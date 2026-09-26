@@ -428,6 +428,9 @@ func (m *Manifest) Validate() error {
 	if err := validateRuntimeValue("defaults.runtime", m.Defaults.Runtime); err != nil {
 		return err
 	}
+	if err := ValidateAllowedRemoteResourcesFormat("defaults.allowed_remote_resources", m.Defaults.AllowedRemoteResources); err != nil {
+		return err
+	}
 	var err error
 	// validateConfigSource resolves a local config_base.source path to a
 	// manifest-directory-relative absolute path for containment checking;
@@ -453,6 +456,9 @@ func (m *Manifest) Validate() error {
 		for i := range p.cfg.Repos {
 			e := &p.cfg.Repos[i]
 			if err := validateRuntimeValue(fmt.Sprintf("%s.repos[%s].runtime", p.name, e.Name), e.Runtime); err != nil {
+				return err
+			}
+			if err := ValidateAllowedRemoteResourcesFormat(fmt.Sprintf("%s.repos[%s].allowed_remote_resources", p.name, e.Name), e.AllowedRemoteResources); err != nil {
 				return err
 			}
 			if e.ConfigBase.resolvedSource, err = m.validateConfigSource(fmt.Sprintf("%s.repos[%d].config_base.source", p.name, i), e.ConfigBase.Source); err != nil {

@@ -249,7 +249,8 @@ func TestMergeOverlays_NilLayers(t *testing.T) {
 	var only OverlayConfig
 	require.NoError(t, yaml.Unmarshal([]byte("mint_url: https://mint.example.com\n"), &only))
 
-	assert.Nil(t, MergeOverlays(nil, nil))
+	var nilLayers PerRepoConfigWriter = MergeOverlays(nil, nil)
+	assert.True(t, nilLayers == nil, "MergeOverlays(nil, nil) must return an untyped nil interface, not a typed-nil pointer boxed in a non-nil interface")
 
 	fromParent := MergeOverlays(only.Writer(), nil)
 	require.NotNil(t, fromParent)

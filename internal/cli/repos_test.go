@@ -1766,7 +1766,7 @@ func TestRunReposInstall_AllowedRemoteResources(t *testing.T) {
 		concurrency:            4,
 		repoFilter:             []string{"acme/web"},
 		forge:                  repos.ForgeGitHub,
-		allowedRemoteResources: []string{"https://example.com/harness.yaml"},
+		allowedRemoteResources: []string{"https://example.com/harness/"},
 		roles:                  []string{"triage"},
 		direct:                 true,
 		inferenceProject:       "inf-proj",
@@ -1780,7 +1780,34 @@ func TestRunReposInstall_AllowedRemoteResources(t *testing.T) {
 	require.NoError(t, loadErr)
 	require.NotNil(t, m.GitHub)
 	require.Equal(t, 2, len(m.GitHub.Repos))
-	assert.Equal(t, []string{"https://example.com/harness.yaml"}, m.GitHub.Repos[1].AllowedRemoteResources)
+	assert.Equal(t, []string{"https://example.com/harness/"}, m.GitHub.Repos[1].AllowedRemoteResources)
+}
+
+func TestRunReposInstall_InvalidAllowedRemoteResources(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		allowedRemoteResources: []string{"https://example.com/harness"},
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--allowed-remote-resources")
+	assert.Contains(t, err.Error(), "must end with /")
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	require.Equal(t, 1, len(m.GitHub.Repos), "malformed prefix must not be persisted")
 }
 
 func TestRunReposInstall_SyncFailureReportsError(t *testing.T) {

@@ -47,9 +47,11 @@ func CheckFileContentDrift(ctx context.Context, client forge.Client,
 	var drifted []ContentDriftFile
 
 	for _, ef := range expectedFiles {
-		// Skip overlay and base config files. Overlay is owned by the
-		// repository; base-file drift is compared against the declared
-		// preset, not against the generated overlay from BuildScaffoldFiles.
+		// Skip config.yaml and base config files. An unmanaged
+		// config.yaml is owned by the repository; managed-configuration
+		// drift is compared against the canonical rendered configuration,
+		// and base-file drift against the declared preset — not against
+		// BuildScaffoldFiles.
 		if ef.Path == ".fullsend/config.yaml" || ef.Path == ".fullsend/config.base.yaml" {
 			continue
 		}

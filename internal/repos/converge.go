@@ -87,9 +87,17 @@ type ConvergeConfig struct {
 // installation component during convergence.
 type ComponentAction struct {
 	Component string // e.g., "workflow", "thin-caller:<path>", "var:MINT_URL", "schedule:<name>", "ref"
-	Action    string // "none", "add", "update", "upgrade", "delete", "orphan", "error"
+	Action    string // "none", "add", "update", "upgrade", "delete", "orphan", "error", ActionAdoptionRequired
 	Detail    string // human-readable detail
 }
+
+// ActionAdoptionRequired marks a ComponentAction reporting that an existing
+// managed .fullsend/config.yaml predates ADR-0122 adoption (missing the
+// ownership marker) and was therefore left untouched. It is deliberately
+// distinct from "none" so convergeRepo's hasAction check below still
+// counts a pending adoption as outstanding work instead of classifying the
+// repo AlreadyCurrent.
+const ActionAdoptionRequired = "adoption-required"
 
 // ConvergeResult holds the outcome of converging a single repo.
 type ConvergeResult struct {
@@ -220,11 +228,12 @@ func validateConcurrency(n int) error {
 // convergence actions are determined. Package-level so it can be
 // shared across convergeRepo and convergeScaffoldFiles.
 type convergeDiscovery struct {
-	repo       ResolvedRepo
-	resolved   ResolvedConfig
-	components []ComponentStatus
-	preset     []byte
-	err        error
+	repo          ResolvedRepo
+	resolved      ResolvedConfig
+	components    []ComponentStatus
+	preset        []byte
+	managedConfig []byte
+	err           error
 }
 
 // hasComponent returns true if the named component is present in the probe results.
@@ -530,6 +539,21 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			}
 		}
 
+		// Render the managed configuration before any writes so a
+		// validation failure fails the repo without applying changes.
+		if d.resolved.OverlayManaged {
+			body, _, configErr := desiredManagedConfig(d.resolved)
+			if configErr != nil {
+				result.Results[i] = ConvergeResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("rendering managed config: %w", configErr),
+				}
+				continue
+			}
+			d.managedConfig = body
+		}
+
 		// Compute WIF for repos that need secrets written.
 		hasSecrets := secretsPresent(d.components)
 		var wif string
@@ -703,6 +727,24 @@ func convergeRepo(ctx context.Context,
 	if isNew {
 		progress(repoFullName, "install", "Not installed, performing full install")
 
+		// ADR-0122 adoption gate: this fresh-install path has no shim
+		// workflow yet, but the repository may already carry a
+		// hand-authored .fullsend/config.yaml — the exact "first write to
+		// a pre-existing file" case the marker/adoption contract exists
+		// for. convergeManagedConfigFiles enforces this gate on the
+		// already-installed path; Install/BuildScaffoldFiles would
+		// otherwise write ManagedConfig unconditionally here, so the
+		// check is repeated for this path.
+		var configAdoptionRequired bool
+		if resolved.OverlayManaged {
+			required, adoptionErr := checkManagedConfigAdoptionRequired(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo)
+			if adoptionErr != nil {
+				cr.Error = fmt.Errorf("reading existing %s: %w", preset.OverlayPath, adoptionErr)
+				return cr
+			}
+			configAdoptionRequired = required
+		}
+
 		if cfg.DryRun {
 			cr.Installed = true
 			cr.Actions = append(cr.Actions, ComponentAction{
@@ -716,6 +758,23 @@ func convergeRepo(ctx context.Context,
 					Action:    "add",
 					Detail:    "would write config preset as " + preset.BasePath,
 				})
+			}
+			if d.resolved.OverlayManaged {
+				if configAdoptionRequired {
+					detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be written (ADR-0122)", preset.OverlayPath)
+					cr.Actions = append(cr.Actions, ComponentAction{
+						Component: preset.OverlayPath,
+						Action:    ActionAdoptionRequired,
+						Detail:    detail,
+					})
+					progress(repoFullName, "dry-run", detail)
+				} else {
+					cr.Actions = append(cr.Actions, ComponentAction{
+						Component: preset.OverlayPath,
+						Action:    "add",
+						Detail:    "would write managed configuration as " + preset.OverlayPath,
+					})
+				}
 			}
 			progress(repoFullName, "dry-run", "Would install (new)")
 			return cr
@@ -745,24 +804,26 @@ func convergeRepo(ctx context.Context,
 		}
 
 		installCfg := InstallConfig{
-			Owner:             rr.Owner,
-			Repo:              rr.Repo,
-			Forge:             resolved.Forge,
-			Roles:             installRoles,
-			MintURL:           resolved.MintURL,
-			InferenceProject:  cfg.InferenceProject,
-			InferenceRegion:   cfg.InferenceRegion,
-			UpstreamRef:       ref,
-			UpstreamTag:       tag,
-			WIFProvider:       wifProvider,
-			ReviewAppClientID: cfg.ReviewAppClientID,
-			RunnerTags:        gitlabRunnerTags(cfg.Manifest),
-			Runtime:           resolved.Runtime,
-			Direct:            cfg.Direct,
-			ReuseSecrets:      hasSecrets,
-			ExistingSecrets:   existingSecretNames(d.components),
-			VendorBinary:      vendor,
-			Preset:            d.preset,
+			Owner:                         rr.Owner,
+			Repo:                          rr.Repo,
+			Forge:                         resolved.Forge,
+			Roles:                         installRoles,
+			MintURL:                       resolved.MintURL,
+			InferenceProject:              cfg.InferenceProject,
+			InferenceRegion:               cfg.InferenceRegion,
+			UpstreamRef:                   ref,
+			UpstreamTag:                   tag,
+			WIFProvider:                   wifProvider,
+			ReviewAppClientID:             cfg.ReviewAppClientID,
+			RunnerTags:                    gitlabRunnerTags(cfg.Manifest),
+			Runtime:                       resolved.Runtime,
+			Direct:                        cfg.Direct,
+			ReuseSecrets:                  hasSecrets,
+			ExistingSecrets:               existingSecretNames(d.components),
+			VendorBinary:                  vendor,
+			Preset:                        d.preset,
+			ManagedConfig:                 d.managedConfig,
+			ManagedConfigAdoptionRequired: configAdoptionRequired,
 		}
 
 		// When vendored, the running binary's embedded templates match the
@@ -798,6 +859,15 @@ func convergeRepo(ctx context.Context,
 			Action:    "add",
 			Detail:    "Installed",
 		})
+		if configAdoptionRequired {
+			detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be converged automatically (ADR-0122)", preset.OverlayPath)
+			cr.Actions = append(cr.Actions, ComponentAction{
+				Component: preset.OverlayPath,
+				Action:    ActionAdoptionRequired,
+				Detail:    detail,
+			})
+			progress(repoFullName, "install", detail)
+		}
 		return cr
 	}
 
@@ -952,8 +1022,9 @@ func convergeRepo(ctx context.Context,
 
 	// 2d-iii: Configuration preset — replace .fullsend/config.base.yaml
 	// wholesale when a preset is declared and the installed bytes differ.
-	// Overlay is never rewritten. No declared preset is a no-op so an
-	// existing base file is preserved without comparison.
+	// No declared preset is a no-op so an existing base file is preserved
+	// without comparison. Managed-configuration handling is independent
+	// (2d-iv).
 	presetFiles, presetActions := convergePresetFiles(ctx, resolved, d.preset, cfg.DryRun, progress)
 	cr.Actions = append(cr.Actions, presetActions...)
 	var presetErrors []string
@@ -967,6 +1038,23 @@ func convergeRepo(ctx context.Context,
 		return cr
 	}
 	allScaffoldFiles = append(allScaffoldFiles, presetFiles...)
+
+	// 2d-iv: Managed configuration — replace .fullsend/config.yaml
+	// wholesale when the repository is config-managed and the installed
+	// bytes differ. Unmanaged repositories leave the file untouched.
+	configFiles, configActions := convergeManagedConfigFiles(ctx, resolved, d.managedConfig, cfg.DryRun, progress)
+	cr.Actions = append(cr.Actions, configActions...)
+	var configErrors []string
+	for _, a := range configActions {
+		if a.Action == "error" {
+			configErrors = append(configErrors, a.Detail)
+		}
+	}
+	if len(configErrors) > 0 {
+		cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(configErrors, "; "))
+		return cr
+	}
+	allScaffoldFiles = append(allScaffoldFiles, configFiles...)
 
 	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;
@@ -1911,10 +1999,12 @@ func convergeScaffoldFiles(ctx context.Context,
 		}
 		if missingSet["workflow"] {
 			// When workflow is missing, also include the workflow file,
-			// config.yaml, and GitLab auxiliary CI templates — they are
-			// part of the scaffold and won't self-heal otherwise.
+			// config.yaml (unmanaged only), and GitLab auxiliary CI
+			// templates — they are part of the scaffold and won't
+			// self-heal otherwise. Config-managed config.yaml is
+			// rewritten by convergeManagedConfigFiles instead.
 			if slices.Contains(resolved.ForgeConfig.WorkflowPaths, f.Path) ||
-				f.Path == ".fullsend/config.yaml" {
+				(f.Path == preset.OverlayPath && !resolved.OverlayManaged) {
 				repairFiles = append(repairFiles, f)
 			}
 		}

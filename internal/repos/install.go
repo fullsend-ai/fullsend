@@ -116,9 +116,26 @@ type InstallConfig struct {
 	PrebuiltScaffoldFiles scaffold.InstallFiles
 
 	// Preset, when non-nil, is written byte-for-byte as
-	// .fullsend/config.base.yaml. The overlay (.fullsend/config.yaml) is
-	// still generated independently and is never merged with the preset.
+	// .fullsend/config.base.yaml. The overlay is generated independently
+	// unless ManagedConfig is set.
 	Preset []byte
+
+	// ManagedConfig, when non-nil, is written as .fullsend/config.yaml
+	// instead of generating an installer overlay. Used for config-managed
+	// repositories (ADR 0122). Unmanaged repos leave this nil so existing
+	// installer generation is preserved.
+	ManagedConfig []byte
+
+	// ManagedConfigAdoptionRequired, when true, skips writing
+	// .fullsend/config.yaml entirely, even though ManagedConfig may be
+	// set: the caller found an existing file that does not carry the
+	// ADR-0122 ownership marker, so it predates managed-configuration
+	// adoption and must be left untouched until an operator adopts it —
+	// the same contract convergeManagedConfigFiles enforces on the
+	// already-installed path. Callers that do not check for adoption
+	// (repos outside the managed-configuration install/converge flow)
+	// leave this false so existing behavior is unchanged.
+	ManagedConfigAdoptionRequired bool
 }
 
 // InstallResult holds the outcome of a per-repo installation.
@@ -420,42 +437,50 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 // Exported so the CLI dry-run path can display the file list without running
 // the full install.
 func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
-	var perRepoCfg config.PerRepoConfigWriter
-	switch {
-	case cfg.PerRepoConfig != nil:
-		perRepoCfg = cfg.PerRepoConfig
-	case len(cfg.Preset) > 0:
-		// A base preset layer is declared: build a stub overlay with
-		// only explicit fleet overrides (mirroring buildPresetOverlay
-		// in `github setup --config`), rather than NewPerRepoConfig's
-		// full defaults. Layered accessors prefer the overlay over the
-		// base, so materializing default roles/allowed_remote_resources/
-		// create_issues here would silently shadow the preset's values.
-		// cfg.Roles is only non-empty when the caller explicitly
-		// requested roles (see defaultRoles in converge.go); an unset
-		// Roles here lets the preset (or its own fallback defaults)
-		// take effect through the overlay -> base -> code-default chain.
-		overlay := config.NewEmptyPerRepoOverlay()
-		if len(cfg.Roles) > 0 {
-			overlay.SetRoles(cfg.Roles)
+	var cfgYAML []byte
+	var err error
+	if !cfg.ManagedConfigAdoptionRequired {
+		if cfg.ManagedConfig != nil {
+			cfgYAML = cfg.ManagedConfig
+		} else {
+			var perRepoCfg config.PerRepoConfigWriter
+			switch {
+			case cfg.PerRepoConfig != nil:
+				perRepoCfg = cfg.PerRepoConfig
+			case len(cfg.Preset) > 0:
+				// A base preset layer is declared: build a stub overlay with
+				// only explicit fleet overrides (mirroring buildPresetOverlay
+				// in `github setup --config`), rather than NewPerRepoConfig's
+				// full defaults. Layered accessors prefer the overlay over the
+				// base, so materializing default roles/allowed_remote_resources/
+				// create_issues here would silently shadow the preset's values.
+				// cfg.Roles is only non-empty when the caller explicitly
+				// requested roles (see defaultRoles in converge.go); an unset
+				// Roles here lets the preset (or its own fallback defaults)
+				// take effect through the overlay -> base -> code-default chain.
+				overlay := config.NewEmptyPerRepoOverlay()
+				if len(cfg.Roles) > 0 {
+					overlay.SetRoles(cfg.Roles)
+				}
+				if cfg.Runtime != "" {
+					overlay.SetRuntime(cfg.Runtime)
+				}
+				perRepoCfg = overlay
+			default:
+				generated := config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
+				if cfg.Runtime != "" {
+					generated.SetRuntime(cfg.Runtime)
+				}
+				perRepoCfg = generated
+			}
+			if err := perRepoCfg.Validate(); err != nil {
+				return nil, fmt.Errorf("invalid config: %w", err)
+			}
+			cfgYAML, err = perRepoCfg.Marshal()
+			if err != nil {
+				return nil, fmt.Errorf("marshaling config: %w", err)
+			}
 		}
-		if cfg.Runtime != "" {
-			overlay.SetRuntime(cfg.Runtime)
-		}
-		perRepoCfg = overlay
-	default:
-		generated := config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
-		if cfg.Runtime != "" {
-			generated.SetRuntime(cfg.Runtime)
-		}
-		perRepoCfg = generated
-	}
-	if err := perRepoCfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
-	}
-	cfgYAML, err := perRepoCfg.Marshal()
-	if err != nil {
-		return nil, fmt.Errorf("marshaling config: %w", err)
 	}
 
 	var installFiles scaffold.InstallFiles
@@ -483,11 +508,13 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 			Mode:    f.Mode,
 		})
 	}
-	files = append(files, forge.TreeFile{
-		Path:    ".fullsend/config.yaml",
-		Content: cfgYAML,
-		Mode:    "100644",
-	})
+	if !cfg.ManagedConfigAdoptionRequired {
+		files = append(files, forge.TreeFile{
+			Path:    ".fullsend/config.yaml",
+			Content: cfgYAML,
+			Mode:    "100644",
+		})
+	}
 	if len(cfg.Preset) > 0 {
 		plan := preset.Apply(cfg.Preset, nil, nil)
 		files = append(files, forge.TreeFile{

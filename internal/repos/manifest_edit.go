@@ -402,11 +402,7 @@ func SetDefault(manifestPath, key, value string) error {
 		if value == "" {
 			m.Defaults.AllowedRemoteResources = nil
 		} else {
-			parts := strings.Split(value, ",")
-			for i := range parts {
-				parts[i] = strings.TrimSpace(parts[i])
-			}
-			m.Defaults.AllowedRemoteResources = parts
+			m.Defaults.AllowedRemoteResources = splitAllowedRemoteResources(value)
 		}
 	case "github.url":
 		if value != "" {
@@ -461,6 +457,21 @@ func SetDefault(manifestPath, key, value string) error {
 	return writeManifest(manifestPath, m)
 }
 
+// splitAllowedRemoteResources splits a comma-separated
+// defaults.allowed_remote_resources value into trimmed, non-empty prefixes.
+// Used both to validate the value and to build the slice persisted to the
+// manifest, so a trailing comma or whitespace-only entry can't slip an empty
+// token past validation and into the written file.
+func splitAllowedRemoteResources(value string) []string {
+	var parts []string
+	for _, raw := range strings.Split(value, ",") {
+		if v := strings.TrimSpace(raw); v != "" {
+			parts = append(parts, v)
+		}
+	}
+	return parts
+}
+
 // validateDefaultValue checks that value is appropriate for the given key.
 func validateDefaultValue(key, value string) error {
 	switch key {
@@ -499,15 +510,9 @@ func validateDefaultValue(key, value string) error {
 			return fmt.Errorf("defaults.vendor must be \"true\" or \"false\", got %q", value)
 		}
 	case "defaults.allowed_remote_resources":
-		for _, raw := range strings.Split(value, ",") {
-			v := strings.TrimSpace(raw)
-			if v == "" {
-				continue
-			}
-			u, err := url.Parse(v)
-			if err != nil || u.Scheme != "https" || u.Host == "" {
-				return fmt.Errorf("defaults.allowed_remote_resources: %q must be a valid HTTPS URL", v)
-			}
+		parts := splitAllowedRemoteResources(value)
+		if err := ValidateAllowedRemoteResourcesFormat("defaults.allowed_remote_resources", parts); err != nil {
+			return err
 		}
 	case "gitlab.runner_tags":
 		for _, raw := range strings.Split(value, ",") {

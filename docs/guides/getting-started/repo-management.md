@@ -214,20 +214,30 @@ github:
     - name: acme/unmanaged        # would be unmanaged without defaults.config
 ```
 
-`defaults.config` opts every repository into overlay management. A
+`defaults.config` opts every repository into managed configuration. A
 repository `config` block (including `config: {}`) opts in only that
-repository. A repository with neither declaration is not overlay-managed.
+repository. A repository with neither declaration is not config-managed.
 Resolution is code defaults, then `config_base`, then `defaults.config`,
 then the repository `config`; more specific values win and unspecified
-keys inherit. The managed overlay contains only explicitly supplied
+keys inherit. The managed configuration contains only explicitly supplied
 values (plus the `runtime` / `allowed_remote_resources` shorthands) —
 code defaults and `config.base.yaml` are not baked into the file.
 Unknown fields and the forbidden shorthand keys fail manifest validation
 with field-specific errors.
 
-Install, convergence, and overlay drift for these blocks land with the
-rest of [ADR 0122](../../ADRs/0122-declarative-repo-configuration.md);
-this release parses, validates, and resolves them.
+Every managed `.fullsend/config.yaml` begins with a stable ownership
+marker. If a config-managed repository already has an existing
+`.fullsend/config.yaml` without that marker, `repos status` reports it as
+`managed configuration (adoption required)` rather than ordinary drift,
+and `repos install`/convergence leave the file untouched until it is
+manually adopted (edited to carry the marker, or replaced with the
+rendered managed body). Once a file carries the marker, `repos install`
+writes the canonical sparse `.fullsend/config.yaml`, `repos status`
+reports any whole-file difference (including a single-key change) as
+drift, and convergence rewrites the file deterministically.
+Repositories with neither declaration keep their existing configuration
+and are excluded from managed-configuration drift checks.
+`.fullsend/config.base.yaml` handling stays independent.
 
 ### Manifest paths and URLs
 
@@ -269,11 +279,11 @@ Install runs in two phases:
    separate upgrade PR. Repos whose workflow is already on the default
    branch are checked for component drift (workflow, thin callers,
    variables, secrets, pipeline schedules, GitLab poller protected-ref
-   pipeline access), scaffold content drift,
-   scaffold ref drift, and declared configuration-preset drift against
-   `.fullsend/config.base.yaml`. Missing or drifted components are
-   repaired automatically; ref updates are committed as PRs (or direct
-   pushes with `--direct`).
+   pipeline access), scaffold content drift, managed `.fullsend/config.yaml`
+   drift, scaffold ref drift, and declared configuration-preset drift against
+   `.fullsend/config.base.yaml`. Missing or drifted components are repaired
+   automatically; ref updates are committed as PRs (or direct pushes with
+   `--direct`).
 
 > **GitHub prerequisite:** GCP WIF provisioning
 > (`fullsend inference provision`) must be completed before running install.
@@ -342,8 +352,8 @@ fullsend repos status -f repos.yaml --json
 Run `repos install` to detect and fix component drift (workflow, thin
 callers, variables, secrets, pipeline schedules, GitLab poller
 protected-ref pipeline access), scaffold ref drift,
-scaffold content drift, and declared configuration-preset drift across
-all manifest repos:
+scaffold content drift, declared configuration-preset drift, and managed
+`.fullsend/config.yaml` drift across all manifest repos:
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -363,12 +373,16 @@ passed), scaffold content drift (including structural rewrites of
 `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and
 removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs
 predating #7707),
-declared configuration-preset drift, and scaffold workflow refs against
-the manifest. Missing or drifted components are repaired automatically
-(disabled pipeline schedules are the exception — see above); a changed
-preset replaces only `.fullsend/config.base.yaml` and leaves the overlay
-intact. Ref updates are committed as PRs (or direct pushes with
-`--direct`).
+declared configuration-preset drift, managed `.fullsend/config.yaml` drift,
+and scaffold workflow refs against the manifest. Missing or drifted
+components are repaired automatically (disabled pipeline schedules are the
+exception — see above); a changed preset replaces only
+`.fullsend/config.base.yaml` and leaves the managed configuration intact. A
+drifted managed configuration file is rewritten wholesale, unless the
+existing file predates managed-configuration adoption (missing the
+ownership marker) — that case is reported as adoption required and left
+untouched instead of rewritten; unmanaged files are left intact. Ref
+updates are committed as PRs (or direct pushes with `--direct`).
 
 Use `repos status` for a read-only drift report (no changes applied). For
 GitLab repos, status also reports `protected-ref-pipeline` drift when the
