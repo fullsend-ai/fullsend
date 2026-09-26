@@ -168,11 +168,15 @@ which bot and review state are accepted.
 ### Lifecycle close (pull\_request\_target.closed)
 
 The `pull_request_target.closed` event that triggers the retro stage is
-intentionally ungated: any closer may trigger read-only lifecycle
-accounting. The retro agent performs only observation work and does not
-mutate repository state. This exception is currently implemented in
-the bash dispatch path; the Go `IsAuthorized()` path has no special
-handling for closed transitions and applies the standard `write+` gate.
+intentionally ungated: any closer may trigger retro. Retro's minted
+token has `issues:write` and `pull_requests:write` (contents stays
+read-only), so it can file issues, comment, and apply the
+`ready-for-triage` label, which the router dispatches to triage without
+a further authorization check — see
+[Threat 6](../../../problems/security-threat-model.md#threat-6-denial-of-service-dos--resource-exhaustion).
+This exception is currently implemented in the bash dispatch path; the
+Go `IsAuthorized()` path has no special handling for closed transitions
+and applies the standard `write+` gate.
 
 ### Schedule and manual dispatch
 
