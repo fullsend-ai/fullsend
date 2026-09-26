@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 )
@@ -483,11 +484,34 @@ func FormatSignOffTrailer(name, email string) (string, error) {
 // Mode controls file permissions: "100644" for regular files,
 // "100755" for executable files (e.g., shell scripts).
 // When Delete is true, the file is removed from the tree.
+//
+// Large binaries (e.g. a vendored CLI) should set LocalPath instead of
+// Content so callers do not hold the full payload in memory between
+// collection and CommitFiles. Forge clients stream or read LocalPath at
+// commit time. When LocalPath is set, Content is ignored.
 type TreeFile struct {
-	Path    string
-	Content []byte
-	Mode    string // "100644" or "100755"
-	Delete  bool   // remove file from tree instead of adding/updating
+	Path      string
+	Content   []byte
+	LocalPath string // stream from this filesystem path instead of Content
+	Mode      string // "100644" or "100755"
+	Delete    bool   // remove file from tree instead of adding/updating
+}
+
+// Bytes returns the file payload. LocalPath, when set, is read from disk
+// so callers can keep large binaries out of TreeFile.Content. Delete
+// entries have no payload.
+func (f TreeFile) Bytes() ([]byte, error) {
+	if f.Delete {
+		return nil, nil
+	}
+	if f.LocalPath != "" {
+		data, err := os.ReadFile(f.LocalPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", f.LocalPath, err)
+		}
+		return data, nil
+	}
+	return f.Content, nil
 }
 
 // DirectoryEntry represents a file or subdirectory in a repository directory listing.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -61,15 +62,16 @@ func makeVendorFunc(fullsendBinary, fullsendSource string) layers.VendorFunc {
 	}
 }
 
+func nopCleanup() {}
+
 // makeVendorCollectFunc returns a VendorCollectFunc for combined scaffold commits.
 func makeVendorCollectFunc(fullsendBinary, fullsendSource string) layers.VendorCollectFunc {
-	return func(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string) ([]forge.TreeFile, int, error) {
+	return func(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string) ([]forge.TreeFile, int, func(), error) {
 		bundle, cleanup, err := prepareVendorFiles(ctx, client, printer, owner, repo, fullsendBinary, fullsendSource)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, cleanup, err
 		}
-		defer cleanup()
-		return bundle.files, bundle.assetCount, nil
+		return bundle.files, bundle.assetCount, cleanup, nil
 	}
 }
 
@@ -80,16 +82,15 @@ func vendorStackArgs(vendor bool, fullsendBinary, fullsendSource string) (layers
 	return makeVendorFunc(fullsendBinary, fullsendSource), makeVendorCollectFunc(fullsendBinary, fullsendSource)
 }
 
-func appendVendorTreeFiles(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, files []forge.TreeFile, vendor bool, fullsendBinary, fullsendSource string) ([]forge.TreeFile, int, error) {
+func appendVendorTreeFiles(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, files []forge.TreeFile, vendor bool, fullsendBinary, fullsendSource string) ([]forge.TreeFile, int, func(), error) {
 	if !vendor {
-		return files, 0, nil
+		return files, 0, nopCleanup, nil
 	}
 	bundle, cleanup, err := prepareVendorFiles(ctx, client, printer, owner, repo, fullsendBinary, fullsendSource)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, cleanup, err
 	}
-	defer cleanup()
-	return append(files, bundle.files...), bundle.assetCount, nil
+	return append(files, bundle.files...), bundle.assetCount, cleanup, nil
 }
 
 func prepareVendorFiles(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, fullsendBinary, fullsendSource string) (vendorFileBundle, func(), error) {
@@ -145,6 +146,13 @@ func prepareVendorFiles(ctx context.Context, client forge.Client, printer *ui.Pr
 		cleanupRoot()
 	}
 
+	absPath, err := filepath.Abs(binPath)
+	if err != nil {
+		cleanup()
+		return vendorFileBundle{}, func() {}, fmt.Errorf("resolving binary path: %w", err)
+	}
+	binPath = absPath
+
 	info, err := os.Stat(binPath)
 	if err != nil {
 		cleanup()
@@ -154,11 +162,6 @@ func prepareVendorFiles(ctx context.Context, client forge.Client, printer *ui.Pr
 	if info.Size() > maxVendoredBinarySize {
 		cleanup()
 		return vendorFileBundle{}, func() {}, fmt.Errorf("binary is %d bytes, exceeds %d byte limit", info.Size(), maxVendoredBinarySize)
-	}
-	binData, err := os.ReadFile(binPath)
-	if err != nil {
-		cleanup()
-		return vendorFileBundle{}, func() {}, fmt.Errorf("reading binary: %w", err)
 	}
 
 	assets, err := scaffold.CollectVendoredAssets(root.Path, pathPrefix)
@@ -178,9 +181,9 @@ func prepareVendorFiles(ctx context.Context, client forge.Client, printer *ui.Pr
 	}
 
 	files := []forge.TreeFile{{
-		Path:    destPath,
-		Content: binData,
-		Mode:    "100755",
+		Path:      destPath,
+		LocalPath: binPath,
+		Mode:      "100755",
 	}}
 	for _, f := range assets {
 		files = append(files, forge.TreeFile{

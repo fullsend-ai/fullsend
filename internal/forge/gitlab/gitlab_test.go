@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1516,6 +1518,105 @@ func TestBlobSHA(t *testing.T) {
 	assert.Equal(t, sha, blobSHA(content))
 	// Different input produces a different hash
 	assert.NotEqual(t, sha, blobSHA([]byte("world")))
+}
+
+func TestBlobSHAFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hello")
+	require.NoError(t, os.WriteFile(path, []byte("hello"), 0o644))
+	got, err := blobSHAFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, blobSHA([]byte("hello")), got)
+
+	_, err = blobSHAFile(filepath.Join(dir, "missing"))
+	require.Error(t, err)
+}
+
+func TestCommitFiles_LocalPath(t *testing.T) {
+	client, mux := setupTest(t)
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff}
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, content, 0o755))
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		actions := body["actions"].([]any)
+		require.Len(t, actions, 1)
+		action := actions[0].(map[string]any)
+		assert.Equal(t, "create", action["action"])
+		assert.Equal(t, "bin/fullsend", action["file_path"])
+		assert.Equal(t, "base64", action["encoding"])
+		decoded, err := base64.StdEncoding.DecodeString(action["content"].(string))
+		require.NoError(t, err)
+		assert.Equal(t, content, decoded)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"id": "commit-sha"})
+	})
+
+	committed, err := client.CommitFiles(context.Background(), "owner", "repo", "vendor binary", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: binPath, Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+}
+
+func TestCommitFiles_LocalPathIdempotent(t *testing.T) {
+	client, mux := setupTest(t)
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0x00}
+	fileSHA := blobSHA(content)
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, content, 0o755))
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": fileSHA, "path": "bin/fullsend", "type": "blob", "mode": "100755"},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("commits endpoint should not be called when LocalPath file is unchanged")
+	})
+
+	committed, err := client.CommitFiles(context.Background(), "owner", "repo", "no-op", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: binPath, Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.False(t, committed)
+}
+
+func TestCommitFiles_LocalPathMissing(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
+			"default_branch": "main", "visibility": "public",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/tree", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
+	})
+
+	_, err := client.CommitFiles(context.Background(), "owner", "repo", "vendor binary", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: filepath.Join(t.TempDir(), "missing"), Mode: "100755"},
+	})
+	require.Error(t, err)
 }
 
 func TestCommitFilesToBranch(t *testing.T) {
