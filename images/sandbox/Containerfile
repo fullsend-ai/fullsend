@@ -131,7 +131,8 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 # a pinned pi release. Registers provider "anthropic-vertex": pi's own
 # Claude catalog and Anthropic transport behind a request-rewriting fetch,
 # no @anthropic-ai/* dependency, no mirrored pi internals. Reviewed at
-# v0.1.0 (#7019).
+# v0.1.0 (#7019); v0.1.1 (#7750) falls back when Vertex refuses strict
+# tools as structured_outputs under org policy.
 #
 # Pinned by git tag + SHA256 of the GitHub tag tarball. Installed under
 # PI_EXTENSIONS_DIR, root-owned and outside PI_CODING_AGENT_DIR, so pi never
@@ -146,8 +147,8 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 # PI_VERSION bump move that matrix to the new pin first. Compat flags
 # reach Vertex only through the extension's VERTEX_COMPAT_KEYS allowlist.
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
-ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.0
-ARG PI_ANTHROPIC_VERTEX_SHA256=83e21c22f68717612a693baa25fe632f2b49eb449a7665d06bcd04ede6343d57
+ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.1
+ARG PI_ANTHROPIC_VERTEX_SHA256=b7c5572a94dc2b1ad80a189216067b4d3adee4028d85a1f60c3228651c826559
 ARG PI_EXTENSIONS_DIR=/usr/local/share/pi-extensions
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v${PI_ANTHROPIC_VERTEX_VERSION}.tar.gz" \
