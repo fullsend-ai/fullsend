@@ -27,6 +27,11 @@ superseded by [ADR 0098](0098-entity-first-harness-evaluation.md). The poll
 command, driver architecture, per-repo scope, and coordination decisions remain
 current.
 
+GitLab's native webhook fast-path
+([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)) is another
+event-driven input into this same dispatch core; the GitLab cron-poller
+remains the reconciliation backstop.
+
 ## Context
 
 Fullsend's primary dispatch path is **event-driven**: forge webhooks are normalized

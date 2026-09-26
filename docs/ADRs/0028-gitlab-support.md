@@ -19,11 +19,22 @@ Date: 2026-04-29
 
 Deprecated — the harness-level forge-specific vs. forge-neutral split
 is now addressed by [ADR 0045](0045-forge-portable-harness-schema.md)
-(forge-portable harness schema). The webhook bridge approach described
-here is superseded by [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md)
-(cron-polling event dispatch), which eliminates webhooks entirely. The
-broader GitLab support architecture (CI/CD pipeline mapping, PAT-based
-auth) documented here remains reference material.
+(forge-portable harness schema). The external webhook-bridge approach
+described here is superseded by [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md)
+(cron-polling, which removed the bridge) and then by
+[ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md) (GitLab-native
+webhook fast-path + poller backstop). The broader GitLab support
+architecture (CI/CD pipeline mapping, PAT-based auth) documented here
+remains reference material.
+
+> **Update (2026-09, #7758):** The claim in "Event Handling and Webhook
+> Architecture" that webhook JSON and the pipeline trigger API are not
+> wire-compatible — so a translation bridge is required — is refuted.
+> GitLab's native "use a webhook" trigger
+> (`POST /api/v4/projects/:id/ref/:ref/trigger/pipeline`) pins `:ref` in
+> the URL, which overrides the payload ref. No intermediary and no
+> inbound endpoint we operate. See
+> [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md).
 
 ## Context
 
@@ -280,14 +291,14 @@ The implementation document is structured for iterative evolution as GitLab supp
 
 ### Webhook-to-Trigger Translation Architecture
 
-**Problem**: GitLab webhooks (JSON payloads) and the pipeline trigger API (form-encoded parameters) are not wire-compatible. An intermediary is required to translate webhook events to trigger API calls.
+~~**Problem**: GitLab webhooks (JSON payloads) and the pipeline trigger API (form-encoded parameters) are not wire-compatible. An intermediary is required to translate webhook events to trigger API calls.~~ Decided in [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md): GitLab's native "use a webhook" trigger pins `:ref` in the URL, so no translation bridge is required. [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md) had previously eliminated the bridge by going poll-only.
 
 **Trade-offs**:
 - **Option 1 (CI/CD webhook integration)**: Runs in enrolled repo, but cannot enforce protected-branch-only execution without blocking MR reactions entirely. Reintroduces security concern.
 - **Option 2 (GitLab serverless functions)**: Keeps compute within GitLab infrastructure, but requires GitLab Premium/Ultimate tier.
 - **Option 3 (Minimal bridge service)**: Works on GitLab Free tier, but reintroduces hosted webhook receiver concern from ADR-0009.
 
-**Decision needed**: Choose between infrastructure cost (options 2/3) and security model compromise (option 1). For GitLab Free tier, option 3 appears to be the only viable path. This question should be resolved before production deployment.
+**Decision needed**: ~~Choose between infrastructure cost (options 2/3) and security model compromise (option 1). For GitLab Free tier, option 3 appears to be the only viable path. This question should be resolved before production deployment.~~ Resolved by [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md) (no translation bridge).
 
 ### ADR Scope and Structure
 

@@ -27,6 +27,9 @@ default; that criterion is superseded by the default-on decision in
 [PR #7461](https://github.com/fullsend-ai/fullsend/pull/7461) (ADR 0121,
 not on `main`). This ADR's decision is unchanged.
 
+On GitLab, the webhook candidate and poller-backstop composition is
+[ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md).
+
 ## Context
 
 Agent execution currently uses platform-specific concurrency controls that may
