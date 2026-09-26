@@ -30,14 +30,14 @@ type EventMatcher interface {
 // evaluation. It mirrors harnessdispatch.ExecutionRef but is defined here to
 // keep the jirapoll package decoupled from harness internals.
 type DispatchRecord struct {
-	Agent         string `json:"agent"`
-	Role          string `json:"role"`
-	SourceRepo    string `json:"source_repo"`
-	EventType     string `json:"event_type"`
-	EventPayload  string `json:"event_payload"`
-	TriggerSource string `json:"trigger_source,omitempty"`
-	StatusRepo    string `json:"status_repo"`
-	StatusNumber  string `json:"status_number"`
+	Agent         string          `json:"agent"`
+	Role          string          `json:"role"`
+	SourceRepo    string          `json:"source_repo"`
+	EventType     string          `json:"event_type"`
+	EventPayload  json.RawMessage `json:"event_payload"`
+	TriggerSource string          `json:"trigger_source,omitempty"`
+	StatusRepo    string          `json:"status_repo"`
+	StatusNumber  string          `json:"status_number"`
 }
 
 // maxEventsPerIssue bounds how many routable events one issue can dispatch

@@ -91,7 +91,7 @@ func (m *routerMatcher) Match(_ context.Context, event *normevent.Event) ([]jira
 			Role:         stage,
 			SourceRepo:   event.Repo,
 			EventType:    event.Source.RawType,
-			EventPayload: string(neJSON),
+			EventPayload: json.RawMessage(neJSON),
 			StatusRepo:   event.Repo,
 			StatusNumber: fmt.Sprintf("%d", event.Entity.ID),
 		})
@@ -262,11 +262,11 @@ func thenDispatchActorRole(w *world.World, issueKey, actorID, wantRole string) e
 	}
 
 	for _, d := range dispatches {
-		if d.EventPayload == "" {
+		if len(d.EventPayload) == 0 {
 			continue
 		}
 		var ne dispatch.NormalizedEvent
-		if err := json.Unmarshal([]byte(d.EventPayload), &ne); err != nil {
+		if err := json.Unmarshal(d.EventPayload, &ne); err != nil {
 			return fmt.Errorf("unmarshal payload: %w", err)
 		}
 		if ne.Actor.ID == actorID {
@@ -297,7 +297,7 @@ func thenDispatchNotContains(w *world.World, issueKey string) error {
 // dispatchMatchesIssue checks whether a DispatchRecord belongs to the given
 // Jira issue key by inspecting the entity.key field inside EventPayload.
 func dispatchMatchesIssue(d jirapoll.DispatchRecord, issueKey string) bool {
-	if d.EventPayload == "" {
+	if len(d.EventPayload) == 0 {
 		return false
 	}
 	var payload struct {
@@ -305,7 +305,7 @@ func dispatchMatchesIssue(d jirapoll.DispatchRecord, issueKey string) bool {
 			Key string `json:"key"`
 		} `json:"entity"`
 	}
-	if err := json.Unmarshal([]byte(d.EventPayload), &payload); err != nil {
+	if err := json.Unmarshal(d.EventPayload, &payload); err != nil {
 		return false
 	}
 	return payload.Entity.Key == issueKey

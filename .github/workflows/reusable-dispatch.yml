@@ -1759,7 +1759,7 @@ jobs:
       - name: Write dispatch event payload
         shell: bash
         env:
-          EVENT_PAYLOAD: ${{ matrix.event_payload }}
+          EVENT_PAYLOAD: ${{ toJSON(matrix.event_payload) }}
         run: |
           set -euo pipefail
           mkdir -p .fullsend/dispatch
@@ -1829,7 +1829,7 @@ jobs:
         id: dispatch-env
         shell: bash
         env:
-          EVENT_PAYLOAD: ${{ matrix.event_payload }}
+          EVENT_PAYLOAD: ${{ toJSON(matrix.event_payload) }}
         run: |
           set -euo pipefail
           URL=$(printf '%s' "${EVENT_PAYLOAD}" | jq -r '.issue.html_url // .pull_request.html_url // empty')
@@ -1890,6 +1890,6 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}
           status-number: ${{ matrix.status_number }}
-          status-comment-id: ${{ fromJSON(matrix.event_payload).comment.id }}
+          status-comment-id: ${{ matrix.event_payload.comment.id }}
           mint-url: ${{ inputs.mint_url }}
-          pr-head-sha: ${{ fromJSON(matrix.event_payload).pull_request.head.sha || '' }}
+          pr-head-sha: ${{ matrix.event_payload.pull_request.head.sha || '' }}

@@ -241,7 +241,7 @@ Key fields in each dispatch record:
 |---|---|
 | `agent` | Agent to dispatch (e.g., `triage`, `code`) |
 | `event_type` | What triggered the dispatch (e.g., `comment_added`, `label_changed`) |
-| `event_payload` | JSON-encoded [NormalizedEvent](../../normative/normalized-event/v1/) — inspect with `jq -r '.event_payload \| fromjson' dispatches.json` |
+| `event_payload` | Structured [NormalizedEvent](../../normative/normalized-event/v1/) object — inspect with `jq '.[].event_payload' dispatches.json` |
 | `source_repo` | GitHub repo slug where the agent runs |
 | `status_repo` | GitHub repo slug for status tracking |
 | `status_number` | Entity identifier as a string (Jira numeric issue ID) |
@@ -263,7 +263,7 @@ The poll step writes an array of dispatch records to `dispatches.json`. Each rec
 | `agent` | string | Agent to run (e.g., `"triage"`, `"code"`). Determined by CEL trigger evaluation. |
 | `role` | string | Harness role for this agent. |
 | `event_type` | string | Jira event type that triggered the dispatch (e.g., `"comment_added"`, `"label_changed"`, `"opened"`, `"reopened"`, `"edited"`, `"closed"`). |
-| `event_payload` | string | JSON-encoded [NormalizedEvent](../../normative/normalized-event/v1/). Example below. |
+| `event_payload` | object | Structured [NormalizedEvent](../../normative/normalized-event/v1/) object. Example below. |
 | `source_repo` | string | GitHub repo slug where the agent workflow runs. |
 | `trigger_source` | string | (Optional) Trigger source identifier. |
 | `status_repo` | string | GitHub repo slug for status tracking. |
@@ -271,7 +271,7 @@ The poll step writes an array of dispatch records to `dispatches.json`. Each rec
 
 ### `event_payload` example
 
-The `event_payload` field is a JSON-encoded [NormalizedEvent](../../normative/normalized-event/v1/) — the same forge-neutral struct that GitHub and GitLab input drivers produce. An example for a `/fs-triage` comment on `PROJ-101`:
+The `event_payload` field is a structured [NormalizedEvent](../../normative/normalized-event/v1/) object — the same forge-neutral struct that GitHub and GitLab input drivers produce. An example for a `/fs-triage` comment on `PROJ-101`:
 
 ```json
 {
