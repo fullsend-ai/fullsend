@@ -120,7 +120,7 @@ func TestRenderSteerEnvelope_FullProvenance(t *testing.T) {
 		"issue_comment by octocat",
 		"2026-09-03T10:48:29Z",
 		"head is now abc1234",
-		"attributed to octocat",
+		"activity by octocat, whose authorization the route job verified",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("envelope missing %q:\n%s", want, got)
@@ -145,6 +145,16 @@ func TestRenderSteerEnvelope_LocalRun(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "reviewer asked for the null case") {
 		t.Errorf("steer text missing:\n%s", got)
+	}
+	// No follow-up run means no Route job checked anything: the envelope
+	// must say so, not borrow the authorized-run wording.
+	if !strings.Contains(got, "did not come through a follow-up run, so no permission check stands behind it") {
+		t.Errorf("local steer must disclaim authorization:\n%s", got)
+	}
+	for _, unwanted := range []string{"authorized follow-up run", "route job verified", `Items under "Amendments"`} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("local steer claims authority it does not have (%q):\n%s", unwanted, got)
+		}
 	}
 }
 
@@ -181,31 +191,36 @@ func TestRenderSteerEnvelope_DoesNotContradictItsOwnProvenance(t *testing.T) {
 	}
 }
 
-// TestRenderSteerEnvelope_ClaimsNoAuthorityItCannotVouchFor is the negative
-// property that has to hold while this change ships the delivery path alone.
-// Nothing here verifies who was authorized, so the envelope must not tell the
-// agent that anyone was: a runner vouching for a check it has not made is
-// worse than a runner that stays quiet. The sentences that carry authority
-// belong with the change that establishes it.
-func TestRenderSteerEnvelope_ClaimsNoAuthorityItCannotVouchFor(t *testing.T) {
-	for _, msg := range []SteerMessage{
-		{Actor: "octocat", Event: "issue_comment", FollowUpRunID: 7, Text: "x"},
-		{Text: "x"}, // local run: no actor, no run id
+// TestRenderSteerEnvelope_ClaimsTheAuthorityProvenanceEstablishes checks that
+// the envelope vouches for the provenance the steerwatch package establishes
+// (ADR 0118): with an actor, that the route job verified that actor's
+// authorization; without one, that the update still came through an
+// authorized follow-up run. How to weigh the body's halves is the body's
+// own opening paragraph, which varies with the batch, so the header must
+// not assert a split the body may not carry. This replaces the test that
+// pinned the opposite while nothing established provenance.
+func TestRenderSteerEnvelope_ClaimsTheAuthorityProvenanceEstablishes(t *testing.T) {
+	withActor := renderSteerEnvelope(SteerMessage{Actor: "octocat", Event: "issue_comment", FollowUpRunID: 7, Text: "x"})
+	for _, want := range []string{
+		"activity by octocat, whose authorization the route job verified for this issue_comment",
+		"the same permission check that authorized this run",
 	} {
-		got := renderSteerEnvelope(msg)
-		for _, unwanted := range []string{
-			"authorization",
-			"authorized",
-			"permission check",
-			"permission gate",
-			"route job",
-			"takes precedence",
-			"taking precedence",
-		} {
-			if strings.Contains(got, unwanted) {
-				t.Errorf("envelope asserts an authority this change does not establish (%q):\n%s", unwanted, got)
-			}
+		if !strings.Contains(withActor, want) {
+			t.Errorf("envelope with an actor lacks %q:\n%s", want, withActor)
 		}
+	}
+	for _, unwanted := range []string{`Items under "Amendments"`, "taking precedence"} {
+		if strings.Contains(withActor, unwanted) {
+			t.Errorf("envelope must leave the amendment/context weighing to the body (%q):\n%s", unwanted, withActor)
+		}
+	}
+
+	noActor := renderSteerEnvelope(SteerMessage{FollowUpRunID: 7, Text: "x"})
+	if !strings.Contains(noActor, "authorized follow-up run, checked by the same permission gate that authorized this run") {
+		t.Errorf("envelope without an actor must still name the run-level authorization:\n%s", noActor)
+	}
+	if strings.Contains(noActor, "whose authorization the route job verified") {
+		t.Errorf("envelope without an actor must not attribute authorization to anyone:\n%s", noActor)
 	}
 }
 

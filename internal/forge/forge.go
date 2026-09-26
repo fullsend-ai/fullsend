@@ -291,7 +291,50 @@ type PullRequestInfo struct {
 	IsFork   bool
 }
 
+// CommitComparison is a forge's three-dot comparison of a head ref against
+// a base ref.
+type CommitComparison struct {
+	// Status is the forge's verdict on how head relates to base: "ahead",
+	// "behind", "diverged" or "identical". Only "ahead" means the files
+	// below are exactly what head added on top of base.
+	Status   string
+	AheadBy  int
+	BehindBy int
+	// Files are the changed files in the forge's order. GitHub returns at
+	// most 300, silently; a caller that needs the whole set must treat a
+	// list of 300 as possibly truncated.
+	Files []ComparedFile
+}
+
+// ComparedFile is one file a comparison touched.
+type ComparedFile struct {
+	Path string
+	// Status is the forge's change kind: "added", "removed", "modified",
+	// "renamed", "copied", "changed" or "unchanged".
+	Status string
+	// PreviousPath is set for a rename.
+	PreviousPath string
+	Additions    int
+	Deletions    int
+	// Patch is the unified-diff hunk text, or empty when the forge omits
+	// it (binary content, or a diff too large to include).
+	Patch string
+}
+
+// ReferencedWorkflow is one reusable workflow a run called, pinned by ref
+// and resolved sha. Comparing two runs' sets is how a caller establishes
+// that both came through the same dispatch chain without knowing which
+// version that chain is on (ADR 0113).
+type ReferencedWorkflow struct {
+	Path string // "owner/repo/.github/workflows/file.yml@ref"
+	Ref  string // "refs/heads/main"
+	SHA  string
+}
+
 // WorkflowRun represents a CI/CD workflow execution.
+//
+// The fields below CreatedAt are populated only by callers that need run
+// provenance; the older listing methods leave them zero.
 type WorkflowRun struct {
 	ID         int
 	Name       string
@@ -300,6 +343,27 @@ type WorkflowRun struct {
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
 	CreatedAt  string
+
+	// RunAttempt is 1 for the run as first created and counts up on each
+	// re-run. A re-run replays the original event under whoever pressed
+	// the button, so a caller that reasons about who caused a run must
+	// know it is not looking at the first attempt. Zero when unknown.
+	RunAttempt int
+	// Path is the workflow file the run came from, relative to the
+	// repository root.
+	Path string
+	// DisplayTitle is the run's rendered title — the workflow's `run-name`
+	// when it declares one, otherwise a platform default.
+	DisplayTitle string
+	// Actor is the login the run is attributed to; TriggeringActor is the
+	// login whose action caused it. They differ on re-runs.
+	Actor           string
+	TriggeringActor string
+	// PullRequestNumbers are the pull requests the run is associated with.
+	// Empty for events that carry no association, such as issue_comment.
+	PullRequestNumbers []int
+	// ReferencedWorkflows are the reusable workflows this run called.
+	ReferencedWorkflows []ReferencedWorkflow
 }
 
 // WorkflowJob represents a job within a workflow run.
@@ -346,16 +410,38 @@ type Issue struct {
 	Body   string
 	URL    string
 	Labels []string
+	// IsPullRequest reports whether this number is a pull request rather
+	// than an issue. GitHub numbers the two in one sequence and serves a
+	// pull request from the issues endpoint as well, carrying a
+	// `pull_request` object only when it is one — so this is the only
+	// reliable way to tell them apart, and a URL's `/issues/` or `/pull/`
+	// segment is not: both forms resolve to the same pull request.
+	IsPullRequest bool
 }
 
 // IssueComment represents a comment on an issue.
 type IssueComment struct {
-	ID        int
-	NodeID    string
-	HTMLURL   string
-	Body      string
-	Author    string
+	ID      int
+	NodeID  string
+	HTMLURL string
+	Body    string
+	Author  string
+	// CreatedAt is when the comment was written. UpdatedAt is when its
+	// body last changed, and equals CreatedAt for a comment never edited.
+	// The two differ for an edited comment, and the difference matters
+	// wherever a decision was made about the text: an authorization the
+	// original wording earned does not extend to a replacement.
+	// UpdatedAt is empty on forges that do not report it.
 	CreatedAt string
+	UpdatedAt string
+	// AuthorIsApp reports whether the forge says the author is an App or
+	// bot account rather than a person — GitHub's `user.type == "Bot"`,
+	// which the platform sets for App identities and no user can choose.
+	// It is the only sanctioned way to tell the two apart: a login's shape
+	// (a `[bot]` suffix, a `-bot` ending, a name like one of fullsend's
+	// own) is choosable by any user account and decides nothing. False
+	// on forges whose decoder does not report it.
+	AuthorIsApp bool
 }
 
 // Reaction represents an emoji reaction on an issue, pull request,
@@ -374,6 +460,9 @@ type PullRequestReview struct {
 	State       string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"
 	Body        string
 	SubmittedAt string
+	// AuthorIsApp is the forge's own verdict on the reviewer, as on
+	// IssueComment.AuthorIsApp.
+	AuthorIsApp bool
 }
 
 // ReviewComment represents an inline comment on a specific line of a
@@ -765,6 +854,11 @@ type Client interface {
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
+	// ListIssueCommentsSince returns comments updated at or after since.
+	// The filter saves bandwidth; callers that want comments created after
+	// since still check CreatedAt. Returns ErrNotSupported on forges
+	// without a since-filtered comment listing.
+	ListIssueCommentsSince(ctx context.Context, owner, repo string, number int, since time.Time) ([]IssueComment, error)
 	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*IssueComment, error)
 	UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error
 	DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error
@@ -805,6 +899,13 @@ type Client interface {
 	// Pull request operations
 	GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*PullRequestInfo, error)
 	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)
+	// CompareChanges returns the forge's three-dot comparison of head
+	// against base with the files head changed since their merge base;
+	// CompareCommits below reports the relationship alone. Returns
+	// ErrNotFound (wrapped) when either ref does not exist, which after a
+	// force-push is the common case for the old head, and ErrNotSupported
+	// on forges without a file-level comparison.
+	CompareChanges(ctx context.Context, owner, repo, base, head string) (*CommitComparison, error)
 	// ListPullRequestFiles returns the relative file paths changed by a pull
 	// request. On GitHub, the API caps results at 3000 files total.
 	ListPullRequestFiles(ctx context.Context, owner, repo string, number int) ([]string, error)

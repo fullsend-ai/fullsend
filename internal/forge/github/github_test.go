@@ -4663,3 +4663,195 @@ func TestDo_ServerErrorExhaustedIsNotARateLimit(t *testing.T) {
 	assert.NotContains(t, err.Error(), "rate limit:")
 	assert.Contains(t, err.Error(), "retryable error after 5 attempts")
 }
+
+func TestGetWorkflowRun_CarriesProvenance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/runs/42", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 42, "path": ".github/workflows/fullsend.yml", "event": "pull_request_target",
+			"created_at": "2026-09-03T10:00:00Z",
+			"referenced_workflows": []map[string]any{
+				{"path": "o/r/.github/workflows/reusable-dispatch.yml@main", "ref": "refs/heads/main", "sha": "abc"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	run, err := newTestClient(t, srv).GetWorkflowRun(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, ".github/workflows/fullsend.yml", run.Path)
+	require.Len(t, run.ReferencedWorkflows, 1)
+	assert.Equal(t, "abc", run.ReferencedWorkflows[0].SHA)
+}
+
+func TestListWorkflowRunJobs_Paginates(t *testing.T) {
+	// A large matrix pushes the stage job onto page 2. A caller looking for
+	// one job by name must not read its absence from page 1 as a verdict.
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		jobs := make([]map[string]any, 0, 100)
+		if page == "1" {
+			for i := 0; i < 100; i++ {
+				jobs = append(jobs, map[string]any{"id": i, "name": fmt.Sprintf("matrix-%d", i),
+					"status": "completed", "conclusion": "success"})
+			}
+		} else {
+			jobs = append(jobs, map[string]any{"id": 999, "name": "dispatch / Review",
+				"status": "in_progress", "conclusion": ""})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 101, "jobs": jobs})
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1", "2"}, pages)
+	require.Len(t, jobs, 101)
+	assert.Equal(t, "dispatch / Review", jobs[100].Name)
+}
+
+func TestListWorkflowRunJobs_SinglePageStops(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 2, "jobs": []map[string]any{
+			{"id": 1, "name": "dispatch / Route", "status": "completed", "conclusion": "success"},
+			{"id": 2, "name": "dispatch / Review", "status": "queued"},
+		}})
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 1, calls, "a short page is the last page")
+	assert.Len(t, jobs, 2)
+}
+
+func TestListIssueCommentsSince(t *testing.T) {
+	var gotSince string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSince = r.URL.Query().Get("since")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "body": "hi", "user": map[string]any{"login": "octocat"},
+				"created_at": "2026-09-03T10:06:00Z"},
+		})
+	}))
+	defer srv.Close()
+
+	since := time.Date(2026, 9, 3, 10, 5, 0, 0, time.UTC)
+	comments, err := newTestClient(t, srv).ListIssueCommentsSince(context.Background(), "org", "repo", 7, since)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-09-03T10:05:00Z", gotSince)
+	require.Len(t, comments, 1)
+	assert.Equal(t, "octocat", comments[0].Author)
+}
+
+func TestCompareChanges(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "ahead", "ahead_by": 2, "behind_by": 0,
+			"files": []map[string]any{
+				{"filename": "a.go", "status": "modified", "additions": 3, "deletions": 1, "patch": "@@ -1 +1 @@\n-x\n+y"},
+				{"filename": "b.md", "status": "renamed", "previous_filename": "c.md", "additions": 0, "deletions": 0},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	cmp, err := newTestClient(t, srv).CompareChanges(context.Background(), "org", "repo", "aaa111", "bbb222")
+	require.NoError(t, err)
+	assert.Equal(t, "/repos/org/repo/compare/aaa111...bbb222", gotPath)
+	// per_page bounds the commits, which are not read; files are not
+	// paginated by it (measured on the live API).
+	assert.Equal(t, "per_page=1", gotQuery)
+	assert.Equal(t, "ahead", cmp.Status)
+	assert.Equal(t, 2, cmp.AheadBy)
+	require.Len(t, cmp.Files, 2)
+	assert.Equal(t, forge.ComparedFile{Path: "a.go", Status: "modified", Additions: 3, Deletions: 1, Patch: "@@ -1 +1 @@\n-x\n+y"}, cmp.Files[0])
+	assert.Equal(t, "c.md", cmp.Files[1].PreviousPath)
+}
+
+func TestCompareChanges_UnknownShaIsNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+	}))
+	defer srv.Close()
+	_, err := newTestClient(t, srv).CompareChanges(context.Background(), "org", "repo", "gone", "bbb222")
+	require.ErrorIs(t, err, forge.ErrNotFound)
+}
+
+func TestGetWorkflowRun_CarriesRunAttempt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"id": 7, "run_attempt": 2, "actor": map[string]any{"login": "reviewer"},
+			"triggering_actor": map[string]any{"login": "rerunner"}})
+	}))
+	defer srv.Close()
+	run, err := newTestClient(t, srv).GetWorkflowRun(context.Background(), "org", "repo", 7)
+	require.NoError(t, err)
+	assert.Equal(t, 2, run.RunAttempt)
+	assert.Equal(t, "reviewer", run.Actor)
+	assert.Equal(t, "rerunner", run.TriggeringActor)
+}
+
+// AuthorIsApp comes from GitHub's own `user.type`, never from the login:
+// a person named like one of fullsend's Apps decodes as a person, and an
+// App decodes as an App whatever it is called.
+func TestListIssueComments_AuthorIsAppFromUserType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "body": "started", "user": map[string]any{"login": "fullsend-ai-review[bot]", "type": "Bot"},
+				"created_at": "2026-09-03T10:01:00Z"},
+			{"id": 2, "body": "receipt", "user": map[string]any{"login": "github-actions[bot]", "type": "Bot"},
+				"created_at": "2026-09-03T10:02:00Z"},
+			{"id": 3, "body": "not the App", "user": map[string]any{"login": "fullsend-ai-review", "type": "User"},
+				"created_at": "2026-09-03T10:03:00Z"},
+			{"id": 4, "body": "no type at all", "user": map[string]any{"login": "octocat"},
+				"created_at": "2026-09-03T10:04:00Z"},
+		})
+	}))
+	defer srv.Close()
+
+	comments, err := newTestClient(t, srv).ListIssueComments(context.Background(), "org", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, comments, 4)
+	assert.True(t, comments[0].AuthorIsApp)
+	assert.True(t, comments[1].AuthorIsApp)
+	assert.False(t, comments[2].AuthorIsApp, "a user account is a person whatever its login")
+	assert.False(t, comments[3].AuthorIsApp, "a missing type is not an App verdict")
+}
+
+func TestListPullRequestReviews_AuthorIsAppFromUserType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "state": "COMMENTED", "body": "nil check", "submitted_at": "2026-09-03T10:06:00Z",
+				"user": map[string]any{"login": "coderabbitai[bot]", "type": "Bot"}},
+			{"id": 2, "state": "APPROVED", "body": "", "submitted_at": "2026-09-03T10:07:00Z",
+				"user": map[string]any{"login": "acme-bot", "type": "User"}},
+		})
+	}))
+	defer srv.Close()
+
+	reviews, err := newTestClient(t, srv).ListPullRequestReviews(context.Background(), "org", "repo", 7)
+	require.NoError(t, err)
+	require.Len(t, reviews, 2)
+	assert.True(t, reviews[0].AuthorIsApp)
+	assert.False(t, reviews[1].AuthorIsApp, "a login ending in -bot is not an App verdict")
+}
+
+func TestListIssueComments_SendsNoSinceWhenUnset(t *testing.T) {
+	var hadSince bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, hadSince = r.URL.Query()["since"]
+		json.NewEncoder(w).Encode([]map[string]any{})
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).ListIssueComments(context.Background(), "org", "repo", 7)
+	require.NoError(t, err)
+	assert.False(t, hadSince, "the unfiltered listing must stay unfiltered")
+}

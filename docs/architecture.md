@@ -306,9 +306,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   not cancel an active run. Each event still passes through authorization and
   CEL routing; the execution platform coalesces matching events into one latest
   pending run, and each run reconciles the subject's current state. Authority
-  over other comments and content discovered during reconciliation remains a
-  separate decision
-  ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+  over other comments and content discovered during reconciliation was left to
+  a separate decision
+  ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)),
+  now [ADR 0118](ADRs/0118-take-steer-authority-from-the-route-job.md).
   On GitHub this is every stage job in `reusable-dispatch.yml` running with
   `cancel-in-progress: false`, so the last run to queue, normally but not
   necessarily the newest event, waits as the single pending run and works from
@@ -331,6 +332,15 @@ The existing design principle is that [the repo is the coordinator](problems/age
   ([ADR 0117](ADRs/0117-steer-interface-in-sandbox-mailbox.md)). Steering is off
   by default; a harness will opt in with `steer: {enabled: true}`, which is accepted and
   validated but not yet consulted by any caller.
+- A steer delivered to a run in flight is authorized once, by the follow-up
+  run's `Route` job; the runner verifies only provenance, from run records the
+  sender cannot write. Text from an actor that job authorized is an amendment
+  the agent acts on; everything else is context it reads and must not obey.
+  Context excludes only fullsend's own output, by exact resolved login or by
+  the forge's App verdict plus a fullsend marker — never by the shape of a
+  login — so a repository-installed App's review reaches the agent as context
+  ([ADR 0118](ADRs/0118-take-steer-authority-from-the-route-job.md), rules in
+  [steering.md](contributing/steering.md#amendments-and-context)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline

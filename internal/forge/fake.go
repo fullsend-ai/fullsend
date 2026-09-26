@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Compile-time interface checks.
@@ -295,6 +296,10 @@ type FakeClient struct {
 
 	// Pull request head SHA for GetPullRequestHeadSHA.
 	PullRequestHeadSHA string
+
+	// Comparisons for CompareChanges. A base...head pair with no entry
+	// answers ErrNotFound, as the forge does for a ref it cannot resolve.
+	Comparisons map[string]*CommitComparison // key: "owner/repo/base...head"
 
 	// Pull request info for GetPullRequestInfo.
 	PullRequestInfos map[string]PullRequestInfo // key: "owner/repo/number"
@@ -1527,6 +1532,36 @@ func (f *FakeClient) ListIssueComments(_ context.Context, owner, repo string, nu
 	return nil, nil
 }
 
+// ListIssueCommentsSince returns the ListIssueComments fixtures updated (or,
+// when UpdatedAt is empty, created) at or after since. A timestamp that does
+// not parse is kept, as a server would not have filtered what it cannot
+// order.
+func (f *FakeClient) ListIssueCommentsSince(_ context.Context, owner, repo string, number int, since time.Time) ([]IssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListIssueCommentsSince"); e != nil {
+		return nil, e
+	}
+	var out []IssueComment
+	for _, c := range f.IssueComments[fmt.Sprintf("%s/%s/%d", owner, repo, number)] {
+		stamp := c.UpdatedAt
+		if stamp == "" {
+			stamp = c.CreatedAt
+		}
+		if atOrAfter(stamp, since) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// atOrAfter reports whether an RFC 3339 stamp is at or after since. An
+// unparseable stamp counts as after.
+func atOrAfter(stamp string, since time.Time) bool {
+	t, err := time.Parse(time.RFC3339, stamp)
+	return err != nil || !t.Before(since)
+}
+
 func (f *FakeClient) CreateIssueComment(_ context.Context, owner, repo string, number int, body string) (*IssueComment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1701,6 +1736,18 @@ func (f *FakeClient) GetPullRequestHeadSHA(_ context.Context, _, _ string, _ int
 		return "", e
 	}
 	return f.PullRequestHeadSHA, nil
+}
+
+func (f *FakeClient) CompareChanges(_ context.Context, owner, repo, base, head string) (*CommitComparison, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("CompareChanges"); e != nil {
+		return nil, e
+	}
+	if cmp, ok := f.Comparisons[fmt.Sprintf("%s/%s/%s...%s", owner, repo, base, head)]; ok {
+		return cmp, nil
+	}
+	return nil, fmt.Errorf("compare %s...%s: %w", base, head, ErrNotFound)
 }
 
 func (f *FakeClient) ListPullRequestFiles(_ context.Context, owner, repo string, number int) ([]string, error) {

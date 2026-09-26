@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2142,4 +2143,40 @@ func TestFakeClient_ForceCommitFileToBranch_ConcurrentLastWriteWins(t *testing.T
 	sha, err := fc.GetBranchRef(ctx, "o", "r", "state")
 	require.NoError(t, err)
 	assert.NotEmpty(t, sha)
+}
+
+func TestFakeClient_ListIssueCommentsSince(t *testing.T) {
+	fc := NewFakeClient()
+	fc.IssueComments = map[string][]IssueComment{
+		"org/repo/7": {
+			{ID: 1, CreatedAt: "2026-09-01T00:00:00Z"},
+			{ID: 2, CreatedAt: "2026-09-01T00:00:00Z", UpdatedAt: "2026-09-03T00:00:00Z"},
+			{ID: 3, CreatedAt: "2026-09-02T00:00:00Z"},
+			{ID: 4, CreatedAt: "not a time"},
+		},
+	}
+	since := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+
+	got, err := fc.ListIssueCommentsSince(context.Background(), "org", "repo", 7, since)
+	require.NoError(t, err)
+	var ids []int
+	for _, c := range got {
+		ids = append(ids, c.ID)
+	}
+	// 1 is older; 2 was edited after since; 3 is at since; 4 cannot be ordered.
+	assert.Equal(t, []int{2, 3, 4}, ids)
+
+	fc.Errors["ListIssueCommentsSince"] = errors.New("boom")
+	_, err = fc.ListIssueCommentsSince(context.Background(), "org", "repo", 7, since)
+	assert.EqualError(t, err, "boom")
+}
+
+func TestFakeClient_CompareChanges(t *testing.T) {
+	f := NewFakeClient()
+	f.Comparisons = map[string]*CommitComparison{"o/r/aaa...bbb": {Status: "ahead", Files: []ComparedFile{{Path: "x"}}}}
+	cmp, err := f.CompareChanges(context.Background(), "o", "r", "aaa", "bbb")
+	require.NoError(t, err)
+	assert.Equal(t, "ahead", cmp.Status)
+	_, err = f.CompareChanges(context.Background(), "o", "r", "gone", "bbb")
+	require.ErrorIs(t, err, ErrNotFound)
 }
