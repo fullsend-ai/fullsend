@@ -159,6 +159,11 @@ repo baseline and overrides)
   remain event-triggered only and may rely on the event being present
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md), partially superseded by
   [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
+- Run cost budget: an optional `max_cost_usd` harness field caps one run's
+  aggregated spend; the validation loop refuses to start another iteration
+  once the cap is reached, and `metrics.json` records `over_budget` when
+  the cap suppressed a retry
+  ([ADR 0097](ADRs/0097-harness-max-cost-usd-budget-cap.md)).
 - Portable provider and profile resolution: provider and profile definitions
   can be URL-referenced (sha256-pinned) or specified as local file paths in
   the harness, enabling portable base harnesses that carry their own
