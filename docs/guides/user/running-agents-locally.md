@@ -164,11 +164,12 @@ git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agen
 Depending on the agent you want to run you need a different set of environment variables.
 Check the variables they need in their environment files, referenced in their harness files.
 
-**Note**: the fleet-clone examples below need `--forge github` (or `--forge gitlab`)
-because that checkout's `.fullsend/config.yaml` has no `forge:` set. Auto-detection
-checks `--forge`, then `config.forge` in `.fullsend/config.yaml`, then CI environment
-variables (`GITHUB_ACTIONS`, `GITLAB_CI`) — see [`--forge`](#remote-resource-flags) in
-the option table below.
+**Note**: the fleet-clone examples below need `--forge github` (or `--forge gitlab`),
+because the clone's `config.yaml` sets no `forge:`. Without a forge, the harness's
+GitHub settings (`ISSUE_URL`, the GitHub provider) never apply and the pre-script
+stops with `ISSUE_URL must be set`. `fullsend run` takes the forge from `--forge`, then
+`forge:` in the `config.yaml` at the root of `--fullsend-dir`, then CI environment
+variables (`GITHUB_ACTIONS`, `GITLAB_CI`).
 
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
@@ -208,9 +209,13 @@ Add to an env file:
 # In CI, REVIEW_TOKEN is auto-minted by the binary when --mint-url is provided.
 # For local runs, supply a GitHub PAT manually:
 REVIEW_TOKEN={github-pat}
+GH_TOKEN={github-pat}
 GITHUB_PR_URL="https://github.com/{org}/{repo}/pull/{pr_number}"
 PR_NUMBER="{pr_number}"
 REPO_FULL_NAME="{org}/{repo}"
+# Set by CI on a re-review; leave empty for a first review.
+PRIOR_REVIEW_SHA=
+PRIOR_REVIEW_PROVENANCE=
 ```
 
 ```bash
@@ -239,6 +244,8 @@ ISSUE_NUMBER={issue_num}
 CODE_ALLOWED_TARGET_BRANCHES=main
 REPO_DIR=/tmp/repo-dir
 GITHUB_WORKSPACE=/tmp/
+# Author and committer email for the agent's commits.
+GIT_BOT_EMAIL={bot-or-your-email}
 ```
 
 ```bash
@@ -286,7 +293,7 @@ you can tune resolution limits:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `config.forge` in `.fullsend/config.yaml`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
+| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--max-depth` | 10 | Maximum dependency depth for transitive resolution (0 disables) |
 | `--max-resources` | 50 | Maximum total remote resources fetched per harness |
 | `--offline` | false | Reject network fetches; only use cached remote resources |
@@ -329,7 +336,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
 | `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
-| `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `config.forge` in `.fullsend/config.yaml`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
+| `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 
 Example:
 

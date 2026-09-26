@@ -27,7 +27,7 @@ fullsend run <agent-name> [flags]
 | `--no-post-script` | Skip post-script execution |
 | `--keep-sandbox` | Skip sandbox deletion after the run |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
-| `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `config.forge` in `.fullsend/config.yaml`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
+| `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
 
