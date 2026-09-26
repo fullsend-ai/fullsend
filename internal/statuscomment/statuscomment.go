@@ -52,6 +52,13 @@ const (
 	// a dedicated label rather than falling through to ReasonTerminated.
 	// See PR #5736.
 	ReasonSkipCommentFailed TerminationReason = "skip_comment_failed"
+
+	// ReasonStatusUpdateFailed is used when the CI job reported success
+	// but the start comment was left non-terminal — typically because
+	// the deferred PostCompletion mint timed out. The agent itself
+	// finished; only the status-reporting layer failed. Labelling this
+	// Terminated would imply the review was cut short. See #6667.
+	ReasonStatusUpdateFailed TerminationReason = "status_update_failed"
 )
 
 // now is overridable in tests to fix the current time for ReconcileOrphaned.
@@ -709,13 +716,15 @@ func statusEmoji(status string) string {
 
 // ReconcileOrphaned finds and finalizes a status comment that was left in
 // "Started" state because the process was hard-killed (SIGKILL, OOM, etc.)
-// before the deferred PostCompletion call could run.
+// before the deferred PostCompletion call could run, or because
+// PostCompletion itself failed after the agent finished (e.g. an OIDC
+// timeout while minting a fresh tracker client; see #6667).
 //
 // It searches for a comment matching the run's status metadata that has not
 // reached a terminal state. Jira uses comment properties; GitHub and GitLab
 // use the fullsend:agent-status and fullsend:status:terminal HTML markers.
-// If found in a non-terminal state, it updates the comment to "Interrupted"
-// and records it as terminal.
+// If found in a non-terminal state, it updates the comment to a terminal
+// label that depends on reason and jobStatus, and records it as terminal.
 //
 // completionMode is the configured comment.completion value ("enabled",
 // "on_failure", or "disabled"). It changes what an absent marker means:
@@ -733,13 +742,20 @@ func statusEmoji(status string) string {
 //     marker is never synthesized in this mode, regardless of outcome.
 //
 // jobStatus is the GitHub Actions job status (e.g., "success", "failure",
-// "cancelled"). Synthesis is skipped when jobStatus is "success" or
-// empty — "success" means the run completed normally, and empty means the
-// job outcome is unknown (e.g., --job-status was omitted). wasSkipped
-// overrides this for "on_failure" mode only: it's true when the pre-script
-// itself decided to skip the run, which means jobStatus can be "success"
-// even though no completion comment ended up recorded for it (its error is
-// only logged, not propagated to the job's exit code). See PR #5736.
+// "cancelled"). Synthesis of a missing comment is skipped when jobStatus
+// is "success" or empty — "success" means the run completed normally, and
+// empty means the job outcome is unknown (e.g., --job-status was omitted).
+// When a non-terminal start comment *is* found and jobStatus is "success",
+// the leftover comment is labelled ReasonStatusUpdateFailed rather than
+// Terminated: the agent finished, only the status update failed (#6667). If
+// wasSkipped is also true, that leftover comment is labelled
+// ReasonSkipCommentFailed instead — PostStart runs before the pre-script's
+// skip decision in "enabled" completion mode, so a skipped run can still
+// leave a start comment behind, and that isn't a completed review. wasSkipped
+// also overrides the synthesis skip for "on_failure" mode: it's true when the
+// pre-script itself decided to skip the run, which means jobStatus can be
+// "success" even though no completion comment ended up recorded for it (its
+// error is only logged, not propagated to the job's exit code). See PR #5736.
 //
 // agentDescription is used as the heading for a synthesized "Interrupted"
 // comment (e.g. "Code" for the code agent), so operators can tell which
@@ -788,9 +804,28 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 			return nil
 		}
 		// Still in "Started" state — finalize it.
+		finalizeReason := reason
+		// A leftover start comment after a successful job means the
+		// agent finished but PostCompletion failed to mint/post —
+		// typically an OIDC timeout (#6667). Hard-kills produce a
+		// non-success jobStatus, so Terminated stays correct for those.
+		// An explicit cancelled reason is preserved even if the job
+		// later reported success (defensive; action.yml passes both).
+		if jobStatus == "success" && reason != ReasonCancelled {
+			finalizeReason = ReasonStatusUpdateFailed
+			// wasSkipped means the pre-script decided to skip the run
+			// before PostStart's leftover comment could be cleaned up
+			// (PostStart runs before the skip decision in "enabled"
+			// completion mode). That's not a completed review, so it
+			// gets the existing skip label instead of implying the
+			// agent finished. See #6667.
+			if wasSkipped {
+				finalizeReason = ReasonSkipCommentFailed
+			}
+		}
 		desc, startTimeStr := parseStartBody(string(matched.Body))
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason)
+		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, finalizeReason)
 		if err := updateStatusComment(ctx, client, project, number, matched.ID, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("updating orphaned comment: %w", err)
 		}
@@ -847,7 +882,8 @@ func parseStartBody(body string) (description, startTime string) {
 }
 
 // buildInterruptedBody constructs the comment body for an orphaned status
-// comment that was interrupted by a hard process kill or job cancellation.
+// comment that was interrupted by a hard process kill, job cancellation,
+// or a failed status update after a successful run.
 func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string, endTime time.Time, reason TerminationReason) string {
 	statusLabel, heading := reasonLabel(reason, description)
 
@@ -891,6 +927,13 @@ func reasonLabel(reason TerminationReason, description string) (statusLabel, hea
 			heading = description
 		} else {
 			heading = "Agent run skipped"
+		}
+	case ReasonStatusUpdateFailed:
+		statusLabel = "⚠️ Completed (status update failed)"
+		if description != "" {
+			heading = description
+		} else {
+			heading = "Agent run completed"
 		}
 	default:
 		statusLabel = "❌ Terminated"

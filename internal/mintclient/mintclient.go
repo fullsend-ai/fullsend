@@ -33,9 +33,10 @@ var httpClient HTTPDoer = &http.Client{Timeout: 30 * time.Second}
 // attempt or two — while remaining well inside a CI job's own timeout.
 //
 // Callers that bound MintToken with a context deadline (e.g. the
-// post-script remint in internal/cli, #7231) should use at least this
-// value: a shorter bound routinely cuts off retries the client itself
-// would have completed.
+// post-script remint in internal/cli, #7231, and the deferred
+// PostCompletion mint, #6667) should use at least this value: a
+// shorter bound routinely cuts off retries the client itself would
+// have completed.
 const MaxMintDuration = 120 * time.Second
 
 // HTTPDoer abstracts http.Client for testability.

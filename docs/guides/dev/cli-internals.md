@@ -189,7 +189,7 @@ fullsend
     ├── --role <string>                      #   Agent role for minting (required with --mint-url)
     ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
     ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection and tracker routing)
-    ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
+    ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled); leftover start comments after success are labeled "Completed (status update failed)", not Terminated
     └── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
 ```
 
