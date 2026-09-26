@@ -51,7 +51,7 @@ overlay on drift). `repos status` reports base-file drift only when a
 preset is declared. See
 [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
 
-Fleet manifests may also declare a managed configuration overlay via
+Fleet manifests may also declare managed configuration via
 `defaults.config` and per-repository `config` ([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)).
 Those blocks use this same schema and the per-field merge rules below.
 `runtime` and `allowed_remote_resources` stay on the existing manifest
@@ -64,9 +64,12 @@ required)" instead of ordinary drift, and install/convergence leave that
 file untouched until it is adopted. Once a file carries the marker,
 `repos install` writes the canonical sparse configuration for opted-in
 repositories, `repos status` reports whole-file managed-configuration
-drift, and convergence rewrites a drifted file; unmanaged
+drift, and convergence rewrites a drifted file unless the candidate would
+become less restrictive than the current effective configuration without
+an explicit manifest declaration. That comparison uses the overlay → base
+→ code-defaults accessor chain, including omitted-key fallthrough. Unmanaged
 repositories are left untouched. See
-[Repo Management — Configuration overlays](../getting-started/repo-management.md#configuration-overlays).
+[Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration).
 
 ### Marshal behavior
 

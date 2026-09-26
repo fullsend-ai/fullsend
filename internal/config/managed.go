@@ -12,27 +12,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Overlay fields that already have authoritative repos.yaml shorthands.
-// They are valid on .fullsend/config.yaml but must not appear inside a
-// manifest config block (ADR 0122).
+// Managed-configuration fields that already have authoritative repos.yaml
+// shorthands. They are valid on .fullsend/config.yaml but must not appear
+// inside a manifest config block (ADR 0122).
 const (
-	overlayForbiddenRuntime = "runtime"
-	overlayForbiddenARR     = "allowed_remote_resources"
+	managedForbiddenRuntime = "runtime"
+	managedForbiddenARR     = "allowed_remote_resources"
 )
 
 var (
-	overlayKeysOnce sync.Once
-	overlayKeys     map[string]bool
+	managedKeysOnce sync.Once
+	managedKeys     map[string]bool
 
 	agentEntryKeysOnce sync.Once
 	agentEntryKeys     map[string]bool
 )
 
-func knownOverlayKeys() map[string]bool {
-	overlayKeysOnce.Do(func() {
-		overlayKeys = yamlKeysOf(perRepoConfig{})
+func knownManagedKeys() map[string]bool {
+	managedKeysOnce.Do(func() {
+		managedKeys = yamlKeysOf(perRepoConfig{})
 	})
-	return overlayKeys
+	return managedKeys
 }
 
 func knownAgentEntryKeys() map[string]bool {
@@ -59,7 +59,7 @@ func unknownAgentEntryFieldErrors(n *yaml.Node) []error {
 		for i := 0; i+1 < len(item.Content); i += 2 {
 			keyNode := item.Content[i]
 			if !known[keyNode.Value] {
-				errs = append(errs, overlayFieldError(keyNode,
+				errs = append(errs, managedFieldError(keyNode,
 					fmt.Sprintf("agents[%d]: unknown field %q", idx, keyNode.Value)))
 			}
 		}
@@ -84,35 +84,36 @@ func yamlKeysOf(v any) map[string]bool {
 	return keys
 }
 
-// OverlayConfig is a sparse per-repo configuration overlay as declared in
+// ManagedConfig is a sparse per-repo managed configuration as declared in
 // repos.yaml defaults.config and per-repository config blocks (ADR 0122).
 // The zero value means the key was omitted.
-type OverlayConfig struct {
+type ManagedConfig struct {
 	cfg *perRepoConfig
 }
 
 // IsSet reports whether a config mapping was present in YAML, including
-// an empty mapping (`config: {}`) that opts a repository into overlay
-// management without supplying values.
-func (o OverlayConfig) IsSet() bool { return o.cfg != nil }
+// an empty mapping (`config: {}`) that opts a repository into managed
+// configuration without supplying values.
+func (o ManagedConfig) IsSet() bool { return o.cfg != nil }
 
-// IsZero reports whether the overlay was omitted. yaml.v3 uses this for
-// omitempty so unset overlays are not marshaled as null.
-func (o OverlayConfig) IsZero() bool { return o.cfg == nil }
+// IsZero reports whether the managed configuration was omitted. yaml.v3
+// uses this for omitempty so unset blocks are not marshaled as null.
+func (o ManagedConfig) IsZero() bool { return o.cfg == nil }
 
-// Writer returns the overlay as a PerRepoConfigWriter, or nil if unset.
-func (o OverlayConfig) Writer() PerRepoConfigWriter {
+// Writer returns the managed configuration as a PerRepoConfigWriter, or
+// nil if unset.
+func (o ManagedConfig) Writer() PerRepoConfigWriter {
 	if o.cfg == nil {
 		return nil
 	}
 	return o.cfg
 }
 
-// UnmarshalYAML strictly decodes a mapping into a sparse per-repo overlay.
-// Unknown fields and the runtime / allowed_remote_resources shorthands are
-// rejected with field-specific errors.
-func (o *OverlayConfig) UnmarshalYAML(value *yaml.Node) error {
-	cfg, err := decodePerRepoOverlay(value)
+// UnmarshalYAML strictly decodes a mapping into a sparse per-repo managed
+// configuration. Unknown fields and the runtime / allowed_remote_resources
+// shorthands are rejected with field-specific errors.
+func (o *ManagedConfig) UnmarshalYAML(value *yaml.Node) error {
+	cfg, err := decodeManagedConfig(value)
 	if err != nil {
 		return err
 	}
@@ -120,16 +121,16 @@ func (o *OverlayConfig) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// MarshalYAML encodes the overlay as a sparse mapping without the
-// config.yaml file header.
-func (o OverlayConfig) MarshalYAML() (interface{}, error) {
+// MarshalYAML encodes the managed configuration as a sparse mapping
+// without the config.yaml file header.
+func (o ManagedConfig) MarshalYAML() (interface{}, error) {
 	if o.cfg == nil {
 		return nil, nil
 	}
 	return o.cfg.MarshalYAML()
 }
 
-func decodePerRepoOverlay(n *yaml.Node) (*perRepoConfig, error) {
+func decodeManagedConfig(n *yaml.Node) (*perRepoConfig, error) {
 	node := n
 	if node != nil && node.Kind == yaml.DocumentNode && len(node.Content) == 1 {
 		node = node.Content[0]
@@ -138,21 +139,21 @@ func decodePerRepoOverlay(n *yaml.Node) (*perRepoConfig, error) {
 		return nil, errors.New("must be a YAML mapping")
 	}
 
-	known := knownOverlayKeys()
+	known := knownManagedKeys()
 	var fieldErrs []error
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		keyNode := node.Content[i]
 		key := keyNode.Value
 		switch key {
-		case overlayForbiddenRuntime:
-			fieldErrs = append(fieldErrs, overlayFieldError(keyNode,
+		case managedForbiddenRuntime:
+			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
 				"runtime is not allowed inside config; use the runtime field"))
-		case overlayForbiddenARR:
-			fieldErrs = append(fieldErrs, overlayFieldError(keyNode,
+		case managedForbiddenARR:
+			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
 				"allowed_remote_resources is not allowed inside config; use the allowed_remote_resources field"))
 		default:
 			if !known[key] {
-				fieldErrs = append(fieldErrs, overlayFieldError(keyNode,
+				fieldErrs = append(fieldErrs, managedFieldError(keyNode,
 					fmt.Sprintf("unknown field %q", key)))
 			}
 		}
@@ -161,7 +162,7 @@ func decodePerRepoOverlay(n *yaml.Node) (*perRepoConfig, error) {
 		// nested mappings — yaml.v3 hands each list element straight to
 		// the custom unmarshaler, which decodes via a plain type alias
 		// with no strict-field option. Reject unknown keys here instead,
-		// the same way top-level overlay keys are rejected above.
+		// the same way top-level managed-configuration keys are rejected above.
 		if key == "agents" {
 			fieldErrs = append(fieldErrs, unknownAgentEntryFieldErrors(node.Content[i+1])...)
 		}
@@ -178,7 +179,7 @@ func decodePerRepoOverlay(n *yaml.Node) (*perRepoConfig, error) {
 	return &cfg, nil
 }
 
-func overlayFieldError(n *yaml.Node, msg string) error {
+func managedFieldError(n *yaml.Node, msg string) error {
 	if n != nil && n.Line > 0 {
 		return fmt.Errorf("line %d: %s", n.Line, msg)
 	}
@@ -202,36 +203,38 @@ func decodeKnownFields(n *yaml.Node, out any) error {
 	return nil
 }
 
-// MergeOverlays combines two sparse overlay layers using the per-field
-// merge rules of per-repo config. child wins where it sets a value;
-// unspecified child fields inherit from parent. Neither code defaults nor
-// a config.base.yaml layer are baked in. A nil layer is treated as unset.
-func MergeOverlays(parent, child PerRepoConfigWriter) PerRepoConfigWriter {
+// MergeManaged combines two sparse managed-configuration layers using the
+// per-field merge rules of per-repo config. child wins where it sets a
+// value; unspecified child fields inherit from parent. Neither code
+// defaults nor a config.base.yaml layer are baked in. A nil layer is
+// treated as unset.
+func MergeManaged(parent, child PerRepoConfigWriter) PerRepoConfigWriter {
 	p := asPerRepo(parent)
 	c := asPerRepo(child)
 	if p == nil && c == nil {
-		// Return an untyped nil interface, not cloneOverlay(nil) boxed as
+		// Return an untyped nil interface, not clonePerRepo(nil) boxed as
 		// a typed-nil *perRepoConfig — a caller comparing the result to
 		// nil would otherwise get false for a typed-nil interface value.
 		return nil
 	}
 	if c == nil {
-		return cloneOverlay(p)
+		return clonePerRepo(p)
 	}
 	if p == nil {
-		return cloneOverlay(c)
+		return clonePerRepo(c)
 	}
-	out := cloneOverlay(p)
-	applyOverlayLayer(out, c)
+	out := clonePerRepo(p)
+	applyManagedLayer(out, c)
 	return out
 }
 
-// ApplyOverlayShorthands writes the authoritative repos.yaml runtime and
-// allowed_remote_resources values onto a managed overlay. Empty runtime and
-// a nil allowlist are left unset so code defaults / config.base.yaml still
-// apply at read time. An explicit empty allowlist is deny-all.
-func ApplyOverlayShorthands(overlay PerRepoConfigWriter, runtime string, allowedRemoteResources []string) {
-	cfg := asPerRepo(overlay)
+// ApplyManagedShorthands writes the authoritative repos.yaml runtime and
+// allowed_remote_resources values onto a managed configuration. Empty
+// runtime and a nil allowlist are left unset so code defaults /
+// config.base.yaml still apply at read time. An explicit empty allowlist
+// is deny-all.
+func ApplyManagedShorthands(managed PerRepoConfigWriter, runtime string, allowedRemoteResources []string) {
+	cfg := asPerRepo(managed)
 	if cfg == nil {
 		return
 	}
@@ -248,7 +251,7 @@ func ApplyOverlayShorthands(overlay PerRepoConfigWriter, runtime string, allowed
 // case the parent is code defaults only. The overlay is cloned so the
 // caller's value is not mutated.
 func LayerOnBase(overlay PerRepoConfigWriter, baseYAML []byte) (PerRepoConfigWriter, error) {
-	cloned := cloneOverlay(asPerRepo(overlay))
+	cloned := clonePerRepo(asPerRepo(overlay))
 	if cloned == nil {
 		cloned = &perRepoConfig{}
 	}
@@ -276,7 +279,7 @@ func asPerRepo(w PerRepoConfigWriter) *perRepoConfig {
 	return c
 }
 
-func cloneOverlay(src *perRepoConfig) *perRepoConfig {
+func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	if src == nil {
 		return nil
 	}
@@ -341,7 +344,7 @@ func cloneOverlay(src *perRepoConfig) *perRepoConfig {
 	return out
 }
 
-func applyOverlayLayer(out, child *perRepoConfig) {
+func applyManagedLayer(out, child *perRepoConfig) {
 	if child.Version != "" {
 		out.Version = child.Version
 	}

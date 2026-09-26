@@ -16,7 +16,7 @@ import (
 // prefixes to its canonical bytes, verbatim as specified in ADR-0122's
 // "Decision" section. Its presence is what distinguishes a file this
 // package owns from a hand-authored one: convergeManagedConfigFiles and
-// checkManagedConfigDrift in overlay_lifecycle.go refuse to treat
+// checkManagedConfigDrift in managed_config_lifecycle.go refuse to treat
 // an existing markerless file as ordinary drift, since the manifest may
 // not restate every restriction (kill_switch, roles,
 // allowed_remote_resources, ...) the hand-authored file set, and silently
@@ -32,32 +32,32 @@ func hasManagedConfigMarker(content []byte) bool {
 	return bytes.HasPrefix(content, []byte(managedConfigMarker))
 }
 
-// overlayManaged reports whether defaults.config or the repository config
-// block opts this repository into a managed .fullsend/config.yaml overlay.
-func overlayManaged(defaults, entry config.OverlayConfig) bool {
+// configManaged reports whether defaults.config or the repository config
+// block opts this repository into a managed .fullsend/config.yaml.
+func configManaged(defaults, entry config.ManagedConfig) bool {
 	return defaults.IsSet() || entry.IsSet()
 }
 
-// managedOverlay flattens defaults.config, the repository config, and
+// mergeManagedConfig flattens defaults.config, the repository config, and
 // authoritative runtime / allowed_remote_resources shorthands into a sparse
-// overlay. It does not bake in code defaults or config.base.yaml.
-func (m *Manifest) managedOverlay(entry RepoEntry) config.PerRepoConfigWriter {
-	merged := config.MergeOverlays(m.Defaults.Config.Writer(), entry.Config.Writer())
+// managed configuration. It does not bake in code defaults or config.base.yaml.
+func (m *Manifest) mergeManagedConfig(entry RepoEntry) config.PerRepoConfigWriter {
+	merged := config.MergeManaged(m.Defaults.Config.Writer(), entry.Config.Writer())
 	if merged == nil {
 		merged = config.NewEmptyPerRepoOverlay()
 	}
-	config.ApplyOverlayShorthands(merged, resolveField(entry.Runtime, m.Defaults.Runtime, ""), overlayAllowlist(entry, m.Defaults))
+	config.ApplyManagedShorthands(merged, resolveField(entry.Runtime, m.Defaults.Runtime, ""), managedAllowlist(entry, m.Defaults))
 	return merged
 }
 
-func overlayAllowlist(entry RepoEntry, defaults DefaultsConfig) []string {
+func managedAllowlist(entry RepoEntry, defaults DefaultsConfig) []string {
 	if entry.AllowedRemoteResources != nil {
 		return entry.AllowedRemoteResources
 	}
 	return defaults.AllowedRemoteResources
 }
 
-// RenderManagedOverlay returns the canonical sparse configuration YAML body
+// RenderManagedConfig returns the canonical sparse configuration YAML body
 // for a config-managed repository — the explicitly supplied manifest
 // values, with no code defaults or config.base.yaml baked in. ok is false
 // when the repository is not config-managed; data is then nil.
@@ -73,13 +73,13 @@ func overlayAllowlist(entry RepoEntry, defaults DefaultsConfig) []string {
 // body only. desiredManagedConfig is the install-path renderer (#7632)
 // that prefixes the marker and is compared against the installed file by
 // convergeManagedConfigFiles / checkManagedConfigDrift in
-// overlay_lifecycle.go, which also implement the adoption gate for
+// managed_config_lifecycle.go, which also implement the adoption gate for
 // an existing markerless file.
-func (m *Manifest) RenderManagedOverlay(entry RepoEntry) (data []byte, ok bool, err error) {
-	if !overlayManaged(m.Defaults.Config, entry.Config) {
+func (m *Manifest) RenderManagedConfig(entry RepoEntry) (data []byte, ok bool, err error) {
+	if !configManaged(m.Defaults.Config, entry.Config) {
 		return nil, false, nil
 	}
-	body, err := marshalManagedConfig(m.managedOverlay(entry))
+	body, err := marshalManagedConfig(m.mergeManagedConfig(entry))
 	if err != nil {
 		return nil, true, err
 	}
@@ -94,10 +94,10 @@ func (m *Manifest) RenderManagedOverlay(entry RepoEntry) (data []byte, ok bool, 
 // exact bytes, so the marker is part of both the write and the whole-file
 // compare.
 func desiredManagedConfig(resolved ResolvedConfig) (data []byte, ok bool, err error) {
-	if !resolved.OverlayManaged {
+	if !resolved.ConfigManaged {
 		return nil, false, nil
 	}
-	body, err := marshalManagedConfig(resolved.Overlay)
+	body, err := marshalManagedConfig(resolved.Managed)
 	if err != nil {
 		return nil, true, err
 	}
@@ -108,20 +108,20 @@ func desiredManagedConfig(resolved ResolvedConfig) (data []byte, ok bool, err er
 // config" — every caller already wraps the returned error with its own
 // "rendering managed config..." context, and adding the same phrase here
 // would stutter it.
-func marshalManagedConfig(overlay config.PerRepoConfigWriter) ([]byte, error) {
-	if overlay == nil {
-		overlay = config.NewEmptyPerRepoOverlay()
+func marshalManagedConfig(cfg config.PerRepoConfigWriter) ([]byte, error) {
+	if cfg == nil {
+		cfg = config.NewEmptyPerRepoOverlay()
 	}
-	if err := config.ValidateMergedOverlay(overlay); err != nil {
+	if err := config.ValidateMergedManaged(cfg); err != nil {
 		return nil, err
 	}
-	if err := validateOverlayMintAndWIF(overlay); err != nil {
+	if err := validateManagedMintAndWIF(cfg); err != nil {
 		return nil, err
 	}
-	if err := ValidateAllowedRemoteResourcesFormat("allowed_remote_resources", overlay.AllowedResources()); err != nil {
+	if err := ValidateAllowedRemoteResourcesFormat("allowed_remote_resources", cfg.AllowedResources()); err != nil {
 		return nil, err
 	}
-	body, err := yaml.Marshal(overlay)
+	body, err := yaml.Marshal(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling: %w", err)
 	}
@@ -129,18 +129,18 @@ func marshalManagedConfig(overlay config.PerRepoConfigWriter) ([]byte, error) {
 }
 
 // LayeredConfig returns the effective per-repo configuration for entry:
-// managed overlay → config.base.yaml (baseYAML) → code defaults.
-// Unmanaged repositories skip the overlay layer. baseYAML may be empty.
+// managed configuration → config.base.yaml (baseYAML) → code defaults.
+// Unmanaged repositories skip the managed layer. baseYAML may be empty.
 func (m *Manifest) LayeredConfig(entry RepoEntry, baseYAML []byte) (config.PerRepoConfigReader, error) {
-	var overlay config.PerRepoConfigWriter
-	if overlayManaged(m.Defaults.Config, entry.Config) {
-		overlay = m.managedOverlay(entry)
+	var managed config.PerRepoConfigWriter
+	if configManaged(m.Defaults.Config, entry.Config) {
+		managed = m.mergeManagedConfig(entry)
 	}
-	return config.LayerOnBase(overlay, baseYAML)
+	return config.LayerOnBase(managed, baseYAML)
 }
 
-func validateManifestOverlays(m *Manifest) error {
-	if err := validateOverlayBlock("defaults.config", m.Defaults.Config); err != nil {
+func validateManifestManaged(m *Manifest) error {
+	if err := validateManagedBlock("defaults.config", m.Defaults.Config); err != nil {
 		return err
 	}
 	for _, p := range []struct {
@@ -155,58 +155,58 @@ func validateManifestOverlays(m *Manifest) error {
 			if entry.Name != "" {
 				field = fmt.Sprintf("%s.repos[%s].config", p.name, entry.Name)
 			}
-			if err := validateOverlayBlock(field, entry.Config); err != nil {
+			if err := validateManagedBlock(field, entry.Config); err != nil {
 				return err
 			}
-			if !overlayManaged(m.Defaults.Config, entry.Config) {
+			if !configManaged(m.Defaults.Config, entry.Config) {
 				continue
 			}
-			overlay := m.managedOverlay(entry)
-			if err := config.ValidateMergedOverlay(overlay); err != nil {
-				return fmt.Errorf("%s: merged overlay: %w", field, err)
+			merged := m.mergeManagedConfig(entry)
+			if err := config.ValidateMergedManaged(merged); err != nil {
+				return fmt.Errorf("%s: merged managed configuration: %w", field, err)
 			}
-			if err := validateOverlayMintAndWIF(overlay); err != nil {
-				return fmt.Errorf("%s: merged overlay: %w", field, err)
+			if err := validateManagedMintAndWIF(merged); err != nil {
+				return fmt.Errorf("%s: merged managed configuration: %w", field, err)
 			}
 		}
 	}
 	return nil
 }
 
-// validateOverlayBlock validates a single overlay layer (defaults.config
-// or one repository's raw config block) in isolation, before
-// defaults.config and the repository config are merged and before
+// validateManagedBlock validates a single managed-configuration layer
+// (defaults.config or one repository's raw config block) in isolation,
+// before defaults.config and the repository config are merged and before
 // repos.yaml shorthands are applied. It intentionally does not run the
 // checks that need that merge (agent allowlist, override-only custom
-// agents) — see config.ValidateOverlayLayer — those run again, correctly,
-// against the merged overlay below.
-func validateOverlayBlock(field string, o config.OverlayConfig) error {
+// agents) — see config.ValidateManagedLayer — those run again, correctly,
+// against the merged managed configuration below.
+func validateManagedBlock(field string, o config.ManagedConfig) error {
 	if !o.IsSet() {
 		return nil
 	}
-	if err := config.ValidateOverlayLayer(o.Writer()); err != nil {
+	if err := config.ValidateManagedLayer(o.Writer()); err != nil {
 		return fmt.Errorf("%s: %w", field, err)
 	}
-	if err := validateOverlayMintAndWIF(o.Writer()); err != nil {
+	if err := validateManagedMintAndWIF(o.Writer()); err != nil {
 		return fmt.Errorf("%s: %w", field, err)
 	}
 	return nil
 }
 
-// validateOverlayMintAndWIF runs the same mint_url HTTPS/userinfo gate
+// validateManagedMintAndWIF runs the same mint_url HTTPS/userinfo gate
 // used for RepoEntry.MintURL and the CLI's validateMintURLHTTPS, plus the
-// WIF provider resource-name pattern check, on an overlay layer or the
-// shorthand-merged overlay. Neither field is touched by
-// ApplyOverlayShorthands, so the same check is correct whether r is an
-// isolated layer or the merged overlay; an unset value resolves through
-// the parent chain to the code default (always a valid HTTPS mint URL),
-// so this only ever flags a value the overlay itself set. Install and
-// converge write these values into the managed `.fullsend/config.yaml`;
-// this closes the format gate before that write.
+// WIF provider resource-name pattern check, on a managed-configuration
+// layer or the shorthand-merged result. Neither field is touched by
+// ApplyManagedShorthands, so the same check is correct whether r is an
+// isolated layer or the merged configuration; an unset value resolves
+// through the parent chain to the code default (always a valid HTTPS mint
+// URL), so this only ever flags a value the managed configuration itself
+// set. Install and converge write these values into the managed
+// `.fullsend/config.yaml`; this closes the format gate before that write.
 // Unlike github.url/gitlab.url (validated via RejectExtraneousURLParts),
 // mint_url is allowed to carry a path — e.g. a Cloud Functions mint
 // endpoint — matching every other mint_url gate in this codebase.
-func validateOverlayMintAndWIF(r config.PerRepoConfigReader) error {
+func validateManagedMintAndWIF(r config.PerRepoConfigReader) error {
 	if mintURL := r.ConfigMintURL(); mintURL != "" {
 		mu, err := url.Parse(mintURL)
 		if err != nil || mu.Scheme != "https" || mu.Host == "" {

@@ -137,11 +137,11 @@ type RepoEntry struct {
 	// defaults.config_base; source "none" disables inheritance. SHA256
 	// is an optional digest verified against the fetched preset.
 	ConfigBase ConfigBase `yaml:"config_base,omitempty"`
-	// Config is a sparse .fullsend/config.yaml overlay for this
-	// repository (ADR 0122). Presence opts this repository into overlay
-	// management even when the mapping is empty. runtime and
+	// Config is a sparse managed .fullsend/config.yaml for this
+	// repository (ADR 0122). Presence opts this repository into managed
+	// configuration even when the mapping is empty. runtime and
 	// allowed_remote_resources are rejected here; use the sibling fields.
-	Config config.OverlayConfig `yaml:"config,omitempty"`
+	Config config.ManagedConfig `yaml:"config,omitempty"`
 }
 
 // DefaultsConfig holds default field values applied to every repo
@@ -158,9 +158,9 @@ type DefaultsConfig struct {
 	// source "none" disables inheritance for entries that reference it.
 	// SHA256 is an optional digest verified against the fetched preset.
 	ConfigBase ConfigBase `yaml:"config_base,omitempty"`
-	// Config is a fleet-wide sparse .fullsend/config.yaml overlay
-	// (ADR 0122). Presence opts every repository into overlay management.
-	Config config.OverlayConfig `yaml:"config,omitempty"`
+	// Config is a fleet-wide sparse managed .fullsend/config.yaml
+	// (ADR 0122). Presence opts every repository into managed configuration.
+	Config config.ManagedConfig `yaml:"config,omitempty"`
 }
 
 // DefaultGitHubURL is the default forge URL for GitHub.com.
@@ -200,16 +200,15 @@ type ResolvedConfig struct {
 	// ConfigHash is the resolved SHA-256 hex digest; empty skips
 	// digest validation.
 	ConfigHash string
-	// OverlayManaged reports whether this repository is opted into a
-	// managed .fullsend/config.yaml overlay (ADR 0122). defaults.config
-	// opts every repository in; a repository config block opts in only
-	// that repository.
-	OverlayManaged bool
-	// Overlay is the sparse managed overlay: defaults.config merged with
+	// ConfigManaged reports whether this repository is opted into a
+	// managed .fullsend/config.yaml (ADR 0122). defaults.config opts every
+	// repository in; a repository config block opts in only that repository.
+	ConfigManaged bool
+	// Managed is the sparse managed configuration: defaults.config merged with
 	// the repository config, plus authoritative runtime and
-	// allowed_remote_resources shorthands. Nil when OverlayManaged is
+	// allowed_remote_resources shorthands. Nil when ConfigManaged is
 	// false. It does not bake in code defaults or config.base.yaml.
-	Overlay config.PerRepoConfigWriter
+	Managed config.PerRepoConfigWriter
 }
 
 func parseManifestBytes(data []byte, m *Manifest) error {
@@ -547,7 +546,7 @@ func (m *Manifest) Validate() error {
 		}
 	}
 
-	if err := validateManifestOverlays(m); err != nil {
+	if err := validateManifestManaged(m); err != nil {
 		return err
 	}
 
@@ -927,9 +926,9 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 	} else {
 		cfg.ConfigHash = resolveField(entry.ConfigBase.SHA256, m.Defaults.ConfigBase.SHA256, "")
 	}
-	cfg.OverlayManaged = overlayManaged(m.Defaults.Config, entry.Config)
-	if cfg.OverlayManaged {
-		cfg.Overlay = m.managedOverlay(entry)
+	cfg.ConfigManaged = configManaged(m.Defaults.Config, entry.Config)
+	if cfg.ConfigManaged {
+		cfg.Managed = m.mergeManagedConfig(entry)
 	}
 
 	// Source infrastructure config from the platform-level section,

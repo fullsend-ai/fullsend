@@ -189,9 +189,9 @@ the `repos install` command line — so the preset's own roles (rather
 than the fleet-wide `--roles` default) take effect through the layered
 config.
 
-### Configuration overlays
+### Managed configuration
 
-`repos.yaml` can also declare a sparse `.fullsend/config.yaml` overlay
+`repos.yaml` can also declare a sparse managed `.fullsend/config.yaml`
 ([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)). The
 block uses the same schema as per-repo `config.yaml` except `runtime`
 and `allowed_remote_resources`, which stay on their existing manifest
@@ -234,9 +234,17 @@ manually adopted (edited to carry the marker, or replaced with the
 rendered managed body). Once a file carries the marker, `repos install`
 writes the canonical sparse `.fullsend/config.yaml`, `repos status`
 reports any whole-file difference (including a single-key change) as
-drift, and convergence rewrites the file deterministically.
-Repositories with neither declaration keep their existing configuration
-and are excluded from managed-configuration drift checks.
+drift, and convergence rewrites the file deterministically — unless the
+candidate would become less restrictive than the current effective
+configuration without an explicit manifest declaration. That pre-write
+safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
+agent `enabled: false` suppressions, and `create_issues.allow_targets`
+through the full overlay → base → code-defaults accessor chain. Omitted
+keys fall through rather than being treated as unset; an explicit empty
+`allowed_remote_resources: []` remains deny-all. Status and install output
+identify the affected keys. A blanket adoption acknowledgement is not
+enough. Repositories with neither declaration keep their existing
+configuration and are excluded from managed-configuration drift checks.
 `.fullsend/config.base.yaml` handling stays independent.
 
 ### Manifest paths and URLs
@@ -527,7 +535,7 @@ Common causes:
   `config_base: {source: <value>}` and `config_hash:` as
   `config_base: {sha256: <value>}`, for both `defaults` and per-repo
   entries. A mapping-shaped `config:` block is separate and still
-  valid — that is the [configuration overlay](#configuration-overlays)
+  valid — that is the [managed configuration](#managed-configuration)
   syntax (ADR 0122), not the old preset key:
 
   ```yaml

@@ -87,7 +87,7 @@ type ConvergeConfig struct {
 // installation component during convergence.
 type ComponentAction struct {
 	Component string // e.g., "workflow", "thin-caller:<path>", "var:MINT_URL", "schedule:<name>", "ref"
-	Action    string // "none", "add", "update", "upgrade", "delete", "orphan", "error", ActionAdoptionRequired
+	Action    string // "none", "add", "update", "upgrade", "delete", "orphan", "error", ActionAdoptionRequired, ActionSafetyRejected
 	Detail    string // human-readable detail
 }
 
@@ -541,7 +541,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 
 		// Render the managed configuration before any writes so a
 		// validation failure fails the repo without applying changes.
-		if d.resolved.OverlayManaged {
+		if d.resolved.ConfigManaged {
 			body, _, configErr := desiredManagedConfig(d.resolved)
 			if configErr != nil {
 				result.Results[i] = ConvergeResult{
@@ -736,13 +736,18 @@ func convergeRepo(ctx context.Context,
 		// otherwise write ManagedConfig unconditionally here, so the
 		// check is repeated for this path.
 		var configAdoptionRequired bool
-		if resolved.OverlayManaged {
-			required, adoptionErr := checkManagedConfigAdoptionRequired(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo)
-			if adoptionErr != nil {
-				cr.Error = fmt.Errorf("reading existing %s: %w", preset.OverlayPath, adoptionErr)
+		var configSafetyRejected *ComponentAction
+		if resolved.ConfigManaged {
+			existing, readErr := resolved.ForgeConfig.Client.GetFileContent(ctx, rr.Owner, rr.Repo, preset.OverlayPath)
+			if readErr != nil && !forge.IsNotFound(readErr) {
+				cr.Error = fmt.Errorf("reading existing %s: %w", preset.OverlayPath, readErr)
 				return cr
 			}
-			configAdoptionRequired = required
+			if forge.IsNotFound(readErr) {
+				existing = nil
+			}
+			configAdoptionRequired = len(existing) > 0 && !hasManagedConfigMarker(existing)
+			configSafetyRejected = checkManagedConfigSafetyGate(ctx, resolved, existing)
 		}
 
 		if cfg.DryRun {
@@ -759,15 +764,22 @@ func convergeRepo(ctx context.Context,
 					Detail:    "would write config preset as " + preset.BasePath,
 				})
 			}
-			if d.resolved.OverlayManaged {
+			if d.resolved.ConfigManaged {
 				if configAdoptionRequired {
 					detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be written (ADR-0122)", preset.OverlayPath)
+					if configSafetyRejected != nil && configSafetyRejected.Action == ActionSafetyRejected {
+						detail = detail + "; " + configSafetyRejected.Detail
+					}
 					cr.Actions = append(cr.Actions, ComponentAction{
 						Component: preset.OverlayPath,
 						Action:    ActionAdoptionRequired,
 						Detail:    detail,
 					})
 					progress(repoFullName, "dry-run", detail)
+				} else if configSafetyRejected != nil {
+					cr.Actions = append(cr.Actions, *configSafetyRejected)
+					progress(repoFullName, "dry-run", configSafetyRejected.Detail)
+					cr.Error = fmt.Errorf("%s", configSafetyRejected.Detail)
 				} else {
 					cr.Actions = append(cr.Actions, ComponentAction{
 						Component: preset.OverlayPath,
@@ -823,7 +835,7 @@ func convergeRepo(ctx context.Context,
 			VendorBinary:                  vendor,
 			Preset:                        d.preset,
 			ManagedConfig:                 d.managedConfig,
-			ManagedConfigAdoptionRequired: configAdoptionRequired,
+			ManagedConfigAdoptionRequired: configAdoptionRequired || configSafetyRejected != nil,
 		}
 
 		// When vendored, the running binary's embedded templates match the
@@ -861,12 +873,19 @@ func convergeRepo(ctx context.Context,
 		})
 		if configAdoptionRequired {
 			detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be converged automatically (ADR-0122)", preset.OverlayPath)
+			if configSafetyRejected != nil && configSafetyRejected.Action == ActionSafetyRejected {
+				detail = detail + "; " + configSafetyRejected.Detail
+			}
 			cr.Actions = append(cr.Actions, ComponentAction{
 				Component: preset.OverlayPath,
 				Action:    ActionAdoptionRequired,
 				Detail:    detail,
 			})
 			progress(repoFullName, "install", detail)
+		} else if configSafetyRejected != nil {
+			cr.Actions = append(cr.Actions, *configSafetyRejected)
+			progress(repoFullName, "install", configSafetyRejected.Detail)
+			cr.Error = fmt.Errorf("%s", configSafetyRejected.Detail)
 		}
 		return cr
 	}
@@ -1046,7 +1065,8 @@ func convergeRepo(ctx context.Context,
 	cr.Actions = append(cr.Actions, configActions...)
 	var configErrors []string
 	for _, a := range configActions {
-		if a.Action == "error" {
+		switch a.Action {
+		case "error", ActionSafetyRejected:
 			configErrors = append(configErrors, a.Detail)
 		}
 	}
@@ -2004,7 +2024,7 @@ func convergeScaffoldFiles(ctx context.Context,
 			// self-heal otherwise. Config-managed config.yaml is
 			// rewritten by convergeManagedConfigFiles instead.
 			if slices.Contains(resolved.ForgeConfig.WorkflowPaths, f.Path) ||
-				(f.Path == preset.OverlayPath && !resolved.OverlayManaged) {
+				(f.Path == preset.OverlayPath && !resolved.ConfigManaged) {
 				repairFiles = append(repairFiles, f)
 			}
 		}

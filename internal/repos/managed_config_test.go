@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestParseManifest_ConfigOverlayRoundTrip(t *testing.T) {
+func TestParseManifest_ManagedConfigRoundTrip(t *testing.T) {
 	input := `
 version: 1
 defaults:
@@ -46,7 +46,7 @@ github:
 	assert.NotContains(t, text, "runtime:")
 }
 
-func TestLoadManifest_ConfigOverlayUnknownAndForbiddenFields(t *testing.T) {
+func TestLoadManifest_ManagedConfigUnknownAndForbiddenFields(t *testing.T) {
 	tests := []struct {
 		name    string
 		yaml    string
@@ -162,7 +162,7 @@ github:
 
 // A URL-sourced agent in defaults.config whose prefix is only covered by
 // the sibling defaults.allowed_remote_resources shorthand must validate:
-// the shorthand is merged onto the overlay (managedOverlay) before the
+// the shorthand is merged onto the overlay (mergeManagedConfig) before the
 // allowlist is checked, even though defaults.config's own allowed_
 // remote_resources field is forbidden and never set directly.
 func TestValidate_ConfigOverlayAgentAllowedViaARRShorthand(t *testing.T) {
@@ -203,7 +203,7 @@ github:
 	assert.NoError(t, m.Validate())
 }
 
-func TestRenderManagedOverlay_OverrideOnlyCustomAgentDefersToBaseLayer(t *testing.T) {
+func TestRenderManagedConfig_OverrideOnlyCustomAgentDefersToBaseLayer(t *testing.T) {
 	input := `
 version: 1
 github:
@@ -216,7 +216,7 @@ github:
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-	body, ok, err := m.RenderManagedOverlay(m.GitHub.Repos[0])
+	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Contains(t, string(body), "mycustom")
@@ -360,31 +360,31 @@ github:
 
 	inherits, ok := m.ResolveConfig("acme", "inherits")
 	require.True(t, ok)
-	assert.True(t, inherits.OverlayManaged)
-	require.NotNil(t, inherits.Overlay)
-	assert.True(t, inherits.Overlay.IsKillSwitchActive())
-	assert.Equal(t, []string{"triage"}, inherits.Overlay.ConfigRoles())
-	assert.Equal(t, "us-east1", inherits.Overlay.ConfigInferenceRegion())
-	assert.Equal(t, "fleet-proj", inherits.Overlay.ConfigInferenceProject())
-	assert.Equal(t, "pi", inherits.Overlay.ConfigRuntime())
-	body, err := inherits.Overlay.Marshal()
+	assert.True(t, inherits.ConfigManaged)
+	require.NotNil(t, inherits.Managed)
+	assert.True(t, inherits.Managed.IsKillSwitchActive())
+	assert.Equal(t, []string{"triage"}, inherits.Managed.ConfigRoles())
+	assert.Equal(t, "us-east1", inherits.Managed.ConfigInferenceRegion())
+	assert.Equal(t, "fleet-proj", inherits.Managed.ConfigInferenceProject())
+	assert.Equal(t, "pi", inherits.Managed.ConfigRuntime())
+	body, err := inherits.Managed.Marshal()
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "https://default.example.com/")
 	assert.Contains(t, string(body), "runtime: pi")
 
 	override, ok := m.ResolveConfig("acme", "override")
 	require.True(t, ok)
-	assert.True(t, override.OverlayManaged)
-	assert.False(t, override.Overlay.IsKillSwitchActive(), "repo config wins")
-	assert.Equal(t, []string{"triage"}, override.Overlay.ConfigRoles(), "unset repo field inherits defaults.config")
-	assert.Equal(t, "us-east1", override.Overlay.ConfigInferenceRegion())
-	assert.Equal(t, "repo-proj", override.Overlay.ConfigInferenceProject())
-	assert.Equal(t, "claude", override.Overlay.ConfigRuntime(), "repo runtime shorthand wins")
-	assert.Empty(t, override.Overlay.AllowedResources(), "explicit empty allowlist is deny-all")
+	assert.True(t, override.ConfigManaged)
+	assert.False(t, override.Managed.IsKillSwitchActive(), "repo config wins")
+	assert.Equal(t, []string{"triage"}, override.Managed.ConfigRoles(), "unset repo field inherits defaults.config")
+	assert.Equal(t, "us-east1", override.Managed.ConfigInferenceRegion())
+	assert.Equal(t, "repo-proj", override.Managed.ConfigInferenceProject())
+	assert.Equal(t, "claude", override.Managed.ConfigRuntime(), "repo runtime shorthand wins")
+	assert.Empty(t, override.Managed.AllowedResources(), "explicit empty allowlist is deny-all")
 
 	empty, ok := m.ResolveConfig("acme", "empty")
 	require.True(t, ok)
-	assert.True(t, empty.OverlayManaged, "config: {} opts this repo in")
+	assert.True(t, empty.ConfigManaged, "config: {} opts this repo in")
 }
 
 func TestResolveConfig_RepoConfigOptsInOnlyThatRepo(t *testing.T) {
@@ -403,13 +403,13 @@ github:
 
 	managed, ok := m.ResolveConfig("acme", "managed")
 	require.True(t, ok)
-	assert.True(t, managed.OverlayManaged)
-	assert.False(t, managed.Overlay.ConfigKeepHistory())
+	assert.True(t, managed.ConfigManaged)
+	assert.False(t, managed.Managed.ConfigKeepHistory())
 
 	unmanaged, ok := m.ResolveConfig("acme", "unmanaged")
 	require.True(t, ok)
-	assert.False(t, unmanaged.OverlayManaged)
-	assert.Nil(t, unmanaged.Overlay)
+	assert.False(t, unmanaged.ConfigManaged)
+	assert.Nil(t, unmanaged.Managed)
 }
 
 func TestResolveConfig_NoConfigLeavesOverlayUnmanaged(t *testing.T) {
@@ -425,11 +425,11 @@ github:
 
 	cfg, ok := m.ResolveConfig("acme", "plain")
 	require.True(t, ok)
-	assert.False(t, cfg.OverlayManaged)
-	assert.Nil(t, cfg.Overlay)
+	assert.False(t, cfg.ConfigManaged)
+	assert.Nil(t, cfg.Managed)
 }
 
-func TestRenderManagedOverlay_SparseAndExplicitValues(t *testing.T) {
+func TestRenderManagedConfig_SparseAndExplicitValues(t *testing.T) {
 	input := `
 version: 1
 defaults:
@@ -448,7 +448,7 @@ github:
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
 	require.NoError(t, m.Validate())
 
-	body, ok, err := m.RenderManagedOverlay(m.GitHub.Repos[0])
+	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
 	require.NoError(t, err)
 	require.True(t, ok)
 	text := string(body)
@@ -462,7 +462,7 @@ github:
 	assert.NotContains(t, text, "claude", "code default runtime must not be baked in")
 }
 
-func TestRenderManagedOverlay_NoUnmanagedFileHeader(t *testing.T) {
+func TestRenderManagedConfig_NoUnmanagedFileHeader(t *testing.T) {
 	input := `
 version: 1
 github:
@@ -473,7 +473,7 @@ github:
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-	body, ok, err := m.RenderManagedOverlay(m.GitHub.Repos[0])
+	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
 	require.NoError(t, err)
 	require.True(t, ok)
 	text := string(body)
@@ -482,7 +482,7 @@ github:
 	assert.True(t, strings.HasPrefix(text, "kill_switch:"), "body must start with config content, not a header; the ownership marker is prefixed by install (#7632)")
 }
 
-func TestRenderManagedOverlay_InvalidOverlay(t *testing.T) {
+func TestRenderManagedConfig_InvalidManaged(t *testing.T) {
 	input := `
 version: 1
 github:
@@ -494,13 +494,13 @@ github:
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-	_, ok, err := m.RenderManagedOverlay(m.GitHub.Repos[0])
+	_, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
 	require.Error(t, err)
 	assert.True(t, ok)
 	assert.Contains(t, err.Error(), "invalid role")
 }
 
-func TestRenderManagedOverlay_DoesNotBakeCodeDefaults(t *testing.T) {
+func TestRenderManagedConfig_DoesNotBakeCodeDefaults(t *testing.T) {
 	input := `
 version: 1
 defaults:
@@ -512,7 +512,7 @@ github:
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-	body, ok, err := m.RenderManagedOverlay(m.GitHub.Repos[0])
+	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
 	require.NoError(t, err)
 	require.True(t, ok)
 	text := string(body)
@@ -523,12 +523,12 @@ github:
 	assert.NotContains(t, text, "mint_url:")
 }
 
-func TestRenderManagedOverlay_Unmanaged(t *testing.T) {
+func TestRenderManagedConfig_Unmanaged(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		GitHub:  &PlatformConfig{Repos: []RepoEntry{{Name: "acme/plain"}}},
 	}
-	body, ok, err := m.RenderManagedOverlay(m.GitHub.Repos[0])
+	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Nil(t, body)
@@ -578,8 +578,8 @@ github:
 	require.True(t, resolved[0].Entry.Config.IsSet())
 
 	cfg := m.ResolveConfigForEntry(resolved[0].Owner, resolved[0].Repo, ForgeGitHub, resolved[0].Entry)
-	assert.True(t, cfg.OverlayManaged)
-	assert.True(t, cfg.Overlay.IsKillSwitchActive())
+	assert.True(t, cfg.ConfigManaged)
+	assert.True(t, cfg.Managed.IsKillSwitchActive())
 }
 
 func TestDefaultsConfigOptsAllReposIncludingGlobs(t *testing.T) {
@@ -600,8 +600,8 @@ github:
 
 	explicit, ok := m.ResolveConfig("acme", "explicit")
 	require.True(t, ok)
-	assert.True(t, explicit.OverlayManaged)
-	assert.Equal(t, []string{"review"}, explicit.Overlay.ConfigRoles())
+	assert.True(t, explicit.ConfigManaged)
+	assert.Equal(t, []string{"review"}, explicit.Managed.ConfigRoles())
 
 	fc := forge.NewFakeClient()
 	fc.Repos = []forge.Repository{{Name: "glob-one", FullName: "acme/glob-one"}}
@@ -615,8 +615,8 @@ github:
 	}
 	require.Equal(t, "acme/glob-one", globEntry.Name)
 	cfg := m.ResolveConfigForEntry("acme", "glob-one", ForgeGitHub, globEntry)
-	assert.True(t, cfg.OverlayManaged)
-	assert.Equal(t, []string{"review"}, cfg.Overlay.ConfigRoles())
+	assert.True(t, cfg.ConfigManaged)
+	assert.Equal(t, []string{"review"}, cfg.Managed.ConfigRoles())
 }
 
 func TestLoadManifest_LegacyConfigHashStillUnknown(t *testing.T) {

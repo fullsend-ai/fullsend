@@ -4,10 +4,20 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/preset"
 )
+
+// ActionSafetyRejected marks a ComponentAction reporting that the
+// candidate managed configuration is less restrictive than the current
+// effective configuration and the manifest did not declare that
+// relaxation (ADR 0122). Distinct from "error" so status/adoption
+// output can identify the affected keys without treating a parse
+// failure as the same class of problem.
+const ActionSafetyRejected = "safety-rejected"
 
 // convergeManagedConfigFiles returns the managed configuration file to
 // write when a repository is config-managed and the installed
@@ -29,7 +39,7 @@ import (
 // rendered managed body) so a later run's whole-file compare starts from
 // a marked baseline.
 func convergeManagedConfigFiles(ctx context.Context, resolved ResolvedConfig, desired []byte, dryRun bool, progress ProgressFunc) ([]forge.TreeFile, []ComponentAction) {
-	if !resolved.OverlayManaged {
+	if !resolved.ConfigManaged {
 		return nil, nil
 	}
 
@@ -52,6 +62,9 @@ func convergeManagedConfigFiles(ctx context.Context, resolved ResolvedConfig, de
 
 	if len(existing) > 0 && !hasManagedConfigMarker(existing) {
 		detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be converged automatically (ADR-0122)", preset.OverlayPath)
+		if rejected := managedSafetyRejectedAction(ctx, resolved, existing); rejected != nil && rejected.Action == ActionSafetyRejected {
+			detail = detail + "; " + rejected.Detail
+		}
 		progress(repoFullName, "config", detail)
 		actions = append(actions, ComponentAction{
 			Component: preset.OverlayPath,
@@ -63,6 +76,11 @@ func convergeManagedConfigFiles(ctx context.Context, resolved ResolvedConfig, de
 
 	if bytes.Equal(existing, desired) {
 		return nil, nil
+	}
+
+	if rejected := managedSafetyRejectedAction(ctx, resolved, existing); rejected != nil {
+		progress(repoFullName, "config", rejected.Detail)
+		return nil, []ComponentAction{*rejected}
 	}
 
 	action := "update"
@@ -108,7 +126,7 @@ func convergeManagedConfigFiles(ctx context.Context, resolved ResolvedConfig, de
 // convergeManagedConfigFiles for why a markerless file must never be
 // silently rewritten.
 func checkManagedConfigDrift(ctx context.Context, cfg ResolvedConfig, status *RepoStatus) {
-	if !cfg.OverlayManaged {
+	if !cfg.ConfigManaged {
 		return
 	}
 	desired, _, err := desiredManagedConfig(cfg)
@@ -125,14 +143,32 @@ func checkManagedConfigDrift(ctx context.Context, cfg ResolvedConfig, status *Re
 		existing = nil
 	}
 	if len(existing) > 0 && !hasManagedConfigMarker(existing) {
+		actual := "existing file predates managed-configuration adoption; missing ownership marker"
+		expected := "managed configuration (adoption required)"
+		if rejected := managedSafetyRejectedAction(ctx, cfg, existing); rejected != nil && rejected.Action == ActionSafetyRejected {
+			expected = "managed configuration (adoption required; safety gate)"
+			actual = actual + "; " + rejected.Detail
+		}
 		status.Drifts = append(status.Drifts, Drift{
 			Field:    preset.OverlayPath,
-			Expected: "managed configuration (adoption required)",
-			Actual:   "existing file predates managed-configuration adoption; missing ownership marker",
+			Expected: expected,
+			Actual:   actual,
 		})
 		return
 	}
 	if bytes.Equal(existing, desired) {
+		return
+	}
+	if rejected := managedSafetyRejectedAction(ctx, cfg, existing); rejected != nil {
+		if rejected.Action == "error" {
+			status.Error = rejected.Detail
+			return
+		}
+		status.Drifts = append(status.Drifts, Drift{
+			Field:    preset.OverlayPath,
+			Expected: "managed configuration (safety gate)",
+			Actual:   rejected.Detail,
+		})
 		return
 	}
 	actual := "installed content differs"
@@ -146,23 +182,68 @@ func checkManagedConfigDrift(ctx context.Context, cfg ResolvedConfig, status *Re
 	})
 }
 
-// checkManagedConfigAdoptionRequired reports whether an existing managed
-// configuration file predates ADR-0122 adoption (present but missing the
-// ownership marker), for the isNew/fresh-install path in convergeRepo.
-// That path does not go through convergeManagedConfigFiles —
-// Install/BuildScaffoldFiles would otherwise write ManagedConfig
-// unconditionally, silently overwriting a hand-authored
-// .fullsend/config.yaml the first time a repository with no shim workflow
-// yet opts into managed configuration. readErr is non-nil for any read
-// failure other than the file not existing, so the caller can fail closed
-// instead of guessing.
-func checkManagedConfigAdoptionRequired(ctx context.Context, client forge.Client, owner, repo string) (required bool, readErr error) {
-	existing, err := client.GetFileContent(ctx, owner, repo, preset.OverlayPath)
+// checkManagedConfigSafetyGate is the ADR-0122 pre-write safety gate for
+// the isNew/fresh-install path. convergeManagedConfigFiles enforces the
+// same comparison on the already-installed path; Install would otherwise
+// write ManagedConfig after only the adoption-marker check. existingYAML
+// is the installed .fullsend/config.yaml (possibly empty). Returns a
+// ComponentAction when the write must be refused, or nil when it may
+// proceed.
+func checkManagedConfigSafetyGate(ctx context.Context, resolved ResolvedConfig, existingYAML []byte) *ComponentAction {
+	return managedSafetyRejectedAction(ctx, resolved, existingYAML)
+}
+
+func managedSafetyRejectedAction(ctx context.Context, resolved ResolvedConfig, existingYAML []byte) *ComponentAction {
+	relaxations, err := evaluateManagedSafetyGate(ctx, resolved, existingYAML)
+	if err != nil {
+		return &ComponentAction{
+			Component: preset.OverlayPath,
+			Action:    "error",
+			Detail:    err.Error(),
+		}
+	}
+	if len(relaxations) == 0 {
+		return nil
+	}
+	return &ComponentAction{
+		Component: preset.OverlayPath,
+		Action:    ActionSafetyRejected,
+		Detail:    formatManagedSafetyRejection(relaxations),
+	}
+}
+
+func evaluateManagedSafetyGate(ctx context.Context, resolved ResolvedConfig, existingYAML []byte) ([]config.SafetyRelaxation, error) {
+	baseYAML, err := readManagedConfigBase(ctx, resolved)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", preset.BasePath, err)
+	}
+	relaxations, err := config.CheckManagedSafetyGateFromLayers(existingYAML, resolved.Managed, baseYAML)
+	if err != nil {
+		return nil, fmt.Errorf("evaluating managed-configuration safety gate: %w", err)
+	}
+	return relaxations, nil
+}
+
+func readManagedConfigBase(ctx context.Context, resolved ResolvedConfig) ([]byte, error) {
+	client := resolved.ForgeConfig.Client
+	if client == nil {
+		return nil, nil
+	}
+	data, err := client.GetFileContent(ctx, resolved.Owner, resolved.Repo, preset.BasePath)
 	if err != nil {
 		if forge.IsNotFound(err) {
-			return false, nil
+			return nil, nil
 		}
-		return false, err
+		return nil, err
 	}
-	return len(existing) > 0 && !hasManagedConfigMarker(existing), nil
+	return data, nil
+}
+
+func formatManagedSafetyRejection(relaxations []config.SafetyRelaxation) string {
+	keys := config.SafetyRelaxationKeys(relaxations)
+	return fmt.Sprintf(
+		"%s would become less restrictive than the current effective configuration without an explicit manifest declaration (ADR-0122): %s",
+		strings.Join(keys, ", "),
+		config.FormatSafetyRelaxations(relaxations),
+	)
 }

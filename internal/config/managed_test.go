@@ -21,7 +21,7 @@ func TestYamlKeysOf_PerRepoConfigIncludesForbiddenShorthands(t *testing.T) {
 	assert.False(t, keys["parent"], "parent must stay unexported from YAML")
 }
 
-func TestOverlayConfig_DecodeSparseAndRoundTrip(t *testing.T) {
+func TestManagedConfig_DecodeSparseAndRoundTrip(t *testing.T) {
 	input := `
 kill_switch: true
 roles:
@@ -33,7 +33,7 @@ models:
   aliases:
     opus: anthropic-vertex/claude-opus
 `
-	var o OverlayConfig
+	var o ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(input), &o))
 	require.True(t, o.IsSet())
 	w := o.Writer()
@@ -53,28 +53,28 @@ models:
 	assert.NotContains(t, text, "version:")
 }
 
-func TestOverlayConfig_EmptyMappingIsSet(t *testing.T) {
-	var o OverlayConfig
+func TestManagedConfig_EmptyMappingIsSet(t *testing.T) {
+	var o ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte("{}\n"), &o))
 	assert.True(t, o.IsSet(), "config: {} opts in with no values")
 	assert.False(t, o.IsZero())
 }
 
-func TestOverlayConfig_MarshalYAMLNil(t *testing.T) {
-	v, err := OverlayConfig{}.MarshalYAML()
+func TestManagedConfig_MarshalYAMLNil(t *testing.T) {
+	v, err := ManagedConfig{}.MarshalYAML()
 	require.NoError(t, err)
 	assert.Nil(t, v)
 }
 
-func TestOverlayConfig_NullIsUnset(t *testing.T) {
-	var o OverlayConfig
+func TestManagedConfig_NullIsUnset(t *testing.T) {
+	var o ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte("null\n"), &o))
 	assert.False(t, o.IsSet(), "config: null is treated as omitted")
 }
 
-func TestOverlayConfig_OmittedIsUnset(t *testing.T) {
+func TestManagedConfig_OmittedIsUnset(t *testing.T) {
 	type wrap struct {
-		Config OverlayConfig `yaml:"config,omitempty"`
+		Config ManagedConfig `yaml:"config,omitempty"`
 	}
 	var w wrap
 	require.NoError(t, yaml.Unmarshal([]byte("other: 1\n"), &w))
@@ -82,7 +82,7 @@ func TestOverlayConfig_OmittedIsUnset(t *testing.T) {
 	assert.True(t, w.Config.IsZero())
 }
 
-func TestOverlayConfig_RejectsForbiddenAndUnknownFields(t *testing.T) {
+func TestManagedConfig_RejectsForbiddenAndUnknownFields(t *testing.T) {
 	tests := []struct {
 		name    string
 		yaml    string
@@ -111,7 +111,7 @@ func TestOverlayConfig_RejectsForbiddenAndUnknownFields(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var o OverlayConfig
+			var o ManagedConfig
 			err := yaml.Unmarshal([]byte(tt.yaml), &o)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
@@ -119,21 +119,21 @@ func TestOverlayConfig_RejectsForbiddenAndUnknownFields(t *testing.T) {
 	}
 }
 
-func TestOverlayConfig_RejectsBothForbiddenFields(t *testing.T) {
-	var o OverlayConfig
+func TestManagedConfig_RejectsBothForbiddenFields(t *testing.T) {
+	var o ManagedConfig
 	err := yaml.Unmarshal([]byte("runtime: pi\nallowed_remote_resources:\n  - https://example.com/\n"), &o)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "runtime is not allowed")
 	assert.Contains(t, err.Error(), "allowed_remote_resources is not allowed")
 }
 
-func TestOverlayConfig_ExplicitFalseAndEmptySurviveMarshal(t *testing.T) {
+func TestManagedConfig_ExplicitFalseAndEmptySurviveMarshal(t *testing.T) {
 	input := `
 kill_switch: false
 keep_history: false
 roles: []
 `
-	var o OverlayConfig
+	var o ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(input), &o))
 	w := o.Writer()
 	require.NotNil(t, w)
@@ -150,18 +150,18 @@ roles: []
 	assert.Contains(t, text, "roles: []")
 }
 
-func TestMergeOverlays_ExplicitEmptyAuthorizationSurvivesRoundTrip(t *testing.T) {
-	var parent OverlayConfig
+func TestMergeManaged_ExplicitEmptyAuthorizationSurvivesRoundTrip(t *testing.T) {
+	var parent ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`
 authorization:
   - provider: owners_file
 `), &parent))
-	var child OverlayConfig
+	var child ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`
 authorization: []
 `), &child))
 
-	merged := MergeOverlays(parent.Writer(), child.Writer())
+	merged := MergeManaged(parent.Writer(), child.Writer())
 	require.NotNil(t, merged)
 	assert.False(t, merged.IsOwnersFileAuthEnabled(), "explicit empty authorization overrides parent's owners_file")
 
@@ -173,14 +173,14 @@ authorization: []
 	// Re-decoding the marshaled overlay must still carry an explicit
 	// empty (non-nil) authorization rather than an omitted/nil one, so a
 	// second merge against a fresh owners_file parent still loses.
-	var reloaded OverlayConfig
+	var reloaded ManagedConfig
 	require.NoError(t, yaml.Unmarshal(body, &reloaded))
-	remerged := MergeOverlays(parent.Writer(), reloaded.Writer())
+	remerged := MergeManaged(parent.Writer(), reloaded.Writer())
 	assert.False(t, remerged.IsOwnersFileAuthEnabled(), "re-decoded empty authorization must still win over parent owners_file")
 }
 
-func TestMergeOverlays_ChildWinsAndParentFillsGaps(t *testing.T) {
-	var parent OverlayConfig
+func TestMergeManaged_ChildWinsAndParentFillsGaps(t *testing.T) {
+	var parent ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`
 kill_switch: true
 roles:
@@ -193,7 +193,7 @@ models:
     opus: parent-opus
     sonnet: parent-sonnet
 `), &parent))
-	var child OverlayConfig
+	var child ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`
 kill_switch: false
 inference:
@@ -203,7 +203,7 @@ models:
     sonnet: child-sonnet
 `), &child))
 
-	merged := MergeOverlays(parent.Writer(), child.Writer())
+	merged := MergeManaged(parent.Writer(), child.Writer())
 	require.NotNil(t, merged)
 	assert.False(t, merged.IsKillSwitchActive(), "child explicit false wins")
 	assert.Equal(t, []string{"triage"}, merged.ConfigRoles(), "unset child inherits parent roles")
@@ -223,21 +223,21 @@ models:
 	assert.NotContains(t, text, "runtime:")
 }
 
-func TestMergeOverlays_AgentsKeyedMerge(t *testing.T) {
-	var parent OverlayConfig
+func TestMergeManaged_AgentsKeyedMerge(t *testing.T) {
+	var parent ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`
 agents:
   - name: code
     model: opus
 `), &parent))
-	var child OverlayConfig
+	var child ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`
 agents:
   - name: code
     effort: high
 `), &child))
 
-	merged := MergeOverlays(parent.Writer(), child.Writer())
+	merged := MergeManaged(parent.Writer(), child.Writer())
 	entries := merged.AgentEntries()
 	require.Len(t, entries, 1)
 	assert.Equal(t, "code", entries[0].Name)
@@ -245,31 +245,31 @@ agents:
 	assert.Equal(t, "high", entries[0].Effort)
 }
 
-func TestMergeOverlays_NilLayers(t *testing.T) {
-	var only OverlayConfig
+func TestMergeManaged_NilLayers(t *testing.T) {
+	var only ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte("mint_url: https://mint.example.com\n"), &only))
 
-	var nilLayers PerRepoConfigWriter = MergeOverlays(nil, nil)
-	assert.True(t, nilLayers == nil, "MergeOverlays(nil, nil) must return an untyped nil interface, not a typed-nil pointer boxed in a non-nil interface")
+	var nilLayers PerRepoConfigWriter = MergeManaged(nil, nil)
+	assert.True(t, nilLayers == nil, "MergeManaged(nil, nil) must return an untyped nil interface, not a typed-nil pointer boxed in a non-nil interface")
 
-	fromParent := MergeOverlays(only.Writer(), nil)
+	fromParent := MergeManaged(only.Writer(), nil)
 	require.NotNil(t, fromParent)
 	assert.Equal(t, "https://mint.example.com", fromParent.ConfigMintURL())
 
-	fromChild := MergeOverlays(nil, only.Writer())
+	fromChild := MergeManaged(nil, only.Writer())
 	require.NotNil(t, fromChild)
 	assert.Equal(t, "https://mint.example.com", fromChild.ConfigMintURL())
 }
 
-func TestApplyOverlayShorthands_OnlySetsPresentValues(t *testing.T) {
+func TestApplyManagedShorthands_OnlySetsPresentValues(t *testing.T) {
 	overlay := NewEmptyPerRepoOverlay()
-	ApplyOverlayShorthands(overlay, "", nil)
+	ApplyManagedShorthands(overlay, "", nil)
 	body, err := overlay.Marshal()
 	require.NoError(t, err)
 	assert.NotContains(t, string(body), "runtime:")
 	assert.NotContains(t, string(body), "allowed_remote_resources:")
 
-	ApplyOverlayShorthands(overlay, "pi", []string{})
+	ApplyManagedShorthands(overlay, "pi", []string{})
 	assert.Equal(t, "pi", overlay.ConfigRuntime())
 	assert.NotNil(t, overlay.AllowedResources())
 	assert.Empty(t, overlay.AllowedResources())
@@ -280,7 +280,7 @@ func TestApplyOverlayShorthands_OnlySetsPresentValues(t *testing.T) {
 }
 
 func TestLayerOnBase_OverlayWinsOverBaseAndCodeDefaults(t *testing.T) {
-	var overlay OverlayConfig
+	var overlay ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`
 kill_switch: false
 roles:
@@ -317,44 +317,44 @@ func TestLayerOnBase_EmptyBaseUsesCodeDefaults(t *testing.T) {
 	assert.Equal(t, PerRepoDefaultRoles(), effective.ConfigRoles())
 }
 
-func TestOverlayConfig_RejectsNestedUnknownField(t *testing.T) {
-	var o OverlayConfig
+func TestManagedConfig_RejectsNestedUnknownField(t *testing.T) {
+	var o ManagedConfig
 	err := yaml.Unmarshal([]byte("inference:\n  bogus: true\n"), &o)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bogus")
 }
 
-func TestOverlayConfig_InvalidRoleIsSemanticError(t *testing.T) {
-	var o OverlayConfig
+func TestManagedConfig_InvalidRoleIsSemanticError(t *testing.T) {
+	var o ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte("roles: [not-a-role]\n"), &o))
 	err := o.Writer().Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `invalid role "not-a-role"`)
 }
 
-func TestOverlayConfig_RejectsUnknownAgentEntryField(t *testing.T) {
-	var o OverlayConfig
+func TestManagedConfig_RejectsUnknownAgentEntryField(t *testing.T) {
+	var o ManagedConfig
 	err := yaml.Unmarshal([]byte("agents:\n  - name: code\n    efort: high\n"), &o)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `agents[0]: unknown field "efort"`)
 }
 
-func TestOverlayConfig_AgentEntryStringShorthandUnaffectedByUnknownFieldCheck(t *testing.T) {
-	var o OverlayConfig
+func TestManagedConfig_AgentEntryStringShorthandUnaffectedByUnknownFieldCheck(t *testing.T) {
+	var o ManagedConfig
 	err := yaml.Unmarshal([]byte("agents:\n  - https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890\n"), &o)
 	require.NoError(t, err)
 }
 
-// ValidateOverlayLayer validates a single, isolated overlay layer (ADR
+// ValidateManagedLayer validates a single, isolated overlay layer (ADR
 // 0122) — before defaults.config/repo config are merged and before the
 // repos.yaml allowed_remote_resources shorthand is applied. It must defer
 // the agent-allowlist and override-only-built-in-name checks, which need
-// information this layer alone doesn't have; ValidateMergedOverlay runs
+// information this layer alone doesn't have; ValidateMergedManaged runs
 // them once that information is available (except the built-in-name
 // check, which needs config.base.yaml and so is never enforced by
-// either — see internal/repos/overlay.go).
-func TestValidateOverlayLayer_DefersAllowlistAndBuiltinNameChecks(t *testing.T) {
-	var o OverlayConfig
+// either — see internal/repos/managed_config.go).
+func TestValidateManagedLayer_DefersAllowlistAndBuiltinNameChecks(t *testing.T) {
+	var o ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`
 agents:
   - source: "https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
@@ -363,7 +363,7 @@ agents:
 `), &o))
 	w := o.Writer()
 
-	require.NoError(t, ValidateOverlayLayer(w),
+	require.NoError(t, ValidateManagedLayer(w),
 		"isolated layer must not reject a URL agent for lacking an allowlist, or an override-only entry for not naming a built-in agent")
 
 	// The same agents fail strict, full validation (used for a complete,
@@ -371,8 +371,8 @@ agents:
 	assert.Error(t, w.Validate())
 }
 
-func TestValidateMergedOverlay_EnforcesAllowlistButNotBuiltinName(t *testing.T) {
-	var o OverlayConfig
+func TestValidateMergedManaged_EnforcesAllowlistButNotBuiltinName(t *testing.T) {
+	var o ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`
 agents:
   - source: "https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
@@ -383,19 +383,19 @@ agents:
 
 	// Before the allowed_remote_resources shorthand is merged in, the URL
 	// agent still fails.
-	err := ValidateMergedOverlay(w)
+	err := ValidateMergedManaged(w)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not covered by allowed_remote_resources")
 
-	// Once the shorthand is applied (as managedOverlay does), the URL
+	// Once the shorthand is applied (as mergeManagedConfig does), the URL
 	// agent passes; the override-only entry naming "mycustom" still isn't
 	// required to be a built-in agent — config.base.yaml, which may
 	// register it, isn't layered on until install/converge time.
 	w.SetAllowedRemoteResources([]string{"https://example.com/"})
-	assert.NoError(t, ValidateMergedOverlay(w))
+	assert.NoError(t, ValidateMergedManaged(w))
 }
 
-func TestMergeOverlays_AllFieldsAndAgentClone(t *testing.T) {
+func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 	enabled := false
 	sub := "sonnet"
 	parent := &perRepoConfig{
@@ -466,7 +466,7 @@ func TestMergeOverlays_AllFieldsAndAgentClone(t *testing.T) {
 		parent: &perRepoDefaults{},
 	}
 
-	merged := MergeOverlays(parent, child)
+	merged := MergeManaged(parent, child)
 	require.NotNil(t, merged)
 	assert.Equal(t, "gitlab", merged.ConfigForge())
 	assert.Equal(t, "gitlab", merged.ConfigTracker())
@@ -500,22 +500,22 @@ func TestMergeOverlays_AllFieldsAndAgentClone(t *testing.T) {
 	assert.False(t, entries[0].IsEnabled())
 	require.Contains(t, entries[0].Subagents, "reviewer")
 
-	// cloneOverlay must not alias nested pointers from the parent.
+	// clonePerRepo must not alias nested pointers from the parent.
 	parent.Inference.Project = "mutated"
 	assert.Equal(t, "child-proj", merged.ConfigInferenceProject())
 }
 
-func TestMergeOverlays_ModelsOntoEmptyParentAndShorthandNil(t *testing.T) {
+func TestMergeManaged_ModelsOntoEmptyParentAndShorthandNil(t *testing.T) {
 	child := &perRepoConfig{
 		Models: &ModelsConfig{Aliases: map[string]string{"haiku": "child-haiku"}},
 		parent: &perRepoDefaults{},
 	}
-	merged := MergeOverlays(NewEmptyPerRepoOverlay(), child)
+	merged := MergeManaged(NewEmptyPerRepoOverlay(), child)
 	require.NotNil(t, merged)
 	assert.Equal(t, "child-haiku", merged.ConfigModelAliases()["haiku"])
 
-	ApplyOverlayShorthands(nil, "pi", []string{"https://example.com/"})
-	assert.Nil(t, OverlayConfig{}.Writer())
+	ApplyManagedShorthands(nil, "pi", []string{"https://example.com/"})
+	assert.Nil(t, ManagedConfig{}.Writer())
 
 	_, err := LayerOnBase(NewEmptyPerRepoOverlay(), []byte(": not yaml"))
 	require.Error(t, err)
@@ -524,9 +524,9 @@ func TestMergeOverlays_ModelsOntoEmptyParentAndShorthandNil(t *testing.T) {
 
 func boolPtr(v bool) *bool { return &v }
 
-func TestOverlayConfig_MarshalOmitsUnset(t *testing.T) {
+func TestManagedConfig_MarshalOmitsUnset(t *testing.T) {
 	type wrap struct {
-		Config OverlayConfig `yaml:"config,omitempty"`
+		Config ManagedConfig `yaml:"config,omitempty"`
 	}
 	encoded, err := yaml.Marshal(wrap{})
 	require.NoError(t, err)
