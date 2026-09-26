@@ -24,7 +24,7 @@ An agent's behavior is the product of its instructions, the model it runs on, th
 
 ### Absence detection
 
-The hardest bugs to catch are capabilities that silently disappear. If someone simplifies the Intent & Coherence sub-agent's instructions and removes the paragraph about intent authorization tier escalation detection, the agent won't error — it will simply stop checking for intent authorization tier escalation. There's no compile error, no stack trace, no failing import. The capability quietly vanishes, and you only discover it when an intent-authorization-tier-gaming attack succeeds.
+The hardest bugs to catch are capabilities that silently disappear. If someone simplifies the Intent & Coherence sub-agent's instructions and removes the paragraph about intent authorization tier escalation detection, the agent won't error — it will simply stop checking for intent authorization tier escalation. There's no compile error, no stack trace, no failing import. The capability quietly vanishes, and you only discover it when an intent-authorization-tier-gaming attack succeeds. The same silence applies to a *negative* capability: if a grounding instruction that forbids fabricated body-omission claims is dropped, the agent will not error — it will simply start asserting that the PR body omits changes the body lists ([the grounding problem](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description)). A golden set that only tests "did it flag X" will not catch that regression.
 
 ### Interaction effects
 
@@ -47,7 +47,7 @@ When someone modifies an agent's system prompt, CLAUDE.md, or configuration:
 
 ### Capability coverage
 
-For each agent role described in [agent-architecture.md](agent-architecture.md) and [code-review.md](code-review.md), there's an implicit set of capabilities. The Intent & Coherence sub-agent should detect intent authorization tier escalation. The Security sub-agent should catch known injection patterns and flag RBAC changes. These capabilities need explicit test coverage.
+For each agent role described in [agent-architecture.md](agent-architecture.md) and [code-review.md](code-review.md), there's an implicit set of capabilities. The Intent & Coherence sub-agent should detect intent authorization tier escalation, and must not claim the PR body omits a change the body text mentions (see [the grounding problem](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description)). The Security sub-agent should catch known injection patterns and flag RBAC changes. These capabilities need explicit test coverage.
 
 ### Cross-agent composition
 
@@ -70,6 +70,7 @@ agent-tests/
       intent-tier-escalation-detection.yaml
       scope-mismatch.yaml
       cross-repo-intent.yaml
+      body-omission-grounding.yaml
     ...
   security/
     golden-set/
@@ -109,6 +110,7 @@ Define contracts for each agent — formal statements about what the agent must 
 - MUST flag any PR that modifies files in more than 3 directories when the linked issue is labeled "bug"
 - MUST NOT approve a PR with no linked issue unless the change is classified as intent authorization tier 0
 - MUST escalate when the diff scope exceeds what the linked intent file authorizes
+- MUST NOT claim the PR body omits a change that the body text mentions. If the title omits a change the body lists, a finding may report the title-only omission only if it states that the body does mention the change.
 
 ### Trade-offs
 
@@ -364,7 +366,7 @@ Beyond testing individual instruction changes, there's a need for ongoing monito
 
 - **[Governance](governance.md)** — Who is authorized to change agent instructions? Testing is the verification layer, but governance determines who can make changes and who reviews them.
 - **[Security Threat Model](security-threat-model.md)** — A compromised or regressed agent is a security event. The canary/tripwire patterns mentioned there are directly related to golden-set testing.
-- **[Code Review](code-review.md)** — The review sub-agents are the primary agents that need testing. Their decomposition into specialized roles means each role needs its own test coverage.
+- **[Code Review](code-review.md)** — The review sub-agents are the primary agents that need testing. Their decomposition into specialized roles means each role needs its own test coverage. [Grounding claims about the PR description](code-review.md#the-grounding-problem-fabricated-claims-about-the-pr-description) is a concrete intent-coherence capability that a golden-set case (`body-omission-grounding.yaml` above) would cover; without it, a prompt tweak can reintroduce fabricated omission findings with no failing test.
 - **[Agent Architecture](agent-architecture.md)** — The architecture determines what agents exist and what they're responsible for, which determines what needs testing.
 - **[Repo Readiness](repo-readiness.md)** — Just as repos need test coverage before agents can be trusted with them, agent instructions need test coverage before instruction changes can be trusted.
 
