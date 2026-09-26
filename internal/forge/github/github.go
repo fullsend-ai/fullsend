@@ -3355,6 +3355,7 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 			State       string `json:"state"`
 			Body        string `json:"body"`
 			SubmittedAt string `json:"submitted_at"`
+			CommitID    string `json:"commit_id"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decoding pull request reviews page %d: %w", page, err)
@@ -3368,6 +3369,7 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 				State:       r.State,
 				Body:        r.Body,
 				SubmittedAt: r.SubmittedAt,
+				CommitID:    r.CommitID,
 				AuthorIsApp: isAppUserType(r.User.Type),
 			})
 		}

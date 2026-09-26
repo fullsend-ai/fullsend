@@ -460,6 +460,9 @@ type PullRequestReview struct {
 	State       string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"
 	Body        string
 	SubmittedAt string
+	// CommitID is the head the review was submitted against. Empty when the
+	// forge does not report it.
+	CommitID string
 	// AuthorIsApp is the forge's own verdict on the reviewer, as on
 	// IssueComment.AuthorIsApp.
 	AuthorIsApp bool

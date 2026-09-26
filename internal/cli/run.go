@@ -1267,6 +1267,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// seeded from the harness timeout once it is known, so a run that never
 	// reaches the loop cannot read as timed out on a zero budget.
 	var terminalElapsed, terminalBudget time.Duration
+	// steerMarker records what this run absorbed; the status-notification
+	// defer writes it onto the terminal comment so a reader can see what the
+	// run took in, and the receipt below claims it. It is chosen after the
+	// iteration loop from iterSteerMarkers, which holds each iteration's own.
+	var steerMarker statuscomment.SteerMarker
+	iterSteerMarkers := map[int]statuscomment.SteerMarker{}
+
 	// steerSeen and steerBaseline carry the judged follow-up run ids and the
 	// delta window across validation loop iterations, so a retry neither
 	// re-examines them nor re-sends content already delivered.
@@ -1291,7 +1298,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		statusRepo:    sOpts.statusRepo,
 		statusNum:     sOpts.statusNum,
 		jobToken:      steerJobToken,
+		receiptToken:  steerReceiptToken(steerJobToken, envGHToken(), minted),
 		roleToken:     envGHToken(),
+		providersDir:  providerDefsDir(absFullsendDir),
 		runStart:      runStartedAt,
 		headSHA:       runStartHeadSHA,
 		printer:       printer,
@@ -1310,6 +1319,32 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		baseSteerOpts.selfLogins = logins
 	}
+
+	// Pre-flight skips, before the start comment and before the pre-script,
+	// whose side effects (label changes, prior-review lookups) are not free.
+	if runPreflightSkips(ctx, baseSteerOpts, eventMap) {
+		return nil
+	}
+
+	// Declared up here rather than beside lastExitCode because the receipt
+	// defer below closes over it: an agent that exits 0 with an error in its
+	// transcript has its post-script withheld, and the receipt must not
+	// claim work the post-script never published.
+	var transcriptErrorOverride bool
+
+	// The receipt for whatever this run absorbs. Registered here, before the
+	// status notifier and long before the post-script, so it runs LAST: both
+	// of those are defers too, and the post-script can still turn a
+	// successful run into a failed one. A receipt claims the work is done,
+	// so it must see the same final state the status comment reports, not an
+	// earlier guess at it.
+	defer func() {
+		if !shouldPostSteerReceipt(runErr, ctx.Err(), runSkipped, transcriptErrorOverride,
+			h.PostScript != "" && noPostScript) {
+			return
+		}
+		postSteerReceipt(ctx, baseSteerOpts, steerMarker)
+	}()
 
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
@@ -1342,6 +1377,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
+				notifier.SetSteerMarker(steerMarkerForStatus(status, steerMarker))
 				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer dCancel()
 				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
@@ -1481,7 +1517,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// (openshell.profiles entries only). Unlisted files under
 		// profiles/ are skipped to prevent stale overrides (#7095).
 
-		providersDir := filepath.Join(absFullsendDir, "providers")
+		providersDir := providerDefsDir(absFullsendDir)
 		declared := make(map[string]struct{}, len(h.Providers))
 		for _, p := range h.Providers {
 			declared[p] = struct{}{}
@@ -1639,7 +1675,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// An inbound TRACEPARENT is adopted via the W3C propagator so the root
 	// span continues the parent trace.
 	var lastExitCode int
-	var transcriptErrorOverride bool
 	var runCount int
 	tracer, tracingCleanup := telemetry.Setup(runDir, Version())
 	tid := resolveTraceIdentity(ctx, tracer, os.Getenv("TRACEPARENT"), os.Getenv("TRACESTATE"), []attribute.KeyValue{
@@ -2506,6 +2541,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// a single writer: the marker records only what the runtime
 			// acknowledged the agent received.
 			steerSess.stop()
+			iterSteerMarkers[iteration] = steerSess.marker(metrics.Steers)
 			steerSeen = steerSess.seenRunIDs()
 			steerObserved = steerSess.observedRuns()
 			steerBaseline = steerSess.baseline()
@@ -2783,6 +2819,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		repoExtractedOK = sweep.repoExtractedOK
 		validatedIterNum = sweep.validatedIter
 	}
+	steerMarker = shippedSteerMarker(iterSteerMarkers, h.ValidationLoop != nil, validatedIterNum, runCount)
 
 	// Write aggregated behavioral metrics.
 	if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
@@ -3025,6 +3062,50 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 // validEnvKeyRe matches POSIX-portable environment variable names.
 // Keys that don't match are skipped to prevent shell injection.
 var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// swappedAwayTokens holds the credentials minting replaced, so childScriptEnv
+// can strip them wherever they appear. Written by mintAgentTokenAtLevel before
+// any goroutine that reads the environment starts — the same ordering
+// os.Setenv already requires there.
+//
+// Mints nest: a stage whose privilege level differs remints and restores
+// around its script (ADR 0073), so each cleanup removes only what its own mint
+// added. Clearing the whole list would drop the ORIGINAL job token while it is
+// still swapped away, and a post-script inheriting a third-name copy of it
+// could then sign a receipt.
+var swappedAwayTokens []string
+
+// forgetSwappedAwayToken removes one recorded credential, restoring the list to
+// what it held before the matching mint. Removes a single occurrence, so a
+// remint that swapped the same value twice stays balanced.
+func forgetSwappedAwayToken(v string) {
+	for i, t := range swappedAwayTokens {
+		if t == v {
+			swappedAwayTokens = append(swappedAwayTokens[:i], swappedAwayTokens[i+1:]...)
+			return
+		}
+	}
+}
+
+// strippedByValue reports whether a value carries a credential minting swapped
+// out.
+//
+// Containment rather than equality: a caller is as free to wrap the token in a
+// header or a URL — `AUTHORIZATION=Bearer <token>` — as to export it bare, and
+// a post-script that inherits the wrapper holds the credential just as surely.
+// The recorded values are forge tokens, so a substring match costs no realistic
+// false positive.
+func strippedByValue(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, t := range swappedAwayTokens {
+		if t != "" && strings.Contains(v, t) {
+			return true
+		}
+	}
+	return false
+}
 
 // oidcDenyKeys lists OIDC credential env vars that must not leak into
 // user-controlled or sandbox-visible contexts. The parent harness process
@@ -3829,13 +3910,14 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 }
 
 // stripOIDCEnv returns a copy of env with OIDC credential entries and
-// provider-only keys removed. Use this to filter os.Environ() slices in
-// contexts where childScriptEnv is not applicable (e.g., validation scripts
-// that compose their env differently). See #5832, #6649.
+// provider-only keys removed, and any entry holding a credential minting
+// swapped out, as childScriptEnv does. Use this to filter os.Environ() slices
+// in contexts where childScriptEnv is not applicable (e.g., validation
+// scripts that compose their env differently). See #5832, #6649.
 func stripOIDCEnv(env []string) []string {
 	result := make([]string, 0, len(env))
 	for _, e := range env {
-		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
+		if i := strings.IndexByte(e, '='); i > 0 && (harnessExpansionDenied(e[:i]) || strippedByValue(e[i+1:])) {
 			continue
 		}
 		result = append(result, e)
@@ -4501,6 +4583,12 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 		}
 		// Strip OIDC credential vars and provider-only keys (#5832, #6649).
 		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
+			continue
+		}
+		// By value, not by name: minting replaces GH_TOKEN and GITHUB_TOKEN,
+		// but a caller is free to export the same job token under a third
+		// name, and a post-script holding it can sign a steer receipt.
+		if i := strings.IndexByte(e, '='); i > 0 && strippedByValue(e[i+1:]) {
 			continue
 		}
 		env = append(env, e)
@@ -5981,11 +6069,23 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 	// before any goroutines that read env vars (sandbox streaming,
 	// post-script execution) are launched.
 	originals := make(map[string]string)
-	envVars := []string{"GH_TOKEN"}
-	if v, ok := os.LookupEnv("GH_TOKEN"); ok {
-		originals["GH_TOKEN"] = v
+	// Both spellings, because the swap is what keeps the job token out of
+	// the sandbox and out of childScriptEnv. Replacing only GH_TOKEN leaves
+	// a caller-exported GITHUB_TOKEN holding the job token, which a
+	// post-script inherits and can sign a steer receipt with (ADR 0120).
+	envVars := []string{"GH_TOKEN", "GITHUB_TOKEN"}
+	var swappedHere []string
+	for _, name := range envVars {
+		if v, ok := os.LookupEnv(name); ok {
+			originals[name] = v
+			if v != result.Token {
+				swappedAwayTokens = append(swappedAwayTokens, v)
+				swappedHere = append(swappedHere, v)
+			}
+		}
+		os.Setenv(name, result.Token)
 	}
-	// Preserve the Actions workflow token before GH_TOKEN is replaced so
+	// Preserve the Actions workflow token GH_TOKEN held before the swap so
 	// provider credentials can authenticate to GitHub Packages. Outside
 	// Actions leave a caller-set value alone and never derive one from a
 	// local PAT (#6649).
@@ -6026,7 +6126,6 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 			}
 		}
 	}
-	os.Setenv("GH_TOKEN", result.Token)
 
 	for _, tv := range roleTokenVars[role] {
 		if v, ok := os.LookupEnv(tv.Name); ok {
@@ -6053,6 +6152,9 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 			} else {
 				os.Unsetenv(v)
 			}
+		}
+		for _, v := range swappedHere {
+			forgetSwappedAwayToken(v)
 		}
 	}
 
@@ -6451,6 +6553,13 @@ func dedupResolvedProfiles(profiles []resolve.ResolvedProfile) []resolve.Resolve
 		}
 	}
 	return deduped
+}
+
+// providerDefsDir is where a run reads its provider definitions. The steer
+// skip check scans the same directory the run provisions credentials from,
+// so the two cannot drift apart.
+func providerDefsDir(fullsendDir string) string {
+	return filepath.Join(fullsendDir, "providers")
 }
 
 // mergeProviderDefs merges local and URL-resolved provider definitions.
