@@ -572,10 +572,38 @@ polling](#off-system-polling) for pickup instead of re-running install
 just to add the tag in that case.
 
 The target project (or its group) must have a runner registered with
-that tag. For provisioning runner VMs on OpenShift Virtualization or
-GCE, see the
+that tag — see [Assigning runners](#assigning-runners). For provisioning
+your own runner VMs on OpenShift Virtualization or GCE instead of joining
+a hub, see the
 [GitLab Runner VM](https://github.com/fullsend-ai/fullsend/blob/main/hack/gitlab-runner-vm/README.md)
 README.
+
+### Assigning runners
+
+Setting `gitlab.runner_tags` only chooses which tag the scaffold embeds.
+GitLab still has to **assign** a runner that carries that tag to the
+target project or a parent group, or the job never gets a runner.
+
+Use the Fullsend runner hub on the **same GitLab instance** you pass to
+`--gitlab-url`. A hub on a different instance cannot pick up the job.
+
+* **GitLab.com** (`https://gitlab.com`) — use the
+  [GitLab.com Fullsend runner hub](https://gitlab.com/fullsend/runner-hub).
+  Follow that project's
+  [README](https://gitlab.com/fullsend/runner-hub/-/blob/main/README.md)
+  to have its runners assigned to your project or group. The hub README
+  is the source of truth for onboarding; this guide does not repeat those
+  steps.
+* **Self-managed instances** — use that instance's own Fullsend runner
+  hub, typically a `fullsend/runner-hub` project on the same host.
+  Follow **that** project's `README.md`, not the GitLab.com one.
+  Onboarding tokens, groups, and runner registration are instance-local.
+  Pointing a self-managed project at the GitLab.com hub (or the reverse)
+  will not work.
+
+After the hub assigns a runner, confirm the project (or its group) lists
+a runner with the tag you set in `gitlab.runner_tags` (Settings → CI/CD
+→ Runners).
 
 ## Verifying the Installation
 
