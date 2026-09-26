@@ -14,15 +14,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func mustOverlayConfig(t *testing.T, raw string) config.OverlayConfig {
+func mustManagedConfig(t *testing.T, raw string) config.ManagedConfig {
 	t.Helper()
-	var o config.OverlayConfig
+	var o config.ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(raw), &o))
 	require.True(t, o.IsSet())
 	return o
 }
 
-func mustDesiredOverlay(t *testing.T, m *Manifest, owner, repo string) []byte {
+func mustDesiredManaged(t *testing.T, m *Manifest, owner, repo string) []byte {
 	t.Helper()
 	cfg, ok := m.ResolveConfig(owner, repo)
 	require.True(t, ok)
@@ -32,7 +32,7 @@ func mustDesiredOverlay(t *testing.T, m *Manifest, owner, repo string) []byte {
 	return body
 }
 
-func overlayResolved(t *testing.T, fc *forge.FakeClient, m *Manifest, owner, repo string) ResolvedConfig {
+func managedResolved(t *testing.T, fc *forge.FakeClient, m *Manifest, owner, repo string) ResolvedConfig {
 	t.Helper()
 	cfg, ok := m.ResolveConfig(owner, repo)
 	require.True(t, ok)
@@ -40,7 +40,7 @@ func overlayResolved(t *testing.T, fc *forge.FakeClient, m *Manifest, owner, rep
 	return cfg
 }
 
-func TestMarshalManagedConfig_NilOverlay(t *testing.T) {
+func TestMarshalManagedConfig_NilWriter(t *testing.T) {
 	body, err := marshalManagedConfig(nil)
 	require.NoError(t, err)
 	assert.NotContains(t, string(body), "roles:")
@@ -48,7 +48,7 @@ func TestMarshalManagedConfig_NilOverlay(t *testing.T) {
 }
 
 func TestDesiredManagedConfig_NilWriterStillManaged(t *testing.T) {
-	body, managed, err := desiredManagedConfig(ResolvedConfig{OverlayManaged: true})
+	body, managed, err := desiredManagedConfig(ResolvedConfig{ConfigManaged: true})
 	require.NoError(t, err)
 	assert.True(t, managed)
 	require.NotNil(t, body)
@@ -56,7 +56,7 @@ func TestDesiredManagedConfig_NilWriterStillManaged(t *testing.T) {
 
 func TestDesiredManagedConfig_PrefixesOwnershipMarker(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
 	cfg, ok := m.ResolveConfig("acme", "api")
 	require.True(t, ok)
 	body, managed, err := desiredManagedConfig(cfg)
@@ -66,7 +66,7 @@ func TestDesiredManagedConfig_PrefixesOwnershipMarker(t *testing.T) {
 }
 
 func TestMarshalManagedConfig_InvalidMintURL(t *testing.T) {
-	_, err := marshalManagedConfig(mustOverlayConfig(t, "mint_url: http://insecure.example.com\n").Writer())
+	_, err := marshalManagedConfig(mustManagedConfig(t, "mint_url: http://insecure.example.com\n").Writer())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint_url")
 }
@@ -83,26 +83,26 @@ func TestDesiredManagedConfig_Unmanaged(t *testing.T) {
 
 func TestConvergeManagedConfigFiles_IdempotentWhenUnchanged(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+preset.OverlayPath] = desired
-	resolved := overlayResolved(t, fc, m, "acme", "api")
+	resolved := managedResolved(t, fc, m, "acme", "api")
 
 	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
 	assert.Empty(t, files)
 	assert.Empty(t, actions)
 }
 
-func TestConvergeManagedConfigFiles_ReplacesChangedMarkedOverlay(t *testing.T) {
+func TestConvergeManagedConfigFiles_ReplacesChangedMarked(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: false\n")
-	resolved := overlayResolved(t, fc, m, "acme", "api")
+	resolved := managedResolved(t, fc, m, "acme", "api")
 
 	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
 	require.Len(t, files, 1)
@@ -120,12 +120,12 @@ func TestConvergeManagedConfigFiles_ReplacesChangedMarkedOverlay(t *testing.T) {
 // rewritten.
 func TestConvergeManagedConfigFiles_UnmarkedExistingRequiresAdoption(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("kill_switch: false\n")
-	resolved := overlayResolved(t, fc, m, "acme", "api")
+	resolved := managedResolved(t, fc, m, "acme", "api")
 
 	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
 	assert.Empty(t, files, "an unmarked existing overlay must not be overwritten")
@@ -134,13 +134,13 @@ func TestConvergeManagedConfigFiles_UnmarkedExistingRequiresAdoption(t *testing.
 	assert.Contains(t, actions[0].Detail, "adoption required")
 }
 
-func TestConvergeManagedConfigFiles_AddsMissingOverlay(t *testing.T) {
+func TestConvergeManagedConfigFiles_AddsMissing(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	fc := forge.NewFakeClient()
-	resolved := overlayResolved(t, fc, m, "acme", "api")
+	resolved := managedResolved(t, fc, m, "acme", "api")
 
 	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
 	require.Len(t, files, 1)
@@ -150,11 +150,11 @@ func TestConvergeManagedConfigFiles_AddsMissingOverlay(t *testing.T) {
 
 func TestConvergeManagedConfigFiles_DryRunAddAndUpdate(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	fc := forge.NewFakeClient()
-	resolved := overlayResolved(t, fc, m, "acme", "api")
+	resolved := managedResolved(t, fc, m, "acme", "api")
 
 	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, true, noopProgress)
 	assert.Empty(t, files)
@@ -174,7 +174,7 @@ func TestConvergeManagedConfigFiles_UnmanagedIsNoOp(t *testing.T) {
 	m := newConvergeManifest("acme/api")
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("version: \"1\"\n# keep me\n")
-	resolved := overlayResolved(t, fc, m, "acme", "api")
+	resolved := managedResolved(t, fc, m, "acme", "api")
 
 	files, actions := convergeManagedConfigFiles(context.Background(), resolved, []byte("kill_switch: true\n"), false, noopProgress)
 	assert.Empty(t, files)
@@ -183,14 +183,14 @@ func TestConvergeManagedConfigFiles_UnmanagedIsNoOp(t *testing.T) {
 
 func TestConvergeManagedConfigFiles_ReadError(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	fc := forge.NewFakeClient()
 	fc.GetFileContentErrors = map[string]error{
 		"acme/api/" + preset.OverlayPath: fmt.Errorf("boom"),
 	}
-	resolved := overlayResolved(t, fc, m, "acme", "api")
+	resolved := managedResolved(t, fc, m, "acme", "api")
 
 	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
 	assert.Empty(t, files)
@@ -201,12 +201,12 @@ func TestConvergeManagedConfigFiles_ReadError(t *testing.T) {
 
 func TestCheckManagedConfigDrift_ReportsMissingAndChanged(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	fc := forge.NewFakeClient()
 	status := RepoStatus{}
-	cfg := overlayResolved(t, fc, m, "acme", "api")
+	cfg := managedResolved(t, fc, m, "acme", "api")
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	require.Len(t, status.Drifts, 1)
 	assert.Equal(t, preset.OverlayPath, status.Drifts[0].Field)
@@ -237,7 +237,7 @@ func TestCheckManagedConfigDrift_UnmanagedDoesNotCompare(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("version: \"1\"\n# local edit\n")
 	status := RepoStatus{}
-	cfg := overlayResolved(t, fc, m, "acme", "api")
+	cfg := managedResolved(t, fc, m, "acme", "api")
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	assert.Empty(t, status.Drifts)
 	assert.Empty(t, status.Error)
@@ -245,23 +245,23 @@ func TestCheckManagedConfigDrift_UnmanagedDoesNotCompare(t *testing.T) {
 
 func TestCheckManagedConfigDrift_ReadError(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
 	fc := forge.NewFakeClient()
 	fc.GetFileContentErrors = map[string]error{
 		"acme/api/" + preset.OverlayPath: fmt.Errorf("boom"),
 	}
 	status := RepoStatus{}
-	cfg := overlayResolved(t, fc, m, "acme", "api")
+	cfg := managedResolved(t, fc, m, "acme", "api")
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	assert.Contains(t, status.Error, "reading")
 }
 
-func TestCheckManagedConfigDrift_InvalidOverlay(t *testing.T) {
+func TestCheckManagedConfigDrift_InvalidManaged(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.GitHub.Repos[0].Config = mustOverlayConfig(t, "roles:\n  - not-a-role\n")
+	m.GitHub.Repos[0].Config = mustManagedConfig(t, "roles:\n  - not-a-role\n")
 	fc := forge.NewFakeClient()
 	status := RepoStatus{}
-	cfg := overlayResolved(t, fc, m, "acme", "api")
+	cfg := managedResolved(t, fc, m, "acme", "api")
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	assert.Contains(t, status.Error, "rendering managed config")
 	assert.Contains(t, status.Error, "invalid role")
@@ -271,8 +271,8 @@ func TestConverge_ManagedConfigFreshInstallWritesCanonicalFile(t *testing.T) {
 	repoNames := []string{"acme/api"}
 	fc := newFakeClientForBatch(repoNames...)
 	m := newConvergeManifest(repoNames...)
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	sc := &spyScaffoldCommit{}
 	cfg := convergeCfgWithDefaults(m)
@@ -316,7 +316,7 @@ func TestConverge_ManagedConfigFreshInstallUnmarkedExistingRequiresAdoption(t *t
 	original := []byte("kill_switch: false\n# hand-authored\n")
 	fc.FileContents["acme/api/"+preset.OverlayPath] = original
 	m := newConvergeManifest(repoNames...)
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
 
 	sc := &spyScaffoldCommit{}
 	cfg := convergeCfgWithDefaults(m)
@@ -395,7 +395,7 @@ func TestConverge_ManagedConfigUnmarkedManualEditRequiresAdoption(t *testing.T) 
 	fc.FileContents["acme/api/"+preset.OverlayPath] = original
 
 	m := newConvergeManifest(repoNames...)
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
 
 	var committedFiles []forge.TreeFile
 	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
@@ -449,8 +449,8 @@ func TestConverge_ManagedConfigRewriteOnMarkedDrift(t *testing.T) {
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: false\n")
 
 	m := newConvergeManifest(repoNames...)
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	var committedFiles []forge.TreeFile
 	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
@@ -488,8 +488,8 @@ func TestConverge_ManagedConfigExactMatchIsIdempotent(t *testing.T) {
 	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
 
 	m := newConvergeManifest(repoNames...)
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 	fc.FileContents["acme/api/"+preset.OverlayPath] = desired
 
 	committed := false
@@ -553,7 +553,7 @@ func TestConverge_ManagedConfigFreshInstallDryRun(t *testing.T) {
 	repoNames := []string{"acme/api"}
 	fc := newFakeClientForBatch(repoNames...)
 	m := newConvergeManifest(repoNames...)
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
 	cfg := convergeCfgWithDefaults(m)
 	cfg.DryRun = true
 
@@ -589,7 +589,7 @@ func TestConverge_ManagedConfigFreshInstallDryRunAdoptionRequired(t *testing.T) 
 	fc := newFakeClientForBatch(repoNames...)
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("kill_switch: false\n# hand-authored\n")
 	m := newConvergeManifest(repoNames...)
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
 	cfg := convergeCfgWithDefaults(m)
 	cfg.DryRun = true
 
@@ -627,7 +627,7 @@ func TestConverge_ManagedConfigDryRunDoesNotCommit(t *testing.T) {
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: false\n")
 
 	m := newConvergeManifest(repoNames...)
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
 	cfg := convergeCfgWithDefaults(m)
 	cfg.DryRun = true
 
@@ -661,7 +661,7 @@ func TestConverge_ManagedConfigInvalidFailsBeforeApply(t *testing.T) {
 	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
 
 	m := newConvergeManifest(repoNames...)
-	m.GitHub.Repos[0].Config = mustOverlayConfig(t, "roles:\n  - not-a-role\n")
+	m.GitHub.Repos[0].Config = mustManagedConfig(t, "roles:\n  - not-a-role\n")
 
 	committed := false
 	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
@@ -692,7 +692,7 @@ func TestConverge_ManagedConfigReadErrorFailsRepo(t *testing.T) {
 	}
 
 	m := newConvergeManifest(repoNames...)
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
 
 	committed := false
 	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
@@ -727,8 +727,8 @@ func TestConverge_ManagedConfigAndPresetIndependent(t *testing.T) {
 
 	m := newConvergeManifest(repoNames...)
 	m.Defaults.ConfigBase.Source = presetPath
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme", "api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	var committedFiles []forge.TreeFile
 	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
@@ -774,8 +774,8 @@ func TestConverge_GitLab_OverlayRewrite(t *testing.T) {
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: false\n")
 
 	cfg := gitlabConvergeCfg("acme/api")
-	cfg.Manifest.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, cfg.Manifest, "acme", "api")
+	cfg.Manifest.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, cfg.Manifest, "acme", "api")
 
 	var committedFiles []forge.TreeFile
 	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
@@ -808,8 +808,8 @@ func TestConverge_GitLab_OverlayRewrite(t *testing.T) {
 func TestConverge_GitLab_OverlayFreshInstall(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	cfg := gitlabConvergeCfg("acme/api")
-	cfg.Manifest.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, cfg.Manifest, "acme", "api")
+	cfg.Manifest.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, cfg.Manifest, "acme", "api")
 
 	sc := &spyScaffoldCommit{}
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -837,8 +837,8 @@ func TestConverge_GitLab_OverlayFreshInstall(t *testing.T) {
 func TestStatus_OverlayDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
-	desired := mustDesiredOverlay(t, m, "acme-corp", "api-server")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme-corp", "api-server")
 
 	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
@@ -881,7 +881,7 @@ func TestStatus_OverlayDrift(t *testing.T) {
 	}
 }
 
-func TestStatus_UnmanagedOverlayDoesNotCompare(t *testing.T) {
+func TestStatus_UnmanagedConfigDoesNotCompare(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
@@ -904,7 +904,7 @@ func TestStatus_GitLab_OverlayDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Config: mustOverlayConfig(t, "kill_switch: true\n")},
+		Defaults: DefaultsConfig{Config: mustManagedConfig(t, "kill_switch: true\n")},
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -933,7 +933,7 @@ func TestStatus_OverlayMissingFile(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 	m.GitHub.Repos = []RepoEntry{{Name: "acme-corp/api-server"}}
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
 
 	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
@@ -962,7 +962,7 @@ func TestStatus_OverlayAdoptionRequired(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 	m.GitHub.Repos = []RepoEntry{{Name: "acme-corp/api-server"}}
-	m.Defaults.Config = mustOverlayConfig(t, "kill_switch: true\n")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
 
 	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
@@ -1003,12 +1003,12 @@ func TestConverge_ManagedConfigOnlyOneRepoManaged(t *testing.T) {
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1.0.0",
 			Repos: []RepoEntry{
-				{Name: "acme/managed", Config: mustOverlayConfig(t, "kill_switch: true\n")},
+				{Name: "acme/managed", Config: mustManagedConfig(t, "kill_switch: true\n")},
 				{Name: "acme/unmanaged"},
 			},
 		},
 	}
-	desired := mustDesiredOverlay(t, m, "acme", "managed")
+	desired := mustDesiredManaged(t, m, "acme", "managed")
 	// The managed repo's overlay is already adopted (carries the ownership
 	// marker) but drifted, so this test exercises ordinary drift-rewrite
 	// for a managed repo alongside an untouched unmanaged sibling — not
@@ -1050,4 +1050,370 @@ func TestConverge_ManagedConfigOnlyOneRepoManaged(t *testing.T) {
 	if got := fc.FileContents["acme/unmanaged/"+preset.OverlayPath]; string(got) != "version: \"1\"\n# local\n" {
 		t.Error("unmanaged sibling overlay bytes must be preserved")
 	}
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateRejectsImplicitKillSwitchDrop(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: true\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	assert.Empty(t, files)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ActionSafetyRejected, actions[0].Action)
+	assert.Contains(t, actions[0].Detail, "kill_switch")
+	assert.Contains(t, actions[0].Detail, "not explicitly declared")
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateAllowsExplicitKillSwitchFalse(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: false\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: true\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	require.Len(t, files, 1)
+	require.Len(t, actions, 1)
+	assert.Equal(t, desired, files[0].Content)
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateFallthroughKeepsParentRestriction(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.BasePath] = []byte("kill_switch: true\nroles: []\n")
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "version: \"1\"\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	require.Len(t, files, 1, "same effective restrictions through fallthrough still allow whole-file rewrite")
+	require.Len(t, actions, 1)
+	assert.Equal(t, desired, files[0].Content)
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateExplicitEmptyRoles(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.GitHub.Repos[0].Config = mustManagedConfig(t, "roles: []\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "roles:\n  - triage\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	require.Len(t, files, 1)
+	require.Len(t, actions, 1)
+	assert.Equal(t, desired, files[0].Content)
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateRejectsImplicitEmptyRolesDrop(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "roles: []\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	assert.Empty(t, files)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ActionSafetyRejected, actions[0].Action)
+	assert.Contains(t, actions[0].Detail, "roles")
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateRejectsImplicitAllowlistWiden(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "allowed_remote_resources: []\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	assert.Empty(t, files)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ActionSafetyRejected, actions[0].Action)
+	assert.Contains(t, actions[0].Detail, "allowed_remote_resources")
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateAllowsExplicitAllowlist(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.GitHub.Repos[0].AllowedRemoteResources = []string{"https://github.com/"}
+	m.GitHub.Repos[0].Config = mustManagedConfig(t, "{}")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "allowed_remote_resources: []\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	require.Len(t, files, 1)
+	require.Len(t, actions, 1)
+	assert.Equal(t, desired, files[0].Content)
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateRejectsImplicitAgentEnable(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "agents:\n  - name: review\n    enabled: false\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	assert.Empty(t, files)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ActionSafetyRejected, actions[0].Action)
+	assert.Contains(t, actions[0].Detail, "agents.review.enabled")
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateAllowsExplicitAgentEnable(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "agents:\n  - name: review\n    enabled: true\n    runtime: claude\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "agents:\n  - name: review\n    enabled: false\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	require.Len(t, files, 1)
+	require.Len(t, actions, 1)
+	assert.Equal(t, desired, files[0].Content)
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateRejectsImplicitCreateIssuesWiden(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.BasePath] = []byte("create_issues:\n  allow_targets:\n    orgs:\n      - acme\n      - other\n")
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	assert.Empty(t, files)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ActionSafetyRejected, actions[0].Action)
+	assert.Contains(t, actions[0].Detail, "create_issues.allow_targets")
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateAllowsExplicitCreateIssuesWiden(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n      - other\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	require.Len(t, files, 1)
+	require.Len(t, actions, 1)
+	assert.Equal(t, desired, files[0].Content)
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateFirstCreationAgainstEmptyLayer(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	require.Len(t, files, 1)
+	assert.Equal(t, "add", actions[0].Action)
+}
+
+func TestConvergeManagedConfigFiles_AdoptionIncludesSafetyKeys(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("kill_switch: true\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	assert.Empty(t, files)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ActionAdoptionRequired, actions[0].Action)
+	assert.Contains(t, actions[0].Detail, "adoption required")
+	assert.Contains(t, actions[0].Detail, "kill_switch")
+}
+
+func TestCheckManagedConfigDrift_AdoptionIncludesSafetyKeys(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("kill_switch: true\n")
+	status := RepoStatus{}
+	cfg := managedResolved(t, fc, m, "acme", "api")
+	checkManagedConfigDrift(context.Background(), cfg, &status)
+	require.Len(t, status.Drifts, 1)
+	assert.Equal(t, "managed configuration (adoption required; safety gate)", status.Drifts[0].Expected)
+	assert.Contains(t, status.Drifts[0].Actual, "kill_switch")
+}
+
+func TestCheckManagedConfigDrift_SafetyGateParseError(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + ": not yaml\n")
+	status := RepoStatus{}
+	cfg := managedResolved(t, fc, m, "acme", "api")
+	checkManagedConfigDrift(context.Background(), cfg, &status)
+	assert.Contains(t, status.Error, "safety gate")
+}
+
+func TestCheckManagedConfigDrift_SafetyGate(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: true\n")
+	status := RepoStatus{}
+	cfg := managedResolved(t, fc, m, "acme", "api")
+	checkManagedConfigDrift(context.Background(), cfg, &status)
+	require.Len(t, status.Drifts, 1)
+	assert.Equal(t, "managed configuration (safety gate)", status.Drifts[0].Expected)
+	assert.Contains(t, status.Drifts[0].Actual, "kill_switch")
+}
+
+func TestConverge_ManagedConfigSafetyRejectedOnMarkedDrift(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+	original := []byte(managedConfigMarker + "kill_switch: true\n")
+	fc.FileContents["acme/api/"+preset.OverlayPath] = original
+
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+
+	var committedFiles []forge.TreeFile
+	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if result.Results[0].Error == nil {
+		t.Fatal("expected safety-gate error")
+	}
+	assert.Contains(t, result.Results[0].Error.Error(), "kill_switch")
+	for _, f := range committedFiles {
+		if f.Path == preset.OverlayPath {
+			t.Error("safety-rejected write must not rewrite config.yaml")
+		}
+	}
+	if got := fc.FileContents["acme/api/"+preset.OverlayPath]; string(got) != string(original) {
+		t.Error("existing managed config must be preserved when the safety gate rejects")
+	}
+}
+
+func TestConverge_ManagedConfigFreshInstallDryRunSafetyRejected(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: true\n")
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	cfg := convergeCfgWithDefaults(m)
+	cfg.DryRun = true
+
+	committed := false
+	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+		committed = true
+		return nil
+	}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if committed {
+		t.Error("dry-run must not commit")
+	}
+	if result.Results[0].Error == nil {
+		t.Fatal("expected safety-gate error")
+	}
+	var saw bool
+	for _, a := range result.Results[0].Actions {
+		if a.Action == ActionSafetyRejected && strings.Contains(a.Detail, "kill_switch") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("expected safety-rejected dry-run action, got %v", result.Results[0].Actions)
+	}
+}
+
+func TestConverge_ManagedConfigFreshInstallSafetyRejected(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	original := []byte(managedConfigMarker + "kill_switch: true\n")
+	fc.FileContents["acme/api/"+preset.OverlayPath] = original
+	m := newConvergeManifest(repoNames...)
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+
+	sc := &spyScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if result.Results[0].Error == nil {
+		t.Fatal("expected safety-gate error on fresh install")
+	}
+	assert.Contains(t, result.Results[0].Error.Error(), "kill_switch")
+	for _, f := range sc.files {
+		if f.Path == preset.OverlayPath {
+			t.Errorf("safety-rejected fresh install must not write config.yaml, got %q", f.Content)
+		}
+	}
+	var saw bool
+	for _, a := range result.Results[0].Actions {
+		if a.Action == ActionSafetyRejected && strings.Contains(a.Detail, "kill_switch") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("expected safety-rejected action, got %v", result.Results[0].Actions)
+	}
+}
+
+func TestConvergeManagedConfigFiles_SafetyGateBaseReadError(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+	desired := mustDesiredManaged(t, m, "acme", "api")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: false\n")
+	fc.GetFileContentErrors = map[string]error{
+		"acme/api/" + preset.BasePath: fmt.Errorf("boom"),
+	}
+	resolved := managedResolved(t, fc, m, "acme", "api")
+
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	assert.Empty(t, files)
+	require.Len(t, actions, 1)
+	assert.Equal(t, "error", actions[0].Action)
+	assert.Contains(t, actions[0].Detail, preset.BasePath)
 }

@@ -18,22 +18,16 @@ Date: 2026-09-18
 
 Accepted
 
-**Implementation note (#7632):** The install/converge/status integration in
-PR #7638 ships the ownership marker and the first-adoption gate described
-below on every write path this PR touches — the already-installed
-converge/status path (`convergeManagedConfigFiles`/`checkManagedConfigDrift`)
-and the fresh-install path (`Install`/`BuildScaffoldFiles`, gated via
-`InstallConfig.ManagedConfigAdoptionRequired`): an existing markerless
-`.fullsend/config.yaml` is never silently rewritten; status reports it as
-requiring adoption and install/converge leave it untouched. The pre-write
-safety-gate comparison against the current effective configuration through
-the full runtime accessor chain (`IsKillSwitchActive()`, `AllowedResources()`,
+**Implementation note (#7632, #7749):** The install/converge/status
+integration in PR #7638 ships the ownership marker and the first-adoption
+gate described below. Issue #7749 adds the pre-write safety-gate comparison
+against the current effective configuration through the full runtime
+accessor chain (`IsKillSwitchActive()`, `AllowedResources()`,
 `ConfigRoles()`, agent `enabled: false` suppressions,
-`IssueCreationConfig()`/`create_issues.allow_targets`) described in the
-Decision section is not yet implemented; a manifest edit that drops or
-narrows a previously managed restriction is currently applied as ordinary
-drift once a file is already adopted (marked). Track closing this gap in a
-follow-up to #7632.
+`IssueCreationConfig()`/`create_issues.allow_targets`) on first creation,
+first adoption, and subsequent convergence. A less-restrictive candidate
+is rejected unless the manifest explicitly declares that relaxation; status
+and install output identify the affected keys.
 
 ## Context
 

@@ -1152,11 +1152,11 @@ func (c *perRepoConfig) Validate() error {
 // parent chain: version, roles, create_issues, runtime,
 // status_notifications, inference provider, authorization providers,
 // and model aliases. It is split out of Validate so a repos.yaml config
-// overlay layer (ADR 0122) can be checked without pulling in the
-// agent-allowlist / override-only-custom-agent checks below, which need
+// managed-configuration layer (ADR 0122) can be checked without pulling in
+// the agent-allowlist / override-only-custom-agent checks below, which need
 // information (repos.yaml shorthands, config.base.yaml) that isn't
-// resolved yet at every point an overlay is validated — see
-// ValidateOverlayLayer and ValidateMergedOverlay.
+// resolved yet at every point a managed block is validated — see
+// ValidateManagedLayer and ValidateMergedManaged.
 func (c *perRepoConfig) validateLocalFields() error {
 	// Version: empty means "inherit from parent"; non-empty must be "1".
 	if c.Version != "" && c.Version != "1" {
@@ -1210,15 +1210,15 @@ func (c *perRepoConfig) validateLocalFields() error {
 	// key in config.base.yaml must not slip through because the overlay
 	// omits models:. Currently the parent chain never actually carries a
 	// resolved config.base.yaml at any Validate call site (the overlay
-	// file is validated via ValidateMergedOverlay before it is written),
+	// file is validated via ValidateMergedManaged before it is written),
 	// so this only ever sees this layer's own aliases — but it is safe to run
 	// unconditionally: with no parent contribution there is nothing it
 	// could wrongly reject.
 	return ValidateModelAliases(c.ConfigModelAliases())
 }
 
-// ValidateOverlayLayer validates a single repos.yaml config overlay layer
-// (defaults.config or one repository's config block, ADR 0122) in
+// ValidateManagedLayer validates a single repos.yaml managed-configuration
+// layer (defaults.config or one repository's config block, ADR 0122) in
 // isolation: before defaults.config and the repository config are merged,
 // and before the repos.yaml runtime / allowed_remote_resources shorthands
 // are applied. It runs the same locally-set field checks as Validate,
@@ -1228,9 +1228,9 @@ func (c *perRepoConfig) validateLocalFields() error {
 // shorthand isn't applied to this layer yet) and does not require an
 // override-only entry (no source) to name a compiled-in agent (it may
 // tune a custom agent registered in config.base.yaml, which this layer
-// cannot see). Those two checks run in ValidateMergedOverlay once the
+// cannot see). Those two checks run in ValidateMergedManaged once the
 // shorthand is applied.
-func ValidateOverlayLayer(w PerRepoConfigWriter) error {
+func ValidateManagedLayer(w PerRepoConfigWriter) error {
 	c := asPerRepo(w)
 	if c == nil {
 		return nil
@@ -1241,16 +1241,16 @@ func ValidateOverlayLayer(w PerRepoConfigWriter) error {
 	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), false, false)
 }
 
-// ValidateMergedOverlay validates a repos.yaml config overlay (ADR 0122)
-// after defaults.config and the repository config have been merged and
-// the repos.yaml runtime / allowed_remote_resources shorthands applied
-// (managedOverlay). The resolved allowlist is now correct, so a
-// URL-sourced agent entry is checked against it; an override-only entry
+// ValidateMergedManaged validates a repos.yaml managed configuration
+// (ADR 0122) after defaults.config and the repository config have been
+// merged and the repos.yaml runtime / allowed_remote_resources shorthands
+// applied (mergeManagedConfig). The resolved allowlist is now correct, so
+// a URL-sourced agent entry is checked against it; an override-only entry
 // is still not required to name a compiled-in agent, since
 // config.base.yaml — which may register the agent it tunes — is not
-// layered on until the overlay is written and later read through
+// layered on until the managed file is written and later read through
 // LayeredConfig.
-func ValidateMergedOverlay(w PerRepoConfigWriter) error {
+func ValidateMergedManaged(w PerRepoConfigWriter) error {
 	c := asPerRepo(w)
 	if c == nil {
 		return nil

@@ -129,12 +129,12 @@ type InstallConfig struct {
 	// ManagedConfigAdoptionRequired, when true, skips writing
 	// .fullsend/config.yaml entirely, even though ManagedConfig may be
 	// set: the caller found an existing file that does not carry the
-	// ADR-0122 ownership marker, so it predates managed-configuration
-	// adoption and must be left untouched until an operator adopts it —
-	// the same contract convergeManagedConfigFiles enforces on the
-	// already-installed path. Callers that do not check for adoption
-	// (repos outside the managed-configuration install/converge flow)
-	// leave this false so existing behavior is unchanged.
+	// ADR-0122 ownership marker, or the pre-write safety gate rejected
+	// the candidate, so the file must be left untouched — the same
+	// contract convergeManagedConfigFiles enforces on the already-
+	// installed path. Callers that do not check for adoption or the
+	// safety gate (repos outside the managed-configuration install/
+	// converge flow) leave this false so existing behavior is unchanged.
 	ManagedConfigAdoptionRequired bool
 }
 
