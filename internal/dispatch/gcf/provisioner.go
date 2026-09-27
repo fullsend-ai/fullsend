@@ -161,6 +161,38 @@ type Provisioner struct {
 	cfg        Config
 	gcpAPI     GCFClient
 	httpClient *http.Client // for health checks; nil uses http.DefaultClient
+
+	// pollDelay returns a channel that fires after the given duration, used
+	// by waitForRevisionReady for inter-poll delays. nil → time.After.
+	// Tests inject a zero-delay function to avoid real sleeps.
+	pollDelay func(time.Duration) <-chan time.Time
+
+	// revisionReadyTimeout bounds how long waitForRevisionReady polls before
+	// giving up. Zero → defaultRevisionReadyTimeout. Tests shrink this to
+	// exercise the timeout path without a real 2-minute wait.
+	revisionReadyTimeout time.Duration
+}
+
+// defaultRevisionReadyTimeout is the production value of
+// Provisioner.revisionReadyTimeout.
+const defaultRevisionReadyTimeout = 2 * time.Minute
+
+// getRevisionReadyTimeout returns the configured revision-ready timeout,
+// defaulting to defaultRevisionReadyTimeout when unset.
+func (p *Provisioner) getRevisionReadyTimeout() time.Duration {
+	if p.revisionReadyTimeout > 0 {
+		return p.revisionReadyTimeout
+	}
+	return defaultRevisionReadyTimeout
+}
+
+// getPollDelay returns the configured poll delay function, defaulting to
+// time.After when none is set.
+func (p *Provisioner) getPollDelay() func(time.Duration) <-chan time.Time {
+	if p.pollDelay != nil {
+		return p.pollDelay
+	}
+	return time.After
 }
 
 // NewProvisioner creates a new Provisioner with defaults applied.
@@ -1894,11 +1926,19 @@ func (p *Provisioner) GetServiceRevisionInfo(ctx context.Context) (*ServiceRevis
 	return p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 }
 
-// ensureTrafficOnLatestRevision pins Cloud Run traffic to the latest ready
+// ensureTrafficOnLatestRevision pins Cloud Run traffic to the latest created
 // revision when the serving revision has diverged from it. After a Cloud
 // Functions source deploy, traffic stays on a previously pinned revision
 // unless it is explicitly re-pinned. If the pin fails, the error includes
 // the gcloud command to recover manually.
+//
+// The pin target is derived the same way TemplateMatchesTraffic is
+// (LatestCreatedRevisionShort, falling back to TemplateRevision, then to
+// LatestReadyRevisionShort): a just-finished deploy can create a new
+// revision before Cloud Run reports it as latestReadyRevision. Before
+// pinning to a target that isn't already confirmed Ready, this waits (see
+// waitForRevisionReady) rather than either skipping the pin or pinning an
+// unready revision.
 //
 // isFirstDeploy must be true only when this is the initial creation of the
 // service (called right after CreateFunction, with no prior revision to
@@ -1929,9 +1969,17 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context, isFirst
 		return nil
 	}
 
-	target := info.LatestReadyRevisionShort
+	// Prefer the latest *created* revision (mirrors TemplateMatchesTraffic
+	// above): it reflects a just-finished deploy immediately, whereas
+	// LatestReadyRevisionShort can lag until that revision becomes Ready.
+	// Falling back to LatestReadyRevisionShort keeps this safe when the API
+	// didn't report a created/template revision at all.
+	target := info.LatestCreatedRevisionShort
 	if target == "" {
 		target = shortRevisionName(info.TemplateRevision)
+	}
+	if target == "" {
+		target = info.LatestReadyRevisionShort
 	}
 
 	if info.TrafficRevisionShort == "" {
@@ -1955,6 +2003,12 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context, isFirst
 				target)
 		}
 		log.Printf("Cloud Run traffic revision not yet reported (first deploy); pinning 100%% to latest ready %s", target)
+		if !revisionIsReady(info, target) {
+			if err := p.waitForRevisionReady(ctx, target); err != nil {
+				return fmt.Errorf("waiting for revision %s to become ready before pinning traffic: %w; recover with: %s",
+					target, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+			}
+		}
 		if err := p.gcpAPI.PinServiceTraffic(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, target); err != nil {
 			return fmt.Errorf("pinning Cloud Run traffic to %s: %w; recover with: %s",
 				target, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
@@ -1999,11 +2053,66 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context, isFirst
 
 	log.Printf("Cloud Run traffic is on %s, not latest ready %s; pinning 100%% to %s",
 		info.TrafficRevisionShort, target, target)
+	if !revisionIsReady(info, target) {
+		if err := p.waitForRevisionReady(ctx, target); err != nil {
+			return fmt.Errorf("waiting for revision %s to become ready before pinning traffic away from %s: %w; recover with: %s",
+				target, info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+		}
+	}
 	if err := p.gcpAPI.PinServiceTraffic(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, target); err != nil {
 		return fmt.Errorf("pinning Cloud Run traffic to %s (currently serving %s): %w; recover with: %s",
 			target, info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
 	}
 	return nil
+}
+
+// revisionIsReady reports whether targetShort is confirmed Ready according
+// to info: either because it is already the latest-ready revision, or
+// because it appears in RecentRevisions marked Active. A nil info or empty
+// targetShort is never ready.
+func revisionIsReady(info *ServiceRevisionInfo, targetShort string) bool {
+	if info == nil || targetShort == "" {
+		return false
+	}
+	if info.LatestReadyRevisionShort == targetShort {
+		return true
+	}
+	for _, rev := range info.RecentRevisions {
+		if rev.Name == targetShort && rev.Active {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForRevisionReady polls GetServiceRevisionInfo until targetShort is
+// confirmed Ready (see revisionIsReady) or a 2-minute timeout elapses. This
+// guards against pinning traffic to a revision a deploy just created but
+// that Cloud Run has not finished bringing up yet — TemplateMatchesTraffic
+// (and the target derived from LatestCreatedRevisionShort/TemplateRevision)
+// can report a genuinely newer revision before it is safe to route traffic
+// to.
+func (p *Provisioner) waitForRevisionReady(ctx context.Context, targetShort string) error {
+	timeout := p.getRevisionReadyTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	delay := p.getPollDelay()
+	for {
+		info, err := p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+		if err != nil {
+			return fmt.Errorf("checking readiness of revision %s: %w", targetShort, err)
+		}
+		if revisionIsReady(info, targetShort) {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("revision %s did not become ready within %s", targetShort, timeout)
+		case <-delay(3 * time.Second):
+		}
+	}
 }
 
 // accumulativeEnvKeys lists CSV-formatted allow-list env vars that are
@@ -2038,6 +2147,15 @@ var accumulativeEnvKeys = []string{"ALLOWED_ORGS", "PER_REPO_WIF_REPOS", "WORKFL
 // exact registration drop this function exists to prevent, so it errors
 // instead.
 //
+// A nil or empty trafficEnv is treated the same way, even when
+// trafficEnvUnreliable is false: mint's init() fatals on missing required
+// env vars, so a revision that is actually serving traffic always has a
+// non-empty env. GetServiceRevisionInfo marks a genuinely unread traffic env
+// as unreliable rather than returning it as an empty-but-verified map, so an
+// empty trafficEnv reaching here signals an unverified read this function
+// should refuse to reconcile against, not "traffic legitimately has nothing
+// accumulative to contribute."
+//
 // currentAgentAppIDs is this run's p.cfg.AgentAppIDs. Unlike ALLOWED_ORGS,
 // PER_REPO_WIF_REPOS, and WORKFLOW_HOST_REPOS — which are only ever changed
 // by direct Cloud Run patches (EnsureOrgInMint, RegisterPerRepoWIF, etc.) —
@@ -2059,7 +2177,7 @@ func reconcileTargetEnvVars(trafficEnv, targetEnv map[string]string, trafficEnvU
 		return nil, fmt.Errorf("traffic-serving revision's env vars could not be read reliably; refusing to reconcile registration data without a verified read")
 	}
 	if len(trafficEnv) == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("traffic-serving revision's env vars are empty; refusing to reconcile registration data against an unverified empty read")
 	}
 
 	changed := false

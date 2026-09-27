@@ -1845,6 +1845,23 @@ Required IAM roles on the mint project (--project mode only):
 	return cmd
 }
 
+// latestCreatedOrTemplateRevisionShort returns the short name of the most
+// recently created revision, mirroring how gcf.GetServiceRevisionInfo
+// derives TemplateMatchesTraffic: prefer LatestCreatedRevisionShort (it
+// reflects a just-finished deploy immediately), falling back to the
+// template's own revision field, then to LatestReadyRevisionShort (which can
+// lag behind both until Cloud Run finishes bringing a new revision up).
+func latestCreatedOrTemplateRevisionShort(revInfo *gcf.ServiceRevisionInfo) string {
+	if revInfo.LatestCreatedRevisionShort != "" {
+		return revInfo.LatestCreatedRevisionShort
+	}
+	if revInfo.TemplateRevision != "" {
+		parts := strings.Split(revInfo.TemplateRevision, "/")
+		return parts[len(parts)-1]
+	}
+	return revInfo.LatestReadyRevisionShort
+}
+
 func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, org string) error {
 	printer.Banner(Version())
 	printer.Blank()
@@ -1930,14 +1947,20 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 			printer.Blank()
 			printer.StepWarn("Traffic-serving revision could not be determined")
 			printer.StepInfo("Unable to confirm which revision is currently serving traffic.")
-		} else if revInfo.LatestReadyRevisionShort != "" && revInfo.LatestReadyRevisionShort != revInfo.TrafficRevisionShort {
+		} else if latestKnown := latestCreatedOrTemplateRevisionShort(revInfo); latestKnown != "" && latestKnown != revInfo.TrafficRevisionShort {
 			// Show a divergence warning. A source deploy can create a newer
-			// revision while traffic remains pinned to an older one.
+			// revision while traffic remains pinned to an older one. Prefer
+			// the latest *created* revision (falling back to the template's
+			// own revision, then to LatestReadyRevisionShort) over
+			// LatestReadyRevisionShort alone: right after a deploy,
+			// LatestReadyRevisionShort can still lag on the old revision
+			// while a newer, not-yet-ready revision already exists — using
+			// only LatestReadyRevisionShort here would miss that case.
 			printer.Blank()
 			printer.StepWarn("Newer revision exists but is not serving")
 			printer.StepInfo("Service template diverges from the traffic-serving revision.")
 			printer.StepInfo(fmt.Sprintf("Traffic revision: %s", revInfo.TrafficRevisionShort))
-			printer.StepInfo(fmt.Sprintf("Latest ready:     %s", revInfo.LatestReadyRevisionShort))
+			printer.StepInfo(fmt.Sprintf("Latest ready:     %s", latestKnown))
 		} else {
 			// Traffic revision is known but the latest-ready revision could
 			// not be determined confidently — avoid asserting a newer

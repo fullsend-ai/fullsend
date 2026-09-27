@@ -2607,13 +2607,15 @@ func TestLiveGCFClient_GetServiceRevisionInfo_TrafficRevisionNoContainers(t *tes
 }
 
 // TestLiveGCFClient_GetServiceRevisionInfo_TemplateAheadOfLatestReady pins down
-// the intended behavior when the service template's assigned revision (what
-// a just-completed create/update deploy produced) is ahead of
+// the intended behavior when the service's latestCreatedRevision (what a
+// just-completed create/update deploy produced) is ahead of
 // latestReadyRevision — i.e. the newly created revision has not become Ready
-// yet. TemplateMatchesTraffic/LatestReadyRevisionShort must stay derived
-// from latestReadyRevision (the currently-serving candidate), not from the
-// template's revision name, so callers like ensureTrafficOnLatestRevision
-// never treat an unready revision as a pin target.
+// yet, while traffic and latestReadyRevision both still point at the old
+// revision. TemplateMatchesTraffic must be derived from the latest *created*
+// revision (falling back to the template's own revision field), not from
+// latestReadyRevision: comparing against latestReadyRevision alone would
+// report a false match and let callers like ensureTrafficOnLatestRevision
+// skip re-pinning traffic once the new revision becomes ready.
 func TestLiveGCFClient_GetServiceRevisionInfo_TemplateAheadOfLatestReady(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -2626,7 +2628,7 @@ func TestLiveGCFClient_GetServiceRevisionInfo_TemplateAheadOfLatestReady(t *test
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]interface{}{"revisions": []interface{}{}})
 		default:
-			// GET service: template.revision (latest created) is ahead of
+			// GET service: latestCreatedRevision is ahead of
 			// latestReadyRevision — the new revision from a just-finished
 			// deploy has not become Ready yet, while traffic and
 			// latestReadyRevision both still point at the old revision.
@@ -2643,7 +2645,8 @@ func TestLiveGCFClient_GetServiceRevisionInfo_TemplateAheadOfLatestReady(t *test
 						"percent":  100,
 					},
 				},
-				"latestReadyRevision": "my-svc-00042-abc",
+				"latestReadyRevision":   "my-svc-00042-abc",
+				"latestCreatedRevision": "my-svc-00043-def",
 			})
 		}
 	}))
@@ -2654,10 +2657,11 @@ func TestLiveGCFClient_GetServiceRevisionInfo_TemplateAheadOfLatestReady(t *test
 	require.NotNil(t, info)
 	assert.Equal(t, "my-svc-00042-abc", info.TrafficRevisionShort)
 	assert.Equal(t, "my-svc-00042-abc", info.LatestReadyRevisionShort)
+	assert.Equal(t, "my-svc-00043-def", info.LatestCreatedRevisionShort)
 	assert.Equal(t, "my-svc-00043-def", shortRevisionName(info.TemplateRevision),
 		"TemplateRevision reflects the not-yet-ready revision independently of LatestReadyRevisionShort")
-	assert.True(t, info.TemplateMatchesTraffic,
-		"TemplateMatchesTraffic must compare against LatestReadyRevisionShort, not the ahead-of-ready TemplateRevision")
+	assert.False(t, info.TemplateMatchesTraffic,
+		"TemplateMatchesTraffic must compare against the latest created revision, not the stale latestReadyRevision")
 }
 
 func TestLiveGCFClient_PinServiceTraffic(t *testing.T) {

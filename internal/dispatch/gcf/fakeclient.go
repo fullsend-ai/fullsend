@@ -59,6 +59,12 @@ type fakeGCFClient struct {
 	// Track revision info for GetServiceRevisionInfo.
 	revisionInfo *ServiceRevisionInfo
 
+	// revisionInfoSequence, when non-empty, is consumed FIFO by successive
+	// GetServiceRevisionInfo calls (one entry per call) to simulate a
+	// revision transitioning across polls (e.g. not-ready then ready).
+	// Once exhausted, GetServiceRevisionInfo falls back to revisionInfo.
+	revisionInfoSequence []*ServiceRevisionInfo
+
 	// lastPinnedRevision is the short revision name passed to PinServiceTraffic.
 	lastPinnedRevision string
 
@@ -273,6 +279,11 @@ func (f *fakeGCFClient) GetServiceRevisionInfo(_ context.Context, _, _, _ string
 	f.calls = append(f.calls, "GetServiceRevisionInfo")
 	if err := f.errs["GetServiceRevisionInfo"]; err != nil {
 		return nil, err
+	}
+	if len(f.revisionInfoSequence) > 0 {
+		next := f.revisionInfoSequence[0]
+		f.revisionInfoSequence = f.revisionInfoSequence[1:]
+		return next, nil
 	}
 	if f.revisionInfo != nil {
 		return f.revisionInfo, nil

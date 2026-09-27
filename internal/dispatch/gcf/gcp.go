@@ -70,10 +70,22 @@ type ServiceRevisionInfo struct {
 	// TemplateRevision is the revision name from the service template (latest created).
 	TemplateRevision string
 	// LatestReadyRevisionShort is the short name of latestReadyRevision
-	// (e.g., "fullsend-mint-00115-qp5").
+	// (e.g., "fullsend-mint-00115-qp5"). This can lag behind
+	// LatestCreatedRevisionShort until Cloud Run finishes bringing the
+	// newly created revision up.
 	LatestReadyRevisionShort string
-	// TemplateMatchesTraffic is true when the template's latest revision matches
-	// the traffic-serving revision.
+	// LatestCreatedRevisionShort is the short name of latestCreatedRevision —
+	// the revision a template update (source deploy or env var patch) most
+	// recently created, whether or not it has become Ready yet.
+	LatestCreatedRevisionShort string
+	// TemplateMatchesTraffic is true when the template's latest revision
+	// (LatestCreatedRevisionShort, falling back to TemplateRevision) matches
+	// the traffic-serving revision. This is deliberately compared against
+	// the latest *created* revision rather than LatestReadyRevisionShort:
+	// right after a deploy, latestReadyRevision (and traffic) can still lag
+	// on the previous revision while a newer, not-yet-ready revision already
+	// exists — comparing against latestReadyRevision would report a false
+	// match and skip re-pinning traffic onto that newer revision once ready.
 	TemplateMatchesTraffic bool
 	// RecentRevisions lists the most recent revisions (up to 5), newest first.
 	RecentRevisions []RevisionSummary
@@ -1868,7 +1880,8 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 			Revision string `json:"revision"`
 			Percent  int    `json:"percent"`
 		} `json:"trafficStatuses"`
-		LatestReadyRevision string `json:"latestReadyRevision"`
+		LatestReadyRevision   string `json:"latestReadyRevision"`
+		LatestCreatedRevision string `json:"latestCreatedRevision"`
 	}
 	svcBody, _ := io.ReadAll(io.LimitReader(getResp.Body, 10<<20))
 	if err := json.Unmarshal(svcBody, &service); err != nil {
@@ -1909,11 +1922,24 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 
 	// Determine if template matches traffic.
 	info.LatestReadyRevisionShort = shortRevisionName(service.LatestReadyRevision)
-	if info.TrafficRevisionShort == "" {
+	info.LatestCreatedRevisionShort = shortRevisionName(service.LatestCreatedRevision)
+	// Compare traffic against the latest *created* revision (falling back to
+	// the template's own revision field when the API didn't return
+	// latestCreatedRevision), not latestReadyRevision. Right after a code
+	// deploy or env var patch, Cloud Run can report latestReadyRevision (and
+	// traffic) still on the previous revision while a newer revision has
+	// already been created and is simply not Ready yet; comparing against
+	// latestReadyRevision would treat that as "matches" and skip pinning
+	// traffic onto the new revision once it becomes ready.
+	latestCreatedOrTemplate := info.LatestCreatedRevisionShort
+	if latestCreatedOrTemplate == "" {
+		latestCreatedOrTemplate = shortRevisionName(service.Template.Revision)
+	}
+	if info.TrafficRevisionShort == "" || latestCreatedOrTemplate == "" {
 		// Cannot determine traffic state — treat as not matching to avoid false confidence.
 		info.TemplateMatchesTraffic = false
 	} else {
-		info.TemplateMatchesTraffic = info.TrafficRevisionShort == info.LatestReadyRevisionShort
+		info.TemplateMatchesTraffic = info.TrafficRevisionShort == latestCreatedOrTemplate
 	}
 
 	// 2. List recent revisions. Non-fatal: on transport error, skip this
@@ -2002,14 +2028,19 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 				}
 				revBody, _ := io.ReadAll(io.LimitReader(revResp.Body, 10<<20))
 				if err := json.Unmarshal(revBody, &revision); err == nil {
-					// A traffic-serving revision with no containers is not a
-					// reliable "nothing to report" read -- mirror
-					// GetServiceTrafficEnvVars's hard-error handling of the same
-					// condition. Leaving trafficEnvVarsRead false here causes the
-					// fallback below to mark TrafficEnvVarsUnreliable, so callers
-					// like reconcileTargetEnvVars refuse to treat this as a
-					// verified empty traffic env.
-					if len(revision.Containers) > 0 {
+					// A traffic-serving revision with no containers, or a
+					// container reporting zero env vars, is not a reliable
+					// "nothing to report" read -- mirror
+					// GetServiceTrafficEnvVars's hard-error handling of the
+					// no-containers condition, and extend it to an empty Env
+					// list: mint's init() fatals on missing required env
+					// vars, so a revision that is actually serving /health
+					// must already have a non-empty Env list in normal
+					// operation. Leaving trafficEnvVarsRead false here causes
+					// the fallback below to mark TrafficEnvVarsUnreliable, so
+					// callers like reconcileTargetEnvVars refuse to treat
+					// this as a verified empty traffic env.
+					if len(revision.Containers) > 0 && len(revision.Containers[0].Env) > 0 {
 						envVars := make(map[string]string)
 						for _, e := range revision.Containers[0].Env {
 							envVars[e.Name] = e.Value

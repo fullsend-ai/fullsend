@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/stretchr/testify/assert"
@@ -41,6 +42,12 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { re
 func newTestProvisioner(cfg Config, gcpAPI GCFClient) *Provisioner {
 	p := NewProvisioner(cfg, gcpAPI)
 	p.httpClient = healthyClient()
+	// Avoid real sleeps in tests that exercise waitForRevisionReady's poll loop.
+	p.pollDelay = func(time.Duration) <-chan time.Time {
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
 	return p
 }
 
@@ -4506,25 +4513,101 @@ func TestEnsureTrafficOnLatestRevision_AlreadyMatching(t *testing.T) {
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 }
 
-func TestEnsureTrafficOnLatestRevision_DoesNotPinAheadOfReadyTemplateRevision(t *testing.T) {
-	// Pins down intended behavior for a not-yet-ready newly created
-	// revision: TemplateMatchesTraffic is derived from LatestReadyRevisionShort
-	// (see GetServiceRevisionInfo), so when traffic and latestReady both
-	// still point at the old revision — even though the template's revision
-	// name (TemplateRevision) is already ahead, pointing at a newer revision
-	// that has not become Ready — ensureTrafficOnLatestRevision must not
-	// pin traffic onto that unready revision.
+func TestEnsureTrafficOnLatestRevision_PinsAheadOfReadyTemplateRevisionOnceReady(t *testing.T) {
+	// A just-finished deploy creates a new revision (LatestCreatedRevisionShort)
+	// while traffic and LatestReadyRevisionShort still point at the old
+	// revision — TemplateMatchesTraffic correctly reports divergence (see the
+	// GetServiceRevisionInfo fix comparing against the latest *created*
+	// revision, not latestReadyRevision). ensureTrafficOnLatestRevision must
+	// still confirm the new revision is Ready (via RecentRevisions) before
+	// pinning traffic to it — not skip the pin entirely.
 	fake := newFakeGCFClient()
 	fake.revisionInfo = &ServiceRevisionInfo{
-		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
-		LatestReadyRevisionShort: "fullsend-mint-00114-fm9",
-		TemplateRevision:         "projects/p/locations/r/services/s/revisions/fullsend-mint-00115-qp5",
-		TemplateMatchesTraffic:   true,
+		TrafficRevisionShort:       "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort:   "fullsend-mint-00114-fm9",
+		LatestCreatedRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateRevision:           "projects/p/locations/r/services/s/revisions/fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:     false,
+		RecentRevisions: []RevisionSummary{
+			{Name: "fullsend-mint-00115-qp5", Active: true},
+			{Name: "fullsend-mint-00114-fm9", Active: true},
+		},
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
 	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_WaitsForNotYetReadyRevisionThenPins(t *testing.T) {
+	// The newly created revision is not yet Ready on the first read (absent
+	// from RecentRevisions' Active set) but becomes Ready on a subsequent
+	// poll. ensureTrafficOnLatestRevision must wait rather than either
+	// pinning an unready revision or giving up immediately.
+	fake := newFakeGCFClient()
+	notYetReady := &ServiceRevisionInfo{
+		TrafficRevisionShort:       "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort:   "fullsend-mint-00114-fm9",
+		LatestCreatedRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:     false,
+		RecentRevisions: []RevisionSummary{
+			{Name: "fullsend-mint-00115-qp5", Active: false},
+			{Name: "fullsend-mint-00114-fm9", Active: true},
+		},
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	nowReady := &ServiceRevisionInfo{
+		TrafficRevisionShort:       "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort:   "fullsend-mint-00115-qp5",
+		LatestCreatedRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:     false,
+		RecentRevisions: []RevisionSummary{
+			{Name: "fullsend-mint-00115-qp5", Active: true},
+			{Name: "fullsend-mint-00114-fm9", Active: true},
+		},
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	// First call: initial GetServiceRevisionInfo inside ensureTrafficOnLatestRevision.
+	// Second/third calls: waitForRevisionReady's poll loop.
+	fake.revisionInfoSequence = []*ServiceRevisionInfo{notYetReady, notYetReady, nowReady}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_TimesOutWaitingForNotYetReadyRevision(t *testing.T) {
+	// The newly created revision never becomes Ready within the timeout:
+	// ensureTrafficOnLatestRevision must fail with the gcloud recovery
+	// command rather than pinning the unready revision.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:       "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort:   "fullsend-mint-00114-fm9",
+		LatestCreatedRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:     false,
+		RecentRevisions: []RevisionSummary{
+			{Name: "fullsend-mint-00115-qp5", Active: false},
+			{Name: "fullsend-mint-00114-fm9", Active: true},
+		},
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+	p.revisionReadyTimeout = 5 * time.Millisecond
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did not become ready")
+	assert.Contains(t, err.Error(), "gcloud run services update-traffic")
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 }
 
@@ -4534,6 +4617,12 @@ func TestEnsureTrafficOnLatestRevision_PinsWhenDiverged(t *testing.T) {
 		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
 		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
 		TemplateMatchesTraffic:   false,
+		// Traffic env vars must be a verified, non-empty read (see
+		// reconcileTargetEnvVars) and match the template here so this test
+		// exercises the "already reconciled" branch without also asserting
+		// anything about reconciliation itself.
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
@@ -4549,6 +4638,14 @@ func TestEnsureTrafficOnLatestRevision_FallsBackToTemplateRevision(t *testing.T)
 		TrafficRevisionShort:   "fullsend-mint-00114-fm9",
 		TemplateRevision:       "projects/p/locations/r/services/s/revisions/fullsend-mint-00116-abc",
 		TemplateMatchesTraffic: false,
+		// Confirms the fallback target (derived from TemplateRevision, since
+		// LatestCreatedRevisionShort/LatestReadyRevisionShort are both empty
+		// here) is Ready before ensureTrafficOnLatestRevision pins to it.
+		RecentRevisions: []RevisionSummary{
+			{Name: "fullsend-mint-00116-abc", Active: true},
+		},
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
 	}
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
 
@@ -4621,6 +4718,8 @@ func TestEnsureTrafficOnLatestRevision_PinErrorIncludesGcloudCommand(t *testing.
 		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
 		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
 		TemplateMatchesTraffic:   false,
+		TrafficEnvVars:           map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars:          map[string]string{"ALLOWED_ORGS": "test-org"},
 	}
 	fake.errs["PinServiceTraffic"] = fmt.Errorf("permission denied")
 	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
@@ -5025,6 +5124,11 @@ func TestProvisioner_Provision_CodeChanged_PinsTrafficWhenDiverged(t *testing.T)
 		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
 		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
 		TemplateMatchesTraffic:   false,
+		// ROLE_APP_IDS matches p.cfg.AgentAppIDs (singleRoleAppIDs()) on both
+		// sides so reconciliation finds nothing to change and this test can
+		// isolate the direct-pin behavior it's named for.
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"12345"}`},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"12345"}`},
 	}
 
 	p := newTestProvisioner(Config{
@@ -5069,6 +5173,11 @@ func TestProvisioner_Provision_SameHash_PinsTrafficWhenDiverged(t *testing.T) {
 		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
 		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
 		TemplateMatchesTraffic:   false,
+		// ROLE_APP_IDS matches p.cfg.AgentAppIDs (singleRoleAppIDs()) on both
+		// sides so reconciliation finds nothing to change and this test can
+		// isolate the direct-pin behavior it's named for.
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"12345"}`},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"12345"}`},
 	}
 
 	p := newTestProvisioner(Config{
