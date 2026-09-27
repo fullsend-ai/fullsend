@@ -6,6 +6,9 @@ import (
 	"fmt"
 )
 
+// Compile-time check that fakeGCFClient implements GCFClient.
+var _ GCFClient = (*fakeGCFClient)(nil)
+
 // fakeGCFClient records calls and returns preset responses.
 type fakeGCFClient struct {
 	calls []string
@@ -55,6 +58,9 @@ type fakeGCFClient struct {
 
 	// Track revision info for GetServiceRevisionInfo.
 	revisionInfo *ServiceRevisionInfo
+
+	// lastPinnedRevision is the short revision name passed to PinServiceTraffic.
+	lastPinnedRevision string
 
 	// Captured project IAM binding arguments.
 	projectIAMBindings []projectIAMBinding
@@ -237,6 +243,11 @@ func (f *fakeGCFClient) UpdateServiceEnvVars(_ context.Context, _, _, _ string, 
 	f.calls = append(f.calls, "UpdateServiceEnvVars")
 	f.lastUpdateServiceEnvVars = envVars
 	return f.updateServiceRevision, f.errs["UpdateServiceEnvVars"]
+}
+func (f *fakeGCFClient) PinServiceTraffic(_ context.Context, _, _, _, revision string) error {
+	f.calls = append(f.calls, "PinServiceTraffic")
+	f.lastPinnedRevision = revision
+	return f.errs["PinServiceTraffic"]
 }
 func (f *fakeGCFClient) GetServiceTrafficEnvVars(_ context.Context, _, _, _ string) (map[string]string, error) {
 	f.calls = append(f.calls, "GetServiceTrafficEnvVars")

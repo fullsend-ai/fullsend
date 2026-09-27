@@ -2425,8 +2425,229 @@ func TestLiveGCFClient_GetServiceRevisionInfo_ShortRevisionName(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, info)
 		assert.Equal(t, "my-svc-00042-abc", info.TrafficRevisionShort)
+		assert.Equal(t, "my-svc-00042-abc", info.LatestReadyRevisionShort)
 		assert.Equal(t, "org-x", info.TrafficEnvVars["ALLOWED_ORGS"])
 		assert.Equal(t, 3, callCount)
+	})
+}
+
+// failingRevisionsListTransport simulates a transport-level error (e.g. a
+// connection reset) specifically on the recent-revisions list GET
+// (identified by its distinctive pageSize query param), while routing every
+// other request through to the test server normally. Used to reproduce the
+// non-fatal revisions-list failure path in GetServiceRevisionInfo without
+// also failing the traffic-revision env var read that follows it.
+type failingRevisionsListTransport struct {
+	base *url.URL
+}
+
+func (t *failingRevisionsListTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.RawQuery, "pageSize") {
+		return nil, fmt.Errorf("connection reset by peer")
+	}
+	req.URL.Scheme = t.base.Scheme
+	req.URL.Host = t.base.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// TestLiveGCFClient_GetServiceRevisionInfo_RevisionsListTransportErrorStillReadsTrafficEnv
+// guards against a regression where a transport error on the non-fatal
+// revisions-list GET (step 2) returned early and skipped the traffic
+// revision's env var read (step 3) entirely. That early return left
+// TrafficEnvVars nil and TrafficEnvVarsUnreliable false — looking exactly
+// like "no accumulative data to contribute" to reconcileTargetEnvVars
+// instead of "couldn't verify it" — even though the read was never
+// attempted. The revisions-list failure must not prevent the traffic env
+// read that follows it.
+func TestLiveGCFClient_GetServiceRevisionInfo_RevisionsListTransportErrorStillReadsTrafficEnv(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/revisions/my-svc-00042-abc"):
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"containers": []interface{}{
+					map[string]interface{}{
+						"env": []interface{}{
+							map[string]string{"name": "ALLOWED_ORGS", "value": "org-x"},
+						},
+					},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"template": map[string]interface{}{
+					"revision":   "my-svc-00042-abc",
+					"containers": []interface{}{map[string]interface{}{}},
+				},
+				"trafficStatuses": []interface{}{
+					map[string]interface{}{
+						"type":     "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+						"revision": "my-svc-00042-abc",
+						"percent":  100,
+					},
+				},
+				"latestReadyRevision": "my-svc-00042-abc",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	target, _ := url.Parse(srv.URL)
+	httpClient := &http.Client{Transport: &failingRevisionsListTransport{base: target}}
+	client := &LiveGCFClient{Client: gcp.NewClientWithHTTP(httpClient), skipUploadURLCheck: true}
+
+	info, err := client.GetServiceRevisionInfo(context.Background(), "proj", "us-central1", "my-svc")
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.Empty(t, info.RecentRevisions, "revisions list failed at the transport level, so no recent revisions")
+	assert.Equal(t, "org-x", info.TrafficEnvVars["ALLOWED_ORGS"], "traffic env must still be read after the non-fatal revisions-list failure")
+	assert.False(t, info.TrafficEnvVarsUnreliable, "traffic env was read directly from the traffic-serving revision, so it is reliable")
+}
+
+// TestLiveGCFClient_GetServiceRevisionInfo_RevisionsListAndTrafficEnvBothFail
+// covers the case the prior early return also masked: when the
+// revisions-list GET fails AND the traffic-revision env read that follows it
+// also can't complete, TrafficEnvVarsUnreliable must end up true so
+// reconcileTargetEnvVars refuses to pin on unverified data. Before the fix,
+// the early return after the revisions-list failure meant this flag was
+// never set at all.
+func TestLiveGCFClient_GetServiceRevisionInfo_RevisionsListAndTrafficEnvBothFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/revisions/my-svc-00042-abc"):
+			// Traffic revision env read also fails.
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"template": map[string]interface{}{
+					"revision":   "my-svc-00042-abc",
+					"containers": []interface{}{map[string]interface{}{}},
+				},
+				"trafficStatuses": []interface{}{
+					map[string]interface{}{
+						"type":     "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+						"revision": "my-svc-00042-abc",
+						"percent":  100,
+					},
+				},
+				"latestReadyRevision": "my-svc-00043-def",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	target, _ := url.Parse(srv.URL)
+	httpClient := &http.Client{Transport: &failingRevisionsListTransport{base: target}}
+	client := &LiveGCFClient{Client: gcp.NewClientWithHTTP(httpClient), skipUploadURLCheck: true}
+
+	info, err := client.GetServiceRevisionInfo(context.Background(), "proj", "us-central1", "my-svc")
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.True(t, info.TrafficEnvVarsUnreliable,
+		"traffic env could not be read after either failure, so it must be marked unreliable rather than silently false")
+}
+
+// TestLiveGCFClient_GetServiceRevisionInfo_TemplateAheadOfLatestReady pins down
+// the intended behavior when the service template's assigned revision (what
+// a just-completed create/update deploy produced) is ahead of
+// latestReadyRevision — i.e. the newly created revision has not become Ready
+// yet. TemplateMatchesTraffic/LatestReadyRevisionShort must stay derived
+// from latestReadyRevision (the currently-serving candidate), not from the
+// template's revision name, so callers like ensureTrafficOnLatestRevision
+// never treat an unready revision as a pin target.
+func TestLiveGCFClient_GetServiceRevisionInfo_TemplateAheadOfLatestReady(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/revisions/my-svc-00042-abc"):
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"containers": []interface{}{map[string]interface{}{}},
+			})
+		case strings.Contains(r.URL.Path, "/revisions"):
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"revisions": []interface{}{}})
+		default:
+			// GET service: template.revision (latest created) is ahead of
+			// latestReadyRevision — the new revision from a just-finished
+			// deploy has not become Ready yet, while traffic and
+			// latestReadyRevision both still point at the old revision.
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"template": map[string]interface{}{
+					"revision":   "my-svc-00043-def",
+					"containers": []interface{}{map[string]interface{}{}},
+				},
+				"trafficStatuses": []interface{}{
+					map[string]interface{}{
+						"type":     "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+						"revision": "my-svc-00042-abc",
+						"percent":  100,
+					},
+				},
+				"latestReadyRevision": "my-svc-00042-abc",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	info, err := newTestClient(srv).GetServiceRevisionInfo(context.Background(), "proj", "us-central1", "my-svc")
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.Equal(t, "my-svc-00042-abc", info.TrafficRevisionShort)
+	assert.Equal(t, "my-svc-00042-abc", info.LatestReadyRevisionShort)
+	assert.Equal(t, "my-svc-00043-def", shortRevisionName(info.TemplateRevision),
+		"TemplateRevision reflects the not-yet-ready revision independently of LatestReadyRevisionShort")
+	assert.True(t, info.TemplateMatchesTraffic,
+		"TemplateMatchesTraffic must compare against LatestReadyRevisionShort, not the ahead-of-ready TemplateRevision")
+}
+
+func TestLiveGCFClient_PinServiceTraffic(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPatch, r.Method)
+			assert.Contains(t, r.URL.RawQuery, "updateMask=traffic")
+
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			traffic := body["traffic"].([]interface{})
+			require.Len(t, traffic, 1)
+			entry := traffic[0].(map[string]interface{})
+			assert.Equal(t, "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", entry["type"])
+			assert.Equal(t, "fullsend-mint-00115-qp5", entry["revision"])
+			assert.Equal(t, float64(100), entry["percent"])
+
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTraffic(context.Background(), "proj", "us-central1", "fullsend-mint", "fullsend-mint-00115-qp5")
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects_invalid_revision", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("should not call API for invalid revision")
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTraffic(context.Background(), "proj", "us-central1", "fullsend-mint", "projects/p/locations/r/services/s/revisions/fullsend-mint-00115-qp5")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected revision name format")
+	})
+
+	t.Run("http_error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"permission denied"}}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTraffic(context.Background(), "proj", "us-central1", "fullsend-mint", "fullsend-mint-00115-qp5")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status 403")
 	})
 }
 
