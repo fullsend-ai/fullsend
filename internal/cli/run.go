@@ -1238,6 +1238,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if notifyErr != nil {
 			printer.StepWarn("Status notifications disabled: " + notifyErr.Error())
 		} else {
+			notifier.SetReviewRun(builtInGitHubReview(agentName, forgePlatform))
 			description := titleCase(strings.ReplaceAll(agentName, "-", " "))
 			if err := notifier.PostStart(ctx, description); err != nil {
 				printer.StepWarn("Failed to post start status: " + err.Error())
@@ -5216,6 +5217,14 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 		return setupStatusNotifierGitLab(notifyCfg, owner, repo, sOpts, printer)
 	}
 	return setupStatusNotifierGitHub(notifyCfg, owner, repo, role, sOpts, printer)
+}
+
+// builtInGitHubReview identifies the one review run that can be retried with
+// GitHub's /fs-review command. Roles are intentionally excluded: custom
+// agents may declare role: review but that command would run the built-in
+// agent, not the custom one.
+func builtInGitHubReview(agentName, forgePlatform string) bool {
+	return agentName == "review" && forgePlatform == "github"
 }
 
 // setupStatusNotifierGitHub creates a status notifier for GitHub. It mints

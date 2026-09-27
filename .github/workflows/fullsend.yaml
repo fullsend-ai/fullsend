@@ -40,9 +40,7 @@ jobs:
        || (startsWith(github.event.comment.body, '/fs-')
            && github.event.comment.user.type != 'Bot'))
       && (github.event_name != 'pull_request_review'
-       || (github.event.action == 'submitted'
-           && (github.event.review.state != 'commented'
-               || github.event.review.body != '')))
+       || github.event.action == 'submitted')
     permissions:
       actions: write
       id-token: write

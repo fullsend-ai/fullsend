@@ -100,6 +100,14 @@ type Notifier struct {
 	now              func() time.Time
 	warnf            func(string, ...any)
 	runInfo          *RunInfo
+	reviewRun        bool
+}
+
+// SetReviewRun marks this notifier as the built-in GitHub review agent. A
+// cancelled built-in review needs explicit retry guidance; custom agents that
+// happen to use the review role must not receive the built-in command.
+func (n *Notifier) SetReviewRun(reviewRun bool) {
+	n.reviewRun = reviewRun
 }
 
 // New creates a Notifier. The runID becomes either an invisible HTML marker
@@ -529,6 +537,9 @@ func (n *Notifier) buildCompletionBody(description, status, detail string, compl
 	if footer := BuildRunInfoFooter(n.runInfo); footer != "" {
 		b.WriteString("\n\n")
 		b.WriteString(footer)
+	}
+	if status == "cancelled" && n.reviewRun {
+		b.WriteString("\n\n**Automated review did not complete for this commit. Review the current pull request HEAD before merging. Comment `/fs-review` to retry.**")
 	}
 	return b.String()
 }

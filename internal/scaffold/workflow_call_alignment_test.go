@@ -979,7 +979,7 @@ func TestLiveShimSlashCommandFilter(t *testing.T) {
 		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
 }
 
-func TestPerRepoShimReviewEventFilter(t *testing.T) {
+func TestPerRepoShimAdmitsEmptyBodyReviewEvents(t *testing.T) {
 	cases := []struct {
 		name    string
 		content func(t *testing.T) []byte
@@ -996,8 +996,10 @@ func TestPerRepoShimReviewEventFilter(t *testing.T) {
 			require.True(t, ok)
 			assert.Contains(t, job.If, "github.event_name != 'pull_request_review'")
 			assert.Contains(t, job.If, "github.event.action == 'submitted'")
-			assert.Contains(t, job.If, "github.event.review.state != 'commented'")
-			assert.Contains(t, job.If, "github.event.review.body != ''")
+			assert.NotContains(t, job.If, "github.event.review.state != 'commented'",
+				"empty-body commented reviews can carry substantive inline feedback")
+			assert.NotContains(t, job.If, "github.event.review.body != ''",
+				"empty-body commented reviews must reach custom review_submitted triggers")
 			assert.NotContains(t, job.If, "github.event.review.user.login",
 				"shim must preserve review events used by custom harness triggers")
 		})
@@ -1107,7 +1109,7 @@ func TestActionPRHeadSHAInput(t *testing.T) {
 		"reconcile step must pass PR_HEAD_SHA_INPUT env from input")
 }
 
-func TestActionRunDoesNotExposeWorkflowTokens(t *testing.T) {
+func TestActionRunPreservesPreMintWorkflowTokenButBlocksInjectedToken(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
 	require.NoError(t, err)
 
@@ -1118,7 +1120,7 @@ func TestActionRunDoesNotExposeWorkflowTokens(t *testing.T) {
 	if nextStep := strings.Index(runStep[1:], "\n    - name: "); nextStep >= 0 {
 		runStep = runStep[:nextStep+1]
 	}
-	assert.Contains(t, runStep, "GH_TOKEN: \"\"")
+	assert.Contains(t, runStep, "GH_TOKEN: ${{ inputs.github_token }}")
 	assert.Contains(t, runStep, "GITHUB_TOKEN: \"\"")
 }
 

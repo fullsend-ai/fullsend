@@ -416,9 +416,11 @@ runs:
         AGENT: ${{ inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         TARGET_REPO: ${{ inputs.target-repo }}
-        # The workflow token can write review statuses. Keep it confined to
-        # the dedicated status steps; fullsend mints a role-scoped GH_TOKEN.
-        GH_TOKEN: ""
+        # Keep the workflow token available until Fullsend mints its
+        # role-scoped token: pre-mint private-resource fetches and provider
+        # credentials require it. GITHUB_TOKEN remains blank for child-script
+        # isolation; Fullsend strips it from child environments as well.
+        GH_TOKEN: ${{ inputs.github_token }}
         GITHUB_TOKEN: ""
         STATUS_RUN_URL: ${{ inputs.run-url }}
         STATUS_REPO: ${{ inputs.status-repo }}
@@ -581,6 +583,9 @@ runs:
         fi
         if [[ "${JOB_STATUS}" == "cancelled" ]]; then
           RECONCILE_FLAGS+=(--reason cancelled)
+        fi
+        if [[ "${AGENT}" == "review" ]]; then
+          RECONCILE_FLAGS+=(--review-run)
         fi
         fullsend reconcile-status "${RECONCILE_FLAGS[@]+"${RECONCILE_FLAGS[@]}"}" || {
           echo "::warning::Could not reconcile orphaned status comment"
