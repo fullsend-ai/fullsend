@@ -1535,6 +1535,38 @@ func TestPostCompletionWithDetail_SkippedShowsReason(t *testing.T) {
 	assert.Contains(t, fc.UpdatedComments[0].Body, "⏭️ Skipped (PR #123 already addresses this issue)")
 }
 
+func TestPostCompletionWithDetail_CancelledBuiltInReviewShowsRetryGuidance(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+	n.SetReviewRun(true)
+	require.NoError(t, n.PostStart(context.Background(), "Reviewing this PR"))
+
+	err := n.PostCompletionWithDetail(context.Background(), "Reviewing this PR", "cancelled", "")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "Automated review did not complete for this commit")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "Comment `/fs-review` to retry")
+}
+
+func TestPostCompletionWithDetail_CancelledNonReviewDoesNotShowRetryGuidance(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+	require.NoError(t, n.PostStart(context.Background(), "Reviewing this PR"))
+
+	err := n.PostCompletionWithDetail(context.Background(), "Reviewing this PR", "cancelled", "")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "Comment `/fs-review` to retry")
+}
+
 func TestSanitizeDetail(t *testing.T) {
 	t.Parallel()
 

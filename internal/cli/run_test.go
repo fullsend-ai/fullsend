@@ -8408,3 +8408,9 @@ func TestDoBridgeAgentsMDToHome_ReportsExitAndStderr(t *testing.T) {
 	assert.Contains(t, buf.String(), "exit 1: head: write error: No space left on device")
 	assert.NotContains(t, buf.String(), "<nil>")
 }
+
+func TestBuiltInGitHubReview(t *testing.T) {
+	assert.True(t, builtInGitHubReview("review", "github"))
+	assert.False(t, builtInGitHubReview("custom-review", "github"), "custom agents must not receive /fs-review guidance")
+	assert.False(t, builtInGitHubReview("review", "gitlab"), "GitLab does not support the GitHub retry command")
+}

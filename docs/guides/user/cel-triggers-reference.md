@@ -94,9 +94,9 @@ This table covers the most common trigger fields. For the complete field list �
 | `comment_added` | Comment posted — check `event.transition.comment.command` for slash commands |
 | `review_submitted` | PR review submitted — check `event.transition.review.state` (`"approved"`, `"changes_requested"`, `"commented"`, `"dismissed"`) |
 
-On GitHub, empty-body `commented` review submissions are inline-reply
-containers and are filtered before dispatch. Non-empty review comments and
-all other review states remain available to custom triggers.
+On GitHub, empty-body `commented` review submissions remain available to custom
+triggers. A reviewer may submit substantive inline comments without adding a
+summary body.
 
 ### Common trigger patterns
 

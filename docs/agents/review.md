@@ -41,10 +41,10 @@ If a GitHub review run is cancelled, its status comment identifies that
 cancelled commit and directs maintainers to review the current HEAD or retry
 with `/fs-review` before merging.
 
-GitHub review submissions whose state is `commented` and whose body is empty
-are ignored. These are containers for inline replies and carry no
-dispatch-relevant review message; non-empty comments and other review states
-continue through normal routing.
+GitHub review submissions, including `commented` reviews with an empty summary,
+continue through normal routing. An empty summary can still accompany
+substantive inline review comments, so custom triggers receive the complete
+review event.
 
 On GitLab, automatic review fires when the cron poller sees an MR whose `created_at` is newer than the watermark
 (up to one poll interval of delay). Native `merge_request_event` dispatch was removed. `fullsend repos install`
