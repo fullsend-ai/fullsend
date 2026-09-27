@@ -20,6 +20,9 @@
 # The expensive image layers (runner image, supervisor) stay in the VM's
 # Podman cache. Only the CLI (~39 MB) and a version-skewed supervisor
 # (~30 MB) are fetched when the job's pin differs from the host.
+# Unused superseded images are reclaimed by podman-prune.sh (hourly
+# timer plus a call from prepare/cleanup) so the ~30 GiB root disk
+# cannot fill (#7663).
 
 # Renovate-tracked pin for the OpenShell version/commit this host trusts,
 # read from .github/scripts/openshell-version.sh (the same file
@@ -66,6 +69,75 @@ ensure_user_systemd_env() {
 user_systemctl() {
   ensure_user_systemd_env
   command systemctl --user "$@"
+}
+
+# Reclaim unused rootless Podman storage. Installed by setup.sh
+# (install_podman_prune); no-op on VMs that have not been re-provisioned.
+# timeout + || true: never fail the job stage if prune is slow or errors.
+#
+# $1, if given, is an extra image ref (repository:tag) to protect for this
+# invocation only, on top of the persistent keep-file. prepare.sh passes the
+# job's own image: the keep-file only lists the provision-time warm cache
+# (RUNNER_IMAGE, OpenShell supervisor), not CUSTOM_ENV_CI_JOB_IMAGE, and
+# `podman images` lists newest-first — a cached copy of the image about to
+# be pulled is a plausible rmi target otherwise, forcing a re-pull right
+# after the prune that was supposed to make room for it (#7663).
+#
+# When FULLSEND_PODMAN_PRUNE_LOCK_HELD is already exported (prepare.sh's
+# caller holds the serialization lock via acquire_podman_prune_lock below),
+# that flag propagates to the podman-prune.sh child process and tells it not
+# to also try to flock the file — see acquire_podman_prune_lock for why.
+prune_unused_podman_storage() {
+  local prune="${HOME}/.local/lib/fullsend/podman-prune.sh"
+  local extra_keep="${1:-}"
+  if [ -x "${prune}" ]; then
+    echo "Pruning unused Podman storage"
+    FULLSEND_PODMAN_PRUNE_EXTRA_KEEP="${extra_keep}" timeout --kill-after=5 30 "${prune}" || true
+  fi
+}
+
+# Well-known lock serializing the hourly podman-prune.sh timer against
+# prepare.sh's own reclaim-then-pull-then-create window. job_in_flight() in
+# podman-prune.sh only treats a non-exited runner-*/openshell-* container as
+# in-flight, but prepare.sh reaps those leftovers and does not create
+# runner-${JOB_ID} until after the image pull and
+# ensure_job_openshell_gateway — so during that window no such container
+# exists yet and a concurrent timer tick sees nothing in-flight. It can then
+# run `podman image prune -f` / `podman rmi` while prepare.sh's own pull is
+# still writing layers, deleting a dangling layer mid-write or (once the
+# per-invocation extra-keep protection from prune_unused_podman_storage's
+# own call has ended) the job's freshly cached image (review on #7669).
+PODMAN_PRUNE_LOCK_FILE="${FULLSEND_PODMAN_PRUNE_LOCK_FILE:-${HOME}/.local/state/fullsend-gitlab-runner/podman-prune.lock}"
+
+# Acquire the lock for the rest of the caller's critical section (prepare.sh
+# holds it from just before prune_unused_podman_storage until after `podman
+# start`). Exports FULLSEND_PODMAN_PRUNE_LOCK_HELD so a podman-prune.sh
+# invocation made from inside that section trusts the caller instead of
+# trying to flock the same path itself — a child process locking it
+# independently would see the parent's lock as unavailable and skip a prune
+# the caller actually wants to run.
+#
+# The lock lives on this shell's open file descriptor, so it is released by
+# the kernel when this process exits for any reason — normal completion,
+# `set -e`, or a signal — even if release_podman_prune_lock below is never
+# reached. That is why cleanup.sh needs no matching unlock call for
+# prepare.sh's failure paths.
+acquire_podman_prune_lock() {
+  mkdir -p "$(dirname "${PODMAN_PRUNE_LOCK_FILE}")"
+  exec {PODMAN_PRUNE_LOCK_FD}>"${PODMAN_PRUNE_LOCK_FILE}"
+  flock -x "${PODMAN_PRUNE_LOCK_FD}"
+  export FULLSEND_PODMAN_PRUNE_LOCK_HELD=1
+}
+
+# Release a lock taken by acquire_podman_prune_lock. Safe to call even when
+# no lock was acquired (e.g. a second, defensive call).
+release_podman_prune_lock() {
+  if [ -n "${PODMAN_PRUNE_LOCK_FD:-}" ]; then
+    flock -u "${PODMAN_PRUNE_LOCK_FD}" 2>/dev/null || true
+    exec {PODMAN_PRUNE_LOCK_FD}>&- 2>/dev/null || true
+    unset PODMAN_PRUNE_LOCK_FD
+  fi
+  unset FULLSEND_PODMAN_PRUNE_LOCK_HELD
 }
 
 # OpenShell's systemd user unit sets StateDirectory=openshell/gateway, which
@@ -170,6 +242,34 @@ teardown_openshell_gateway() {
 reap_orphaned_openshell() {
   echo "Reaping leftover OpenShell gateway/sandboxes from a previous job"
   teardown_openshell_gateway
+}
+
+# Reap a leftover job container from an abruptly killed prior job (runner
+# process crash, timeout kill — cleanup.sh never ran). $1 is the container
+# name this job is about to create; it is excluded even though it cannot
+# exist yet, for clarity at the call site.
+#
+# These VMs register exactly one runner with the default concurrency of 1
+# (see setup.sh's patch_config: "Single-runner VM assumption"), so any other
+# runner-* container found here belongs to a job GitLab already considers
+# finished — it can only be a leftover. Without this reap, a leftover stuck
+# in a non-exited state pins podman-prune.sh's job_in_flight() check forever:
+# prepare.sh, cleanup.sh, and the hourly timer would all skip the entire
+# reclaim (container prune, dangling images, and tagged-image rmi)
+# indefinitely, reproducing the disk-exhaustion failure mode (#7663).
+reap_orphaned_runner_containers() {
+  command -v podman >/dev/null 2>&1 || return 0
+  local keep="${1:-}" name
+  while IFS= read -r name; do
+    [ -n "${name}" ] || continue
+    case "${name}" in
+      runner-*)
+        [ "${name}" = "${keep}" ] && continue
+        echo "Removing leftover job container: ${name}"
+        podman rm -f -- "${name}" 2>/dev/null || true
+        ;;
+    esac
+  done < <(podman ps -a --format '{{.Names}}' 2>/dev/null || true)
 }
 
 wait_for_openshell_gateway() {

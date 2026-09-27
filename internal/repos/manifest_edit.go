@@ -339,7 +339,9 @@ var ValidDefaultKeys = []string{
 	"github.fullsend_ref",
 	"gitlab.url",
 	"gitlab.fullsend_ref",
-	"gitlab.runner_tags",
+	"gitlab.agent_runner_tags",
+	"gitlab.control_runner_tags",
+	"gitlab.runner_tags", // deprecated alias for gitlab.agent_runner_tags
 }
 
 // validDefaultKeySet is the lookup set for ValidDefaultKeys.
@@ -402,11 +404,7 @@ func SetDefault(manifestPath, key, value string) error {
 		if value == "" {
 			m.Defaults.AllowedRemoteResources = nil
 		} else {
-			parts := strings.Split(value, ",")
-			for i := range parts {
-				parts[i] = strings.TrimSpace(parts[i])
-			}
-			m.Defaults.AllowedRemoteResources = parts
+			m.Defaults.AllowedRemoteResources = splitAllowedRemoteResources(value)
 		}
 	case "github.url":
 		if value != "" {
@@ -444,21 +442,48 @@ func SetDefault(manifestPath, key, value string) error {
 		} else if m.GitLab != nil {
 			m.GitLab.FullsendRef = ""
 		}
-	case "gitlab.runner_tags":
-		if value == "" {
-			if m.GitLab != nil {
-				m.GitLab.RunnerTags = nil
-			}
-		} else {
-			parts := strings.Split(value, ",")
-			for i := range parts {
-				parts[i] = strings.TrimSpace(parts[i])
-			}
-			m.EnsurePlatform(ForgeGitLab).RunnerTags = parts
+	case "gitlab.agent_runner_tags", "gitlab.runner_tags":
+		if value != "" {
+			m.EnsurePlatform(ForgeGitLab).AgentRunnerTags = parseGitLabTagList(value)
+			m.GitLab.DeprecatedRunnerTags = nil
+		} else if m.GitLab != nil {
+			m.GitLab.AgentRunnerTags = nil
+			m.GitLab.DeprecatedRunnerTags = nil
+		}
+	case "gitlab.control_runner_tags":
+		if value != "" {
+			m.EnsurePlatform(ForgeGitLab).ControlRunnerTags = parseGitLabTagList(value)
+		} else if m.GitLab != nil {
+			m.GitLab.ControlRunnerTags = nil
 		}
 	}
 
 	return writeManifest(manifestPath, m)
+}
+
+// parseGitLabTagList splits a comma-separated tag value into a trimmed
+// slice. Callers handle clearing the field for an empty value themselves.
+func parseGitLabTagList(value string) []string {
+	parts := strings.Split(value, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+// splitAllowedRemoteResources splits a comma-separated
+// defaults.allowed_remote_resources value into trimmed, non-empty prefixes.
+// Used both to validate the value and to build the slice persisted to the
+// manifest, so a trailing comma or whitespace-only entry can't slip an empty
+// token past validation and into the written file.
+func splitAllowedRemoteResources(value string) []string {
+	var parts []string
+	for _, raw := range strings.Split(value, ",") {
+		if v := strings.TrimSpace(raw); v != "" {
+			parts = append(parts, v)
+		}
+	}
+	return parts
 }
 
 // validateDefaultValue checks that value is appropriate for the given key.
@@ -499,20 +524,14 @@ func validateDefaultValue(key, value string) error {
 			return fmt.Errorf("defaults.vendor must be \"true\" or \"false\", got %q", value)
 		}
 	case "defaults.allowed_remote_resources":
-		for _, raw := range strings.Split(value, ",") {
-			v := strings.TrimSpace(raw)
-			if v == "" {
-				continue
-			}
-			u, err := url.Parse(v)
-			if err != nil || u.Scheme != "https" || u.Host == "" {
-				return fmt.Errorf("defaults.allowed_remote_resources: %q must be a valid HTTPS URL", v)
-			}
+		parts := splitAllowedRemoteResources(value)
+		if err := ValidateAllowedRemoteResourcesFormat("defaults.allowed_remote_resources", parts); err != nil {
+			return err
 		}
-	case "gitlab.runner_tags":
+	case "gitlab.agent_runner_tags", "gitlab.control_runner_tags", "gitlab.runner_tags":
 		for _, raw := range strings.Split(value, ",") {
 			if strings.TrimSpace(raw) == "" {
-				return fmt.Errorf("gitlab.runner_tags: tags must not be empty")
+				return fmt.Errorf("%s: tags must not be empty", key)
 			}
 		}
 	}

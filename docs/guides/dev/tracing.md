@@ -19,7 +19,7 @@ The tracing code is split between two locations:
 - **`internal/telemetry/`** - the TracerProvider, exporters, and W3C
   traceparent helpers.
 - **`internal/cli/run.go`** - span creation, attribute assignment, and
-  trace context propagation to child scripts.
+  trace context propagation to child scripts and the in-sandbox runtime.
 
 The telemetry package owns the provider and exporters. `run.go` owns the
 span lifecycle: it decides when spans start and end, and which attributes
@@ -250,10 +250,20 @@ steps:
    `AlwaysSample` flag. This prevents child runs from re-advertising as
    sampled when the parent trace opted out.
 
-The resulting `TRACEPARENT` string is passed to pre-scripts, post-scripts,
-and the sandbox environment via `childScriptEnv()`. That function strips
-any inherited `TRACEPARENT` from `os.Environ()` and `runner_env` before
-appending fullsend's own value (issue #2779).
+The resulting `TRACEPARENT` string is passed to pre-scripts and
+post-scripts via `childScriptEnv()`. That function strips any inherited
+`TRACEPARENT` from `os.Environ()` and `runner_env` before appending
+fullsend's own value (issue #2779). That value is the **run-root** span.
+
+A second, complementary path reaches the in-sandbox agent process. Before
+every iteration, `runAgent` starts the per-iteration `agent` span and
+writes that span's `TRACEPARENT` (same trace ID, agent span ID, flags from
+`resolveTraceIdentity`) into `.fullsend/iteration.env` via
+`writeIterationEnv`. The sandbox `.env` sources that file last, so the
+runtime sees the agent-span parent rather than the run-root value
+`childScriptEnv()` gives host-side scripts. An inbound unsampled parent
+stays `-00` here too, so a runtime that honours W3C sampling does not
+export when the parent trace opted out.
 
 ## File exporter output format
 

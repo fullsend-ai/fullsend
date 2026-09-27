@@ -237,11 +237,11 @@ A single mint instance can serve multiple orgs:
 - **Authorization:** Any valid credential from the auth pipeline — no role restriction.
 - **OIDC response:** Scoped to the authenticating workflow's org.
   ```json
-  {"org": "my-org", "roles": ["coder", "review", "triage"]}
+  {"org": "my-org", "roles": ["coder", "review", "triage"], "workflow_host_repos": ["fullsend-ai/fullsend"], "version": "2.0.0", "commit": "abc123"}
   ```
 - **Non-OIDC response** (e.g. GitHub user token): Reports all configured allowed orgs.
   ```json
-  {"allowed_orgs": ["org-a", "org-b"], "roles": ["coder", "review", "triage"]}
+  {"allowed_orgs": ["org-a", "org-b"], "roles": ["coder", "review", "triage"], "workflow_host_repos": ["fullsend-ai/fullsend"], "version": "2.0.0", "commit": "abc123"}
   ```
 - **Use case:** Workflow diagnostics — discover which roles are available before requesting a token. Non-OIDC auth enables status checks from outside GitHub Actions (e.g. `gh` CLI, OAuth login).
 - **Security:** OIDC returns only the requesting org. Non-OIDC returns allowed orgs (not individual role app IDs).
@@ -374,9 +374,11 @@ events); otherwise each branch is an empty signed baseline. Existing
 branch documents are not overwritten. `repos uninstall` deletes both
 branches via `DeleteRef` (a missing branch is ignored).
 
-Every poller save force-re-roots the mode's branch on the repository's
-root commit (`force: true` + `start_sha`), so the branch stays at base +
-1 commit and history never grows. The poller **fails closed** when
+Each poll cycle performs a single save of that mode's `state.json`
+(dispatched keys, failed-key retry counts, watermark, and label state
+together). Every save force-re-roots the mode's branch on the
+repository's root commit (`force: true` + `start_sha`), so the branch
+stays at base + 1 commit and history never grows. The poller **fails closed** when
 `FULLSEND_DISPATCH_SECRET` is unset (refuse load/write) or when a
 present `state.json` has a missing/invalid HMAC (discard the branch and
 fail that cycle). A missing branch or file is **not** tampering: the

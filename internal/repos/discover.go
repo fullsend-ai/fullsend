@@ -247,9 +247,11 @@ func countDistinct(repos []DiscoveredRepo, extract func(DiscoveredRepo) string) 
 	return len(seen)
 }
 
-// MarshalWithHeader serializes the manifest with a descriptive header comment.
+// MarshalWithHeader serializes the manifest with a descriptive header
+// comment. Like Manifest.Marshal, it does not mutate the receiver — the
+// deprecated runner_tags migration runs against a shallow copy.
 func MarshalWithHeader(m *Manifest) ([]byte, error) {
-	data, err := yaml.Marshal(m)
+	data, err := yaml.Marshal(migratedManifestForMarshal(m))
 	if err != nil {
 		return nil, fmt.Errorf("marshalling manifest: %w", err)
 	}

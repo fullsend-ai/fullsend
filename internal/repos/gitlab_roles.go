@@ -35,6 +35,7 @@ type ProjectAccessToken struct {
 	Active    bool
 	ExpiresAt string
 	Revoked   bool
+	UserID    int
 }
 
 // ProjectAccessTokenClient creates, lists, and revokes GitLab project

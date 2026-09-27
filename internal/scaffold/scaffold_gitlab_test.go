@@ -1,12 +1,58 @@
 package scaffold
 
 import (
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
+
+const (
+	gitlabInstallCLIScriptPath  = ".gitlab/ci/scripts/install-fullsend-cli.sh"
+	gitlabRunPollJobScriptPath  = ".gitlab/ci/scripts/run-poll-job.sh"
+	gitlabRunAgentJobScriptPath = ".gitlab/ci/scripts/run-agent-job.sh"
+)
+
+func gitlabPerRepoText(t *testing.T, path string) string {
+	t.Helper()
+	content, err := GitLabPerRepoFile(path)
+	require.NoError(t, err, "reading %s", path)
+	return string(content)
+}
+
+func gitlabJoinTexts(t *testing.T, paths ...string) string {
+	t.Helper()
+	parts := make([]string, len(paths))
+	for i, p := range paths {
+		parts[i] = gitlabPerRepoText(t, p)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// gitlabAgentScaffold concatenates the agent job YAML with the scripts it
+// invokes so tests can assert job structure and shell behavior together.
+func gitlabAgentScaffold(t *testing.T) string {
+	t.Helper()
+	return gitlabJoinTexts(t,
+		".gitlab/ci/fullsend-agent.yml",
+		gitlabInstallCLIScriptPath,
+		gitlabRunAgentJobScriptPath,
+	)
+}
+
+// gitlabPollScaffold concatenates the poll job YAML with the scripts it
+// invokes so tests can assert job structure and shell behavior together.
+func gitlabPollScaffold(t *testing.T) string {
+	t.Helper()
+	return gitlabJoinTexts(t,
+		".gitlab/ci/fullsend-poll.yml",
+		gitlabInstallCLIScriptPath,
+		gitlabRunPollJobScriptPath,
+	)
+}
 
 func TestGitLabPerRepoFilesExist(t *testing.T) {
 	expected := []string{
@@ -14,11 +60,13 @@ func TestGitLabPerRepoFilesExist(t *testing.T) {
 		".gitlab-ci.yml",
 		".fullsend/config.yaml",
 		".gitlab/ci/fullsend-pipeline.yml",
-		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		gitlabInstallCLIScriptPath,
+		gitlabRunPollJobScriptPath,
+		gitlabRunAgentJobScriptPath,
 	}
 
 	for _, path := range expected {
@@ -43,7 +91,7 @@ func TestGitLabGitignoreExcludesOutput(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 	for _, f := range files {
 		assert.NotEqual(t, ".gitignore", f.Path,
@@ -52,7 +100,7 @@ func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_SkipsRootPipeline(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 	for _, f := range files {
 		assert.NotEqual(t, ".gitlab-ci.yml", f.Path,
@@ -108,27 +156,13 @@ func TestAllGitLabYAMLDocumentStartMarker(t *testing.T) {
 	assert.True(t, checked >= 4, "expected at least 4 YAML files, got %d", checked)
 }
 
-func TestGitLabDispatchContent(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-dispatch.yml")
-	require.NoError(t, err)
-	s := string(content)
-	// Native MR dispatch jobs were removed in #7322. The file is kept
-	// as the version-marker carrier and must not define CI jobs.
-	assert.Contains(t, s, "# fullsend-stage: dispatch")
-	assert.Contains(t, s, "#7322")
-	assert.Contains(t, s, "cron poller")
-	assert.NotContains(t, s, "dispatch-mr-agents:")
-	assert.NotContains(t, s, "mr-dispatch-pipeline.yml")
-	assert.NotContains(t, s, "__RUNNER_TAGS__")
-	assert.NotRegexp(t, `(?m)^dispatch:`, s, "must not define a dispatch job")
-	assert.True(t, strings.HasPrefix(s, "---\n"),
-		"must start with YAML document start marker (---)")
+func TestGitLabDispatchFileRemoved(t *testing.T) {
+	_, err := GitLabPerRepoFile(".gitlab/ci/fullsend-dispatch.yml")
+	assert.Error(t, err, "fullsend-dispatch.yml must not be in the GitLab scaffold after #7707")
 }
 
 func TestGitLabAgentTemplateContent(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 	// Standalone pipeline config: must declare stages for poller path
 	assert.Contains(t, s, "stages:")
 	assert.Contains(t, s, "- agent")
@@ -266,9 +300,7 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 // the job — reusing it would misattribute prior-review lookups and
 // GIT_BOT_EMAIL to the wrong bot user.
 func TestGitLabAgentTemplateBotIdentityNotLeakedPastRoleReselection(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 
 	reselectIdx := strings.Index(s, "FULLSEND_JOB_KIND=agent")
 	require.NotEqual(t, -1, reselectIdx, "agent role re-selection marker not found")
@@ -301,9 +333,7 @@ func TestGitLabAgentTemplateBotIdentityNotLeakedPastRoleReselection(t *testing.T
 // than the poller bootstrap token just because the HMAC check was
 // skipped rather than passed.
 func TestGitLabAgentTemplateStageReselectRequiresVerifiedDispatch(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 
 	// An explicit flag, set only on a successful HMAC check, gates the
 	// re-select — not merely "the HMAC block didn't error".
@@ -360,9 +390,7 @@ func TestGitLabAgentTemplateStageReselectRequiresVerifiedDispatch(t *testing.T) 
 }
 
 func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 	// Fix stage exports REVIEW_BODY_FILE for the fix harness
 	assert.Contains(t, s, "REVIEW_BODY_FILE")
 	assert.Contains(t, s, `"fix"`)
@@ -428,9 +456,7 @@ func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
 // FULLSEND_JOB_TOKEN before GITLAB_TOKEN/PUSH_TOKEN and the rest of the
 // job run.
 func TestGitLabAgentTemplateFixStageReviewNoteUsesAnalystIdentity(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 
 	fixOnlyMarker := `if [ "${STAGE}" = "fix" ]; then`
 	fixOnlyIdx := strings.Index(s, fixOnlyMarker)
@@ -468,9 +494,7 @@ func TestGitLabAgentTemplateFixStageReviewNoteUsesAnalystIdentity(t *testing.T) 
 // exported in the shared code|fix|review block so all three stages
 // receive them (#6865).
 func TestGitLabAgentTemplateSharedCodeFixEnvVars(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 
 	// Shared block guards on code, fix, or review
 	assert.Contains(t, s, `"${STAGE}" = "code"`)
@@ -505,9 +529,7 @@ func TestGitLabAgentTemplateSharedCodeFixEnvVars(t *testing.T) {
 }
 
 func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 	assert.Contains(t, s, "kill_switch")
 	assert.Contains(t, s, "Kill switch is active")
 	assert.Contains(t, s, "kill_switch: false")
@@ -524,9 +546,7 @@ func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
 }
 
 func TestGitLabAgentTemplateRoleEnablement(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 	assert.Contains(t, s, "STAGE_ROLE")
 	assert.Contains(t, s, `code|fix) STAGE_ROLE="coder"`)
 	assert.Contains(t, s, "not in configured roles")
@@ -536,9 +556,7 @@ func TestGitLabAgentTemplateRoleEnablement(t *testing.T) {
 }
 
 func TestGitLabAgentTemplateForkProtection(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 	assert.Contains(t, s, "Fork MR detected")
 	assert.Contains(t, s, "IS_FORK")
 	// Fail-closed: default to true when IS_FORK is unset
@@ -555,9 +573,7 @@ func TestGitLabAgentTemplateForkProtection(t *testing.T) {
 }
 
 func TestGitLabAgentTemplateAuthorizationGate(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 	// Authorization uses bot PAT (PRIVATE-TOKEN), not job token
 	assert.Contains(t, s, "PRIVATE-TOKEN")
 	assert.Contains(t, s, "members/all")
@@ -576,9 +592,7 @@ func TestGitLabAgentTemplateAuthorizationGate(t *testing.T) {
 }
 
 func TestGitLabAgentTemplateCredentialValidation(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 	assert.Contains(t, s, "CI_DEBUG_TRACE")
 	assert.Contains(t, s, "select-gitlab-role-token.sh")
 	assert.Contains(t, s, "FULLSEND_JOB_KIND=agent")
@@ -587,9 +601,7 @@ func TestGitLabAgentTemplateCredentialValidation(t *testing.T) {
 }
 
 func TestGitLabPollContent(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-poll.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabPollScaffold(t)
 	assert.Contains(t, s, "# fullsend-stage: poll")
 	assert.Contains(t, s, "fullsend poll")
 	assert.Contains(t, s, "schedule")
@@ -642,9 +654,7 @@ func TestGitLabPollContent(t *testing.T) {
 // agent template still needs those siblings present until its own HMAC
 // reselect and the STAGE=fix analyst-identity lookup).
 func TestGitLabPollBlanksSiblingRoleSecrets(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-poll.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabPollScaffold(t)
 
 	selectIdx := strings.Index(s, "select-gitlab-role-token.sh")
 	require.NotEqual(t, -1, selectIdx, "expected select-gitlab-role-token.sh to be sourced")
@@ -704,9 +714,11 @@ func TestGitLabPipelineWrapperContent(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	// Pipeline wrapper contains includes and stages moved from root.
-	// Native MR dispatch was removed in #7322; the dispatch file is
-	// retained on disk as a version-marker carrier but is not included.
+	// Native MR dispatch was removed in #7322; the leftover dispatch
+	// stub was dropped in #7707. The version marker is injected here
+	// at collect time, not baked into the raw template.
 	assert.NotContains(t, s, "local: '.gitlab/ci/fullsend-dispatch.yml'")
+	assert.NotContains(t, s, "fullsend-ref:")
 	assert.Contains(t, s, "fullsend-poll.yml")
 	assert.Contains(t, s, "fullsend-agent.yml")
 	assert.Contains(t, s, "stages:")
@@ -725,67 +737,82 @@ func TestGitLabPipelineWrapperContent(t *testing.T) {
 }
 
 func TestGitLabRunnerTagsPlaceholder(t *testing.T) {
-	taggedFiles := []string{
-		".gitlab/ci/fullsend-poll.yml",
-		".gitlab/ci/fullsend-agent.yml",
-	}
-	for _, path := range taggedFiles {
-		content, err := GitLabPerRepoFile(path)
-		require.NoError(t, err, path)
-		assert.Contains(t, string(content), "__RUNNER_TAGS__", "%s must contain __RUNNER_TAGS__ placeholder", path)
-	}
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "__AGENT_RUNNER_TAGS__",
+		"agent job must contain __AGENT_RUNNER_TAGS__ placeholder")
+	assert.NotContains(t, string(content), "__CONTROL_RUNNER_TAGS__")
+
+	content, err = GitLabPerRepoFile(".gitlab/ci/fullsend-poll.yml")
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "__CONTROL_RUNNER_TAGS__",
+		"poll job must contain __CONTROL_RUNNER_TAGS__ placeholder")
+	assert.NotContains(t, string(content), "__AGENT_RUNNER_TAGS__")
 }
 
 func TestCollectGitLabPerRepoInstallFiles_WithTags(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles([]string{"docker", "linux"}, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(
+		[]string{"docker", "linux"}, []string{"api"}, "", "",
+	)
 	require.NoError(t, err)
 
+	var sawAgent, sawPoll bool
 	for _, f := range files {
-		if strings.HasSuffix(f.Path, ".yml") {
-			s := string(f.Content)
-			assert.NotContains(t, s, "__RUNNER_TAGS__", "%s should have tags substituted", f.Path)
-			if strings.Contains(s, "tags:") {
-				assert.Contains(t, s, `["docker", "linux"]`, "%s should contain formatted tags", f.Path)
-			}
+		s := string(f.Content)
+		assert.NotContains(t, s, "__AGENT_RUNNER_TAGS__", "%s should have agent tags substituted", f.Path)
+		assert.NotContains(t, s, "__CONTROL_RUNNER_TAGS__", "%s should have control tags substituted", f.Path)
+		switch f.Path {
+		case ".gitlab/ci/fullsend-agent.yml":
+			sawAgent = true
+			assert.Contains(t, s, `["docker", "linux"]`)
+			assert.NotContains(t, s, `["api"]`)
+		case ".gitlab/ci/fullsend-poll.yml":
+			sawPoll = true
+			assert.Contains(t, s, `["api"]`)
+			assert.NotContains(t, s, `["docker", "linux"]`)
 		}
 	}
+	assert.True(t, sawAgent, "agent job missing from install files")
+	assert.True(t, sawPoll, "poll job missing from install files")
 }
 
 func TestCollectGitLabPerRepoInstallFiles_NoTags(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
-		if strings.HasSuffix(f.Path, ".yml") {
-			s := string(f.Content)
-			assert.NotContains(t, s, "__RUNNER_TAGS__", "%s should have tags substituted", f.Path)
-		}
+		s := string(f.Content)
+		assert.NotContains(t, s, "__AGENT_RUNNER_TAGS__", "%s should have agent tags substituted", f.Path)
+		assert.NotContains(t, s, "__CONTROL_RUNNER_TAGS__", "%s should have control tags substituted", f.Path)
 	}
 }
 
 func TestCollectGitLabPerRepoInstallFiles_VersionMarker(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "v0.34.0", "v0.34.0")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "v0.34.0", "v0.34.0")
 	require.NoError(t, err)
 
-	var dispatchContent string
+	var pipelineContent string
 	for _, f := range files {
-		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
-			dispatchContent = string(f.Content)
+		if f.Path == ".gitlab/ci/fullsend-pipeline.yml" {
+			pipelineContent = string(f.Content)
 			break
 		}
 	}
-	require.NotEmpty(t, dispatchContent, "dispatch file should exist")
-	assert.Contains(t, dispatchContent, "# fullsend-ref: v0.34.0",
-		"dispatch file should contain version marker")
+	require.NotEmpty(t, pipelineContent, "pipeline wrapper should exist")
+	assert.Contains(t, pipelineContent, "# fullsend-ref: v0.34.0",
+		"pipeline wrapper should contain version marker")
 	// Marker must appear after YAML document start marker
-	assert.True(t, strings.HasPrefix(dispatchContent, "---\n"),
-		"dispatch file must start with YAML document start marker")
-	idx := strings.Index(dispatchContent, "# fullsend-ref: v0.34.0")
+	assert.True(t, strings.HasPrefix(pipelineContent, "---\n"),
+		"pipeline wrapper must start with YAML document start marker")
+	idx := strings.Index(pipelineContent, "# fullsend-ref: v0.34.0")
 	assert.Greater(t, idx, 0, "version marker should appear after ---")
 
-	// Other files should NOT contain the version marker
+	// Other files should NOT contain the version marker, and the
+	// obsolete dispatch stub must not be installed at all.
 	for _, f := range files {
-		if f.Path != ".gitlab/ci/fullsend-dispatch.yml" {
+		assert.NotEqual(t, ".gitlab/ci/fullsend-dispatch.yml", f.Path,
+			"fresh install must not include obsolete fullsend-dispatch.yml")
+		if f.Path != ".gitlab/ci/fullsend-pipeline.yml" {
 			assert.NotContains(t, string(f.Content), "fullsend-ref:",
 				"%s should not contain version marker", f.Path)
 		}
@@ -793,7 +820,7 @@ func TestCollectGitLabPerRepoInstallFiles_VersionMarker(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_NoVersionMarkerWhenEmpty(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
@@ -804,32 +831,32 @@ func TestCollectGitLabPerRepoInstallFiles_NoVersionMarkerWhenEmpty(t *testing.T)
 
 func TestCollectGitLabPerRepoInstallFiles_SHAWithTagAnnotation(t *testing.T) {
 	// When both ref (SHA) and tag differ, marker includes both
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "v0.35.0")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "abc123def", "v0.35.0")
 	require.NoError(t, err)
 
 	for _, f := range files {
-		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
+		if f.Path == ".gitlab/ci/fullsend-pipeline.yml" {
 			s := string(f.Content)
 			assert.Contains(t, s, "# fullsend-ref: abc123def (v0.35.0)",
 				"version marker should include SHA with tag annotation")
 			return
 		}
 	}
-	t.Fatal("dispatch file not found in collected files")
+	t.Fatal("pipeline wrapper not found in collected files")
 }
 
 func TestCollectGitLabPerRepoInstallFiles_RefUsedWhenNoTag(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "v0.34.0", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "v0.34.0", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
-		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" {
+		if f.Path == ".gitlab/ci/fullsend-pipeline.yml" {
 			assert.Contains(t, string(f.Content), "# fullsend-ref: v0.34.0",
 				"version marker should use ref when tag is empty")
 			return
 		}
 	}
-	t.Fatal("dispatch file not found in collected files")
+	t.Fatal("pipeline wrapper not found in collected files")
 }
 
 func TestFormatRunnerTags(t *testing.T) {
@@ -855,7 +882,7 @@ func TestResolveFullsendVersion(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_VersionPlaceholderReplaced(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "v0.42.0")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "abc123def", "v0.42.0")
 	require.NoError(t, err)
 
 	for _, f := range files {
@@ -864,9 +891,9 @@ func TestCollectGitLabPerRepoInstallFiles_VersionPlaceholderReplaced(t *testing.
 			"%s should have __FULLSEND_VERSION__ replaced", f.Path)
 	}
 
-	// Agent and poll templates should contain the rendered version
+	// The shared CLI installer should contain the rendered version.
 	for _, f := range files {
-		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+		if f.Path == gitlabInstallCLIScriptPath {
 			s := string(f.Content)
 			assert.Contains(t, s, `FULLSEND_VERSION="v0.42.0"`,
 				"%s should contain the rendered version tag", f.Path)
@@ -875,11 +902,11 @@ func TestCollectGitLabPerRepoInstallFiles_VersionPlaceholderReplaced(t *testing.
 }
 
 func TestCollectGitLabPerRepoInstallFiles_SHAFallbackWhenNoTag(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "abc123def", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
-		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+		if f.Path == gitlabInstallCLIScriptPath {
 			s := string(f.Content)
 			assert.Contains(t, s, `FULLSEND_VERSION="abc123def"`,
 				"%s should contain the SHA when no tag is available", f.Path)
@@ -888,11 +915,11 @@ func TestCollectGitLabPerRepoInstallFiles_SHAFallbackWhenNoTag(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_LatestWhenNoVersion(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 
 	for _, f := range files {
-		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+		if f.Path == gitlabInstallCLIScriptPath {
 			s := string(f.Content)
 			assert.Contains(t, s, `FULLSEND_VERSION="latest"`,
 				"%s should fall back to latest when no ref/tag provided", f.Path)
@@ -912,9 +939,7 @@ func TestInsertAfterDocStart(t *testing.T) {
 }
 
 func TestGitLabAgentTemplateRunnerTempBeforeRun(t *testing.T) {
-	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
-	require.NoError(t, err)
-	s := string(content)
+	s := gitlabAgentScaffold(t)
 
 	exportIdx := strings.Index(s, "export RUNNER_TEMP=")
 	require.Greater(t, exportIdx, 0, "RUNNER_TEMP export must exist")
@@ -952,23 +977,24 @@ func TestGitLabAgentTemplateHarnessPassthroughVars(t *testing.T) {
 }
 
 func TestGitLabTemplatesSourceRoleTokenHelper(t *testing.T) {
-	for _, path := range []string{
-		".gitlab/ci/fullsend-poll.yml",
-		".gitlab/ci/fullsend-agent.yml",
+	for _, tc := range []struct {
+		path string
+		body func(*testing.T) string
+	}{
+		{".gitlab/ci/fullsend-poll.yml", gitlabPollScaffold},
+		{".gitlab/ci/fullsend-agent.yml", gitlabAgentScaffold},
 	} {
-		content, err := GitLabPerRepoFile(path)
-		require.NoError(t, err, path)
-		s := string(content)
-		assert.Contains(t, s, "select-gitlab-role-token.sh", path)
-		assert.Contains(t, s, `PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}`, path)
-		assert.NotContains(t, s, `PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}`, path)
-		assert.NotContains(t, s, `export GITLAB_TOKEN="${FULLSEND_FORGE_TOKEN}"`, path)
-		assert.NotContains(t, s, `export PUSH_TOKEN="${FULLSEND_FORGE_TOKEN}"`, path)
+		s := tc.body(t)
+		assert.Contains(t, s, "select-gitlab-role-token.sh", tc.path)
+		assert.Contains(t, s, `PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}`, tc.path)
+		assert.NotContains(t, s, `PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}`, tc.path)
+		assert.NotContains(t, s, `export GITLAB_TOKEN="${FULLSEND_FORGE_TOKEN}"`, tc.path)
+		assert.NotContains(t, s, `export PUSH_TOKEN="${FULLSEND_FORGE_TOKEN}"`, tc.path)
 	}
 }
 
 func TestCollectGitLabPerRepoInstallFiles_IncludesRoleTokenScript(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 	var found bool
 	for _, f := range files {
@@ -981,6 +1007,66 @@ func TestCollectGitLabPerRepoInstallFiles_IncludesRoleTokenScript(t *testing.T) 
 		}
 	}
 	assert.True(t, found, "install files must include select-gitlab-role-token.sh")
+}
+
+func TestGitLabGeneratedCIYAMLRemainsValid(t *testing.T) {
+	err := WalkGitLabPerRepo(func(path string, content []byte) error {
+		if !strings.HasSuffix(path, ".yml") && !strings.HasSuffix(path, ".yaml") {
+			return nil
+		}
+		var docs []any
+		dec := yaml.NewDecoder(strings.NewReader(string(content)))
+		for {
+			var doc any
+			decodeErr := dec.Decode(&doc)
+			if decodeErr != nil {
+				if decodeErr == io.EOF {
+					break
+				}
+				require.NoError(t, decodeErr, "%s must be valid YAML", path)
+				return decodeErr
+			}
+			docs = append(docs, doc)
+		}
+		assert.NotEmpty(t, docs, "%s must contain at least one YAML document", path)
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+func TestGitLabJobsSourceExtractedScripts(t *testing.T) {
+	agentYAML := gitlabPerRepoText(t, ".gitlab/ci/fullsend-agent.yml")
+	pollYAML := gitlabPerRepoText(t, ".gitlab/ci/fullsend-poll.yml")
+
+	assert.Contains(t, agentYAML, gitlabInstallCLIScriptPath)
+	assert.Contains(t, agentYAML, gitlabRunAgentJobScriptPath)
+	assert.Contains(t, pollYAML, gitlabInstallCLIScriptPath)
+	assert.Contains(t, pollYAML, gitlabRunPollJobScriptPath)
+
+	assert.NotContains(t, agentYAML, "set -euo pipefail")
+	assert.NotContains(t, pollYAML, "set -euo pipefail")
+	assert.NotContains(t, agentYAML, "HMAC_MESSAGE=$(printf")
+	assert.NotContains(t, pollYAML, "FULLSEND_JOB_KIND=poller")
+
+	assert.Contains(t, gitlabPerRepoText(t, gitlabInstallCLIScriptPath), "__FULLSEND_VERSION__")
+	assert.Contains(t, gitlabPerRepoText(t, gitlabRunPollJobScriptPath), "fullsend poll")
+	assert.Contains(t, gitlabPerRepoText(t, gitlabRunAgentJobScriptPath), `fullsend run "${STAGE}"`)
+}
+
+func TestCollectGitLabPerRepoInstallFiles_IncludesExtractedJobScripts(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
+	require.NoError(t, err)
+	found := map[string]bool{}
+	for _, f := range files {
+		found[f.Path] = true
+	}
+	for _, path := range []string{
+		gitlabInstallCLIScriptPath,
+		gitlabRunPollJobScriptPath,
+		gitlabRunAgentJobScriptPath,
+	} {
+		assert.True(t, found[path], "install files must include %s", path)
+	}
 }
 
 func TestGitLabNoPerStageTemplates(t *testing.T) {
@@ -996,4 +1082,26 @@ func TestGitLabNoPerStageTemplates(t *testing.T) {
 		_, err := GitLabPerRepoFile(path)
 		assert.Error(t, err, "per-stage template %s should not exist — use fullsend-agent.yml", path)
 	}
+}
+
+// TestGitLabAgentTemplateExportsGoogleCloudProject guards the Vertex ADC
+// contract for Pi's google-vertex (Gemini) provider. GitHub Actions gets
+// GOOGLE_CLOUD_PROJECT from google-github-actions/auth; the GitLab scaffold
+// does a manual WIF exchange and must export it itself. Claude-on-Vertex
+// still uses ANTHROPIC_VERTEX_PROJECT_ID; Pi only maps that onto
+// GOOGLE_CLOUD_PROJECT on the anthropic-vertex path (#7577).
+func TestGitLabAgentTemplateExportsGoogleCloudProject(t *testing.T) {
+	s := gitlabAgentScaffold(t)
+
+	assert.Contains(t, s, `export GOOGLE_CLOUD_PROJECT="${FULLSEND_GCP_PROJECT_ID}"`)
+	assert.Contains(t, s, `export ANTHROPIC_VERTEX_PROJECT_ID="${FULLSEND_GCP_PROJECT_ID}"`)
+	assert.Contains(t, s, `export GOOGLE_APPLICATION_CREDENTIALS="${GCP_CRED_CONFIG_FILE}"`)
+	assert.Contains(t, s, `export CLOUD_ML_REGION="${FULLSEND_GCP_REGION}"`)
+
+	projectIdx := strings.Index(s, `export GOOGLE_CLOUD_PROJECT="${FULLSEND_GCP_PROJECT_ID}"`)
+	runIdx := strings.Index(s, `fullsend run "${STAGE}"`)
+	require.Greater(t, projectIdx, 0, "GOOGLE_CLOUD_PROJECT export must exist")
+	require.Greater(t, runIdx, 0, "fullsend run must exist")
+	assert.Less(t, projectIdx, runIdx,
+		"GOOGLE_CLOUD_PROJECT must be exported before fullsend run is invoked")
 }

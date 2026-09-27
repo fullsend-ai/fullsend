@@ -22,6 +22,9 @@ fullsend
 │   ├── enroll       <org|owner/repo>        # Register org/repo in mint
 │   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
 │   ├── status       [org]                   # Inspect mint state and PEM health
+│   │   ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
+│   │   ├── --project <id>                   #   GCP project ID (direct infra queries)
+│   │   └── --region <region>                #   GCP region (default: us-central1)
 │   └── token                                # Mint a short-lived token via OIDC
 │       ├── --role <name>                    #   Agent role (triage, coder, review)
 │       ├── --repos <list>                   #   Comma-separated repo names
@@ -93,7 +96,7 @@ fullsend
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --manifest-only                  #   Remove from manifest without tearing down
 │   │   └── --uninstall-only                 #   Tear down without removing from manifest
-│   ├── status                               # Compare manifest against actual repo state (includes declared config-preset drift)
+│   ├── status                               # Compare manifest against actual repo state (includes declared config-preset and managed configuration drift)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
@@ -469,8 +472,9 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │  ├── sources .env.d/*.env files          │                   │
 │  │  └── sources .fullsend/iteration.env     │                   │
 │  │      (FULLSEND_TIMEOUT_MINUTES +         │                   │
-│  │       FULLSEND_ITERATION_DEADLINE,       │                   │
-│  │       rewritten before every iteration)  │                   │
+│  │       FULLSEND_ITERATION_DEADLINE +      │                   │
+│  │       TRACEPARENT, rewritten before      │                   │
+│  │       every iteration)                   │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
@@ -518,7 +522,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │ for i := 1; i <= max_iterations; i++ {   │                   │
 │  │   if i > 1: ClearIterationArtifacts      │                   │
 │  │     (sweep stray processes, clear output)│                   │
-│  │   write .fullsend/iteration.env deadline │                   │
+│  │   write iteration.env incl. TRACEPARENT  │                   │
 │  │   run agent                              │                   │
 │  │   if killed at timeout: sweep stray      │                   │
 │  │     processes (agent still runs, #7042)  │                   │

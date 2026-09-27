@@ -45,9 +45,34 @@ preset file.
 default source in `defaults.config_base.source` (optional
 `defaults.config_base.sha256`) or override it per repository with
 `config_base`. The `none` sentinel disables inheritance. Convergence writes the fetched bytes to
-`config.base.yaml` and never edits the overlay; `repos status` reports
-base-file drift only when a preset is declared. See
+`config.base.yaml`; this preset-application step never edits the overlay
+itself (see below for managed-configuration convergence, which does rewrite the
+overlay on drift). `repos status` reports base-file drift only when a
+preset is declared. See
 [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
+
+Fleet manifests may also declare managed configuration via
+`defaults.config` and per-repository `config` ([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)).
+Those blocks are not `config_base` presets: `config` is a sparse overlay
+written to `.fullsend/config.yaml`, while `config_base` copies a preset
+byte-for-byte to `.fullsend/config.base.yaml`. Managed blocks use this
+same schema and the per-field merge rules below.
+`runtime` and `allowed_remote_resources` stay on the existing manifest
+shorthands and are rejected inside `config`. Managed configuration is
+opt-in: `defaults.config` opts every repository in; a repository `config`
+opts in only that repository. Every managed file carries an ownership
+marker; a pre-existing `config.yaml` that lacks the marker requires
+adoption — `repos status` reports "managed configuration (adoption
+required)" instead of ordinary drift, and install/convergence leave that
+file untouched until it is adopted. Once a file carries the marker,
+`repos install` writes the canonical sparse configuration for opted-in
+repositories, `repos status` reports whole-file managed-configuration
+drift, and convergence rewrites a drifted file unless the candidate would
+become less restrictive than the current effective configuration without
+an explicit manifest declaration. That comparison uses the overlay → base
+→ code-defaults accessor chain, including omitted-key fallthrough. Unmanaged
+repositories are left untouched. See
+[Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration).
 
 ### Marshal behavior
 

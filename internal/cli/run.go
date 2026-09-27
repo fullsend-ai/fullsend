@@ -1962,7 +1962,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if entryFound {
 		agentSubagents = entry.Subagents
 	}
-	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel)
+	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel, remoteRepositoryDir)
 	if err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
@@ -2041,6 +2041,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// repos that only have AGENTS.md. Runtimes opt in via ContextBridger.
 	if agentruntime.WantsClaudeMDBridge(rt) && agentsMDAvailable && !hasClaudeMD(hostRepositoryDir) {
 		injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer)
+	}
+
+	// 8a.2. Copy AGENTS.md to where a runtime that does not read it from
+	// the repo will load it (codex: the project is pinned untrusted).
+	if dest := agentruntime.HomeAgentsMDPath(rt); dest != "" && agentsMDAvailable {
+		bridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest, printer)
 	}
 
 	// 8a-2. Exclude agent working directories from git tracking.
@@ -2296,8 +2302,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Running agent")
 		printer.Blank()
 
+		// Start the agent span before writeIterationEnv so the runtime
+		// TRACEPARENT names this iteration's span, not the run root.
+		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		agentTraceparent := iterationTraceparent(agentSpan, tid.PropagatedFlags)
+
 		agentStart := time.Now()
-		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout)); err != nil {
+		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout), agentTraceparent); err != nil {
 			// The deadline is advisory; a stale one from the previous
 			// iteration is the only harmful state, so clear it and go on.
 			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
@@ -2305,13 +2316,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
 					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
 				}
+				endAgentSpanOnSetupError(agentSpan, rmErr)
 				return fmt.Errorf("clearing stale iteration deadline (iteration %d): %w", iteration, rmErr)
 			}
 		}
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
-
-		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
 		// One collector per iteration: iteration and agent span are 1:1, so
 		// a run-scoped collector would repeat earlier iterations' content on
 		// later spans. Nil when the Level 3 gate is off; nil is inert. The
@@ -2959,6 +2969,7 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_SLUG":               true,
 	"FULLSEND_TIMEOUT_MINUTES":    true,
 	"FULLSEND_ITERATION_DEADLINE": true,
+	"TRACEPARENT":                 true,
 	// OPENAI_API_KEY is reserved through oidcDenyKeys (merged by init()).
 	// GH_WORKFLOW_TOKEN is reserved through providerOnlyKeys (merged by init()).
 }
@@ -3065,7 +3076,8 @@ func iterationTimedOut(exitCode int, elapsed, timeout time.Duration) bool {
 }
 
 // iterationEnvFile is the runner-owned file .env sources after every
-// harness-controlled entry; it holds the budget and the deadline (#7042).
+// harness-controlled entry; it holds the budget, the deadline (#7042),
+// and the current agent span's W3C TRACEPARENT.
 const (
 	iterationEnvDir  = sandbox.SandboxWorkspace + "/.fullsend"
 	iterationEnvFile = iterationEnvDir + "/iteration.env"
@@ -3077,11 +3089,44 @@ func iterationEnvSourceLine() string {
 	return fmt.Sprintf("if [ -f %s ]; then . %s; fi", iterationEnvFile, iterationEnvFile)
 }
 
-// iterationEnvCommand rewrites iterationEnvFile with the budget in minutes
-// and the Unix time at which the running iteration is killed.
-func iterationEnvCommand(timeoutMinutes int, deadline time.Time) string {
-	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n' > %s",
-		iterationEnvDir, timeoutMinutes, deadline.Unix(), iterationEnvFile)
+// w3cTraceparentRe matches the W3C traceparent format that
+// telemetry.Traceparent emits (version 00). Used to refuse shell
+// interpolation of anything else at the iteration.env write site.
+var w3cTraceparentRe = regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
+
+// sanitizeTraceparent returns traceparent if it is a well-formed W3C
+// value, otherwise empty. iterationEnvCommand interpolates the result
+// into a shell printf, so anything outside this charset is dropped.
+func sanitizeTraceparent(traceparent string) string {
+	if w3cTraceparentRe.MatchString(traceparent) {
+		return traceparent
+	}
+	return ""
+}
+
+// iterationTraceparent formats the W3C TRACEPARENT the runtime inherits
+// from this iteration's agent span. Flags come from the run's resolved
+// identity so an inbound unsampled parent stays unsampled even though
+// the local tracer AlwaysSamples.
+func iterationTraceparent(agentSpan trace.Span, flags trace.TraceFlags) string {
+	return telemetry.TraceparentWithFlags(agentSpan.SpanContext(), flags)
+}
+
+// endAgentSpanOnSetupError ends an agent span started so its TRACEPARENT
+// could be exported, then never handed to rt.Run because iteration-env
+// setup failed on both write and cleanup.
+func endAgentSpanOnSetupError(span trace.Span, err error) {
+	recordSanitizedError(span, err)
+	span.SetStatus(codes.Error, truncateStatusMsg(err.Error()))
+	span.End()
+}
+
+// iterationEnvCommand rewrites iterationEnvFile with the budget in minutes,
+// the Unix time at which the running iteration is killed, and the agent
+// span's W3C TRACEPARENT so in-sandbox runtimes can join Fullsend traces.
+func iterationEnvCommand(timeoutMinutes int, deadline time.Time, traceparent string) string {
+	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\nexport TRACEPARENT=%s\\n' > %s",
+		iterationEnvDir, timeoutMinutes, deadline.Unix(), sanitizeTraceparent(traceparent), iterationEnvFile)
 }
 
 // runIterationEnvCommand treats a non-zero exit as an error: sandbox.Exec
@@ -3098,8 +3143,8 @@ func runIterationEnvCommand(exec sandboxExecFunc, sandboxName, command string) e
 }
 
 // writeIterationEnv rewrites iterationEnvFile for the iteration about to run.
-func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time) error {
-	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline))
+func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time, traceparent string) error {
+	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline, traceparent))
 }
 
 // clearIterationEnv removes a previous iteration's file so a stale deadline
@@ -3198,8 +3243,8 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// overriding a single var from a shared host_files .env file.
 	lines = append(lines, buildSandboxEnvLines(h)...)
 
-	// Runner-owned budget and deadline come after every harness-controlled
-	// entry so none of them can shadow the values (#7042).
+	// Runner-owned budget, deadline, and TRACEPARENT come after every
+	// harness-controlled entry so none of them can shadow the values (#7042).
 	lines = append(lines, iterationEnvSourceLine())
 
 	content := strings.Join(lines, "\n") + "\n"
@@ -4034,10 +4079,11 @@ func rootSpanStatus(runErr error, exitCode int, validationPassed bool) (codes.Co
 
 // traceIdentity holds the resolved trace context for a run.
 type traceIdentity struct {
-	Ctx         context.Context
-	RootSpan    trace.Span
-	Traceparent string
-	SpanKind    trace.SpanKind
+	Ctx             context.Context
+	RootSpan        trace.Span
+	Traceparent     string
+	SpanKind        trace.SpanKind
+	PropagatedFlags trace.TraceFlags
 }
 
 // resolveTraceIdentity extracts an inbound W3C traceparent, starts the root
@@ -4065,10 +4111,11 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	traceparent := telemetry.TraceparentWithFlags(rootSpan.SpanContext(), propagatedFlags)
 
 	return traceIdentity{
-		Ctx:         ctx,
-		RootSpan:    rootSpan,
-		Traceparent: traceparent,
-		SpanKind:    spanKind,
+		Ctx:             ctx,
+		RootSpan:        rootSpan,
+		Traceparent:     traceparent,
+		SpanKind:        spanKind,
+		PropagatedFlags: propagatedFlags,
 	}
 }
 
@@ -4801,6 +4848,34 @@ func doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *u
 		printer.StepWarn("Could not add CLAUDE.md to git exclude: " + err.Error())
 	}
 	printer.StepDone("Injected CLAUDE.md pointer to AGENTS.md (target repo has none)")
+}
+
+// agentsMDHomeMaxBytes matches codex's default project_doc_max_bytes, so
+// the copy is bounded the way native AGENTS.md loading is.
+const agentsMDHomeMaxBytes = 32 * 1024
+
+func bridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest string, printer *ui.Printer) {
+	doBridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest, printer, sandbox.Exec)
+}
+
+// doBridgeAgentsMDToHome is the testable core of bridgeAgentsMDToHome. It
+// takes the first regular file among hasAgentsMD's names; a symlink is
+// refused so the repo cannot point the copy at another file in the sandbox.
+func doBridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest string, printer *ui.Printer, execFn sandboxExecFunc) {
+	cmd := fmt.Sprintf(
+		"for f in AGENTS.md agents.md Agents.md; do p=%s/\"$f\"; if [ -f \"$p\" ] && [ ! -L \"$p\" ]; then head -c %d \"$p\" > %s; exit $?; fi; done; exit 3",
+		shellQuote(remoteRepositoryDir), agentsMDHomeMaxBytes, shellQuote(dest))
+	_, stderr, code, err := execFn(sandboxName, cmd, 10*time.Second)
+	switch {
+	case err == nil && code == 0:
+		printer.StepDone("Copied AGENTS.md to " + dest + " (the runtime does not read the repo's)")
+	case code == 3:
+		printer.StepWarn("AGENTS.md not bridged: no regular AGENTS.md at the repo root (symlinks are refused)")
+	case err != nil:
+		printer.StepWarn(fmt.Sprintf("Could not copy AGENTS.md to %s: %v", dest, err))
+	default:
+		printer.StepWarn(fmt.Sprintf("Could not copy AGENTS.md to %s: exit %d: %s", dest, code, strings.TrimSpace(stderr)))
+	}
 }
 
 // scanRepoContextFiles walks the target repo directory for known context

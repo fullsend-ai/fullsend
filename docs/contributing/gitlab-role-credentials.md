@@ -271,8 +271,9 @@ unlisted), exports `GITLAB_TOKEN` from that secret, and sets
 `approve_merge_request`. Role-aware modes also publish non-secret
 diagnostic env vars `FULLSEND_GITLAB_ROLE`,
 `FULLSEND_GITLAB_ROLE_SECRET`, and `FULLSEND_GITLAB_ROLE_SOURCE`.
-GitLab CI templates (`fullsend-poll.yml`, `fullsend-agent.yml`) resolve
-credentials via `select-gitlab-role-token.sh`. In `fullsend-agent.yml`,
+GitLab CI templates (`fullsend-poll.yml`, `fullsend-agent.yml`) source
+`run-poll-job.sh` and `run-agent-job.sh`, which resolve credentials via
+`select-gitlab-role-token.sh`. In `run-agent-job.sh`,
 the STAGE pipeline variable that would otherwise select the role is not
 yet authenticated when the job starts, so the *pre-verification*
 bootstrap calls (resource-group PUT, pipeline-metadata GET, bot-identity
@@ -306,7 +307,7 @@ review-body pre-fetch below ever execute, is the only way to keep an
 unverified STAGE from reaching a role-specific credential. This closes a
 gap where a forged dispatch that spoofed the pipeline source (via an
 overridden `CI_API_V4_URL`, the documented residual risk in ADR 0067 and
-`fullsend-agent.yml`) could otherwise obtain a higher-privilege role
+`run-agent-job.sh`) could otherwise obtain a higher-privilege role
 token before any credential separation existed to matter. Poll jobs have
 no such pre-verification window and resolve `FULLSEND_GITLAB_POLLER_TOKEN`
 once. Disabled and rollback still read `FULLSEND_FORGE_TOKEN` throughout.
@@ -322,7 +323,7 @@ that author match — neither identity is the note's author once
 analyst/coder resolve to distinct tokens. This lookup only runs once
 STAGE has already been authenticated (or the gate mode makes the
 distinction moot), since the job would otherwise already have exited
-above, so `fullsend-agent.yml` temporarily re-sources
+above, so `run-agent-job.sh` temporarily re-sources
 `select-gitlab-role-token.sh` with `FULLSEND_JOB_AGENT=review` to resolve
 the Analyst identity for that one lookup, then restores
 `FULLSEND_JOB_TOKEN` to the Coder credential before `GITLAB_TOKEN`,

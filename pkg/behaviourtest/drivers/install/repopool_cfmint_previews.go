@@ -102,7 +102,10 @@ func buildCFMintDriver(
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens := newRepoEnsurer(e2eCfg, client, token, binary, logf)
+	ens, err := newRepoEnsurer(e2eCfg, client, token, binary, logf)
+	if err != nil {
+		return nil, fmt.Errorf("cfmint factory: %w", err)
+	}
 
 	// Construct and return the composed driver.
 	d, err := newComposedDriver(org, md, ens, poolSize, logf)
