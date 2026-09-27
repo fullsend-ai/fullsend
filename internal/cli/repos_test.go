@@ -798,7 +798,7 @@ func writeTestManifest(t *testing.T, content string) string {
 // (#6501 supplementary finding A / #7457).
 func assertDirectPushPath(t *testing.T, fc *forge.FakeClient) {
 	t.Helper()
-	assert.Empty(t, fc.CreatedForks, "install should push directly, not fork")
+	require.Empty(t, fc.CreatedForks, "expected direct push, not fork")
 }
 
 func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
