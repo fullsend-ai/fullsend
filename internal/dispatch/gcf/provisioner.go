@@ -558,7 +558,7 @@ func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, o
 		}
 		roleOnly := mintcore.RoleOnlyAppIDs(roleAppIDMap)
 		if len(roleOnly) > 0 {
-			return fmt.Errorf("data inconsistency: ALLOWED_ORGS is empty but ROLE_APP_IDS has %d configured roles; this suggests env var data loss — run 'fullsend mint status --project=%s' to investigate", len(roleOnly), p.cfg.ProjectID)
+			return fmt.Errorf("data inconsistency: ALLOWED_ORGS is empty but ROLE_APP_IDS has %d configured roles; this suggests env var data loss — run 'fullsend mint status --mint-url= --project=%s' to investigate", len(roleOnly), p.cfg.ProjectID)
 		}
 	}
 
@@ -1698,13 +1698,21 @@ func (p *Provisioner) RemoveOrgFromMint(ctx context.Context, org string) error {
 		updated[k] = v
 	}
 
-	// Remove org from ALLOWED_ORGS.
+	// Remove org from ALLOWED_ORGS. If this removes the last org, fall
+	// back to PlaceholderOrg — mirroring RemoveOrgFromWIFCondition's
+	// last-org behavior — instead of leaving ALLOWED_ORGS empty. An empty
+	// ALLOWED_ORGS is otherwise indistinguishable from env var data loss
+	// and would trip EnsureOrgInMint's data-inconsistency guard on the
+	// next enrollment.
 	var filteredOrgs []string
 	for _, o := range strings.Split(trafficEnvVars["ALLOWED_ORGS"], ",") {
 		o = strings.TrimSpace(o)
 		if o != "" && !strings.EqualFold(o, org) {
 			filteredOrgs = append(filteredOrgs, o)
 		}
+	}
+	if len(filteredOrgs) == 0 {
+		filteredOrgs = []string{PlaceholderOrg}
 	}
 	sort.Strings(filteredOrgs)
 	updated["ALLOWED_ORGS"] = strings.Join(filteredOrgs, ",")

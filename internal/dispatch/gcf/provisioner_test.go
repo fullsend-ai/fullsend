@@ -3444,7 +3444,42 @@ func TestRemoveOrgFromMint_LowercasesOrg(t *testing.T) {
 	err := p.RemoveOrgFromMint(context.Background(), "ACME")
 	require.NoError(t, err)
 
-	assert.Equal(t, "", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+	// Last org removed: falls back to PlaceholderOrg rather than "" so
+	// ALLOWED_ORGS staying empty remains a true data-loss signal (see
+	// TestRemoveOrgFromMint_LastOrg_ThenEnsureOrgInMint_Succeeds).
+	assert.Equal(t, PlaceholderOrg, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestRemoveOrgFromMint_LastOrg_ThenEnsureOrgInMint_Succeeds(t *testing.T) {
+	// Regression test: unenrolling the sole remaining org must not
+	// permanently block future enrollment. RemoveOrgFromMint leaves
+	// ALLOWED_ORGS as PlaceholderOrg (not empty) so EnsureOrgInMint's
+	// data-inconsistency guard does not mistake legitimate last-org
+	// unenroll for env var data loss, and enrolling a new org afterward
+	// succeeds without the placeholder leaking into ALLOWED_ORGS.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "acme",
+			"ROLE_APP_IDS": `{"coder":"111"}`,
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+
+	require.NoError(t, p.RemoveOrgFromMint(context.Background(), "acme"))
+	require.Equal(t, PlaceholderOrg, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+
+	// Reflect the removal in the traffic-serving revision the next call reads.
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"],
+		"ROLE_APP_IDS": fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"],
+	}
+
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.NoError(t, err)
+	assert.Equal(t, "new-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
 }
 
 func TestRemoveOrgFromMint_ReadsFromTrafficServingRevision(t *testing.T) {
