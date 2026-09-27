@@ -43,6 +43,14 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 	hasRequiredComponent := false
 	state := RepoState{}
 	for _, c := range components {
+		// Capture the version marker even when the current carrier is
+		// missing: GitLab repos enrolled before #7707 still host it in
+		// the leftover dispatch stub. Presence of that stub is not
+		// install evidence; the ref is still useful once another
+		// required component proves the repo is installed.
+		if c.Name == "workflow" {
+			state.FullsendRef = c.Actual
+		}
 		if !c.Present {
 			continue
 		}
@@ -54,8 +62,6 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 			hasRequiredComponent = true
 		case strings.HasPrefix(c.Name, "schedule:"):
 			hasRequiredComponent = true
-		case c.Name == "workflow":
-			state.FullsendRef = c.Actual
 		}
 	}
 
@@ -85,6 +91,7 @@ type Drift struct {
 type RepoStatus struct {
 	Owner           string  `json:"owner"`
 	Repo            string  `json:"repo"`
+	Forge           string  `json:"forge,omitempty"`
 	Installed       bool    `json:"installed"`
 	CurrentRef      string  `json:"current_ref,omitempty"`
 	ExpectedRef     string  `json:"expected_ref,omitempty"`
@@ -158,10 +165,11 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 	// ReviewAppClientID are CLI flags on the install command and are
 	// not available in the status path, so value drift for
 	// GCP region and review client ID can only be
-	// detected by repos install, not repos status. RunnerTags come
-	// from the manifest's GitLab platform section.
+	// detected by repos install, not repos status. Agent/control
+	// runner tags come from the manifest's GitLab platform section.
 	dcfg := DriftConfig{
-		RunnerTags: gitlabRunnerTags(manifest),
+		AgentRunnerTags:   gitlabAgentRunnerTags(manifest),
+		ControlRunnerTags: gitlabControlRunnerTags(manifest),
 	}
 
 	results := make([]RepoStatus, len(resolved))
@@ -187,6 +195,7 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 				results[idx] = RepoStatus{
 					Owner: rr.Owner,
 					Repo:  rr.Repo,
+					Forge: cfg.Forge,
 					Error: fcErr.Error(),
 				}
 				return
@@ -225,6 +234,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	status := RepoStatus{
 		Owner:           owner,
 		Repo:            repo,
+		Forge:           cfg.Forge,
 		ExpectedRef:     cfg.FullsendRef,
 		ExpectedMintURL: cfg.MintURL,
 	}
@@ -325,6 +335,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		return status
 	}
 
+	checkManagedConfigDrift(ctx, cfg, &status)
+	if status.Error != "" {
+		return status
+	}
+
 	// Read display-only variable not covered by required vars.
 	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, forge.VarGCPRegion)
 	if regionErr != nil {
@@ -381,17 +396,14 @@ func gitLabRoleReadinessRequired(mode gitlabroles.Mode) bool {
 }
 
 func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (string, error) {
-	for _, path := range fc.WorkflowPaths {
-		content, err := client.GetFileContent(ctx, owner, repo, path)
-		if err != nil {
-			if forge.IsNotFound(err) {
-				continue
-			}
-			return "", err
-		}
-		return extractWorkflowRef(content, fc), nil
+	content, _, err := readWorkflowContent(ctx, client, owner, repo, fc)
+	if err != nil {
+		return "", err
 	}
-	return "", nil
+	if content == nil {
+		return "", nil
+	}
+	return extractWorkflowRef(content, fc), nil
 }
 
 // extractWorkflowRef extracts the @ref from a fullsend workflow file

@@ -29,6 +29,7 @@ type bootstrapInput struct {
 	skillDirs    []string
 	plugins      []PluginInput
 	modelAliases map[string]string
+	repoDir      string
 }
 
 func (b bootstrapInput) SandboxName() string                { return b.sandboxName }
@@ -39,6 +40,12 @@ func (b bootstrapInput) Plugins() []PluginInput             { return b.plugins }
 func (b bootstrapInput) ModelAliases() map[string]string    { return b.modelAliases }
 func (b bootstrapInput) AgentSubagents() map[string]*string { return nil }
 func (b bootstrapInput) ParentModel() string                { return "" }
+func (b bootstrapInput) RepoDir() string {
+	if b.repoDir == "" {
+		return "/sandbox/workspace/repo"
+	}
+	return b.repoDir
+}
 
 // claudePlugins and piPlugins build the two kinds of plugin input from
 // host directories, so a test names the format it means.
@@ -615,18 +622,19 @@ func TestClaudeRuntime_Bootstrap_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	agentDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "agent.md"), []byte("test"), 0o644))
+	agentFile := filepath.Join(agentDir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("test"), 0o644))
 
 	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
 		sandboxName: "test-sandbox",
-		agentPath:   agentDir,
+		agentPath:   agentFile,
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "creating runtime config dirs")
 }
 
 // TestClaudeRuntime_Bootstrap_AgentNameDest verifies that Bootstrap uses
-// agentDestName to derive the destination filename and calls UploadFile
+// agentDestName to derive the destination filename and calls uploadBytes
 // with the correct path. A stub openshell binary is placed on PATH so
 // sandbox operations succeed without a real sandbox.
 func TestClaudeRuntime_Bootstrap_AgentNameDest(t *testing.T) {
@@ -646,7 +654,7 @@ func TestClaudeRuntime_Bootstrap_AgentNameDest(t *testing.T) {
 	})
 	// The stub openshell succeeds for all sandbox calls, so Bootstrap
 	// should complete without error, exercising agentDestName and the
-	// UploadFile call path.
+	// uploadBytes call path.
 	assert.NoError(t, err)
 }
 

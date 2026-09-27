@@ -476,8 +476,11 @@ func mergeWithExistingManifest(path string, newManifest *Manifest) *Manifest {
 		if ep.FullsendRef == "" && newPlatform.FullsendRef != "" {
 			ep.FullsendRef = newPlatform.FullsendRef
 		}
-		if len(ep.RunnerTags) == 0 && len(newPlatform.RunnerTags) > 0 {
-			ep.RunnerTags = newPlatform.RunnerTags
+		if len(ep.AgentRunnerTags) == 0 && len(newPlatform.AgentRunnerTags) > 0 {
+			ep.AgentRunnerTags = newPlatform.AgentRunnerTags
+		}
+		if len(ep.ControlRunnerTags) == 0 && len(newPlatform.ControlRunnerTags) > 0 {
+			ep.ControlRunnerTags = newPlatform.ControlRunnerTags
 		}
 	}
 	mergePlatformDefaults(&existing.GitHub, newManifest.GitHub)

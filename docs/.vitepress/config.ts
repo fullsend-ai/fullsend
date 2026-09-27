@@ -294,6 +294,10 @@ export default defineConfig({
                   text: "Custom Agent Identity",
                   link: "/guides/user/custom-agent-identity",
                 },
+                {
+                  text: "Chaining Follow-up Workflows",
+                  link: "/guides/user/chaining-follow-up-workflows",
+                },
                 { text: "Config Reference", link: "/reference/config-reference" },
                 { text: "Harness Field Reference", link: "/reference/harness-reference" },
                 { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },

@@ -129,6 +129,7 @@ Agents amplify authority. If a compromised account can trigger agent actions, th
 - **Rate limiting / anomaly detection** — unusual patterns of agent activity (sudden burst of cross-repo changes, changes to security-sensitive paths) trigger alerts
 - **CODEOWNERS for agent config** — changes to agent rules, permissions, and configuration always require human approval
 - **Separation of duties** — different agents for different concerns, with no single agent having end-to-end authority
+- **Role admission criteria** — a new built-in agent role gets no write access on control-plane scopes (`actions`, `workflows`, `administration`, `secrets`), and a role with two or more write groups is judged by what they enable together; control-plane actions after a run go to the user's own workflow with the job token (see [ADR 0124](../ADRs/0124-criteria-for-adding-a-built-in-agent-role.md))
 
 ### Open questions
 

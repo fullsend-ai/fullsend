@@ -66,31 +66,23 @@ STATE_DIR="${HOME}/.local/state/gitlab-runner"
 mkdir -p "${STATE_DIR}"
 STATE_FILE="${STATE_DIR}/container-${JOB_ID}"
 
-echo "Pulling image: ${IMAGE}"
-podman pull -- "${IMAGE}"
-
-# Per-job OpenShell gateway: reap leftovers from a killed prior job, then
-# start a version-matched gateway with an empty profile registry. The image
-# pull above is required so we can read the job's OpenShell pin from it.
+# Reap leftovers from a killed prior job before prune/pull: an OpenShell
+# sandbox cannot pin image layers, and a leftover runner-* container stuck
+# non-exited would otherwise pin podman-prune.sh's in-flight check forever
+# (#7663). The job image pull below is still required before
+# ensure_job_openshell_gateway, which reads the job's OpenShell pin from it.
 # shellcheck source=gateway.sh
 source "$(dirname "${BASH_SOURCE[0]}")/gateway.sh"
 reap_orphaned_openshell
-ensure_job_openshell_gateway "${IMAGE}" || {
-  echo "ERROR: failed to start a per-job OpenShell gateway" >&2
-  exit 1
-}
+reap_orphaned_runner_containers "${CONTAINER_NAME}"
 
 mkdir -p "${BUILDS_DIR}" "${CACHE_DIR}"
-
-# --network=host is required so the container can reach the OpenShell gateway.
-# The host CA trust bundle is injected into containers via the OCI createRuntime
-# hook (install_ca_hook in setup.sh). Gateway mTLS credentials are mounted
-# read-only from the runner user's OpenShell config.
-OPENSHELL_CONFIG="${HOME}/.config/openshell"
 
 # Job ids are unique per runner, so a container of this name can only be a
 # stopped leftover from an earlier failed stage. Use plain `podman rm` (no -f):
 # it refuses a running container atomically, with no inspect/rm window.
+# Drop it before prune so it cannot pin layers the upcoming pull needs space
+# for, and so prune's in-flight check does not skip on this leftover.
 if podman container exists "${CONTAINER_NAME}" 2>/dev/null; then
   if ! rm_err=$(podman rm "${CONTAINER_NAME}" 2>&1); then
     if podman inspect --format '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -q true; then
@@ -101,6 +93,38 @@ if podman container exists "${CONTAINER_NAME}" 2>/dev/null; then
     exit 1
   fi
 fi
+
+# Serialize against the hourly podman-prune.sh timer from here through the
+# container actually starting: job_in_flight() in podman-prune.sh has
+# nothing to match on during this window (the old leftovers were just
+# reaped above and runner-${JOB_ID} does not exist until podman create
+# below), so a concurrent timer tick could otherwise prune a layer this
+# pull is still writing or rmi the job's own image right after it lands
+# (review on #7669). acquire_podman_prune_lock's fd-backed lock is released
+# by the kernel even if this script dies mid-window, so no separate
+# cleanup.sh unlock is needed on failure paths.
+acquire_podman_prune_lock
+trap release_podman_prune_lock EXIT
+
+# Reclaim unused images so this pull has disk headroom (#7663). Protect this
+# job's own image: the keep-file only lists the provision-time warm cache,
+# and `podman images` lists newest-first, so a cached copy of ${IMAGE} could
+# otherwise be the first rmi target right before the pull below needs it.
+prune_unused_podman_storage "${IMAGE}"
+
+echo "Pulling image: ${IMAGE}"
+podman pull -- "${IMAGE}"
+
+ensure_job_openshell_gateway "${IMAGE}" || {
+  echo "ERROR: failed to start a per-job OpenShell gateway" >&2
+  exit 1
+}
+
+# --network=host is required so the container can reach the OpenShell gateway.
+# The host CA trust bundle is injected into containers via the OCI createRuntime
+# hook (install_ca_hook in setup.sh). Gateway mTLS credentials are mounted
+# read-only from the runner user's OpenShell config.
+OPENSHELL_CONFIG="${HOME}/.config/openshell"
 
 OPENSHELL_MOUNT=()
 if [ -d "${OPENSHELL_CONFIG}" ]; then
@@ -141,6 +165,11 @@ podman create \
   sleep infinity
 
 podman start "${CONTAINER_NAME}"
+
+# The job container is up: release the prune lock so the hourly timer (or a
+# concurrent cleanup.sh) can run again. The EXIT trap makes this a no-op
+# safety net if anything above returned early instead.
+release_podman_prune_lock
 
 # Host CA trust is injected into all containers by the OCI createRuntime hook
 # installed by setup.sh (install_ca_hook). No per-container CA injection needed.

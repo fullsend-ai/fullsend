@@ -193,7 +193,7 @@ for tool in oc virtctl python3 curl timeout sha256sum; do
     _missing=1
   fi
 done
-for _f in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh \
+for _f in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh podman-prune.sh \
   executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh executor/gateway.sh; do
   if [ ! -f "${SCRIPT_DIR}/${_f}" ]; then
     echo "ERROR: required file not found: ${SCRIPT_DIR}/${_f}" >&2
@@ -400,7 +400,7 @@ virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
   -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
   -c "mkdir -p ~/gitlab-runner-vm/executor ~/gitlab-runner-vm/.github/scripts"
 
-for file in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh; do
+for file in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh podman-prune.sh; do
   virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
     -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
     -c "cat > ~/gitlab-runner-vm/${file}" < "${SCRIPT_DIR}/${file}"
@@ -421,14 +421,14 @@ done
 
 virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
   -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
-  -c "chmod +x ~/gitlab-runner-vm/setup.sh ~/gitlab-runner-vm/create-openshift-vm.sh ~/gitlab-runner-vm/executor/*.sh ~/gitlab-runner-vm/.github/scripts/*.sh"
+  -c "chmod +x ~/gitlab-runner-vm/setup.sh ~/gitlab-runner-vm/create-openshift-vm.sh ~/gitlab-runner-vm/podman-prune.sh ~/gitlab-runner-vm/executor/*.sh ~/gitlab-runner-vm/.github/scripts/*.sh"
 
 # `cat > file` exits 0 on a short write, so a dropped SSH channel can leave a
 # truncated setup.sh that then executes an arbitrary prefix of provisioning.
 # Verify every copy against a locally computed manifest before running it.
 echo "==> Verifying copied files"
 {
-  (cd "${SCRIPT_DIR}" && sha256sum setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh \
+  (cd "${SCRIPT_DIR}" && sha256sum setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh podman-prune.sh \
     executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh executor/gateway.sh)
   (cd "${REPO_ROOT}/.github/scripts" \
     && sha256sum install-openshell.sh openshell-version.sh \

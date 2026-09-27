@@ -2030,10 +2030,10 @@ func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
 }
 
 func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
-	// Base-composed plugins use raw.githubusercontent.com URLs ending in
-	// /plugin.json. resolveFromLock must parse these via ParseRawContentURL
-	// (not ParseForgeURL, which rejects non-github.com hosts) to extract
-	// the plugin directory name.
+	// Legacy base-composed plugin locks use raw.githubusercontent.com URLs
+	// ending in /plugin.json. resolveFromLock must parse these via
+	// ParseRawContentURL (not ParseForgeURL, which rejects non-github.com
+	// hosts) to extract the plugin directory name.
 	manifestJSON := []byte(`{"name": "gopls-lsp"}`)
 	pluginFiles := map[string][]byte{
 		"plugin.json": manifestJSON,
@@ -2470,6 +2470,12 @@ func TestLockTreeDirName(t *testing.T) {
 			name:  "raw plugin.json marker stripped",
 			field: "plugins[0]",
 			url:   "https://raw.githubusercontent.com/org/repo/abc123/plugins/gopls-lsp/plugin.json",
+			want:  "gopls-lsp",
+		},
+		{
+			name:  "raw plugin directory URL uses directory basename",
+			field: "plugins[0]",
+			url:   "https://raw.githubusercontent.com/org/repo/abc123/plugins/gopls-lsp/",
 			want:  "gopls-lsp",
 		},
 		{

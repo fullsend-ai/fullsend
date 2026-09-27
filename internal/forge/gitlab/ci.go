@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -1017,21 +1018,229 @@ func (c *LiveClient) CreateProtectedCIVariable(ctx context.Context, owner, repo,
 // IsProtectedBranch checks whether the given branch has protection rules.
 // GitLab returns 200 if the branch is protected, 404 if not.
 func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch string) (bool, error) {
+	rule, err := c.GetProtectedBranch(ctx, owner, repo, branch)
+	if err != nil {
+		return false, err
+	}
+	return rule != nil, nil
+}
+
+type gitlabProtectedAccess struct {
+	AccessLevel int  `json:"access_level"`
+	UserID      *int `json:"user_id"`
+	GroupID     *int `json:"group_id"`
+}
+
+func convertProtectedAccess(levels []gitlabProtectedAccess) []forge.ProtectedBranchAccess {
+	out := make([]forge.ProtectedBranchAccess, 0, len(levels))
+	for _, l := range levels {
+		a := forge.ProtectedBranchAccess{AccessLevel: l.AccessLevel}
+		if l.UserID != nil {
+			a.UserID = *l.UserID
+		}
+		if l.GroupID != nil {
+			a.GroupID = *l.GroupID
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func userHasProtectedBranchAccess(rule *forge.ProtectedBranchRule, userID int) bool {
+	if rule == nil || userID <= 0 {
+		return false
+	}
+	for _, levels := range [][]forge.ProtectedBranchAccess{rule.MergeAccessLevels, rule.PushAccessLevels} {
+		for _, l := range levels {
+			if l.UserID == userID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type gitlabProtectedBranchRaw struct {
+	Name              string                  `json:"name"`
+	PushAccessLevels  []gitlabProtectedAccess `json:"push_access_levels"`
+	MergeAccessLevels []gitlabProtectedAccess `json:"merge_access_levels"`
+}
+
+func (raw gitlabProtectedBranchRaw) toRule() *forge.ProtectedBranchRule {
+	return &forge.ProtectedBranchRule{
+		Name:              raw.Name,
+		PushAccessLevels:  convertProtectedAccess(raw.PushAccessLevels),
+		MergeAccessLevels: convertProtectedAccess(raw.MergeAccessLevels),
+	}
+}
+
+// GetProtectedBranch returns push/merge access levels for a protected
+// branch. A nil rule means the branch is not protected.
+//
+// GitLab protects branches either by an exact-name rule or by one or more
+// wildcard rules (e.g. "*", "main*") that match many branches at once, and
+// CreatePipeline access is the most-permissive union across every rule
+// matching the branch — not just the first one found. So this always
+// checks both: the exact-name rule (if any) and every protected-branch
+// rule whose wildcard pattern matches, then merges their access levels
+// into a single synthetic rule. Merging keeps downstream checks
+// (PollerCanCreatePipeline) correct when, for example, a Maintainer-only
+// exact rule for the default branch coexists with a Developer-allowed
+// wildcard rule, or multiple overlapping wildcards match the same branch.
+func (c *LiveClient) GetProtectedBranch(ctx context.Context, owner, repo, branch string) (*forge.ProtectedBranchRule, error) {
+	exact, err := c.getProtectedBranchExact(ctx, owner, repo, branch)
+	if err != nil {
+		return nil, err
+	}
+	wildcards, err := c.listMatchingWildcardProtectedBranches(ctx, owner, repo, branch)
+	if err != nil {
+		return nil, err
+	}
+	return mergeProtectedBranchRules(branch, exact, wildcards), nil
+}
+
+// mergeProtectedBranchRules combines an exact-name rule (if any) with every
+// matching wildcard rule into a single rule representing the union of
+// access GitLab actually grants on branch. Returns nil when nothing
+// matched (branch is unprotected).
+func mergeProtectedBranchRules(branch string, exact *forge.ProtectedBranchRule, wildcards []*forge.ProtectedBranchRule) *forge.ProtectedBranchRule {
+	if exact == nil && len(wildcards) == 0 {
+		return nil
+	}
+	merged := &forge.ProtectedBranchRule{Name: branch}
+	if exact == nil {
+		// No exact-name rule exists — the branch is only protected via
+		// wildcard rule(s). Keep Name distinct from branch (the matched
+		// wildcard's own pattern) so callers such as
+		// GrantProtectedBranchMergeUser can tell there is no exact-name
+		// rule that is safe to PATCH.
+		merged.Name = wildcards[0].Name
+	}
+	if exact != nil {
+		merged.PushAccessLevels = append(merged.PushAccessLevels, exact.PushAccessLevels...)
+		merged.MergeAccessLevels = append(merged.MergeAccessLevels, exact.MergeAccessLevels...)
+	}
+	for _, w := range wildcards {
+		merged.PushAccessLevels = append(merged.PushAccessLevels, w.PushAccessLevels...)
+		merged.MergeAccessLevels = append(merged.MergeAccessLevels, w.MergeAccessLevels...)
+	}
+	return merged
+}
+
+func (c *LiveClient) getProtectedBranchExact(ctx context.Context, owner, repo, branch string) (*forge.ProtectedBranchRule, error) {
 	path := fmt.Sprintf("/projects/%s/protected_branches/%s",
 		projectPath(owner, repo), url.PathEscape(branch))
 	resp, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		return false, fmt.Errorf("check branch protection: %w", err)
-	}
-	if resp.StatusCode == http.StatusOK {
-		resp.Body.Close()
-		return true, nil
+		return nil, fmt.Errorf("get protected branch: %w", err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		resp.Body.Close()
-		return false, nil
+		return nil, nil
 	}
-	return false, fmt.Errorf("check branch protection: %w", checkStatus(resp, http.StatusOK))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get protected branch: %w", checkStatus(resp, http.StatusOK))
+	}
+	var raw gitlabProtectedBranchRaw
+	if err := decodeJSON(resp, &raw); err != nil {
+		return nil, fmt.Errorf("decode protected branch: %w", err)
+	}
+	return raw.toRule(), nil
+}
+
+// listMatchingWildcardProtectedBranches lists the project's protected-branch
+// rules and returns every one whose name is a wildcard pattern matching
+// branch — not just the first — since GitLab unions access across all
+// matching rules rather than picking one. Used both when no
+// protected_branches record is literally named after branch (e.g. a repo
+// protected only via a "*" or "main*" rule) and alongside an exact-name
+// rule, since a permissive wildcard can coexist with a stricter exact rule.
+func (c *LiveClient) listMatchingWildcardProtectedBranches(ctx context.Context, owner, repo, branch string) ([]*forge.ProtectedBranchRule, error) {
+	const perPage = 100
+	const maxPages = 100
+	proj := projectPath(owner, repo)
+	var matches []*forge.ProtectedBranchRule
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/projects/%s/protected_branches?per_page=%d&page=%d", proj, perPage, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list protected branches page %d: %w", page, err)
+		}
+		var raws []gitlabProtectedBranchRaw
+		if err := decodeJSON(resp, &raws); err != nil {
+			return nil, fmt.Errorf("decode protected branches page %d: %w", page, err)
+		}
+		for _, raw := range raws {
+			if raw.Name == branch {
+				// Already covered by the exact-name lookup; if it 404'd,
+				// a stale/mismatched listing shouldn't override that.
+				continue
+			}
+			if gitlabWildcardMatchesBranch(raw.Name, branch) {
+				matches = append(matches, raw.toRule())
+			}
+		}
+		if len(raws) < perPage {
+			return matches, nil
+		}
+	}
+	return nil, fmt.Errorf("list protected branches: pagination exceeded %d pages", maxPages)
+}
+
+// gitlabWildcardMatchesBranch reports whether branch matches a GitLab
+// wildcard protected-branch pattern. GitLab's wildcard syntax treats "*"
+// as matching any run of characters (including "/"); patterns without a
+// "*" are exact-name rules and are handled by the exact-name lookup, not
+// here.
+func gitlabWildcardMatchesBranch(pattern, branch string) bool {
+	if !strings.Contains(pattern, "*") {
+		return false
+	}
+	quoted := regexp.QuoteMeta(pattern)
+	quoted = strings.ReplaceAll(quoted, `\*`, `.*`)
+	re, err := regexp.Compile("^" + quoted + "$")
+	if err != nil {
+		return false
+	}
+	return re.MatchString(branch)
+}
+
+// GrantProtectedBranchMergeUser adds userID to allowed_to_merge on the
+// branch's exact-name protected-branch rule. No-op if the user already
+// has merge or push access. Fails closed, without PATCHing anything, when
+// the branch is only protected via a wildcard rule (e.g. "*", "main*") and
+// has no exact-name rule of its own: a wildcard rule's access-level
+// settings apply to every branch it matches, so PATCHing it to add the
+// poller would grant merge access far beyond the single default branch
+// this call is scoped to.
+func (c *LiveClient) GrantProtectedBranchMergeUser(ctx context.Context, owner, repo, branch string, userID int) error {
+	if userID <= 0 {
+		return fmt.Errorf("grant protected branch merge: invalid user ID %d", userID)
+	}
+	rule, err := c.GetProtectedBranch(ctx, owner, repo, branch)
+	if err != nil {
+		return fmt.Errorf("grant protected branch merge: %w", err)
+	}
+	if rule == nil {
+		return fmt.Errorf("grant protected branch merge: %s is not protected", branch)
+	}
+	if userHasProtectedBranchAccess(rule, userID) {
+		return nil
+	}
+	if rule.Name != branch {
+		return fmt.Errorf("grant protected branch merge: %s is only protected via wildcard rule %q, which also covers other branches; add an exact-name protection rule for %s that includes the poller in allowed_to_merge, or grant Developer-level merge access on %s directly", branch, rule.Name, branch, branch)
+	}
+	path := fmt.Sprintf("/projects/%s/protected_branches/%s",
+		projectPath(owner, repo), url.PathEscape(branch))
+	body := map[string]any{
+		"allowed_to_merge": []map[string]any{{"user_id": userID}},
+	}
+	resp, err := c.patch(ctx, path, body)
+	if err != nil {
+		return fmt.Errorf("grant protected branch merge: %w", err)
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,6 +1302,7 @@ type ProjectAccessToken struct {
 	Token     string `json:"token"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 	Revoked   bool   `json:"revoked,omitempty"`
+	UserID    int    `json:"user_id,omitempty"`
 }
 
 // CreateProjectAccessToken creates a project access token with the given name,

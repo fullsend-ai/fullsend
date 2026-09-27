@@ -121,11 +121,26 @@ proceeding.
 
 ### 2. Pre-check current state
 
-Run `mint status` to see the current mint state, enrolled orgs, Cloud Run
-revision info, and PEM health:
+Run `mint status --project` to see the current mint state, enrolled orgs,
+Cloud Run revision info, and PEM health — this is the enrollment/admin
+pre-check step and must be run with `--project`, since only GCP-based mode
+reports PEM health, Cloud Run revision info, and template divergence. If
+`FULLSEND_MINT_URL` is set in the environment, pass `--mint-url=` (empty)
+to force GCP-based mode — otherwise the CLI errors with "ambiguous mode":
 
 ```bash
-go run ./cmd/fullsend mint status --project="$GCP_PROJECT" --region="$MINT_REGION"
+go run ./cmd/fullsend mint status --mint-url= --project="$GCP_PROJECT" --region="$MINT_REGION"
+```
+
+When `FULLSEND_MINT_URL` is already configured, `mint status --mint-url`
+is available as a lighter diagnostics command (no GCP IAM roles required),
+but it only reports version, commit, org/allowed-orgs, roles, and
+workflow-host repos — it does **not** show PEM health, Cloud Run revision
+info, or the health summary, so it does not replace the `--project`
+pre-check above:
+
+```bash
+go run ./cmd/fullsend mint status --mint-url="$FULLSEND_MINT_URL"
 ```
 
 If the mint is not deployed yet, deploy it first:
@@ -147,7 +162,7 @@ For per-org drill-down into PEM status (accepts org name only, not
 `owner/repo` — for per-repo enrollment, use just the org portion):
 
 ```bash
-go run ./cmd/fullsend mint status "<github-org>" --project="$GCP_PROJECT" --region="$MINT_REGION"
+go run ./cmd/fullsend mint status "<github-org>" --mint-url= --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
 **STOP — show the status output to the operator.** Confirm the mint is
@@ -194,10 +209,11 @@ The CLI runs post-enrollment verification automatically. Check its output for:
 - **ROLE_APP_IDS**: confirms shared role keys (e.g., `coder`, `review`) are configured on the mint
 
 If the CLI reports "Post-write verification FAILED", run `mint status` to
-diagnose:
+diagnose (pass `--mint-url=` to force GCP-based mode if `FULLSEND_MINT_URL`
+is set in the environment):
 
 ```bash
-go run ./cmd/fullsend mint status --project="$GCP_PROJECT" --region="$MINT_REGION"
+go run ./cmd/fullsend mint status --mint-url= --project="$GCP_PROJECT" --region="$MINT_REGION"
 ```
 
 Common causes of verification failure:

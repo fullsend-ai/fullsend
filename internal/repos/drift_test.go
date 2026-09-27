@@ -367,6 +367,36 @@ func TestCheckOrphanVars_GitLabRetiredVarsNotFlagged(t *testing.T) {
 	}
 }
 
+func TestCheckOrphanFiles_GitLabDispatchStubIsOrphan(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["owner/repo/"+fullsendPipelineInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")
+	fc.FileContents["owner/repo/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")
+
+	expected := []forge.TreeFile{
+		{Path: fullsendPipelineInclude, Content: []byte("---\n# fullsend-ref: v2.5.0\n")},
+	}
+
+	glFC := GitLabForgeConfig()
+	glFC.Client = fc
+
+	orphans, err := CheckOrphanFiles(
+		context.Background(), fc, "owner", "repo",
+		glFC, ForgeGitLab, expected,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var found bool
+	for _, o := range orphans {
+		if o.Path == fullsendDispatchInclude {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected leftover %s to be reported as an orphan, got %v", fullsendDispatchInclude, orphans)
+	}
+}
+
 func TestCheckOrphanFiles_GitLabPollStateBranchesNotScaffoldPaths(t *testing.T) {
 	for _, branch := range gitlabPollStateBranches {
 		for _, p := range ScaffoldPathsForForge(ForgeGitLab) {
