@@ -2,6 +2,7 @@ package poll
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -49,6 +50,13 @@ const maxEventRetries = 3
 // Run executes a single poll cycle: read watermark, discover events,
 // filter, deduplicate, convert to NormalizedEvent, route, dispatch,
 // and advance the watermark.
+//
+// Conversion, routing, and dispatch failures are returned after poll
+// state is persisted so the poll job fails instead of reporting a
+// healthy cycle. Failed events remain retryable until maxEventRetries.
+// The cycle that exhausts the budget also fails (the event is dropped);
+// later rediscovery of an already-dropped event is a skip, not a new
+// failure, so the 30s watermark overlap cannot pin the poll job red.
 //
 // Poll mode is determined by Options.Mode:
 //   - "slash": fast poll — only /fs-* slash commands via the Events API
@@ -104,6 +112,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	var maxUpdatedAt time.Time
 	var minFailedAt time.Time
 	failedLabelEvents := make(map[int]map[string]bool)
+	var cycleErrs []error
 
 	// Entity-level deduplication: within a single poll cycle, dispatch
 	// at most one pipeline per stage+entity (e.g. "triage:issue-3").
@@ -128,9 +137,8 @@ func (p *Poller) Run(ctx context.Context) error {
 		normalizedEvent, actorID, err := p.toNormalizedEvent(ctx, event)
 		if err != nil {
 			log.Printf("WARNING: skipping %s event on IID %d: %v", event.Type, event.IID, err)
-			failedKeys[eventKey]++
-			trackFailure(&minFailedAt, event.UpdatedAt)
-			trackLabelFailure(failedLabelEvents, event)
+			recordEventFailure(&cycleErrs, failedKeys, event, &minFailedAt, failedLabelEvents,
+				fmt.Errorf("skipping %s event on IID %d: %w", event.Type, event.IID, err))
 			continue
 		}
 
@@ -143,9 +151,8 @@ func (p *Poller) Run(ctx context.Context) error {
 			stages, err = p.router.Route(&normalizedEvent)
 			if err != nil {
 				log.Printf("dispatch core error for %s: %v", eventKey, err)
-				failedKeys[eventKey]++
-				trackFailure(&minFailedAt, event.UpdatedAt)
-				trackLabelFailure(failedLabelEvents, event)
+				recordEventFailure(&cycleErrs, failedKeys, event, &minFailedAt, failedLabelEvents,
+					fmt.Errorf("dispatch core error for %s: %w", eventKey, err))
 				continue
 			}
 		}
@@ -174,9 +181,8 @@ func (p *Poller) Run(ctx context.Context) error {
 			allSkipped = false
 			if err := p.dispatch(ctx, p.owner, p.repo, stage, event); err != nil {
 				log.Printf("dispatch %s for %s failed: %v", stage, eventKey, err)
-				failedKeys[eventKey]++
-				trackFailure(&minFailedAt, event.UpdatedAt)
-				trackLabelFailure(failedLabelEvents, event)
+				recordEventFailure(&cycleErrs, failedKeys, event, &minFailedAt, failedLabelEvents,
+					fmt.Errorf("dispatch %s for %s failed: %w", stage, eventKey, err))
 				continue
 			}
 			dispatched++
@@ -205,9 +211,9 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 	}
 
-	// Persist dispatched keys. Pipelines were already created via API
-	// during dispatch — if key persistence fails, events may re-dispatch
-	// on the next cycle (at-least-once delivery).
+	// Merge newly dispatched keys into the in-memory map. Pipelines were
+	// already created via API during dispatch — if the combined persist
+	// below fails, events may re-dispatch on the next cycle (at-least-once).
 	for k, ts := range newDispatchedKeys {
 		previouslyDispatched[k] = ts
 	}
@@ -218,9 +224,12 @@ func (p *Poller) Run(ctx context.Context) error {
 	if maxUpdatedAt.IsZero() {
 		log.Printf("WARNING: all %d dispatches failed, watermark not advanced", len(events))
 		if err := p.persistFailedKeys(ctx, p.owner, p.repo, failedKeys); err != nil {
-			log.Printf("WARNING: failed to persist failed keys: %v", err)
+			cycleErrs = append(cycleErrs, fmt.Errorf("persist failed keys: %w", err))
 		}
-		return nil
+		if err := errors.Join(cycleErrs...); err != nil {
+			return fmt.Errorf("poll cycle: %w", err)
+		}
+		return fmt.Errorf("all %d dispatches failed, watermark not advanced", len(events))
 	}
 	if !minFailedAt.IsZero() && minFailedAt.Before(maxUpdatedAt) {
 		maxUpdatedAt = minFailedAt
@@ -238,16 +247,6 @@ func (p *Poller) Run(ctx context.Context) error {
 		log.Printf("persisting %d new dispatched keys: %v", len(keys), keys)
 	}
 
-	if err := p.persistDispatchedKeys(ctx, p.owner, p.repo, previouslyDispatched, newWatermark); err != nil {
-		return fmt.Errorf("persist dispatched keys: %w", err)
-	}
-	if err := p.persistFailedKeys(ctx, p.owner, p.repo, failedKeys); err != nil {
-		log.Printf("WARNING: failed to persist failed keys: %v", err)
-	}
-	if err := p.updateWatermark(ctx, p.owner, p.repo, newWatermark); err != nil {
-		log.Printf("WARNING: failed to update watermark: %v", err)
-	}
-
 	if labelState != nil {
 		for iid, failedLabels := range failedLabelEvents {
 			if current, ok := labelState[iid]; ok {
@@ -260,13 +259,34 @@ func (p *Poller) Run(ctx context.Context) error {
 				labelState[iid] = kept
 			}
 		}
-		if err := p.persistLabelState(ctx, p.owner, p.repo, labelState); err != nil {
-			log.Printf("WARNING: %v (next poll may re-dispatch label events)", err)
-		}
+	}
+
+	// One load-modify-save for dispatched keys, failed keys, watermark,
+	// and label state. Splitting these across separate commits created
+	// redundant poll-state history and skipped pipeline records.
+	// Pipelines were already created via API — if this persist fails,
+	// events may re-dispatch on the next cycle (at-least-once delivery).
+	if err := p.persistCycleState(ctx, p.owner, p.repo, previouslyDispatched, &newWatermark, failedKeys, labelState); err != nil {
+		cycleErrs = append(cycleErrs, fmt.Errorf("persist poll state: %w", err))
+		return fmt.Errorf("poll cycle: %w", errors.Join(cycleErrs...))
 	}
 
 	log.Printf("poll complete: %d events discovered, %d dispatched", len(events), dispatched)
+	if err := errors.Join(cycleErrs...); err != nil {
+		return fmt.Errorf("poll cycle: %w", err)
+	}
 	return nil
+}
+
+func recordEventFailure(cycleErrs *[]error, failedKeys map[string]int, event RoutableEvent, minFailedAt *time.Time, failedLabelEvents map[int]map[string]bool, cause error) {
+	*cycleErrs = append(*cycleErrs, cause)
+	eventKey := event.Key()
+	failedKeys[eventKey]++
+	if failedKeys[eventKey] >= maxEventRetries {
+		*cycleErrs = append(*cycleErrs, fmt.Errorf("exhausted retry budget (%d) for %s, dropping", maxEventRetries, eventKey))
+	}
+	trackFailure(minFailedAt, event.UpdatedAt)
+	trackLabelFailure(failedLabelEvents, event)
 }
 
 func trackFailure(minFailedAt *time.Time, updatedAt time.Time) {

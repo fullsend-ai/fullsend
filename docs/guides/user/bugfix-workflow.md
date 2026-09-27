@@ -69,7 +69,10 @@ Authorization is verified via the collaborator permission API and is
 stage-dependent: `/fs-triage` and `/fs-review` accept triage-level
 permission or higher; `/fs-code`, `/fs-fix`, `/fs-retro`, and
 `/fs-fix-stop` require write-level permission or higher (admin,
-maintain, or write). Bot-to-bot agent handoffs are not affected because
+maintain, or write). In a repo that enables `owners_file`
+[authorization](../../reference/config-reference.md#authorization),
+`OWNERS` approvers can run every command and reviewers can run
+`/fs-triage` and `/fs-review`. Bot-to-bot agent handoffs are not affected because
 they use label-based triggers, not slash commands.
 
 ### What to expect from agent PRs

@@ -619,7 +619,7 @@ func buildProviderUpdateArgs(name string, credentials, config map[string]string,
 	for _, k := range cfgKeys {
 		v := config[k]
 		if !fromURL {
-			v = expandProviderValue(v)
+			v = expandProviderConfigValue(v)
 		}
 		args = append(args, "--config", k+"="+v)
 	}
@@ -654,7 +654,7 @@ func buildProviderArgs(name, providerType string, credentials, config map[string
 	for _, k := range cfgKeys {
 		v := config[k]
 		if !fromURL {
-			v = expandProviderValue(v)
+			v = expandProviderConfigValue(v)
 		}
 		args = append(args, "--config", k+"="+v)
 	}
@@ -721,6 +721,10 @@ func SetProviderCredentialExpiry(ctx context.Context, name, key string, expiresA
 var (
 	deniedExpansionMu   sync.RWMutex
 	deniedExpansionKeys = map[string]bool{}
+	// credentialOnlyKeys may expand in provider credential values, which
+	// reach the provider CLI through the child environment only, but never
+	// in config values, which are passed inline on argv (#6649).
+	credentialOnlyKeys = map[string]bool{}
 )
 
 // DenyExpansionKeys marks environment variable names that provider
@@ -739,6 +743,30 @@ func expandProviderValue(v string) string {
 	defer deniedExpansionMu.RUnlock()
 	return os.Expand(v, func(k string) string {
 		if deniedExpansionKeys[k] {
+			return ""
+		}
+		return os.Getenv(k)
+	})
+}
+
+// CredentialOnlyExpansionKeys marks environment variable names that provider
+// credential values may expand but provider config values may not.
+func CredentialOnlyExpansionKeys(keys ...string) {
+	deniedExpansionMu.Lock()
+	defer deniedExpansionMu.Unlock()
+	for _, k := range keys {
+		credentialOnlyKeys[k] = true
+	}
+}
+
+// expandProviderConfigValue is expandProviderValue that also refuses
+// credential-only keys. Config values are passed inline as --config KEY=VALUE,
+// so a credential expanded here would appear on the process command line.
+func expandProviderConfigValue(v string) string {
+	deniedExpansionMu.RLock()
+	defer deniedExpansionMu.RUnlock()
+	return os.Expand(v, func(k string) string {
+		if deniedExpansionKeys[k] || credentialOnlyKeys[k] {
 			return ""
 		}
 		return os.Getenv(k)

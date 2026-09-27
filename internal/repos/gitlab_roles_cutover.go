@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -11,6 +12,33 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 )
+
+// ErrGitLabRoleCutoverNotReady indicates a required role credential is
+// missing or not yet ready when cutover is attempted. Ordinary unflagged
+// install treats this as deferred: leave migrating, do not reopen the
+// shared-token fallback.
+var ErrGitLabRoleCutoverNotReady = errors.New("GitLab role cutover is not ready")
+
+// ErrGitLabRoleCutoverWrongMode indicates cutover was attempted while the
+// GitLab role migration gate is neither migrating nor enforced. Ordinary
+// unflagged install treats this as deferred rather than failing the
+// whole converge.
+var ErrGitLabRoleCutoverWrongMode = errors.New("GitLab role cutover requires migrating or enforced mode")
+
+// ErrGitLabRoleCutoverStateChanged indicates the role registry, credential
+// presence, or rotation state changed between the initial readiness check
+// and the final pre-cutover revalidation. Ordinary unflagged install
+// treats this as deferred rather than failing the whole converge.
+var ErrGitLabRoleCutoverStateChanged = errors.New("GitLab role state changed during cutover verification")
+
+// IsGitLabRoleCutoverDeferred reports whether err is a cutover
+// precondition failure that ordinary install should leave in place
+// instead of failing.
+func IsGitLabRoleCutoverDeferred(err error) bool {
+	return errors.Is(err, ErrGitLabRoleCutoverNotReady) ||
+		errors.Is(err, ErrGitLabRoleCutoverWrongMode) ||
+		errors.Is(err, ErrGitLabRoleCutoverStateChanged)
+}
 
 var gitlabRoleOperationLocks sync.Map // map[string]*sync.Mutex
 
@@ -28,10 +56,9 @@ func LockGitLabRoleOperation(owner, repo string) func() {
 	return lock.Unlock
 }
 
-// GitLabRoleCutoverConfig controls the explicit verification-and-cutover
-// operation. Cutover is intentionally separate from normal provisioning and
-// rotation so an ordinary install can never retire the shared credential by
-// accident.
+// GitLabRoleCutoverConfig controls verification-and-cutover. Ordinary
+// unflagged `repos install` calls this after provisioning when roles are
+// ready. Explicit `--gitlab-role-cutover` still requires DrainConfirmed.
 type GitLabRoleCutoverConfig struct {
 	Owner          string
 	Repo           string
@@ -105,10 +132,10 @@ func CutoverGitLabRoleCredentials(ctx context.Context, cfg GitLabRoleCutoverConf
 		return GitLabRoleCutoverResult{}, fmt.Errorf("internal error: cutover result leaked a secret value (%s)", leak)
 	}
 	if !result.Readiness.Ready || !result.Registered.Ready {
-		return result, fmt.Errorf("GitLab role cutover is not ready: %s", cutoverMissingRoles(result))
+		return result, fmt.Errorf("%w: %s", ErrGitLabRoleCutoverNotReady, cutoverMissingRoles(result))
 	}
 	if mode != gitlabroles.ModeMigrating && mode != gitlabroles.ModeEnforced {
-		return result, fmt.Errorf("GitLab role cutover requires migration mode %q or %q, got %q", gitlabroles.ModeMigrating, gitlabroles.ModeEnforced, mode)
+		return result, fmt.Errorf("%w, got %q", ErrGitLabRoleCutoverWrongMode, mode)
 	}
 	if cfg.DryRun {
 		result.Enforced = true
@@ -131,7 +158,7 @@ func CutoverGitLabRoleCredentials(ctx context.Context, cfg GitLabRoleCutoverConf
 		return result, fmt.Errorf("revalidating GitLab role rotation state before cutover: %w", rotationErr)
 	}
 	if latestMode != mode || !reflect.DeepEqual(latestReg, reg) || !reflect.DeepEqual(latestPresent, present) || !reflect.DeepEqual(latestRotation, rotation) {
-		return result, fmt.Errorf("GitLab role state changed during cutover verification; rerun cutover")
+		return result, fmt.Errorf("%w; rerun cutover", ErrGitLabRoleCutoverStateChanged)
 	}
 	latestBuiltin := gitlabroles.CheckBuiltinReadiness(latestPresent, latestReg)
 	latestRegistered := gitlabroles.CheckRegisteredReadiness(latestPresent, latestReg)
@@ -147,7 +174,7 @@ func CutoverGitLabRoleCredentials(ctx context.Context, cfg GitLabRoleCutoverConf
 	latestBuiltin = latestBuiltin.WithLifecycle(lifecycle)
 	latestRegistered = latestRegistered.WithLifecycle(lifecycle)
 	if !latestBuiltin.Ready || !latestRegistered.Ready {
-		return result, fmt.Errorf("GitLab role state is no longer ready for cutover; rerun verification")
+		return result, fmt.Errorf("%w: state changed during revalidation; rerun verification", ErrGitLabRoleCutoverNotReady)
 	}
 
 	gateChanged := mode != gitlabroles.ModeEnforced

@@ -55,6 +55,11 @@ func newPostReviewCmd() *cobra.Command {
 		Long: `Posts review findings as a sticky issue comment on a pull request
 or merge request, then submits a formal review with the disposition.
 
+The sticky comment is the success criterion. If it is posted, the
+command exits 0 even when the subsequent formal review submission
+fails; that failure is logged as a warning so a posted verdict is
+not reported as a workflow Failure.
+
 On first run, creates a new comment with a hidden HTML marker.
 On re-runs, finds the existing comment, collapses old content into
 a <details> block, and edits in-place. Stale formal reviews by the
@@ -157,16 +162,7 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 				return postFailureNotice(cmd.Context(), client, owner, repoName, pr, parsed, cfg, printer)
 			}
 
-			commentURL, err := sticky.Post(cmd.Context(), client, owner, repoName, pr, parsed.Body, cfg, printer)
-			if err != nil {
-				return err
-			}
-
-			if err := submitFormalReview(cmd.Context(), client, owner, repoName, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer); err != nil {
-				return err
-			}
-
-			return postApprovedFollowUpIssues(cmd.Context(), owner, repoName, pr, parsed, printer)
+			return postReviewContent(cmd.Context(), client, owner, repoName, pr, parsed, cfg, dryRun, printer)
 		},
 	}
 
@@ -306,6 +302,23 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 	}
 	printer.StepDone("Failure notice posted")
 	return nil
+}
+
+// postReviewContent posts the sticky review comment, then attempts a
+// formal PR/MR review. Once the sticky comment is on the PR, formal
+// review submission is best-effort: a forge API failure must not turn
+// a posted verdict into a workflow Failure (#3548).
+func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, dryRun bool, printer *ui.Printer) error {
+	commentURL, err := sticky.Post(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
+	if err != nil {
+		return err
+	}
+
+	if err := submitFormalReview(ctx, client, owner, repo, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer); err != nil {
+		printer.StepWarn(fmt.Sprintf("Formal review submission failed (%v); sticky review comment was posted", err))
+	}
+
+	return postApprovedFollowUpIssues(ctx, owner, repo, pr, parsed, printer)
 }
 
 // submitFormalReview minimizes stale reviews by the same user, then

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# setup-new-e2e-org — provision a halfsend-NN org for e2e testing.
+# setup-new-e2e-org — provision a pool org for e2e testing.
 #
-# Usage: hack/setup-new-e2e-org NN
+# Usage: hack/setup-new-e2e-org.sh NN|ORG
+#   NN  — org number, e.g. 01 (halfsend-01)
+#   ORG — full org name, e.g. halfsend (STAGE)
 #
 # Idempotent: safe to run multiple times. Checks each prerequisite and
 # only acts on what's missing. Pauses for manual steps and verifies
-# before continuing.
+# before continuing. Test actors receive organization-level all-repository
+# roles so access survives pool repo delete/recreate.
 
 set -euo pipefail
 
@@ -51,15 +54,91 @@ poll_for_app_install() {
   return 1
 }
 
+# normalize_role_name lowercases and turns spaces/hyphens into underscores.
+normalize_role_name() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | tr ' -' '__'
+}
+
+# resolve_all_repo_role_id looks up a predefined all-repository role id.
+# Matches all_repo_<perm> and all_repository_<perm> (display-name) variants.
+# Prints the id on stdout; errors go to stderr. Returns 1 when not found.
+resolve_all_repo_role_id() {
+  local org="$1" perm="$2"
+  local payload names id n
+  if ! payload=$(gh api "/orgs/${org}/organization-roles" 2>&1); then
+    echo "    ERROR: could not list organization roles for ${org}: ${payload}" >&2
+    return 1
+  fi
+  names=$(echo "${payload}" | jq -r '.roles[]? | "\(.id)\t\(.name)"')
+  while IFS=$'\t' read -r id n; do
+    [[ -z "${id}" ]] && continue
+    case "$(normalize_role_name "${n}")" in
+      "all_repo_${perm}"|"all_repository_${perm}")
+        echo "${id}"
+        return 0
+        ;;
+    esac
+  done <<< "${names}"
+  echo "    ERROR: no all-repository ${perm} role in ${org}." >&2
+  echo "    Available roles:" >&2
+  echo "${names}" >&2
+  return 1
+}
+
+# assign_all_repo_role grants username the all-repository <perm> org role.
+# Idempotent: already-assigned roles are left in place and re-verified.
+assign_all_repo_role() {
+  local org="$1" username="$2" perm="$3"
+  local role_id assigned
+  role_id=$(resolve_all_repo_role_id "${org}" "${perm}") || return 1
+
+  assigned=$(gh api "/orgs/${org}/organization-roles/users/${username}" \
+    | jq -r --arg id "${role_id}" '.roles[]? | select(.id == ($id | tonumber)) | .id' \
+    2>/dev/null || true)
+  if [[ -n "${assigned}" ]]; then
+    echo "    OK: ${username} already has all-repository ${perm} (role ${role_id})"
+    return 0
+  fi
+
+  echo "    Assigning all-repository ${perm} (role ${role_id}) to ${username}..."
+  if ! gh api -X PUT "/orgs/${org}/organization-roles/users/${username}/${role_id}" --silent; then
+    echo "    ERROR: failed to assign all-repository ${perm} to ${username}."
+    return 1
+  fi
+
+  assigned=$(gh api "/orgs/${org}/organization-roles/users/${username}" \
+    | jq -r --arg id "${role_id}" '.roles[]? | select(.id == ($id | tonumber)) | .id' \
+    2>/dev/null || true)
+  if [[ -z "${assigned}" ]]; then
+    echo "    ERROR: ${username} still lacks all-repository ${perm} after assignment."
+    return 1
+  fi
+  echo "    OK: ${username} has all-repository ${perm}"
+}
+
 # --- arg parsing ---
-if [[ $# -ne 1 ]] || ! [[ "$1" =~ ^[0-9]+$ ]]; then
-  echo "Usage: $0 NN" >&2
-  echo "  NN is the org number, e.g. 01, 02, 03" >&2
+if [[ $# -ne 1 ]]; then
+  echo "Usage: $0 NN|ORG" >&2
+  echo "  NN is the org number, e.g. 01, 02, 03 (halfsend-NN)" >&2
+  echo "  ORG is a full org name, e.g. halfsend (STAGE)" >&2
   exit 1
 fi
 
-NN="$1"
-ORG="halfsend-${NN}"
+if [[ "$1" =~ ^[0-9]+$ ]]; then
+  ORG="halfsend-$1"
+else
+  ORG="$1"
+fi
+
+# Validate against the known pool/STAGE org names. This script invites
+# fstest-write/fstest-triage and assigns them all-repository write/triage
+# roles; a mistyped or copy-pasted argument must not silently do that to
+# an unintended org.
+if ! [[ "${ORG}" =~ ^halfsend(-[0-9]+)?$ ]]; then
+  echo "Error: '${ORG}' is not a recognized pool/STAGE org name." >&2
+  echo "  Expected halfsend-NN (DEV pool) or halfsend (STAGE)." >&2
+  exit 1
+fi
 
 echo "==> Setting up e2e org: ${ORG}"
 echo
@@ -196,63 +275,67 @@ for actor_info in "${TEST_WRITE_USER}:TEST_ACTOR_WRITE_PAT" "${TEST_TRIAGE_USER}
   echo "    OK: ${actor} is now an active org member"
 done
 
-# Verify outsider has no org membership.
-outsider_state=$(gh api "/orgs/${ORG}/memberships/${TEST_OUTSIDER_USER}" --jq '.state' 2>/dev/null || echo "none")
-if [[ "${outsider_state}" == "none" ]]; then
+# Verify outsider has no org membership. Fail closed: this is a security
+# invariant (#7777), not an advisory check. Any API response other than
+# the documented "not a member" 404 aborts the script — an auth error or
+# rate limit must not be silently reinterpreted as "none", and a real
+# membership (active or pending) must not fall through as just a WARNING.
+if outsider_membership_body=$(gh api "/orgs/${ORG}/memberships/${TEST_OUTSIDER_USER}" 2>&1); then
+  outsider_state=$(echo "${outsider_membership_body}" | jq -r '.state')
+  echo "    ERROR: ${TEST_OUTSIDER_USER} has org membership (state: ${outsider_state})." >&2
+  echo "    Remove from ${ORG} to preserve the outsider test model." >&2
+  exit 1
+elif echo "${outsider_membership_body}" | grep -q "HTTP 404"; then
   echo "    OK: ${TEST_OUTSIDER_USER} has no org membership"
 else
-  echo "    WARNING: ${TEST_OUTSIDER_USER} has org membership (state: ${outsider_state})."
-  echo "    Remove from ${ORG} to preserve the outsider test model."
+  echo "    ERROR: could not verify ${TEST_OUTSIDER_USER} membership status: ${outsider_membership_body}" >&2
+  exit 1
 fi
 echo
 
-# --- 3c. test actor repo permissions ---
-echo "==> Granting test actor collaborator permissions on base repos..."
-if ! base_repos=$(gh api --paginate "/orgs/${ORG}/repos" \
-  --jq '.[] | select(.fork == false) | select(.name | startswith("test-repo")) | .name' \
-  2>&1); then
-  echo "    WARNING: could not list repos for ${ORG}: ${base_repos}"
-  echo "    Check authentication and permissions, then re-run."
-  base_repos=""
+# --- 3c. test actor all-repository organization roles ---
+echo "==> Assigning all-repository organization roles to test actors..."
+if ! assign_all_repo_role "${ORG}" "${TEST_WRITE_USER}" "write"; then
+  echo "    ERROR: ${TEST_WRITE_USER} does not have the all-repository write role."
+  exit 1
+fi
+if ! assign_all_repo_role "${ORG}" "${TEST_TRIAGE_USER}" "triage"; then
+  echo "    ERROR: ${TEST_TRIAGE_USER} does not have the all-repository triage role."
+  exit 1
 fi
 
-if [[ -z "${base_repos}" ]]; then
-  echo "    No base test-repo* repos found. Skipping collaborator grants."
-  echo "    Re-run after test repos are created to apply permissions."
+# Confirm outsider was not granted an all-repository role. Fail closed,
+# same rationale as the membership check above: an API error must abort
+# rather than silently reporting an empty (and therefore "OK") role list.
+if outsider_roles_body=$(gh api "/orgs/${ORG}/organization-roles/users/${TEST_OUTSIDER_USER}" 2>&1); then
+  outsider_role_names=$(echo "${outsider_roles_body}" | jq -r '.roles[]?.name')
+elif echo "${outsider_roles_body}" | grep -q "HTTP 404"; then
+  outsider_role_names=""
 else
-  ok_count=0
-  fail_count=0
-  while IFS= read -r repo; do
-    # fstest-write → push
-    if gh api "/repos/${ORG}/${repo}/collaborators/${TEST_WRITE_USER}" \
-        -X PUT -f permission="push" --silent 2>/dev/null; then
-      ok_count=$((ok_count + 1))
-    else
-      echo "    WARNING: ${TEST_WRITE_USER} → push on ${repo}"
-      fail_count=$((fail_count + 1))
-    fi
+  echo "    ERROR: could not check ${TEST_OUTSIDER_USER} organization roles: ${outsider_roles_body}" >&2
+  exit 1
+fi
 
-    # fstest-triage → triage
-    if gh api "/repos/${ORG}/${repo}/collaborators/${TEST_TRIAGE_USER}" \
-        -X PUT -f permission="triage" --silent 2>/dev/null; then
-      ok_count=$((ok_count + 1))
-    else
-      echo "    WARNING: ${TEST_TRIAGE_USER} → triage on ${repo}"
-      fail_count=$((fail_count + 1))
-    fi
-  done <<< "${base_repos}"
+# Route names through normalize_role_name so a display-name variant (e.g.
+# "All-repository write") is caught the same way resolve_all_repo_role_id
+# already recognizes it for the assignment path above.
+outsider_has_all_repo_role=false
+while IFS= read -r role_name; do
+  [[ -z "${role_name}" ]] && continue
+  case "$(normalize_role_name "${role_name}")" in
+    all_repo_write | all_repo_triage | all_repository_write | all_repository_triage)
+      outsider_has_all_repo_role=true
+      ;;
+  esac
+done <<< "${outsider_role_names}"
 
-  echo "    Collaborator grants: OK=${ok_count} WARNING=${fail_count}"
-
-  # Verify outsider has no collaborator access on the first base repo.
-  first_repo=$(echo "${base_repos}" | head -1)
-  if gh api "/repos/${ORG}/${first_repo}/collaborators/${TEST_OUTSIDER_USER}" \
-      --silent 2>/dev/null; then
-    echo "    WARNING: ${TEST_OUTSIDER_USER} is a collaborator on ${first_repo}."
-    echo "    Remove to preserve the outsider test model."
-  else
-    echo "    OK: ${TEST_OUTSIDER_USER} is not a collaborator on ${first_repo}"
-  fi
+if "${outsider_has_all_repo_role}"; then
+  echo "    ERROR: ${TEST_OUTSIDER_USER} has an all-repository role:" >&2
+  echo "${outsider_role_names}" | sed 's/^/      /' >&2
+  echo "    Remove to preserve the outsider test model." >&2
+  exit 1
+else
+  echo "    OK: ${TEST_OUTSIDER_USER} has no all-repository write/triage role"
 fi
 echo
 

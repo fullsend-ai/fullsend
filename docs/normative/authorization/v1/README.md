@@ -60,6 +60,22 @@ authorization outcome is identical. The `author_association` field is
 **not** used because it does not correctly reflect private org membership
 (see [Excluded fields](#excluded-fields)).
 
+A GitHub repository that lists `owners_file` under `authorization` in
+`.fullsend/config.yaml` consults its repo-root Prow `OWNERS` file before the
+collaborator API:
+
+| OWNERS list | Role granted |
+|-------------|--------------|
+| `approvers` | at least `write` |
+| `reviewers` | at least `triage` |
+| _(not listed)_ | none; the collaborator API decides |
+
+OWNERS can only raise a role, never lower one. An entry that names an
+`OWNERS_ALIASES` key stands for that alias's members. A login equal to any alias
+key never matches, and nested aliases are not expanded. The files are read from the base branch for PR-scoped events and
+from the default branch otherwise, so a PR cannot add its author. See the
+[`authorization` field](../../../reference/config-reference.md#authorization).
+
 On Jira the mapping source is the project's role membership roster,
 resolved once per poll cycle for the configured `--jira-project`. An
 actor is matched by Jira account ID. Role names are matched
@@ -109,6 +125,8 @@ describe behavior currently implemented by `fullsend dispatch` or
 | Custom repository roles (GitHub) | Mapped to `none`; denied until custom roles are handled platform-wide |
 | `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | Username is empty | Denied |
+| `OWNERS` is missing or malformed, or `OWNERS_ALIASES` is present but malformed (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |
+| Username contains characters outside `[A-Za-z0-9-]` (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |
 | Fullsend poll invocation provenance is missing or unverifiable | Entity discovery denied |
 | Harness entity sources are missing or malformed | That harness is skipped for scheduled evaluation |
 | Effective platform eligibility policy is missing, malformed, or unverifiable | Scheduled evaluations governed by that policy are denied |
@@ -281,10 +299,10 @@ enabled, which labels trigger automation) operates **within** the
 authorization boundary. A repository can disable a stage entirely but
 cannot make it available to unauthorized users.
 
-A future per-repo configuration system that needs to customize
-authorization rules (e.g., allowing `triage` for a mutation stage)
-should extend the `has_repo_permission` helper's allowed permission
-list, not bypass the gate.
+A repository can add permission sources through the `authorization`
+field (today only `owners_file`). These sources extend the
+`has_repo_permission` helper and the Go `IsAuthorized` check; they do not
+bypass the gate or change the thresholds.
 
 ## Versioning
 

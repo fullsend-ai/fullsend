@@ -109,6 +109,13 @@ func TestAgentNewEndToEnd(t *testing.T) {
 	if !strings.Contains(h.Trigger, `"/fs-lint-docs"`) {
 		t.Errorf("trigger should carry the same command: %q", h.Trigger)
 	}
+	// Local runs need ISSUE_NUMBER and REPO_FULL_NAME so the generated
+	// prompt can fetch without embedding a github.com URL (#7563).
+	for _, want := range []string{"ISSUE_NUMBER", "REPO_FULL_NAME"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("next steps should name %s among the .env.local vars:\n%s", want, out)
+		}
+	}
 }
 
 // TestAgentNewPostScriptIsExecutable: the post-script is invoked directly by

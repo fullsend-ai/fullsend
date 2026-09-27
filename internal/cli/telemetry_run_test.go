@@ -287,6 +287,33 @@ func TestChildScriptEnv_StripsOIDCVars(t *testing.T) {
 	assert.True(t, hasRunner, "RunnerEnv var must survive")
 }
 
+func TestChildScriptEnv_StripsWorkflowToken(t *testing.T) {
+	t.Setenv(workflowTokenEnv, "ghs_workflow_token_value_xx")
+	t.Setenv("SAFE_VAR", "should-survive")
+
+	env := childScriptEnv(map[string]string{"RUNNER_VAR": "present"}, "")
+
+	for _, e := range env {
+		key := e
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key = e[:i]
+		}
+		assert.NotEqual(t, workflowTokenEnv, key, "GH_WORKFLOW_TOKEN must be stripped from child script env")
+	}
+
+	hasSafe, hasRunner := false, false
+	for _, e := range env {
+		if e == "SAFE_VAR=should-survive" {
+			hasSafe = true
+		}
+		if e == "RUNNER_VAR=present" {
+			hasRunner = true
+		}
+	}
+	assert.True(t, hasSafe, "non-denied process env var must survive")
+	assert.True(t, hasRunner, "RunnerEnv var must survive")
+}
+
 // TestChildScriptEnv_StripsOIDCFromRunnerEnv verifies that OIDC credential
 // vars injected via RunnerEnv are also stripped (#5832).
 func TestChildScriptEnv_StripsOIDCFromRunnerEnv(t *testing.T) {
@@ -583,6 +610,7 @@ func TestResolveTraceIdentity_AdoptsSampledParent(t *testing.T) {
 	assert.Equal(t, trace.SpanKindConsumer, tid.SpanKind, "remote parent → Consumer kind")
 	assert.True(t, strings.HasSuffix(tid.Traceparent, "-01"), "sampled flag preserved")
 	assert.True(t, strings.HasPrefix(tid.Traceparent, "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-"), "trace ID in propagated traceparent")
+	assert.True(t, tid.PropagatedFlags.IsSampled(), "sampled inbound keeps sampled flags")
 }
 
 func TestResolveTraceIdentity_PreservesUnsampledFlag(t *testing.T) {
@@ -596,6 +624,7 @@ func TestResolveTraceIdentity_PreservesUnsampledFlag(t *testing.T) {
 	assert.True(t, sc.IsSampled(), "local span still sampled for file exporter")
 	assert.True(t, strings.HasSuffix(tid.Traceparent, "-00"), "propagated traceparent must preserve unsampled flag")
 	assert.Equal(t, trace.SpanKindConsumer, tid.SpanKind)
+	assert.False(t, tid.PropagatedFlags.IsSampled(), "unsampled inbound must not re-advertise sampled")
 }
 
 func TestResolveTraceIdentity_NoInbound(t *testing.T) {
@@ -606,6 +635,65 @@ func TestResolveTraceIdentity_NoInbound(t *testing.T) {
 	require.True(t, sc.IsValid(), "root span must be valid")
 	assert.True(t, strings.HasSuffix(tid.Traceparent, "-01"), "fresh trace is sampled")
 	assert.Equal(t, trace.SpanKindInternal, tid.SpanKind, "no remote parent → Internal kind")
+	assert.True(t, tid.PropagatedFlags.IsSampled(), "fresh local trace is sampled")
+}
+
+func TestIterationTraceparent_PreservesUnsampledFlag(t *testing.T) {
+	const inbound = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-00"
+	tracer := testTracer()
+	tid := resolveTraceIdentity(context.Background(), tracer, inbound, "", nil)
+	defer tid.RootSpan.End()
+
+	_, agentSpan := tracer.Start(tid.Ctx, "agent")
+	defer agentSpan.End()
+
+	got := iterationTraceparent(agentSpan, tid.PropagatedFlags)
+	require.NotEmpty(t, got)
+	assert.True(t, strings.HasSuffix(got, "-00"), "runtime TRACEPARENT must keep the inbound unsampled flag, not AlwaysSample")
+	parts := strings.Split(got, "-")
+	require.Len(t, parts, 4)
+	assert.Equal(t, "4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d", parts[1], "same trace ID")
+	agentID := agentSpan.SpanContext().SpanID().String()
+	rootID := tid.RootSpan.SpanContext().SpanID().String()
+	assert.Equal(t, agentID, parts[2], "span ID must be the agent span, not the run root")
+	assert.NotEqual(t, agentID, rootID)
+}
+
+func TestIterationTraceparent_SampledParent(t *testing.T) {
+	const inbound = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+	tracer := testTracer()
+	tid := resolveTraceIdentity(context.Background(), tracer, inbound, "", nil)
+	defer tid.RootSpan.End()
+
+	_, agentSpan := tracer.Start(tid.Ctx, "agent")
+	defer agentSpan.End()
+
+	got := iterationTraceparent(agentSpan, tid.PropagatedFlags)
+	require.NotEmpty(t, got)
+	assert.True(t, strings.HasSuffix(got, "-01"))
+	assert.Contains(t, got, agentSpan.SpanContext().SpanID().String())
+}
+
+func TestEndAgentSpanOnSetupError(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	_, span := tp.Tracer("test").Start(context.Background(), "agent")
+	endAgentSpanOnSetupError(span, errors.New("clearing stale iteration deadline"))
+
+	ended := sr.Ended()
+	require.Len(t, ended, 1)
+	assert.Equal(t, codes.Error, ended[0].Status().Code)
+	assert.Contains(t, ended[0].Status().Description, "clearing stale iteration deadline")
+}
+
+func TestSanitizeTraceparent(t *testing.T) {
+	const valid = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+	assert.Equal(t, valid, sanitizeTraceparent(valid))
+	assert.Equal(t, "", sanitizeTraceparent(""))
+	assert.Equal(t, "", sanitizeTraceparent("abc"))
+	assert.Equal(t, "", sanitizeTraceparent("00-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ-aaaaaaaaaaaaaaaa-01"))
+	assert.Equal(t, "", sanitizeTraceparent("'; rm -rf /; echo '"))
 }
 
 func TestResolveTraceIdentity_MalformedInput(t *testing.T) {

@@ -3677,6 +3677,38 @@ func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo,
 	return perm.RoleName, nil
 }
 
+func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username, permission string) error {
+	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
+	resp, err := c.put(ctx, path, map[string]string{"permission": permission})
+	if err != nil {
+		return fmt.Errorf("add collaborator %s: %w", username, err)
+	}
+	resp.Body.Close()
+	// 201 means GitHub sent an invitation; access starts only once it is accepted.
+	if resp.StatusCode == http.StatusCreated {
+		return fmt.Errorf("add collaborator %s: invitation pending, access not granted", username)
+	}
+	return nil
+}
+
+func (c *LiveClient) GetOrgMembership(ctx context.Context, org, username string) (forge.OrgMembership, error) {
+	path := fmt.Sprintf("/orgs/%s/memberships/%s",
+		url.PathEscape(org), url.PathEscape(username))
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return forge.OrgMembership{}, fmt.Errorf("get org membership for %s in %s: %w", username, org, err)
+	}
+	var body struct {
+		State string `json:"state"`
+		Role  string `json:"role"`
+	}
+	if err := decodeJSON(resp, &body); err != nil {
+		return forge.OrgMembership{}, fmt.Errorf("decode org membership for %s in %s: %w", username, org, err)
+	}
+	return forge.OrgMembership{State: body.State, Role: body.Role}, nil
+}
+
 // CreateOrgSecret creates or updates an encrypted organization-level secret
 // scoped to the given repository IDs.
 // The value is trimmed of whitespace before encryption to prevent corruption
@@ -4003,6 +4035,18 @@ func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch 
 	return true, nil
 }
 
+// GetProtectedBranch is not supported on GitHub. GitHub Actions does not
+// gate workflow dispatch on protected-branch merge/push access the way
+// GitLab gates CreatePipeline.
+func (c *LiveClient) GetProtectedBranch(_ context.Context, _, _, _ string) (*forge.ProtectedBranchRule, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// GrantProtectedBranchMergeUser is not supported on GitHub.
+func (c *LiveClient) GrantProtectedBranchMergeUser(_ context.Context, _, _, _ string, _ int) error {
+	return forge.ErrNotSupported
+}
+
 // CreatePipeline is not supported on GitHub.
 func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[string]string) (*forge.Pipeline, error) {
 	return nil, forge.ErrNotSupported
@@ -4021,6 +4065,11 @@ func (c *LiveClient) DeletePipelineSchedule(_ context.Context, owner, repo strin
 // ListPipelineSchedules is not supported on GitHub.
 func (c *LiveClient) ListPipelineSchedules(_ context.Context, owner, repo string) ([]forge.PipelineSchedule, error) {
 	return nil, forge.ErrNotSupported
+}
+
+// UpdatePipelineSchedule is not supported on GitHub.
+func (c *LiveClient) UpdatePipelineSchedule(_ context.Context, _, _ string, _ int64, _ bool) error {
+	return forge.ErrNotSupported
 }
 
 // UpdateCIVariable is not supported on GitHub.

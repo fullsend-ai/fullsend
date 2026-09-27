@@ -76,6 +76,9 @@ Environment variables set by the runner, present in every agent's shell:
 - `FULLSEND_TIMEOUT_MINUTES` — the harness's `timeout_minutes`, your whole budget
 - `FULLSEND_ITERATION_DEADLINE` — Unix time (seconds) at which this iteration is killed;
   write your result before it (see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline))
+- `TRACEPARENT` — W3C trace context of this iteration's agent span, so runtime telemetry
+  can join the Fullsend trace; empty when telemetry produced no valid span context
+  (see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline))
 
 ## Process
 
@@ -230,7 +233,7 @@ process:
   run_as_group: sandbox
 ```
 
-Most custom agents can reuse the scaffold's `policies/base.yaml` instead of creating their own. Override only when your agent has specific filesystem or process requirements.
+Most custom agents can reuse the `policies/base.yaml` that [`fullsend agent new`](../../cli/agent.md#agent-new) writes — the same policy the fleet agents run under — and only write their own when they need different filesystem or process rules. Either way, commit the policy: CI does not supply one.
 
 ### Network access via providers (recommended)
 
@@ -404,9 +407,10 @@ for the full preference order and sanitization rules.
 set -euo pipefail
 
 # Prefer the validated iteration directory set by the harness
-# (FULLSEND_VALIDATED_ITERATION_DIR) — without it, scanning for the last
-# iteration can pick up output that failed validation. Fall back to
-# scanning for the last iteration for harnesses with no validation_loop.
+# (FULLSEND_VALIDATED_ITERATION_DIR, always an absolute path) — without
+# it, scanning for the last iteration can pick up output that failed
+# validation. Fall back to scanning for the last iteration for
+# harnesses with no validation_loop.
 if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
   RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
 else
@@ -523,10 +527,11 @@ jobs:
         run: |
           set -euo pipefail
           SRC=".defaults/internal/scaffold/fullsend-repo"
-          # Agent files (harness, agents, policies, etc.) are now resolved
-          # from the fullsend-ai/agents repo at runtime by `fullsend run`.
-          # Only infrastructure scripts remain in the scaffold.
-          LAYERED_DIRS="scripts"
+          # Layer the scaffold's provider definitions so the providers
+          # configured in Step 2 resolve without vendoring copies into this
+          # repository. The policy (Step 3) and profiles are committed with
+          # the harness; this step layers neither.
+          LAYERED_DIRS="providers scripts"
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p ".fullsend/${dir}"

@@ -13,13 +13,12 @@ import (
 // These are written only when absent and are never overwritten, because they
 // are shared by every agent in the directory. They are needed at all because
 // a per-repo install vendors none of them: CollectPerRepoInstallFiles returns
-// only the shim workflow and one thin caller, and CI's workspace layering
-// skips policies/ (the embedded scaffold has no policies/ directory, so the
-// [[ -d ]] guard fails) and never had profiles/ in LAYERED_DIRS at all.
+// only the shim workflow and one thin caller, and CI layers providers/ but
+// never policies/ or profiles/, so the copies written here are the ones every
+// run uses. The policy template here is the only in-repo copy (#7268).
 //
-// The bytes come from the existing scaffold embed wherever possible, so a
-// generated tree is byte-identical to what CI layers in and to what the
-// fleet runs.
+// Providers and profiles come from the scaffold embed, so a generated
+// providers/ tree matches what CI layers in.
 func sharedAssets(role Role, validationLoop bool) ([]File, error) {
 	files := []File{}
 

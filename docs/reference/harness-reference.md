@@ -152,7 +152,7 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
 
-**`timeout_minutes`** — Wall-clock budget for one agent iteration, default 30. The runner ends the iteration and terminates the agent's processes in the sandbox when it is spent, and a killed iteration ends the run with `agent timed out after <elapsed> without completing (timeout: <budget>)` unless its output validates anyway. Before every iteration the runner writes the budget as `FULLSEND_TIMEOUT_MINUTES` and the kill time as `FULLSEND_ITERATION_DEADLINE` (Unix seconds) into the agent's environment — see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline). Both names are reserved: an `env.sandbox` entry with either name is dropped.
+**`timeout_minutes`** — Wall-clock budget for one agent iteration, default 30. The runner ends the iteration and sweeps the processes the agent left running in the sandbox (best effort) when it is spent, and a killed iteration ends the run with `agent timed out after <elapsed> without completing (timeout: <budget>)` unless its output validates anyway. Before every iteration the runner writes the budget as `FULLSEND_TIMEOUT_MINUTES`, the kill time as `FULLSEND_ITERATION_DEADLINE` (Unix seconds), and the current agent span as `TRACEPARENT` into the agent's environment — see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline). Those names are reserved: an `env.sandbox` entry with any of them is dropped.
 
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
 
@@ -224,7 +224,8 @@ More-specific entries go last so they override broader defaults.
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — not a `ForgeConfig` field, so this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
-| `validation_loop`, `security` | Child replaces entirely |
+| `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
+| `security` | Child replaces entirely |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the org-level `allowed_remote_resources` from `config.yaml` acts as a fallback for URL resolution |
 
 ## Referencing resources: local vs. remote

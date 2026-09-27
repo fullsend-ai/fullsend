@@ -179,6 +179,33 @@ managed_content_b64() {
   fi
 }
 
+# normalize_sha_pins rewrites SHA-pinned GitHub Actions uses: refs of the
+# form `@<40-hex-sha> # <ref>` to `@<ref>`. Renovate and pinact manage pins
+# this way; treating them as equivalent to the named ref prevents
+# reconciliation from stripping a SHA pin back to a mutable branch (a
+# security regression on workflows granting id-token: write). Tolerates an
+# optional closing quote between the SHA and the `#` annotation (e.g.
+# `uses: "owner/repo@<sha>" # main`) so a quoted uses: value normalizes the
+# same way as an unquoted one; no quoted uses: line exists in this repo
+# today, but this keeps the comparison correct if the template ever quotes
+# one.
+# Reads stdin, writes stdout.
+normalize_sha_pins() {
+  sed -E 's/^([[:space:]]*uses:[[:space:]]+[^[:space:]@]+)@([0-9a-fA-F]{40})(["'"'"']?)[[:space:]]+#[[:space:]]+([A-Za-z0-9._-]+)/\1@\4\3/'
+}
+
+# comparable_managed_b64 returns the fullsend-managed portion of a shim with
+# SHA-pinned uses: refs normalized so `@<sha> # <ref>` compares equal to
+# `@<ref>`. Used only for drift comparison — the write path still emits the
+# template as-is when other content has drifted.
+# Args: $1 = base64-encoded file content
+# Prints: base64-encoded normalized managed portion
+comparable_managed_b64() {
+  local managed
+  managed=$(managed_content_b64 "$1")
+  printf '%s' "$managed" | base64 -d | tr -d '\r' | normalize_sha_pins | base64 -w0
+}
+
 COMMIT_SHA="${GITHUB_SHA:-unknown}"
 PER_REPO_GUARD_VAR="FULLSEND_PER_REPO_INSTALL"
 
@@ -265,6 +292,30 @@ delete_branch() {
     return 1
   fi
   echo "  Deleted branch $branch for $repo"
+}
+
+# fetch_contents_field prints one field of a contents API entry. gh api
+# prints the JSON error body on stdout when a call fails, so the output is
+# used only on success. A 404 means the file is absent: prints nothing and
+# returns 0. Any other failure warns and returns 1, so the caller counts the
+# repo as failed rather than guessing. Uses the same numeric-status idiom as
+# delete_branch.
+# Args: $1 = repo, $2 = path (may carry ?ref=), $3 = jq filter (e.g. .sha)
+fetch_contents_field() {
+  local repo="$1"
+  local path="$2"
+  local filter="$3"
+  local resp
+
+  if resp=$(gh api "repos/$ORG/$repo/contents/$path" --jq "$filter" 2>/dev/null); then
+    printf '%s' "$resp"
+    return 0
+  fi
+  if printf '%s' "$resp" | jq -e '.status == "404"' >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "::warning::Failed to read $path for $repo" >&2
+  return 1
 }
 
 # close_pr_on_branch closes an open PR on the given branch and deletes the branch.
@@ -478,15 +529,21 @@ if [ -n "$ENABLED_REPOS" ]; then
 
     # Check if already enrolled (shim exists on default branch).
     # Fetch content and SHA in one call to avoid race between reads.
-    REMOTE_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .content 2>/dev/null || true)
+    if ! REMOTE_CONTENT=$(fetch_contents_field "$REPO" "$SHIM_PATH" .content); then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
     if [ -n "$REMOTE_CONTENT" ]; then
       # File exists — compare only the managed portion (from sentinel onward)
       # so user-added headers (e.g. license) do not trigger false drift.
+      # SHA-pinned uses: refs of the form `@<sha> # <ref>` are treated as
+      # equivalent to `@<ref>` so Renovate-managed pins of the template's
+      # named ref are not stripped back to a mutable branch.
       EXPECTED_B64=$(shim_content_b64)
       # GitHub returns base64 with newlines; strip them for comparison.
       REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\r\n')
-      REMOTE_MANAGED=$(managed_content_b64 "$REMOTE_B64")
-      EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
+      REMOTE_MANAGED=$(comparable_managed_b64 "$REMOTE_B64")
+      EXPECTED_MANAGED=$(comparable_managed_b64 "$EXPECTED_B64")
       if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
         if ! close_pr_on_branch "$REPO" "$ENROLL_BRANCH" "Shim already matches the current template"; then
           FAILED=$((FAILED + 1))
@@ -615,7 +672,11 @@ if [ -n "$DISABLED_REPOS" ]; then
     fi
 
     # Check if shim exists on default branch.
-    if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --silent 2>/dev/null; then
+    if ! DEFAULT_FILE_SHA=$(fetch_contents_field "$REPO" "$SHIM_PATH" .sha); then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
+    if [ -z "$DEFAULT_FILE_SHA" ]; then
       echo "✓ $REPO already unenrolled (no shim on default branch)"
       SKIPPED=$((SKIPPED + 1))
       continue
@@ -629,7 +690,10 @@ if [ -n "$DISABLED_REPOS" ]; then
     fi
 
     # Fetch file SHA on the removal branch (required for DELETE).
-    FILE_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH?ref=$UNENROLL_BRANCH" --jq .sha 2>/dev/null || true)
+    if ! FILE_SHA=$(fetch_contents_field "$REPO" "$SHIM_PATH?ref=$UNENROLL_BRANCH" .sha); then
+      FAILED=$((FAILED + 1))
+      continue
+    fi
     if [ -z "$FILE_SHA" ]; then
       echo "✓ $REPO shim already removed from branch"
       SKIPPED=$((SKIPPED + 1))

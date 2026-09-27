@@ -381,10 +381,129 @@ validation_loop:
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.NoError(t, err)
 
-	// ValidationLoop: child replaces entirely
+	// Child non-zero fields override; unspecified fields inherit from base.
 	require.NotNil(t, h.ValidationLoop)
 	assert.Equal(t, "child-script.sh", h.ValidationLoop.Script)
 	assert.Equal(t, 3, h.ValidationLoop.MaxIterations)
+}
+
+func TestLoadWithBase_LocalBase_ValidationLoopFieldLevelMerge(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: base-schema.json
+  preflight_check: "python3 -c 'import jsonschema'"
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+validation_loop:
+  schema: child-schema.json
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "base-validate.sh", h.ValidationLoop.Script, "script should be inherited from base")
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations, "max_iterations should be inherited from base")
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode, "feedback_mode should be inherited from base")
+	assert.Equal(t, "child-schema.json", h.ValidationLoop.Schema, "schema should be overridden by child")
+	assert.Equal(t, "python3 -c 'import jsonschema'", h.ValidationLoop.PreflightCheck, "preflight_check should be inherited from base")
+}
+
+func TestLoadWithBase_LocalBase_ValidationLoopChildScriptOnly(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: base-schema.json
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+validation_loop:
+  script: child-validate.sh
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "child-validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "base-schema.json", h.ValidationLoop.Schema)
+}
+
+func TestLoadWithBase_ForgePartialValidationLoopInherits(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: base-schema.json
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  github:
+    validation_loop:
+      schema: child-schema.json
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "base-validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, "child-schema.json", h.ValidationLoop.Schema)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+}
+
+func TestLoadWithBase_LocalBase_ValidationLoopEmptyInheritsAll(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-validate.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: base-schema.json
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+validation_loop: {}
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "base-validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "base-schema.json", h.ValidationLoop.Schema)
 }
 
 func TestLoadWithBase_LocalBase_ValidationLoopInherit(t *testing.T) {
@@ -1829,6 +1948,111 @@ func TestMergeForgeConfigInto_ValidationLoop(t *testing.T) {
 	require.NotNil(t, child.ValidationLoop)
 	assert.Equal(t, "base-validate.sh", child.ValidationLoop.Script)
 	assert.Equal(t, 5, child.ValidationLoop.MaxIterations)
+}
+
+func TestMergeForgeConfigInto_ValidationLoopFieldLevelMerge(t *testing.T) {
+	base := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Script:         "base-validate.sh",
+			Schema:         "base-schema.json",
+			MaxIterations:  5,
+			FeedbackMode:   "append",
+			PreflightCheck: "python3 -c 'import jsonschema'",
+		},
+	}
+	child := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Schema: "child-schema.json",
+		},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.ValidationLoop)
+	assert.Equal(t, "base-validate.sh", child.ValidationLoop.Script)
+	assert.Equal(t, "child-schema.json", child.ValidationLoop.Schema)
+	assert.Equal(t, 5, child.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", child.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "python3 -c 'import jsonschema'", child.ValidationLoop.PreflightCheck)
+}
+
+func TestMergeValidationLoop(t *testing.T) {
+	base := &ValidationLoop{
+		Script:         "base.sh",
+		Schema:         "base.json",
+		MaxIterations:  5,
+		FeedbackMode:   "append",
+		PreflightCheck: "which jq",
+	}
+	childSchema := &ValidationLoop{Schema: "child.json"}
+	childAll := &ValidationLoop{
+		Script:         "child.sh",
+		Schema:         "child.json",
+		MaxIterations:  2,
+		FeedbackMode:   "none",
+		PreflightCheck: "which python3",
+	}
+	empty := &ValidationLoop{}
+
+	tests := []struct {
+		name    string
+		base    *ValidationLoop
+		child   *ValidationLoop
+		want    *ValidationLoop
+		wantNil bool
+	}{
+		{name: "both nil", wantNil: true},
+		{name: "child nil inherits base", base: base, want: base},
+		{name: "base nil keeps child", child: childSchema, want: childSchema},
+		{
+			name:  "child schema only inherits rest",
+			base:  base,
+			child: childSchema,
+			want: &ValidationLoop{
+				Script:         "base.sh",
+				Schema:         "child.json",
+				MaxIterations:  5,
+				FeedbackMode:   "append",
+				PreflightCheck: "which jq",
+			},
+		},
+		{name: "child sets all fields", base: base, child: childAll, want: childAll},
+		{
+			name:  "empty child inherits all",
+			base:  base,
+			child: empty,
+			want:  base,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeValidationLoop(tt.base, tt.child)
+			if tt.wantNil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestMergeValidationLoop_DoesNotMutateInputs(t *testing.T) {
+	base := &ValidationLoop{Script: "base.sh", Schema: "base.json", MaxIterations: 5}
+	child := &ValidationLoop{Schema: "child.json"}
+
+	got := mergeValidationLoop(base, child)
+
+	assert.Equal(t, "base.sh", base.Script)
+	assert.Equal(t, "base.json", base.Schema)
+	assert.Equal(t, "", child.Script)
+	assert.Equal(t, "child.json", child.Schema)
+	require.NotNil(t, got)
+	assert.Equal(t, "base.sh", got.Script)
+	assert.Equal(t, "child.json", got.Schema)
+	got.Script = "mutated.sh"
+	assert.Equal(t, "base.sh", base.Script)
+	assert.Equal(t, "", child.Script)
 }
 
 func TestMergeForgeConfigInto_PreflightCheckCarryForward(t *testing.T) {

@@ -4,7 +4,8 @@ encodes. -->
 
 ## Inputs
 
-- `ISSUE_URL` — the HTML URL of the work item this run was dispatched for.
+- `ISSUE_NUMBER` — the issue or pull request number this run was dispatched for.
+- `REPO_FULL_NAME` — `owner/repo` of the repository that contains the work item.
 - The target repository is checked out at the sandbox working directory.
 
 <!-- FILL IN: any other environment variables your harness passes in
@@ -13,7 +14,7 @@ agent will read an empty string at run time. -->
 
 ## Steps
 
-1. Fetch the work item with `gh issue view "$ISSUE_URL" --json title,body,labels`.
+1. Fetch the work item with `gh issue view "$ISSUE_NUMBER" -R "$REPO_FULL_NAME" --json title,body,labels`.
    If the command fails, write an error result (see Output contract) and stop.
 2. <!-- FILL IN: the analysis this agent performs. Be specific — name the
    files, the thresholds, and the decision boundaries. A vague step here is the

@@ -35,6 +35,7 @@ type ProjectAccessToken struct {
 	Active    bool
 	ExpiresAt string
 	Revoked   bool
+	UserID    int
 }
 
 // ProjectAccessTokenClient creates, lists, and revokes GitLab project
@@ -459,25 +460,61 @@ func gitLabRolePresence(ctx context.Context, client forge.Client, owner, repo st
 }
 
 func extraGitLabRoleUninstallVars(ctx context.Context, client forge.Client, owner, repo string, already []string) []string {
-	vars, err := client.ListRepoVariables(ctx, owner, repo)
-	if err != nil {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(already))
+	seen := make(map[string]struct{}, len(already)+8)
 	for _, n := range already {
 		seen[n] = struct{}{}
 	}
 	var extra []string
-	for name := range vars {
-		if _, ok := seen[name]; ok {
-			continue
+	add := func(name string) {
+		if name == "" {
+			return
 		}
-		if IsGitLabRoleManagedVar(name) {
-			extra = append(extra, name)
+		if !IsGitLabRoleManagedVar(name) {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		extra = append(extra, name)
+	}
+	// ListRepoVariables is best-effort: a list error must not hide names we
+	// can still recover from the stored registry. Built-in secrets stay on
+	// the static uninstall list either way.
+	if vars, err := client.ListRepoVariables(ctx, owner, repo); err == nil {
+		for name := range vars {
+			add(name)
+		}
+	}
+	if raw, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleRegistry); err == nil && exists {
+		if reg, perr := gitlabroles.ParseRegistry(raw); perr == nil {
+			for _, rec := range reg.Registrations() {
+				add(rec.Credential.SecretName)
+			}
 		}
 	}
 	sort.Strings(extra)
 	return extra
+}
+
+func gitlabRoleIdentityVarNames(ctx context.Context, client forge.Client, owner, repo string) []string {
+	already := make([]string, 0, 1+len(gitLabRoleUninstallVars))
+	already = append(already, forge.SecretForgeToken)
+	already = append(already, gitLabRoleUninstallVars...)
+	return append(already, extraGitLabRoleUninstallVars(ctx, client, owner, repo, already)...)
+}
+
+func isGitLabIdentityUninstallVar(name string) bool {
+	return name == forge.SecretForgeToken || IsGitLabRoleManagedVar(name)
+}
+
+func isGitLabRoleSecretName(name string) bool {
+	switch name {
+	case forge.SecretForgeToken, forge.SecretGitLabPollerToken,
+		forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
+		return true
+	}
+	return strings.HasPrefix(name, "FULLSEND_GITLAB_ROLE_") && strings.HasSuffix(name, "_TOKEN")
 }
 
 func secretLeak(result RoleProvisionResult) string {

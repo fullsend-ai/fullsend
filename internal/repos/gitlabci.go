@@ -17,10 +17,11 @@ const fullsendPipelineInclude = ".gitlab/ci/fullsend-pipeline.yml"
 
 // fullsendDispatchInclude is the local include entry fullsend versions
 // before #7322 used to pull in the native merge_request_event dispatch
-// job. It's no longer referenced by the current fullsend-pipeline.yml
-// template, but an already-enrolled repo whose on-repo wrapper predates
-// #7322 may still include it — see
-// gitlabPipelineWrapperStillIncludesDispatch.
+// job. Current fullsend-pipeline.yml does not reference it, and #7707
+// stopped installing the file; an already-enrolled repo whose on-repo
+// wrapper predates #7322 may still include it — see
+// gitlabPipelineWrapperStillIncludesDispatch. Converge deletes the
+// leftover file via gitlabRetiredScaffoldPaths.
 const fullsendDispatchInclude = ".gitlab/ci/fullsend-dispatch.yml"
 
 // fullsendWorkflowNamePrefix is the prefix of the workflow.name value
@@ -1613,6 +1614,21 @@ func gitlabPipelineWrapperStillIncludesDispatch(ctx context.Context, client forg
 		}
 		return true, fmt.Errorf("reading %s: %w", fullsendPipelineInclude, err)
 	}
+	return gitlabWrapperContentIncludesDispatch(content)
+}
+
+// gitlabWrapperContentIncludesDispatch reports whether the given
+// fullsend-pipeline.yml content still carries a local include entry for
+// fullsendDispatchInclude. It is the content-parsing half of
+// gitlabPipelineWrapperStillIncludesDispatch, factored out so callers that
+// already hold wrapper content — e.g. the freshly rendered expected
+// scaffold, which reflects what will actually be committed this run —
+// can check it without an extra forge read.
+//
+// Any outcome other than "confirmed absent" fails closed (returns true):
+// a parse error, an unexpected document shape, or the include entry
+// actually being present.
+func gitlabWrapperContentIncludesDispatch(content []byte) (bool, error) {
 	if len(bytes.TrimSpace(content)) == 0 {
 		return false, nil
 	}
@@ -1649,4 +1665,21 @@ func gitlabPipelineWrapperStillIncludesDispatch(ctx context.Context, client forg
 		}
 	}
 	return false, nil
+}
+
+// gitlabPipelineWrapperWillIncludeDispatch reports whether the
+// fullsend-pipeline.yml content that will remain committed after this
+// converge run still references fullsendDispatchInclude. It prefers the
+// freshly rendered expectedFiles entry — the same content that content-drift
+// repair would write, so it reflects a repo pinned to an old fullsend_ref
+// whose wrapper predates #7322 just as accurately as one already current —
+// over re-reading the file straight from the forge, and falls back to a
+// live forge read only when expectedFiles has no wrapper entry at all.
+func gitlabPipelineWrapperWillIncludeDispatch(ctx context.Context, client forge.Client, owner, repo string, expectedFiles []forge.TreeFile) (bool, error) {
+	for _, f := range expectedFiles {
+		if f.Path == fullsendPipelineInclude {
+			return gitlabWrapperContentIncludesDispatch(f.Content)
+		}
+	}
+	return gitlabPipelineWrapperStillIncludesDispatch(ctx, client, owner, repo)
 }

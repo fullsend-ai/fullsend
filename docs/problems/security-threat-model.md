@@ -13,6 +13,8 @@ Defending the agentic system against adversarial attacks. Security is not a feat
 4. **Agent drift** — insidious, slow, hard to detect
 5. **Supply chain attacks** — partially addressed by existing tooling, but agentic development introduces a novel trust boundary
 
+[Coordinated inauthentic contributions](#threat-7-coordinated-inauthentic-contributions) (Threat 7) cut across [prompt injection](#threat-1-external-prompt-injection) and [denial of service](#threat-6-denial-of-service-dos--resource-exhaustion) but attack identity and intent rather than content or resources. They are documented as a distinct class rather than inserted into the ranking above.
+
 ## Threat 1: External prompt injection
 
 ### The attack
@@ -24,6 +26,7 @@ An attacker submits a PR, issue, or comment containing instructions designed to 
 - An issue body that tricks a triage agent into assigning high priority to a malicious task
 - Commit messages, branch names, or file contents crafted to inject prompts
 - Content in upstream dependencies (READMEs, changelogs) that influence agents processing dependency updates
+- A burst of individually-plausible comments on an issue or PR, posted by multiple accounts, that a maintainer then asks an agent to assess for legitimacy
 
 ### Why it's dangerous
 
@@ -95,7 +98,7 @@ In fullsend's architecture, this is mitigated by several design decisions: agent
 - Can prompt injection be reliably detected? Current research suggests it's fundamentally hard.
 - Should we treat all PR content as untrusted, even from org members? (Relates to insider threat.)
 - How do we handle the case where legitimate code contains text that looks like prompt injection? (e.g., a test for prompt injection defenses)
-- What's the blast radius if an injection succeeds? How do we limit it? (Credential exposure mitigated by keeping credentials out of sandboxes entirely — see [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); model-provider credentials for runtimes that need one follow the same rule through a run-scoped provider and a placeholder the agent never resolves — see [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) and, for codex, [ADR 0099](../ADRs/0099-codex-agent-runtime.md). Tool access limited by `permissions.deny` hard-blocks — see [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md). Other blast radius dimensions remain open.)
+- What's the blast radius if an injection succeeds? How do we limit it? (Credential exposure mitigated by keeping credentials out of sandboxes entirely — see [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); model-provider credentials for runtimes that need one follow the same rule through a run-scoped provider and a placeholder the agent never resolves — see [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) and, for codex, [ADR 0099](../ADRs/0099-codex-agent-runtime.md); the Actions workflow token used for GitHub Packages has its *placeholder* bound the same way, resolving only at the two registry hosts; but a value recovered through the registry's error echo is the job's own `GITHUB_TOKEN` and is replayable against whatever hosts the running role's forge profile already allows — read-write for `coder` — see [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md). Tool access limited by `permissions.deny` hard-blocks — see [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md). Other blast radius dimensions remain open.)
 - Should agents operate on Unicode-normalized text with non-rendering characters stripped, or on raw text with a separate detection pass? Stripping at ingestion is simpler but risks breaking legitimate internationalized content. A detection pass preserves the original but requires every agent to handle invisible content correctly.
 - How do we handle invisible Unicode in code itself (source files, not just metadata)? Some non-rendering characters are legitimate in string literals for internationalization. What heuristics distinguish malicious use from legitimate use?
 
@@ -122,10 +125,11 @@ Agents amplify authority. If a compromised account can trigger agent actions, th
   that authorized it (see
   [ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md))
 - **No self-approval** — an agent that implements a change cannot also approve it. On GitHub this separation is real: the code and review stages run as distinct bot identities. On GitLab, while the role-credential migration gate is unset, `disabled`, or `rollback`, [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) uses a single shared bot PAT for both stages, so GitLab's own self-approval block (`merge_requests_author_approval=false`) would always reject the review agent's approve call on its own MRs; since that rejection is certain rather than a rare failure to recover from, the review agent checks the authenticated identity against the MR author before calling `/approve` and, only on an affirmative match, skips the call outright and records the approve verdict as an MR note instead of a formal approval, with the sticky review comment remaining the authoritative record. A post-hoc check against a 401 remains as a safety net for cases the pre-call check can't resolve, using the same identity comparison. Credential-failure 401s, non-author 401s, and any error while performing the identity check itself all fail closed (a hard error, not a note) rather than falling back — the note is posted only when the bot identity is affirmatively confirmed as the MR author. This is a documented trade-off of ADR 0067's single-shared-PAT credential model, not an independently reviewed security exception or a per-role-token gap to close. Once the gate is `migrating` or `enforced`, the [GitLab role-credential contract](../contributing/gitlab-role-credentials.md)'s `approve_merge_request` capability check applies instead: once role secrets are provisioned (always true in `enforced`; in `migrating`, only for roles whose secret is already configured — an unconfigured role may still fall back to the shared token), Analyst and Coder authenticate with distinct per-role credentials. Coder is structurally denied the approve call even during that shared-token fallback, because the capability check resolves from the role identity, not the credential backing it, rather than relying on the identity-vs-author workaround above
-- **GitLab role-credential contract** — built-in Poller/Analyst/Coder and administrator-registered custom roles share one registry and credential-selection path ([gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md)). Role registration is install-state only; repository and merge-request content cannot create or elevate roles. Runtime authentication failures do not fall back to the shared token. Provisioning of role credentials is additive and preserves the shared token (#7498). Job routing (#7499) selects the registered role credential in `migrating`/`enforced` and keeps the shared token on `disabled`/`rollback`. Rotation (#7500) replaces a due role PAT by creating a new token and distributing it to the existing CI variable while the previous PAT stays valid for in-flight jobs; a failed rotation does not drop the last known-good secret or silently broaden to the shared token. An explicit, drain-confirmed cutover (#7501) enables `enforced` mode and retires the shared `FULLSEND_FORGE_TOKEN` credential
+- **GitLab role-credential contract** — built-in Poller/Analyst/Coder and administrator-registered custom roles share one registry and credential-selection path ([gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md)). Role registration is install-state only; repository and merge-request content cannot create or elevate roles. Runtime authentication failures do not fall back to the shared token. Provisioning of role credentials is additive and preserves the shared token (#7498). Job routing (#7499) selects the registered role credential in `migrating`/`enforced` and keeps the shared token on `disabled`/`rollback`. Rotation (#7500) replaces a due role PAT by creating a new token and distributing it to the existing CI variable while the previous PAT stays valid for in-flight jobs; a failed rotation does not drop the last known-good secret or silently broaden to the shared token. Ordinary unflagged `repos install` (#7524) enables `enforced` mode and retires the shared `FULLSEND_FORGE_TOKEN` credential once role checks pass; emergency rollback remains an explicit confirmed flag
 - **Rate limiting / anomaly detection** — unusual patterns of agent activity (sudden burst of cross-repo changes, changes to security-sensitive paths) trigger alerts
 - **CODEOWNERS for agent config** — changes to agent rules, permissions, and configuration always require human approval
 - **Separation of duties** — different agents for different concerns, with no single agent having end-to-end authority
+- **Role admission criteria** — a new built-in agent role gets no write access on control-plane scopes (`actions`, `workflows`, `administration`, `secrets`), and a role with two or more write groups is judged by what they enable together; control-plane actions after a run go to the user's own workflow with the job token (see [ADR 0124](../ADRs/0124-criteria-for-adding-a-built-in-agent-role.md))
 
 ### Open questions
 
@@ -352,9 +356,10 @@ An attacker triggers excessive consumption of compute, API tokens, or event-proc
 ### Attack vectors
 
 **Event flooding:**
-- Rapidly filing issues, posting comments, toggling labels, or creating PRs to trigger agent invocations at scale
-- Abusing slash commands (`/triage`, `/code`) to queue expensive operations
-- Creating issues in bulk across multiple repos in an organization to saturate shared infrastructure
+- Collaborators or compromised insiders with write (or, for observation stages, triage) permission rapidly filing issues, posting comments, toggling labels, or creating PRs to trigger agent invocations at scale. Write-permission dispatch gating ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) means an untrusted external actor cannot force inference this way; see [Threat 7](#threat-7-coordinated-inauthentic-contributions) for how that trust is farmed instead.
+- Abusing slash commands (`/fs-triage`, `/fs-code`, `/fs-review`) to queue expensive operations — the same dispatch gating applies, so this requires an actor who already holds the necessary permission
+- Creating issues in bulk across multiple repos in an organization to saturate shared infrastructure — filing is ungated, but dispatching an agent against each one still requires a permissioned actor, or a maintainer reacting to the flood at scale
+- Maintainer-triggered amplification — a maintainer asking an agent to "assess this thread" on a flooded issue or PR still consumes resources even though the flood itself could not dispatch an agent unassisted
 
 **Cost amplification:**
 - Crafting issues that cause maximum LLM token consumption (extremely long descriptions, requests for exhaustive analysis)
@@ -392,7 +397,7 @@ Agentic DOS requires defenses beyond standard infrastructure hardening (sandbox 
   coalesce rapid-fire events for the same harness and entity into at most one
   newest pending invocation; this bounds queued work, not consecutive runs
   ([ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
-- **Tiered response based on actor trust** — events from non-org-members or new contributors could be subject to stricter rate limits or require human approval before triggering agents.
+- **Tiered response based on actor trust** — write (or, for observation stages, triage) permission is already required before slash-command or issue/PR-open dispatch can trigger an agent ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)), so non-collaborators cannot trigger those paths today. One documented exception: `pull_request_target.closed` → retro is intentionally left ungated, so any PR closer — including an untrusted external author closing their own PR — can trigger retro without a permission check. This is not read-only lifecycle accounting: retro runs with a minted token that has `issues:write` and `pull_requests:write` while contents remains read-only; its post-script can file issues, comment, and apply `ready-for-triage`, which the router dispatches to triage without another actor-authorization check. An untrusted PR closer can therefore force retro inference and indirectly trigger a downstream triage run, leaving a residual DOS/injection surface. On top of the live permission check on gated paths, a reputation-based tier — accounts that are new or have thin contribution history — could still be subject to stricter rate limits or require human approval before triggering agents. This is a starting point, not a complete defense: [Threat 7](#threat-7-coordinated-inauthentic-contributions) specifically games the reputation-building process this control relies on.
 - **Input size limits** — cap the size of issue descriptions, comments, and referenced content that agents will process. Truncate or reject inputs above a threshold.
 - **Backpressure mechanisms** — when agent queue depth exceeds a threshold, new events should be rejected or deferred rather than queued, with notification to org administrators.
 - **Rate limiting per actor and per repository** — cap the number of agent-triggering events a single user can generate within a time window, and limit concurrent agent runs per repository and per organization. Note: [Threat 2](#threat-2-insider-threat--compromised-credentials) discusses rate limiting for anomaly detection of compromised credentials via behavioral patterns. DOS rate limiting is distinct — it caps event volume from any actor regardless of intent, as a resource protection mechanism rather than a compromise detection signal.
@@ -404,7 +409,7 @@ DOS has elements that touch several existing threats:
 - **Agent-to-agent injection** — a compromised agent could generate outputs designed to trigger expensive cascades in downstream agents
 - **Insider threat** — a compromised account with org membership bypasses actor-based rate limits
 - **Agent drift** — gradual increases in agent response time or resource consumption may indicate an unintentional DOS caused by system degradation
-- **Contribution volume** — high-volume AI-generated external PRs (see [contribution-volume.md](contribution-volume.md)) create conditions where both DOS and temporal split-payload attacks become harder to detect. Volume provides cover: a deliberate attack can hide among legitimate contributions, and the sheer review workload increases the chance that a weakened test or a staged payload goes unnoticed. Rate limiting and triage are both DOS defenses and security screening mechanisms.
+- **Contribution volume** — high-volume AI-generated external PRs (see [contribution-volume.md](contribution-volume.md)) create conditions where both DOS and temporal split-payload attacks become harder to detect. Volume provides cover: a deliberate attack can hide among legitimate contributions, and the sheer review workload increases the chance that a weakened test or a staged payload goes unnoticed. Rate limiting and triage are both DOS defenses and security screening mechanisms. When the volume itself is inauthentic rather than good-faith overflow, that is [Threat 7](#threat-7-coordinated-inauthentic-contributions), not only a capacity problem.
 
 ### Open questions
 
@@ -416,6 +421,71 @@ DOS has elements that touch several existing threats:
   discussion be treated as a DOS defense or purely a correctness concern?~~ It
   serves both purposes; the finish-and-coalesce policy is decided in
   [ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md).
+
+<a id="threat-7-coordinated-inauthentic-contributions"></a>
+## Threat 7 (unranked / distinct class): Coordinated inauthentic contributions
+
+*A distinct threat class, not a ranked item — see [Threat priority](#threat-priority-ranked).*
+
+### The attack
+
+An attacker — an agent, or a human using agents — systematically targets a project's issue tracker, PR queue, and adjacent repositories to manufacture credibility, exhaust maintainer attention, and promote competing work. The colloquial name in the wild is "claws." Luke Hinds's ["The Day of the Claws"](https://decodebytes.substack.com/p/the-day-of-the-claws) is a first-person account of this pattern against sigstore, in-toto, and SLSA.
+
+The behaviors are individually hard to distinguish from good-faith contribution:
+
+- **Speed-to-merge gaming.** PRs that immediately accept every review comment, appearing cooperative so they merge quickly rather than because the change is sound.
+- **Recognition land-grabs.** Issues and PRs filed across many adjacent projects to build a contribution graph that looks legitimate but is synthetic.
+- **Volume spam.** A flood of issues and PRs that each look competent in isolation but collectively exhaust review capacity. Unlike the good-faith [contribution volume](contribution-volume.md) problem, the volume *is* the point.
+- **Confident nonsense.** LLM-generated text that cites obscure-sounding frameworks, IETF drafts, pending specs, or other open PRs without substantive meaning, exploiting how expensive domain-specific claims are to verify.
+- **Mutual reinforcement.** Multiple inauthentic accounts supporting each other's issues and PRs, creating artificial consensus.
+- **Missing provenance.** No DCO sign-off, no commit signing, no verifiable identity — with contributions polished enough to pass casual review.
+- **Overstated conclusions.** Exaggerating the significance of open PRs or issues elsewhere to borrow credibility.
+- **Feature cloning.** Near-copies of existing projects (same primitives, same abstractions, slightly different names), then issues filed in the original project's tracker to promote the clone.
+
+### Why it's dangerous
+
+This is an identity-level and intent-level attack, not a content-level one. [Zero trust between agents](#threat-5-agent-to-agent-prompt-injection) treats every input as potentially adversarial regardless of source; it does not ask "is this issue filed to promote a competing project?" A claw can increase comment volume on an issue until a maintainer, trying to assess legitimacy, feeds that thread to an agent — which is then exposed to whatever [prompt injection](#threat-1-external-prompt-injection) the thread contains.
+
+It also specifically games two [DOS defenses](#threat-6-denial-of-service-dos--resource-exhaustion), in different ways. Reputation-based "tiered response based on actor trust" assumes that unfamiliar actors stay unfamiliar; claws game it by accumulating a series of small, seemingly legitimate contributions until reputation/intake signals (contribution history, allowlists, DIFC-style trust tiers) treat them as an established contributor — a graduation in reputation standing, not in the live write-permission dispatch check, which [ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md) re-evaluates on every event regardless of history. Per-actor rate limits assume that volume from one actor is the signal; claws game them by distributing volume across accounts so no single actor trips a limit.
+
+The [xz backdoor](https://en.wikipedia.org/wiki/XZ_Utils_backdoor) is the slow-burn precedent for building trust as a contributor before delivering a payload. Claws compress that timeline with AI and add a multi-account, multi-repo dimension the xz attacker did not need.
+
+### Why existing defenses are partial
+
+Two controls already shrink the blast radius; neither addresses the identity/intent core.
+
+- **Write-permission dispatch gating** ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)). External non-members cannot trigger agent runs by opening issues, opening PRs, or posting slash commands. A maintainer must apply a label or run `/fs-triage`, `/fs-code`, or `/fs-review`. This is a platform-level control every enrolled repo gets. It stops the cheapest form of agentic DOS and injection (untrusted actors forcing inference). It does **not** stop the flood of issues and PRs that still consume human attention, and a maintainer who then asks an agent to "assess this thread" re-opens the injection surface on purpose.
+- **First-contributor attestation and allowlists** (project-level, not a product default). Some projects refuse PRs from accounts a maintainer has not attested — a username allowlist, a cryptographic contributor attestation system such as [vouch](https://github.com/mitchellh/vouch), or an explicit collaborator list. Ghostty discussed [LOC gating by prior merge count](https://github.com/ghostty-org/ghostty/discussions/10550) and adopted an allowlist. These raise the cost of a recognition land-grab on *one* repo. They do not detect coordinated clusters across repos, feature-cloning promotion, or confident nonsense from an account that has already been attested. The allowlist itself becomes a target: a claw's goal is to get onto it.
+
+Content sanitization, input-size limits, and per-actor rate limits remain necessary. They do not catch promotional intent, fabricated citations, or a dozen accounts each filing one modest PR.
+
+### Intersection with other threats
+
+- **Prompt injection (Threat 1).** Claw-style threads are a natural delivery vehicle. Multiple accounts talking to each other inflate the untrusted text a later agent run will consume. Hidden Unicode and social-pressure variants apply to that text the same as to any other issue or PR.
+- **DOS (Threat 6).** Attention exhaustion is the human-side analogue of token exhaustion. Per-actor rate limits fail when each actor's contributions are small and the campaign is the sum. Reputation-based actor-trust tiering — not the live write-permission dispatch check, which ADR 0054 re-evaluates on every event — is the control the attack is designed to graduate through.
+- **Insider threat (Threat 2).** Once a claw has actual write (or, for observation stages, triage) permission or org membership, they look like a compromised-or-malicious insider for the purpose of dispatch gating, which checks live collaborator permission rather than vouch status or merge history. A maintainer vouch or prior merge count is at most an intake/allowlist signal — it does not itself grant dispatch authority under [ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
+- **Temporal split-payload.** A campaign that first lands small "innocent" test or docs PRs, then a later payload, is easier to stage if the early PRs also farm trust.
+- **Contribution volume.** Good-faith AI volume and inauthentic volume produce the same queue. Salvage-and-throughput workflows (immediately accepting review, asking the project to rewrite) are exactly the cooperation pattern speed-to-merge gaming exploits. See [contribution-volume.md](contribution-volume.md#when-volume-is-the-attack).
+
+### Defense considerations
+
+None of these is a complete answer. They are options with different failure modes.
+
+- **Keep intake open; keep dispatch gated.** The current platform default ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)): anyone can file; observation/mutation dispatch (triage, code, review, fix) requires write or triage permission, and slash commands and issue/PR-open dispatch are gated the same way. One documented exception: `pull_request_target.closed` → retro is intentionally ungated. Retro runs with a minted token that has `issues:write` and `pull_requests:write` while contents remains read-only; its post-script can file issues, comment, and apply `ready-for-triage`, which the router dispatches to triage without an additional actor-authorization check. Any PR closer can therefore force retro inference and indirectly trigger a downstream triage run, a residual DOS/injection surface that the gated paths do not eliminate. Maintainers still spend attention. Drive-by bug reports still arrive.
+- **Contributor allowlists / attestation for PRs.** Close or ignore PRs from unattested accounts. Variants range from a maintained username file to cryptographic attestation. Trade-off: friction for legitimate first-time contributors; attested accounts are not thereby honest; a campaign that invests in getting attested has passed the gate.
+- **Behavioral and graph screening.** Tooling such as the [Microsoft Agent Governance Toolkit contributor-governance tutorial](https://microsoft.github.io/agent-governance-toolkit/tutorials/46-contributor-governance/) describes signals for repo velocity, cross-repo spray, self-promotion, thin credibility, and coordinated promotion, plus cluster detection across accounts. Trade-off: false positives against prolific good-faith contributors; privacy and bias risk; attackers adapt to published signals; this is identity-level trust, which the rest of the threat model treats as insufficient for *content*.
+- **Reputation signals in triage.** Account age, prior merge count, cross-repo history as a pre-filter before an agent reads the issue. Trade-off: new legitimate reporters look like claws; this is the trust-graduation process claws farm; it sits in tension with treating all content as untrusted regardless of source.
+- **LOC or prior-merge gating.** New contributors limited until N PRs have merged. Ghostty considered this and moved to an allowlist, in part because small merged PRs are exactly what a claw farms.
+- **Provenance requirements (DCO, signed commits).** Raise the cost of disposable accounts somewhat. A polished campaign can still sign; a DCO trailer is a claim, not a proof.
+
+### Open questions
+
+- Should enrolled repos be able to layer a contributor allowlist or blocklist *on top of* write-permission dispatch gating — for example, auto-triage from attested reporters without write access, or refuse even maintainer-triggered runs on blocked accounts? [ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md) already notes vouch-style trust policies as a possible way to relax the write-permission boundary for drive-by bug reports; that pulls in the opposite direction from using attestation as an intake gate.
+- Should the triage agent evaluate contributor reputation signals (account age, contribution history, cross-repo patterns) before processing an issue? If it does, how is that reconciled with zero trust between agents?
+- How should projects detect confident nonsense — citations of fabricated specs, IETF drafts, or pending PRs that do not bear on the change — without requiring a human domain expert on every issue?
+- How should projects detect feature cloning and promotional issues that are not malicious in content but are inauthentic in intent?
+- Is cluster detection (mutual-reinforcement graphs across accounts and repos) something the platform should offer, something each project should run, or out of scope because it is forge-level identity analysis?
+- Does integrating contributor-governance tooling into the triage workflow as a pre-filter help, or does it create a false sense of identity-level safety while agents still consume the untrusted text?
 
 ## Cross-cutting concern: agent self-report unreliability
 

@@ -44,13 +44,16 @@ func FileMode(path string) string {
 // layeredDirs contain upstream defaults provided at runtime via reusable
 // workflow workspace preparation. The scaffold does not install these;
 // customization uses base: harness composition instead. See ADR 0064.
+//
+// policies/ is absent: the scaffold ships no policy, and workspace
+// preparation's [[ -d ]] guard skips an entry with no embedded files (#6834).
+// See TestLayeredDirsShipContent.
 var layeredDirs = []string{
 	"agents/",
 	"skills/",
 	"schemas/",
 	"harness/",
 	"plugins/",
-	"policies/",
 	"profiles/",
 	"providers/",
 	"scripts/",
@@ -221,8 +224,9 @@ func GitLabPerRepoFile(path string) ([]byte, error) {
 
 // WalkGitLabPerRepo calls fn for each file in the GitLab per-repo scaffold.
 // Unlike WalkFullsendRepo, this does not filter layered directories because
-// the GitLab scaffold contains only CI pipeline YAML and .fullsend/config.yaml
-// — it has no layered content (harness, agents, policies) to filter. Harness
+// the GitLab scaffold contains only CI pipeline YAML, helper scripts, and
+// .fullsend/config.yaml — it has no layered content (harness, agents,
+// policies) to filter. Harness
 // resolution at runtime is handled by fullsend run's config-driven lookup.
 func WalkGitLabPerRepo(fn func(path string, content []byte) error) error {
 	return walkEmbedFS(gitlabContent, "fullsend-repo-gitlab", fn, nil)

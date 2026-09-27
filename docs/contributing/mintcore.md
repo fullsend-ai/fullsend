@@ -307,6 +307,28 @@ Current `gcfSkip` entries: `env_js.go`, `fetch_js.go`,
 `http_client_js.go`, `pem_js.go` (all `//go:build js`), and
 `file_pem.go` (standalone-mint-only, `//go:build !js`).
 
+### Build metadata stamping
+
+The mint Cloud Function receives version and commit metadata via
+deploy-time source stamping, not runtime environment variables. The
+provisioner writes `mintcore/version.go` into the function source zip
+at bundle time (`writeVersionGoToZip` in
+`internal/dispatch/gcf/provisioner.go`) with version and commit values
+baked in. The same technique stamps GitHub status-auth config into
+`mintcore/status_consts.go`. On-disk copies of these generated files
+are skipped during bundling so stale source cannot overwrite the
+stamped values.
+
+The Cloudflare Worker follows the same principle: `wasmLDFlags` in
+`internal/dispatch/cf/provisioner.go` stamps `mintcore.Version`,
+`mintcore.Commit`, and status-auth config into the WASM binary via
+`-ldflags` at compile time rather than injecting runtime env vars.
+
+This keeps metadata in lockstep with the deployed code. Follow this
+pattern for any future build metadata the function needs — never use
+environment variables for values that must stay in lockstep with the
+deployed source.
+
 ### WASM binary size gate
 
 The compiled WASM binary must stay within Cloudflare Workers size

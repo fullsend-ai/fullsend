@@ -671,6 +671,58 @@ func TestBuildScaffoldFiles_PresetOverlayDoesNotShadowPresetRoles(t *testing.T) 
 	}
 }
 
+func TestBuildScaffoldFiles_ManagedConfig(t *testing.T) {
+	cfg := baseCfg()
+	managed := []byte("kill_switch: true\n")
+	cfg.ManagedConfig = managed
+	cfg.Roles = []string{"triage", "review"}
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	var managedFile []byte
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			managedFile = f.Content
+		}
+	}
+	if managedFile == nil {
+		t.Fatal("expected .fullsend/config.yaml managed configuration")
+	}
+	if string(managedFile) != string(managed) {
+		t.Errorf("config.yaml = %q, want managed bytes %q", managedFile, managed)
+	}
+	if strings.Contains(string(managedFile), "roles:") {
+		t.Errorf("managed configuration must not be replaced by installer roles: %s", managedFile)
+	}
+}
+
+// TestBuildScaffoldFiles_ManagedConfigAdoptionRequired is the ADR-0122
+// adoption gate on the fresh-install path: when the caller (convergeRepo)
+// found an existing .fullsend/config.yaml without the ownership marker, it
+// sets ManagedConfigAdoptionRequired so BuildScaffoldFiles must not emit
+// a config.yaml tree entry at all — writing anything here, managed or
+// generated, would still overwrite the existing file the caller decided
+// requires a deliberate adoption handoff first.
+func TestBuildScaffoldFiles_ManagedConfigAdoptionRequired(t *testing.T) {
+	cfg := baseCfg()
+	cfg.ManagedConfig = []byte(managedConfigMarker + "kill_switch: true\n")
+	cfg.ManagedConfigAdoptionRequired = true
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			t.Errorf("adoption-required install must not write config.yaml, got content %q", f.Content)
+		}
+	}
+}
+
 func TestBuildScaffoldFiles_InvalidConfig(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Roles = []string{"nonexistent-role"}
@@ -760,7 +812,7 @@ func TestCheckInstallComponents_SecretCheckError(t *testing.T) {
 
 func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -780,12 +832,8 @@ func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 
 func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	trustScript, err := scaffold.GitLabPerRepoFile(gitlabTrustScriptPath)
-	if err != nil {
-		t.Fatalf("GitLabPerRepoFile() error = %v", err)
-	}
-	fc.FileContents["acme/api/"+gitlabTrustScriptPath] = trustScript
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
+	putGitLabAuxiliaryScripts(t, fc, "acme", "api")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -1315,8 +1363,11 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 	for _, expected := range []string{
 		".gitlab/ci/fullsend-pipeline.yml",
 		".gitlab/ci/fullsend-agent.yml",
-		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		".gitlab/ci/scripts/install-fullsend-cli.sh",
+		".gitlab/ci/scripts/run-poll-job.sh",
+		".gitlab/ci/scripts/run-agent-job.sh",
 		".fullsend/config.yaml",
 	} {
 		if !paths[expected] {
@@ -1326,6 +1377,9 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 	if paths[".gitlab-ci.yml"] {
 		t.Error(".gitlab-ci.yml should not be in static scaffold — " +
 			"root file is merged dynamically by Install")
+	}
+	if paths[fullsendDispatchInclude] {
+		t.Error("fresh GitLab install must not include obsolete fullsend-dispatch.yml")
 	}
 }
 

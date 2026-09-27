@@ -574,87 +574,6 @@ func TestHealGitLabResourceGroups(t *testing.T) {
 	})
 }
 
-func TestCleanupGitLabBotToken(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("nil glClient is a no-op", func(t *testing.T) {
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		err := cleanupGitLabBotToken(ctx, nil, printer, "group", "project")
-		require.NoError(t, err)
-	})
-
-	t.Run("revokes active fullsend-bot tokens", func(t *testing.T) {
-		var revokedIDs []int
-		mux := http.NewServeMux()
-		mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 10, "name": "fullsend-bot", "active": true},
-				{"id": 11, "name": "other-token", "active": true},
-				{"id": 12, "name": "fullsend-bot", "active": false},
-			})
-		})
-		mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens/10", func(w http.ResponseWriter, r *http.Request) {
-			revokedIDs = append(revokedIDs, 10)
-			w.WriteHeader(http.StatusNoContent)
-		})
-		srv := httptest.NewServer(mux)
-		defer srv.Close()
-
-		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-		require.NoError(t, err)
-
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		err = cleanupGitLabBotToken(ctx, glClient, printer, "group", "project")
-		require.NoError(t, err)
-		assert.Equal(t, []int{10}, revokedIDs)
-		assert.Contains(t, buf.String(), "Revoked bot access token")
-	})
-
-	t.Run("no active tokens", func(t *testing.T) {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]map[string]any{})
-		})
-		srv := httptest.NewServer(mux)
-		defer srv.Close()
-
-		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-		require.NoError(t, err)
-
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		err = cleanupGitLabBotToken(ctx, glClient, printer, "group", "project")
-		require.NoError(t, err)
-		assert.Contains(t, buf.String(), "No active bot access token found")
-	})
-
-	t.Run("list error is non-fatal", func(t *testing.T) {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusForbidden)
-		})
-		srv := httptest.NewServer(mux)
-		defer srv.Close()
-
-		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-		require.NoError(t, err)
-
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-
-		err = cleanupGitLabBotToken(ctx, glClient, printer, "group", "project")
-		require.NoError(t, err)
-		assert.Contains(t, buf.String(), "Could not list project access tokens")
-	})
-}
-
 // Poll-state provisioning itself (legacy-var migration, empty-baseline
 // seeding, skip-existing-branch) is covered directly against
 // SeedGitLabPollStateBranches / EnsureDispatchSecret in
@@ -721,10 +640,10 @@ func TestParseGitLabRoleTokens(t *testing.T) {
 }
 
 func TestPrepareGitLabRoleFlags(t *testing.T) {
-	t.Run("rejects enforced", func(t *testing.T) {
-		err := prepareGitLabRoleFlags(&reposInstallConfig{gitlabRoleMigration: "enforced"})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "#7501")
+	t.Run("accepts enforced", func(t *testing.T) {
+		opts := &reposInstallConfig{gitlabRoleMigration: "enforced"}
+		require.NoError(t, prepareGitLabRoleFlags(opts))
+		assert.Equal(t, gitlabroles.ModeEnforced, opts.gitlabRoleModeFlag)
 	})
 
 	t.Run("parses migrating and registry file", func(t *testing.T) {
@@ -793,7 +712,7 @@ func TestMaybeProvisionGitLabRoles_FreshAndExistingMigrating(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	require.NoError(t, maybeProvisionGitLabRoles(ctx, &reposInstallConfig{}, fake, printer, "group", "project", true))
+	require.NoError(t, maybeProvisionGitLabRoles(ctx, &reposInstallConfig{}, fake, printer, "group", "project"))
 	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
 
 	fake2 := forge.NewFakeClient()
@@ -801,7 +720,7 @@ func TestMaybeProvisionGitLabRoles_FreshAndExistingMigrating(t *testing.T) {
 	fake2.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
 	fake2.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	buf.Reset()
-	require.NoError(t, maybeProvisionGitLabRoles(ctx, &reposInstallConfig{}, fake2, printer, "group", "project", false))
+	require.NoError(t, maybeProvisionGitLabRoles(ctx, &reposInstallConfig{}, fake2, printer, "group", "project"))
 	assert.Contains(t, buf.String(), "Provisioning GitLab role credentials")
 }
 
@@ -881,24 +800,24 @@ func TestGitLabRoleWorkNeededExistingEnforced(t *testing.T) {
 	fake := forge.NewFakeClient()
 	fake.VariableValues["g/p/"+forge.VarGitLabRoleMigration] = "enforced"
 	fake.VariablesExist["g/p/"+forge.VarGitLabRoleMigration] = true
-	needed, mode, err := gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{}, "g", "p", false)
+	needed, mode, err := gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{}, "g", "p")
 	require.NoError(t, err)
 	assert.True(t, needed)
 	assert.Equal(t, gitlabroles.ModeEnforced, mode)
 
-	needed, _, err = gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{gitlabRoleModeFlag: gitlabroles.ModeRollback}, "g", "p", false)
+	needed, _, err = gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{gitlabRoleModeFlag: gitlabroles.ModeRollback}, "g", "p")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "gitlab-role-rollback-confirmed")
 	needed, mode, err = gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{
 		gitlabRoleModeFlag:          gitlabroles.ModeRollback,
 		gitlabRoleRollbackConfirmed: true,
-	}, "g", "p", false)
+	}, "g", "p")
 	require.NoError(t, err)
 	assert.True(t, needed)
 	assert.Equal(t, gitlabroles.ModeRollback, mode)
 
 	fake.Errors["GetRepoVariable"] = fmt.Errorf("denied")
-	_, _, err = gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{}, "g", "p", false)
+	_, _, err = gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{}, "g", "p")
 	require.Error(t, err)
 }
 
@@ -908,7 +827,7 @@ func TestGitLabRoleWorkNeededFreshPreservesEnforcedGate(t *testing.T) {
 		VariablesExist: map[string]bool{"g/p/" + forge.VarGitLabRoleMigration: true},
 		VariableValues: map[string]string{"g/p/" + forge.VarGitLabRoleMigration: string(gitlabroles.ModeEnforced)},
 	}
-	needed, mode, err := gitLabRoleWorkNeeded(context.Background(), fake, &reposInstallConfig{}, "g", "p", true)
+	needed, mode, err := gitLabRoleWorkNeeded(context.Background(), fake, &reposInstallConfig{}, "g", "p")
 	require.NoError(t, err)
 	assert.True(t, needed)
 	assert.Equal(t, gitlabroles.ModeEnforced, mode)
@@ -955,9 +874,7 @@ func TestMaybeCutoverGitLabRoles(t *testing.T) {
 	assert.False(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
 }
 
-func TestMaybeCutoverGitLabRolesRequiresTokenInventory(t *testing.T) {
-	ctx := context.Background()
-	fake := forge.NewFakeClient()
+func seedCLICutoverReady(fake *forge.FakeClient) {
 	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
 	fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "migrating"
 	fake.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
@@ -968,10 +885,166 @@ func TestMaybeCutoverGitLabRolesRequiresTokenInventory(t *testing.T) {
 	} {
 		fake.Secrets["group/project/"+name] = true
 	}
+}
+
+func TestMaybeCutoverGitLabRolesRequiresTokenInventory(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	seedCLICutoverReady(fake)
 	var buf bytes.Buffer
-	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{gitlabRoleCutoverDrained: true}, fake, ui.New(&buf), "group", "project")
+	// Ordinary unflagged install skips cutover when there is no inventory
+	// rather than failing converge.
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{}, fake, ui.New(&buf), "group", "project")
+	require.NoError(t, err)
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+
+	buf.Reset()
+	err = maybeCutoverGitLabRoles(ctx, &reposInstallConfig{gitlabRoleCutover: true, gitlabRoleCutoverDrained: true}, fake, ui.New(&buf), "group", "project")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "project-token inventory")
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+func TestMaybeCutoverGitLabRolesAutomaticOnUnflaggedReady(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	seedCLICutoverReady(fake)
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{testGitLabTokenInventory: cliCutoverTokens{}}, fake, ui.New(&buf), "group", "project")
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "cutover complete")
+	assert.Equal(t, "enforced", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.False(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+func TestMaybeCutoverGitLabRolesAutomaticDefersWhenNotReady(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	seedCLICutoverReady(fake)
+	delete(fake.Secrets, "group/project/"+forge.SecretGitLabCoderToken)
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{testGitLabTokenInventory: cliCutoverTokens{}}, fake, ui.New(&buf), "group", "project")
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "cutover deferred")
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "partial enrollment must not reopen or drop the shared credential")
+}
+
+func TestMaybeCutoverGitLabRolesAutomaticSkipsRollback(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+	fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "rollback"
+	fake.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{testGitLabTokenInventory: cliCutoverTokens{}}, fake, ui.New(&buf), "group", "project")
+	require.NoError(t, err)
+	assert.NotContains(t, buf.String(), "cutting over")
+	assert.Equal(t, "rollback", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+func TestMaybeCutoverGitLabRolesExplicitRequiresDrain(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	seedCLICutoverReady(fake)
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{
+		gitlabRoleCutover:        true,
+		testGitLabTokenInventory: cliCutoverTokens{},
+	}, fake, ui.New(&buf), "group", "project")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "in-flight shared-token jobs are drained")
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+func TestMaybeCutoverGitLabRolesEnforcedFlagDoesNotRequireDrain(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	seedCLICutoverReady(fake)
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{
+		gitlabRoleModeFlag:       gitlabroles.ModeEnforced,
+		testGitLabTokenInventory: cliCutoverTokens{},
+	}, fake, ui.New(&buf), "group", "project")
+	require.NoError(t, err)
+	assert.Equal(t, "enforced", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.False(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+func TestGitLabRoleWorkNeededExistingDisabledPromotesToMigrating(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	needed, mode, err := gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{}, "g", "p")
+	require.NoError(t, err)
+	assert.True(t, needed)
+	assert.Equal(t, gitlabroles.ModeMigrating, mode)
+}
+
+func TestGitLabRoleWorkNeededExistingRollbackStaysRolledBack(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.VariableValues["g/p/"+forge.VarGitLabRoleMigration] = "rollback"
+	fake.VariablesExist["g/p/"+forge.VarGitLabRoleMigration] = true
+	needed, mode, err := gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{}, "g", "p")
+	require.NoError(t, err)
+	assert.False(t, needed)
+	assert.Equal(t, gitlabroles.ModeRollback, mode)
+}
+
+func TestMaybeCutoverGitLabRolesSkipsRequestedRollback(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	seedCLICutoverReady(fake)
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{
+		gitlabRoleModeFlag:       gitlabroles.ModeRollback,
+		testGitLabTokenInventory: cliCutoverTokens{},
+	}, fake, ui.New(&buf), "group", "project")
+	require.NoError(t, err)
+	assert.NotContains(t, buf.String(), "cutting over")
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+func TestMaybeProvisionThenCutoverExistingDisabled(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	require.NoError(t, maybeProvisionGitLabRoles(ctx, &reposInstallConfig{}, fake, printer, "group", "project"))
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	for _, name := range []string{
+		forge.SecretGitLabPollerToken,
+		forge.SecretGitLabAnalystToken,
+		forge.SecretGitLabCoderToken,
+	} {
+		fake.Secrets["group/project/"+name] = true
+	}
+	buf.Reset()
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{testGitLabTokenInventory: cliCutoverTokens{}}, fake, printer, "group", "project")
+	require.NoError(t, err)
+	assert.Equal(t, "enforced", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.False(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+func TestMaybeCutoverGitLabRolesExplicitNotReadyFails(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	seedCLICutoverReady(fake)
+	delete(fake.Secrets, "group/project/"+forge.SecretGitLabCoderToken)
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{
+		gitlabRoleCutover:        true,
+		gitlabRoleCutoverDrained: true,
+		testGitLabTokenInventory: cliCutoverTokens{},
+	}, fake, ui.New(&buf), "group", "project")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not ready")
 	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
 	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
 }
@@ -999,7 +1072,7 @@ func TestMaybeProvisionGitLabRoles_PreservesRollbackWithRegistryOnly(t *testing.
 	// overwritten back to migrating.
 	opts := &reposInstallConfig{gitlabRoleRegistryJSON: `{"roles":[]}`}
 
-	err := maybeProvisionGitLabRoles(ctx, opts, fake, printer, "group", "project", false)
+	err := maybeProvisionGitLabRoles(ctx, opts, fake, printer, "group", "project")
 	require.NoError(t, err)
 	assert.Equal(t, "rollback", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
 }
@@ -1014,7 +1087,77 @@ func TestSetupGitLabRoleCredentials_RegistryReadError(t *testing.T) {
 	assert.NotContains(t, err.Error(), "glpat-")
 }
 
-func TestMaybeProvisionGitLabRoles_SkipExistingDisabled(t *testing.T) {
+func TestMaybeProvisionGitLabRoles_ReadError(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Errors["GetRepoVariable"] = fmt.Errorf("denied")
+	var buf bytes.Buffer
+	err := maybeProvisionGitLabRoles(ctx, &reposInstallConfig{}, fake, ui.New(&buf), "group", "project")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), forge.VarGitLabRoleMigration)
+}
+
+func TestMaybeProvisionGitLabRoles_ExplicitMigratingFlag(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+	var buf bytes.Buffer
+	opts := &reposInstallConfig{gitlabRoleModeFlag: gitlabroles.ModeMigrating}
+	require.NoError(t, maybeProvisionGitLabRoles(ctx, opts, fake, ui.New(&buf), "group", "project"))
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+}
+
+func TestMaybeProvisionGitLabRoles_ExplicitEnforcedFlagDefersCutoverOnMissingRoleSecret(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	opts := &reposInstallConfig{
+		gitlabRoleModeFlag:       gitlabroles.ModeEnforced,
+		testGitLabTokenInventory: cliCutoverTokens{},
+	}
+
+	// No GitLab token client and no administrator-provided credentials:
+	// provisioning cannot create any role secret. Provisioning must
+	// never write the enforced gate directly from the flag's value —
+	// CutoverGitLabRoleCredentials is the sole writer of enforced, once
+	// role readiness has been verified. If provisioning wrote enforced
+	// here, the explicit cutover below would hard-fail with the repo
+	// stuck in enforced mode and missing role secrets.
+	require.NoError(t, maybeProvisionGitLabRoles(ctx, opts, fake, printer, "group", "project"))
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken])
+
+	buf.Reset()
+	err := maybeCutoverGitLabRoles(ctx, opts, fake, printer, "group", "project")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not ready")
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "partial enrollment must not reopen or drop the shared credential")
+}
+
+func TestGitLabRoleWorkNeededInvalidLiveMode(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.VariableValues["g/p/"+forge.VarGitLabRoleMigration] = "nope"
+	fake.VariablesExist["g/p/"+forge.VarGitLabRoleMigration] = true
+	_, _, err := gitLabRoleWorkNeeded(ctx, fake, &reposInstallConfig{}, "g", "p")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, gitlabroles.ErrInvalidMode)
+}
+
+func TestMaybeCutoverGitLabRolesLoadStateError(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	fake.Errors["GetRepoVariable"] = fmt.Errorf("denied")
+	var buf bytes.Buffer
+	err := maybeCutoverGitLabRoles(ctx, &reposInstallConfig{testGitLabTokenInventory: cliCutoverTokens{}}, fake, ui.New(&buf), "group", "project")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), forge.VarGitLabRoleMigration)
+}
+
+func TestMaybeProvisionGitLabRoles_ExistingDisabledPromotesToMigrating(t *testing.T) {
 	ctx := context.Background()
 	fake := forge.NewFakeClient()
 	fake.Secrets["group/project/"+forge.SecretForgeToken] = true
@@ -1022,67 +1165,11 @@ func TestMaybeProvisionGitLabRoles_SkipExistingDisabled(t *testing.T) {
 	printer := ui.New(&buf)
 	opts := &reposInstallConfig{}
 
-	err := maybeProvisionGitLabRoles(ctx, opts, fake, printer, "group", "project", false)
+	err := maybeProvisionGitLabRoles(ctx, opts, fake, printer, "group", "project")
 	require.NoError(t, err)
-	assert.Empty(t, fake.UpdatedVariables)
-	assert.NotContains(t, buf.String(), "Provisioning GitLab role credentials")
-}
-
-func TestCleanupGitLabRoleTokens(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("nil client is a no-op", func(t *testing.T) {
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-		require.NoError(t, cleanupGitLabRoleTokens(ctx, nil, printer, "group", "project"))
-	})
-
-	t.Run("revokes role tokens not shared bot", func(t *testing.T) {
-		var revokedIDs []int
-		mux := http.NewServeMux()
-		mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 1, "name": "fullsend-bot", "active": true},
-				{"id": 2, "name": "fullsend-poller", "active": true},
-				{"id": 3, "name": "fullsend-role-scanner", "active": true},
-				{"id": 4, "name": "other-token", "active": true},
-			})
-		})
-		mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens/2", func(w http.ResponseWriter, r *http.Request) {
-			revokedIDs = append(revokedIDs, 2)
-			w.WriteHeader(http.StatusNoContent)
-		})
-		mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens/3", func(w http.ResponseWriter, r *http.Request) {
-			revokedIDs = append(revokedIDs, 3)
-			w.WriteHeader(http.StatusNoContent)
-		})
-		srv := httptest.NewServer(mux)
-		defer srv.Close()
-
-		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-		require.NoError(t, err)
-		var buf bytes.Buffer
-		printer := ui.New(&buf)
-		require.NoError(t, cleanupGitLabRoleTokens(ctx, glClient, printer, "group", "project"))
-		assert.ElementsMatch(t, []int{2, 3}, revokedIDs)
-		assert.Contains(t, buf.String(), "Revoked 2 GitLab role access token")
-		assert.NotContains(t, buf.String(), "glpat-")
-	})
-
-	t.Run("list error is non-fatal", func(t *testing.T) {
-		mux := http.NewServeMux()
-		mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusForbidden)
-		})
-		srv := httptest.NewServer(mux)
-		defer srv.Close()
-		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
-		require.NoError(t, err)
-		var buf bytes.Buffer
-		require.NoError(t, cleanupGitLabRoleTokens(ctx, glClient, ui.New(&buf), "group", "project"))
-		assert.Contains(t, buf.String(), "Could not list project access tokens")
-	})
+	assert.Equal(t, "migrating", fake.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.Contains(t, buf.String(), "Provisioning GitLab role credentials")
+	assert.True(t, fake.Secrets["group/project/"+forge.SecretForgeToken], "partial enrollment must not recreate or drop the shared credential")
 }
 
 func TestPrepareGitLabRoleFlagsRotateNames(t *testing.T) {
@@ -1212,4 +1299,384 @@ func TestAnnotateGitLabRoleLifecycleDoesNotDoubleCountDrifted(t *testing.T) {
 		require.Len(t, result.Repos[0].Drifts, 1)
 		assert.Equal(t, 1, result.Summary.Drifted, "no-drift to drift transition must be counted exactly once")
 	})
+}
+
+func TestAnnotateGitLabRoleLifecycleSkipsNonGitLabForgeRepos(t *testing.T) {
+	ctx := context.Background()
+	var calledPaths []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		calledPaths = append(calledPaths, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	// A mixed-forge manifest: "acme/app" is resolved as a GitHub repo, but
+	// happens to share an owner/repo path with an actual GitLab project.
+	// Only the GitLab-forge entry should ever reach the GitLab client.
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{Owner: "acme", Repo: "app", Forge: repos.ForgeGitHub},
+		},
+	}
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.Empty(t, calledPaths, "GitHub-forge repo must never be sent to the GitLab client, got requests: %v", calledPaths)
+	assert.Empty(t, result.Repos[0].Drifts)
+	assert.Equal(t, 0, result.Summary.Drifted)
+}
+
+func TestGitLabUninstallTokens(t *testing.T) {
+	manifest := &repos.Manifest{
+		Version: 1,
+		GitLab: &repos.PlatformConfig{
+			Repos: []repos.RepoEntry{{Name: "group/project"}},
+		},
+	}
+	printer := ui.New(&bytes.Buffer{})
+
+	t.Run("test hook wins", func(t *testing.T) {
+		hook := cliCutoverTokens{}
+		got := gitLabUninstallTokens(&reposUninstallConfig{testGitLabTokens: hook}, nil, printer, manifest, []string{"group/project"})
+		assert.Equal(t, hook, got)
+	})
+
+	t.Run("fake client is not live inventory warns and returns nil", func(t *testing.T) {
+		var buf bytes.Buffer
+		got := gitLabUninstallTokens(&reposUninstallConfig{}, newSingleClientFactory(forge.NewFakeClient()), ui.New(&buf), manifest, []string{"group/project"})
+		assert.Nil(t, got)
+		assert.Contains(t, buf.String(), "not a live API client")
+	})
+
+	t.Run("github-only repos skip inventory", func(t *testing.T) {
+		gh := &repos.Manifest{
+			Version: 1,
+			GitHub: &repos.PlatformConfig{
+				Repos: []repos.RepoEntry{{Name: "acme/api"}},
+			},
+		}
+		got := gitLabUninstallTokens(&reposUninstallConfig{}, newSingleClientFactory(forge.NewFakeClient()), printer, gh, []string{"acme/api"})
+		assert.Nil(t, got)
+	})
+
+	t.Run("nil factory or manifest", func(t *testing.T) {
+		assert.Nil(t, gitLabUninstallTokens(&reposUninstallConfig{}, nil, printer, manifest, []string{"group/project"}))
+		assert.Nil(t, gitLabUninstallTokens(&reposUninstallConfig{}, newSingleClientFactory(forge.NewFakeClient()), printer, nil, []string{"group/project"}))
+	})
+
+	t.Run("skips names without a slash", func(t *testing.T) {
+		got := gitLabUninstallTokens(&reposUninstallConfig{}, newSingleClientFactory(forge.NewFakeClient()), printer, manifest, []string{"not-a-repo"})
+		assert.Nil(t, got)
+	})
+
+	t.Run("live gitlab client is wrapped", func(t *testing.T) {
+		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL("http://127.0.0.1:1"))
+		require.NoError(t, err)
+		got := gitLabUninstallTokens(&reposUninstallConfig{}, newSingleClientFactory(glClient), printer, manifest, []string{"group/project"})
+		require.NotNil(t, got)
+		_, ok := got.(gitlabTokenAdapter)
+		assert.True(t, ok)
+	})
+}
+
+type pipelineAccessTokens struct {
+	tokens []repos.ProjectAccessToken
+	err    error
+}
+
+func (p pipelineAccessTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
+	return nil, nil
+}
+
+func (p pipelineAccessTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
+	return p.tokens, p.err
+}
+
+func (p pipelineAccessTokens) RevokeProjectAccessToken(context.Context, string, string, int) error {
+	return nil
+}
+
+func TestEnsureGitLabPollerPipelineAccess(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("grants poller user on maintainer-only protection", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		fake.ProtectedBranchRules["group/project/main"] = &forge.ProtectedBranchRule{
+			Name:              "main",
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+		}
+		var buf bytes.Buffer
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, pipelineAccessTokens{tokens: []repos.ProjectAccessToken{
+			{Name: gitlabroles.PollerTokenName, Active: true, UserID: 99},
+		}}, ui.New(&buf), "group", "project", false)
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "Granted poller merge access")
+		require.NotEmpty(t, fake.GrantedProtectedBranchMergeUsers)
+		assert.Equal(t, 99, fake.GrantedProtectedBranchMergeUsers[0].UserID)
+	})
+
+	t.Run("dry-run does not grant", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		fake.ProtectedBranchRules["group/project/main"] = &forge.ProtectedBranchRule{
+			Name:              "main",
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+		}
+		var buf bytes.Buffer
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, pipelineAccessTokens{tokens: []repos.ProjectAccessToken{
+			{Name: gitlabroles.PollerTokenName, Active: true, UserID: 99},
+		}}, ui.New(&buf), "group", "project", true)
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "Would grant poller merge access")
+		assert.Empty(t, fake.GrantedProtectedBranchMergeUsers)
+	})
+
+	t.Run("unprotected is silent", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		var buf bytes.Buffer
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, nil, ui.New(&buf), "group", "project", false)
+		require.NoError(t, err)
+		assert.NotContains(t, buf.String(), "Granted")
+	})
+
+	t.Run("token list error on unprotected repo still succeeds", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		var buf bytes.Buffer
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, pipelineAccessTokens{err: fmt.Errorf("token list failed")}, ui.New(&buf), "group", "project", false)
+		require.NoError(t, err)
+		assert.NotContains(t, buf.String(), "Granted")
+	})
+
+	t.Run("token list error on maintainer-only repo fails closed", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		fake.ProtectedBranchRules["group/project/main"] = &forge.ProtectedBranchRule{
+			Name:              "main",
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+		}
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, pipelineAccessTokens{err: fmt.Errorf("token list failed")}, ui.New(&bytes.Buffer{}), "group", "project", false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no poller project-access-token user")
+		assert.Contains(t, err.Error(), "listing project access tokens")
+		assert.Contains(t, err.Error(), "token list failed")
+	})
+
+	t.Run("missing poller user fails closed", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		fake.ProtectedBranchRules["group/project/main"] = &forge.ProtectedBranchRule{
+			Name:              "main",
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+		}
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, nil, ui.New(&bytes.Buffer{}), "group", "project", false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no poller project-access-token user")
+	})
+}
+
+func TestGitLabTokenInventory(t *testing.T) {
+	hook := pipelineAccessTokens{}
+	got := gitLabTokenInventory(&reposInstallConfig{testGitLabTokenInventory: hook}, forge.NewFakeClient())
+	assert.Equal(t, hook, got)
+	assert.Nil(t, gitLabTokenInventory(&reposInstallConfig{}, forge.NewFakeClient()))
+	assert.Nil(t, gitLabTokenInventory(nil, forge.NewFakeClient()))
+
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL("http://127.0.0.1:1"))
+	require.NoError(t, err)
+	inv := gitLabTokenInventory(&reposInstallConfig{}, glClient)
+	_, ok := inv.(gitlabTokenAdapter)
+	assert.True(t, ok)
+}
+
+func TestAnnotateGitLabRoleLifecycleReportsPipelineRefDrift(t *testing.T) {
+	ctx := context.Background()
+	varsCalled := false
+	tokensCalled := false
+	repoCalled := false
+	branchCalled := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/variables/", func(w http.ResponseWriter, r *http.Request) {
+		varsCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, forge.VarGitLabRoleMigration):
+			json.NewEncoder(w).Encode(map[string]any{"value": "migrating"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		tokensCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 99},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject", func(w http.ResponseWriter, r *http.Request) {
+		repoCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name": "project", "path_with_namespace": "group/project", "default_branch": "main",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		branchCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name":                "main",
+			"merge_access_levels": []map[string]any{{"access_level": 40}},
+			"push_access_levels":  []map[string]any{{"access_level": 40}},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{{
+			Owner: "group", Repo: "project", GitLabRoleMode: "migrating",
+		}},
+	}
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.True(t, varsCalled, "variables handler was not called")
+	assert.True(t, tokensCalled, "access_tokens handler was not called")
+	assert.True(t, repoCalled, "repo handler was not called")
+	assert.True(t, branchCalled, "protected_branches handler was not called")
+	require.NotEmpty(t, result.Repos[0].Drifts)
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "protected-ref-pipeline" {
+			found = true
+			assert.Contains(t, d.Expected, "poller can create pipelines on main")
+		}
+	}
+	assert.True(t, found, "expected protected-ref-pipeline drift, got %v", result.Repos[0].Drifts)
+	assert.Equal(t, 1, result.Summary.Drifted)
+}
+
+func TestAnnotateGitLabRoleLifecycleReportsPipelineRefWithoutRoleMode(t *testing.T) {
+	ctx := context.Background()
+	tokensCalled := false
+	repoCalled := false
+	branchCalled := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		tokensCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 99},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject", func(w http.ResponseWriter, r *http.Request) {
+		repoCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name": "project", "path_with_namespace": "group/project", "default_branch": "main",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		branchCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name":                "main",
+			"merge_access_levels": []map[string]any{{"access_level": 40}},
+			"push_access_levels":  []map[string]any{{"access_level": 40}},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{{
+			Owner: "group", Repo: "project",
+		}},
+	}
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.True(t, tokensCalled, "access_tokens handler was not called")
+	assert.True(t, repoCalled, "repo handler was not called")
+	assert.True(t, branchCalled, "protected_branches handler was not called")
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "protected-ref-pipeline" {
+			found = true
+		}
+	}
+	assert.True(t, found, "pipeline-ref drift should be reported even without GitLab role mode")
+	assert.Equal(t, 1, result.Summary.Drifted)
+}
+
+func TestAnnotateGitLabRoleLifecyclePipelineRefWithoutTokenList(t *testing.T) {
+	ctx := context.Background()
+	tokensCalled := false
+	repoCalled := false
+	branchCalled := false
+	mux := http.NewServeMux()
+	// No handler for /variables/: when ListProjectAccessTokens fails,
+	// annotateGitLabRoleLifecycle skips EnrichGitLabRoleStatus (the only
+	// caller of that endpoint) entirely, so it must never be requested.
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		tokensCalled = true
+		w.WriteHeader(http.StatusForbidden)
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject", func(w http.ResponseWriter, r *http.Request) {
+		repoCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name": "project", "path_with_namespace": "group/project", "default_branch": "main",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		branchCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name":                "main",
+			"merge_access_levels": []map[string]any{{"access_level": 40}},
+			"push_access_levels":  []map[string]any{{"access_level": 40}},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{{
+			Owner: "group", Repo: "project", GitLabRoleMode: "migrating",
+		}},
+	}
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.True(t, tokensCalled, "access_tokens handler was not called")
+	assert.True(t, repoCalled, "repo handler was not called")
+	assert.True(t, branchCalled, "protected_branches handler was not called")
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "protected-ref-pipeline" {
+			found = true
+		}
+	}
+	assert.True(t, found, "pipeline-ref drift should still be reported without token inventory")
 }

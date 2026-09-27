@@ -46,7 +46,8 @@ const (
 	// recovery path.
 	ModeRollback Mode = "rollback"
 	// ModeEnforced requires a provisioned role credential. The shared
-	// token is not used. Cutover (#7501) is what enables this mode.
+	// token is not used. Ordinary unflagged repos install (#7524) enables
+	// this mode once role checks pass.
 	ModeEnforced Mode = "enforced"
 )
 

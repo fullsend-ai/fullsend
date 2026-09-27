@@ -45,8 +45,8 @@ your needs genuinely diverge from the default agent's charter.
 Each default agent documents its extension points in
 [`docs/agents/<agent>.md`](../). The review agent, for example, documents
 `REVIEW_FINDING_SEVERITY_THRESHOLD` as a configuration variable and
-`issue-labels` as an overloadable skill. Using those mechanisms produces a
-configured review agent, not a derived one.
+`issue-labels` as a skill you can override via `base:` composition. Using
+those mechanisms produces a configured review agent, not a derived one.
 
 ## The `base` lineage test
 

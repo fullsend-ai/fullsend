@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# setup_test.sh — Tests for setup.sh idempotency hygiene (patch_config backup
-# and configure_per_job_gateway seed-start skip).
+# setup_test.sh — Tests for setup.sh idempotency hygiene (patch_config backup,
+# configure_per_job_gateway seed-start skip, setup_runner_user UID drop-in).
 #
 # Run from the repo root:
 #   bash hack/gitlab-runner-vm/setup_test.sh
@@ -28,6 +28,7 @@ run_setup() {
   local test_builds_dir="${BUILDS_DIR}"
   local test_cache_dir="${CACHE_DIR}"
   local test_executor_dir="${EXECUTOR_DIR}"
+  local test_override_dir="${GITLAB_RUNNER_OVERRIDE_DIR}"
   RUN_SETUP_RC=0
   RUN_SETUP_OUT=$(
     export PATH="${SHIM_DIR}:${PATH}"
@@ -38,6 +39,7 @@ run_setup() {
     BUILDS_DIR="${test_builds_dir}"
     CACHE_DIR="${test_cache_dir}"
     EXECUTOR_DIR="${test_executor_dir}"
+    GITLAB_RUNNER_OVERRIDE_DIR="${test_override_dir}"
     export RUNNER_USER="testuser"
     "${fn}"
   ) && RUN_SETUP_RC=0 || RUN_SETUP_RC=$?
@@ -52,9 +54,11 @@ CONFIG_TOML="${WORK_DIR}/config.toml"
 BUILDS_DIR="${FAKE_HOME}/builds"
 CACHE_DIR="${FAKE_HOME}/cache"
 EXECUTOR_DIR="${FAKE_HOME}/gitlab-runner-executor"
+GITLAB_RUNNER_OVERRIDE_DIR="${WORK_DIR}/systemd-override"
 SYSTEMCTL_LOG="${SHIM_DIR}/systemctl.log"
 OPENSHELL_LOG="${SHIM_DIR}/openshell.log"
 SUDO_LOG="${SHIM_DIR}/sudo.log"
+FAKE_UID=1000
 
 # sudo is a no-op (patch_config chown/chmod the config dir).
 printf '#!/bin/sh\necho "$@" >> "%s"\nexit 0\n' "${SUDO_LOG}" > "${SHIM_DIR}/sudo"
@@ -103,6 +107,50 @@ STUB
   : > "${SYSTEMCTL_LOG}"
   : > "${OPENSHELL_LOG}"
   : > "${SUDO_LOG}"
+}
+
+# sudo that actually mkdir/tee so setup_runner_user can write a drop-in.
+write_sudo_passthrough_stub() {
+  cat > "${SHIM_DIR}/sudo" <<STUB
+#!/bin/sh
+echo "\$@" >> "${SUDO_LOG}"
+cmd="\$1"
+shift
+case "\$cmd" in
+  mkdir) mkdir "\$@" ;;
+  tee) cat > "\$1" ;;
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "${SHIM_DIR}/sudo"
+  : > "${SUDO_LOG}"
+}
+
+write_id_stub() {
+  cat > "${SHIM_DIR}/id" <<STUB
+#!/bin/sh
+if [ "\$1" = "-u" ]; then
+  echo "${FAKE_UID}"
+  exit 0
+fi
+exit 1
+STUB
+  chmod +x "${SHIM_DIR}/id"
+}
+
+write_dropin() {
+  local xdg_path="$1"
+  mkdir -p "${GITLAB_RUNNER_OVERRIDE_DIR}"
+  cat > "${GITLAB_RUNNER_OVERRIDE_DIR}/user.conf" <<EOF
+[Service]
+User=testuser
+Group=testuser
+WorkingDirectory=${FAKE_HOME}
+Environment=XDG_RUNTIME_DIR=${xdg_path}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=${xdg_path}/bus
+ExecStart=
+ExecStart=/usr/local/bin/gitlab-runner run --config ${CONFIG_TOML} --working-directory ${FAKE_HOME} --service gitlab-runner
+EOF
 }
 
 write_shell_config() {
@@ -173,23 +221,31 @@ else
   fail "configure_per_job_gateway missing seed-start skip"
 fi
 
-if grep -Fq 'Environment=XDG_RUNTIME_DIR=/run/user/%U' "${SETUP}" \
-  && grep -Fq 'Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus' "${SETUP}"; then
-  pass "setup_runner_user writes user-session env into the gitlab-runner override"
+if grep -Eq '^[[:space:]]*(Environment=)?(XDG_RUNTIME_DIR=/run/user/%U|DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus)' "${SETUP}"; then
+  fail "setup_runner_user still interpolates systemd %U (expands to UID 0 on system units)"
 else
-  fail "setup_runner_user missing XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS Environment= lines"
+  pass "setup_runner_user does not interpolate systemd %U for the user-session env"
 fi
 
-# A VM provisioned before #7453 has User= already. If the skip path only
-# checks User=, re-running setup.sh never rewrites the drop-in and jobs keep
-# failing. The skip must require the env lines so existing runners converge.
-if grep -B8 'systemd override already in place' "${SETUP}" \
-  | grep -Fq 'XDG_RUNTIME_DIR=/run/user/%U' \
-  && grep -B8 'systemd override already in place' "${SETUP}" \
-  | grep -Fq 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus'; then
-  pass "setup_runner_user skip path requires user-session env (re-run converges a pre-fix override)"
+if grep -Fq 'id -u "${RUNNER_USER}"' "${SETUP}" \
+  && grep -Fq 'Environment=XDG_RUNTIME_DIR=/run/user/${runner_uid}' "${SETUP}" \
+  && grep -Fq 'Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${runner_uid}/bus' "${SETUP}"; then
+  pass "setup_runner_user writes user-session env with the resolved numeric UID"
 else
-  fail "setup_runner_user skip path does not require user-session env — existing VMs would not converge"
+  fail "setup_runner_user missing numeric-UID XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS Environment= lines"
+fi
+
+# A VM provisioned before #7453 has User= already; a VM provisioned with
+# the #7453 %U drop-in has env lines that expand to /run/user/0 (#7696).
+# The skip must require the env lines with the resolved numeric UID so
+# both generations converge on re-run.
+if grep -B12 'systemd override already in place' "${SETUP}" \
+  | grep -Fq 'XDG_RUNTIME_DIR=/run/user/${runner_uid}' \
+  && grep -B12 'systemd override already in place' "${SETUP}" \
+  | grep -Fq 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${runner_uid}/bus'; then
+  pass "setup_runner_user skip path requires numeric-UID env (re-run converges a pre-fix override)"
+else
+  fail "setup_runner_user skip path does not require numeric-UID env — existing VMs would not converge"
 fi
 
 if grep -E '^[[:space:]]+systemctl --user' "${SETUP}" >/dev/null; then
@@ -306,6 +362,74 @@ elif ! grep -q 'start openshell-gateway.service' "${SYSTEMCTL_LOG}"; then
   fail "active unit should not take the skip path: $(tr '\n' '|' < "${SYSTEMCTL_LOG}")"
 else
   pass "running unit falls through and re-seeds (pins back to per-job)"
+fi
+
+echo "== setup_runner_user numeric UID generation and convergence =="
+write_id_stub
+write_sudo_passthrough_stub
+write_systemctl_stub seeded
+
+# Generation: a missing drop-in is written with the resolved numeric UID,
+# not systemd %U (which expands to 0 on a system-scope unit).
+rm -rf "${GITLAB_RUNNER_OVERRIDE_DIR}"
+run_setup setup_runner_user
+override_file="${GITLAB_RUNNER_OVERRIDE_DIR}/user.conf"
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "setup_runner_user generation should succeed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif [ ! -f "${override_file}" ]; then
+  fail "setup_runner_user did not write ${override_file}"
+elif grep -Fq '/run/user/%U' "${override_file}"; then
+  fail "setup_runner_user still wrote systemd %U into the drop-in"
+elif grep -Fq "Environment=XDG_RUNTIME_DIR=/run/user/${FAKE_UID}" "${override_file}" \
+  && grep -Fq "Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${FAKE_UID}/bus" "${override_file}" \
+  && grep -Fq "User=testuser" "${override_file}"; then
+  pass "setup_runner_user writes /run/user/${FAKE_UID} (resolved UID) into the drop-in"
+else
+  fail "setup_runner_user drop-in missing numeric-UID env: $(tr '\n' '|' < "${override_file}")"
+fi
+
+# Skip: a drop-in that already has the resolved UID is left alone.
+write_dropin "/run/user/${FAKE_UID}"
+: > "${SUDO_LOG}"
+run_setup setup_runner_user
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "setup_runner_user skip should succeed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif grep -q ' tee ' "${SUDO_LOG}" || grep -q '^tee ' "${SUDO_LOG}"; then
+  fail "setup_runner_user rewrote a drop-in that already had the resolved UID"
+elif printf '%s' "${RUN_SETUP_OUT}" | grep -Fq 'already in place'; then
+  pass "setup_runner_user skips rewrite when the drop-in already has the resolved UID"
+else
+  fail "setup_runner_user did not skip a current drop-in: ${RUN_SETUP_OUT}"
+fi
+
+# Convergence: a #7453 %U drop-in is rewritten to the numeric UID.
+write_dropin '/run/user/%U'
+: > "${SUDO_LOG}"
+run_setup setup_runner_user
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "setup_runner_user %U convergence should succeed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif grep -Fq '/run/user/%U' "${override_file}"; then
+  fail "setup_runner_user left a %U drop-in in place"
+elif grep -Fq "Environment=XDG_RUNTIME_DIR=/run/user/${FAKE_UID}" "${override_file}" \
+  && grep -Fq "Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${FAKE_UID}/bus" "${override_file}"; then
+  pass "setup_runner_user rewrites a %U drop-in to the resolved numeric UID"
+else
+  fail "setup_runner_user %U rewrite produced: $(tr '\n' '|' < "${override_file}")"
+fi
+
+# Convergence: /run/user/0 (what %U actually expands to) is also rewritten.
+write_dropin '/run/user/0'
+: > "${SUDO_LOG}"
+run_setup setup_runner_user
+if [ "${RUN_SETUP_RC}" -ne 0 ]; then
+  fail "setup_runner_user UID-0 convergence should succeed (rc=${RUN_SETUP_RC}): ${RUN_SETUP_OUT}"
+elif grep -Fxq 'Environment=XDG_RUNTIME_DIR=/run/user/0' "${override_file}"; then
+  fail "setup_runner_user left a /run/user/0 drop-in in place"
+elif grep -Fq "Environment=XDG_RUNTIME_DIR=/run/user/${FAKE_UID}" "${override_file}" \
+  && grep -Fq "Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${FAKE_UID}/bus" "${override_file}"; then
+  pass "setup_runner_user rewrites a /run/user/0 drop-in to the resolved numeric UID"
+else
+  fail "setup_runner_user UID-0 rewrite produced: $(tr '\n' '|' < "${override_file}")"
 fi
 
 if [ "${FAILURES}" -ne 0 ]; then

@@ -190,7 +190,7 @@ class TestNFKCEscapeBypass(unittest.TestCase):
         self.assertEqual(rc, 0)
         out = json.loads(stdout)
         self.assertNotIn("\x1b", out["tool_result"])
-        self.assertIn("ansi_escape", out["metadata"]["categories"])
+        self.assertIn("nfkc_escape_reassembly", out["metadata"]["categories"])
         self.assertIn("fullwidth", out["metadata"]["categories"])
 
     def test_fullwidth_bracket_osc_detected_post_nfkc(self):
@@ -201,7 +201,7 @@ class TestNFKCEscapeBypass(unittest.TestCase):
         self.assertEqual(rc, 0)
         out = json.loads(stdout)
         self.assertNotIn("evil.com", out["tool_result"])
-        self.assertIn("osc_escape", out["metadata"]["categories"])
+        self.assertIn("nfkc_escape_reassembly", out["metadata"]["categories"])
 
 
 class TestOSCPerformance(unittest.TestCase):

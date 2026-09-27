@@ -19,9 +19,10 @@ forge operations by registered role is implemented by `fullsend poll`,
 in-flight overlap are implemented by `RotateGitLabRoleCredentials`
 (`internal/repos`) and invoked from `repos install`. Built-in Poller,
 Analyst, and Coder readiness is `CheckBuiltinReadiness` (surfaced on
-`repos status`). Enabling `enforced` and shared-token retirement remain
-follow-up work unless the explicit `--gitlab-role-cutover` operation is used.
-Both rotation and retirement must follow the
+`repos status`). Ordinary unflagged `repos install` enables `enforced` and
+retires the shared token once every registered role is ready. Explicit
+`--gitlab-role-cutover --gitlab-role-cutover-drained` remains available as a
+fail-closed retry. Both rotation and retirement must follow the
 [credential-routing security checklist](#credential-routing-security-checklist).
 
 Built-in and custom roles are the same kind of registry entry. Job
@@ -185,12 +186,11 @@ not have.
 | Custom `own` | `fullsend-role-<name>` | Developer (30) | `api` |
 | Custom `reuse` | (none; uses the target role's PAT) | — | — |
 
-`repos install` creates these tokens on a fresh GitLab install and on
-an existing install that opts into `--gitlab-role-migration=migrating`
-(or already has a `migrating`/`enforced` gate). It does not revoke the
-shared `fullsend-bot` token. Access level and scopes match the current
-shared bot; do not claim finer GitLab permissions than the
-implementation uses.
+`repos install` creates these tokens on a fresh GitLab install and on an
+existing shared-token install. Ordinary unflagged install then cuts over to
+`enforced` and retires the shared `fullsend-bot` token when every registered
+role is ready. Access level and scopes match the current shared bot; do not
+claim finer GitLab permissions than the implementation uses.
 
 ## Job → role mapping
 
@@ -222,10 +222,10 @@ closed (`ErrInvalidMode`) so a typo cannot silently disable the gate.
 
 | Mode | When | Shared token used | Missing role secret |
 | --- | --- | --- | --- |
-| `disabled` (default, unset) | Existing installations | Always | Ignored |
-| `migrating` | Additive rollout after #7498 | Only as **explicit** fallback when that role is unconfigured | Use shared token; report pending |
-| `rollback` | Operator-initiated rollback | Always | Ignored (role secrets unused) |
-| `enforced` | After verification (#7501) | Never | Fail (`ErrUnconfigured`) |
+| `disabled` (unset) | Legacy shared-token runtime, or explicit `--gitlab-role-migration=disabled` | Always | Ignored |
+| `migrating` | Additive provisioning before roles are ready | Only as **explicit** fallback when that role is unconfigured | Use shared token; report pending |
+| `rollback` | Operator-initiated emergency recovery | Always | Ignored (role secrets unused) |
+| `enforced` | Desired state after ordinary `repos install` | Never | Fail (`ErrUnconfigured`) |
 
 The shared token is **not** selected after an arbitrary
 role-credential failure. The only legitimate shared-token uses are:
@@ -271,8 +271,63 @@ unlisted), exports `GITLAB_TOKEN` from that secret, and sets
 `approve_merge_request`. Role-aware modes also publish non-secret
 diagnostic env vars `FULLSEND_GITLAB_ROLE`,
 `FULLSEND_GITLAB_ROLE_SECRET`, and `FULLSEND_GITLAB_ROLE_SOURCE`.
-GitLab CI templates still read `FULLSEND_FORGE_TOKEN` for bootstrap API
-calls; the Go CLI overrides the token used for forge operations.
+GitLab CI templates (`fullsend-poll.yml`, `fullsend-agent.yml`) source
+`run-poll-job.sh` and `run-agent-job.sh`, which resolve credentials via
+`select-gitlab-role-token.sh`. In `run-agent-job.sh`,
+the STAGE pipeline variable that would otherwise select the role is not
+yet authenticated when the job starts, so the *pre-verification*
+bootstrap calls (resource-group PUT, pipeline-metadata GET, bot-identity
+`/user` call) always resolve the Poller credential
+(`FULLSEND_GITLAB_POLLER_TOKEN`), regardless of stage — this avoids
+handing a forged dispatch a higher-privilege token before the
+pipeline-source/bot-identity check and HMAC verification pass. The
+template only re-resolves the credential for the job's actual stage —
+analyst stages use `FULLSEND_GITLAB_ANALYST_TOKEN`, coder stages use
+`FULLSEND_GITLAB_CODER_TOKEN` — once `DISPATCH_VERIFIED` is true: the
+`api`-sourced dispatch passed HMAC verification, or the gate mode is
+`disabled`/`rollback` (every role already shares one token, so an
+unverified STAGE grants no extra privilege there). In `migrating` or
+`enforced` mode, a missing `FULLSEND_DISPATCH_SECRET` now fails the job
+closed instead of silently skipping HMAC verification, and a
+`parent_pipeline`-sourced dispatch (legacy child-pipeline installs;
+current installs only ever dispatch via `api`) has no HMAC to check, so
+`DISPATCH_VERIFIED` stays false. In `migrating`/`enforced` mode the job
+now fails closed at that point (`exit 1`) rather than continuing on the
+lower-privileged Poller credential. An earlier revision of this template
+continued the job on the Poller credential instead, but that was not
+sufficient: `fullsend run` resolves its own GitLab credential internally
+via `gitlabroles.SelectAgent(agentName, harnessRole, os.Getenv)`
+(`internal/cli/gitlab_role.go`), using the same unverified `STAGE` value
+and reading role secrets directly from the process environment — a
+shell-local `DISPATCH_VERIFIED` flag has no effect on that Go-side
+selection, so continuing on the Poller credential in the shell did not
+stop the CLI from promoting the STAGE-derived role token anyway. Failing
+the whole job closed, before `fullsend run` or the `STAGE=fix`
+review-body pre-fetch below ever execute, is the only way to keep an
+unverified STAGE from reaching a role-specific credential. This closes a
+gap where a forged dispatch that spoofed the pipeline source (via an
+overridden `CI_API_V4_URL`, the documented residual risk in ADR 0067 and
+`run-agent-job.sh`) could otherwise obtain a higher-privilege role
+token before any credential separation existed to matter. Poll jobs have
+no such pre-verification window and resolve `FULLSEND_GITLAB_POLLER_TOKEN`
+once. Disabled and rollback still read `FULLSEND_FORGE_TOKEN` throughout.
+The Go CLI then overrides `GITLAB_TOKEN` / `PUSH_TOKEN` for forge
+operations.
+
+The `STAGE=fix` review-body pre-fetch is a separate case: it looks up
+the prior review note, which is always authored by the Analyst identity
+(`STAGE=review` maps to the analyst role) regardless of which role is
+running the fix stage. It cannot reuse the fix stage's own
+`FULLSEND_JOB_TOKEN` (Coder) or the discarded Poller `BOT_USER_ID` for
+that author match — neither identity is the note's author once
+analyst/coder resolve to distinct tokens. This lookup only runs once
+STAGE has already been authenticated (or the gate mode makes the
+distinction moot), since the job would otherwise already have exited
+above, so `run-agent-job.sh` temporarily re-sources
+`select-gitlab-role-token.sh` with `FULLSEND_JOB_AGENT=review` to resolve
+the Analyst identity for that one lookup, then restores
+`FULLSEND_JOB_TOKEN` to the Coder credential before `GITLAB_TOKEN`,
+`PUSH_TOKEN`, and the rest of the fix stage run.
 
 ## Unconfigured vs unregistered vs failed
 
@@ -332,6 +387,14 @@ A role secret that is present while the gate is `disabled` or
 error; leftover secrets after rollback are expected until uninstall
 removes them. `repos install --rotate-gitlab-roles` refreshes those
 leftover secrets without changing the gate; it does not remove them.
+`repos uninstall` deletes the gate, registry, rotation document,
+built-in and custom role secrets, leftover `FULLSEND_FORGE_TOKEN`, and
+matching `fullsend-bot` / `fullsend-poller` / `fullsend-analyst` /
+`fullsend-coder` / `fullsend-role-*` project access tokens. A token-
+revocation failure fails uninstall so the manifest entry remains for
+an idempotent retry. Ordinary reinstall after a complete uninstall
+does not recreate those retired artifacts until a fresh provision
+writes a new role-aware gate.
 
 **Never** put token values in logs, status output, issue comments, or
 `Error` strings. Presence booleans and variable names are the only
@@ -385,12 +448,18 @@ changing the gate.
 
 ## Verification and cutover
 
-Run `repos.CutoverGitLabRoleCredentials` explicitly through
-`fullsend repos install
---gitlab-role-cutover --gitlab-role-cutover-drained`. It checks the built-in capability contract, verifies
-every registered role has a provisioned credential and at least one authorized
-agent mapping, rejects expired, revoked, or unverified project tokens, and
-resolves each mapping in `enforced` mode. It then writes
+Ordinary unflagged `repos install` calls `repos.CutoverGitLabRoleCredentials`
+after provisioning when the live gate is `migrating` or `enforced`. If roles
+are not ready, inventory is unavailable, or state changes during verification,
+cutover is deferred: the gate stays `migrating`, `FULLSEND_FORGE_TOKEN` is not
+recreated, and a later unflagged install retries. Explicit
+`--gitlab-role-cutover --gitlab-role-cutover-drained` is a fail-closed retry
+that does not defer.
+
+Cutover checks the built-in capability contract, verifies every registered
+role has a provisioned credential and at least one authorized agent mapping,
+rejects expired, revoked, or unverified project tokens, and resolves each
+mapping in `enforced` mode. It then writes
 `FULLSEND_GITLAB_ROLE_MIGRATION=enforced`, deletes the protected
 `FULLSEND_FORGE_TOKEN` secret, and revokes every listed active
 `fullsend-bot` project access token. If secret deletion fails, the gate is
@@ -401,9 +470,10 @@ operation should be retried. A personal or group PAT supplied through
 manually. `--dry-run` performs the checks without changing the gate or
 secrets. Operators must still drain in-flight shared-token jobs, verify
 deployment-specific GitLab permissions and branch rules, and exercise the
-role-specific operations in the target environment before cutover. The local
-readiness check cannot authenticate with a secret value stored in CI or prove
-that a deployment's ACLs match the declared capability contract.
+role-specific operations in the target environment; those remain deployment
+prerequisites that local readiness cannot prove. Emergency rollback uses
+`--gitlab-role-migration=rollback --gitlab-role-rollback-confirmed` and is
+not part of ordinary converge.
 
 ## Registry JSON shape
 
@@ -515,15 +585,17 @@ Leave these to the follow-up issues.
 | [#7498](https://github.com/fullsend-ai/fullsend/issues/7498) | **Implemented.** `repos install` creates/enrolls built-in and custom PATs, stores them as protected masked CI variables, writes the registry, sets the gate, reports partial provisioning, preserves the shared token, and handles reinstall/drift/uninstall without deleting credentials still in use |
 | [#7499](https://github.com/fullsend-ai/fullsend/issues/7499) | **Implemented.** `fullsend poll`, `fullsend run`, and `fullsend post-review` select the registered role credential, enforce `ValidateAgent` / `Registration.Has` in role-aware modes, and fail closed on authentication failure without switching identities |
 | [#7500](https://github.com/fullsend-ai/fullsend/issues/7500) | **Implemented.** Role-aware rotation, recovery, in-flight overlap, and expiry/revocation diagnostics. See [Rotation and recovery](#rotation-and-recovery) and follow the [credential-routing security checklist](#credential-routing-security-checklist) |
-| [#7501](https://github.com/fullsend-ai/fullsend/issues/7501) | **Implemented locally.** Built-in and registered-role readiness is surfaced on `repos status`; explicit `--gitlab-role-cutover` enables `enforced` and retires the shared-token secret with rollback on retirement failure. Operators must still verify deployment-specific GitLab branch rules and drain in-flight jobs. Hold the [credential-routing security checklist](#credential-routing-security-checklist) |
+| [#7501](https://github.com/fullsend-ai/fullsend/issues/7501) | **Implemented locally.** Built-in and registered-role readiness is surfaced on `repos status`; guarded `--gitlab-role-cutover` enables `enforced` and retires the shared-token secret with rollback on retirement failure. Live GitLab ACL/operation probes, deployment branch-rule verification, and in-flight drain remain deployment prerequisites. Hold the [credential-routing security checklist](#credential-routing-security-checklist) |
+| [#7524](https://github.com/fullsend-ai/fullsend/issues/7524) | **Implemented.** Ordinary unflagged `repos install` detects shared-token installs, provisions role credentials, and cuts over to `enforced` when ready. Partial enrollment fails closed (defers cutover, never recreates `FULLSEND_FORGE_TOKEN`). Drift repair preserves enforced mode. `--gitlab-role-migration=enforced` is accepted. Emergency rollback remains explicit (`--gitlab-role-migration=rollback --gitlab-role-rollback-confirmed`). |
+| [#7558](https://github.com/fullsend-ai/fullsend/issues/7558) | **Implemented.** `repos uninstall` removes migration-era GitLab identity state (gate, registry, rotation, built-in and custom role secrets, leftover shared token, and matching project access tokens) and fails closed if token revocation cannot complete. Ordinary install still converges leftover shared-token or partial installs to `enforced` without recreating retired shared-token artifacts. Partial enrollment, retries, drift, revoked credentials, custom roles, and uninstall/reinstall are covered by lifecycle tests. |
 | [#7502](https://github.com/fullsend-ai/fullsend/issues/7502) | ADR 0067 status annotation and operator-facing lifecycle docs |
 
 ## Credential-routing security checklist
 
 Hold these four code invariants and the documentation-terminology rule
 below when changing `internal/gitlabroles`, GitLab credential handling
-in `internal/cli`, or the remaining rollout stage
-([#7501](https://github.com/fullsend-ai/fullsend/issues/7501)). They are
+in `internal/cli`, or GitLab role cutover
+([#7524](https://github.com/fullsend-ai/fullsend/issues/7524)). They are
 the review findings from [PR #7510](https://github.com/fullsend-ai/fullsend/pull/7510)
 (stage 3 routing). A later change that selects, stores, or hands a
 GitLab role credential to a child process can reintroduce any of them.
@@ -596,15 +668,15 @@ when the only error is `gitlabroles.ErrSharedUnconfigured`, so a
 directly-set `GITLAB_TOKEN` (no `FULLSEND_FORGE_TOKEN`) still works.
 Role-aware modes (`migrating` / `enforced`) still fail closed.
 
-Retiring the **shared-token** fallback is the point of #7501 and must
-be an explicit, flagged cutover after verification — not a silent
+Retiring the **shared-token** fallback is the point of ordinary
+`repos install` cutover (#7524) after role checks pass — not a silent
 tightening of `disabled`/`rollback` or of the local `GITLAB_TOKEN`
-fallback.
+fallback. Emergency rollback remains an explicit, confirmed flag.
 
 - [ ] `disabled`/`rollback` still accept a directly-set `GITLAB_TOKEN`
       when `FULLSEND_FORGE_TOKEN` is absent, unless this change is
       marked breaking.
-- [ ] Shared-token fallback is removed only in the #7501 cutover, after
+- [ ] Shared-token fallback is removed only in the #7524 cutover, after
       role checks pass, and is marked `!`.
 
 ### Keep fallback terminology consistent across docs

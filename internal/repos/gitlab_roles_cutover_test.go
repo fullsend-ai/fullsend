@@ -66,6 +66,8 @@ func TestCutoverGitLabRoleCredentialsRefusesMissingRole(t *testing.T) {
 		Owner: "group", Repo: "project", Client: fc, TokenInventory: cutoverTokenInventory(), DrainConfirmed: true,
 	})
 	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrGitLabRoleCutoverNotReady)
+	assert.True(t, IsGitLabRoleCutoverDeferred(err))
 	assert.False(t, result.Enforced)
 	assert.Equal(t, "migrating", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
@@ -328,8 +330,40 @@ func TestCutoverGitLabRoleCredentialsRevalidatesBeforeWrites(t *testing.T) {
 		TokenInventory: cutoverTokenInventory(), DrainConfirmed: true,
 	})
 	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrGitLabRoleCutoverStateChanged)
+	assert.True(t, IsGitLabRoleCutoverDeferred(err))
 	assert.Contains(t, err.Error(), "state changed")
 	assert.False(t, result.Enforced)
 	assert.Equal(t, "enforced", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
+}
+
+func TestCutoverGitLabRoleCredentialsWrongModeIsDeferred(t *testing.T) {
+	t.Parallel()
+	fc := provisionClient(t)
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "rollback"
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
+	for _, name := range []string{
+		forge.SecretGitLabPollerToken,
+		forge.SecretGitLabAnalystToken,
+		forge.SecretGitLabCoderToken,
+	} {
+		fc.Secrets["group/project/"+name] = true
+	}
+
+	result, err := CutoverGitLabRoleCredentials(context.Background(), GitLabRoleCutoverConfig{
+		Owner: "group", Repo: "project", Client: fc,
+		TokenInventory: cutoverTokenInventory(), DrainConfirmed: true,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrGitLabRoleCutoverWrongMode)
+	assert.True(t, IsGitLabRoleCutoverDeferred(err))
+	assert.False(t, result.Enforced)
+	assert.Equal(t, "rollback", fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+}
+
+func TestIsGitLabRoleCutoverDeferredIgnoresUnrelatedErrors(t *testing.T) {
+	t.Parallel()
+	assert.False(t, IsGitLabRoleCutoverDeferred(errors.New("permission denied")))
+	assert.False(t, IsGitLabRoleCutoverDeferred(nil))
 }

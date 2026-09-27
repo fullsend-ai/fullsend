@@ -113,6 +113,7 @@ fi
 
 # Extract flags from the gh api call.
 jq_filter=""
+silent=false
 has_input=false
 method="GET"
 field_message=""
@@ -129,7 +130,7 @@ while [[ \$# -gt 0 ]]; do
       fi
       shift 2
       ;;
-    --silent) shift ;;
+    --silent) silent=true; shift ;;
     *) shift ;;
   esac
 done
@@ -173,6 +174,7 @@ case "\$endpoint" in
     ;;
   repos/test-org/*/contents/*)
     # new-repo, refresh-repo: no shim on default branch.
+    json='{"status":"404","message":"Not Found"}'
     rc=1
     ;;
   repos/test-org/*/git/ref/heads/*)
@@ -209,9 +211,12 @@ case "\$endpoint" in
 esac
 
 if [[ -n "\$json" ]]; then
-  if [[ -n "\$jq_filter" ]]; then
+  if [[ "\$rc" != "0" ]]; then
+    # Like real gh: a failed call prints the error body unfiltered on stdout.
+    [[ "\$silent" == "true" ]] || printf '%s\n' "\$json"
+  elif [[ -n "\$jq_filter" ]]; then
     printf '%s' "\$json" | jq -r "\$jq_filter"
-  else
+  elif [[ "\$silent" != "true" ]]; then
     printf '%s\n' "\$json"
   fi
 fi
@@ -425,17 +430,18 @@ if [[ "\$1" != "api" ]]; then
 fi
 
 jq_filter=""
+silent=false
 method="GET"
 shift
 endpoint="\$1"; shift
 while [[ \$# -gt 0 ]]; do
   case "\$1" in
     --jq) jq_filter="\$2"; shift 2 ;;
-    --input) shift 2 ;;
+    --input) cat > /dev/null; shift 2 ;;  # drain stdin like real gh
     --method) method="\$2"; shift 2 ;;
     --field) shift 2 ;;
     --include) shift ;;
-    --silent) shift ;;
+    --silent) silent=true; shift ;;
     *) shift ;;
   esac
 done
@@ -451,6 +457,7 @@ case "\$endpoint" in
     json='{"content":"${UPTODATE_B64}","sha":"file-sha"}'
     ;;
   repos/test-org/removed-repo/contents/.github/workflows/fullsend.yaml)
+    json='{"status":"404","message":"Not Found"}'
     rc=1
     ;;
   repos/test-org/test-repo/git/ref/heads/fullsend/onboard)
@@ -500,9 +507,12 @@ case "\$endpoint" in
 esac
 
 if [[ -n "\$json" ]]; then
-  if [[ -n "\$jq_filter" ]]; then
+  if [[ "\$rc" != "0" ]]; then
+    # Like real gh: a failed call prints the error body unfiltered on stdout.
+    [[ "\$silent" == "true" ]] || printf '%s\n' "\$json"
+  elif [[ -n "\$jq_filter" ]]; then
     printf '%s' "\$json" | jq -r "\$jq_filter"
-  else
+  elif [[ "\$silent" != "true" ]]; then
     printf '%s\n' "\$json"
   fi
 fi
@@ -778,6 +788,7 @@ if [[ "\$1" != "api" ]]; then
 fi
 
 jq_filter=""
+silent=false
 has_input=false
 shift
 endpoint="\$1"; shift
@@ -786,13 +797,16 @@ while [[ \$# -gt 0 ]]; do
     --jq) jq_filter="\$2"; shift 2 ;;
     --input) has_input=true; shift 2 ;;
     --method|--field) shift 2 ;;
-    --silent) shift ;;
+    --silent) silent=true; shift ;;
     *) shift ;;
   esac
 done
 
 if [[ "\$has_input" == "true" && "\$endpoint" == *"/git/blobs" ]]; then
   cat > "${TMPDIR}/blob-input-test-repo.json"
+elif [[ "\$has_input" == "true" ]]; then
+  # Drain stdin like real gh, so the writer upstream never sees SIGPIPE.
+  cat > /dev/null
 fi
 
 json=""
@@ -839,9 +853,12 @@ case "\$endpoint" in
 esac
 
 if [[ -n "\$json" ]]; then
-  if [[ -n "\$jq_filter" ]]; then
+  if [[ "\$rc" != "0" ]]; then
+    # Like real gh: a failed call prints the error body unfiltered on stdout.
+    [[ "\$silent" == "true" ]] || printf '%s\n' "\$json"
+  elif [[ -n "\$jq_filter" ]]; then
     printf '%s' "\$json" | jq -r "\$jq_filter"
-  else
+  elif [[ "\$silent" != "true" ]]; then
     printf '%s\n' "\$json"
   fi
 fi
@@ -921,6 +938,7 @@ if [[ "\$1" != "api" ]]; then
 fi
 
 jq_filter=""
+silent=false
 has_input=false
 shift
 endpoint="\$1"; shift
@@ -929,13 +947,16 @@ while [[ \$# -gt 0 ]]; do
     --jq) jq_filter="\$2"; shift 2 ;;
     --input) has_input=true; shift 2 ;;
     --method|--field) shift 2 ;;
-    --silent) shift ;;
+    --silent) silent=true; shift ;;
     *) shift ;;
   esac
 done
 
 if [[ "\$has_input" == "true" && "\$endpoint" == *"/git/blobs" ]]; then
   cat > "${TMPDIR}/blob-input-test-repo.json"
+elif [[ "\$has_input" == "true" ]]; then
+  # Drain stdin like real gh, so the writer upstream never sees SIGPIPE.
+  cat > /dev/null
 fi
 
 json=""
@@ -982,9 +1003,12 @@ case "\$endpoint" in
 esac
 
 if [[ -n "\$json" ]]; then
-  if [[ -n "\$jq_filter" ]]; then
+  if [[ "\$rc" != "0" ]]; then
+    # Like real gh: a failed call prints the error body unfiltered on stdout.
+    [[ "\$silent" == "true" ]] || printf '%s\n' "\$json"
+  elif [[ -n "\$jq_filter" ]]; then
     printf '%s' "\$json" | jq -r "\$jq_filter"
-  else
+  elif [[ "\$silent" != "true" ]]; then
     printf '%s\n' "\$json"
   fi
 fi
@@ -1082,14 +1106,15 @@ if [[ "\$1" != "api" ]]; then
 fi
 
 jq_filter=""
+silent=false
 shift
 endpoint="\$1"; shift
 while [[ \$# -gt 0 ]]; do
   case "\$1" in
     --jq) jq_filter="\$2"; shift 2 ;;
-    --input) shift 2 ;;
+    --input) cat > /dev/null; shift 2 ;;  # drain stdin like real gh
     --method|--field) shift 2 ;;
-    --silent) shift ;;
+    --silent) silent=true; shift ;;
     *) shift ;;
   esac
 done
@@ -1103,6 +1128,7 @@ case "\$endpoint" in
     ;;
   repos/test-org/empty-repo/contents/*)
     # No shim on default branch.
+    json='{"status":"404","message":"Not Found"}'
     rc=1
     ;;
   repos/test-org/empty-repo/git/ref/heads/main)
@@ -1120,9 +1146,12 @@ case "\$endpoint" in
 esac
 
 if [[ -n "\$json" ]]; then
-  if [[ -n "\$jq_filter" ]]; then
+  if [[ "\$rc" != "0" ]]; then
+    # Like real gh: a failed call prints the error body unfiltered on stdout.
+    [[ "\$silent" == "true" ]] || printf '%s\n' "\$json"
+  elif [[ -n "\$jq_filter" ]]; then
     printf '%s' "\$json" | jq -r "\$jq_filter"
-  else
+  elif [[ "\$silent" != "true" ]]; then
     printf '%s\n' "\$json"
   fi
 fi
@@ -1155,3 +1184,453 @@ if grep -q "git/blobs" "${GH_LOG}"; then
 fi
 
 echo "PASS: empty repo emits actionable error and skips enrollment"
+
+# ===========================
+# Test 6: SHA-pinned dispatch uses: refs tracking the template ref are not drift
+# ===========================
+# A Renovate/pinact pin of the form `@<40-hex-sha> # main` must compare equal
+# to the template's `@main` so reconciliation does not strip the pin. Other
+# differences (wrong annotation, missing annotation, extra YAML) remain drift.
+
+write_sha_pin_gh_mock() {
+  local shim_b64="$1"
+  rm -f "${GH_LOG}" "${TMPDIR}/blob-input-test-repo.json"
+  cat > "${MOCK_BIN}/gh" <<GHEOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" && "\$2" == "list" ]]; then
+  exit 0
+fi
+
+if [[ "\$1" == "pr" && "\$2" == "create" ]]; then
+  echo "https://github.com/test-org/test-repo/pull/77"
+  exit 0
+fi
+
+if [[ "\$1" == "pr" ]]; then
+  exit 0
+fi
+
+if [[ "\$1" != "api" ]]; then
+  echo "unexpected gh command: \$*" >&2
+  exit 1
+fi
+
+jq_filter=""
+silent=false
+has_input=false
+method="GET"
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) has_input=true; shift 2 ;;
+    --method) method="\$2"; shift 2 ;;
+    --field) shift 2 ;;
+    --silent) silent=true; shift ;;
+    *) shift ;;
+  esac
+done
+
+if [[ "\$has_input" == "true" && "\$endpoint" == *"/git/blobs" ]]; then
+  cat > "${TMPDIR}/blob-input-test-repo.json"
+elif [[ "\$has_input" == "true" ]]; then
+  # Drain stdin like real gh, so the writer upstream never sees SIGPIPE.
+  cat > /dev/null
+fi
+
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/test-repo/actions/variables/*)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/test-repo/contents/.github/workflows/fullsend.yaml)
+    json='{"content":"${shim_b64}","sha":"file-sha"}'
+    ;;
+  repos/test-org/test-repo/git/ref/heads/fullsend/onboard)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/test-repo/git/ref/heads/main)
+    json='{"object":{"sha":"base-sha"}}'
+    ;;
+  repos/test-org/test-repo/git/commits/base-sha)
+    json='{"tree":{"sha":"base-tree-sha"}}'
+    ;;
+  repos/test-org/test-repo/git/blobs)
+    json='{"sha":"blob-sha"}'
+    ;;
+  repos/test-org/test-repo/git/trees)
+    json='{"sha":"tree-sha"}'
+    ;;
+  repos/test-org/test-repo/git/commits)
+    json='{"sha":"desired-commit-sha"}'
+    ;;
+  repos/test-org/test-repo/git/refs)
+    rc=1
+    ;;
+  repos/test-org/test-repo/git/refs/heads/*)
+    rc=0
+    ;;
+  repos/test-org/test-repo)
+    json='{"default_branch":"main","private":false}'
+    ;;
+  *)
+    rc=0
+    ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ "\$rc" != "0" ]]; then
+    # Like real gh: a failed call prints the error body unfiltered on stdout.
+    [[ "\$silent" == "true" ]] || printf '%s\n' "\$json"
+  elif [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  elif [[ "\$silent" != "true" ]]; then
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+GHEOF
+  chmod +x "${MOCK_BIN}/gh"
+}
+
+cat > "${CONFIG_DIR}/config.yaml" <<'CFGEOF'
+version: 1
+repos:
+  test-repo:
+    enabled: true
+CFGEOF
+
+cat > "${CONFIG_DIR}/templates/shim-workflow-call.yaml" <<'TMPLEOF'
+# --- fullsend managed below - do not edit ---
+name: fullsend
+jobs:
+  dispatch:
+    uses: __ORG__/.fullsend/.github/workflows/dispatch.yml@main
+    with:
+      event_action: test
+TMPLEOF
+
+cat > "${MOCK_BIN}/yq" <<'YQEOF'
+#!/usr/bin/env bash
+query="${1:-}"
+if [[ "$query" == *"enabled == true"* ]]; then
+  echo "test-repo"
+elif [[ "$query" == *"enabled == false"* ]]; then
+  true
+else
+  echo "unexpected yq query: $*" >&2
+  exit 1
+fi
+YQEOF
+chmod +x "${MOCK_BIN}/yq"
+
+RENDERED=$(sed "s|__ORG__|test-org|g" "${CONFIG_DIR}/templates/shim-workflow-call.yaml")
+b64_of() {
+  printf '%s\n' "$1" | /usr/bin/base64 | tr -d '\r\n'
+}
+
+SHA40="ec21706cccc58d01588ecd842464a5afcc375ba1"
+PINNED=$(printf '%s\n' "$RENDERED" | sed "s|dispatch.yml@main|dispatch.yml@${SHA40} # main|")
+PINNED_WITH_HEADER=$(printf '# Copyright 2026 Conforma\n# SPDX-License-Identifier: Apache-2.0\n%s\n' "$PINNED")
+
+write_sha_pin_gh_mock "$(b64_of "$PINNED_WITH_HEADER")"
+
+if ! bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout6a.log" 2>&1; then
+  echo "FAIL: SHA-pinned dispatch ref tracking main returned an error"
+  cat "${TMPDIR}/stdout6a.log"
+  exit 1
+fi
+
+if grep -q "shim is stale" "${TMPDIR}/stdout6a.log"; then
+  echo "FAIL: SHA-pinned dispatch ref tracking main was flagged as stale"
+  cat "${TMPDIR}/stdout6a.log"
+  exit 1
+fi
+
+if ! grep -q "already enrolled (shim up to date)" "${TMPDIR}/stdout6a.log"; then
+  echo "FAIL: SHA-pinned dispatch ref tracking main was not recognized as current"
+  cat "${TMPDIR}/stdout6a.log"
+  exit 1
+fi
+
+if [ -f "${TMPDIR}/blob-input-test-repo.json" ]; then
+  echo "FAIL: blob was created for SHA-pinned dispatch ref tracking main"
+  exit 1
+fi
+
+echo "PASS: SHA-pinned dispatch ref tracking main is not drift"
+
+# Wrong annotation (# develop) is still drift — it does not track the template ref.
+WRONG_ANNOTATION=$(printf '%s\n' "$RENDERED" | sed "s|dispatch.yml@main|dispatch.yml@${SHA40} # develop|")
+write_sha_pin_gh_mock "$(b64_of "$WRONG_ANNOTATION")"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout6b.log" 2>&1 || true
+
+if ! grep -q "shim is stale" "${TMPDIR}/stdout6b.log"; then
+  echo "FAIL: SHA pin annotated # develop was not flagged as stale"
+  cat "${TMPDIR}/stdout6b.log"
+  exit 1
+fi
+
+if [ ! -f "${TMPDIR}/blob-input-test-repo.json" ]; then
+  echo "FAIL: no update blob created for SHA pin annotated # develop"
+  exit 1
+fi
+
+echo "PASS: SHA pin annotated with a different ref is still drift"
+
+# A bare SHA pin with no # ref annotation is still drift — we cannot tell
+# which named ref it tracks.
+NO_ANNOTATION=$(printf '%s\n' "$RENDERED" | sed "s|dispatch.yml@main|dispatch.yml@${SHA40}|")
+write_sha_pin_gh_mock "$(b64_of "$NO_ANNOTATION")"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout6c.log" 2>&1 || true
+
+if ! grep -q "shim is stale" "${TMPDIR}/stdout6c.log"; then
+  echo "FAIL: unannotated SHA pin was not flagged as stale"
+  cat "${TMPDIR}/stdout6c.log"
+  exit 1
+fi
+
+echo "PASS: unannotated SHA pin is still drift"
+
+# Real content drift plus a SHA pin must still produce an update PR.
+PINNED_WITH_DRIFT=$(printf '%s\nextra: drift\n' "$PINNED")
+write_sha_pin_gh_mock "$(b64_of "$PINNED_WITH_DRIFT")"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout6d.log" 2>&1 || true
+
+if ! grep -q "shim is stale" "${TMPDIR}/stdout6d.log"; then
+  echo "FAIL: SHA pin plus extra YAML drift was not flagged as stale"
+  cat "${TMPDIR}/stdout6d.log"
+  exit 1
+fi
+
+echo "PASS: SHA pin plus extra content drift is still drift"
+
+# Locked-in write-path contract: when other managed content has drifted
+# alongside a SHA pin, the update PR re-emits the raw template (`@main`),
+# not the SHA-pinned form — Renovate/pinact can re-pin it. This is the
+# documented, accepted behavior (see PR description); assert it explicitly
+# so a future refactor cannot silently change it in either direction
+# without a test failure.
+if [ ! -f "${TMPDIR}/blob-input-test-repo.json" ]; then
+  echo "FAIL: no update blob captured for SHA pin plus extra content drift"
+  exit 1
+fi
+
+BLOB6D_B64=$(jq -r '.content' "${TMPDIR}/blob-input-test-repo.json")
+BLOB6D_DECODED=$(printf '%s' "$BLOB6D_B64" | /usr/bin/base64 -d)
+
+if ! printf '%s\n' "$BLOB6D_DECODED" | grep -q "dispatch.yml@main"; then
+  echo "FAIL: mixed-drift update did not re-emit the raw template (@main); SHA pin was not stripped as expected"
+  echo "Got:"
+  printf '%s\n' "$BLOB6D_DECODED"
+  exit 1
+fi
+
+if printf '%s\n' "$BLOB6D_DECODED" | grep -q "dispatch.yml@${SHA40}"; then
+  echo "FAIL: mixed-drift update unexpectedly preserved the SHA pin"
+  echo "Got:"
+  printf '%s\n' "$BLOB6D_DECODED"
+  exit 1
+fi
+
+echo "PASS: mixed-drift update re-emits the raw template, stripping the SHA pin (locked-in behavior)"
+
+# ===========================
+# Test 7: contents API failures are classified by status, never by body
+# ===========================
+# gh api prints the JSON error body on stdout when a call fails. A 404 means
+# the file is absent; any other failure must count the repo as failed without
+# writing anything, and reconciliation must continue with the next repo.
+
+rm -f "${GH_LOG}" "${COMMIT_MSGS_LOG}" "${TMPDIR}/blob-input-"*.json
+
+cat > "${CONFIG_DIR}/config.yaml" <<'CFGEOF'
+version: 1
+repos:
+  broken-repo:
+    enabled: true
+  absent-repo:
+    enabled: true
+  gone-on-branch:
+    enabled: false
+  sha-broken:
+    enabled: false
+  probe-broken:
+    enabled: false
+CFGEOF
+
+cat > "${MOCK_BIN}/yq" <<'YQEOF'
+#!/usr/bin/env bash
+query="${1:-}"
+if [[ "$query" == *"enabled == true"* ]]; then
+  printf '%s\n' "broken-repo" "absent-repo"
+elif [[ "$query" == *"enabled == false"* ]]; then
+  printf '%s\n' "gone-on-branch" "sha-broken" "probe-broken"
+else
+  echo "unexpected yq query: $*" >&2
+  exit 1
+fi
+YQEOF
+chmod +x "${MOCK_BIN}/yq"
+
+cat > "${MOCK_BIN}/gh" <<EOF7
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" && "\$2" == "create" ]]; then
+  echo "https://github.com/test-org/mock/pull/99"
+  exit 0
+fi
+if [[ "\$1" == "pr" ]]; then
+  exit 0
+fi
+
+jq_filter=""
+silent=false
+has_input=false
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) has_input=true; shift 2 ;;
+    --silent) silent=true; shift ;;
+    *) shift ;;
+  esac
+done
+if [[ "\$has_input" == "true" ]]; then
+  cat > /dev/null
+fi
+
+not_found='{"message":"Not Found","status":"404"}'
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/*/actions/variables/*|repos/test-org/*/git/ref/heads/fullsend/*)
+    json="\$not_found"; rc=1 ;;
+  repos/test-org/broken-repo/contents/*)
+    json='{"message":"Server Error","status":"500"}'; rc=1 ;;
+  repos/test-org/absent-repo/contents/*)
+    json="\$not_found"; rc=1 ;;
+  repos/test-org/gone-on-branch/contents/*\?ref=*)
+    json="\$not_found"; rc=1 ;;
+  repos/test-org/sha-broken/contents/*\?ref=*)
+    json='{"message":"Server Error","status":"500"}'; rc=1 ;;
+  repos/test-org/probe-broken/contents/*)
+    json='{"message":"Server Error","status":"500"}'; rc=1 ;;
+  repos/test-org/*/contents/*)
+    json='{"content":"c3RhbGUgc2hpbSB0ZW1wbGF0ZQo=","sha":"default-file-sha"}' ;;
+  repos/test-org/*/git/ref/heads/main)
+    json='{"object":{"sha":"base-sha"}}' ;;
+  repos/test-org/*/git/commits/base-sha)
+    json='{"tree":{"sha":"base-tree-sha"}}' ;;
+  repos/test-org/*/git/blobs|repos/test-org/*/git/trees|repos/test-org/*/git/commits)
+    json='{"sha":"new-sha"}' ;;
+  repos/test-org/*/git/*)
+    ;;
+  repos/test-org/*)
+    json='{"default_branch":"main","private":false}' ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ "\$rc" != "0" ]]; then
+    [[ "\$silent" == "true" ]] || printf '%s\n' "\$json"
+  elif [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  elif [[ "\$silent" != "true" ]]; then
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+EOF7
+chmod +x "${MOCK_BIN}/gh"
+
+test7_rc=0
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout7.log" 2>&1 || test7_rc=$?
+
+t7_fail() {
+  echo "FAIL: $1"
+  cat "${TMPDIR}/stdout7.log"
+  exit 1
+}
+
+if grep -q "base64: invalid input" "${TMPDIR}/stdout7.log"; then
+  t7_fail "an error body was base64-decoded as file content"
+fi
+
+# 404 on the default branch: the repo is not enrolled, so it takes the
+# enroll path, not the stale-shim update path.
+if ! grep -q "^Enrolling absent-repo\.\.\.$" "${TMPDIR}/stdout7.log"; then
+  t7_fail "404 on the shim did not take the enroll path"
+fi
+if grep -q "absent-repo enrolled but shim is stale" "${TMPDIR}/stdout7.log"; then
+  t7_fail "404 on the shim was treated as a stale shim"
+fi
+echo "PASS: contents 404 on the default branch takes the enroll path"
+
+# 500 on the default branch: warn, count as failed, write nothing, continue.
+if ! grep -qF "::warning::Failed to read .github/workflows/fullsend.yaml for broken-repo" "${TMPDIR}/stdout7.log"; then
+  t7_fail "500 on the shim did not warn with the repo and path"
+fi
+if grep -E "repos/test-org/broken-repo/(git/(blobs|trees|commits|refs)|contents/.*--method)" "${GH_LOG}" ||
+   grep -q "pr create --repo test-org/broken-repo" "${GH_LOG}"; then
+  t7_fail "500 on the shim still wrote to broken-repo"
+fi
+if grep -qE "broken-repo (enrolled|has existing)|Enrolling broken-repo" "${TMPDIR}/stdout7.log"; then
+  t7_fail "500 on the shim was classified instead of failing"
+fi
+echo "PASS: contents 500 on the default branch counts as failed with no write"
+
+# Unenroll: the file is already gone from the removal branch (404), so no
+# DELETE is sent; a 500 there fails the repo instead of deleting with a
+# SHA read from the error body.
+if ! grep -q "gone-on-branch shim already removed from branch" "${TMPDIR}/stdout7.log"; then
+  t7_fail "404 on the removal branch was not treated as already removed"
+fi
+if grep -q "gone-on-branch/contents/.*DELETE" "${GH_LOG}"; then
+  t7_fail "404 on the removal branch still sent a DELETE"
+fi
+echo "PASS: unenroll with the file missing on the removal branch sends no DELETE"
+
+if ! grep -qF "::warning::Failed to read .github/workflows/fullsend.yaml?ref=fullsend/offboard for sha-broken" "${TMPDIR}/stdout7.log"; then
+  t7_fail "500 on the removal branch did not warn with the repo and path"
+fi
+if grep -q "sha-broken/contents/.*DELETE" "${GH_LOG}" ||
+   grep -q "pr create --repo test-org/sha-broken" "${GH_LOG}"; then
+  t7_fail "500 on the removal branch still sent a DELETE or opened a PR"
+fi
+echo "PASS: unenroll with an unreadable removal branch counts as failed with no DELETE"
+
+# A failed default-branch lookup must not read as "already unenrolled".
+if ! grep -qF "::warning::Failed to read .github/workflows/fullsend.yaml for probe-broken" "${TMPDIR}/stdout7.log"; then
+  t7_fail "500 on the default-branch shim lookup did not warn with the repo and path"
+fi
+if grep -q "probe-broken already unenrolled" "${TMPDIR}/stdout7.log" ||
+   grep -qE "repos/test-org/probe-broken/(git/refs|contents/.*DELETE)" "${GH_LOG}"; then
+  t7_fail "500 on the default-branch shim lookup was treated as unenrolled or still wrote"
+fi
+echo "PASS: unenroll with an unreadable default branch counts as failed with no write"
+
+if [ "$test7_rc" -eq 0 ] || ! grep -q "^Failed: 3$" "${TMPDIR}/stdout7.log"; then
+  t7_fail "expected exit 1 with exactly 3 failed repos (rc=${test7_rc})"
+fi
+echo "PASS: contents API failures are counted and reconciliation continues"

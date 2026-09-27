@@ -88,6 +88,9 @@ type PerRepoConfigReader interface {
 	// aliases are configured: every alias resolves through the runtime's
 	// compiled-in table.
 	ConfigModelAliases() map[string]string
+	// IsOwnersFileAuthEnabled reports whether the owners_file
+	// authorization provider is listed.
+	IsOwnersFileAuthEnabled() bool
 }
 
 // --- Write superset interfaces ---
@@ -131,6 +134,7 @@ type PerRepoConfigWriter interface {
 	SetInferenceWIFProvider(string)
 	SetInferenceOpenAI(OpenAIWIFConfig)
 	SetModelAliases(map[string]string)
+	SetOwnersFileAuthEnabled(bool)
 }
 
 // --- Compile-time assertions ---
@@ -425,6 +429,18 @@ func (c *perRepoConfig) ConfigVersion() string {
 // IsOrgMode reports that this is a per-repo configuration.
 func (c *perRepoConfig) IsOrgMode() bool { return false }
 
+// IsOwnersFileAuthEnabled returns whether OWNERS-file authorization is enabled.
+// Intentionally no parent fallback: OWNERS auth is a per-repo opt-in that must
+// not be inheritable from config.base.yaml.
+func (c *perRepoConfig) IsOwnersFileAuthEnabled() bool {
+	for _, p := range c.Authorization {
+		if p.Provider == "owners_file" {
+			return true
+		}
+	}
+	return false
+}
+
 // ConfigRoles returns the configured agent roles. nil (key omitted)
 // falls through to parent. Non-nil (including empty) replaces the
 // parent list entirely.
@@ -603,6 +619,30 @@ func (c *perRepoConfig) ConfigModelAliases() map[string]string {
 // SetKillSwitch sets the kill switch state. Stores a *bool so that
 // an explicit false is distinguishable from unset (nil) across layers.
 func (c *perRepoConfig) SetKillSwitch(v bool) { c.KillSwitch = &v }
+
+// SetOwnersFileAuthEnabled enables or disables OWNERS-file authorization.
+func (c *perRepoConfig) SetOwnersFileAuthEnabled(v bool) {
+	if v {
+		for _, p := range c.Authorization {
+			if p.Provider == "owners_file" {
+				return
+			}
+		}
+		c.Authorization = append(c.Authorization, AuthorizationProvider{Provider: "owners_file"})
+	} else {
+		filtered := make([]AuthorizationProvider, 0, len(c.Authorization))
+		for _, p := range c.Authorization {
+			if p.Provider != "owners_file" {
+				filtered = append(filtered, p)
+			}
+		}
+		if len(filtered) == 0 {
+			c.Authorization = nil
+		} else {
+			c.Authorization = filtered
+		}
+	}
+}
 
 // SetAgents replaces the registered agent entries.
 func (c *perRepoConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }

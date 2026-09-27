@@ -531,6 +531,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return fmt.Errorf("resolving fullsend dir: %w", err)
 	}
 
+	outputBase, err = resolveOutputBase(outputBase)
+	if err != nil {
+		return err
+	}
+
 	// 1. Resolve and load harness.
 	harnessStart := time.Now()
 
@@ -945,25 +950,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir
 		}
-		// Refuse OIDC credential vars so ${VAR} expansion in harness
-		// YAML cannot leak mint-usable credentials (#5832).
-		if oidcDenyKeys[key] {
-			return ""
-		}
-		return os.Getenv(key)
+		// Refuse OIDC credential vars and provider-only keys so ${VAR}
+		// expansion in harness YAML cannot leak mint-usable or workflow
+		// credentials (#5832, #6649).
+		return harnessEnvExpand(key)
 	}
 	lookup := func(key string) (string, bool) {
 		if key == "FULLSEND_DIR" {
 			return absFullsendDir, true
 		}
-		// Refuse OIDC credential vars (#5832).
+		// Refuse OIDC credential vars and provider-only keys (#5832, #6649).
 		// Unlike expander (which silently returns "" to produce an empty
 		// expansion), lookup returns false so ValidateRunnerEnvWith treats
 		// the reference as an unresolvable variable and fails validation.
-		if oidcDenyKeys[key] {
-			return "", false
-		}
-		return os.LookupEnv(key)
+		return harnessEnvLookup(key)
 	}
 	if err := h.ValidateRunnerEnvWith(lookup); err != nil {
 		printer.StepFail("Environment validation failed")
@@ -1544,9 +1544,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	workItemID := resolveWorkItemID()
 
 	// 3. Create run directory and initialise tracer.
-	if outputBase == "" {
-		outputBase = filepath.Join(os.TempDir(), "fullsend")
-	}
+	// outputBase is already absolute (resolveOutputBase above).
 	runDir := filepath.Join(outputBase, sandboxName)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return fmt.Errorf("creating run directory: %w", err)
@@ -1851,12 +1849,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			postRepoDir, postValidatedIterDir := postScriptRepoEnv(h, runDir, hostRepositoryDownloadDir, repoExtractedOK, validatedIterNum)
 			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", postRepoDir))
 			// FULLSEND_VALIDATED_ITERATION_DIR tells the post-script which
-			// iteration's output was validated. Without this, post-scripts
-			// that scan for the last iteration-*/output would pick up
-			// unvalidated output when the sweep validated an earlier
-			// iteration. Empty when no validation loop is configured or
-			// when no iteration passed validation (the post-script is
-			// skipped in the latter case, so this is defensive).
+			// iteration's output was validated. The path is always absolute
+			// (runDir is resolved via resolveOutputBase) so the post-script
+			// can open it regardless of its working directory (#7522).
+			// Without this, post-scripts that scan for the last
+			// iteration-*/output would pick up unvalidated output when the
+			// sweep validated an earlier iteration. Empty when no validation
+			// loop is configured or when no iteration passed validation (the
+			// post-script is skipped in the latter case, so this is defensive).
 			if postValidatedIterDir != "" {
 				postCmd.Env = append(postCmd.Env, fmt.Sprintf("FULLSEND_VALIDATED_ITERATION_DIR=%s", postValidatedIterDir))
 			}
@@ -1966,7 +1966,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if entryFound {
 		agentSubagents = entry.Subagents
 	}
-	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel)
+	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel, remoteRepositoryDir)
 	if err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
@@ -2045,6 +2045,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// repos that only have AGENTS.md. Runtimes opt in via ContextBridger.
 	if agentruntime.WantsClaudeMDBridge(rt) && agentsMDAvailable && !hasClaudeMD(hostRepositoryDir) {
 		injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer)
+	}
+
+	// 8a.2. Copy AGENTS.md to where a runtime that does not read it from
+	// the repo will load it (codex: the project is pinned untrusted).
+	if dest := agentruntime.HomeAgentsMDPath(rt); dest != "" && agentsMDAvailable {
+		bridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest, printer)
 	}
 
 	// 8a-2. Exclude agent working directories from git tracking.
@@ -2297,8 +2303,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Running agent")
 		printer.Blank()
 
+		// Start the agent span before writeIterationEnv so the runtime
+		// TRACEPARENT names this iteration's span, not the run root.
+		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		agentTraceparent := iterationTraceparent(agentSpan, tid.PropagatedFlags)
+
 		agentStart := time.Now()
-		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout)); err != nil {
+		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout), agentTraceparent); err != nil {
 			// The deadline is advisory; a stale one from the previous
 			// iteration is the only harmful state, so clear it and go on.
 			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
@@ -2306,13 +2317,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
 					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
 				}
+				endAgentSpanOnSetupError(agentSpan, rmErr)
 				return fmt.Errorf("clearing stale iteration deadline (iteration %d): %w", iteration, rmErr)
 			}
 		}
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
-
-		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
 		// One collector per iteration: iteration and agent span are 1:1, so
 		// a run-scoped collector would repeat earlier iterations' content on
 		// later spans. Nil when the Level 3 gate is off; nil is inert. The
@@ -2858,8 +2868,10 @@ var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // MAINTENANCE: when new OIDC-related credential env vars are introduced
 // (e.g. by mint infrastructure changes), add them here. By convention the
 // vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
-// expansion site in this file consults this map, so a single addition
-// propagates to all deny checks.
+// expansion site in this file consults harnessExpansionDenied, which
+// includes this map, so a single addition propagates to all deny checks.
+// Keys that provider credentials must still expand belong in
+// providerOnlyKeys, not here (#6649).
 var oidcDenyKeys = map[string]bool{
 	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
 	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
@@ -2876,6 +2888,44 @@ var oidcDenyKeys = map[string]bool{
 	// harness cannot copy the real key under another name, and keeps it out
 	// of pre/post scripts.
 	"OPENAI_API_KEY": true,
+}
+
+// workflowTokenEnv is the Actions workflow token preserved across minting
+// so provider credentials can authenticate to GitHub Packages. See #6649.
+const workflowTokenEnv = "GH_WORKFLOW_TOKEN"
+
+// providerOnlyKeys are runner credentials that harness-controlled ${}
+// expansion must refuse (same sites as oidcDenyKeys) but that provider
+// credential expansion may still read. Unlike oidcDenyKeys these are NOT
+// pushed to sandbox.DenyExpansionKeys. See #6649.
+var providerOnlyKeys = map[string]bool{
+	workflowTokenEnv: true,
+}
+
+// harnessExpansionDenied reports whether a ${VAR} reference must be refused
+// at every harness-controlled expansion site (runner_env, env.runner,
+// env.sandbox, host_files, validation_loop.schema) and stripped from
+// pre/post/validation child environments.
+func harnessExpansionDenied(key string) bool {
+	return oidcDenyKeys[key] || providerOnlyKeys[key]
+}
+
+// harnessEnvExpand is the expander used for harness YAML ${VAR} sites.
+func harnessEnvExpand(key string) string {
+	if harnessExpansionDenied(key) {
+		return ""
+	}
+	return os.Getenv(key)
+}
+
+// harnessEnvLookup is the lookup used by ValidateRunnerEnvWith. Denied keys
+// return false so a harness that references them fails validation rather
+// than expanding empty.
+func harnessEnvLookup(key string) (string, bool) {
+	if harnessExpansionDenied(key) {
+		return "", false
+	}
+	return os.LookupEnv(key)
 }
 
 // reservedSandboxKeys are infrastructure env vars that env.sandbox must not
@@ -2903,7 +2953,9 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_SLUG":               true,
 	"FULLSEND_TIMEOUT_MINUTES":    true,
 	"FULLSEND_ITERATION_DEADLINE": true,
+	"TRACEPARENT":                 true,
 	// OPENAI_API_KEY is reserved through oidcDenyKeys (merged by init()).
+	// GH_WORKFLOW_TOKEN is reserved through providerOnlyKeys (merged by init()).
 }
 
 func init() {
@@ -2918,6 +2970,22 @@ func init() {
 	sandbox.DenyExpansionKeys(denied...)
 	for k := range oidcDenyKeys {
 		reservedSandboxKeys[k] = true
+	}
+	// Provider-only keys are reserved in the sandbox (env.sandbox cannot
+	// inject them) but must remain expandable in provider credential values,
+	// so they are not passed to DenyExpansionKeys; config values refuse them
+	// (#6649). expandProviderValue
+	// is not scoped by provider type, so any provider definition's ${}
+	// credential can reference these keys, not only fullsend-github-packages.
+	// This does not widen the trusted-ref surface: .fullsend provider
+	// definitions (and the ${GH_TOKEN}/${PUSH_TOKEN} they can already
+	// reference) are already read from the trusted ref. Documented in
+	// docs/guides/user/customizing-agents.md#private-registries-and-github-packages.
+	for k := range providerOnlyKeys {
+		reservedSandboxKeys[k] = true
+		// Provider config values are passed on argv, so refuse provider-only
+		// keys there; only credential values (child env) may expand them.
+		sandbox.CredentialOnlyExpansionKeys(k)
 	}
 }
 
@@ -2992,7 +3060,8 @@ func iterationTimedOut(exitCode int, elapsed, timeout time.Duration) bool {
 }
 
 // iterationEnvFile is the runner-owned file .env sources after every
-// harness-controlled entry; it holds the budget and the deadline (#7042).
+// harness-controlled entry; it holds the budget, the deadline (#7042),
+// and the current agent span's W3C TRACEPARENT.
 const (
 	iterationEnvDir  = sandbox.SandboxWorkspace + "/.fullsend"
 	iterationEnvFile = iterationEnvDir + "/iteration.env"
@@ -3004,11 +3073,44 @@ func iterationEnvSourceLine() string {
 	return fmt.Sprintf("if [ -f %s ]; then . %s; fi", iterationEnvFile, iterationEnvFile)
 }
 
-// iterationEnvCommand rewrites iterationEnvFile with the budget in minutes
-// and the Unix time at which the running iteration is killed.
-func iterationEnvCommand(timeoutMinutes int, deadline time.Time) string {
-	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\n' > %s",
-		iterationEnvDir, timeoutMinutes, deadline.Unix(), iterationEnvFile)
+// w3cTraceparentRe matches the W3C traceparent format that
+// telemetry.Traceparent emits (version 00). Used to refuse shell
+// interpolation of anything else at the iteration.env write site.
+var w3cTraceparentRe = regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
+
+// sanitizeTraceparent returns traceparent if it is a well-formed W3C
+// value, otherwise empty. iterationEnvCommand interpolates the result
+// into a shell printf, so anything outside this charset is dropped.
+func sanitizeTraceparent(traceparent string) string {
+	if w3cTraceparentRe.MatchString(traceparent) {
+		return traceparent
+	}
+	return ""
+}
+
+// iterationTraceparent formats the W3C TRACEPARENT the runtime inherits
+// from this iteration's agent span. Flags come from the run's resolved
+// identity so an inbound unsampled parent stays unsampled even though
+// the local tracer AlwaysSamples.
+func iterationTraceparent(agentSpan trace.Span, flags trace.TraceFlags) string {
+	return telemetry.TraceparentWithFlags(agentSpan.SpanContext(), flags)
+}
+
+// endAgentSpanOnSetupError ends an agent span started so its TRACEPARENT
+// could be exported, then never handed to rt.Run because iteration-env
+// setup failed on both write and cleanup.
+func endAgentSpanOnSetupError(span trace.Span, err error) {
+	recordSanitizedError(span, err)
+	span.SetStatus(codes.Error, truncateStatusMsg(err.Error()))
+	span.End()
+}
+
+// iterationEnvCommand rewrites iterationEnvFile with the budget in minutes,
+// the Unix time at which the running iteration is killed, and the agent
+// span's W3C TRACEPARENT so in-sandbox runtimes can join Fullsend traces.
+func iterationEnvCommand(timeoutMinutes int, deadline time.Time, traceparent string) string {
+	return fmt.Sprintf("mkdir -p %s && printf 'export FULLSEND_TIMEOUT_MINUTES=%d\\nexport FULLSEND_ITERATION_DEADLINE=%d\\nexport TRACEPARENT=%s\\n' > %s",
+		iterationEnvDir, timeoutMinutes, deadline.Unix(), sanitizeTraceparent(traceparent), iterationEnvFile)
 }
 
 // runIterationEnvCommand treats a non-zero exit as an error: sandbox.Exec
@@ -3025,8 +3127,8 @@ func runIterationEnvCommand(exec sandboxExecFunc, sandboxName, command string) e
 }
 
 // writeIterationEnv rewrites iterationEnvFile for the iteration about to run.
-func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time) error {
-	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline))
+func writeIterationEnv(exec sandboxExecFunc, sandboxName string, timeoutMinutes int, deadline time.Time, traceparent string) error {
+	return runIterationEnvCommand(exec, sandboxName, iterationEnvCommand(timeoutMinutes, deadline, traceparent))
 }
 
 // clearIterationEnv removes a previous iteration's file so a stale deadline
@@ -3125,8 +3227,8 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// overriding a single var from a shared host_files .env file.
 	lines = append(lines, buildSandboxEnvLines(h)...)
 
-	// Runner-owned budget and deadline come after every harness-controlled
-	// entry so none of them can shadow the values (#7042).
+	// Runner-owned budget, deadline, and TRACEPARENT come after every
+	// harness-controlled entry so none of them can shadow the values (#7042).
 	lines = append(lines, iterationEnvSourceLine())
 
 	content := strings.Join(lines, "\n") + "\n"
@@ -3214,16 +3316,11 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 }
 
 // safeExpandEnv expands ${VAR} references like os.ExpandEnv but refuses
-// OIDC credential vars (oidcDenyKeys), expanding them to empty. Use this
-// instead of os.ExpandEnv at any site where the expanded value may reach
-// user-controlled or sandbox-visible contexts. See #5832.
+// OIDC credential vars and provider-only keys, expanding them to empty.
+// Use this instead of os.ExpandEnv at any site where the expanded value
+// may reach user-controlled or sandbox-visible contexts. See #5832, #6649.
 func safeExpandEnv(s string) string {
-	return os.Expand(s, func(key string) string {
-		if oidcDenyKeys[key] {
-			return ""
-		}
-		return os.Getenv(key)
-	})
+	return os.Expand(s, harnessEnvExpand)
 }
 
 // shellSafeExpandEnv expands ${VAR} references in text using the host
@@ -3231,12 +3328,13 @@ func safeExpandEnv(s string) string {
 // (", $, `, \) so the result is safe to source as a shell script.
 // Templates use the standard export FOO="${FOO}" pattern; this function
 // ensures substituted values cannot break out of the double-quote context.
-// OIDC credential vars are refused (expand to empty) to prevent leaking
-// mint-usable credentials into sandbox-bound files (#5832).
+// OIDC credential vars and provider-only keys are refused (expand to
+// empty) to prevent leaking mint-usable or workflow credentials into
+// sandbox-bound files (#5832, #6649).
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
-		if oidcDenyKeys[key] {
+		if harnessExpansionDenied(key) {
 			return ""
 		}
 		return escapeForDoubleQuotes(os.Getenv(key))
@@ -3432,6 +3530,16 @@ func redactFeedback(feedback string, runnerEnv map[string]string) string {
 		}
 		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
 	}
+	// Provider-only keys live in the process environment, not RunnerEnv.
+	// Redact their literals the same way so they cannot reach the agent
+	// prompt or the uploaded run directory (#6649).
+	for key := range providerOnlyKeys {
+		value := os.Getenv(key)
+		if len(value) < minRedactableSecretLen {
+			continue
+		}
+		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
+	}
 	// ScanResult.Sanitized is empty when the scanner changed nothing, so the
 	// original text is the fallback — not an empty prompt.
 	if res := security.NewSecretRedactor().Scan(feedback); res.Sanitized != "" {
@@ -3464,11 +3572,12 @@ func writeValidationFeedback(iterDir string, valOut []byte, valErr error, runner
 //
 // repoDir is hostRepositoryDownloadDir when repoExtractedOK is true, empty
 // otherwise — see the call site's doc comment for why repoExtractedOK can be
-// false. validatedIterDir points at the validated iteration's output
-// directory when a validation loop is configured and an iteration passed;
-// it is empty when there's no validation loop (the post-script's own
-// last-iteration scan is used instead) or when no iteration passed (the
-// post-script is skipped entirely in that case, so this is defensive).
+// false. validatedIterDir is the absolute path of the validated iteration's
+// output directory when a validation loop is configured and an iteration
+// passed (runDir is always absolute after resolveOutputBase); it is empty
+// when there's no validation loop (the post-script's own last-iteration
+// scan is used instead) or when no iteration passed (the post-script is
+// skipped entirely in that case, so this is defensive).
 func postScriptRepoEnv(h *harness.Harness, runDir, hostRepositoryDownloadDir string, repoExtractedOK bool, validatedIterNum int) (repoDir, validatedIterDir string) {
 	if repoExtractedOK {
 		repoDir = hostRepositoryDownloadDir
@@ -3517,14 +3626,14 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
 }
 
-// stripOIDCEnv returns a copy of env with OIDC credential entries removed.
-// Use this to filter os.Environ() slices in contexts where childScriptEnv is
-// not applicable (e.g., validation scripts that compose their env differently).
-// See #5832.
+// stripOIDCEnv returns a copy of env with OIDC credential entries and
+// provider-only keys removed. Use this to filter os.Environ() slices in
+// contexts where childScriptEnv is not applicable (e.g., validation scripts
+// that compose their env differently). See #5832, #6649.
 func stripOIDCEnv(env []string) []string {
 	result := make([]string, 0, len(env))
 	for _, e := range env {
-		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
 			continue
 		}
 		result = append(result, e)
@@ -3930,10 +4039,11 @@ func rootSpanStatus(runErr error, exitCode int, validationPassed bool) (codes.Co
 
 // traceIdentity holds the resolved trace context for a run.
 type traceIdentity struct {
-	Ctx         context.Context
-	RootSpan    trace.Span
-	Traceparent string
-	SpanKind    trace.SpanKind
+	Ctx             context.Context
+	RootSpan        trace.Span
+	Traceparent     string
+	SpanKind        trace.SpanKind
+	PropagatedFlags trace.TraceFlags
 }
 
 // resolveTraceIdentity extracts an inbound W3C traceparent, starts the root
@@ -3961,10 +4071,11 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	traceparent := telemetry.TraceparentWithFlags(rootSpan.SpanContext(), propagatedFlags)
 
 	return traceIdentity{
-		Ctx:         ctx,
-		RootSpan:    rootSpan,
-		Traceparent: traceparent,
-		SpanKind:    spanKind,
+		Ctx:             ctx,
+		RootSpan:        rootSpan,
+		Traceparent:     traceparent,
+		SpanKind:        spanKind,
+		PropagatedFlags: propagatedFlags,
 	}
 }
 
@@ -4160,9 +4271,11 @@ func stripControlChars(s string) string {
 // identity never derives from runner_env (issue #2779). An empty traceparent
 // (telemetry disabled) is omitted rather than emitted blank.
 //
-// OIDC credential vars (oidcDenyKeys) are stripped so user-authored pre/post
-// scripts and validation/preflight commands cannot mint their own tokens.
-// The parent harness process retains them for mintAgentToken. See #5832.
+// OIDC credential vars and provider-only keys are stripped so user-authored
+// pre/post scripts and validation/preflight commands cannot mint their own
+// tokens or read the preserved workflow token. The parent harness process
+// retains them for mintAgentToken and provider credential expansion.
+// See #5832, #6649.
 //
 // GitLab role-routing vars (isPinnedGitLabRoleRoutingKey) are pinned to the
 // process environment: a runnerEnv entry for one of those keys is dropped
@@ -4184,8 +4297,8 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 		if strings.HasPrefix(e, "TRACEPARENT=") {
 			continue
 		}
-		// Strip OIDC credential vars from child script env (#5832).
-		if i := strings.IndexByte(e, '='); i > 0 && oidcDenyKeys[e[:i]] {
+		// Strip OIDC credential vars and provider-only keys (#5832, #6649).
+		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
 			continue
 		}
 		env = append(env, e)
@@ -4573,6 +4686,22 @@ func collectOpenshellLogs(sandboxName, runDir string, printer *ui.Printer) {
 	}
 }
 
+// resolveOutputBase returns an absolute path for --output-dir. Empty input
+// uses the default ($TMPDIR/fullsend). Fails closed if Abs fails so runDir
+// and FULLSEND_VALIDATED_ITERATION_DIR never inherit a relative flag value
+// (#7522): a post-script whose cwd is runDir would otherwise resolve a
+// relative iteration path against runDir and miss the result file.
+func resolveOutputBase(outputBase string) (string, error) {
+	if outputBase == "" {
+		outputBase = filepath.Join(os.TempDir(), "fullsend")
+	}
+	abs, err := filepath.Abs(outputBase)
+	if err != nil {
+		return "", fmt.Errorf("resolving output dir: %w", err)
+	}
+	return abs, nil
+}
+
 // relOrAbs returns path relative to base, falling back to the absolute path if Rel fails.
 func relOrAbs(base, path string) string {
 	rel, err := filepath.Rel(base, path)
@@ -4679,6 +4808,34 @@ func doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *u
 		printer.StepWarn("Could not add CLAUDE.md to git exclude: " + err.Error())
 	}
 	printer.StepDone("Injected CLAUDE.md pointer to AGENTS.md (target repo has none)")
+}
+
+// agentsMDHomeMaxBytes matches codex's default project_doc_max_bytes, so
+// the copy is bounded the way native AGENTS.md loading is.
+const agentsMDHomeMaxBytes = 32 * 1024
+
+func bridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest string, printer *ui.Printer) {
+	doBridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest, printer, sandbox.Exec)
+}
+
+// doBridgeAgentsMDToHome is the testable core of bridgeAgentsMDToHome. It
+// takes the first regular file among hasAgentsMD's names; a symlink is
+// refused so the repo cannot point the copy at another file in the sandbox.
+func doBridgeAgentsMDToHome(sandboxName, remoteRepositoryDir, dest string, printer *ui.Printer, execFn sandboxExecFunc) {
+	cmd := fmt.Sprintf(
+		"for f in AGENTS.md agents.md Agents.md; do p=%s/\"$f\"; if [ -f \"$p\" ] && [ ! -L \"$p\" ]; then head -c %d \"$p\" > %s; exit $?; fi; done; exit 3",
+		shellQuote(remoteRepositoryDir), agentsMDHomeMaxBytes, shellQuote(dest))
+	_, stderr, code, err := execFn(sandboxName, cmd, 10*time.Second)
+	switch {
+	case err == nil && code == 0:
+		printer.StepDone("Copied AGENTS.md to " + dest + " (the runtime does not read the repo's)")
+	case code == 3:
+		printer.StepWarn("AGENTS.md not bridged: no regular AGENTS.md at the repo root (symlinks are refused)")
+	case err != nil:
+		printer.StepWarn(fmt.Sprintf("Could not copy AGENTS.md to %s: %v", dest, err))
+	default:
+		printer.StepWarn(fmt.Sprintf("Could not copy AGENTS.md to %s: exit %d: %s", dest, code, strings.TrimSpace(stderr)))
+	}
 }
 
 // scanRepoContextFiles walks the target repo directory for known context
@@ -5491,6 +5648,11 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 // The caller should defer cleanup() to clear tokens from the process env.
 // forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
 // set to "github-app" for GitHub and "pat" for GitLab.
+// On GitHub Actions the pre-mint GH_TOKEN is copied to GH_WORKFLOW_TOKEN
+// for provider credential expansion (#6649); cleanup unsets it. Remint-safe:
+// if GH_WORKFLOW_TOKEN is already set (remintAgentTokenForPostScript's
+// second call, after the first mint replaced GH_TOKEN with the App token),
+// the copy is skipped so the already-preserved workflow token is left alone.
 func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, level string, printer *ui.Printer) (bool, func(), error) {
 	if mintURL == "" || role == "" {
 		return false, func() {}, nil
@@ -5530,6 +5692,47 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 	envVars := []string{"GH_TOKEN"}
 	if v, ok := os.LookupEnv("GH_TOKEN"); ok {
 		originals["GH_TOKEN"] = v
+	}
+	// Preserve the Actions workflow token before GH_TOKEN is replaced so
+	// provider credentials can authenticate to GitHub Packages. Outside
+	// Actions leave a caller-set value alone and never derive one from a
+	// local PAT (#6649).
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		// A non-empty existing value means either a prior mintAgentToken
+		// call in this process already preserved the real workflow token
+		// (remintAgentTokenForPostScript's second call, after the first
+		// mint replaced GH_TOKEN with the App installation token — at that
+		// point originals["GH_TOKEN"] is the App token, not the real
+		// pre-mint value, so copying it here would clobber the already-
+		// preserved token) or a caller deliberately set one. Either way,
+		// leave it alone; this call's cleanup must not touch it either, so
+		// it stays untouched in envVars/originals. Empty-string values
+		// (test fixtures resetting state with a blank sentinel, or a var
+		// that is merely declared but never populated) are treated as
+		// "not preserved yet" so the normal preserve path below still runs.
+		// See review finding on run.go:5357 (#6649).
+		existing, alreadyPreserved := os.LookupEnv(workflowTokenEnv)
+		alreadyPreserved = alreadyPreserved && existing != ""
+		if !alreadyPreserved {
+			preMint := originals["GH_TOKEN"]
+			switch {
+			case preMint == "":
+				// A future caller could override the workflow's github_token
+				// input to empty; fail loud instead of silently skipping the
+				// preserve step (#6649).
+				printer.StepWarn("GITHUB_ACTIONS is set but no pre-mint GH_TOKEN was found; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
+			case !mintTokenPattern.MatchString(preMint):
+				// Gate the same as result.Token below before it reaches
+				// Setenv/add-mask/RegisterRuntimeSecret: fail closed rather
+				// than trust an unvalidated value (#6649).
+				printer.StepWarn("pre-mint GH_TOKEN has an unexpected format; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
+			default:
+				os.Setenv(workflowTokenEnv, preMint)
+				envVars = append(envVars, workflowTokenEnv)
+				security.RegisterRuntimeSecret(preMint)
+				fmt.Fprintf(os.Stderr, "::add-mask::%s\n", preMint)
+			}
+		}
 	}
 	os.Setenv("GH_TOKEN", result.Token)
 

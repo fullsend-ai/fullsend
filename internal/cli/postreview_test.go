@@ -209,6 +209,112 @@ func TestPostFailureNotice_EmptyReason(t *testing.T) {
 	assert.Contains(t, comments[0].Body, "NOT reviewed")
 }
 
+func TestPostReviewContent_FormalReviewFailureDoesNotFailCommand(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.Errors["CreatePullRequestReview"] = fmt.Errorf("API error")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Body: "Looks good", Action: "approve"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.NoError(t, err, "sticky comment success must not fail the command when formal review fails")
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Looks good")
+	assert.Empty(t, fc.CreatedReviews)
+	assert.Contains(t, buf.String(), "Formal review submission failed")
+	assert.Contains(t, buf.String(), "sticky review comment was posted")
+}
+
+func TestPostReviewContent_RequestChangesFormalReviewFailureDoesNotFailCommand(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.Errors["CreatePullRequestReview"] = fmt.Errorf("API error")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Body: "Please fix these issues", Action: "request-changes"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Please fix these issues")
+	assert.Empty(t, fc.CreatedReviews)
+	assert.Contains(t, buf.String(), "Formal review submission failed")
+}
+
+func TestPostReviewContent_StickyFailureStillFails(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.Errors["CreateIssueComment"] = fmt.Errorf("comment API error")
+
+	printer := ui.New(io.Discard)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Body: "Looks good", Action: "approve"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating comment")
+	assert.Empty(t, fc.CreatedReviews)
+	assert.Empty(t, fc.IssueComments["o/r/1"])
+}
+
+func TestPostReviewContent_SuccessSubmitsFormalReview(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Looks good")
+	require.Len(t, fc.CreatedReviews, 1)
+	assert.Equal(t, "APPROVE", fc.CreatedReviews[0].Event)
+	assert.Equal(t, "abc123def456", fc.CreatedReviews[0].CommitSHA)
+}
+
+func TestPostReviewContent_FallbackFailureDoesNotFailCommand(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.Errors["CreatePullRequestReview"] = &gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "validation failed"}
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {
+			{Path: "internal/service.go", Patch: "@@ -1,1 +1,1 @@"},
+		},
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{
+		Body:   "Needs changes",
+		Action: "request-changes",
+		Findings: []ReviewFinding{{
+			File: "internal/service.go", Line: 1, Description: "invalid change",
+		}},
+	}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Needs changes")
+	assert.Empty(t, fc.CreatedReviews)
+	assert.Contains(t, buf.String(), "Formal review submission failed")
+}
+
 func TestCheckStaleHead_CaseInsensitive(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.PullRequestHeadSHA = "abc1234567890abcdef1234567890abcdef123456"

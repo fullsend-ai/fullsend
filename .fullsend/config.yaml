@@ -36,6 +36,8 @@ agents:
         challenger: xai/grok-4.6
         correctness: xai/grok-4.6
         docs-currency: google-vertex/gemini-3.8-flash
+        intent-coherence: google-vertex/gemini-3.8-flash
+        risk-assessment: google-vertex/gemini-3.8-flash
         security: xai/grok-4.6
         style-conventions: google-vertex/gemini-3.8-flash
     - name: retro
