@@ -1230,7 +1230,7 @@ func verifyEnrollment(ctx context.Context, printer *ui.Printer, provisioner enro
 	// if revision info was unavailable.
 	printer.StepStart("Post-write verification")
 	var verifyEnvVars map[string]string
-	if revErr == nil && revInfo != nil && revInfo.TrafficEnvVars != nil {
+	if revErr == nil && revInfo != nil && revInfo.TrafficEnvVars != nil && !revInfo.TrafficEnvVarsUnreliable {
 		verifyEnvVars = revInfo.TrafficEnvVars
 	} else {
 		var verifyErr error
@@ -1922,25 +1922,33 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 
 		if revInfo.TemplateMatchesTraffic {
 			printer.KeyValue("Template", fmt.Sprintf("%s (matches traffic)", revInfo.TrafficRevisionShort))
-		} else {
+		} else if revInfo.TrafficRevisionShort == "" {
+			// TemplateMatchesTraffic is also false when the traffic-serving
+			// revision itself couldn't be resolved — that's a weaker claim
+			// than "a newer revision exists and isn't serving," so say so
+			// explicitly instead of implying a confirmed divergence.
+			printer.Blank()
+			printer.StepWarn("Traffic-serving revision could not be determined")
+			printer.StepInfo("Unable to confirm which revision is currently serving traffic.")
+		} else if revInfo.LatestReadyRevisionShort != "" && revInfo.LatestReadyRevisionShort != revInfo.TrafficRevisionShort {
 			// Show a divergence warning. A source deploy can create a newer
 			// revision while traffic remains pinned to an older one.
 			printer.Blank()
 			printer.StepWarn("Newer revision exists but is not serving")
 			printer.StepInfo("Service template diverges from the traffic-serving revision.")
 			printer.StepInfo(fmt.Sprintf("Traffic revision: %s", revInfo.TrafficRevisionShort))
-			latestShort := revInfo.LatestReadyRevisionShort
-			if latestShort == "" {
-				latestShort = revInfo.TemplateRevision
-				if latestShort != "" {
-					parts := strings.Split(latestShort, "/")
-					latestShort = parts[len(parts)-1]
-				}
+			printer.StepInfo(fmt.Sprintf("Latest ready:     %s", revInfo.LatestReadyRevisionShort))
+		} else {
+			// Traffic revision is known but the latest-ready revision could
+			// not be determined confidently — avoid asserting a newer
+			// revision exists when that isn't confirmed.
+			printer.Blank()
+			printer.StepWarn("Latest-ready revision could not be determined")
+			printer.StepInfo(fmt.Sprintf("Traffic revision: %s", revInfo.TrafficRevisionShort))
+			if templateShort := revInfo.TemplateRevision; templateShort != "" {
+				parts := strings.Split(templateShort, "/")
+				printer.StepInfo(fmt.Sprintf("Template revision: %s", parts[len(parts)-1]))
 			}
-			if latestShort == "" {
-				latestShort = "unknown"
-			}
-			printer.StepInfo(fmt.Sprintf("Latest ready:     %s", latestShort))
 		}
 
 		if len(revInfo.RecentRevisions) > 0 {
@@ -1971,12 +1979,13 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 
 	// Parse enrolled orgs from traffic-serving env vars when available.
 	var trafficEnv map[string]string
-	if revErr == nil && revInfo != nil && revInfo.TrafficEnvVars != nil {
+	if revErr == nil && revInfo != nil && revInfo.TrafficEnvVars != nil && !revInfo.TrafficEnvVarsUnreliable {
 		trafficEnv = revInfo.TrafficEnvVars
 	} else {
 		var envErr error
 		trafficEnv, envErr = provisioner.GetServiceTrafficEnvVars(ctx)
 		if envErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not verify serving allow-lists: %v", envErr))
 			trafficEnv = nil
 		}
 	}

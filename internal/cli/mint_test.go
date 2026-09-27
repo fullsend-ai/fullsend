@@ -3577,6 +3577,31 @@ func TestVerifyEnrollment_FallsBackToTrafficEnvVars(t *testing.T) {
 	}, "acme", "my-project")
 }
 
+// TestVerifyEnrollment_TrafficEnvUnreliableFallsBackToLiveRead ensures
+// verifyEnrollment does not trust revInfo.TrafficEnvVars as source-of-truth
+// when TrafficEnvVarsUnreliable is set (e.g. it was filled in from the
+// service template because the traffic-serving revision's env couldn't be
+// read directly). It must fall through to GetServiceTrafficEnvVars instead
+// of reporting a revoked org as still enrolled based on stale template data.
+func TestVerifyEnrollment_TrafficEnvUnreliableFallsBackToLiveRead(t *testing.T) {
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	verifyEnrollment(context.Background(), printer, &fakeEnrollmentVerifier{
+		revInfo: &gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:     "fullsend-mint-00001",
+			TrafficPercent:           100,
+			TemplateMatchesTraffic:   true,
+			TrafficEnvVars:           map[string]string{"ALLOWED_ORGS": "acme,revoked-org"},
+			TrafficEnvVarsUnreliable: true,
+		},
+		envVars: map[string]string{
+			"ALLOWED_ORGS": "acme",
+		},
+	}, "revoked-org", "my-project")
+	assert.Contains(t, out.String(), "FAILED")
+	assert.Contains(t, out.String(), "revoked-org MISSING")
+}
+
 func withMintGCFClient(t *testing.T, client gcf.GCFClient) {
 	t.Helper()
 	old := mintGCFClientFactory
@@ -3975,6 +4000,72 @@ func TestRunMintStatus_TemplateDivergence(t *testing.T) {
 	assert.Contains(t, out.String(), "Newer revision exists but is not serving")
 	assert.Contains(t, out.String(), "Latest ready:")
 	assert.Contains(t, out.String(), "fullsend-mint-00002")
+}
+
+// TestRunMintStatus_TrafficRevisionUnknown ensures that when the
+// traffic-serving revision can't be resolved at all (TrafficRevisionShort
+// empty), runMintStatus does not claim "Newer revision exists but is not
+// serving" — that's a more specific claim than the underlying signal
+// supports. It should report that the traffic-serving revision could not
+// be determined instead.
+func TestRunMintStatus_TrafficRevisionUnknown(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "https://mint.example.com",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100"}`,
+				"ALLOWED_ORGS": "acme",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+			"ALLOWED_ORGS": "acme",
+		}),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:     "",
+			LatestReadyRevisionShort: "fullsend-mint-00002",
+			TemplateMatchesTraffic:   false,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Traffic-serving revision could not be determined")
+	assert.NotContains(t, out.String(), "Newer revision exists but is not serving")
+}
+
+// TestRunMintStatus_TrafficEnvUnreliableFallsBackToLiveRead ensures
+// runMintStatus does not trust revInfo.TrafficEnvVars when
+// TrafficEnvVarsUnreliable is set — it must fall through to
+// GetServiceTrafficEnvVars rather than displaying template data (which can
+// still list a revoked org) as the serving access-control state.
+func TestRunMintStatus_TrafficEnvUnreliableFallsBackToLiveRead(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "https://mint.example.com",
+			EnvVars: map[string]string{
+				"ALLOWED_ORGS": "acme",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ALLOWED_ORGS": "acme",
+		}),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:     "fullsend-mint-00001",
+			TrafficPercent:           100,
+			TemplateMatchesTraffic:   true,
+			TrafficEnvVars:           map[string]string{"ALLOWED_ORGS": "acme,revoked-org"},
+			TrafficEnvVarsUnreliable: true,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "revoked-org")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "revoked-org is not in ALLOWED_ORGS")
 }
 
 func TestRunMintStatusAPI_Success(t *testing.T) {
