@@ -4574,7 +4574,11 @@ func TestEnsureTrafficOnLatestRevision_PinsWhenTrafficUnknownButLatestKnown(t *t
 	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not yet reported on an existing service")
-	assert.Contains(t, err.Error(), "gcloud run services update-traffic")
+	// The refusal must not hand the operator the exact gcloud command it just
+	// declined to run: following it would perform the unverified pin this
+	// function exists to refuse.
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.Contains(t, err.Error(), "re-run mint deploy")
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 }
 
@@ -4893,7 +4897,11 @@ func TestEnsureTrafficOnLatestRevision_RefusesPinWhenTrafficEnvUnreliable(t *tes
 	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not be read reliably")
-	assert.Contains(t, err.Error(), "gcloud run services update-traffic")
+	// The refusal must not hand the operator the exact gcloud command it just
+	// declined to run: following it would perform the unverified pin this
+	// function exists to refuse.
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.Contains(t, err.Error(), "re-run mint deploy")
 	assert.NotContains(t, fake.calls, "PinServiceTraffic")
 	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }

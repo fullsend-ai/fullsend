@@ -2002,14 +2002,21 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 				}
 				revBody, _ := io.ReadAll(io.LimitReader(revResp.Body, 10<<20))
 				if err := json.Unmarshal(revBody, &revision); err == nil {
-					envVars := make(map[string]string)
+					// A traffic-serving revision with no containers is not a
+					// reliable "nothing to report" read -- mirror
+					// GetServiceTrafficEnvVars's hard-error handling of the same
+					// condition. Leaving trafficEnvVarsRead false here causes the
+					// fallback below to mark TrafficEnvVarsUnreliable, so callers
+					// like reconcileTargetEnvVars refuse to treat this as a
+					// verified empty traffic env.
 					if len(revision.Containers) > 0 {
+						envVars := make(map[string]string)
 						for _, e := range revision.Containers[0].Env {
 							envVars[e.Name] = e.Value
 						}
+						info.TrafficEnvVars = envVars
+						trafficEnvVarsRead = true
 					}
-					info.TrafficEnvVars = envVars
-					trafficEnvVarsRead = true
 				}
 			}
 		}

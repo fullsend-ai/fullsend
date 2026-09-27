@@ -1951,8 +1951,8 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context, isFirst
 		// reconcile against, so pinning straight to the known latest-ready
 		// revision is safe.
 		if !isFirstDeploy {
-			return fmt.Errorf("Cloud Run traffic revision not yet reported on an existing service; refusing to pin to %s without verifying currently-served registration data; recover with: %s",
-				target, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+			return fmt.Errorf("Cloud Run traffic revision not yet reported on an existing service; refusing to pin to %s without verifying currently-served registration data; re-run mint deploy or mint status once the revision read succeeds -- manually running a traffic-shift command bypasses this safety check and can restore registration data that was intentionally revoked",
+				target)
 		}
 		log.Printf("Cloud Run traffic revision not yet reported (first deploy); pinning 100%% to latest ready %s", target)
 		if err := p.gcpAPI.PinServiceTraffic(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, target); err != nil {
@@ -1972,8 +1972,8 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context, isFirst
 
 	reconciled, err := reconcileTargetEnvVars(info.TrafficEnvVars, info.TemplateEnvVars, info.TrafficEnvVarsUnreliable)
 	if err != nil {
-		return fmt.Errorf("reconciling registration data before pinning traffic to %s (currently serving %s): %w; recover with: %s",
-			target, info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+		return fmt.Errorf("reconciling registration data before pinning traffic to %s (currently serving %s): %w; re-run mint deploy or mint status once the revision read succeeds -- manually running a traffic-shift command bypasses this safety check and can restore registration data that was intentionally revoked",
+			target, info.TrafficRevisionShort, err)
 	}
 	if reconciled != nil {
 		log.Printf("Cloud Run traffic is on %s, not latest ready %s; latest ready is missing registration data present on %s, reconciling before pinning",

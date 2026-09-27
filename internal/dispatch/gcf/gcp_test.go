@@ -2549,6 +2549,63 @@ func TestLiveGCFClient_GetServiceRevisionInfo_RevisionsListAndTrafficEnvBothFail
 		"traffic env could not be read after either failure, so it must be marked unreliable rather than silently false")
 }
 
+// TestLiveGCFClient_GetServiceRevisionInfo_TrafficRevisionNoContainers guards
+// against treating a 200 OK response with zero containers on the
+// traffic-serving revision as a reliable "nothing to report" read. Unlike a
+// transport/HTTP failure, this response decodes successfully, so without an
+// explicit check the code would mark TrafficEnvVarsUnreliable false and
+// TrafficEnvVars as an empty (but "verified") map — mirroring the hard-error
+// handling GetServiceTrafficEnvVars already applies to the identical
+// no-containers condition. reconcileTargetEnvVars must see this as unreliable
+// rather than as legitimately having nothing accumulative to contribute, or a
+// revoked template allow-list entry could survive a pin.
+func TestLiveGCFClient_GetServiceRevisionInfo_TrafficRevisionNoContainers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/revisions/my-svc-00042-abc"):
+			// Traffic-serving revision GET succeeds but reports no containers.
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"containers": []interface{}{},
+			})
+		case strings.Contains(r.URL.Path, "/revisions"):
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"revisions": []interface{}{},
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"template": map[string]interface{}{
+					"revision": "my-svc-00042-abc",
+					"containers": []interface{}{
+						map[string]interface{}{
+							"env": []interface{}{
+								map[string]string{"name": "ALLOWED_ORGS", "value": "revoked-org"},
+							},
+						},
+					},
+				},
+				"trafficStatuses": []interface{}{
+					map[string]interface{}{
+						"type":     "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+						"revision": "my-svc-00042-abc",
+						"percent":  100,
+					},
+				},
+				"latestReadyRevision": "my-svc-00042-abc",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	info, err := newTestClient(srv).GetServiceRevisionInfo(context.Background(), "proj", "us-central1", "my-svc")
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.True(t, info.TrafficEnvVarsUnreliable,
+		"traffic-serving revision reported zero containers; the read must not be treated as a verified empty env")
+}
+
 // TestLiveGCFClient_GetServiceRevisionInfo_TemplateAheadOfLatestReady pins down
 // the intended behavior when the service template's assigned revision (what
 // a just-completed create/update deploy produced) is ahead of
