@@ -80,12 +80,23 @@ type Manifest struct {
 // both GitHub and GitLab; validation rejects platform-specific fields
 // on the wrong platform (e.g. mint_url under gitlab).
 type PlatformConfig struct {
-	URL         string      `yaml:"url,omitempty"`
-	MintURL     string      `yaml:"mint_url,omitempty"`
-	MintMode    string      `yaml:"mint_mode,omitempty"`
-	FullsendRef string      `yaml:"fullsend_ref,omitempty"`
-	RunnerTags  []string    `yaml:"runner_tags,omitempty"`
-	Repos       []RepoEntry `yaml:"repos"`
+	URL         string `yaml:"url,omitempty"`
+	MintURL     string `yaml:"mint_url,omitempty"`
+	MintMode    string `yaml:"mint_mode,omitempty"`
+	FullsendRef string `yaml:"fullsend_ref,omitempty"`
+	// AgentRunnerTags routes GitLab agent (data-plane) jobs. GitLab-only.
+	AgentRunnerTags []string `yaml:"agent_runner_tags,omitempty"`
+	// ControlRunnerTags routes GitLab control-plane jobs (poll today;
+	// webhook dispatcher next). GitLab-only. Fully independent of
+	// AgentRunnerTags: there is no cross-fallback. Unset renders an
+	// empty tag list (untagged), not the agent tags.
+	ControlRunnerTags []string `yaml:"control_runner_tags,omitempty"`
+	// DeprecatedRunnerTags is the deprecated gitlab.runner_tags alias.
+	// Parse populates AgentRunnerTags from it when agent_runner_tags is
+	// unset; MarshalWithHeader / Manifest.Marshal drop it so rewrites
+	// emit agent_runner_tags.
+	DeprecatedRunnerTags []string    `yaml:"runner_tags,omitempty"`
+	Repos                []RepoEntry `yaml:"repos"`
 }
 
 // ConfigBase is the nested config_base object in repos.yaml. Source is
@@ -137,6 +148,11 @@ type RepoEntry struct {
 	// defaults.config_base; source "none" disables inheritance. SHA256
 	// is an optional digest verified against the fetched preset.
 	ConfigBase ConfigBase `yaml:"config_base,omitempty"`
+	// Config is a sparse managed .fullsend/config.yaml for this
+	// repository (ADR 0122). Presence opts this repository into managed
+	// configuration even when the mapping is empty. runtime and
+	// allowed_remote_resources are rejected here; use the sibling fields.
+	Config config.ManagedConfig `yaml:"config,omitempty"`
 }
 
 // DefaultsConfig holds default field values applied to every repo
@@ -153,6 +169,9 @@ type DefaultsConfig struct {
 	// source "none" disables inheritance for entries that reference it.
 	// SHA256 is an optional digest verified against the fetched preset.
 	ConfigBase ConfigBase `yaml:"config_base,omitempty"`
+	// Config is a fleet-wide sparse managed .fullsend/config.yaml
+	// (ADR 0122). Presence opts every repository into managed configuration.
+	Config config.ManagedConfig `yaml:"config,omitempty"`
 }
 
 // DefaultGitHubURL is the default forge URL for GitHub.com.
@@ -192,6 +211,15 @@ type ResolvedConfig struct {
 	// ConfigHash is the resolved SHA-256 hex digest; empty skips
 	// digest validation.
 	ConfigHash string
+	// ConfigManaged reports whether this repository is opted into a
+	// managed .fullsend/config.yaml (ADR 0122). defaults.config opts every
+	// repository in; a repository config block opts in only that repository.
+	ConfigManaged bool
+	// Managed is the sparse managed configuration: defaults.config merged with
+	// the repository config, plus authoritative runtime and
+	// allowed_remote_resources shorthands. Nil when ConfigManaged is
+	// false. It does not bake in code defaults or config.base.yaml.
+	Managed config.PerRepoConfigWriter
 }
 
 func parseManifestBytes(data []byte, m *Manifest) error {
@@ -200,7 +228,30 @@ func parseManifestBytes(data []byte, m *Manifest) error {
 	if err := dec.Decode(m); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
+	migrateDeprecatedRunnerTags(m)
 	return nil
+}
+
+// migrateDeprecatedRunnerTags copies gitlab.runner_tags onto
+// agent_runner_tags when the new key is unset, then drops the old key
+// so a subsequent marshal writes agent_runner_tags. When both keys are
+// set, agent_runner_tags wins and runner_tags is still dropped.
+//
+// This only migrates the GitLab platform section: runner_tags (like
+// agent_runner_tags/control_runner_tags) is a GitLab-only key. Leaving
+// a GitHub section's deprecated key untouched keeps it reachable by
+// rejectGitHubRunnerTags, so a manifest that mistakenly sets
+// github.runner_tags is rejected by the key the operator actually
+// wrote, not by the migrated agent_runner_tags name.
+func migrateDeprecatedRunnerTags(m *Manifest) {
+	if m == nil || m.GitLab == nil {
+		return
+	}
+	p := m.GitLab
+	if len(p.AgentRunnerTags) == 0 && len(p.DeprecatedRunnerTags) > 0 {
+		p.AgentRunnerTags = p.DeprecatedRunnerTags
+	}
+	p.DeprecatedRunnerTags = nil
 }
 
 // LoadManifest reads and parses a repos.yaml manifest from a local
@@ -410,6 +461,9 @@ func (m *Manifest) Validate() error {
 	if err := validateRuntimeValue("defaults.runtime", m.Defaults.Runtime); err != nil {
 		return err
 	}
+	if err := ValidateAllowedRemoteResourcesFormat("defaults.allowed_remote_resources", m.Defaults.AllowedRemoteResources); err != nil {
+		return err
+	}
 	var err error
 	// validateConfigSource resolves a local config_base.source path to a
 	// manifest-directory-relative absolute path for containment checking;
@@ -437,6 +491,9 @@ func (m *Manifest) Validate() error {
 			if err := validateRuntimeValue(fmt.Sprintf("%s.repos[%s].runtime", p.name, e.Name), e.Runtime); err != nil {
 				return err
 			}
+			if err := ValidateAllowedRemoteResourcesFormat(fmt.Sprintf("%s.repos[%s].allowed_remote_resources", p.name, e.Name), e.AllowedRemoteResources); err != nil {
+				return err
+			}
 			if e.ConfigBase.resolvedSource, err = m.validateConfigSource(fmt.Sprintf("%s.repos[%d].config_base.source", p.name, i), e.ConfigBase.Source); err != nil {
 				return err
 			}
@@ -449,8 +506,8 @@ func (m *Manifest) Validate() error {
 	// Validate GitHub platform section.
 	if m.GitHub != nil {
 		// Reject GitLab-only fields on GitHub.
-		if len(m.GitHub.RunnerTags) > 0 {
-			return fmt.Errorf("github.runner_tags is not supported; runner_tags is a GitLab-only field")
+		if err := rejectGitHubRunnerTags(m.GitHub); err != nil {
+			return err
 		}
 
 		githubURL := m.GitHub.URL
@@ -521,6 +578,10 @@ func (m *Manifest) Validate() error {
 		if err := m.validatePlatformRepos(ForgeGitLab, m.GitLab, allSeen); err != nil {
 			return err
 		}
+	}
+
+	if err := validateManifestManaged(m); err != nil {
+		return err
 	}
 
 	return nil
@@ -665,6 +726,16 @@ func RejectExtraneousURLParts(u *url.URL, field string) error {
 // The clients factory provides per-forge API clients so glob entries
 // targeting different forges resolve against the correct API.
 func (m *Manifest) ExpandGlobs(ctx context.Context, clients ForgeClientFactory) ([]ResolvedRepo, error) {
+	return m.ExpandGlobsFor(ctx, clients, nil)
+}
+
+// ExpandGlobsFor is like ExpandGlobs, but skips expanding a platform's
+// glob entries when filter is non-empty and does not select any repo on
+// that platform. This keeps a filtered operation (e.g. "repos install
+// gitlab-group/project") from requiring credentials for a forge that
+// only appears via an unrelated glob entry (e.g. a GitHub "acme/*"
+// entry) elsewhere in the manifest.
+func (m *Manifest) ExpandGlobsFor(ctx context.Context, clients ForgeClientFactory, filter []string) ([]ResolvedRepo, error) {
 	resolved := make(map[string]ResolvedRepo)
 
 	platforms := []struct {
@@ -678,6 +749,16 @@ func (m *Manifest) ExpandGlobs(ctx context.Context, clients ForgeClientFactory) 
 	for _, p := range platforms {
 		if p.cfg == nil {
 			continue
+		}
+
+		if len(filter) > 0 {
+			matched, err := platformEntriesMatchFilter(p.cfg, filter)
+			if err != nil {
+				return nil, fmt.Errorf("matching repo filter against forge %q: %w", p.name, err)
+			}
+			if !matched {
+				continue
+			}
 		}
 
 		// First pass: separate explicit entries from glob patterns.
@@ -879,6 +960,10 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 	} else {
 		cfg.ConfigHash = resolveField(entry.ConfigBase.SHA256, m.Defaults.ConfigBase.SHA256, "")
 	}
+	cfg.ConfigManaged = configManaged(m.Defaults.Config, entry.Config)
+	if cfg.ConfigManaged {
+		cfg.Managed = m.mergeManagedConfig(entry)
+	}
 
 	// Source infrastructure config from the platform-level section,
 	// with per-repo overrides via the string fallback chain.
@@ -937,14 +1022,88 @@ func resolveField(perRepo, platformDefault, builtinDefault string) string {
 // section containing repos are included. The order is deterministic
 // (github before gitlab).
 func (m *Manifest) DistinctForges() []string {
+	// A nil filter short-circuits platformEntriesMatchFilter before any
+	// pattern matching happens, so this can never return an error.
+	forges, _ := m.DistinctForgesFor(nil)
+	return forges
+}
+
+// DistinctForgesFor returns the deduplicated set of forge names used by
+// repos matching filter. An empty filter returns DistinctForges(). The
+// order is deterministic (github before gitlab). A glob manifest entry
+// counts as selected when a concrete filter would be produced by
+// expanding it (for example entry "acme/*" and filter "acme/api"). An
+// error is returned if a filter or manifest entry is an invalid glob
+// pattern.
+func (m *Manifest) DistinctForgesFor(filter []string) ([]string, error) {
 	var forges []string
-	if m.GitHub != nil && len(m.GitHub.Repos) > 0 {
+	ghMatch, err := platformEntriesMatchFilter(m.GitHub, filter)
+	if err != nil {
+		return nil, err
+	}
+	if ghMatch {
 		forges = append(forges, ForgeGitHub)
 	}
-	if m.GitLab != nil && len(m.GitLab.Repos) > 0 {
+	glMatch, err := platformEntriesMatchFilter(m.GitLab, filter)
+	if err != nil {
+		return nil, err
+	}
+	if glMatch {
 		forges = append(forges, ForgeGitLab)
 	}
-	return forges
+	return forges, nil
+}
+
+// platformEntriesMatchFilter reports whether cfg has at least one repo
+// entry selected by filter. Matching errors (an invalid glob pattern) are
+// surfaced to the caller rather than swallowed, since silently treating
+// an invalid pattern as "no match" could wrongly skip a targeted forge's
+// credential check or glob expansion.
+//
+// Two glob patterns (a glob manifest entry compared against a glob filter
+// pattern) are treated as always matching. Determining whether two globs
+// can ever overlap requires expanding both against the real repo list;
+// comparing the literal pattern strings against each other proves
+// nothing (e.g. entry "acme/*" and filter "*/api" don't match as literal
+// strings in either direction, but both can resolve to "acme/api"). Since
+// wrongly excluding a targeted forge is worse than wrongly including an
+// unselected one, this case is conservative and matches.
+func platformEntriesMatchFilter(cfg *PlatformConfig, filter []string) (bool, error) {
+	if cfg == nil || len(cfg.Repos) == 0 {
+		return false, nil
+	}
+	if len(filter) == 0 {
+		return true, nil
+	}
+	for _, e := range cfg.Repos {
+		entryIsGlob := isGlob(e.Name)
+		for _, pattern := range filter {
+			ok, err := matchesPattern(pattern, e.Name)
+			if err != nil {
+				return false, fmt.Errorf("matching filter %q against manifest entry %q: %w", pattern, e.Name, err)
+			}
+			if ok {
+				return true, nil
+			}
+			if !entryIsGlob {
+				continue
+			}
+			if isGlob(pattern) {
+				// Both sides are globs: conservative match (see doc comment).
+				return true, nil
+			}
+			// A glob manifest entry ("acme/*") counts as selected when the
+			// filter names a concrete repo that would expand from it.
+			ok, err = matchesPattern(e.Name, pattern)
+			if err != nil {
+				return false, fmt.Errorf("matching manifest entry %q against filter %q: %w", e.Name, pattern, err)
+			}
+			if ok {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // HasForge reports whether any repo in the manifest resolves to the
@@ -973,11 +1132,34 @@ func (m *Manifest) TotalRepoCount() int {
 	return n
 }
 
-// gitlabRunnerTags returns the GitLab runner tags from the manifest,
-// or nil if no GitLab platform section exists.
-func gitlabRunnerTags(m *Manifest) []string {
-	if m.GitLab != nil {
-		return m.GitLab.RunnerTags
+// gitlabAgentRunnerTags returns the GitLab agent-job runner tags from
+// the manifest, or nil if no GitLab platform section exists.
+func gitlabAgentRunnerTags(m *Manifest) []string {
+	if m != nil && m.GitLab != nil {
+		return m.GitLab.AgentRunnerTags
+	}
+	return nil
+}
+
+// gitlabControlRunnerTags returns the GitLab control-plane runner tags.
+// control_runner_tags is fully independent of agent_runner_tags: there
+// is no cross-fallback. An unset control_runner_tags renders as an
+// empty tag list (untagged), not the agent tags.
+func gitlabControlRunnerTags(m *Manifest) []string {
+	if m == nil || m.GitLab == nil {
+		return nil
+	}
+	return m.GitLab.ControlRunnerTags
+}
+
+func rejectGitHubRunnerTags(p *PlatformConfig) error {
+	switch {
+	case len(p.AgentRunnerTags) > 0:
+		return fmt.Errorf("github.agent_runner_tags is not supported; agent_runner_tags is a GitLab-only field")
+	case len(p.ControlRunnerTags) > 0:
+		return fmt.Errorf("github.control_runner_tags is not supported; control_runner_tags is a GitLab-only field")
+	case len(p.DeprecatedRunnerTags) > 0:
+		return fmt.Errorf("github.runner_tags is not supported; runner_tags is a GitLab-only field")
 	}
 	return nil
 }
@@ -1032,9 +1214,41 @@ func IsNumeric(s string) bool {
 	return true
 }
 
-// Marshal serializes the manifest back to YAML.
+// Marshal serializes the manifest back to YAML. Deprecated runner_tags
+// is dropped so rewrites emit agent_runner_tags. Marshal does not
+// mutate the receiver: the deprecated-key migration runs against a
+// shallow copy, so the caller's Manifest (and its platform configs)
+// are unchanged after a call to Marshal.
 func (m *Manifest) Marshal() ([]byte, error) {
-	return yaml.Marshal(m)
+	return yaml.Marshal(migratedManifestForMarshal(m))
+}
+
+// migratedManifestForMarshal returns a shallow copy of m with the
+// deprecated gitlab.runner_tags key migrated onto agent_runner_tags,
+// without mutating m or its platform configs. Marshal and
+// MarshalWithHeader both serialize through this helper so that
+// serializing a manifest has no observable side effect on the value
+// being serialized. Copying the GitHub/GitLab PlatformConfig structs
+// (not just the Manifest) is required because migrateDeprecatedRunnerTags
+// writes fields on the PlatformConfig, not the Manifest itself; a
+// shallow copy is sufficient since migration only reassigns the
+// AgentRunnerTags/DeprecatedRunnerTags fields, never mutating the
+// slices' backing arrays or the shared Repos slice.
+func migratedManifestForMarshal(m *Manifest) *Manifest {
+	if m == nil {
+		return nil
+	}
+	copied := *m
+	if m.GitHub != nil {
+		ghCopy := *m.GitHub
+		copied.GitHub = &ghCopy
+	}
+	if m.GitLab != nil {
+		glCopy := *m.GitLab
+		copied.GitLab = &glCopy
+	}
+	migrateDeprecatedRunnerTags(&copied)
+	return &copied
 }
 
 func configSourceSet(s string) bool {

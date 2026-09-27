@@ -1301,6 +1301,33 @@ func TestAnnotateGitLabRoleLifecycleDoesNotDoubleCountDrifted(t *testing.T) {
 	})
 }
 
+func TestAnnotateGitLabRoleLifecycleSkipsNonGitLabForgeRepos(t *testing.T) {
+	ctx := context.Background()
+	var calledPaths []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		calledPaths = append(calledPaths, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	// A mixed-forge manifest: "acme/app" is resolved as a GitHub repo, but
+	// happens to share an owner/repo path with an actual GitLab project.
+	// Only the GitLab-forge entry should ever reach the GitLab client.
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{Owner: "acme", Repo: "app", Forge: repos.ForgeGitHub},
+		},
+	}
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.Empty(t, calledPaths, "GitHub-forge repo must never be sent to the GitLab client, got requests: %v", calledPaths)
+	assert.Empty(t, result.Repos[0].Drifts)
+	assert.Equal(t, 0, result.Summary.Drifted)
+}
+
 func TestGitLabUninstallTokens(t *testing.T) {
 	manifest := &repos.Manifest{
 		Version: 1,
@@ -1352,4 +1379,304 @@ func TestGitLabUninstallTokens(t *testing.T) {
 		_, ok := got.(gitlabTokenAdapter)
 		assert.True(t, ok)
 	})
+}
+
+type pipelineAccessTokens struct {
+	tokens []repos.ProjectAccessToken
+	err    error
+}
+
+func (p pipelineAccessTokens) CreateProjectAccessToken(context.Context, string, string, string, []string, int, string) (*repos.ProjectAccessToken, error) {
+	return nil, nil
+}
+
+func (p pipelineAccessTokens) ListProjectAccessTokens(context.Context, string, string) ([]repos.ProjectAccessToken, error) {
+	return p.tokens, p.err
+}
+
+func (p pipelineAccessTokens) RevokeProjectAccessToken(context.Context, string, string, int) error {
+	return nil
+}
+
+func TestEnsureGitLabPollerPipelineAccess(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("grants poller user on maintainer-only protection", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		fake.ProtectedBranchRules["group/project/main"] = &forge.ProtectedBranchRule{
+			Name:              "main",
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+		}
+		var buf bytes.Buffer
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, pipelineAccessTokens{tokens: []repos.ProjectAccessToken{
+			{Name: gitlabroles.PollerTokenName, Active: true, UserID: 99},
+		}}, ui.New(&buf), "group", "project", false)
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "Granted poller merge access")
+		require.NotEmpty(t, fake.GrantedProtectedBranchMergeUsers)
+		assert.Equal(t, 99, fake.GrantedProtectedBranchMergeUsers[0].UserID)
+	})
+
+	t.Run("dry-run does not grant", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		fake.ProtectedBranchRules["group/project/main"] = &forge.ProtectedBranchRule{
+			Name:              "main",
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+		}
+		var buf bytes.Buffer
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, pipelineAccessTokens{tokens: []repos.ProjectAccessToken{
+			{Name: gitlabroles.PollerTokenName, Active: true, UserID: 99},
+		}}, ui.New(&buf), "group", "project", true)
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "Would grant poller merge access")
+		assert.Empty(t, fake.GrantedProtectedBranchMergeUsers)
+	})
+
+	t.Run("unprotected is silent", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		var buf bytes.Buffer
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, nil, ui.New(&buf), "group", "project", false)
+		require.NoError(t, err)
+		assert.NotContains(t, buf.String(), "Granted")
+	})
+
+	t.Run("token list error on unprotected repo still succeeds", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		var buf bytes.Buffer
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, pipelineAccessTokens{err: fmt.Errorf("token list failed")}, ui.New(&buf), "group", "project", false)
+		require.NoError(t, err)
+		assert.NotContains(t, buf.String(), "Granted")
+	})
+
+	t.Run("token list error on maintainer-only repo fails closed", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		fake.ProtectedBranchRules["group/project/main"] = &forge.ProtectedBranchRule{
+			Name:              "main",
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+		}
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, pipelineAccessTokens{err: fmt.Errorf("token list failed")}, ui.New(&bytes.Buffer{}), "group", "project", false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no poller project-access-token user")
+		assert.Contains(t, err.Error(), "listing project access tokens")
+		assert.Contains(t, err.Error(), "token list failed")
+	})
+
+	t.Run("missing poller user fails closed", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		fake.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		fake.ProtectedBranchRules["group/project/main"] = &forge.ProtectedBranchRule{
+			Name:              "main",
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+		}
+		err := ensureGitLabPollerPipelineAccess(ctx, fake, nil, ui.New(&bytes.Buffer{}), "group", "project", false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no poller project-access-token user")
+	})
+}
+
+func TestGitLabTokenInventory(t *testing.T) {
+	hook := pipelineAccessTokens{}
+	got := gitLabTokenInventory(&reposInstallConfig{testGitLabTokenInventory: hook}, forge.NewFakeClient())
+	assert.Equal(t, hook, got)
+	assert.Nil(t, gitLabTokenInventory(&reposInstallConfig{}, forge.NewFakeClient()))
+	assert.Nil(t, gitLabTokenInventory(nil, forge.NewFakeClient()))
+
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL("http://127.0.0.1:1"))
+	require.NoError(t, err)
+	inv := gitLabTokenInventory(&reposInstallConfig{}, glClient)
+	_, ok := inv.(gitlabTokenAdapter)
+	assert.True(t, ok)
+}
+
+func TestAnnotateGitLabRoleLifecycleReportsPipelineRefDrift(t *testing.T) {
+	ctx := context.Background()
+	varsCalled := false
+	tokensCalled := false
+	repoCalled := false
+	branchCalled := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/variables/", func(w http.ResponseWriter, r *http.Request) {
+		varsCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, forge.VarGitLabRoleMigration):
+			json.NewEncoder(w).Encode(map[string]any{"value": "migrating"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		tokensCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 99},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject", func(w http.ResponseWriter, r *http.Request) {
+		repoCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name": "project", "path_with_namespace": "group/project", "default_branch": "main",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		branchCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name":                "main",
+			"merge_access_levels": []map[string]any{{"access_level": 40}},
+			"push_access_levels":  []map[string]any{{"access_level": 40}},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{{
+			Owner: "group", Repo: "project", GitLabRoleMode: "migrating",
+		}},
+	}
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.True(t, varsCalled, "variables handler was not called")
+	assert.True(t, tokensCalled, "access_tokens handler was not called")
+	assert.True(t, repoCalled, "repo handler was not called")
+	assert.True(t, branchCalled, "protected_branches handler was not called")
+	require.NotEmpty(t, result.Repos[0].Drifts)
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "protected-ref-pipeline" {
+			found = true
+			assert.Contains(t, d.Expected, "poller can create pipelines on main")
+		}
+	}
+	assert.True(t, found, "expected protected-ref-pipeline drift, got %v", result.Repos[0].Drifts)
+	assert.Equal(t, 1, result.Summary.Drifted)
+}
+
+func TestAnnotateGitLabRoleLifecycleReportsPipelineRefWithoutRoleMode(t *testing.T) {
+	ctx := context.Background()
+	tokensCalled := false
+	repoCalled := false
+	branchCalled := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		tokensCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 99},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject", func(w http.ResponseWriter, r *http.Request) {
+		repoCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name": "project", "path_with_namespace": "group/project", "default_branch": "main",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		branchCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name":                "main",
+			"merge_access_levels": []map[string]any{{"access_level": 40}},
+			"push_access_levels":  []map[string]any{{"access_level": 40}},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{{
+			Owner: "group", Repo: "project",
+		}},
+	}
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.True(t, tokensCalled, "access_tokens handler was not called")
+	assert.True(t, repoCalled, "repo handler was not called")
+	assert.True(t, branchCalled, "protected_branches handler was not called")
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "protected-ref-pipeline" {
+			found = true
+		}
+	}
+	assert.True(t, found, "pipeline-ref drift should be reported even without GitLab role mode")
+	assert.Equal(t, 1, result.Summary.Drifted)
+}
+
+func TestAnnotateGitLabRoleLifecyclePipelineRefWithoutTokenList(t *testing.T) {
+	ctx := context.Background()
+	tokensCalled := false
+	repoCalled := false
+	branchCalled := false
+	mux := http.NewServeMux()
+	// No handler for /variables/: when ListProjectAccessTokens fails,
+	// annotateGitLabRoleLifecycle skips EnrichGitLabRoleStatus (the only
+	// caller of that endpoint) entirely, so it must never be requested.
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		tokensCalled = true
+		w.WriteHeader(http.StatusForbidden)
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject", func(w http.ResponseWriter, r *http.Request) {
+		repoCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name": "project", "path_with_namespace": "group/project", "default_branch": "main",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		branchCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name":                "main",
+			"merge_access_levels": []map[string]any{{"access_level": 40}},
+			"push_access_levels":  []map[string]any{{"access_level": 40}},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{{
+			Owner: "group", Repo: "project", GitLabRoleMode: "migrating",
+		}},
+	}
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.True(t, tokensCalled, "access_tokens handler was not called")
+	assert.True(t, repoCalled, "repo handler was not called")
+	assert.True(t, branchCalled, "protected_branches handler was not called")
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "protected-ref-pipeline" {
+			found = true
+		}
+	}
+	assert.True(t, found, "pipeline-ref drift should still be reported without token inventory")
 }

@@ -63,7 +63,7 @@ GitHub repositories use a different command (`fullsend github setup`). See
 > install` skip repairing schedules, so on a repo where
 > schedules were never created, expect any such re-run to fail even when
 > it's otherwise applying an unrelated change. Set manifest options like
-> `gitlab.runner_tags` (see [Runner Configuration](#runner-configuration)
+> `gitlab.agent_runner_tags` (see [Runner Configuration](#runner-configuration)
 > below) with `repos set-default` *before* your first install so they're
 > captured by that first, non-converge run instead of requiring a
 > converge-path re-run later. Rely on [Off-system
@@ -104,11 +104,19 @@ then converges the project:
   `FULLSEND_FORGE_TOKEN`, then provisions the built-in role credentials.
   When those roles are ready, the same unflagged install enables `enforced`
   mode and deletes `FULLSEND_FORGE_TOKEN`; see the [CLI reference](../../cli/repos.md#gitlab-bot-token)
-  for the role-credential options, emergency rollback, and protected-branch
-  caveat. Missing role credentials are drift while the migration gate is
-  `enforced`.
+  for the role-credential options, emergency rollback, and how install
+  grants the poller merge access on a protected default branch when
+  Developer-class merge/push is not already allowed. Missing role
+  credentials are drift while the migration gate is `enforced`.
+  `repos status` reports `protected-ref-pipeline` drift if that pipeline
+  permission is later removed.
 * Creates two pipeline schedules: `fullsend slash poll` (every 5 minutes)
-  and `fullsend event poll` (at minutes 2, 17, 32, 47).
+  and `fullsend event poll` (at minutes 2, 17, 32, 47). Re-running install
+  reports either schedule as drift if it exists but has been disabled,
+  without changing it; pass `--reactivate-schedules` to have install
+  re-enable it. Leave that flag unset on repos using [Off-system
+  polling](#off-system-polling), where the schedules are disabled on
+  purpose.
 * Writes inference CI/CD variables when `--inference-project` is set.
 
 By default the scaffold lands as a merge request. Pass `--direct` to push
@@ -221,7 +229,15 @@ when the instance's schedule cadence is too slow, from cron on a VM, a
 Kubernetes CronJob, or any scheduler with network access to your GitLab
 instance. Off-system polling replaces the in-CI schedules: disable or delete
 both `fullsend slash poll` and `fullsend event poll` before enabling the
-external jobs, or slash commands can be dispatched twice.
+external jobs, or slash commands can be dispatched twice. Prefer disabling
+over deleting: a later `repos install` reports a disabled required
+schedule as drift but leaves it disabled unless you pass
+`--reactivate-schedules`, while a deleted required schedule is always
+recreated (active) on the next install, since a missing schedule is
+treated as repairable drift regardless of that flag. Do not pass
+`--reactivate-schedules` on repos using off-system polling — it opts back
+into re-enabling a disabled schedule, restoring in-CI dispatch and the
+double-dispatch risk this section describes.
 
 ```bash
 export FULLSEND_FORGE_TOKEN="<bot-pat>"   # not GITLAB_TOKEN
@@ -275,27 +291,77 @@ To create it, add a GitLab-specific provider to the same
 [Advanced setup → Custom inference WIF configuration](../infrastructure/advanced-setup.md#custom-inference-wif-configuration).
 The GitHub recipe there does not carry over as-is: it points the issuer
 at GitHub, maps `assertion.repository*` claims that GitLab tokens don't
-have, and omits `--allowed-audiences`, so a naively adapted provider
-rejects the `aud: "fullsend"` token agent jobs present. Use GitLab's
-issuer, id-token claims, and an explicit allowed audience instead.
+have, omits `--allowed-audiences`, and maps
+`google.subject=assertion.sub`. A naively adapted provider therefore
+rejects the `aud: "fullsend"` token agent jobs present, and GitLab's
+structured `sub` claim (project path plus ref) can exceed Google
+Workload Identity Federation's 127-byte `google.subject` limit even
+when the audience is correct. Use GitLab's issuer, id-token claims,
+numeric `project_id` as `google.subject`, and an explicit allowed
+audience instead.
 
 This guide is single-repo, so the default recipe below scopes trust to
-the exact project being installed, using the `project_path` claim:
+the exact project being installed. Map `google.subject` to GitLab's
+numeric `project_id` — not `assertion.sub` — and bind both that
+immutable ID and the readable `project_path` in the provider condition.
+`project_id` is unique within a GitLab instance, and the provider's
+fixed issuer isolates identities from other instances. Keeping the path
+condition preserves readable configuration and prevents a deleted
+project path being reused by a different project.
+
+Find the numeric project ID on the project's **Settings → General**
+page (labeled Project ID).
 
 ```bash
 export GCP_PROJECT="<gcp-project>"
 export GITLAB_URL="https://gitlab.com"   # or your self-hosted instance URL
 export PROJECT_PATH="<group/project>"    # the exact project path being installed
+export GITLAB_PROJECT_ID="<numeric-id>"  # Settings → General → Project ID
 
 gcloud iam workload-identity-pools providers create-oidc gitlab-oidc \
   --location=global \
   --workload-identity-pool=fullsend-inference \
   --issuer-uri="$GITLAB_URL" \
   --allowed-audiences="fullsend" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
-  --attribute-condition="assertion.project_path == '$PROJECT_PATH'" \
+  --attribute-mapping="google.subject=assertion.project_id,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
+  --attribute-condition="assertion.project_id == '$GITLAB_PROJECT_ID' && assertion.project_path == '$PROJECT_PATH'" \
   --project="$GCP_PROJECT"
 ```
+
+If `gitlab-oidc` already exists with `google.subject=assertion.sub`,
+update just the mapping. This applies no matter which recipe set the
+provider's `--attribute-condition` — this page's default single-project
+condition, [multiple specific projects](#authorizing-multiple-specific-projects-alternative),
+or [a group or group tree](#authorizing-a-group-or-group-tree-alternative):
+
+```bash
+gcloud iam workload-identity-pools providers update-oidc gitlab-oidc \
+  --location=global \
+  --workload-identity-pool=fullsend-inference \
+  --attribute-mapping="google.subject=assertion.project_id,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
+  --project="$GCP_PROJECT"
+```
+
+Omitting `--attribute-condition` leaves your existing condition — set
+by whichever recipe you used — untouched. Changing only the condition
+instead of the mapping leaves the oversize `sub` mapping in place, and
+STS will still reject the exchange.
+
+If you're on the default single-project recipe and want the added
+project-ID protection against a deleted path being reused (see above),
+also update the condition to bind both claims:
+
+```bash
+gcloud iam workload-identity-pools providers update-oidc gitlab-oidc \
+  --location=global \
+  --workload-identity-pool=fullsend-inference \
+  --attribute-condition="assertion.project_id == '$GITLAB_PROJECT_ID' && assertion.project_path == '$PROJECT_PATH'" \
+  --project="$GCP_PROJECT"
+```
+
+The multiple-projects and namespace-wide conditions don't reference
+`project_id`, so no condition change is required there after migrating
+the mapping.
 
 The provider's `--issuer-uri` is a trust-boundary setting: it must exactly
 match the GitLab instance that signs the `id_tokens` used by this repository.
@@ -303,12 +369,13 @@ Do not leave the `https://gitlab.com` value when installing against a
 self-hosted instance, and do not point a self-hosted provider at a different
 instance.
 
-The project-path condition scopes trust to this project, but any job in that
-project that can request an OIDC token with audience `fullsend` can satisfy
-it. If every polling and agent job runs on protected refs, operators may
-further restrict the condition with `&& assertion.ref_protected == 'true'`;
-otherwise keep the project-level condition and treat all token-issuing jobs
-in the project as trusted.
+The combined project-id and project-path condition scopes trust to this
+project, but any job in that project that can request an OIDC token with
+audience `fullsend` can satisfy it. If every polling and agent job runs
+on protected refs, operators may further restrict the condition with
+`&& assertion.ref_protected == 'true'`; otherwise keep the
+project-level condition and treat all token-issuing jobs in the project
+as trusted.
 
 ```bash
 export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')
@@ -319,6 +386,13 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --member="$WIF_PRINCIPAL" \
   --condition=None
 ```
+
+The documented IAM bindings use
+`principalSet://.../attribute.project_path/...` (and
+`attribute.namespace_path` in the group-wide alternative). Those do not
+change. If you bound a direct `principal://.../subject/<value>` IAM
+member instead, the subject value must be the GitLab numeric project
+ID, not the OIDC `sub` claim.
 
 Create the `fullsend-inference` pool first if it doesn't already exist
 (see the Advanced setup steps linked above). Agent jobs obtain a GitLab
@@ -334,11 +408,14 @@ Per-repo teardown](operations.md#per-repo-teardown), step 6.
 
 The `gitlab-oidc` provider is shared across every GitLab repo on the same
 GCP project, but its default `--attribute-condition` above pins trust to a
-single `PROJECT_PATH`. Installing a second repo against the same GCP
+single project. Installing a second repo against the same GCP
 project does not require widening trust to an entire namespace — keep
-exact `project_path` matches for just the repos you're installing by
-OR-ing their paths in the condition and binding one principalSet per
-project:
+the same dual `project_id`-and-`project_path` bind from the create
+recipe for each project you're installing, OR-ing the per-project pairs
+in the condition and binding one principalSet per project. Leave the
+`google.subject=assertion.project_id` mapping from the create recipe
+unchanged; look up each project's numeric ID (Settings → General →
+Project ID) before running the update below:
 
 ```bash
 export GCP_PROJECT="<gcp-project>"
@@ -347,7 +424,7 @@ export GITLAB_URL="https://gitlab.com"   # or your self-hosted instance URL
 gcloud iam workload-identity-pools providers update-oidc gitlab-oidc \
   --location=global \
   --workload-identity-pool=fullsend-inference \
-  --attribute-condition="assertion.project_path == 'group/project-a' || assertion.project_path == 'group/project-b'" \
+  --attribute-condition="(assertion.project_id == '<id-a>' && assertion.project_path == 'group/project-a') || (assertion.project_id == '<id-b>' && assertion.project_path == 'group/project-b')" \
   --project="$GCP_PROJECT"
 
 export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')
@@ -360,11 +437,15 @@ for PROJECT_PATH in "group/project-a" "group/project-b"; do
 done
 ```
 
-Repeat the `--attribute-condition` update (adding another `||` clause) and
-the IAM binding loop each time you install another repo. This keeps trust
-scoped to exactly the repos you've installed, unlike the namespace-wide
-option below. Prefer the namespace-wide alternative only when the repo set
-isn't enumerable in advance.
+Repeat the `--attribute-condition` update (adding another
+`project_id`-and-`project_path` clause) and the IAM binding loop each
+time you install another repo. Keeping the `project_id` conjunct for
+each project preserves the same protection against a deleted path
+being reused that the default recipe adds; dropping to path-only ORs
+would silently undo it for every project added this way. This keeps
+trust scoped to exactly the repos you've installed, unlike the
+namespace-wide option below. Prefer the namespace-wide alternative only
+when the repo set isn't enumerable in advance.
 
 ### Authorizing a group or group tree (alternative)
 
@@ -376,7 +457,10 @@ isn't enumerable in advance.
 > same namespace.
 
 To authorize every project under one immediate parent namespace
-instead of a single project, use the `namespace_path` claim. GitLab's
+instead of a single project, use the `namespace_path` claim for
+authorization. `google.subject` still maps `assertion.project_id` —
+the required Google subject — while the provider condition and
+principalSet stay on `namespace_path`. GitLab's
 `namespace_path` ID-token claim is the project's immediate parent
 namespace path (for example, a project at `my-group/subgroup/project`
 has `namespace_path=my-group/subgroup`) — it is not any ancestor
@@ -393,7 +477,7 @@ gcloud iam workload-identity-pools providers create-oidc gitlab-oidc \
   --workload-identity-pool=fullsend-inference \
   --issuer-uri="$GITLAB_URL" \
   --allowed-audiences="fullsend" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
+  --attribute-mapping="google.subject=assertion.project_id,attribute.namespace_path=assertion.namespace_path,attribute.project_path=assertion.project_path" \
   --attribute-condition="assertion.namespace_path == '$GROUP_PATH'" \
   --project="$GCP_PROJECT"
 
@@ -466,15 +550,54 @@ tagged jobs only match runners that carry those tags.
 The runner VM scripts default to tag `fullsend-gitlab-runner`. Set that
 tag in the manifest **before your first `repos install`** so the initial
 install already embeds it in the scaffold, with no second install
-needed:
+needed. `gitlab.agent_runner_tags` routes sandbox agent jobs;
+`gitlab.control_runner_tags` routes the poll job (and, later, the
+webhook dispatcher). The two fields are fully independent — there is no
+cross-fallback. An unset `gitlab.control_runner_tags` renders `tags: []`
+(untagged), **not** the agent tags; an unset `gitlab.agent_runner_tags`
+likewise renders `tags: []`. If your runner fleet is entirely
+tag-restricted with no untagged pool, set `gitlab.control_runner_tags`
+explicitly or the poll job will sit pending indefinitely:
 
 ```bash
-fullsend repos set-default gitlab.runner_tags fullsend-gitlab-runner
+fullsend repos set-default gitlab.agent_runner_tags fullsend-gitlab-runner
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
   --inference-project "<gcp-project>"
 ```
+
+To route the poll job to a different fleet than the sandbox agents (for
+example, a cheaper high-concurrency runner without sandbox capacity),
+set `gitlab.control_runner_tags` explicitly:
+
+```bash
+fullsend repos set-default gitlab.control_runner_tags fullsend-api
+```
+
+> **Migration note.** Upgrading an existing install that only had the
+> legacy `gitlab.runner_tags` key changes the poll job's default: the
+> value still resolves to `gitlab.agent_runner_tags` for rendering the
+> agent job, but the control-plane (poll) job is untagged unless
+> `gitlab.control_runner_tags` is set explicitly — an unset
+> `gitlab.control_runner_tags` renders `tags: []`, it does not inherit
+> the old fleet tag. This is an intentional, documented default, not a
+> behavior-preserving fallback: an instance whose runner fleet is
+> entirely tag-restricted with no untagged pool must set
+> `gitlab.control_runner_tags` explicitly before or immediately after
+> upgrading, or the poll job sits pending. `fullsend repos converge`
+> auto-remediates the rendered `fullsend-poll.yml` with a repair commit
+> for unpinned, vendored, or post-split-pinned installs; a
+> `gitlab.fullsend_ref` still pinned to a pre-split ref keeps the
+> leftover `__RUNNER_TAGS__` placeholder stamped with the agent tags, so
+> no drift is detected and no repair commit runs there — that install
+> keeps its old rendered tag until it moves past the pre-split pin. The
+> on-disk `gitlab.runner_tags` key is separately rewritten to
+> `gitlab.agent_runner_tags` the next time a manifest-writing command
+> runs (see [`repos
+> set-default`](../../cli/repos.md#repos-set-default) for exactly which
+> commands persist the rewrite); that key rewrite is unrelated to the
+> poll job's tag default described above.
 
 If the repo is already installed, setting the tag with `repos
 set-default` and re-running `fullsend repos install -f repos.yaml`
@@ -488,10 +611,46 @@ polling](#off-system-polling) for pickup instead of re-running install
 just to add the tag in that case.
 
 The target project (or its group) must have a runner registered with
-that tag. For provisioning runner VMs on OpenShift Virtualization or
-GCE, see the
+that tag — see [Assigning runners](#assigning-runners). If
+`gitlab.control_runner_tags` is set to a different value than
+`gitlab.agent_runner_tags` (as in the example above), the project also
+needs a runner registered for the control tag, or the poll job sits
+pending indefinitely. For provisioning
+your own runner VMs on OpenShift Virtualization or GCE instead of joining
+a hub, see the
 [GitLab Runner VM](https://github.com/fullsend-ai/fullsend/blob/main/hack/gitlab-runner-vm/README.md)
 README.
+
+### Assigning runners
+
+Setting `gitlab.agent_runner_tags` / `gitlab.control_runner_tags` only
+chooses which tags the scaffold embeds.
+GitLab still has to **assign** a runner that carries that tag to the
+target project or a parent group, or the job never gets a runner.
+
+Use the Fullsend runner hub on the **same GitLab instance** you pass to
+`--gitlab-url`. A hub on a different instance cannot pick up the job.
+
+* **GitLab.com** (`https://gitlab.com`) — use the
+  [GitLab.com Fullsend runner hub](https://gitlab.com/fullsend/runner-hub).
+  Follow that project's
+  [README](https://gitlab.com/fullsend/runner-hub/-/blob/main/README.md)
+  to have its runners assigned to your project or group. The hub README
+  is the source of truth for onboarding; this guide does not repeat those
+  steps.
+* **Self-managed instances** — use that instance's own Fullsend runner
+  hub, typically a `fullsend/runner-hub` project on the same host.
+  Follow **that** project's `README.md`, not the GitLab.com one.
+  Onboarding tokens, groups, and runner registration are instance-local.
+  Pointing a self-managed project at the GitLab.com hub (or the reverse)
+  will not work.
+
+After the hub assigns a runner, confirm the project (or its group) lists
+a runner with the tag you set in `gitlab.agent_runner_tags` (Settings → CI/CD
+→ Runners). When `gitlab.control_runner_tags` differs from
+`gitlab.agent_runner_tags`, repeat this check for the control tag too —
+both tag sets need their own registered runner under Settings → CI/CD →
+Runners.
 
 ## Verifying the Installation
 
@@ -508,21 +667,32 @@ Confirm:
   show `slash-poll differs, event-poll differs` instead (JSON: `field`
   values `slash-poll`/`event-poll` with `actual` `missing`) — that is
   expected; verify off-system `fullsend poll` instead, per
-  [Off-system polling](#off-system-polling) above.
+  [Off-system polling](#off-system-polling) above. A schedule that exists
+  but has been intentionally disabled for off-system polling reports the
+  same way (JSON: `expected` `active`, `actual` `inactive`) and is
+  likewise expected — `repos install` does not clear this drift unless
+  `--reactivate-schedules` is passed.
 * **Pipeline schedules** — Settings → CI/CD → Pipeline schedules shows
   `fullsend slash poll` and `fullsend event poll`, both active. On
   GitLab.com Free, the schedules may run at most 24 times per day; verify
   the observed cadence is acceptable, or use off-system `fullsend poll`
-  instead when five-minute pickup is required.
+  instead when five-minute pickup is required. If these schedules never
+  run, confirm a runner carrying `gitlab.control_runner_tags` is
+  registered under Settings → CI/CD → Runners — when that tag differs
+  from `gitlab.agent_runner_tags`, both need their own registered runner
+  (see [Assigning runners](#assigning-runners)).
 * **Access tokens** — On Premium/Ultimate or self-managed instances where
   project access tokens are available, Settings → Access Tokens shows
   `fullsend-bot`, `fullsend-poller`, `fullsend-analyst`, and
   `fullsend-coder` (plus any `fullsend-role-*` tokens). On GitLab.com Free
   with `--gitlab-bot-token`, expect the dedicated PAT owner's username
   instead; no project access token is created.
-* **CI/CD variables** — `FULLSEND_FORGE_TOKEN`, `FULLSEND_DISPATCH_SECRET`,
-  `FULLSEND_GCP_PROJECT_ID`, and `FULLSEND_GCP_WIF_PROVIDER` exist and are
-  protected. Role-aware installs also provision
+* **CI/CD variables** — `FULLSEND_DISPATCH_SECRET`, `FULLSEND_GCP_PROJECT_ID`,
+  and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected.
+  `FULLSEND_FORGE_TOKEN` is expected too in `disabled`, `rollback`, or a
+  `migrating` install still waiting on role credentials — but not once the
+  repo cuts over to `enforced` mode, where the unflagged install deletes it
+  (see above). Role-aware installs also provision
   `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, and
   `FULLSEND_GITLAB_CODER_TOKEN`; custom role enrollments may add
   `FULLSEND_GITLAB_ROLE_*_TOKEN`. Secrets are requested as masked, but GitLab

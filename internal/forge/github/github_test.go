@@ -4282,6 +4282,45 @@ func TestAddCollaborator(t *testing.T) {
 	})
 }
 
+func TestGetOrgMembership(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodGet, r.Method)
+			assert.Equal(t, "/orgs/halfsend-01/memberships/fstest-write", r.URL.Path)
+			json.NewEncoder(w).Encode(map[string]string{"state": "active", "role": "member"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		got, err := client.GetOrgMembership(context.Background(), "halfsend-01", "fstest-write")
+		require.NoError(t, err)
+		assert.Equal(t, forge.OrgMembership{State: "active", Role: "member"}, got)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetOrgMembership(context.Background(), "org", "nobody")
+		require.Error(t, err)
+		assert.True(t, forge.IsNotFound(err))
+	})
+
+	t.Run("decode error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, "not-json")
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetOrgMembership(context.Background(), "org", "alice")
+		require.ErrorContains(t, err, "decode org membership")
+	})
+}
+
 func TestIsProtectedBranch(t *testing.T) {
 	t.Run("protected", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4484,6 +4523,14 @@ func TestUnsupportedMethods(t *testing.T) {
 	client := New("test-token")
 	ctx := context.Background()
 
+	t.Run("GetProtectedBranch", func(t *testing.T) {
+		_, err := client.GetProtectedBranch(ctx, "o", "r", "main")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("GrantProtectedBranchMergeUser", func(t *testing.T) {
+		err := client.GrantProtectedBranchMergeUser(ctx, "o", "r", "main", 1)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipeline", func(t *testing.T) {
 		_, err := client.CreatePipeline(ctx, "o", "r", "main", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
@@ -4498,6 +4545,10 @@ func TestUnsupportedMethods(t *testing.T) {
 	})
 	t.Run("ListPipelineSchedules", func(t *testing.T) {
 		_, err := client.ListPipelineSchedules(ctx, "o", "r")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("UpdatePipelineSchedule", func(t *testing.T) {
+		err := client.UpdatePipelineSchedule(ctx, "o", "r", 1, true)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 	t.Run("UpdateCIVariable", func(t *testing.T) {

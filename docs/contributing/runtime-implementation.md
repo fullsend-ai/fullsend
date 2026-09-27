@@ -1012,7 +1012,7 @@ re-checked on a `CODEX_VERSION` bump. The decisions are
 [ADR 0099](../ADRs/0099-codex-agent-runtime.md) (credential delivery) and [ADR 0100](../ADRs/0100-codex-sandbox-hooks.md)
 (sandbox hooks).
 
-Everything below was read at tag `rust-v0.152.1`. Two of the findings are the reason the hook
+Everything below was read at tag `rust-v0.152.1`; the rows of [Re-check on a `CODEX_VERSION` bump](#re-check-on-a-codex_version-bump) were re-verified at `rust-v0.157.0`. Two of the findings are the reason the hook
 adapter exists at all, because forwarding the scripts' own convention would fail **open**.
 
 One iteration, end to end:
@@ -1020,7 +1020,7 @@ One iteration, end to end:
 ```mermaid
 flowchart TB
   B["Bootstrap (once per run)\nagent .md → config.toml developer_instructions\nhooks.json + adapter + auth script\ncodex --version preflight"]
-  G{"shell guards, before .env (command -p):\nadapter + auth script SHA-256 = embedded copy?\nconfig.toml still pins base_url + auth.command,\nno openai_base_url / env_key / [projects]?"}
+  G{"shell guards, before .env (command -p):\nadapter + auth script SHA-256 = embedded copy?\nconfig.toml still pins base_url + auth.command,\nproject trust pinned untrusted?"}
   X["exit 97 / 98\ncodex never starts unhooked\nor pointed at another endpoint"]
   T["seed $CODEX_HOME/openai-token\nplaceholder shape or exit 1"]
   E["source .env\nre-pin CODEX_HOME\nunset OPENAI_* CODEX_API_KEY NODE_*\nre-run both guards"]
@@ -1045,22 +1045,30 @@ flowchart TB
   its L7 egress policy and the credential placeholders are the boundary ([ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md),
   [ADR 0025](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)); the hook adapter is defense in depth
   ([ADR 0090](../ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)).
-- **The project is never trusted.** No `[projects]` entry is written, so the target repo's own
-  `.codex/` layer — settings, instructions and repo-authored hooks — is never loaded. This is
-  codex's equivalent of pi's `defaultProjectTrust: "never"`.
+- **The project is pinned untrusted.** `config.toml` carries
+  `[projects."<repo>"] trust_level = "untrusted"` for the target repo, so its own `.codex/` layer —
+  settings, instructions and repo-authored hooks — is never loaded. The entry has to be written:
+  codex records a trust level for a git checkout it starts in when none is set, and only skips
+  that when one already is. This is codex's equivalent of pi's `defaultProjectTrust: "never"`.
 - **Config layering.** The sandbox image bakes a root-owned managed `/etc/codex/config.toml`; the
   runner's `$CODEX_HOME/config.toml` layers above it, and the `-c` SessionFlags above that. Only
   the `-c` layer is beyond an agent's reach between iterations, which is why the security-relevant
   keys are passed there as well as written to the file.
-- **Reads AGENTS.md natively** (cwd chain plus `$CODEX_HOME/AGENTS.md`) — so `CodexRuntime` does not
-  implement `ContextBridger` and the runner injects no `CLAUDE.md` pointer.
+- **No `CLAUDE.md` pointer.** `CodexRuntime` does not implement `ContextBridger`; it gets the repo's
+  `AGENTS.md` through `$CODEX_HOME/AGENTS.md` instead (see **AGENTS.md** below).
 - **Tool names**: the shell tool is already `Bash`; `apply_patch` covers Claude's `Write` and `Edit`
   and carries them as matcher aliases; `spawn_agent` carries `Agent`. `Read`, `Glob`, `Grep`,
   `WebFetch` and `WebSearch` have no codex tool — codex does that work through the shell, so the
   `Bash` groups already cover it.
 - **Skills** come from `$CODEX_HOME/skills`, which `Bootstrap` populates. Codex also discovers a
-  repo's `.agents/skills`; whether the untrusted-project setting suppresses that is an open item for
-  the first fleet run.
+  repo's `.agents/skills`, and (verified live at 0.157.0) its `.codex/skills` even with the project
+  untrusted; both are covered by the host-side and in-sandbox context scans, which match `SKILL.md`
+  anywhere in the repo.
+- **AGENTS.md** — codex skips a project's own `AGENTS.md` while the project is untrusted
+  (`codex-rs/core/src/agents_md.rs`), but always loads `$CODEX_HOME/AGENTS.md` as user
+  instructions. The runner copies the repo's root `AGENTS.md` (or the injected org-level one) there
+  after the repo is in place (`HomeInstructionsBridger`), refusing a symlink and keeping the first
+  32 KiB, codex's default `project_doc_max_bytes`.
 
 ### Process and exit codes
 
@@ -1321,7 +1329,8 @@ Two artefacts of the run are worth knowing about:
   rather than a fact. `ExtractTranscripts` collects regular `.jsonl` files only — never
   `.jsonl.zst`, since codex writes the running session uncompressed and a plaintext file merely
   *named* that shipped as an artifact the redactor then declined to rewrite — and **every line** of
-  a candidate must parse as a rollout envelope (`session_meta`, `response_item`, `event_msg`, …),
+  a candidate must parse as a rollout envelope (`session_meta`, `response_item`, `event_msg`,
+  `world_state`, `token_usage_record`, ...; the full list is `codexRolloutEnvelopes`),
   since checking only the first would let a file open with one genuine envelope and carry anything
   after it. Each is downloaded to a staging name, validated, redacted and only then renamed into
   place, so a crash cannot leave raw tool output at the path the artifact collector reads; reads are
@@ -1356,7 +1365,9 @@ Two artefacts of the run are worth knowing about:
 | `auth.command` semantics (trimmed stdout, non-zero exit fails, no env fallback) | the whole credential path | `codex-rs/login/src/auth/external_bearer.rs` |
 | `supports_websockets` default for custom providers | a true default would take traffic off `POST /v1/responses` and break the egress profile | `codex-rs/model-provider-info/src/lib.rs` |
 | `[skills.bundled]` and skill discovery | the bundled skills are disabled by the runner-owned config; a renamed key would silently bring `skill-installer` and friends back into the agent's roster | `codex-rs/config/src/skills_config.rs` |
-| The native binary's path inside the platform package (`vendor/<triple>/bin/codex` at 0.152.1) | the `fullsend-openai` profile names it as `**/codex`; the node ancestor still admits a renamed file, but the pin in `runtimeEgressBinaries` should follow the rename | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
+| The `plugins` feature and what it gates | `[features] plugins = false` is what stops the startup fetch of `github.com/openai/plugins.git`; a renamed key, or a sync no longer gated on it, would bring the fetch back | `codex-rs/features/src/lib.rs`, `codex-rs/core-plugins/src/manager.rs` (`maybe_start_plugin_startup_tasks_for_config`) |
+| The native binary's path inside the platform package (`vendor/<triple>/bin/codex` at 0.157.0) | the `fullsend-openai` profile names it as `**/codex`; the node ancestor still admits a renamed file, but the pin in `runtimeEgressBinaries` should follow the rename | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
 | Whether a custom provider still issues `GET /v1/models` at startup | the `fullsend-openai` egress profile denies it; if the request ever became fatal or retried, it would delay or fail every first turn | `codex-rs/models-manager/` |
 | `ConfigToml` keys and the `ReasoningEffort` enum | a renamed or removed key silently changes behaviour; `--strict-config` reports it | `codex-rs/config/src/config_toml.rs`, `codex-rs/protocol/src/openai_models.rs` |
-| JSONL event structs and rollout file naming | the stream parser and transcript extraction | `codex-rs/exec/src/exec_events.rs`, `codex-rs/thread-store/src/local/helpers.rs` |
+| Project trust and `AGENTS.md` | the pinned untrusted entry must still stop codex recording its own trust level, the repo's `.codex/` layer must stay unloaded, and `$CODEX_HOME/AGENTS.md` must still load while the project is untrusted, or the bridge stops reaching the agent | `codex-rs/app-server/src/request_processors/thread_processor.rs` (trust write), `codex-rs/config/src/loader/mod.rs`, `codex-rs/core/src/agents_md.rs`, `codex-rs/codex-home/src/instructions/mod.rs` |
+| JSONL event structs, rollout line types and rollout file naming | the stream parser and transcript extraction; a rollout line type missing from `codexRolloutEnvelopes` discards the whole transcript | `codex-rs/exec/src/exec_events.rs`, `codex-rs/history/src/rollout_payload.rs` (`RolloutItemWire`), `codex-rs/thread-store/src/local/helpers.rs` |

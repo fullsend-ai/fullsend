@@ -283,8 +283,8 @@ func codexConfigGuard(r CodexRuntime, digests codexRunnerHeldDigestSet) string {
 //   - approval policy, sandbox mode and the model provider are passed as `-c`
 //     SessionFlag overrides, which sit above every config layer, so no
 //     rewritten file can move them;
-//   - the project is never trusted (no [projects] entry), so the target repo's
-//     own .codex/ layer — including repo-owned hooks — never loads;
+//   - the project's trust is pinned to untrusted in config.toml, so the target
+//     repo's own .codex/ layer — including repo-owned hooks — never loads;
 //   - whether the hook adapter is required is decided from the runner's own
 //     signal (params.HooksSettingsPath, the same one ClaudeRuntime uses for
 //     --settings), never from the agent-writable manifest.
@@ -389,8 +389,8 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		// beats the value in config.toml (a file naming an unreachable host
 		// still reached api.openai.com). There is no such pin for project
 		// trust — `-c projects={}` and a scalar `trust_level="untrusted"` were
-		// both tried and neither overrides the file — which is why config.toml
-		// integrity is enforced by digest rather than by overrides alone.
+		// both tried and neither overrides the file — so the untrusted entry
+		// lives in config.toml, whose integrity is enforced by digest.
 		"-c "+shellQuote(fmt.Sprintf("model_providers.%s.base_url=%q", codexProviderID, codexBaseURL)),
 		"-c "+shellQuote(fmt.Sprintf("model_providers.%s.auth.command=%q", codexProviderID, r.codexAuthScriptPath())),
 	)

@@ -3,6 +3,11 @@
 Complete reference for all fields available in `.fullsend/config.yaml`. For
 how these fields resolve through layered configuration, see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+Fleet manifests can declare the same managed-configuration schema as
+`defaults.config` / per-repository `config` in `repos.yaml` (this is not
+`config_base`, which is the configuration-preset path written to
+`.fullsend/config.base.yaml`); see
+[Repo Management — Managed configuration](../guides/getting-started/repo-management.md#managed-configuration).
 For initial setup, see
 [Configuring GitHub](../guides/getting-started/configuring-github.md) or
 [Configuring GitLab](../guides/getting-started/configuring-gitlab.md).

@@ -26,7 +26,7 @@ npm run docs:preview
 ## How it works
 
 - `docs/` contains all markdown content, organized by section (agents, guides, ADRs, etc.)
-- `docs/.vitepress/config.ts` defines the sidebar navigation and markdown processing. See [`site-deployment.md`](site-deployment.md).
+- `docs/.vitepress/config.ts` defines the sidebar navigation and markdown processing. After the HTML build, it copies each page's `.md` source into `docs/.vitepress/dist/` next to the matching `.html` (README files land as both `index.md`, matching the HTML URL, and `README.md`, so in-document `README.md` links still resolve) so the same URL plus `.md` is a static file. Relative images those pages reference (`![](...)` and `<img src>`, for example `docs/agents/icons/*.png`) are copied to the same relative path so they resolve next to the `.md`; VitePress still hashes those images in the HTML build. Indexable HTML pages advertise the markdown file with `<link rel="alternate" type="text/markdown">`. See [`site-deployment.md`](site-deployment.md).
 - `getMarkdownFiles()` auto-discovers markdown files and walks nested directories for dynamic sidebar sections (ADRs, experiments, design docs, specs, plans). Nested folders become nested sidebar groups; a subdirectory README supplies the group's title and link.
 - Symlinks connect submodule content into `docs/` (e.g. `docs/experiments` -> `../experiments`)
 - The `search.options.scopes` array in `config.ts` defines the scope pills shown in the search modal. Each scope has a `label` and a list of `prefixes` (path prefixes like `/docs/guides/`). When a user activates a scope, search results are filtered to pages whose path starts with one of the scope's prefixes. Every `docs/` subfolder that produces rendered pages must appear in at least one scope; otherwise its pages become unreachable when any scope pill is active.
@@ -49,6 +49,6 @@ The `docs:dev` and `docs:build` scripts in the root `package.json` handle submod
 ## CI/CD
 
 - **`.github/workflows/site-build.yml`** — builds the VitePress site on PRs and pushes to `main`, uploads the artifact
-- **`.github/workflows/site-deploy.yml`** — deploys the built artifact to Cloudflare Workers on `main` pushes (skipped when a newer successful **Build Site** run already exists), uploads preview versions on PRs
+- **`.github/workflows/site-deploy.yml`** — deploys the built artifact to Cloudflare Workers on `main` pushes, uploads preview versions on PRs
 
 For Cloudflare Worker setup and troubleshooting, see [`site-deployment.md`](site-deployment.md).

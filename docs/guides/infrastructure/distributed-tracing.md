@@ -385,6 +385,13 @@ env:
 
 The child run's root span becomes part of the parent trace.
 
+Inside a run, the runner also writes the per-iteration **agent** span as
+`TRACEPARENT` into `.fullsend/iteration.env` so local runtimes (claude, pi,
+codex) can attach their telemetry to that span. Host-side pre/post scripts
+still receive the run-root value; the two parents share a trace ID but have
+different span IDs. An inbound unsampled flag (`-00`) is preserved on both
+paths.
+
 For separate workflow runs on the same work item (e.g. triage, code, review
 as independent GHA workflows), `TRACEPARENT` must be propagated manually.
 GitHub webhooks do not support custom trace headers.

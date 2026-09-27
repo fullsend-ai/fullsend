@@ -216,17 +216,83 @@ func (p *Poller) readWatermark(ctx context.Context, owner, repo string) (time.Ti
 
 // updateWatermark persists the given timestamp as the poll watermark.
 func (p *Poller) updateWatermark(ctx context.Context, owner, repo string, t time.Time) error {
+	return p.persistCycleState(ctx, owner, repo, nil, &t, nil, nil)
+}
+
+// persistCycleState loads poll state once, applies the provided mutations,
+// and writes a single commit. Nil dispatched / watermark / failed / labels
+// leave the corresponding stored fields unchanged. One poll cycle therefore
+// produces one poll-state commit instead of one commit per field.
+func (p *Poller) persistCycleState(ctx context.Context, owner, repo string, dispatched map[string]int64, watermark *time.Time, failed map[string]int, labels LabelState) error {
 	state, err := p.loadPollState(ctx, owner, repo)
 	if err != nil {
 		return err
 	}
+	if dispatched != nil {
+		cut := time.Time{}
+		if watermark != nil {
+			cut = *watermark
+		}
+		p.applyDispatchedKeys(&state, dispatched, cut)
+	}
+	if failed != nil {
+		p.applyFailedKeys(&state, failed)
+	}
+	if watermark != nil {
+		p.applyWatermark(&state, *watermark)
+	}
+	if labels != nil {
+		state.LabelState = labels
+	}
+	return p.savePollState(ctx, owner, repo, state)
+}
+
+func pruneDispatchedKeys(keys map[string]int64, watermark time.Time) map[string]int64 {
+	cutoff := watermark.Unix()
+	pruned := make(map[string]int64, len(keys))
+	for k, ts := range keys {
+		if ts >= cutoff {
+			pruned[k] = ts
+		}
+	}
+	return pruned
+}
+
+func pruneFailedKeys(keys map[string]int) map[string]int {
+	pruned := make(map[string]int, len(keys))
+	for k, count := range keys {
+		if count > 0 && count <= maxEventRetries {
+			pruned[k] = count
+		}
+	}
+	return pruned
+}
+
+func (p *Poller) applyDispatchedKeys(state *persistedPollState, keys map[string]int64, watermark time.Time) {
+	pruned := pruneDispatchedKeys(keys, watermark)
+	if p.slashCommandsOnly {
+		state.DispatchedKeysFast = pruned
+	} else {
+		state.DispatchedKeysFull = pruned
+	}
+}
+
+func (p *Poller) applyFailedKeys(state *persistedPollState, keys map[string]int) {
+	pruned := pruneFailedKeys(keys)
+	if p.slashCommandsOnly {
+		state.FailedKeysFast = pruned
+	} else {
+		state.FailedKeysFull = pruned
+	}
+}
+
+func (p *Poller) applyWatermark(state *persistedPollState, t time.Time) {
 	formatted := t.Format(time.RFC3339)
 	if p.slashCommandsOnly {
 		state.LastPollAtFast = formatted
 	} else {
 		state.LastPollAtFull = formatted
 	}
-	return p.savePollState(ctx, owner, repo, state)
 }
 
 // detectNewLabels compares current issue labels against stored state to find
@@ -296,12 +362,7 @@ func (p *Poller) detectNewLabels(ctx context.Context, owner, repo string, issues
 
 // persistLabelState writes the label state to the poller state document.
 func (p *Poller) persistLabelState(ctx context.Context, owner, repo string, state LabelState) error {
-	ps, err := p.loadPollState(ctx, owner, repo)
-	if err != nil {
-		return err
-	}
-	ps.LabelState = state
-	return p.savePollState(ctx, owner, repo, ps)
+	return p.persistCycleState(ctx, owner, repo, nil, nil, nil, state)
 }
 
 // isIssueClosed checks whether the given issue is closed.
@@ -334,24 +395,13 @@ func (p *Poller) readDispatchedKeys(ctx context.Context, owner, repo string) (ma
 }
 
 // persistDispatchedKeys writes the dispatched keys map, pruning entries
-// older than the given watermark.
+// older than the given watermark. The stored watermark is not updated.
 func (p *Poller) persistDispatchedKeys(ctx context.Context, owner, repo string, keys map[string]int64, watermark time.Time) error {
-	cutoff := watermark.Unix()
-	pruned := make(map[string]int64, len(keys))
-	for k, ts := range keys {
-		if ts >= cutoff {
-			pruned[k] = ts
-		}
-	}
 	state, err := p.loadPollState(ctx, owner, repo)
 	if err != nil {
 		return err
 	}
-	if p.slashCommandsOnly {
-		state.DispatchedKeysFast = pruned
-	} else {
-		state.DispatchedKeysFull = pruned
-	}
+	p.applyDispatchedKeys(&state, keys, watermark)
 	return p.savePollState(ctx, owner, repo, state)
 }
 
@@ -374,22 +424,7 @@ func (p *Poller) readFailedKeys(ctx context.Context, owner, repo string) (map[st
 // persistFailedKeys writes the failed event retry counts, pruning
 // entries that have exceeded the retry budget.
 func (p *Poller) persistFailedKeys(ctx context.Context, owner, repo string, keys map[string]int) error {
-	pruned := make(map[string]int, len(keys))
-	for k, count := range keys {
-		if count > 0 && count <= maxEventRetries {
-			pruned[k] = count
-		}
-	}
-	state, err := p.loadPollState(ctx, owner, repo)
-	if err != nil {
-		return err
-	}
-	if p.slashCommandsOnly {
-		state.FailedKeysFast = pruned
-	} else {
-		state.FailedKeysFull = pruned
-	}
-	return p.savePollState(ctx, owner, repo, state)
+	return p.persistCycleState(ctx, owner, repo, nil, nil, keys, nil)
 }
 
 // toSet converts a string slice to a set for O(1) lookups.

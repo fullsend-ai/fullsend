@@ -40,7 +40,9 @@ fi
 # A scratch directory outside any git repo: codex refuses to run in an
 # untrusted directory without --skip-git-repo-check, and the capture must not
 # see (or edit) the fullsend checkout.
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/fs-codex-regen.XXXXXX")"
+# cd + pwd normalizes the path (macOS TMPDIR ends in "/"), so it matches the
+# paths codex reports and the redaction below finds them.
+WORKDIR="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/fs-codex-regen.XXXXXX")" && pwd)"
 trap 'rm -rf "${WORKDIR}"' EXIT
 
 echo "regen.sh: capturing with ${PKG} in ${WORKDIR}" >&2

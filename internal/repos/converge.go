@@ -49,6 +49,15 @@ type ConvergeConfig struct {
 	// Force allows downgrades when upgrading refs.
 	Force bool
 
+	// ReactivateSchedules opts in to reactivating a required GitLab
+	// pipeline schedule (fullsend slash poll / fullsend event poll) that
+	// exists but is disabled. Defaults to false: operators running
+	// off-system polling (see "Off-system polling" in
+	// configuring-gitlab.md) intentionally disable these schedules, so a
+	// disabled-but-present schedule is reported as drift but left alone
+	// unless this is set.
+	ReactivateSchedules bool
+
 	// InferenceProject is the GCP project ID for inference.
 	InferenceProject string
 	// InferenceProjectNumber is the numeric GCP project number,
@@ -78,9 +87,17 @@ type ConvergeConfig struct {
 // installation component during convergence.
 type ComponentAction struct {
 	Component string // e.g., "workflow", "thin-caller:<path>", "var:MINT_URL", "schedule:<name>", "ref"
-	Action    string // "none", "add", "update", "upgrade", "delete", "orphan", "error"
+	Action    string // "none", "add", "update", "upgrade", "delete", "orphan", "error", ActionAdoptionRequired, ActionSafetyRejected
 	Detail    string // human-readable detail
 }
+
+// ActionAdoptionRequired marks a ComponentAction reporting that an existing
+// managed .fullsend/config.yaml predates ADR-0122 adoption (missing the
+// ownership marker) and was therefore left untouched. It is deliberately
+// distinct from "none" so convergeRepo's hasAction check below still
+// counts a pending adoption as outstanding work instead of classifying the
+// repo AlreadyCurrent.
+const ActionAdoptionRequired = "adoption-required"
 
 // ConvergeResult holds the outcome of converging a single repo.
 type ConvergeResult struct {
@@ -211,11 +228,12 @@ func validateConcurrency(n int) error {
 // convergence actions are determined. Package-level so it can be
 // shared across convergeRepo and convergeScaffoldFiles.
 type convergeDiscovery struct {
-	repo       ResolvedRepo
-	resolved   ResolvedConfig
-	components []ComponentStatus
-	preset     []byte
-	err        error
+	repo          ResolvedRepo
+	resolved      ResolvedConfig
+	components    []ComponentStatus
+	preset        []byte
+	managedConfig []byte
+	err           error
 }
 
 // hasComponent returns true if the named component is present in the probe results.
@@ -338,7 +356,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		return nil, fmt.Errorf("invalid manifest: %w", err)
 	}
 
-	repos, err := manifest.ExpandGlobs(ctx, clients)
+	repos, err := manifest.ExpandGlobsFor(ctx, clients, cfg.RepoFilter)
 	if err != nil {
 		return nil, fmt.Errorf("expanding globs: %w", err)
 	}
@@ -521,6 +539,21 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			}
 		}
 
+		// Render the managed configuration before any writes so a
+		// validation failure fails the repo without applying changes.
+		if d.resolved.ConfigManaged {
+			body, _, configErr := desiredManagedConfig(d.resolved)
+			if configErr != nil {
+				result.Results[i] = ConvergeResult{
+					Owner: d.repo.Owner,
+					Repo:  d.repo.Repo,
+					Error: fmt.Errorf("rendering managed config: %w", configErr),
+				}
+				continue
+			}
+			d.managedConfig = body
+		}
+
 		// Compute WIF for repos that need secrets written.
 		hasSecrets := secretsPresent(d.components)
 		var wif string
@@ -694,6 +727,29 @@ func convergeRepo(ctx context.Context,
 	if isNew {
 		progress(repoFullName, "install", "Not installed, performing full install")
 
+		// ADR-0122 adoption gate: this fresh-install path has no shim
+		// workflow yet, but the repository may already carry a
+		// hand-authored .fullsend/config.yaml — the exact "first write to
+		// a pre-existing file" case the marker/adoption contract exists
+		// for. convergeManagedConfigFiles enforces this gate on the
+		// already-installed path; Install/BuildScaffoldFiles would
+		// otherwise write ManagedConfig unconditionally here, so the
+		// check is repeated for this path.
+		var configAdoptionRequired bool
+		var configSafetyRejected *ComponentAction
+		if resolved.ConfigManaged {
+			existing, readErr := resolved.ForgeConfig.Client.GetFileContent(ctx, rr.Owner, rr.Repo, preset.OverlayPath)
+			if readErr != nil && !forge.IsNotFound(readErr) {
+				cr.Error = fmt.Errorf("reading existing %s: %w", preset.OverlayPath, readErr)
+				return cr
+			}
+			if forge.IsNotFound(readErr) {
+				existing = nil
+			}
+			configAdoptionRequired = len(existing) > 0 && !hasManagedConfigMarker(existing)
+			configSafetyRejected = checkManagedConfigSafetyGate(ctx, resolved, existing)
+		}
+
 		if cfg.DryRun {
 			cr.Installed = true
 			cr.Actions = append(cr.Actions, ComponentAction{
@@ -707,6 +763,30 @@ func convergeRepo(ctx context.Context,
 					Action:    "add",
 					Detail:    "would write config preset as " + preset.BasePath,
 				})
+			}
+			if d.resolved.ConfigManaged {
+				if configAdoptionRequired {
+					detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be written (ADR-0122)", preset.OverlayPath)
+					if configSafetyRejected != nil && configSafetyRejected.Action == ActionSafetyRejected {
+						detail = detail + "; " + configSafetyRejected.Detail
+					}
+					cr.Actions = append(cr.Actions, ComponentAction{
+						Component: preset.OverlayPath,
+						Action:    ActionAdoptionRequired,
+						Detail:    detail,
+					})
+					progress(repoFullName, "dry-run", detail)
+				} else if configSafetyRejected != nil {
+					cr.Actions = append(cr.Actions, *configSafetyRejected)
+					progress(repoFullName, "dry-run", configSafetyRejected.Detail)
+					cr.Error = fmt.Errorf("%s", configSafetyRejected.Detail)
+				} else {
+					cr.Actions = append(cr.Actions, ComponentAction{
+						Component: preset.OverlayPath,
+						Action:    "add",
+						Detail:    "would write managed configuration as " + preset.OverlayPath,
+					})
+				}
 			}
 			progress(repoFullName, "dry-run", "Would install (new)")
 			return cr
@@ -736,24 +816,27 @@ func convergeRepo(ctx context.Context,
 		}
 
 		installCfg := InstallConfig{
-			Owner:             rr.Owner,
-			Repo:              rr.Repo,
-			Forge:             resolved.Forge,
-			Roles:             installRoles,
-			MintURL:           resolved.MintURL,
-			InferenceProject:  cfg.InferenceProject,
-			InferenceRegion:   cfg.InferenceRegion,
-			UpstreamRef:       ref,
-			UpstreamTag:       tag,
-			WIFProvider:       wifProvider,
-			ReviewAppClientID: cfg.ReviewAppClientID,
-			RunnerTags:        gitlabRunnerTags(cfg.Manifest),
-			Runtime:           resolved.Runtime,
-			Direct:            cfg.Direct,
-			ReuseSecrets:      hasSecrets,
-			ExistingSecrets:   existingSecretNames(d.components),
-			VendorBinary:      vendor,
-			Preset:            d.preset,
+			Owner:                         rr.Owner,
+			Repo:                          rr.Repo,
+			Forge:                         resolved.Forge,
+			Roles:                         installRoles,
+			MintURL:                       resolved.MintURL,
+			InferenceProject:              cfg.InferenceProject,
+			InferenceRegion:               cfg.InferenceRegion,
+			UpstreamRef:                   ref,
+			UpstreamTag:                   tag,
+			WIFProvider:                   wifProvider,
+			ReviewAppClientID:             cfg.ReviewAppClientID,
+			AgentRunnerTags:               gitlabAgentRunnerTags(cfg.Manifest),
+			ControlRunnerTags:             gitlabControlRunnerTags(cfg.Manifest),
+			Runtime:                       resolved.Runtime,
+			Direct:                        cfg.Direct,
+			ReuseSecrets:                  hasSecrets,
+			ExistingSecrets:               existingSecretNames(d.components),
+			VendorBinary:                  vendor,
+			Preset:                        d.preset,
+			ManagedConfig:                 d.managedConfig,
+			ManagedConfigAdoptionRequired: configAdoptionRequired || configSafetyRejected != nil,
 		}
 
 		// When vendored, the running binary's embedded templates match the
@@ -763,7 +846,7 @@ func convergeRepo(ctx context.Context,
 			scaffoldFiles, fetchErr := FetchRemoteScaffold(
 				ctx, refResolver.client,
 				manifestRef, ref, resolved.Forge,
-				gitlabRunnerTags(cfg.Manifest),
+				gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest),
 				vendor,
 			)
 			if fetchErr == nil {
@@ -789,6 +872,22 @@ func convergeRepo(ctx context.Context,
 			Action:    "add",
 			Detail:    "Installed",
 		})
+		if configAdoptionRequired {
+			detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be converged automatically (ADR-0122)", preset.OverlayPath)
+			if configSafetyRejected != nil && configSafetyRejected.Action == ActionSafetyRejected {
+				detail = detail + "; " + configSafetyRejected.Detail
+			}
+			cr.Actions = append(cr.Actions, ComponentAction{
+				Component: preset.OverlayPath,
+				Action:    ActionAdoptionRequired,
+				Detail:    detail,
+			})
+			progress(repoFullName, "install", detail)
+		} else if configSafetyRejected != nil {
+			cr.Actions = append(cr.Actions, *configSafetyRejected)
+			progress(repoFullName, "install", configSafetyRejected.Detail)
+			cr.Error = fmt.Errorf("%s", configSafetyRejected.Detail)
+		}
 		return cr
 	}
 
@@ -814,7 +913,7 @@ func convergeRepo(ctx context.Context,
 
 	// 2c: Converge pipeline schedules (GitLab only).
 	if resolved.Forge == ForgeGitLab {
-		schedActions := convergeSchedules(ctx, resolved, d.components, cfg.DryRun, progress)
+		schedActions := convergeSchedules(ctx, resolved, d.components, cfg.DryRun, cfg.ReactivateSchedules, progress)
 		cr.Actions = append(cr.Actions, schedActions...)
 	}
 
@@ -872,8 +971,9 @@ func convergeRepo(ctx context.Context,
 	}
 	allScaffoldFiles = append(allScaffoldFiles, rootCIFiles...)
 
-	// Track paths already covered by ref upgrade and root CI migration
-	// to avoid duplicates.
+	// Track paths already queued so missing-component repair and
+	// content-drift detection skip duplicates. GitLab rejects two
+	// create actions for the same path in one commit (#7645).
 	refFileSet := make(map[string]bool, len(refFiles)+len(rootCIFiles))
 	for _, f := range refFiles {
 		refFileSet[f.Path] = true
@@ -903,8 +1003,11 @@ func convergeRepo(ctx context.Context,
 			cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(repairErrors, "; "))
 			return cr
 		}
-		allScaffoldFiles = append(allScaffoldFiles, repairFiles...)
 		for _, f := range repairFiles {
+			if refFileSet[f.Path] {
+				continue
+			}
+			allScaffoldFiles = append(allScaffoldFiles, f)
 			refFileSet[f.Path] = true
 		}
 	}
@@ -919,7 +1022,8 @@ func convergeRepo(ctx context.Context,
 		DriftConfig{
 			InferenceRegion:   cfg.InferenceRegion,
 			ReviewAppClientID: cfg.ReviewAppClientID,
-			RunnerTags:        gitlabRunnerTags(cfg.Manifest),
+			AgentRunnerTags:   gitlabAgentRunnerTags(cfg.Manifest),
+			ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
 		},
 		progress,
 	)
@@ -939,8 +1043,9 @@ func convergeRepo(ctx context.Context,
 
 	// 2d-iii: Configuration preset — replace .fullsend/config.base.yaml
 	// wholesale when a preset is declared and the installed bytes differ.
-	// Overlay is never rewritten. No declared preset is a no-op so an
-	// existing base file is preserved without comparison.
+	// No declared preset is a no-op so an existing base file is preserved
+	// without comparison. Managed-configuration handling is independent
+	// (2d-iv).
 	presetFiles, presetActions := convergePresetFiles(ctx, resolved, d.preset, cfg.DryRun, progress)
 	cr.Actions = append(cr.Actions, presetActions...)
 	var presetErrors []string
@@ -955,10 +1060,33 @@ func convergeRepo(ctx context.Context,
 	}
 	allScaffoldFiles = append(allScaffoldFiles, presetFiles...)
 
+	// 2d-iv: Managed configuration — replace .fullsend/config.yaml
+	// wholesale when the repository is config-managed and the installed
+	// bytes differ. Unmanaged repositories leave the file untouched.
+	configFiles, configActions := convergeManagedConfigFiles(ctx, resolved, d.managedConfig, cfg.DryRun, progress)
+	cr.Actions = append(cr.Actions, configActions...)
+	var configErrors []string
+	for _, a := range configActions {
+		switch a.Action {
+		case "error", ActionSafetyRejected:
+			configErrors = append(configErrors, a.Detail)
+		}
+	}
+	if len(configErrors) > 0 {
+		cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(configErrors, "; "))
+		return cr
+	}
+	allScaffoldFiles = append(allScaffoldFiles, configFiles...)
+
 	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;
 	// the next Converge run self-heals (writes become no-ops, commit retries).
+	// Collapse duplicate paths here so a future phase cannot re-queue a
+	// path already produced by ref-upgrade, root-CI migration, repair,
+	// content drift, or preset application. GitLab rejects two create
+	// actions for the same path in one commit (#7645, #7651).
 	if len(allScaffoldFiles) > 0 && !cfg.DryRun {
+		allScaffoldFiles = uniqueScaffoldFiles(allScaffoldFiles)
 		if err := commitScaffold(ctx, rr.Owner, rr.Repo, allScaffoldFiles, cfg.Direct, true); err != nil {
 			cr.Actions = append(cr.Actions, ComponentAction{
 				Component: "scaffold",
@@ -987,6 +1115,27 @@ func convergeRepo(ctx context.Context,
 	}
 
 	return cr
+}
+
+// uniqueScaffoldFiles collapses files so each path appears at most once.
+// The first entry wins, matching GitLab's commit builder (first actionable
+// entry) and protecting both forges from a duplicate-path commit batch.
+// Later converge phases that re-queue a path already produced by an
+// earlier phase are dropped rather than submitted as a second action.
+func uniqueScaffoldFiles(files []forge.TreeFile) []forge.TreeFile {
+	if len(files) < 2 {
+		return files
+	}
+	seen := make(map[string]struct{}, len(files))
+	out := make([]forge.TreeFile, 0, len(files))
+	for _, f := range files {
+		if _, dup := seen[f.Path]; dup {
+			continue
+		}
+		seen[f.Path] = struct{}{}
+		out = append(out, f)
+	}
+	return out
 }
 
 func gitlabRoleCredentialPresent(components []ComponentStatus) bool {
@@ -1158,18 +1307,29 @@ func convergeSecrets(ctx context.Context,
 	return actions
 }
 
-// convergeSchedules checks for missing pipeline schedules on GitLab
-// repos and creates them. This repairs the gap where a partial install
-// committed scaffold and variables but failed before schedule creation.
+// convergeSchedules checks for missing or inactive pipeline schedules on
+// GitLab repos and creates or reactivates them. This repairs the gap
+// where a partial install committed scaffold and variables but failed
+// before schedule creation, and the gap where a required schedule exists
+// but was disabled. Reactivating a disabled-but-present schedule is
+// opt-in via reactivate (see ConvergeConfig.ReactivateSchedules):
+// operators running off-system polling intentionally disable these
+// schedules, so by default a disabled schedule is only reported as
+// drift, not silently re-enabled.
 func convergeSchedules(ctx context.Context,
 	resolved ResolvedConfig,
 	components []ComponentStatus,
 	dryRun bool,
+	reactivate bool,
 	progress ProgressFunc) []ComponentAction {
 
 	var actions []ComponentAction
 
+	owner, repo := resolved.Owner, resolved.Repo
+	repoFullName := owner + "/" + repo
+
 	var missingSchedules []string
+	var inactiveSchedules []string
 	for _, c := range components {
 		if !strings.HasPrefix(c.Name, "schedule:") {
 			continue
@@ -1182,18 +1342,40 @@ func convergeSchedules(ctx context.Context,
 			})
 			continue
 		}
+		if c.Present {
+			inactiveSchedules = append(inactiveSchedules, c.Name)
+			continue
+		}
 		missingSchedules = append(missingSchedules, c.Name)
 	}
 
-	if len(missingSchedules) == 0 {
+	if !reactivate {
+		for _, name := range inactiveSchedules {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "none",
+				Detail:    fmt.Sprintf("%s is disabled; not reactivating (pass --reactivate-schedules to repair)", DriftFieldName(name)),
+			})
+			progress(repoFullName, "warning",
+				fmt.Sprintf("Schedule %s is disabled (not reactivating; pass --reactivate-schedules to repair)", DriftFieldName(name)))
+		}
+		inactiveSchedules = nil
+	}
+
+	if len(missingSchedules) == 0 && len(inactiveSchedules) == 0 {
 		return actions
 	}
 
-	owner, repo := resolved.Owner, resolved.Repo
 	client := resolved.ForgeConfig.Client
-	repoFullName := owner + "/" + repo
 
 	if dryRun {
+		for _, name := range inactiveSchedules {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "update",
+				Detail:    fmt.Sprintf("would activate %s", DriftFieldName(name)),
+			})
+		}
 		for _, name := range missingSchedules {
 			actions = append(actions, ComponentAction{
 				Component: name,
@@ -1202,7 +1384,16 @@ func convergeSchedules(ctx context.Context,
 			})
 		}
 		progress(repoFullName, "dry-run",
-			fmt.Sprintf("Would create %d pipeline schedule(s)", len(missingSchedules)))
+			fmt.Sprintf("Would repair %d pipeline schedule(s)", len(missingSchedules)+len(inactiveSchedules)))
+		return actions
+	}
+
+	if len(inactiveSchedules) > 0 {
+		actions = append(actions, activatePipelineSchedules(
+			ctx, client, owner, repo, repoFullName, inactiveSchedules, progress)...)
+	}
+
+	if len(missingSchedules) == 0 {
 		return actions
 	}
 
@@ -1253,6 +1444,75 @@ func convergeSchedules(ctx context.Context,
 			fmt.Sprintf("Created pipeline schedule %s", DriftFieldName(name)))
 	}
 
+	return actions
+}
+
+// activatePipelineSchedules reactivates existing GitLab pipeline schedules
+// that match the given component names but are currently disabled.
+func activatePipelineSchedules(ctx context.Context, client forge.Client,
+	owner, repo, repoFullName string, inactiveSchedules []string,
+	progress ProgressFunc) []ComponentAction {
+
+	var actions []ComponentAction
+	schedules, listErr := client.ListPipelineSchedules(ctx, owner, repo)
+	if listErr != nil {
+		for _, name := range inactiveSchedules {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("failed to list schedules for activation: %v", listErr),
+			})
+		}
+		return actions
+	}
+
+	for _, name := range inactiveSchedules {
+		spec := scheduleSpecByComponent(name)
+		if spec == nil {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("unrecognized schedule component %s", DriftFieldName(name)),
+			})
+			continue
+		}
+
+		foundInactive := false
+		var activateErr error
+		for _, s := range schedules {
+			if s.Description != spec.Description || s.Active {
+				continue
+			}
+			foundInactive = true
+			if err := client.UpdatePipelineSchedule(ctx, owner, repo, s.ID, true); err != nil {
+				activateErr = err
+				break
+			}
+		}
+		if !foundInactive {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("inactive %s not found on re-list", DriftFieldName(name)),
+			})
+			continue
+		}
+		if activateErr != nil {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("failed to activate %s: %v", DriftFieldName(name), activateErr),
+			})
+			continue
+		}
+		actions = append(actions, ComponentAction{
+			Component: name,
+			Action:    "update",
+			Detail:    fmt.Sprintf("activated %s", DriftFieldName(name)),
+		})
+		progress(repoFullName, "sync",
+			fmt.Sprintf("Activated pipeline schedule %s", DriftFieldName(name)))
+	}
 	return actions
 }
 
@@ -1585,7 +1845,11 @@ func convergeRefFiles(ctx context.Context,
 	newContent, changed = replaceShimRef(content, newRef, newTag, fc, resolved.Forge)
 
 	var files []forge.TreeFile
-	if changed {
+	// GitLab CI templates are rewritten wholesale on ref change
+	// (pipeline wrapper, agent, poll, helper scripts). replaceShimRef
+	// only rewrites the version-marker line, so skip the marker-only
+	// rewrite here.
+	if changed && resolved.Forge != ForgeGitLab {
 		files = append(files, forge.TreeFile{
 			Path:    workflowPath,
 			Content: newContent,
@@ -1594,9 +1858,10 @@ func convergeRefFiles(ctx context.Context,
 	}
 
 	// GitLab CI templates — include only when the ref changed.
+	// Unchanged-ref structural drift is repaired by convergeContentDriftFiles.
 	if changed && resolved.Forge == ForgeGitLab {
 		templateFiles, tplErr := collectGitLabUpgradeTemplates(
-			gitlabRunnerTags(cfg.Manifest), targetRef,
+			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), newRef, newTag,
 		)
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
@@ -1704,16 +1969,17 @@ func convergeScaffoldFiles(ctx context.Context,
 	}
 
 	installCfg := InstallConfig{
-		Owner:        resolved.Owner,
-		Repo:         resolved.Repo,
-		Forge:        resolved.Forge,
-		Roles:        defaultRoles(cfg.Roles),
-		MintURL:      resolved.MintURL,
-		UpstreamRef:  ref,
-		UpstreamTag:  tag,
-		RunnerTags:   gitlabRunnerTags(cfg.Manifest),
-		Runtime:      resolved.Runtime,
-		VendorBinary: repairVendor,
+		Owner:             resolved.Owner,
+		Repo:              resolved.Repo,
+		Forge:             resolved.Forge,
+		Roles:             defaultRoles(cfg.Roles),
+		MintURL:           resolved.MintURL,
+		UpstreamRef:       ref,
+		UpstreamTag:       tag,
+		AgentRunnerTags:   gitlabAgentRunnerTags(cfg.Manifest),
+		ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
+		Runtime:           resolved.Runtime,
+		VendorBinary:      repairVendor,
 	}
 
 	// When vendored, the running binary's embedded templates match the
@@ -1723,7 +1989,7 @@ func convergeScaffoldFiles(ctx context.Context,
 		scaffoldFiles, fetchErr := FetchRemoteScaffold(
 			ctx, refResolver.client,
 			manifestRef, ref, resolved.Forge,
-			gitlabRunnerTags(cfg.Manifest),
+			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest),
 			repairVendor,
 		)
 		if fetchErr == nil {
@@ -1756,10 +2022,12 @@ func convergeScaffoldFiles(ctx context.Context,
 		}
 		if missingSet["workflow"] {
 			// When workflow is missing, also include the workflow file,
-			// config.yaml, and GitLab auxiliary CI templates — they are
-			// part of the scaffold and won't self-heal otherwise.
+			// config.yaml (unmanaged only), and GitLab auxiliary CI
+			// templates — they are part of the scaffold and won't
+			// self-heal otherwise. Config-managed config.yaml is
+			// rewritten by convergeManagedConfigFiles instead.
 			if slices.Contains(resolved.ForgeConfig.WorkflowPaths, f.Path) ||
-				f.Path == ".fullsend/config.yaml" {
+				(f.Path == preset.OverlayPath && !resolved.ConfigManaged) {
 				repairFiles = append(repairFiles, f)
 			}
 		}
@@ -1773,7 +2041,7 @@ func convergeScaffoldFiles(ctx context.Context,
 			templateRef = rref.ref
 		}
 		templateFiles, tplErr := collectGitLabUpgradeTemplates(
-			gitlabRunnerTags(cfg.Manifest), templateRef,
+			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), templateRef, "",
 		)
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
@@ -1849,7 +2117,7 @@ func convergeContentDriftFiles(ctx context.Context,
 		scaffoldFiles, fetchErr := FetchRemoteScaffold(
 			ctx, refResolver.client,
 			manifestRef, ref, resolved.Forge,
-			gitlabRunnerTags(cfg.Manifest),
+			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest),
 			installCfg.VendorBinary,
 		)
 		if fetchErr == nil {
@@ -1921,10 +2189,13 @@ func convergeContentDriftFiles(ctx context.Context,
 
 	// Orphan file detection: check for managed scaffold files that
 	// exist on the forge but are no longer produced by the current
-	// template. Orphans are reported but not deleted — removal is a
-	// destructive action that requires explicit user intent (uninstall).
-	// Runs in both dry-run and live modes so that --dry-run previews
-	// the same orphan information as the live path and repos status.
+	// template. Generic orphans are reported but not deleted — removal
+	// is a destructive action that requires explicit user intent
+	// (uninstall). Known-retired GitLab paths (see
+	// gitlabRetiredScaffoldPaths) are deleted as a migration: they are
+	// leftover stubs with no user content. Runs in both dry-run and
+	// live modes so that --dry-run previews the same information as the
+	// live path and repos status.
 	orphanFiles, orphanErr := CheckOrphanFiles(
 		ctx, resolved.ForgeConfig.Client,
 		resolved.Owner, resolved.Repo,
@@ -1941,6 +2212,54 @@ func convergeContentDriftFiles(ctx context.Context,
 	}
 	for _, o := range orphanFiles {
 		if coveredPaths[o.Path] {
+			continue
+		}
+		if slices.Contains(gitlabRetiredScaffoldPaths, o.Path) {
+			if o.Path == fullsendDispatchInclude {
+				stillIncluded, wrapperErr := gitlabPipelineWrapperWillIncludeDispatch(
+					ctx, resolved.ForgeConfig.Client, resolved.Owner, resolved.Repo, expectedFiles)
+				if wrapperErr != nil {
+					progress(repoFullName, "warning",
+						fmt.Sprintf("checking pipeline wrapper for dispatch include: %v", wrapperErr))
+				}
+				if stillIncluded {
+					// The wrapper that will remain committed (either
+					// just-repaired this run or already on the forge)
+					// still pulls this file in — e.g. a repo pinned to a
+					// pre-#7322 fullsend_ref. Deleting it now would break
+					// the pipeline on a missing local include, so leave it
+					// as a reported orphan instead.
+					actions = append(actions, ComponentAction{
+						Component: o.Path,
+						Action:    "orphan",
+						Detail:    fmt.Sprintf("orphan file %s exists on forge but the pipeline wrapper still includes it; leaving in place", o.Path),
+					})
+					progress(repoFullName, "warning",
+						fmt.Sprintf("Leaving %s in place: pipeline wrapper still references it", o.Path))
+					continue
+				}
+			}
+			if cfg.DryRun {
+				actions = append(actions, ComponentAction{
+					Component: o.Path,
+					Action:    "update",
+					Detail:    fmt.Sprintf("would remove obsolete %s", o.Path),
+				})
+				progress(repoFullName, "dry-run",
+					fmt.Sprintf("Would remove obsolete %s", o.Path))
+			} else {
+				repairFiles = append(repairFiles, forge.TreeFile{
+					Path:   o.Path,
+					Delete: true,
+				})
+				actions = append(actions, ComponentAction{
+					Component: o.Path,
+					Action:    "update",
+					Detail:    fmt.Sprintf("removed obsolete %s", o.Path),
+				})
+				progress(repoFullName, "repair",
+					fmt.Sprintf("Removing obsolete %s", o.Path))
+			}
 			continue
 		}
 		actions = append(actions, ComponentAction{

@@ -1479,9 +1479,9 @@ func TestMergeWithExistingManifest_ForgeFieldCarryOver(t *testing.T) {
 			Repos:       []RepoEntry{{Name: "acme/newrepo"}},
 		},
 		GitLab: &PlatformConfig{
-			URL:         "https://gitlab.example.com",
-			RunnerTags:  []string{"docker", "linux"},
-			FullsendRef: "v2.1.0",
+			URL:             "https://gitlab.example.com",
+			AgentRunnerTags: []string{"docker", "linux"},
+			FullsendRef:     "v2.1.0",
 		},
 	}
 
@@ -1501,7 +1501,7 @@ func TestMergeWithExistingManifest_ForgeFieldCarryOver(t *testing.T) {
 	assert.Equal(t, "v2.1.0", result.GitHub.FullsendRef)
 	require.NotNil(t, result.GitLab)
 	assert.Equal(t, "https://gitlab.example.com", result.GitLab.URL)
-	assert.Equal(t, []string{"docker", "linux"}, result.GitLab.RunnerTags)
+	assert.Equal(t, []string{"docker", "linux"}, result.GitLab.AgentRunnerTags)
 	assert.Equal(t, "v2.1.0", result.GitLab.FullsendRef)
 }
 
@@ -1538,9 +1538,9 @@ gitlab:
 			Repos:       []RepoEntry{{Name: "acme/new"}},
 		},
 		GitLab: &PlatformConfig{
-			URL:         "https://gitlab.new.com",
-			RunnerTags:  []string{"docker"},
-			FullsendRef: "v3.0.0",
+			URL:             "https://gitlab.new.com",
+			AgentRunnerTags: []string{"docker"},
+			FullsendRef:     "v3.0.0",
 		},
 	}
 
@@ -1554,7 +1554,7 @@ gitlab:
 	assert.Equal(t, "v1.0.0", result.GitHub.FullsendRef)
 	require.NotNil(t, result.GitLab)
 	assert.Equal(t, "https://gitlab.existing.com", result.GitLab.URL)
-	assert.Equal(t, []string{"self-hosted"}, result.GitLab.RunnerTags)
+	assert.Equal(t, []string{"self-hosted"}, result.GitLab.AgentRunnerTags)
 	assert.Equal(t, "v1.0.0", result.GitLab.FullsendRef)
 
 	// Both repos present.

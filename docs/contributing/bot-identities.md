@@ -56,8 +56,8 @@ administrator-registered custom roles — is defined in
 shared-token installs and, when every registered role is ready, enables
 `enforced` mode and retires `FULLSEND_FORGE_TOKEN`.
 When `FULLSEND_GITLAB_ROLE_MIGRATION` is `migrating` or `enforced`,
-`fullsend poll` and `fullsend run` select the registered role credential
-instead of the shared token (see
+GitLab CI poll/agent jobs and `fullsend poll` / `fullsend run` select
+the registered role credential instead of the shared token (see
 [gitlab-role-credentials.md](gitlab-role-credentials.md)). Disabled and
 rollback keep the shared `fullsend-bot` identity and are emergency recovery
 only. Role registration is install-state only; repository and merge-request

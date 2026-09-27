@@ -926,7 +926,15 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 	}
 
 	var actions []map[string]any
+	// GitLab rejects two create actions for the same path in one commit
+	// (400 "A file with this name already exists"). Skip a path once it
+	// has been queued; the first actionable entry wins.
+	queued := make(map[string]struct{}, len(files))
 	for _, f := range files {
+		if _, ok := queued[f.Path]; ok {
+			continue
+		}
+
 		if f.Delete {
 			if _, ok := existing[f.Path]; !ok {
 				continue
@@ -935,6 +943,7 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 				"action":    "delete",
 				"file_path": f.Path,
 			})
+			queued[f.Path] = struct{}{}
 			continue
 		}
 
@@ -962,6 +971,7 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 		}
 
 		actions = append(actions, entry)
+		queued[f.Path] = struct{}{}
 	}
 
 	if len(actions) == 0 {

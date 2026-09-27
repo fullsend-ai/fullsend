@@ -74,21 +74,21 @@ func DriftFieldName(componentName string) string {
 func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
 	var results []ComponentStatus
 
-	// Workflow file (try forge-appropriate extensions).
-	workflowPresent := false
-	var workflowRef string
-	for _, path := range fc.WorkflowPaths {
-		content, err := client.GetFileContent(ctx, owner, repo, path)
-		if err != nil {
-			if forge.IsNotFound(err) {
-				continue
-			}
-			return nil, fmt.Errorf("checking workflow file: %w", err)
-		}
-		workflowPresent = true
-		workflowRef = extractWorkflowRef(content, fc)
-		break
+	// Workflow presence is the current carrier (WorkflowPaths). GitLab
+	// still reads a leftover dispatch stub for the version ref so repos
+	// enrolled before #7707 keep reporting the installed version until
+	// converge writes the marker onto the pipeline wrapper and deletes
+	// the stub. Presence stays false when only the stub exists, so the
+	// missing wrapper is repaired.
+	content, _, carrierPresent, err := readWorkflowMarker(ctx, client, owner, repo, fc)
+	if err != nil {
+		return nil, fmt.Errorf("checking workflow file: %w", err)
 	}
+	var workflowRef string
+	if content != nil {
+		workflowRef = extractWorkflowRef(content, fc)
+	}
+	workflowPresent := carrierPresent
 	results = append(results, ComponentStatus{
 		Name:    "workflow",
 		Present: workflowPresent,
@@ -96,21 +96,23 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		Match:   workflowPresent,
 	})
 
-	// The trust script is sourced by the GitLab poll and agent templates,
-	// but is not itself the workflow component. Probe it separately so
-	// status and converge can detect and repair installs missing only this
-	// auxiliary scaffold file.
+	// Auxiliary GitLab scripts are sourced by the poll and agent templates
+	// but are not themselves the workflow component. Probe them separately
+	// so status and converge can detect and repair installs missing only
+	// these files.
 	if forgeName == ForgeGitLab {
-		_, err := client.GetFileContent(ctx, owner, repo, gitlabTrustScriptPath)
-		if err != nil && !forge.IsNotFound(err) {
-			return nil, fmt.Errorf("checking GitLab trust script: %w", err)
+		for _, path := range gitlabAuxiliaryScriptPaths() {
+			_, err := client.GetFileContent(ctx, owner, repo, path)
+			if err != nil && !forge.IsNotFound(err) {
+				return nil, fmt.Errorf("checking GitLab scaffold file %s: %w", path, err)
+			}
+			present := err == nil
+			results = append(results, ComponentStatus{
+				Name:    "scaffold:" + path,
+				Present: present,
+				Match:   present,
+			})
 		}
-		present := err == nil
-		results = append(results, ComponentStatus{
-			Name:    "scaffold:" + gitlabTrustScriptPath,
-			Present: present,
-			Match:   present,
-		})
 	}
 
 	// Per-repo thin callers (GitHub only).
@@ -199,16 +201,30 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		}
 		for _, spec := range pipelineScheduleSpecs {
 			found := false
+			active := false
 			for _, s := range schedules {
 				if s.Description == spec.Description {
 					found = true
-					break
+					if s.Active {
+						active = true
+						break
+					}
+				}
+			}
+			actual := ""
+			if found {
+				if active {
+					actual = "active"
+				} else {
+					actual = "inactive"
 				}
 			}
 			results = append(results, ComponentStatus{
-				Name:    spec.ComponentName,
-				Present: found,
-				Match:   found,
+				Name:     spec.ComponentName,
+				Present:  found,
+				Expected: "active",
+				Actual:   actual,
+				Match:    found && active,
 			})
 		}
 	}

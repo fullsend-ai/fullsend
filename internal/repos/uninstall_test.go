@@ -606,6 +606,58 @@ func TestUninstall_GitLabTrustScript_Deleted(t *testing.T) {
 	}
 }
 
+func TestUninstall_GitLabRoleTokenScript_Deleted(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	found := false
+	for _, p := range collectDeletedPaths(client) {
+		if p == ".gitlab/ci/scripts/select-gitlab-role-token.sh" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("select-gitlab-role-token.sh was not deleted on GitLab uninstall")
+	}
+}
+
+func TestUninstall_GitLabExtractedJobScripts_Deleted(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+
+	_, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error: %v", err)
+	}
+	deleted := make(map[string]bool)
+	for _, p := range collectDeletedPaths(client) {
+		deleted[p] = true
+	}
+	for _, path := range []string{
+		gitlabInstallCLIScriptPath,
+		gitlabPollJobScriptPath,
+		gitlabAgentJobScriptPath,
+	} {
+		if !deleted[path] {
+			t.Errorf("%s was not deleted on GitLab uninstall", path)
+		}
+	}
+}
+
 func TestUninstall_GitLabRootCI_DeletedWhenEmpty(t *testing.T) {
 	client := newInstalledFakeGitLabClient("acme/api")
 	// Override the shared fixture: omit merge_request_event. It's no
@@ -1068,6 +1120,31 @@ func TestUninstallSecretsForForge_GitHub_DeletesOptInOpenAIKey(t *testing.T) {
 		if s == forge.SecretOpenAIAPIKey {
 			t.Errorf("requiredSecretsForForge(GitHub) must not include the opt-in %s", forge.SecretOpenAIAPIKey)
 		}
+	}
+}
+
+func TestUninstall_GitLab_SucceedsWithoutDispatchFile(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	delete(client.FileContents, "acme/api/"+fullsendDispatchInclude)
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Success {
+		t.Errorf("Success = false, want true; Error = %v", r.Error)
+	}
+	if !r.WorkflowDeleted {
+		t.Error("WorkflowDeleted = false, want true")
 	}
 }
 

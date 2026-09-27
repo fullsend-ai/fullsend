@@ -130,7 +130,10 @@ func buildStageMintDriver(
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf)
+	ens, err := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf)
+	if err != nil {
+		return nil, fmt.Errorf("stage cfmint factory: %w", err)
+	}
 
 	d, err := newComposedDriver(StageOrg, md, ens, poolSize, logf)
 	if err != nil {

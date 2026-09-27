@@ -224,8 +224,9 @@ func GitLabPerRepoFile(path string) ([]byte, error) {
 
 // WalkGitLabPerRepo calls fn for each file in the GitLab per-repo scaffold.
 // Unlike WalkFullsendRepo, this does not filter layered directories because
-// the GitLab scaffold contains only CI pipeline YAML and .fullsend/config.yaml
-// — it has no layered content (harness, agents, policies) to filter. Harness
+// the GitLab scaffold contains only CI pipeline YAML, helper scripts, and
+// .fullsend/config.yaml — it has no layered content (harness, agents,
+// policies) to filter. Harness
 // resolution at runtime is handled by fullsend run's config-driven lookup.
 func WalkGitLabPerRepo(fn func(path string, content []byte) error) error {
 	return walkEmbedFS(gitlabContent, "fullsend-repo-gitlab", fn, nil)

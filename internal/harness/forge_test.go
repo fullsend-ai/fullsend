@@ -224,6 +224,56 @@ func TestResolveForge_ValidationLoopNilInherits(t *testing.T) {
 	assert.Equal(t, "scripts/validate.sh", h.ValidationLoop.Script)
 }
 
+func TestResolveForge_ValidationLoopFieldLevelMerge(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/validate-common.sh",
+			Schema:         "schemas/base.json",
+			MaxIterations:  3,
+			FeedbackMode:   "append",
+			PreflightCheck: "which jq",
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				ValidationLoop: &ValidationLoop{
+					Schema: "schemas/gh.json",
+				},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate-common.sh", h.ValidationLoop.Script)
+	assert.Equal(t, "schemas/gh.json", h.ValidationLoop.Schema)
+	assert.Equal(t, 3, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "which jq", h.ValidationLoop.PreflightCheck)
+}
+
+func TestResolveForge_ValidationLoopDoesNotMutateForgeConfig(t *testing.T) {
+	fcLoop := &ValidationLoop{Schema: "schemas/gh.json"}
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		ValidationLoop: &ValidationLoop{
+			Script:        "scripts/validate.sh",
+			MaxIterations: 2,
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {ValidationLoop: fcLoop},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, "", fcLoop.Script, "forge ValidationLoop must not be mutated")
+	assert.Equal(t, "schemas/gh.json", fcLoop.Schema)
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate.sh", h.ValidationLoop.Script)
+}
+
 func TestResolveForge_NoForgeSection(t *testing.T) {
 	h := &Harness{
 		Agent:     "agents/test.md",
@@ -400,6 +450,25 @@ func TestValidate_ForgeScriptURL(t *testing.T) {
 		err := h.Validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "forge.github.validation_loop.script is required")
+	})
+
+	t.Run("validation_loop missing script inherits top-level", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			Role:  "test",
+			ValidationLoop: &ValidationLoop{
+				Script:        "scripts/validate.sh",
+				MaxIterations: 2,
+			},
+			Forge: map[string]*ForgeConfig{
+				"github": {
+					ValidationLoop: &ValidationLoop{
+						Schema: "schemas/gh.json",
+					},
+				},
+			},
+		}
+		require.NoError(t, h.Validate())
 	})
 }
 
@@ -1693,6 +1762,14 @@ func TestValidateOverlayForgeConfig_ValidationLoopMissingScript(t *testing.T) {
 	err := validateOverlayForgeConfig(0, fc)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "overlays[0].validation_loop.script is required when validation_loop is set")
+}
+
+func TestValidateOverlayForgeConfig_ValidationLoopMissingScriptInherits(t *testing.T) {
+	fc := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{Schema: "schemas/custom.json"},
+	}
+	err := validateOverlayForgeConfigInherit(0, fc, true)
+	require.NoError(t, err)
 }
 
 func TestValidateOverlayForgeConfig_ValidationLoopScriptURL(t *testing.T) {
