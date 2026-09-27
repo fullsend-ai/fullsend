@@ -4848,6 +4848,82 @@ func TestEnsureTrafficOnLatestRevision_RevokedRoleDoesNotSurvivePin(t *testing.T
 	assert.Equal(t, "coder", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
 }
 
+func TestEnsureTrafficOnLatestRevision_NewlyConfiguredRoleSurvivesPin(t *testing.T) {
+	// This deploy's own config just added "reviewer" via p.cfg.AgentAppIDs
+	// (merged into the template's ROLE_APP_IDS by the needsCodeDeploy branch
+	// in Provision), but the traffic-serving revision predates that deploy
+	// and only has "coder". Reconciliation must not treat traffic's
+	// ROLE_APP_IDS as the sole source of truth here -- copying it verbatim
+	// would drop "reviewer" even though this same deploy just configured it,
+	// unlike TestEnsureTrafficOnLatestRevision_RevokedRoleDoesNotSurvivePin
+	// where the extra template role is genuinely stale/revoked. Because the
+	// template (the latest-ready revision already built by UpdateFunction)
+	// already carries the reconciled value (traffic's roles plus this run's
+	// AgentAppIDs), no extra reconciliation revision is needed -- the pin
+	// goes straight to that target and "reviewer" survives.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111"}`,
+			"ALLOWED_ROLES": "coder",
+		},
+		TemplateEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111","reviewer":"222"}`,
+			"ALLOWED_ROLES": "coder,reviewer",
+		},
+	}
+	p := newTestProvisioner(Config{
+		ProjectID:   "my-project",
+		Region:      "us-central1",
+		AgentAppIDs: map[string]string{"reviewer": "222"},
+	}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_NewlyConfiguredRoleReconciledWhenTemplateLacksIt(t *testing.T) {
+	// Same scenario as TestEnsureTrafficOnLatestRevision_NewlyConfiguredRoleSurvivesPin
+	// except the template hasn't picked up "reviewer" yet either (e.g. a
+	// hash-skip re-pin, where no code deploy ran to merge p.cfg.AgentAppIDs
+	// into the template). Reconciliation must still add "reviewer" -- sourced
+	// from this run's config, not from traffic -- before pinning.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111"}`,
+			"ALLOWED_ROLES": "coder",
+		},
+		TemplateEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111"}`,
+			"ALLOWED_ROLES": "coder",
+		},
+	}
+	p := newTestProvisioner(Config{
+		ProjectID:   "my-project",
+		Region:      "us-central1",
+		AgentAppIDs: map[string]string{"reviewer": "222"},
+	}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	var gotIDs map[string]string
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &gotIDs))
+	assert.Equal(t, map[string]string{"coder": "111", "reviewer": "222"}, gotIDs)
+	assert.Equal(t, "coder,reviewer", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
+}
+
 func TestEnsureTrafficOnLatestRevision_ReconcilesWorkflowHostRepos(t *testing.T) {
 	// WORKFLOW_HOST_REPOS is patched directly onto the traffic-serving
 	// revision by AddWorkflowHostRepo/RemoveWorkflowHostRepo and never

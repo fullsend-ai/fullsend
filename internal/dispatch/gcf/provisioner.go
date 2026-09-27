@@ -1970,7 +1970,7 @@ func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context, isFirst
 		return nil
 	}
 
-	reconciled, err := reconcileTargetEnvVars(info.TrafficEnvVars, info.TemplateEnvVars, info.TrafficEnvVarsUnreliable)
+	reconciled, err := reconcileTargetEnvVars(info.TrafficEnvVars, info.TemplateEnvVars, info.TrafficEnvVarsUnreliable, p.cfg.AgentAppIDs)
 	if err != nil {
 		return fmt.Errorf("reconciling registration data before pinning traffic to %s (currently serving %s): %w; re-run mint deploy or mint status once the revision read succeeds -- manually running a traffic-shift command bypasses this safety check and can restore registration data that was intentionally revoked",
 			target, info.TrafficRevisionShort, err)
@@ -2038,10 +2038,23 @@ var accumulativeEnvKeys = []string{"ALLOWED_ORGS", "PER_REPO_WIF_REPOS", "WORKFL
 // exact registration drop this function exists to prevent, so it errors
 // instead.
 //
+// currentAgentAppIDs is this run's p.cfg.AgentAppIDs. Unlike ALLOWED_ORGS,
+// PER_REPO_WIF_REPOS, and WORKFLOW_HOST_REPOS — which are only ever changed
+// by direct Cloud Run patches (EnsureOrgInMint, RegisterPerRepoWIF, etc.) —
+// ROLE_APP_IDS can also be updated by this same deploy's own config (see the
+// needsCodeDeploy branch in Provision, which merges p.cfg.AgentAppIDs into
+// the template's ROLE_APP_IDS before this function runs). Copying traffic's
+// ROLE_APP_IDS verbatim would drop a role this deploy just configured but
+// that hasn't reached the still-serving traffic revision yet, so
+// currentAgentAppIDs is re-applied on top of traffic's map as the
+// reconciliation base: a role removed via RemoveRoleFromMint (absent from
+// both traffic and currentAgentAppIDs) still drops out, but a role newly
+// added via config survives.
+//
 // Comparisons are set-based (not string-equality) so that formatting or
 // ordering differences that carry no data-loss risk never trigger an
 // unnecessary reconciliation revision.
-func reconcileTargetEnvVars(trafficEnv, targetEnv map[string]string, trafficEnvUnreliable bool) (map[string]string, error) {
+func reconcileTargetEnvVars(trafficEnv, targetEnv map[string]string, trafficEnvUnreliable bool, currentAgentAppIDs map[string]string) (map[string]string, error) {
 	if trafficEnvUnreliable {
 		return nil, fmt.Errorf("traffic-serving revision's env vars could not be read reliably; refusing to reconcile registration data without a verified read")
 	}
@@ -2070,14 +2083,25 @@ func reconcileTargetEnvVars(trafficEnv, targetEnv map[string]string, trafficEnvU
 			return nil, fmt.Errorf("parsing traffic-serving ROLE_APP_IDS: %w", err)
 		}
 	}
+	// Reconciliation base is traffic's role map (source of truth for roles
+	// revoked via RemoveRoleFromMint), with this run's own AgentAppIDs
+	// re-applied on top so a role this same deploy just configured survives
+	// even though it hasn't reached the traffic-serving revision yet.
+	reconciledRoleIDs := make(map[string]string, len(trafficRoleIDs)+len(currentAgentAppIDs))
+	for role, appID := range trafficRoleIDs {
+		reconciledRoleIDs[role] = appID
+	}
+	for role, appID := range currentAgentAppIDs {
+		reconciledRoleIDs[role] = appID
+	}
 	var currentRoleIDs map[string]string
 	if cur := merged["ROLE_APP_IDS"]; cur != "" {
 		if err := json.Unmarshal([]byte(cur), &currentRoleIDs); err != nil {
 			return nil, fmt.Errorf("parsing target ROLE_APP_IDS: %w", err)
 		}
 	}
-	if !stringMapEqual(currentRoleIDs, trafficRoleIDs) {
-		mergedRoleIDsJSON, err := marshalRoleAppIDs(trafficRoleIDs)
+	if !stringMapEqual(currentRoleIDs, reconciledRoleIDs) {
+		mergedRoleIDsJSON, err := marshalRoleAppIDs(reconciledRoleIDs)
 		if err != nil {
 			return nil, fmt.Errorf("marshaling ROLE_APP_IDS: %w", err)
 		}
