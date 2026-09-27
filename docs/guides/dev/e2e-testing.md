@@ -138,10 +138,11 @@ Each pool org must be provisioned before e2e can use it:
 5. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
 6. Mint enrolled: org in `ALLOWED_ORGS`, `e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
 
-Use the idempotent setup script:
+Use the idempotent setup script. Numeric arguments become `halfsend-NN`; a full org name (for example `halfsend` for STAGE) is used as-is:
 
 ```bash
 MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh 07
+MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh halfsend
 ```
 
 Verify foreign authorization:
@@ -173,22 +174,34 @@ on repo-level foreign grants.
 Pool orgs grant three test actor accounts specific access levels for
 e2e testing of permission-sensitive behaviour:
 
-| Actor | Org membership | Repo permission on base `test-repo*` |
-|-------|----------------|--------------------------------------|
-| `fstest-write` | member | push (write) |
-| `fstest-triage` | member | triage |
-| `fstest-outsider` | none | public read only (no collaborator grant) |
+| Actor | Org membership | Organization role | Effective repo permission |
+|-------|----------------|-------------------|---------------------------|
+| `fstest-write` | member | all-repository write | write on every org repo |
+| `fstest-triage` | member | all-repository triage | triage on every org repo |
+| `fstest-outsider` | none | none | public read only |
 
-Elevated access uses direct collaborator grants (not team membership). The
-behaviour suite deletes and recreates each pool repo at the start of a run, which
-drops these grants, so it re-applies the `fstest-write` and `fstest-triage` grants
-for every actor whose PAT is set. Fork repos
-(`test-repo-fork`) are intentionally excluded — they are not base/enrolled
-targets for permission grants.
+Elevated access uses **organization-level all-repository roles**, not
+per-repo collaborator grants or team membership. Direct collaborator
+grants vanish when the behaviour suite deletes and recreates a pool repo
+and re-adding them creates pending invitations. Org-level roles survive
+that delete/recreate cycle and apply to any future `test-repo*` name,
+including numbered pool slots that do not exist yet.
+
+The behaviour suite verifies org membership once per org at ensure time.
+It does **not** call `AddCollaborator`, and it does not re-verify the
+all-repository role itself at runtime — that would require the e2e App
+installation on every pool org to hold the `organization_custom_roles`
+permission solely to call the organization-roles API. The all-repository
+role is verified once, at setup time, by `hack/setup-new-e2e-org.sh`
+(which runs with an org-admin `gh` session, not the e2e App). Missing
+membership fails with a message to run `hack/setup-new-e2e-org.sh`. The
+outsider must remain outside the organization and must not receive an
+all-repository role.
 
 The setup script (`hack/setup-new-e2e-org.sh`) creates or verifies this
-model idempotently. To auto-accept org membership invitations, pass the
-actor PATs as environment variables:
+model idempotently on `halfsend-NN` and on the STAGE org `halfsend`. To
+auto-accept org membership invitations, pass the actor PATs as
+environment variables:
 
 ```bash
 TEST_ACTOR_WRITE_PAT=ghp_... TEST_ACTOR_TRIAGE_PAT=ghp_... \

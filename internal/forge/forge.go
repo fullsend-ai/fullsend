@@ -948,6 +948,12 @@ type PipelineSchedule struct {
 	Variables    map[string]string // schedule-level pipeline variables
 }
 
+// OrgMembership is a user's membership in a GitHub organization.
+type OrgMembership struct {
+	State string // "active" or "pending"
+	Role  string // "admin" or "member"
+}
+
 // GitHubExtensions provides GitHub-specific operations that are not
 // part of the cross-forge Client interface. Callers should type-assert
 // to this interface when they need GitHub App installation features.
@@ -967,4 +973,9 @@ type GitHubExtensions interface {
 	// error when GitHub only sends an invitation (the user is not an org
 	// member), because access does not start until it is accepted.
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
+
+	// GetOrgMembership returns username's membership in org.
+	// Returns forge.ErrNotFound when the user is not a member and has
+	// no pending invitation.
+	GetOrgMembership(ctx context.Context, org, username string) (OrgMembership, error)
 }

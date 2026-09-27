@@ -47,6 +47,13 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World) (
 // allocated. Deallocation errors are surfaced as test failures rather than
 // panicking the godog runner.
 //
+// Order: CleanupScenario (issues/PRs/forks/hosting repos) runs first,
+// then the deferred DeallocateRepo deletes the leased base and returns
+// the name to the pool. In-scenario debug collection (workflow logs via
+// saveWorkflowRunLogs, agent artifacts via ensureArtifacts) has already
+// finished by the time the After hook runs, so CI still has those files
+// under BEHAVIOUR_ARTIFACT_DIR after the leased repo is gone.
+//
 // driver.DeallocateRepo is deferred so the lease is returned even if
 // steps.CleanupScenario panics. Named return values allow the deferred
 // closure to surface a deallocation error when no scenario error exists.

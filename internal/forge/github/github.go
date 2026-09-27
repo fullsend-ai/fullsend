@@ -3692,6 +3692,23 @@ func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username,
 	return nil
 }
 
+func (c *LiveClient) GetOrgMembership(ctx context.Context, org, username string) (forge.OrgMembership, error) {
+	path := fmt.Sprintf("/orgs/%s/memberships/%s",
+		url.PathEscape(org), url.PathEscape(username))
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return forge.OrgMembership{}, fmt.Errorf("get org membership for %s in %s: %w", username, org, err)
+	}
+	var body struct {
+		State string `json:"state"`
+		Role  string `json:"role"`
+	}
+	if err := decodeJSON(resp, &body); err != nil {
+		return forge.OrgMembership{}, fmt.Errorf("decode org membership for %s in %s: %w", username, org, err)
+	}
+	return forge.OrgMembership{State: body.State, Role: body.Role}, nil
+}
+
 // CreateOrgSecret creates or updates an encrypted organization-level secret
 // scoped to the given repository IDs.
 // The value is trimmed of whitespace before encryption to prevent corruption

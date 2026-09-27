@@ -471,6 +471,34 @@ func TestFakeClient_GetAppClientID(t *testing.T) {
 	})
 }
 
+func TestFakeClient_GetOrgMembership(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("found", func(t *testing.T) {
+		fc := &FakeClient{
+			OrgMemberships: map[string]OrgMembership{
+				"org/fstest-write": {State: "active", Role: "member"},
+			},
+		}
+		got, err := fc.GetOrgMembership(ctx, "org", "fstest-write")
+		require.NoError(t, err)
+		assert.Equal(t, OrgMembership{State: "active", Role: "member"}, got)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		fc := &FakeClient{}
+		_, err := fc.GetOrgMembership(ctx, "org", "nobody")
+		require.Error(t, err)
+		assert.True(t, IsNotFound(err))
+	})
+
+	t.Run("error injection", func(t *testing.T) {
+		fc := &FakeClient{Errors: map[string]error{"GetOrgMembership": errors.New("api down")}}
+		_, err := fc.GetOrgMembership(ctx, "org", "alice")
+		require.ErrorContains(t, err, "api down")
+	})
+}
+
 func TestFakeClient_OrgSecretExists(t *testing.T) {
 	ctx := context.Background()
 
