@@ -190,18 +190,28 @@ the overlay `config.yaml` only, and only enforces the role check when
 `$ROLES` is non-empty. Omitting the key, a YAML null (`roles:`), and an
 explicit `roles: []` all decode to the same empty `$ROLES` there, so **all
 three skip the check and allow every stage** — they do not disagree with
-each other in the workflow, but they disagree sharply with the Go
-accessor chain, where `roles: []` is deny-all and an omitted or null key
-inherits (and may resolve to a non-empty list from `config.base.yaml` or
-code defaults that the workflow never sees). The yq path does not walk
-overlay → base → code defaults, so it can diverge from `ConfigRoles()`
-even when `.fullsend/config.yaml` sets a non-empty `roles` list directly.
+each other in the workflow, but they diverge from the Go `ConfigRoles()`
+accessor chain, where `roles: []` resolves to an empty list distinct from
+an omitted or null key that inherits (and may resolve to a non-empty list
+from `config.base.yaml` or code defaults that the workflow never sees).
+The yq path does not walk overlay → base → code defaults, so it can
+diverge from `ConfigRoles()` even when `.fullsend/config.yaml` sets a
+non-empty `roles` list directly.
 
-This section specifies the Go-side (`ConfigRoles()`) convention only.
-`roles: []` restricts dispatch through that accessor chain; it does not
-restrict the dispatch workflow's own yq-based check, which allows
-regardless of whether `roles` is omitted, null, or `[]`. Aligning the
-workflow's reader with `ConfigRoles()` is a follow-up.
+This section specifies the Go-side (`ConfigRoles()`) resolution only.
+`ConfigRoles()` is **not** itself a dispatch gate today: `BuildConfigMap`
+(`internal/harness/forge.go`) only adds a `roles` key to the overlay
+CEL-evaluation map when the resolved list is non-empty, so `roles: []`
+and an omitted or null key produce the identical CEL-visible map state —
+no distinguishable "deny" signal reaches any trigger through this path.
+`CheckManagedSafetyGate` (`internal/config/managed_safety.go`) uses
+`ConfigRoles()` only to detect unauthorized widening between two configs
+(a safety-relaxation diff), not to block a stage. No current CEL trigger
+or dispatch code path reads `config.roles` to restrict dispatch. The only
+check that currently runs during dispatch is the workflow's own
+yq-based one described above, and it allows regardless of whether
+`roles` is omitted, null, or `[]`. Giving `ConfigRoles()` real dispatch
+enforcement, and aligning the workflow's reader with it, is a follow-up.
 
 ## Field details
 
