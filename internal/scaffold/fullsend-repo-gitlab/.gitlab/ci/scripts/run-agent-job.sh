@@ -319,27 +319,6 @@ if [ -n "${CONFIG_YAML}" ]; then
   fi
 fi
 
-# Role enablement — skip stage if its role is not in configured roles
-if [ -n "${CONFIG_YAML}" ]; then
-  STAGE_ROLE="${STAGE}"
-  case "${STAGE}" in
-    code|fix) STAGE_ROLE="coder" ;;
-  esac
-  if ! ROLES=$(echo "${CONFIG_YAML}" | python3 -c "import sys,yaml; v=(yaml.safe_load(sys.stdin) or {}); roles=v.get('roles') or []; roles=roles if isinstance(roles,list) else [roles]; print('\n'.join(str(r) for r in roles)) if roles else None"); then
-    echo "WARNING: invalid .fullsend/config.yaml — treating as unconfigured (no role restriction)"
-    ROLES=""
-  fi
-  if [ -n "${ROLES}" ] && ! echo "${ROLES}" | grep -Fqx "${STAGE_ROLE}"; then
-    # Backward compat: "fullsend" in roles implies retro + prioritize
-    if echo "${STAGE}" | grep -Eq '^(retro|prioritize)$' && echo "${ROLES}" | grep -Fqx "fullsend"; then
-      echo "Stage '${STAGE}' allowed via 'fullsend' role — if customizing roles, add '${STAGE}' explicitly"
-    else
-      echo "Stage '${STAGE}' skipped — role '${STAGE_ROLE}' not in configured roles"
-      exit 0
-    fi
-  fi
-fi
-
 # Authorization gate (ADR 0054) — check actor has Developer access.
 # Read-only stages (retro, prioritize) are exempt to match GitHub
 # behavior where any closer may trigger retro.

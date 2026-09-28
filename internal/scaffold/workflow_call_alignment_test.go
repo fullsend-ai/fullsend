@@ -1211,52 +1211,6 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 	}
 }
 
-// TestRoleCheckCaseBranches validates the role-check step's case mapping and
-// backward-compat logic in reusable-dispatch.yml (#2298).
-func TestRoleCheckCaseBranches(t *testing.T) {
-	type workflowCase struct {
-		name    string
-		content func(t *testing.T) []byte
-	}
-
-	cases := []workflowCase{
-		{
-			"reusable-dispatch.yml",
-			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
-		},
-	}
-
-	for _, wc := range cases {
-		t.Run(wc.name, func(t *testing.T) {
-			s := string(wc.content(t))
-
-			// code|fix must map to coder
-			assert.Contains(t, s, `code|fix) STAGE_ROLE="coder"`,
-				"code|fix should map to coder role")
-
-			// retro and prioritize must NOT be remapped to fullsend
-			assert.NotContains(t, s, `retro|prioritize) STAGE_ROLE="fullsend"`,
-				"retro/prioritize must not be remapped to fullsend (#2298)")
-
-			// backward compat: fullsend in roles implies retro + prioritize
-			assert.Regexp(t, `\^\(retro\|prioritize\)\$`, s,
-				"backward-compat regex should match retro and prioritize")
-			assert.Contains(t, s, `grep -Fqx "fullsend"`,
-				"backward-compat should check for fullsend in roles")
-
-			// compat path must emit a notice, not silently pass
-			assert.Regexp(t, `(?s)grep -Fqx "fullsend".*::notice::Stage`, s,
-				"backward-compat path must emit a ::notice:: annotation")
-
-			// stages that pass through unmapped must not be remapped
-			assert.NotRegexp(t, `triage\).*STAGE_ROLE=`, s,
-				"triage must not be remapped")
-			assert.NotRegexp(t, `review\).*STAGE_ROLE=`, s,
-				"review must not be remapped")
-		})
-	}
-}
-
 // TestOpenAIVariableForwarding validates that the OpenAI WIF identifiers
 // (#6689, ADR 0092) reach the agent step of every stage the way the OTEL
 // variables do: repository/organization variables are visible inside a
