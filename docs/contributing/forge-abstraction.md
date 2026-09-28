@@ -25,7 +25,7 @@ curl "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}" \
 
 That is a new direct forge API path in the GitLab scaffold. Route the lookup through a `fullsend` CLI subcommand backed by `forge.Client` instead of adding another inline `curl`.
 
-Existing `gh api` calls in `action.yml` and existing authenticated `curl` calls in `internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/` that predate this rule are grandfathered but should be migrated when touched. Adding another call of the same shape is not grandfathered.
+Existing `gh api` calls in `action.yml` (currently none) and under `internal/scaffold/fullsend-repo/` (GitHub scaffold scripts and workflow templates), and existing authenticated `curl` calls in `internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/`, that predate this rule are grandfathered but should be migrated when touched. Adding another call of the same shape is not grandfathered.
 
 **When reviewing PRs:** Flag any new inline `gh api`, `glab`, or authenticated `curl`/`wget` call to a forge API in a CI scaffold script as a medium-severity or higher finding — the same class as a Go-side `exec.Command("gh", ...)` bypass.
 
