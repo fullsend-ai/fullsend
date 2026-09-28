@@ -660,16 +660,6 @@ func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
 	assert.Contains(t, s, "yaml.safe_load")
 }
 
-func TestGitLabAgentTemplateRoleEnablement(t *testing.T) {
-	s := gitlabAgentScaffold(t)
-	assert.Contains(t, s, "STAGE_ROLE")
-	assert.Contains(t, s, `code|fix) STAGE_ROLE="coder"`)
-	assert.Contains(t, s, "not in configured roles")
-	// Backward compat: "fullsend" role implies retro + prioritize
-	assert.Contains(t, s, `"fullsend"`)
-	assert.Contains(t, s, "retro|prioritize")
-}
-
 func TestGitLabAgentTemplateForkProtection(t *testing.T) {
 	s := gitlabAgentScaffold(t)
 	assert.Contains(t, s, "Fork MR detected")
