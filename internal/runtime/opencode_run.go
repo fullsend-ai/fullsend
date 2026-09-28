@@ -377,6 +377,9 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 		// dropping the list.
 		printer.StepWarn(fmt.Sprintf("fallback models %s are not supported on opencode yet and are ignored", sanitizeOutput(strings.Join(params.FallbackModels, ","))))
 	}
+	if params.HooksSettingsPath != "" && len(openCodeHooksExtensionBytes()) == 0 {
+		return -1, fmt.Errorf("opencode run: hooks adapter not yet available (tracked in unbound-force#515)")
+	}
 	trustedEnv, ok := lookupOpenCodeTrustedEnv(params.SandboxName)
 	if !ok {
 		return -1, fmt.Errorf("opencode run: trusted environment was not recorded during bootstrap")
