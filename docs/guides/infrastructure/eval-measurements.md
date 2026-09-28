@@ -259,6 +259,9 @@ fullsend eval-measure \
   manifest only), matching `fullsend run --offline`.
 - Exit `0` when a score is `fail` — scores are data.
 - Exit `0` when telemetry or the manifest is missing (skip).
+- A GitHub 401/403 (other than a rate limit) while resolving `agents@v0`
+  is a hard error, matching `fullsend run`. Missing telemetry or a missing
+  manifest still skip with exit `0`.
 
 ## Implementation note
 

@@ -50,7 +50,9 @@ JSONL artifact plus optional OTLP on the shared OTEL_* path (ADR 0087).
 No vendor score adapters (MLflow Assessments, Phoenix SDK, …) in core.
 
 Exit 0 when scores fail — measurements are data, not gates. Non-zero only
-on hard IO/parse errors. Missing telemetry or manifest is a skip (exit 0).`,
+on hard IO/parse errors (including a GitHub 401/403 while resolving the
+agents@v0 measurement manifest). Missing telemetry or manifest is a skip
+(exit 0).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := ui.New(cmd.OutOrStdout())
 			printer.Header("Eval Measure")
@@ -181,11 +183,7 @@ func resolveEvalMeasureRegistry(ctx context.Context, printer *ui.Printer, opts e
 		}
 	}
 	composeOpts, client := evalMeasureFetchContext(opts.fullsendDir, opts.offline, printer)
-	path, ok := tryAgentsRepoMeasurementManifest(ctx, agent, client, composeOpts, printer)
-	if !ok {
-		return "", nil
-	}
-	return path, nil
+	return tryAgentsRepoMeasurementManifest(ctx, agent, client, composeOpts, printer)
 }
 
 func sanitizeMeasurementAgentName(agent string) (string, error) {

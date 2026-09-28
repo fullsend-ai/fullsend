@@ -27,6 +27,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -1317,33 +1318,230 @@ func TestResolveAgentSource_EnabledAgentStillResolves(t *testing.T) {
 	assert.Contains(t, path, "custom.yaml")
 }
 
+func assertAgentsRepoFallbackSkipped(t *testing.T, path string, err error) {
+	t.Helper()
+	require.NoError(t, err)
+	assert.Empty(t, path)
+}
+
 func TestTryAgentsRepoFallback_UnknownAgent(t *testing.T) {
 	fakeClient := forge.NewFakeClient()
 	printer := ui.New(io.Discard)
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "custom-agent", fakeClient, harness.ComposeOpts{}, printer)
-	assert.False(t, ok)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "custom-agent", fakeClient, harness.ComposeOpts{}, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
 }
 
 func TestTryAgentsRepoFallback_Offline(t *testing.T) {
 	fakeClient := forge.NewFakeClient()
 	printer := ui.New(io.Discard)
 	opts := harness.ComposeOpts{FetchPolicy: fetch.FetchPolicy{Offline: true}}
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
-	assert.False(t, ok)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
 }
 
 func TestTryAgentsRepoFallback_NilClient(t *testing.T) {
 	printer := ui.New(io.Discard)
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", nil, harness.ComposeOpts{}, printer)
-	assert.False(t, ok)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "triage", nil, harness.ComposeOpts{}, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
 }
 
 func TestTryAgentsRepoFallback_GetRefError(t *testing.T) {
 	fakeClient := forge.NewFakeClient()
 	fakeClient.Errors["GetRef"] = fmt.Errorf("rate limited")
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
+	assert.Contains(t, buf.String(), "Could not resolve")
+	assert.NotContains(t, buf.String(), "\u2717")
+}
+
+func TestTryAgentsRepoFallback_GetRefPATForbidden(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Errors["GetRef"] = &gh.APIError{
+		StatusCode: http.StatusForbidden,
+		Message:    "Resource not accessible by personal access token",
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	path, deps, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Empty(t, path)
+	assert.Nil(t, deps)
+	assert.Contains(t, err.Error(), "resolving fullsend-ai/agents@main")
+	assert.Contains(t, err.Error(), "github api: 403")
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
+	assert.Contains(t, buf.String(), "Could not resolve fullsend-ai/agents@main")
+	assert.Contains(t, buf.String(), "\u2717")
+}
+
+func TestTryAgentsRepoFallback_GetRefUnauthorized(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Errors["GetRef"] = &gh.APIError{
+		StatusCode: http.StatusUnauthorized,
+		Message:    "Bad credentials",
+	}
 	printer := ui.New(io.Discard)
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
-	assert.False(t, ok)
+	_, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "github api: 401")
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
+}
+
+func TestTryAgentsRepoFallback_GetRefRateLimitStillSkipped(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Errors["GetRef"] = &gh.APIError{
+		StatusCode: http.StatusForbidden,
+		Message:    "API rate limit exceeded",
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
+	assert.Contains(t, buf.String(), "Could not resolve")
+}
+
+func TestIsAgentsRefAuthError(t *testing.T) {
+	assert.False(t, isAgentsRefAuthError(nil))
+	assert.False(t, isAgentsRefAuthError(fmt.Errorf("rate limited")))
+	assert.False(t, isAgentsRefAuthError(&gh.APIError{StatusCode: http.StatusNotFound, Message: "Not Found"}))
+	assert.False(t, isAgentsRefAuthError(&gh.APIError{StatusCode: http.StatusForbidden, Message: "API rate limit exceeded"}))
+	assert.True(t, isAgentsRefAuthError(&gh.APIError{StatusCode: http.StatusForbidden, Message: "Resource not accessible by personal access token"}))
+	assert.True(t, isAgentsRefAuthError(fmt.Errorf("get ref: %w", &gh.APIError{StatusCode: http.StatusUnauthorized, Message: "Bad credentials"})))
+}
+
+func TestResolveAgentSource_GetRefPATForbiddenIsFatal(t *testing.T) {
+	dir := t.TempDir()
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Errors["GetRef"] = &gh.APIError{
+		StatusCode: http.StatusForbidden,
+		Message:    "Resource not accessible by personal access token",
+	}
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, nil, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving fullsend-ai/agents@main")
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
+	assert.NotContains(t, err.Error(), "agents-repo fallback unavailable")
+}
+
+func TestResolveAgentSource_GetRefPATForbiddenWhenNotInConfig(t *testing.T) {
+	dir := t.TempDir()
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Errors["GetRef"] = &gh.APIError{
+		StatusCode: http.StatusForbidden,
+		Message:    "Resource not accessible by personal access token",
+	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Source: "harness/other.yaml"},
+	})
+	orgCfg.SetAllowedRemoteResources([]string{"https://example.com/"})
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, orgCfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
+	assert.NotContains(t, err.Error(), "not in config")
+}
+
+func TestResolveAgentSource_GetRefPATForbiddenOverrideOnlyEntry(t *testing.T) {
+	dir := t.TempDir()
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Errors["GetRef"] = &gh.APIError{
+		StatusCode: http.StatusForbidden,
+		Message:    "Resource not accessible by personal access token",
+	}
+	cfg, err := config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: triage
+    runtime: pi
+    model: sonnet
+`))
+	require.NoError(t, err)
+	printer := ui.New(io.Discard)
+	_, _, err = resolveAgentSource(context.Background(), dir, "triage", fakeClient, cfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
+	assert.NotContains(t, err.Error(), "agents-repo fallback unavailable")
+}
+
+func agentsRepoFallbackSuccessOpts(t *testing.T) (forge.Client, harness.ComposeOpts, string) {
+	t.Helper()
+	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := "/" + fakeSHA + "/harness/triage.yaml"
+		if r.URL.Path == expectedPath {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/heads/main"] = fakeSHA
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+	return fakeClient, opts, fakeSHA
+}
+
+func TestResolveAgentSource_AgentsRepoFallbackSuccess(t *testing.T) {
+	dir := t.TempDir()
+	fakeClient, opts, fakeSHA := agentsRepoFallbackSuccessOpts(t)
+	printer := ui.New(io.Discard)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, nil, opts, printer)
+	require.NoError(t, err)
+	assert.NotEmpty(t, path)
+	require.Len(t, deps, 1)
+	assert.Contains(t, deps[0].URL, fakeSHA)
+}
+
+func TestResolveAgentSource_AgentsRepoFallbackSuccessWhenNotInConfig(t *testing.T) {
+	dir := t.TempDir()
+	fakeClient, opts, fakeSHA := agentsRepoFallbackSuccessOpts(t)
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Source: "harness/other.yaml"},
+	})
+	orgCfg.SetAllowedRemoteResources(opts.OrgAllowlist)
+	printer := ui.New(io.Discard)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, orgCfg, opts, printer)
+	require.NoError(t, err)
+	assert.NotEmpty(t, path)
+	require.Len(t, deps, 1)
+	assert.Contains(t, deps[0].URL, fakeSHA)
+}
+
+func TestResolveAgentSource_OverrideOnlyEntryFallbackSuccess(t *testing.T) {
+	dir := t.TempDir()
+	fakeClient, opts, fakeSHA := agentsRepoFallbackSuccessOpts(t)
+	cfg, err := config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: triage
+    runtime: pi
+    model: sonnet
+`))
+	require.NoError(t, err)
+	printer := ui.New(io.Discard)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, cfg, opts, printer)
+	require.NoError(t, err)
+	assert.NotEmpty(t, path)
+	require.Len(t, deps, 1)
+	assert.Contains(t, deps[0].URL, fakeSHA)
 }
 
 func TestTryAgentsRepoFallback_NotAllowlisted(t *testing.T) {
@@ -1353,8 +1551,8 @@ func TestTryAgentsRepoFallback_NotAllowlisted(t *testing.T) {
 	opts := harness.ComposeOpts{
 		OrgAllowlist: []string{"https://example.com/"},
 	}
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
-	assert.False(t, ok)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
 }
 
 func TestTryAgentsRepoFallback_ExplicitlyEmptyAllowlist(t *testing.T) {
@@ -1364,8 +1562,8 @@ func TestTryAgentsRepoFallback_ExplicitlyEmptyAllowlist(t *testing.T) {
 	opts := harness.ComposeOpts{
 		OrgAllowlist: []string{},
 	}
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
-	assert.False(t, ok)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
 }
 
 func TestTryAgentsRepoFallback_CaseNormalization(t *testing.T) {
@@ -1375,10 +1573,10 @@ func TestTryAgentsRepoFallback_CaseNormalization(t *testing.T) {
 
 	// "Triage" should pass the known-agent check but would have caused a 404
 	// before the case-normalization fix. Now it uses "triage" in the URL.
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "Triage", fakeClient, harness.ComposeOpts{}, printer)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "Triage", fakeClient, harness.ComposeOpts{}, printer)
 	// Fallback skips because fetch fails (no HTTP server), but it shouldn't
 	// panic and should get past the known-agent gate.
-	assert.False(t, ok)
+	assertAgentsRepoFallbackSkipped(t, path, err)
 }
 
 func TestTryAgentsRepoFallback_ShortSHA(t *testing.T) {
@@ -1387,8 +1585,8 @@ func TestTryAgentsRepoFallback_ShortSHA(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	// Short SHA fails hex validation — exercises both validation and bounds guard.
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
-	assert.False(t, ok)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
 }
 
 func TestTryAgentsRepoFallback_InvalidSHA(t *testing.T) {
@@ -1397,8 +1595,8 @@ func TestTryAgentsRepoFallback_InvalidSHA(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	// Non-hex characters should be rejected by SHA validation.
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
-	assert.False(t, ok)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
 }
 
 func TestTryAgentsRepoFallback_AllKnownAgents(t *testing.T) {
@@ -1408,8 +1606,8 @@ func TestTryAgentsRepoFallback_AllKnownAgents(t *testing.T) {
 			printer := ui.New(io.Discard)
 			// Should pass the known-agent gate (not return false immediately).
 			// GetBranchRef will fail since no ref is set, confirming we got past the gate.
-			_, _, ok := tryAgentsRepoFallback(context.Background(), name, fakeClient, harness.ComposeOpts{}, printer)
-			assert.False(t, ok)
+			path, _, err := tryAgentsRepoFallback(context.Background(), name, fakeClient, harness.ComposeOpts{}, printer)
+			assertAgentsRepoFallbackSkipped(t, path, err)
 		})
 	}
 }
@@ -1452,9 +1650,9 @@ func TestTryAgentsRepoFallback_SuccessPath(t *testing.T) {
 		OrgAllowlist:  []string{srv.URL + "/"},
 	}
 
-	path, deps, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
-	require.True(t, ok, "expected fallback to succeed")
-	assert.NotEmpty(t, path)
+	path, deps, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	require.NoError(t, err)
+	require.NotEmpty(t, path, "expected fallback to succeed")
 	assert.Len(t, deps, 1)
 	assert.Contains(t, deps[0].URL, fakeSHA)
 	assert.Equal(t, "file", deps[0].Type)
@@ -1505,9 +1703,9 @@ func TestTryAgentsRepoFallback_SuccessPath_ReleaseBuild(t *testing.T) {
 		OrgAllowlist:  []string{srv.URL + "/"},
 	}
 
-	path, deps, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
-	require.True(t, ok, "expected release-build fallback to succeed")
-	assert.NotEmpty(t, path)
+	path, deps, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	require.NoError(t, err)
+	require.NotEmpty(t, path, "expected release-build fallback to succeed")
 	assert.Len(t, deps, 1)
 	assert.Contains(t, deps[0].URL, fakeSHA)
 }
@@ -1548,10 +1746,11 @@ func TestTryAgentsRepoMeasurementManifest_Success(t *testing.T) {
 		OrgAllowlist:  []string{srv.URL + "/"},
 	}
 
-	path, ok := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, opts, printer)
-	require.True(t, ok)
-	got, err := os.ReadFile(path)
+	path, err := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, opts, printer)
 	require.NoError(t, err)
+	require.NotEmpty(t, path)
+	got, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
 	assert.Equal(t, manifest, got)
 	assert.Contains(t, path, "content")
 }
@@ -1584,8 +1783,9 @@ func TestTryAgentsRepoMeasurementManifest_HTTP404(t *testing.T) {
 		OrgAllowlist:  []string{srv.URL + "/"},
 	}
 
-	_, ok := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, opts, printer)
-	assert.False(t, ok)
+	path, err := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, opts, printer)
+	require.NoError(t, err)
+	assert.Empty(t, path)
 	assert.Contains(t, buf.String(), "HTTP 404")
 	assert.NotContains(t, buf.String(), "Failed to fetch")
 }
@@ -1618,8 +1818,9 @@ func TestTryAgentsRepoMeasurementManifest_NetworkFailure(t *testing.T) {
 		OrgAllowlist:  []string{srv.URL + "/"},
 	}
 
-	_, ok := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, opts, printer)
-	assert.False(t, ok)
+	path, err := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, opts, printer)
+	require.NoError(t, err)
+	assert.Empty(t, path)
 	assert.Contains(t, buf.String(), "Failed to fetch")
 	assert.NotContains(t, buf.String(), "HTTP 404")
 }
@@ -1627,8 +1828,22 @@ func TestTryAgentsRepoMeasurementManifest_NetworkFailure(t *testing.T) {
 func TestTryAgentsRepoMeasurementManifest_UnknownAgent(t *testing.T) {
 	fakeClient := forge.NewFakeClient()
 	printer := ui.New(io.Discard)
-	_, ok := tryAgentsRepoMeasurementManifest(context.Background(), "custom-agent", fakeClient, harness.ComposeOpts{}, printer)
-	assert.False(t, ok)
+	path, err := tryAgentsRepoMeasurementManifest(context.Background(), "custom-agent", fakeClient, harness.ComposeOpts{}, printer)
+	require.NoError(t, err)
+	assert.Empty(t, path)
+}
+
+func TestTryAgentsRepoMeasurementManifest_GetRefPATForbidden(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Errors["GetRef"] = &gh.APIError{
+		StatusCode: http.StatusForbidden,
+		Message:    "Resource not accessible by personal access token",
+	}
+	printer := ui.New(io.Discard)
+	path, err := tryAgentsRepoMeasurementManifest(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Empty(t, path)
+	assert.Contains(t, err.Error(), agentsRefPATGuidance)
 }
 
 func TestIsFetchHTTPStatus(t *testing.T) {
@@ -1680,8 +1895,8 @@ func TestTryAgentsRepoFallback_AuditLog(t *testing.T) {
 		TraceID:       "test-trace-123",
 	}
 
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
-	require.True(t, ok, "expected fallback to succeed")
+	_, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	require.NoError(t, err, "expected fallback to succeed")
 
 	auditContent, err := os.ReadFile(auditLog)
 	require.NoError(t, err)
@@ -1726,8 +1941,8 @@ func TestTryAgentsRepoFallback_CachePutFailure(t *testing.T) {
 		OrgAllowlist:  []string{srv.URL + "/"},
 	}
 
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
-	assert.False(t, ok, "expected fallback to fail when cache write fails")
+	path, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
 }
 
 func TestTryAgentsRepoFallback_FetchURLError(t *testing.T) {
@@ -1759,8 +1974,8 @@ func TestTryAgentsRepoFallback_FetchURLError(t *testing.T) {
 		OrgAllowlist:  []string{srv.URL + "/"},
 	}
 
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
-	assert.False(t, ok)
+	path, _, err := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assertAgentsRepoFallbackSkipped(t, path, err)
 }
 
 func TestResolveAgentsRef_DevBuild(t *testing.T) {
