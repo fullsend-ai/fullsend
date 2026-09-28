@@ -635,16 +635,18 @@ integration test.
 
 ## Tri-state config field semantics
 
-Per-repo fields that inherit from parent when unset are **tri-state**:
-key absent, explicit empty/zero, and explicit value are three different
-meanings. YAML null (`field:` / `field: null`) is *not* empty —
-`gopkg.in/yaml.v3` decodes it to the same Go `nil` as an omitted key.
-The canonical rule, the yaml.v3 sentinel gotcha, and the workflow-reader
+Per-repo fields that inherit from parent when unset, and whose Go type
+can hold a distinct "explicit empty" value (slices and pointers), are
+**tri-state**: key absent, explicit empty/zero, and explicit value are
+three different meanings. YAML null (`field:` / `field: null`) is *not*
+empty — `gopkg.in/yaml.v3` decodes it to the same Go `nil` as an omitted
+key. String/scalar fields (e.g. `runtime`) are bi-state, not tri-state:
+they have no way to represent "explicit empty" distinct from absent. The
+canonical rule, the yaml.v3 sentinel gotcha, and the workflow-reader
 divergence live in
 [Config Reference — Tri-state config field semantics](../reference/config-reference.md#tri-state-config-field-semantics).
 
-When adding or changing a tri-state field (including a future
-`agents[].enabled` redesign):
+When adding or changing a tri-state field:
 
 1. Link that config-reference section from the field's docs.
 2. Add absent / null / empty-or-false / value rows to

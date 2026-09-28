@@ -102,14 +102,25 @@ models:
 
 Several per-repo fields support inherit-from-parent: an overlay may omit
 the key, set a value, or set an explicit empty or zero value. Absent,
-null, and empty are not interchangeable. Treat any field that participates
-in the overlay → base → code-defaults chain as **tri-state** unless its
-field details say otherwise.
+null, and empty are not interchangeable for these fields.
 
-This is the canonical rule for those fields, including a future
-`agents[].enabled` redesign. A PR that adds or changes a tri-state field
-must link this section and add a four-way row to
-`TestPerRepoConfig_TriStateYAMLShapes` in `internal/config/defaults_test.go`.
+This rule applies only to fields whose Go type can hold a distinct
+"explicit empty" value — slices (`roles`, `allowed_remote_resources`,
+`agents`) and pointers (`kill_switch`, `keep_history`, `agents[].enabled`).
+Treat those as **tri-state** unless their field details say otherwise.
+
+String/scalar fields (`runtime`, `forge`, `tracker`, `mint_url`,
+`inference.*`) and empty-map fields (`models.aliases`) are **bi-state**,
+not tri-state: an omitted key, a YAML null, and an explicit empty
+string/`{}` all decode to the same Go zero value (`""` or a `nil`/empty
+map) and all inherit. There is no way to write "override to empty" for
+these fields — `ConfigRuntime()`, for example, falls through to the
+parent whenever `c.Runtime == ""`, regardless of whether `runtime` was
+omitted, null, or `""` in the overlay.
+
+A PR that adds or changes a tri-state field must link this section and
+add a four-way row to `TestPerRepoConfig_TriStateYAMLShapes` in
+`internal/config/defaults_test.go`.
 
 ### Authoring states
 
@@ -132,7 +143,9 @@ than deny-all. See
 ### YAML null is not empty
 
 `gopkg.in/yaml.v3` decodes a null scalar (`field:`, `field: null`,
-`field: ~`) into the same Go zero value as an omitted key:
+`field: ~`) into the same Go zero value as an omitted key — for a
+*whole-field* unmarshal into a slice or pointer. Per-key map values are
+an exception; see "Map values are not whole-field unmarshal" below.
 
 | YAML | `[]T` (e.g. `roles`) | `*T` (e.g. `kill_switch`) |
 |------|----------------------|---------------------------|
@@ -147,22 +160,48 @@ implements `UnmarshalYAML` (or equivalent) and records key presence.
 `ConfigRoles()` uses `[]string`, so YAML null inherits like an omitted key.
 The only YAML form that resolves to "no roles" is `roles: []`.
 
-Go accessors follow the decoded value, not YAML key presence:
+Go accessors follow the decoded value, not YAML key presence. The unset
+sentinel is type-specific — a `nil` slice, a `nil` pointer, or an empty
+string — and is never a semantic zero value like `false` or a non-nil
+`[]`:
 
-1. Decoded nil / zero → fall through to parent.
+1. Decoded unset sentinel (`nil` slice, `nil` pointer, `""`) → fall
+   through to parent.
 2. Decoded non-nil empty (`[]`, `*false`) → local value, no fallthrough.
 3. Decoded non-empty / non-zero → local value.
+
+#### Map values are not whole-field unmarshal
+
+The whole-field collapse above describes a field's own YAML node — it
+does not apply the same way to individual values inside a map.
+`agents[].subagents` is `map[string]*string`: a `~` (null) value for one
+persona key decodes to a map entry that is *present*, with a `nil`
+pointer value, distinguishable from that key being absent from the map
+entirely. The keyed merge in `internal/config/interfaces.go` treats a
+present nil-valued key as a tombstone that suppresses the inherited
+entry for that persona — it is a real, non-inherited state, not an
+omitted key. See `subagents` under [`agents`](#agents).
 
 ### Workflow readers are not `ConfigRoles()`
 
 The dispatch workflow (`.github/workflows/reusable-dispatch.yml`) reads
-`roles` with `yq` from overlay `config.yaml` only. That path does not walk
-overlay → base → code defaults, and YAML libraries that check key presence
-(`has("roles")`) treat a null scalar as present while Go treats it as
-omitted. Those layers have disagreed about `roles:` (null) before. This
-section specifies the Go-side convention; aligning other readers is a
-follow-up. Prefer `roles: []` (explicit empty) or omitting the key
-(inherit) — never a null scalar — so every reader sees the same intent.
+`ROLES=$(yq '.roles[]' .fullsend/config.yaml 2>/dev/null || echo "")` from
+the overlay `config.yaml` only, and only enforces the role check when
+`$ROLES` is non-empty. Omitting the key, a YAML null (`roles:`), and an
+explicit `roles: []` all decode to the same empty `$ROLES` there, so **all
+three skip the check and allow every stage** — they do not disagree with
+each other in the workflow, but they disagree sharply with the Go
+accessor chain, where `roles: []` is deny-all and an omitted or null key
+inherits (and may resolve to a non-empty list from `config.base.yaml` or
+code defaults that the workflow never sees). The yq path does not walk
+overlay → base → code defaults, so it can diverge from `ConfigRoles()`
+even when `.fullsend/config.yaml` sets a non-empty `roles` list directly.
+
+This section specifies the Go-side (`ConfigRoles()`) convention only.
+`roles: []` restricts dispatch through that accessor chain; it does not
+restrict the dispatch workflow's own yq-based check, which allows
+regardless of whether `roles` is omitted, null, or `[]`. Aligning the
+workflow's reader with `ConfigRoles()` is a follow-up.
 
 ## Field details
 
@@ -201,9 +240,14 @@ not as false. See
 
 Controls whether sticky comment updates (from post-review, post-comment, and
 issues post-comment) append the previous comment body as a collapsed "Previous
-run" `<details>` block. Default is `true` (history appended). Set to `false`
-when accumulated "Previous run" blocks add unwanted noise — for example, when
-comments are synced to Jira where `<details>` does not render as collapsible.
+run" `<details>` block. Uses pointer semantics in the layered config system —
+`nil` (omitted) falls through to parent; an explicit `false` is a local
+decision that does not fall through. A YAML null (`keep_history:`) decodes
+as omitted, not as false. Default is `true` (history appended). Set to
+`false` when accumulated "Previous run" blocks add unwanted noise — for
+example, when comments are synced to Jira where `<details>` does not render
+as collapsible. See
+[Tri-state config field semantics](#tri-state-config-field-semantics).
 
 ### `runtime`
 
@@ -246,7 +290,14 @@ effort, and sub-agent models.
 - **`enabled`** — Toggle the agent without removing its entry. A
   suppression-only entry (`enabled: false`, no source) disables a built-in or
   parent-layer agent by name. YAML null (`enabled:` / `enabled: null`)
-  decodes as omitted (inherit / default true), not as false. See
+  decodes to a `nil` `*bool`, the same as omitting the key — **not**
+  `false`. Inherit and default are separate outcomes: keyed merge
+  (`internal/config/interfaces.go`) keeps the parent agent's `Enabled`
+  pointer whenever the overlay entry's pointer is `nil`, so a
+  parent-layer `enabled: false` survives an overlay that omits or nulls
+  `enabled`. `IsEnabled()` defaults to `true` only when no layer in the
+  chain — overlay, base, or the built-in agent itself — ever set
+  `enabled`. See
   [Tri-state config field semantics](#tri-state-config-field-semantics).
 - **`runtime`**, **`model`**, **`effort`** — Per-agent overrides. An
   override-only entry (no source, at least one setting) tunes a built-in
@@ -273,7 +324,11 @@ org-level list. Default prefixes cover the fullsend and agents repositories.
 
 In the layered config system, this field uses union-with-deny-all semantics:
 omitted inherits from parent; explicit empty (`[]`) denies all remote
-resources; a non-empty list is unioned with the parent's list. See
+resources; a non-empty list is unioned with the parent's list. A YAML null
+(`allowed_remote_resources:` / `allowed_remote_resources: null`) decodes to
+the same nil slice as an omitted key, so it inherits — it does **not** deny
+all. Only `allowed_remote_resources: []` denies all. See
+[Tri-state config field semantics](#tri-state-config-field-semantics) and
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
 ### `create_issues`

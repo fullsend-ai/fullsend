@@ -874,6 +874,7 @@ roles:
 agents:
   - name: triage
     source: harness/triage.yaml
+    enabled: false
 allowed_remote_resources:
   - https://parent.example.com/
 `
@@ -1135,9 +1136,15 @@ agents:
 			},
 		},
 
-		// agents[].enabled: *bool on a keyed-merge entry.
+		// agents[].enabled: *bool on a keyed-merge entry. The parent
+		// triage agent is enabled: false, so these cases actually
+		// exercise the keyed-merge guard in interfaces.go
+		// (`if oi.entry.Enabled != nil { merged.Enabled = oi.entry.Enabled }`):
+		// if that guard were removed and the overlay's nil Enabled
+		// always overwrote the parent's, these would silently flip to
+		// enabled and still pass under the old (unparented) assertions.
 		{
-			name: "agents.enabled/absent inherits parent enabled",
+			name: "agents.enabled/absent inherits parent disabled",
 			overlay: `version: "1"
 agents:
   - name: triage
@@ -1146,12 +1153,13 @@ agents:
 			check: func(t *testing.T, cfg PerRepoConfigReader) {
 				agents := cfg.AgentEntries()
 				require.Len(t, agents, 1)
-				assert.True(t, agents[0].IsEnabled())
-				assert.Nil(t, agents[0].Enabled)
+				assert.False(t, agents[0].IsEnabled())
+				require.NotNil(t, agents[0].Enabled, "keyed merge must preserve the parent's Enabled pointer")
+				assert.False(t, *agents[0].Enabled)
 			},
 		},
 		{
-			name: "agents.enabled/null scalar inherits parent enabled",
+			name: "agents.enabled/null scalar inherits parent disabled",
 			overlay: `version: "1"
 agents:
   - name: triage
@@ -1160,8 +1168,9 @@ agents:
 			check: func(t *testing.T, cfg PerRepoConfigReader) {
 				agents := cfg.AgentEntries()
 				require.Len(t, agents, 1)
-				assert.True(t, agents[0].IsEnabled())
-				assert.Nil(t, agents[0].Enabled, "yaml.v3 decodes enabled: null to nil")
+				assert.False(t, agents[0].IsEnabled())
+				require.NotNil(t, agents[0].Enabled, "yaml.v3 decodes enabled: null to nil, so keyed merge must keep the parent's non-nil Enabled")
+				assert.False(t, *agents[0].Enabled)
 			},
 		},
 		{
