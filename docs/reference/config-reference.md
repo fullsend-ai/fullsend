@@ -195,16 +195,26 @@ accessor chain, where `roles: []` resolves to an empty list distinct from
 an omitted or null key that inherits (and may resolve to a non-empty list
 from `config.base.yaml` or code defaults that the workflow never sees).
 The yq path does not walk overlay → base → code defaults, so it can
-diverge from `ConfigRoles()` even when `.fullsend/config.yaml` sets a
-non-empty `roles` list directly.
+diverge from `ConfigRoles()` when the overlay omits, nulls, or empties
+`roles` while `ConfigRoles()` still inherits a non-empty list from
+`config.base.yaml` or code defaults that the yq path never sees. When
+the overlay itself sets a non-empty `roles` list, `ConfigRoles()`
+returns that same overlay list (replace-if-set), so the two readers
+agree in that case.
 
 This section specifies the Go-side (`ConfigRoles()`) resolution only.
 `ConfigRoles()` is **not** itself a dispatch gate today: `BuildConfigMap`
 (`internal/harness/forge.go`) only adds a `roles` key to the overlay
-CEL-evaluation map when the resolved list is non-empty, so `roles: []`
-and an omitted or null key produce the identical CEL-visible map state —
-no distinguishable "deny" signal reaches any trigger through this path.
-`CheckManagedSafetyGate` (`internal/config/managed_safety.go`) uses
+CEL-evaluation map when the resolved list is non-empty. In the common
+case, an omitted or null `roles` key inherits a non-empty list — from
+the parent config or, absent that, `PerRepoDefaultRoles()`, which is
+never empty — so the CEL map *does* contain `roles` for omit/null. An
+explicit `roles: []` resolves to an empty `ConfigRoles()`, so the
+`roles` key is left out of the map entirely. An empty list is thus
+never inserted as a CEL value, but `has(config.roles)` still
+distinguishes `roles: []` (key absent from the map) from the common
+omit/null case (key present) — the two are not CEL-identical in
+general. `CheckManagedSafetyGate` (`internal/config/managed_safety.go`) uses
 `ConfigRoles()` only to detect unauthorized widening between two configs
 (a safety-relaxation diff), not to block a stage. No current CEL trigger
 or dispatch code path reads `config.roles` to restrict dispatch. The only
