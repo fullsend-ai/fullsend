@@ -80,8 +80,11 @@ func validateOpenCodeTrustedEnv(env openCodeTrustedEnv) error {
 		return fmt.Errorf("reading the trusted OpenCode environment: OPENCODE_CONFIG_CONTENT is invalid JSON: %w", err)
 	}
 	permission, ok := config["permission"]
-	if !ok || validateOpenCodePermissionPolicy(permission) != nil {
+	if !ok {
 		return fmt.Errorf("reading the trusted OpenCode environment: OPENCODE_CONFIG_CONTENT has no permission policy")
+	}
+	if err := validateOpenCodePermissionPolicy(permission); err != nil {
+		return fmt.Errorf("reading the trusted OpenCode environment: OPENCODE_CONFIG_CONTENT has invalid permission policy: %w", err)
 	}
 	if strings.TrimSpace(env.CredentialsPath) == "" {
 		return fmt.Errorf("reading the trusted OpenCode environment: GOOGLE_APPLICATION_CREDENTIALS is empty")

@@ -232,17 +232,18 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	assert.NotContains(t, cmd, "refusing to run unhooked")
 
 	// Runner-owned opencode.json with instructions pointing at workspace
-	// AGENTS.md is written by the prelude before .env is sourced.
+	// AGENTS.md is rewritten after .env is sourced.
 	configPath := OpenCodeRuntime{}.ConfigDir() + "/" + openCodeConfigFile
 	assert.Contains(t, cmd, "> "+shellQuote(configPath))
 	expectedJSON := openCodeInstructionsConfig(params.RepoDir)
 	assert.Contains(t, cmd, shellQuote(expectedJSON))
-	// The config write must appear before .env sourcing.
+	// The config write must appear after .env sourcing.
 	configIdx := strings.Index(cmd, shellQuote(configPath))
 	envIdx := strings.Index(cmd, "&& . "+shellQuote(sandbox.SandboxWorkspace+"/.env"))
 	require.NotEqual(t, -1, configIdx, "config write must be present")
 	require.NotEqual(t, -1, envIdx, ".env source must be present")
-	assert.Less(t, configIdx, envIdx, "runner-owned opencode.json must be written before .env is sourced")
+	assert.Greater(t, configIdx, envIdx, "runner-owned opencode.json must be rewritten after .env is sourced")
+	assert.Contains(t, cmd, "command -p printf '%s' "+shellQuote(expectedJSON))
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeBinaryPin()), envIdx, "opencode binary must be pinned before .env")
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeTrustedEnvPin(trustedEnv)), envIdx, "trusted values must be pinned before .env")
 	assert.Greater(t, strings.Index(cmd, "&& "+openCodeTrustedEnvRestore()), envIdx, "trusted values must be restored after .env")
@@ -259,6 +260,35 @@ func TestOpenCodeBinaryPin(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", out)
 	assert.Equal(t, "REAL", strings.TrimSpace(string(out)))
+}
+
+func TestOpenCodeExitPipeline(t *testing.T) {
+	rcFile := filepath.Join(t.TempDir(), "run-rc")
+	transcript := filepath.Join(t.TempDir(), "output.jsonl")
+	shadow := `printf() { command -p printf FAKE; }; tee() { command -p printf FAKE; }; cat() { command -p printf 0; }; `
+	command := shadow + openCodeExitPipeline(
+		[]string{"/bin/sh", "-c", shellQuote("command -p printf real-output; exit 7")},
+		rcFile,
+		transcript,
+	)
+	cmd := exec.Command("sh", "-c", command)
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr, "%s", out)
+	assert.Equal(t, 7, exitErr.ExitCode())
+	data, readErr := os.ReadFile(transcript)
+	require.NoError(t, readErr)
+	assert.Equal(t, "real-output", string(data))
+}
+
+func TestOpenCodeHooksGuardUsesUnshadowableCommands(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-hooks.ts")
+	shadow := `test() { return 0; }; printf() { return 0; }; sha256sum() { command -p printf '` + strings.Repeat("0", 64) + `  fake'; }; `
+	cmd := exec.Command("sh", "-c", shadow+openCodeHooksGuard(missing))
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+	assert.Equal(t, openCodeHooksMissingExit, exitErr.ExitCode())
 }
 
 func TestOpenCodeTrustedEnvRestore(t *testing.T) {
@@ -328,13 +358,13 @@ func TestOpenCodeValidateTrustedEnv(t *testing.T) {
 		{name: "empty config", env: openCodeTrustedEnv{CredentialsPath: valid.CredentialsPath}, want: "OPENCODE_CONFIG_CONTENT is empty"},
 		{name: "invalid config", env: openCodeTrustedEnv{ConfigContent: "{", CredentialsPath: valid.CredentialsPath}, want: "invalid JSON"},
 		{name: "missing permission", env: openCodeTrustedEnv{ConfigContent: `{}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
-		{name: "empty permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":{}}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
-		{name: "whitespace empty permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":{ }}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
-		{name: "null permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":null}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
-		{name: "array permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":[]}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
-		{name: "string permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":"deny"}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
-		{name: "invalid action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":"sometimes"}}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
-		{name: "invalid pattern action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{"*":"sometimes"}}}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
+		{name: "empty permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":{}}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission policy"},
+		{name: "whitespace empty permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":{ }}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission policy"},
+		{name: "null permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":null}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission policy"},
+		{name: "array permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":[]}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission policy"},
+		{name: "string permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":"deny"}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission policy"},
+		{name: "invalid action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":"sometimes"}}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission action"},
+		{name: "invalid pattern action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{"*":"sometimes"}}}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission action"},
 		{name: "empty credentials", env: openCodeTrustedEnv{ConfigContent: valid.ConfigContent}, want: "GOOGLE_APPLICATION_CREDENTIALS is empty"},
 	}
 	for _, tt := range tests {
@@ -397,12 +427,15 @@ func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
 		HooksSettingsPath: "/sandbox/opencode-config/hooks.json",
 	}
 	cmd := buildOpenCodeRunCommand(params, "fix", openCodeTrustedEnv{})
-	// The sha256 fail-closed guard is emitted before .env is sourced.
-	guardIdx := strings.Index(cmd, "refusing to run unhooked")
+	// The sha256 fail-closed guard is emitted before and after .env is sourced.
+	firstGuardIdx := strings.Index(cmd, "refusing to run unhooked")
+	lastGuardIdx := strings.LastIndex(cmd, "refusing to run unhooked")
 	envIdx := strings.Index(cmd, "&& . "+shellQuote(sandbox.SandboxWorkspace+"/.env"))
-	require.NotEqual(t, -1, guardIdx, "hooks guard must be present")
+	require.NotEqual(t, -1, firstGuardIdx, "hooks guard must be present")
 	require.NotEqual(t, -1, envIdx)
-	assert.Less(t, guardIdx, envIdx, "integrity guard must run before .env is sourced")
+	assert.Equal(t, 2, strings.Count(cmd, "refusing to run unhooked"))
+	assert.Less(t, firstGuardIdx, envIdx, "integrity guard must run before .env is sourced")
+	assert.Greater(t, lastGuardIdx, envIdx, "integrity guard must run again after .env is sourced")
 	assert.Contains(t, cmd, "command -p sha256sum")
 	assert.Contains(t, cmd, OpenCodeRuntime{}.openCodeHooksExtensionPath())
 	assert.Contains(t, cmd, "exit 97")

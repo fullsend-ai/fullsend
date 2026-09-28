@@ -458,6 +458,17 @@ func TestOpenCodeRuntimeClearIterationArtifacts(t *testing.T) {
 	assert.Contains(t, string(log), openCodeDebugLogFile)
 }
 
+func TestOpenCodeRuntimeClearIterationArtifactsReportsExitFailure(t *testing.T) {
+	binDir := t.TempDir()
+	script := "#!/bin/sh\necho 'rm failed' >&2\nexit 4\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := (OpenCodeRuntime{}).ClearIterationArtifacts("sb")
+	require.ErrorContains(t, err, "exited 4")
+	assert.Contains(t, err.Error(), "rm failed")
+}
+
 func TestOpenCodeRuntimeRun_RequiresAgentBaseName(t *testing.T) {
 	printer := ui.New(&strings.Builder{})
 	_, err := OpenCodeRuntime{}.Run(context.Background(), RunParams{}, printer, time.Now(), &RunMetrics{})

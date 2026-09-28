@@ -151,18 +151,14 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 	// .opencode/opencode.json from widening permissions, but it also
 	// suppresses AGENTS.md discovery. config.instructions with an absolute
 	// path bypasses the flag (instruction.ts:140-145), so we inject the
-	// workspace path explicitly. Written before .env so it cannot be
-	// overridden by agent-writable content.
+	// workspace path explicitly after .env is sourced, overwriting any change
+	// an agent-rewritten file attempted.
 	configJSON := openCodeInstructionsConfig(params.RepoDir)
 	configPath := r.ConfigDir() + "/" + openCodeConfigFile
 	prelude := []string{
 		"cd " + shellQuote(params.RepoDir),
 		// Ensure the transcript directory exists before tee writes into it.
 		"&& mkdir -p " + shellQuote(sandboxTranscriptDir),
-		// Inject runner-owned opencode.json with instructions pointing at
-		// workspace AGENTS.md. printf is a shell builtin — safe from PATH
-		// manipulation.
-		"&& printf '%s' " + shellQuote(configJSON) + " > " + shellQuote(configPath),
 		"&& " + openCodeBinaryPin(),
 		"&& " + openCodeTrustedEnvPin(trustedEnv),
 	}
@@ -180,8 +176,14 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 		// from under the guards (mirrors pi_run.go:394 and codex_run.go:313).
 		"&& "+strings.Join(r.EnvExports(), " && "),
 		"&& "+openCodeTrustedEnvRestore(),
+		"&& command -p printf '%s' "+shellQuote(configJSON)+" > "+shellQuote(configPath),
 		"&& export "+openCodeRuntimeEnv+"=opencode",
 	)
+	if hooksEnabled {
+		// .env can execute arbitrary commands, so verify the adapter again after
+		// sourcing it and restoring runner-owned state.
+		prelude = append(prelude, "&& "+openCodeHooksGuard(r.openCodeHooksExtensionPath()))
+	}
 
 	// The opencode invocation itself, whose stdout is the --format json stream.
 	invocation := []string{
@@ -255,12 +257,13 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 	// final exit is conditional on the prelude having succeeded — when the
 	// prelude short-circuits, the shell exits with the prelude's own status
 	// rather than reading a potentially stale rc file.
-	pipeline := "{ " + strings.Join(invocation, " ") + ` ; command -p printf '%s\n' "$?" > ` + shellQuote(rcFile) + " ; }" +
-		" | command -p tee " + shellQuote(sandboxTranscript)
+	return strings.Join(prelude, " ") + " && " + openCodeExitPipeline(invocation, rcFile, sandboxTranscript)
+}
 
-	// `&& exit` only runs when the prelude succeeded. A prelude failure
-	// propagates its own exit status.
-	return strings.Join(prelude, " ") + " && " + pipeline +
+func openCodeExitPipeline(invocation []string, rcFile, transcript string) string {
+	pipeline := "{ " + strings.Join(invocation, " ") + ` ; command -p printf '%s\n' "$?" > ` + shellQuote(rcFile) + " ; }" +
+		" | command -p tee " + shellQuote(transcript)
+	return pipeline +
 		` && FULLSEND_OPENCODE_RC="$(command -p cat ` + shellQuote(rcFile) + ` 2>/dev/null)"` +
 		` && case "$FULLSEND_OPENCODE_RC" in ''|*[!0-9]*) FULLSEND_OPENCODE_RC=1;; esac` +
 		` && exit "$FULLSEND_OPENCODE_RC"`
@@ -315,11 +318,11 @@ func openCodeValidatedArg(s string) string {
 // hash is of an empty adapter, which #515 replaces with the embedded copy.
 //
 // `command -p` bypasses shell functions and uses the system default PATH so
-// nothing the agent left in the environment can stand in for sha256sum or cut
-// (mirrors pi_run.go:310-312). test, [ and echo are builtins.
+// nothing the agent left in the environment can stand in for test, sha256sum,
+// cut, or printf (mirrors pi_run.go:310-312).
 func openCodeHooksGuard(hooksExt string) string {
 	sum := sha256.Sum256(openCodeHooksExtensionBytes())
-	return fmt.Sprintf(`{ test -f %s && [ "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s ] || { echo 'fullsend: opencode hook adapter missing or modified; refusing to run unhooked' >&2; exit %d; }; }`,
+	return fmt.Sprintf(`{ command -p test -f %s && command -p test "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s || { command -p printf '%%s\n' 'fullsend: opencode hook adapter missing or modified; refusing to run unhooked' >&2; exit %d; }; }`,
 		shellQuote(hooksExt), shellQuote(hooksExt), shellQuote(hex.EncodeToString(sum[:])), openCodeHooksMissingExit)
 }
 
@@ -452,8 +455,14 @@ func (r OpenCodeRuntime) ClearIterationArtifacts(sandboxName string) error {
 	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr, "the previous iteration")
 	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s",
 		shellQuote(r.WorkspaceDir()), shellQuote(r.WorkspaceDir()+"/"+openCodeDebugLogFile))
-	_, _, _, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
-	return err
+	_, stderr, exitCode, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("clearing opencode iteration artifacts: exited %d: %s", exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
+	}
+	return nil
 }
 
 // DebugLogName implements DebugLogNamer.
