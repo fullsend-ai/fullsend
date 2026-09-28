@@ -55,7 +55,7 @@ func openCodeReadTrustedEnv(sandboxName string) (openCodeTrustedEnv, error) {
 }
 
 func openCodeTrustedEnvReadCommand(envFile string) string {
-	return ". " + shellQuote(envFile) + ` 2>/dev/null && command -p printf '%s' "${OPENCODE_CONFIG_CONTENT-}" ` +
+	return openCodeUtilityPin() + " && . " + shellQuote(envFile) + ` 2>/dev/null && "$` + openCodePrintfVar + `" '%s' "${OPENCODE_CONFIG_CONTENT-}" ` +
 		shellQuote(openCodeEnvReadSeparator) + ` "${GOOGLE_APPLICATION_CREDENTIALS-}"`
 }
 

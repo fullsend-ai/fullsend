@@ -95,6 +95,12 @@ const openCodeHooksMissingExit = 97
 
 const (
 	openCodeBinaryVar             = "FULLSEND_OPENCODE_BIN"
+	openCodeTestVar               = "FULLSEND_OPENCODE_TEST_BIN"
+	openCodeSHA256Var             = "FULLSEND_OPENCODE_SHA256SUM_BIN"
+	openCodeCutVar                = "FULLSEND_OPENCODE_CUT_BIN"
+	openCodePrintfVar             = "FULLSEND_OPENCODE_PRINTF_BIN"
+	openCodeTeeVar                = "FULLSEND_OPENCODE_TEE_BIN"
+	openCodeCatVar                = "FULLSEND_OPENCODE_CAT_BIN"
 	openCodeConfigContentPinVar   = "FULLSEND_OPENCODE_CONFIG_CONTENT"
 	openCodeCredentialsPathPinVar = "FULLSEND_OPENCODE_GOOGLE_APPLICATION_CREDENTIALS"
 )
@@ -160,6 +166,7 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 		// Ensure the transcript directory exists before tee writes into it.
 		"&& mkdir -p " + shellQuote(sandboxTranscriptDir),
 		"&& " + openCodeBinaryPin(),
+		"&& " + openCodeUtilityPin(),
 		"&& " + openCodeTrustedEnvPin(trustedEnv),
 	}
 	if hooksEnabled {
@@ -176,7 +183,7 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 		// from under the guards (mirrors pi_run.go:394 and codex_run.go:313).
 		"&& "+strings.Join(r.EnvExports(), " && "),
 		"&& "+openCodeTrustedEnvRestore(),
-		"&& command -p printf '%s' "+shellQuote(configJSON)+" > "+shellQuote(configPath),
+		`&& "$`+openCodePrintfVar+`" '%s' `+shellQuote(configJSON)+" > "+shellQuote(configPath),
 		"&& export "+openCodeRuntimeEnv+"=opencode",
 	)
 	if hooksEnabled {
@@ -261,10 +268,10 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 }
 
 func openCodeExitPipeline(invocation []string, rcFile, transcript string) string {
-	pipeline := "{ " + strings.Join(invocation, " ") + ` ; command -p printf '%s\n' "$?" > ` + shellQuote(rcFile) + " ; }" +
-		" | command -p tee " + shellQuote(transcript)
+	pipeline := "{ " + strings.Join(invocation, " ") + ` ; "$` + openCodePrintfVar + `" '%s\n' "$?" > ` + shellQuote(rcFile) + " ; }" +
+		` | "$` + openCodeTeeVar + `" ` + shellQuote(transcript)
 	return pipeline +
-		` && FULLSEND_OPENCODE_RC="$(command -p cat ` + shellQuote(rcFile) + ` 2>/dev/null)"` +
+		` && FULLSEND_OPENCODE_RC="$("$` + openCodeCatVar + `" ` + shellQuote(rcFile) + ` 2>/dev/null)"` +
 		` && case "$FULLSEND_OPENCODE_RC" in ''|*[!0-9]*) FULLSEND_OPENCODE_RC=1;; esac` +
 		` && exit "$FULLSEND_OPENCODE_RC"`
 }
@@ -272,6 +279,28 @@ func openCodeExitPipeline(invocation []string, rcFile, transcript string) string
 func openCodeBinaryPin() string {
 	return `readonly ` + openCodeBinaryVar + `="$(command -v opencode)" && if test -n "$` + openCodeBinaryVar +
 		`"; then :; else echo 'fullsend: opencode not found on PATH' >&2; exit 127; fi`
+}
+
+func openCodeUtilityPin() string {
+	utilities := []struct {
+		variable string
+		name     string
+	}{
+		{openCodeTestVar, "test"},
+		{openCodeSHA256Var, "sha256sum"},
+		{openCodeCutVar, "cut"},
+		{openCodePrintfVar, "printf"},
+		{openCodeTeeVar, "tee"},
+		{openCodeCatVar, "cat"},
+	}
+	assignments := make([]string, 0, len(utilities))
+	checks := make([]string, 0, len(utilities))
+	for _, utility := range utilities {
+		assignments = append(assignments, utility.variable+`=$(for d in /usr/local/bin /usr/bin /bin; do if test -x "$d/`+utility.name+`"; then printf '%s' "$d/`+utility.name+`"; break; fi; done)`)
+		checks = append(checks, `test -n "$`+utility.variable+`"`)
+	}
+	return "readonly " + strings.Join(assignments, " ") + " && if " + strings.Join(checks, " && ") +
+		"; then :; else echo 'fullsend: required opencode utility not found' >&2; exit 127; fi"
 }
 
 func openCodeTrustedEnvPin(env openCodeTrustedEnv) string {
@@ -317,13 +346,14 @@ func openCodeValidatedArg(s string) string {
 // adapter bytes (and therefore the real hash) are #515's — until then the
 // hash is of an empty adapter, which #515 replaces with the embedded copy.
 //
-// `command -p` bypasses shell functions and uses the system default PATH so
-// nothing the agent left in the environment can stand in for test, sha256sum,
-// cut, or printf (mirrors pi_run.go:310-312).
+// Absolute utility paths are resolved and made readonly before .env is sourced,
+// so neither PATH nor shell functions can stand in for these commands.
 func openCodeHooksGuard(hooksExt string) string {
 	sum := sha256.Sum256(openCodeHooksExtensionBytes())
-	return fmt.Sprintf(`{ command -p test -f %s && command -p test "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s || { command -p printf '%%s\n' 'fullsend: opencode hook adapter missing or modified; refusing to run unhooked' >&2; exit %d; }; }`,
-		shellQuote(hooksExt), shellQuote(hooksExt), shellQuote(hex.EncodeToString(sum[:])), openCodeHooksMissingExit)
+	return fmt.Sprintf(`{ "$%s" -f %s && "$%s" "$("$%s" %s | "$%s" -d' ' -f1)" = %s || { "$%s" '%%s\n' 'fullsend: opencode hook adapter missing or modified; refusing to run unhooked' >&2; exit %d; }; }`,
+		openCodeTestVar, shellQuote(hooksExt), openCodeTestVar,
+		openCodeSHA256Var, shellQuote(hooksExt), openCodeCutVar,
+		shellQuote(hex.EncodeToString(sum[:])), openCodePrintfVar, openCodeHooksMissingExit)
 }
 
 // openCodeHooksExtensionBytes returns the runner-vetted hook plugin adapter

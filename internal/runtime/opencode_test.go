@@ -223,10 +223,10 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	// The stream is tee'd to the sandbox transcript path and the transcript
 	// dir is created first.
 	assert.Contains(t, cmd, "mkdir -p "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeOutputSubdir))
-	assert.Contains(t, cmd, "| command -p tee "+shellQuote(openCodeSandboxTranscriptPath()))
+	assert.Contains(t, cmd, `| "$`+openCodeTeeVar+`" `+shellQuote(openCodeSandboxTranscriptPath()))
 	// opencode's real exit code is re-raised past tee (which always exits 0).
-	assert.Contains(t, cmd, "command -p printf '%s\\n' \"$?\" > "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
-	assert.Contains(t, cmd, "$(command -p cat "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
+	assert.Contains(t, cmd, `"$`+openCodePrintfVar+`" '%s\n' "$?" > `+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
+	assert.Contains(t, cmd, `$("$`+openCodeCatVar+`" `+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
 	assert.Contains(t, cmd, `case "$FULLSEND_OPENCODE_RC" in ''|*[!0-9]*) FULLSEND_OPENCODE_RC=1`)
 	// No hooks signal → no integrity guard.
 	assert.NotContains(t, cmd, "refusing to run unhooked")
@@ -243,7 +243,7 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	require.NotEqual(t, -1, configIdx, "config write must be present")
 	require.NotEqual(t, -1, envIdx, ".env source must be present")
 	assert.Greater(t, configIdx, envIdx, "runner-owned opencode.json must be rewritten after .env is sourced")
-	assert.Contains(t, cmd, "command -p printf '%s' "+shellQuote(expectedJSON))
+	assert.Contains(t, cmd, `"$`+openCodePrintfVar+`" '%s' `+shellQuote(expectedJSON))
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeBinaryPin()), envIdx, "opencode binary must be pinned before .env")
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeTrustedEnvPin(trustedEnv)), envIdx, "trusted values must be pinned before .env")
 	assert.Greater(t, strings.Index(cmd, "&& "+openCodeTrustedEnvRestore()), envIdx, "trusted values must be restored after .env")
@@ -265,8 +265,8 @@ func TestOpenCodeBinaryPin(t *testing.T) {
 func TestOpenCodeExitPipeline(t *testing.T) {
 	rcFile := filepath.Join(t.TempDir(), "run-rc")
 	transcript := filepath.Join(t.TempDir(), "output.jsonl")
-	shadow := `printf() { command -p printf FAKE; }; tee() { command -p printf FAKE; }; cat() { command -p printf 0; }; `
-	command := shadow + openCodeExitPipeline(
+	shadow := `command() { printf FAKE; }; printf() { :; }; tee() { :; }; cat() { printf 0; }; `
+	command := openCodeUtilityPin() + " && " + shadow + openCodeExitPipeline(
 		[]string{"/bin/sh", "-c", shellQuote("command -p printf real-output; exit 7")},
 		rcFile,
 		transcript,
@@ -283,8 +283,8 @@ func TestOpenCodeExitPipeline(t *testing.T) {
 
 func TestOpenCodeHooksGuardUsesUnshadowableCommands(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing-hooks.ts")
-	shadow := `test() { return 0; }; printf() { return 0; }; sha256sum() { command -p printf '` + strings.Repeat("0", 64) + `  fake'; }; `
-	cmd := exec.Command("sh", "-c", shadow+openCodeHooksGuard(missing))
+	shadow := `command() { return 0; }; test() { return 0; }; printf() { return 0; }; sha256sum() { return 0; }; cut() { return 0; }; `
+	cmd := exec.Command("sh", "-c", openCodeUtilityPin()+" && "+shadow+openCodeHooksGuard(missing))
 	err := cmd.Run()
 	var exitErr *exec.ExitError
 	require.ErrorAs(t, err, &exitErr)
@@ -331,7 +331,7 @@ func TestOpenCodeTrustedEnvReadCommand(t *testing.T) {
 		CredentialsPath: "/runner/path with spaces/adc.json",
 	}
 	envFile := filepath.Join(t.TempDir(), ".env")
-	content := "printf() { command -p printf forged; }\n" +
+	content := "command() { printf forged; }\nprintf() { :; }\n" +
 		"export OPENCODE_CONFIG_CONTENT=" + shellQuote(want.ConfigContent) + "\n" +
 		"export GOOGLE_APPLICATION_CREDENTIALS=" + shellQuote(want.CredentialsPath) + "\n"
 	require.NoError(t, os.WriteFile(envFile, []byte(content), 0o644))
@@ -436,7 +436,8 @@ func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(cmd, "refusing to run unhooked"))
 	assert.Less(t, firstGuardIdx, envIdx, "integrity guard must run before .env is sourced")
 	assert.Greater(t, lastGuardIdx, envIdx, "integrity guard must run again after .env is sourced")
-	assert.Contains(t, cmd, "command -p sha256sum")
+	assert.Contains(t, cmd, `"$`+openCodeSHA256Var+`"`)
+	assert.Contains(t, cmd, openCodeUtilityPin())
 	assert.Contains(t, cmd, OpenCodeRuntime{}.openCodeHooksExtensionPath())
 	assert.Contains(t, cmd, "exit 97")
 }
