@@ -542,6 +542,11 @@ func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, o
 		return nil
 	}
 
+	// Empty ALLOWED_ORGS is a valid state for mints operating only in
+	// per-repo mode (see docs/ADRs/0044-deprecate-per-org-installation-mode.md
+	// and docs/ADRs/0078-simplified-mint-authorization-policy.md). Do not
+	// treat it as data loss without cross-checking PER_REPO_WIF_REPOS/
+	// role-only ROLE_APP_IDS state.
 	allowedOrgs := trafficEnvVars["ALLOWED_ORGS"]
 	orgPresent := false
 	for _, o := range strings.Split(allowedOrgs, ",") {
@@ -1688,6 +1693,11 @@ func (p *Provisioner) RemoveOrgFromMint(ctx context.Context, org string) error {
 		}
 	}
 	sort.Strings(filteredOrgs)
+	// Empty ALLOWED_ORGS is a valid state for mints operating only in
+	// per-repo mode (see docs/ADRs/0044-deprecate-per-org-installation-mode.md
+	// and docs/ADRs/0078-simplified-mint-authorization-policy.md). Do not
+	// treat it as data loss without cross-checking PER_REPO_WIF_REPOS/
+	// role-only ROLE_APP_IDS state.
 	updated["ALLOWED_ORGS"] = strings.Join(filteredOrgs, ",")
 
 	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
