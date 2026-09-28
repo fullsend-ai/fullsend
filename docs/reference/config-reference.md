@@ -98,6 +98,72 @@ models:
     fable: claude-fable-5-1
 ```
 
+## Tri-state config field semantics
+
+Several per-repo fields support inherit-from-parent: an overlay may omit
+the key, set a value, or set an explicit empty or zero value. Absent,
+null, and empty are not interchangeable. Treat any field that participates
+in the overlay → base → code-defaults chain as **tri-state** unless its
+field details say otherwise.
+
+This is the canonical rule for those fields, including a future
+`agents[].enabled` redesign. A PR that adds or changes a tri-state field
+must link this section and add a four-way row to
+`TestPerRepoConfig_TriStateYAMLShapes` in `internal/config/defaults_test.go`.
+
+### Authoring states
+
+| YAML shape | Meaning | Example |
+|------------|---------|---------|
+| Key absent | Inherit parent, then code defaults | no `roles` key |
+| Explicit non-empty / non-zero value | Override parent | `roles: [triage]` |
+| Explicit empty / zero | Override to "no value" — does **not** inherit | `roles: []`, `kill_switch: false` |
+
+Write `roles: []` when you mean no roles. Do **not** write `roles:` or
+`roles: null` to mean empty — those are YAML null, which Go treats as
+absent (see below).
+
+Merge rules still apply *after* this detection: `roles` replaces the parent
+list, `allowed_remote_resources` unions (with `[]` as deny-all), and
+`agents` keyed-merges so `agents: []` means "no overlay entries" rather
+than deny-all. See
+[Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+
+### YAML null is not empty
+
+`gopkg.in/yaml.v3` decodes a null scalar (`field:`, `field: null`,
+`field: ~`) into the same Go zero value as an omitted key:
+
+| YAML | `[]T` (e.g. `roles`) | `*T` (e.g. `kill_switch`) |
+|------|----------------------|---------------------------|
+| Key omitted | `nil` slice | `nil` pointer |
+| `field:` / `field: null` | `nil` slice | `nil` pointer |
+| `field: []` / `field: false` | non-nil empty slice | pointer to `false` |
+
+A pointer-to-slice (`*[]string`) does **not** fix this: unmarshaling YAML
+null into a pointer still yields a nil pointer, identical to an absent key.
+Distinguishing "absent" from "explicitly null" requires a sentinel that
+implements `UnmarshalYAML` (or equivalent) and records key presence.
+`ConfigRoles()` uses `[]string`, so YAML null inherits like an omitted key.
+The only YAML form that resolves to "no roles" is `roles: []`.
+
+Go accessors follow the decoded value, not YAML key presence:
+
+1. Decoded nil / zero → fall through to parent.
+2. Decoded non-nil empty (`[]`, `*false`) → local value, no fallthrough.
+3. Decoded non-empty / non-zero → local value.
+
+### Workflow readers are not `ConfigRoles()`
+
+The dispatch workflow (`.github/workflows/reusable-dispatch.yml`) reads
+`roles` with `yq` from overlay `config.yaml` only. That path does not walk
+overlay → base → code defaults, and YAML libraries that check key presence
+(`has("roles")`) treat a null scalar as present while Go treats it as
+omitted. Those layers have disagreed about `roles:` (null) before. This
+section specifies the Go-side convention; aligning other readers is a
+follow-up. Prefer `roles: []` (explicit empty) or omitting the key
+(inherit) — never a null scalar — so every reader sees the same intent.
+
 ## Field details
 
 Most fields are self-explanatory from the inline comments above. This section
@@ -127,7 +193,9 @@ setup.
 Emergency stop. When set to `true`, all agent dispatch is disabled for the
 repository. Uses pointer semantics in the layered config system — `nil`
 (omitted) falls through to parent; an explicit `false` is a local decision
-that does not fall through.
+that does not fall through. A YAML null (`kill_switch:`) decodes as omitted,
+not as false. See
+[Tri-state config field semantics](#tri-state-config-field-semantics).
 
 ### `keep_history`
 
@@ -154,7 +222,11 @@ permissions) are provisioned for the repository. Valid roles: `fullsend`,
 
 In the layered config system, `roles` uses replace-if-set semantics — an
 overlay that sets `roles` replaces the parent list entirely (no union).
-Omitting the key inherits the parent's roles. See
+Omitting the key inherits the parent's roles. An explicit empty list
+(`roles: []`) means no roles and does not inherit. A YAML null (`roles:`
+or `roles: null`) is **not** an empty list: `gopkg.in/yaml.v3` decodes it
+as omitted, so it inherits. See
+[Tri-state config field semantics](#tri-state-config-field-semantics) and
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
 ### `agents`
@@ -173,7 +245,9 @@ effort, and sub-agent models.
   against this ref. Empty for SHA-pinned or legacy entries.
 - **`enabled`** — Toggle the agent without removing its entry. A
   suppression-only entry (`enabled: false`, no source) disables a built-in or
-  parent-layer agent by name.
+  parent-layer agent by name. YAML null (`enabled:` / `enabled: null`)
+  decodes as omitted (inherit / default true), not as false. See
+  [Tri-state config field semantics](#tri-state-config-field-semantics).
 - **`runtime`**, **`model`**, **`effort`** — Per-agent overrides. An
   override-only entry (no source, at least one setting) tunes a built-in
   agent by name.

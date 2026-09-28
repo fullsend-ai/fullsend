@@ -632,3 +632,25 @@ check that validation fires on the run path — not only in `Validate()`.
 Flag a missing run-path validation call as a **medium-severity** finding.
 The fix is to add inline validation in `runAgent()` and a corresponding
 integration test.
+
+## Tri-state config field semantics
+
+Per-repo fields that inherit from parent when unset are **tri-state**:
+key absent, explicit empty/zero, and explicit value are three different
+meanings. YAML null (`field:` / `field: null`) is *not* empty —
+`gopkg.in/yaml.v3` decodes it to the same Go `nil` as an omitted key.
+The canonical rule, the yaml.v3 sentinel gotcha, and the workflow-reader
+divergence live in
+[Config Reference — Tri-state config field semantics](../reference/config-reference.md#tri-state-config-field-semantics).
+
+When adding or changing a tri-state field (including a future
+`agents[].enabled` redesign):
+
+1. Link that config-reference section from the field's docs.
+2. Add absent / null / empty-or-false / value rows to
+   `TestPerRepoConfig_TriStateYAMLShapes` in
+   `internal/config/defaults_test.go`. The test must parse YAML (not
+   construct structs) so it covers the yaml.v3 null-vs-absent collapse.
+3. Do not assume `*[]T` distinguishes YAML null from an omitted key —
+   it does not. Use a custom `UnmarshalYAML` sentinel if the field must
+   treat null as explicit empty.

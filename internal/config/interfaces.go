@@ -72,6 +72,11 @@ type OrgConfigReader interface {
 // the struct field names (Roles and Runtime).
 type PerRepoConfigReader interface {
 	ConfigReader
+	// ConfigRoles returns the effective agent roles after overlay →
+	// base → code-defaults resolution. A YAML-null `roles:` key
+	// decodes to the same nil slice as an omitted key (inherit);
+	// `roles: []` is the explicit empty list. See
+	// docs/reference/config-reference.md#tri-state-config-field-semantics.
 	ConfigRoles() []string
 	ConfigRuntime() string
 	ConfigForge() string
@@ -441,9 +446,14 @@ func (c *perRepoConfig) IsOwnersFileAuthEnabled() bool {
 	return false
 }
 
-// ConfigRoles returns the configured agent roles. nil (key omitted)
-// falls through to parent. Non-nil (including empty) replaces the
-// parent list entirely.
+// ConfigRoles returns the configured agent roles. nil (key omitted
+// or a YAML null scalar) falls through to parent. Non-nil (including
+// empty) replaces the parent list entirely.
+//
+// gopkg.in/yaml.v3 decodes `roles:` / `roles: null` to the same nil
+// slice as an absent key, so those spellings inherit rather than
+// meaning "no roles". Write `roles: []` for an explicit empty list.
+// See docs/reference/config-reference.md#tri-state-config-field-semantics.
 func (c *perRepoConfig) ConfigRoles() []string {
 	if c.Roles != nil {
 		return c.Roles

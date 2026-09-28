@@ -104,6 +104,13 @@ This distinction matters most for slice and pointer fields, where the
 difference between "not specified" and "explicitly empty" drives different
 merge behavior.
 
+A YAML null scalar (`field:`, `field: null`, `field: ~`) is **not** an
+explicit empty value. `gopkg.in/yaml.v3` decodes it to the same Go `nil`
+as an omitted key, so it falls through. Write `roles: []` or
+`kill_switch: false` when you mean a local empty/zero; do not write a
+null scalar. See
+[Tri-state config field semantics](../../reference/config-reference.md#tri-state-config-field-semantics).
+
 ## Per-field merge rules
 
 The table below documents how each per-repo config field resolves through
@@ -301,12 +308,14 @@ Jira).
 
 The `roles` field uses replace-if-set semantics with **no union**:
 
-- `nil` (key omitted from YAML) — falls through to parent, then to
-  code default `PerRepoDefaultRoles()`.
+- `nil` (key omitted from YAML, or a YAML null scalar such as `roles:`)
+  — falls through to parent, then to code default `PerRepoDefaultRoles()`.
+  yaml.v3 cannot distinguish those two spellings with a `[]string` field.
 - Non-nil including `roles: []` (explicit empty list) — **replaces** the
   parent value entirely. There is no merge or union of role lists across
   layers. An explicit `roles: []` is preserved through marshal roundtrips
-  (it will not be dropped or collapse to nil).
+  (it will not be dropped or collapse to nil). See
+  [Tri-state config field semantics](../../reference/config-reference.md#tri-state-config-field-semantics).
 
 Example:
 
