@@ -111,6 +111,9 @@ Config-layer addition, slotting in below per-run overrides:
   > default
 ```
 
+[ADR 0112](0112-task-grain-routing-policy-on-the-host.md) adds per-task
+`routing.rules` between the `FULLSEND_*` variables and the `agents:` entry.
+
 The repo-wide `runtime:` key is kept as the default for agents that set
 none — deliberately not removed: existing configs, `fullsend github setup
 --runtime` and the behaviour-test installs depend on it, and a default is
