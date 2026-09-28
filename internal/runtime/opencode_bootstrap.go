@@ -76,6 +76,8 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 	if input == nil {
 		return fmt.Errorf("bootstrap input is required")
 	}
+	sandboxName := input.SandboxName()
+	forgetOpenCodeTrustedEnv(sandboxName)
 	agentPath := input.AgentPath()
 	if agentPath == "" {
 		return fmt.Errorf("agent path is required")
@@ -105,7 +107,6 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("agent name %q contains characters openCodeValidatedArg strips (sanitized to %q); the Run command would pass a different name than Bootstrap wrote", agentName, validated)
 	}
 
-	sandboxName := input.SandboxName()
 	cfg := r.ConfigDir()
 
 	mkdirCmd := fmt.Sprintf("mkdir -p %s %s %s",
@@ -144,9 +145,7 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 	}
 
 	if len(def.BashAllowlist) > 0 {
-		fmt.Fprintf(os.Stderr,
-			"Agent Bash allowlist (%s) is recorded but not enforced on opencode — per-argument restrictions collapse to bare bash: \"allow\" (see docs/contributing/runtime-implementation.md)\n",
-			strings.Join(def.BashAllowlist, ", "))
+		fmt.Fprintln(os.Stderr, openCodeBashAllowlistWarning(def.BashAllowlist))
 	}
 
 	// Hook wiring is #515's responsibility (OpenCode has no native hooks); the
@@ -156,6 +155,11 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 	if err := openCodePreflightVersion(sandboxName); err != nil {
 		return err
 	}
+	trustedEnv, err := openCodeReadTrustedEnv(sandboxName)
+	if err != nil {
+		return err
+	}
+	recordOpenCodeTrustedEnv(sandboxName, trustedEnv)
 	return nil
 }
 
@@ -233,11 +237,6 @@ func openCodePermissionRecord(claudeTools []string) map[string]string {
 	}
 
 	for _, ct := range claudeTools {
-		if ct == "Skill" {
-			// OpenCode has a native skill tool; skills are discovered from the
-			// skills dir, not enabled per-agent by this name.
-			continue
-		}
 		ot, ok := openCodeToolForClaude[ct]
 		if !ok {
 			fmt.Fprintf(os.Stderr, "Agent tool %q has no OpenCode equivalent and is dropped from the allowlist\n", ct)
@@ -264,6 +263,7 @@ var openCodeToolForClaude = map[string]string{
 	"Glob":      "glob",
 	"LS":        "read", // OpenCode's read tool handles both files and directories
 	"WebFetch":  "webfetch",
+	"Skill":     "skill",
 	"Task":      "task",
 	"Agent":     "task", // Agent is the current name; Task is the legacy alias
 }
@@ -289,7 +289,16 @@ func openCodeToolNamesSorted(rec map[string]string) []string {
 // OPENCODE_CONFIG_CONTENT at load time via mergeConfigConcatArrays
 // (config.ts:45-51) so the two sources never conflict.
 func openCodeInstructionsConfig(repoDir string) string {
-	return `{"instructions":["` + repoDir + `/AGENTS.md"]}`
+	data, _ := json.Marshal(struct {
+		Instructions []string `json:"instructions"`
+	}{Instructions: []string{repoDir + "/AGENTS.md"}})
+	return string(data)
+}
+
+func openCodeBashAllowlistWarning(allowlist []string) string {
+	return fmt.Sprintf(
+		"Agent Bash allowlist (%s) is recorded but not enforced on opencode — per-argument restrictions collapse to bare bash: \"allow\" until the hook adapter in unbound-force/unbound-force#515 enforces them (see docs/contributing/runtime-implementation.md)",
+		strings.Join(allowlist, ", "))
 }
 
 // openCodePreflightVersion runs `opencode --version` in the sandbox. Failure

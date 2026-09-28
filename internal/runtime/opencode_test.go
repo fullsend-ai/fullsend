@@ -2,12 +2,18 @@ package runtime
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -121,17 +127,18 @@ func TestOpenCodePermissionRecord(t *testing.T) {
 	rec = openCodePermissionRecord([]string{"Agent", "Task", "Read"})
 	assert.Equal(t, []string{"read", "task"}, openCodeToolNamesSorted(rec))
 
-	// Skill is dropped (native discovery), unsupported names dropped, and an
-	// agent listing only those gets all tools denied (not nil/empty, so
-	// OpenCode does not fall back to its full default set).
+	// Skill enables OpenCode's native skill tool; unsupported names are dropped.
 	rec = openCodePermissionRecord([]string{"Skill", "NoSuchTool"})
 	assert.NotNil(t, rec)
-	assert.Empty(t, openCodeToolNamesSorted(rec))
-	// Every known tool is explicitly denied.
+	assert.Equal(t, []string{"skill"}, openCodeToolNamesSorted(rec))
+	// Every other known tool is explicitly denied.
 	assert.Len(t, rec, len(openCodeAllToolIDs))
 	for _, id := range openCodeAllToolIDs {
-		assert.Equal(t, "deny", rec[id], "tool %q should be denied", id)
+		if id != "skill" {
+			assert.Equal(t, "deny", rec[id], "tool %q should be denied", id)
+		}
 	}
+	assert.Equal(t, "deny", openCodePermissionRecord([]string{"Read"})["skill"])
 }
 
 func TestOpenCodeAgentMarkdown(t *testing.T) {
@@ -176,8 +183,14 @@ func TestOpenCodeValidatedArg(t *testing.T) {
 func TestOpenCodeInstructionsConfig(t *testing.T) {
 	t.Parallel()
 
-	cfg := openCodeInstructionsConfig("/sandbox/workspace/myrepo")
-	assert.Equal(t, `{"instructions":["/sandbox/workspace/myrepo/AGENTS.md"]}`, cfg)
+	for _, repoDir := range []string{"/sandbox/workspace/myrepo", "/sandbox/workspace/repo\\with\"quotes\nand-newline"} {
+		cfg := openCodeInstructionsConfig(repoDir)
+		var decoded map[string][]string
+		require.NoError(t, json.Unmarshal([]byte(cfg), &decoded))
+		assert.Equal(t, map[string][]string{
+			"instructions": {repoDir + "/AGENTS.md"},
+		}, decoded)
+	}
 }
 
 func TestBuildOpenCodeRunCommand(t *testing.T) {
@@ -190,14 +203,18 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 		Effort:        "high",
 		RepoDir:       sandbox.SandboxWorkspace + "/myrepo",
 	}
-	cmd := buildOpenCodeRunCommand(params, "triage")
+	trustedEnv := openCodeTrustedEnv{
+		ConfigContent:   `{"permission":{"*":"deny"}}`,
+		CredentialsPath: "/runner/adc.json",
+	}
+	cmd := buildOpenCodeRunCommand(params, "triage", trustedEnv)
 
 	assert.Contains(t, cmd, "cd "+shellQuote(params.RepoDir))
 	assert.Contains(t, cmd, "&& . "+shellQuote(sandbox.SandboxWorkspace+"/.env"))
 	assert.Contains(t, cmd, "&& export "+openCodeRuntimeEnv+"=opencode")
 	// opencode runs inside the tee pipeline so its stream lands in a sandbox
 	// transcript file for ExtractTranscripts while still streaming to the host.
-	assert.Contains(t, cmd, "opencode run --format json --thinking")
+	assert.Contains(t, cmd, `"$`+openCodeBinaryVar+`" run --format json --thinking`)
 	assert.Contains(t, cmd, "--model "+shellQuote("google-vertex-anthropic/claude-opus-4-6@default"))
 	assert.Contains(t, cmd, "--variant "+shellQuote("high"))
 	assert.Contains(t, cmd, "--agent "+shellQuote("triage"))
@@ -206,10 +223,11 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	// The stream is tee'd to the sandbox transcript path and the transcript
 	// dir is created first.
 	assert.Contains(t, cmd, "mkdir -p "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeOutputSubdir))
-	assert.Contains(t, cmd, "| tee "+shellQuote(openCodeSandboxTranscriptPath()))
+	assert.Contains(t, cmd, "| command -p tee "+shellQuote(openCodeSandboxTranscriptPath()))
 	// opencode's real exit code is re-raised past tee (which always exits 0).
-	assert.Contains(t, cmd, "echo $? > "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
-	assert.Contains(t, cmd, "exit \"$(cat "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
+	assert.Contains(t, cmd, "command -p printf '%s\\n' \"$?\" > "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
+	assert.Contains(t, cmd, "$(command -p cat "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
+	assert.Contains(t, cmd, `case "$FULLSEND_OPENCODE_RC" in ''|*[!0-9]*) FULLSEND_OPENCODE_RC=1`)
 	// No hooks signal → no integrity guard.
 	assert.NotContains(t, cmd, "refusing to run unhooked")
 
@@ -225,6 +243,136 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	require.NotEqual(t, -1, configIdx, "config write must be present")
 	require.NotEqual(t, -1, envIdx, ".env source must be present")
 	assert.Less(t, configIdx, envIdx, "runner-owned opencode.json must be written before .env is sourced")
+	assert.Less(t, strings.Index(cmd, "&& "+openCodeBinaryPin()), envIdx, "opencode binary must be pinned before .env")
+	assert.Less(t, strings.Index(cmd, "&& "+openCodeTrustedEnvPin(trustedEnv)), envIdx, "trusted values must be pinned before .env")
+	assert.Greater(t, strings.Index(cmd, "&& "+openCodeTrustedEnvRestore()), envIdx, "trusted values must be restored after .env")
+}
+
+func TestOpenCodeBinaryPin(t *testing.T) {
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "opencode"), []byte("#!/bin/sh\necho REAL\n"), 0o755))
+	envFile := filepath.Join(t.TempDir(), ".env")
+	require.NoError(t, os.WriteFile(envFile, []byte("opencode() { echo FAKE; }\nexport PATH=/nonexistent\n"), 0o644))
+
+	cmd := exec.Command("sh", "-c", openCodeBinaryPin()+" && . "+shellQuote(envFile)+` && "$`+openCodeBinaryVar+`"`)
+	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	assert.Equal(t, "REAL", strings.TrimSpace(string(out)))
+}
+
+func TestOpenCodeTrustedEnvRestore(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), ".env")
+	require.NoError(t, os.WriteFile(envFile, []byte("export OPENCODE_CONFIG_CONTENT=evil\nunset GOOGLE_APPLICATION_CREDENTIALS\n"), 0o644))
+
+	trustedEnv := openCodeTrustedEnv{
+		ConfigContent:   `{"permission":{"*":"deny"}}`,
+		CredentialsPath: "/runner/adc.json",
+	}
+	command := openCodeTrustedEnvPin(trustedEnv) + " && . " + shellQuote(envFile) + " && " + openCodeTrustedEnvRestore() +
+		` && printf '%s\n%s\n' "$OPENCODE_CONFIG_CONTENT" "$GOOGLE_APPLICATION_CREDENTIALS"`
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	assert.Equal(t, "{\"permission\":{\"*\":\"deny\"}}\n/runner/adc.json", strings.TrimSpace(string(out)))
+}
+
+func TestOpenCodeReadTrustedEnvErrors(t *testing.T) {
+	t.Run("exec error", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		_, err := openCodeReadTrustedEnv("sb")
+		require.ErrorContains(t, err, "reading the trusted OpenCode environment")
+	})
+
+	t.Run("malformed response", func(t *testing.T) {
+		binDir := t.TempDir()
+		script := "#!/bin/sh\nprintf malformed\n"
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		_, err := openCodeReadTrustedEnv("sb")
+		require.ErrorContains(t, err, "malformed response")
+	})
+}
+
+func TestOpenCodeTrustedEnvReadCommand(t *testing.T) {
+	want := openCodeTrustedEnv{
+		ConfigContent:   "{\"permission\":{\"bash\":\"allow\"},\"quote\":\"'\",\"line\":\"a\\nb\"}",
+		CredentialsPath: "/runner/path with spaces/adc.json",
+	}
+	envFile := filepath.Join(t.TempDir(), ".env")
+	content := "printf() { command -p printf forged; }\n" +
+		"export OPENCODE_CONFIG_CONTENT=" + shellQuote(want.ConfigContent) + "\n" +
+		"export GOOGLE_APPLICATION_CREDENTIALS=" + shellQuote(want.CredentialsPath) + "\n"
+	require.NoError(t, os.WriteFile(envFile, []byte(content), 0o644))
+
+	out, err := exec.Command("sh", "-c", openCodeTrustedEnvReadCommand(envFile)).CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	got, err := parseOpenCodeTrustedEnv(string(out))
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func TestOpenCodeValidateTrustedEnv(t *testing.T) {
+	valid := openCodeTrustedEnv{
+		ConfigContent:   `{"permission":{"bash":"allow","read":{"*":"allow"}}}`,
+		CredentialsPath: "/runner/adc.json",
+	}
+	require.NoError(t, validateOpenCodeTrustedEnv(valid))
+
+	tests := []struct {
+		name string
+		env  openCodeTrustedEnv
+		want string
+	}{
+		{name: "empty config", env: openCodeTrustedEnv{CredentialsPath: valid.CredentialsPath}, want: "OPENCODE_CONFIG_CONTENT is empty"},
+		{name: "invalid config", env: openCodeTrustedEnv{ConfigContent: "{", CredentialsPath: valid.CredentialsPath}, want: "invalid JSON"},
+		{name: "missing permission", env: openCodeTrustedEnv{ConfigContent: `{}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
+		{name: "empty permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":{}}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
+		{name: "whitespace empty permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":{ }}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
+		{name: "null permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":null}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
+		{name: "array permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":[]}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
+		{name: "string permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":"deny"}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
+		{name: "invalid action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":"sometimes"}}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
+		{name: "invalid pattern action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{"*":"sometimes"}}}`, CredentialsPath: valid.CredentialsPath}, want: "no permission policy"},
+		{name: "empty credentials", env: openCodeTrustedEnv{ConfigContent: valid.ConfigContent}, want: "GOOGLE_APPLICATION_CREDENTIALS is empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.ErrorContains(t, validateOpenCodeTrustedEnv(tt.env), tt.want)
+		})
+	}
+}
+
+func TestOpenCodeRunnerEnvConcurrentAccess(t *testing.T) {
+	const goroutines = 12
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			key := fmt.Sprintf("concurrent-opencode-%d", i)
+			want := openCodeTrustedEnv{ConfigContent: key, CredentialsPath: "/" + key}
+			recordOpenCodeTrustedEnv(key, want)
+			got, ok := lookupOpenCodeTrustedEnv(key)
+			if !ok || got != want {
+				t.Errorf("lookupOpenCodeTrustedEnv(%q) = %#v, %v; want %#v, true", key, got, ok, want)
+			}
+			forgetOpenCodeTrustedEnv(key)
+		}()
+	}
+	wg.Wait()
+}
+
+func TestOpenCodeBootstrapFailureClearsTrustedEnv(t *testing.T) {
+	const sandboxName = "failed-opencode-rebootstrap"
+	recordOpenCodeTrustedEnv(sandboxName, openCodeTrustedEnv{ConfigContent: "stale"})
+	t.Cleanup(func() { forgetOpenCodeTrustedEnv(sandboxName) })
+
+	err := (OpenCodeRuntime{}).Bootstrap(bootstrapInput{sandboxName: sandboxName})
+	require.Error(t, err)
+	_, ok := lookupOpenCodeTrustedEnv(sandboxName)
+	assert.False(t, ok)
 }
 
 func TestBuildOpenCodeRunCommand_PromptOverride(t *testing.T) {
@@ -235,7 +383,7 @@ func TestBuildOpenCodeRunCommand_PromptOverride(t *testing.T) {
 		RepoDir:       "/repo",
 		Prompt:        "Previous attempt failed: retry with the fix.",
 	}
-	cmd := buildOpenCodeRunCommand(params, "fix")
+	cmd := buildOpenCodeRunCommand(params, "fix", openCodeTrustedEnv{})
 	assert.Contains(t, cmd, shellQuote("Previous attempt failed: retry with the fix."))
 	assert.NotContains(t, cmd, shellQuote(DefaultAgentPrompt))
 }
@@ -248,7 +396,7 @@ func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
 		RepoDir:           "/repo",
 		HooksSettingsPath: "/sandbox/opencode-config/hooks.json",
 	}
-	cmd := buildOpenCodeRunCommand(params, "fix")
+	cmd := buildOpenCodeRunCommand(params, "fix", openCodeTrustedEnv{})
 	// The sha256 fail-closed guard is emitted before .env is sourced.
 	guardIdx := strings.Index(cmd, "refusing to run unhooked")
 	envIdx := strings.Index(cmd, "&& . "+shellQuote(sandbox.SandboxWorkspace+"/.env"))
@@ -268,7 +416,7 @@ func TestBuildOpenCodeRunCommand_DebugMode(t *testing.T) {
 		RepoDir:       "/repo",
 		Debug:         "true",
 	}
-	cmd := buildOpenCodeRunCommand(params, "triage")
+	cmd := buildOpenCodeRunCommand(params, "triage", openCodeTrustedEnv{})
 	assert.Contains(t, cmd, "--print-logs")
 	assert.Contains(t, cmd, "--log-level")
 	assert.Contains(t, cmd, "DEBUG")
@@ -284,8 +432,24 @@ func TestBuildOpenCodeRunCommand_FallbackModelsIgnored(t *testing.T) {
 		RepoDir:        "/repo",
 		FallbackModels: []string{"sonnet", "haiku"},
 	}
-	cmd := buildOpenCodeRunCommand(params, "triage")
-	assert.Contains(t, cmd, "opencode run")
+	cmd := buildOpenCodeRunCommand(params, "triage", openCodeTrustedEnv{})
+	assert.Contains(t, cmd, `"$`+openCodeBinaryVar+`" run`)
+}
+
+func TestOpenCodeRuntimeRunRequiresBootstrapState(t *testing.T) {
+	const sandboxName = "missing-opencode-bootstrap-state"
+	forgetOpenCodeTrustedEnv(sandboxName)
+	t.Cleanup(func() { forgetOpenCodeTrustedEnv(sandboxName) })
+
+	exitCode, err := (OpenCodeRuntime{}).Run(
+		t.Context(),
+		RunParams{SandboxName: sandboxName, AgentBaseName: "triage"},
+		ui.New(&strings.Builder{}),
+		time.Now(),
+		&RunMetrics{},
+	)
+	assert.Equal(t, -1, exitCode)
+	require.ErrorContains(t, err, "trusted environment was not recorded during bootstrap")
 }
 
 func TestOpenCodeHooksExtensionPath(t *testing.T) {

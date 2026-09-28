@@ -119,24 +119,6 @@ func TestResolveFromPerRepoConfig_OpenCodeSelectable(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid runtime")
 }
 
-func TestResolveFromConfig_OpenCodeSelectable(t *testing.T) {
-	t.Parallel()
-
-	// Org config selecting opencode now parses and resolves.
-	cfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
-dispatch:
-  platform: github-actions
-defaults:
-  roles: [triage]
-  runtime: opencode
-repos: {}
-`))
-	require.NoError(t, parseErr)
-	b, err := ResolveFromConfig(cfg)
-	require.NoError(t, err)
-	assert.Equal(t, "opencode", b.Runtime.Name())
-}
-
 func TestResolveForAgent(t *testing.T) {
 	t.Parallel()
 	cfg, err := config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration

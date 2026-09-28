@@ -340,11 +340,11 @@ func ValidProviders() []string {
 // repo, per agent, or as a repos.yaml default; "dummy" and "dummy-playback"
 // are for behaviour tests only.
 //
-// NOTE: opencode does not yet support write-capable agents (code, fix).
-// The runtime-level hooks guard (openCodeHooksExtensionBytes → exit 97)
-// enforces this at run time. A config-level gate is deferred to
-// unbound-force#515 when the hook adapter lands and the gate can be
-// removed.
+// NOTE: opencode does not yet provide sandbox hooks for write-capable agents
+// (code, fix). The exit-97 guard is keyed on security.enabled, not agent role:
+// with security enabled it requires the adapter, while disabling security does
+// not block write-capable roles. Role-aware enforcement is deferred to
+// unbound-force#515 with the hook adapter.
 func ValidRuntimes() []string {
 	return []string{"claude", "pi", "codex", "opencode", "dummy", "dummy-playback"}
 }

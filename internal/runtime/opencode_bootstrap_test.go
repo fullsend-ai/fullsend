@@ -32,6 +32,7 @@ if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
     "opencode --version") echo "0.1.0"; exit 0 ;;
+    *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"*":"deny"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
   esac
   exit 0
 fi
@@ -39,6 +40,7 @@ exit 0
 `
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
 }
 
 const openCodeTestAgentDef = `---
@@ -76,6 +78,7 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 	assert.Contains(t, agentMD, `"model": "opus"`)
 	assert.Contains(t, agentMD, `"bash": "allow"`)
 	assert.Contains(t, agentMD, `"read": "allow"`)
+	assert.Contains(t, agentMD, `"skill": "allow"`)
 	assert.Contains(t, agentMD, "You are the triage agent. Use gh.")
 
 	log, err := os.ReadFile(logPath)
@@ -86,6 +89,19 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 	assert.Contains(t, logStr, "opencode --version")
 	// Skills go through the upload/tar path; the archive lands under skills/.
 	assert.Contains(t, logStr, cfg+"/skills/")
+	trustedEnv, ok := lookupOpenCodeTrustedEnv("sb")
+	require.True(t, ok)
+	assert.Equal(t, `{"permission":{"*":"deny"}}`, trustedEnv.ConfigContent)
+	assert.Equal(t, "/runner/adc.json", trustedEnv.CredentialsPath)
+}
+
+func TestOpenCodeBashAllowlistWarning(t *testing.T) {
+	t.Parallel()
+
+	warning := openCodeBashAllowlistWarning([]string{"gh", "jq"})
+	assert.Contains(t, warning, "Bash allowlist (gh, jq) is recorded but not enforced")
+	assert.Contains(t, warning, "bare bash: \"allow\"")
+	assert.Contains(t, warning, "unbound-force/unbound-force#515")
 }
 
 func TestOpenCodeRuntimeBootstrap_EmptyAgentPath(t *testing.T) {
@@ -338,12 +354,17 @@ func TestOpenCodePathHelpers(t *testing.T) {
 // streamFixture for the `opencode run` command and otherwise succeeds.
 func fakeOpenshellOpenCodeStream(t *testing.T, streamFixture string) {
 	t.Helper()
+	recordOpenCodeTrustedEnv("sb", openCodeTrustedEnv{
+		ConfigContent:   `{"permission":{"*":"deny"}}`,
+		CredentialsPath: "/runner/adc.json",
+	})
+	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
 	binDir := t.TempDir()
 	script := `#!/bin/sh
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    *"opencode run"*) cat '` + streamFixture + `'; exit 0 ;;
+    *"--format json"*) cat '` + streamFixture + `'; exit 0 ;;
   esac
   exit 0
 fi

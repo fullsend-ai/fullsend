@@ -93,6 +93,12 @@ func openCodeBareModelID(spec string) string {
 // supplies the embedded adapter bytes the guard compares against.
 const openCodeHooksMissingExit = 97
 
+const (
+	openCodeBinaryVar             = "FULLSEND_OPENCODE_BIN"
+	openCodeConfigContentPinVar   = "FULLSEND_OPENCODE_CONFIG_CONTENT"
+	openCodeCredentialsPathPinVar = "FULLSEND_OPENCODE_GOOGLE_APPLICATION_CREDENTIALS"
+)
+
 // Sandbox-side transcript layout. Run tees opencode's --format json stream
 // into a file under openCodeOutputSubdir (inside WorkspaceDir);
 // ExtractTranscripts downloads it after the run. openCodeRunRCFile holds
@@ -122,7 +128,7 @@ func openCodeSandboxTranscriptPath() string {
 // (params.HooksSettingsPath != "", the same runner signal ClaudeRuntime and
 // PiRuntime use), the command SHA-256-verifies the runner-owned adapter
 // before sourcing the agent-writable .env and fails closed otherwise.
-func buildOpenCodeRunCommand(params RunParams, agentName string) string {
+func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv openCodeTrustedEnv) string {
 	r := OpenCodeRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	hooksEnabled := params.HooksSettingsPath != ""
@@ -157,6 +163,8 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 		// workspace AGENTS.md. printf is a shell builtin — safe from PATH
 		// manipulation.
 		"&& printf '%s' " + shellQuote(configJSON) + " > " + shellQuote(configPath),
+		"&& " + openCodeBinaryPin(),
+		"&& " + openCodeTrustedEnvPin(trustedEnv),
 	}
 	if hooksEnabled {
 		// Before .env: that file is agent-writable and could otherwise shadow
@@ -171,12 +179,13 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 		// after it so a rewritten .env cannot move OpenCode's config dir out
 		// from under the guards (mirrors pi_run.go:394 and codex_run.go:313).
 		"&& "+strings.Join(r.EnvExports(), " && "),
+		"&& "+openCodeTrustedEnvRestore(),
 		"&& export "+openCodeRuntimeEnv+"=opencode",
 	)
 
 	// The opencode invocation itself, whose stdout is the --format json stream.
 	invocation := []string{
-		"opencode",
+		`"$` + openCodeBinaryVar + `"`,
 	}
 	if params.Debug != "" {
 		// OpenCode's structured logs need OPENCODE_PRINT_LOGS=1 to reach
@@ -246,13 +255,30 @@ func buildOpenCodeRunCommand(params RunParams, agentName string) string {
 	// final exit is conditional on the prelude having succeeded — when the
 	// prelude short-circuits, the shell exits with the prelude's own status
 	// rather than reading a potentially stale rc file.
-	pipeline := "{ " + strings.Join(invocation, " ") + " ; echo $? > " + shellQuote(rcFile) + " ; }" +
-		" | tee " + shellQuote(sandboxTranscript)
+	pipeline := "{ " + strings.Join(invocation, " ") + ` ; command -p printf '%s\n' "$?" > ` + shellQuote(rcFile) + " ; }" +
+		" | command -p tee " + shellQuote(sandboxTranscript)
 
 	// `&& exit` only runs when the prelude succeeded. A prelude failure
 	// propagates its own exit status.
 	return strings.Join(prelude, " ") + " && " + pipeline +
-		" && exit \"$(cat " + shellQuote(rcFile) + " 2>/dev/null || echo 1)\""
+		` && FULLSEND_OPENCODE_RC="$(command -p cat ` + shellQuote(rcFile) + ` 2>/dev/null)"` +
+		` && case "$FULLSEND_OPENCODE_RC" in ''|*[!0-9]*) FULLSEND_OPENCODE_RC=1;; esac` +
+		` && exit "$FULLSEND_OPENCODE_RC"`
+}
+
+func openCodeBinaryPin() string {
+	return `readonly ` + openCodeBinaryVar + `="$(command -v opencode)" && if test -n "$` + openCodeBinaryVar +
+		`"; then :; else echo 'fullsend: opencode not found on PATH' >&2; exit 127; fi`
+}
+
+func openCodeTrustedEnvPin(env openCodeTrustedEnv) string {
+	return "readonly " + openCodeConfigContentPinVar + "=" + shellQuote(env.ConfigContent) + " " +
+		openCodeCredentialsPathPinVar + "=" + shellQuote(env.CredentialsPath)
+}
+
+func openCodeTrustedEnvRestore() string {
+	return `export OPENCODE_CONFIG_CONTENT="$` + openCodeConfigContentPinVar +
+		`" GOOGLE_APPLICATION_CREDENTIALS="$` + openCodeCredentialsPathPinVar + `"`
 }
 
 // openCodeValidatedArg constrains model/effort/agent-name values to a safe
@@ -318,7 +344,11 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 		// dropping the list.
 		printer.StepWarn(fmt.Sprintf("fallback models %s are not supported on opencode yet and are ignored", sanitizeOutput(strings.Join(params.FallbackModels, ","))))
 	}
-	cmd := buildOpenCodeRunCommand(params, agentName)
+	trustedEnv, ok := lookupOpenCodeTrustedEnv(params.SandboxName)
+	if !ok {
+		return -1, fmt.Errorf("opencode run: trusted environment was not recorded during bootstrap")
+	}
+	cmd := buildOpenCodeRunCommand(params, agentName, trustedEnv)
 
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {

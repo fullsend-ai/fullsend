@@ -16,7 +16,8 @@ page is what changes once you are on it.
 > native PreToolUse/PostToolUse hooks, so until the runner-owned, sha256-gated plugin adapter lands,
 > no sandbox tool hooks are installed. Harnesses using the default `security.enabled: true` will
 > exit 97 (hook adapter missing); set `security.enabled: false` on the harness entry until #515
-> lands. Pilot on a disposable repo before relying on it.
+> lands. This is not a role-aware gate: disabling security also removes the exit-97 guard, including
+> for write-capable agents. Select OpenCode only for read-only agents and pilot on a disposable repo.
 
 ## Models and providers
 
@@ -38,6 +39,11 @@ OpenCode's config directory is **runner-owned**, off the agent-writable workspac
 OpenCode with `OPENCODE_CONFIG_DIR` (`/sandbox/opencode-config`). The target repo cannot pre-seed it
 and a workspace reset does not clear it. The injected `OPENCODE_CONFIG_CONTENT` (Vertex provider +
 tool-permission policy) merges last in OpenCode's config stack, so it wins over any repo config.
+
+During Bootstrap, before an agent iteration can modify `.env`, the runner records the effective
+`OPENCODE_CONFIG_CONTENT` and `GOOGLE_APPLICATION_CREDENTIALS` values outside the sandbox. Run fails
+closed if that state is missing, then restores both values after sourcing `.env`. Bootstrap and Run
+must therefore execute in the same fullsend process, as they do in the normal CLI lifecycle.
 
 > A non-interactive `opencode run` has no TTY, so OpenCode auto-rejects every permission request that
 > config does not pre-resolve. The injected policy therefore **allows** the read-only tools an agent
@@ -91,7 +97,8 @@ What a local OpenCode run needs, beyond the guide:
 - **The Claude-style agent definition is translated** into OpenCode's `agent/<name>.md` layout with
   JSON frontmatter (`mode: primary`, `permission:` as a `{toolID: "allow"|"deny"}` record). Claude
   tool names are mapped to OpenCode tool ids; names without an OpenCode equivalent are dropped with
-  a warning. Per-argument Bash restrictions collapse to a bare `bash: "allow"`.
+  a warning. Per-argument Bash restrictions currently collapse to a bare `bash: "allow"`; bootstrap
+  warns when this occurs, and enforcement is grouped with the hook adapter in unbound-force#515.
 - **`plugins:` are unsupported** — the Claude marketplace layout is warned and skipped.
 - **Effort maps to `--variant`** — the harness `effort` value selects OpenCode's model reasoning
   variant.

@@ -25,14 +25,14 @@ import (
 //   - Exec'd directly: `claude` on PATH is a symlink to the npm package's
 //     bin/claude.exe (2.1.2xx places the native binary there — install.cjs,
 //     "Always write to bin/claude.exe"), so the connecting process has no
-//     wrapper ancestor and only a glob on the real file name admits it. This
-//     is what broke every 0.40.0-image run (fullsend#6971): **/claude alone
-//     never matched.
+//     wrapper ancestor. OpenCode is installed directly as the native
+//     /usr/local/bin/opencode binary. Only globs on the real file names admit
+//     them. This is what broke every 0.40.0-image Claude run (fullsend#6971):
+//     **/claude alone never matched.
 //
 // A new runtime must add its mapping here; TestScaffoldProfilesAllowRuntimeBinaries
 // fails for any selectable runtime without one. Decide the globs against the
-// actual Containerfile install (opencode, still a stub, follows the claude.exe
-// pattern — see the note on OpenCodeRuntime). The two exact-list tests
+// actual Containerfile install. The two exact-list tests
 // (TestScaffoldVertexProfile_BinaryAllowlist, TestEmbeddedOpenAIProfileBinaries)
 // pin the full lists; the walk over config.ValidRuntimes is what this test adds.
 var runtimeEgressBinaries = map[string]map[string][]string{

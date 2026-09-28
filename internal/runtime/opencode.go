@@ -70,9 +70,10 @@ func (OpenCodeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 //     path Claude-on-Vertex and pi-on-Vertex use.
 //
 // OPENCODE_CONFIG_CONTENT and GOOGLE_APPLICATION_CREDENTIALS are delivered by
-// the harness (env.sandbox / host_files); they are re-exported here so the
-// prelude inherits them and so docs/runtimes.md's config-key table stays in
-// sync.
+// the harness (env.sandbox / host_files). Bootstrap records their pristine
+// values on the runner, and Run restores those values after sourcing the
+// agent-writable .env. They remain listed here so the initial .env exports them
+// and docs/runtimes.md's config-key table stays in sync.
 //
 // OPENCODE_DISABLE_PROJECT_CONFIG=true prevents OpenCode from walking the
 // workspace directory for .opencode/opencode.json (which could widen tool
