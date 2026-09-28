@@ -106,8 +106,14 @@ null, and empty are not interchangeable for these fields.
 
 This rule applies only to fields whose Go type can hold a distinct
 "explicit empty" value — slices (`roles`, `allowed_remote_resources`,
-`agents`) and pointers (`kill_switch`, `keep_history`, `agents[].enabled`).
-Treat those as **tri-state** unless their field details say otherwise.
+`agents`) and pointers (`kill_switch`, `keep_history`, `agents[].enabled`,
+`create_issues`, `status_notifications`). Any inherit-on-nil pointer whose
+non-nil empty value replaces the parent is tri-state by this same rule,
+not just the fields named above — `create_issues: {}` and
+`status_notifications: {}` decode to a non-nil pointer to a zero-value
+struct, distinct from the nil pointer produced by omitting the key or
+writing an explicit YAML null. Treat those as **tri-state** unless their
+field details say otherwise.
 
 String/scalar fields (`runtime`, `forge`, `tracker`, `mint_url`,
 `inference.*`) and empty-map fields (`models.aliases`) are **bi-state**,
@@ -195,8 +201,8 @@ accessor chain, where `roles: []` resolves to an empty list distinct from
 an omitted or null key that inherits (and may resolve to a non-empty list
 from `config.base.yaml` or code defaults that the workflow never sees).
 The yq path does not walk overlay → base → code defaults, so it can
-diverge from `ConfigRoles()` when the overlay omits, nulls, or empties
-`roles` while `ConfigRoles()` still inherits a non-empty list from
+diverge from `ConfigRoles()` when the overlay omits or nulls `roles`
+while `ConfigRoles()` still inherits a non-empty list from
 `config.base.yaml` or code defaults that the yq path never sees. When
 the overlay itself sets a non-empty `roles` list, `ConfigRoles()`
 returns that same overlay list (replace-if-set), so the two readers
@@ -363,6 +369,12 @@ restricts which orgs and repos agents may create issues in.
 When omitted, agents cannot create issues outside the repository they are
 running in.
 
+`create_issues` uses pointer semantics in the layered config system — `nil`
+(omitted) falls through to parent; an explicit `create_issues: {}` is a local
+decision (no allowed targets) that does not fall through. A YAML null
+(`create_issues:`) decodes as omitted, not as `{}`. See
+[Tri-state config field semantics](#tri-state-config-field-semantics).
+
 ### `authorization`
 
 Lists extra sources of permission for triggering agents. The GitHub
@@ -399,6 +411,13 @@ agents start and complete.
   an opt-in alternative that does not generate a GitHub notification.
 - **`reaction.completion`** — `enabled`, `on_failure`, or `disabled`
   (default).
+
+`status_notifications` uses pointer semantics in the layered config
+system — `nil` (omitted) falls through to parent; an explicit
+`status_notifications: {}` is a local decision (all sub-fields default,
+per-field defaults above) that does not fall through. A YAML null
+(`status_notifications:`) decodes as omitted, not as `{}`. See
+[Tri-state config field semantics](#tri-state-config-field-semantics).
 
 ### `mint_url`
 

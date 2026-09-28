@@ -877,6 +877,13 @@ agents:
     enabled: false
 allowed_remote_resources:
   - https://parent.example.com/
+create_issues:
+  allow_targets:
+    orgs:
+      - parent-org
+status_notifications:
+  comment:
+    start: disabled
 `
 
 func loadTriState(t *testing.T, overlay string) PerRepoConfigReader {
@@ -1201,6 +1208,118 @@ agents:
 				assert.True(t, agents[0].IsEnabled())
 				require.NotNil(t, agents[0].Enabled)
 				assert.True(t, *agents[0].Enabled)
+			},
+		},
+
+		// create_issues: *CreateIssuesConfig. nil falls through to parent,
+		// same shape as kill_switch/keep_history. The parent sets a
+		// distinctive allow_targets.orgs so inherit is distinguishable
+		// from both the code default (nil) and a zero-value replacement.
+		{
+			name:    "create_issues/absent inherits parent",
+			overlay: "version: \"1\"\n",
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				ci := cfg.IssueCreationConfig()
+				require.NotNil(t, ci)
+				assert.Equal(t, []string{"parent-org"}, ci.AllowTargets.Orgs)
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.CreateIssues)
+			},
+		},
+		{
+			name: "create_issues/null scalar inherits parent",
+			overlay: `version: "1"
+create_issues:
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				ci := cfg.IssueCreationConfig()
+				require.NotNil(t, ci)
+				assert.Equal(t, []string{"parent-org"}, ci.AllowTargets.Orgs)
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.CreateIssues, "yaml.v3 decodes create_issues: (null) to nil, same as omitted")
+			},
+		},
+		{
+			name: "create_issues/empty map replaces parent with no targets",
+			overlay: `version: "1"
+create_issues: {}
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				ci := cfg.IssueCreationConfig()
+				require.NotNil(t, ci)
+				assert.Empty(t, ci.AllowTargets.Orgs)
+				assert.Empty(t, ci.AllowTargets.Repos)
+				prc := cfg.(*perRepoConfig)
+				require.NotNil(t, prc.CreateIssues, "create_issues: {} decodes to a non-nil pointer, distinct from omitted/null")
+			},
+		},
+		{
+			name: "create_issues/value replaces parent",
+			overlay: `version: "1"
+create_issues:
+  allow_targets:
+    orgs:
+      - overlay-org
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				ci := cfg.IssueCreationConfig()
+				require.NotNil(t, ci)
+				assert.Equal(t, []string{"overlay-org"}, ci.AllowTargets.Orgs)
+			},
+		},
+
+		// status_notifications: *StatusNotificationConfig. Same nil-falls-
+		// through shape as create_issues. Parent sets a distinctive
+		// comment.start so inherit is distinguishable from a zero-value
+		// replacement (empty string).
+		{
+			name:    "status_notifications/absent inherits parent",
+			overlay: "version: \"1\"\n",
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				sn := cfg.StatusNotifications()
+				require.NotNil(t, sn)
+				assert.Equal(t, "disabled", sn.Comment.Start)
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.Notifications)
+			},
+		},
+		{
+			name: "status_notifications/null scalar inherits parent",
+			overlay: `version: "1"
+status_notifications:
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				sn := cfg.StatusNotifications()
+				require.NotNil(t, sn)
+				assert.Equal(t, "disabled", sn.Comment.Start)
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.Notifications, "yaml.v3 decodes status_notifications: (null) to nil, same as omitted")
+			},
+		},
+		{
+			name: "status_notifications/empty map replaces parent with zero-value config",
+			overlay: `version: "1"
+status_notifications: {}
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				sn := cfg.StatusNotifications()
+				require.NotNil(t, sn)
+				assert.Empty(t, sn.Comment.Start)
+				prc := cfg.(*perRepoConfig)
+				require.NotNil(t, prc.Notifications, "status_notifications: {} decodes to a non-nil pointer, distinct from omitted/null")
+			},
+		},
+		{
+			name: "status_notifications/value replaces parent",
+			overlay: `version: "1"
+status_notifications:
+  comment:
+    start: enabled
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				sn := cfg.StatusNotifications()
+				require.NotNil(t, sn)
+				assert.Equal(t, "enabled", sn.Comment.Start)
 			},
 		},
 	}

@@ -126,8 +126,17 @@ When adding or modifying a field in `AgentEntry`:
 3. **Add layered-merge test coverage** in
    `internal/config/interfaces_test.go` or `internal/config/load_test.go`.
    Test both the overriding value and the inheritance or clearing behavior.
+   If the field inherits from parent when unset (see step 1), also add a
+   four-way YAML-parsed row (absent / null / empty-or-false / value) to
+   `TestPerRepoConfig_TriStateYAMLShapes` in
+   `internal/config/defaults_test.go` — see
+   [Tri-state config field semantics](../reference/config-reference.md#tri-state-config-field-semantics).
 4. **Update the [layered configuration reference](../guides/infrastructure/layered-config-reference.md)**
-   with the field's YAML name, type, and merge rule.
+   with the field's YAML name, type, and merge rule. For an
+   inherit-from-parent field, also update
+   [`docs/reference/config-reference.md`](../reference/config-reference.md)
+   — the tri-state section (if the field's Go type is new to the closed
+   list) and the field's own field-detail entry.
 5. **Recheck `HasSettings()` and `IsOverrideOnly()`** in
    `internal/config/config.go` when the field affects whether an entry is an
    override-only agent.

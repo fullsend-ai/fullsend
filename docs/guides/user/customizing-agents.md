@@ -532,8 +532,13 @@ agents:
 
 This prevents the agent from dispatching and from resolving via
 `fullsend run`. The role can stay in `defaults.roles` — only the agent
-is suppressed. Omitting `enabled` (or setting it to `true`) keeps the
-agent active (backward compatible).
+is suppressed. Omitting `enabled` (or an explicit YAML null) inherits
+the agent's `enabled` state from the parent configuration layer rather
+than unconditionally activating it — if a parent layer already disabled
+the agent, an overlay entry that omits `enabled` leaves it disabled. The
+agent defaults to active only when `enabled` was never set in any
+layer (backward compatible). See
+[Tri-state config field semantics](../../reference/config-reference.md#tri-state-config-field-semantics).
 
 When multiple entries share a name, the last writer wins. This allows a
 disable-then-enable pattern to replace a default agent with a custom one:
