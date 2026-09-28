@@ -663,6 +663,22 @@ if [ "${STAGE}" = "fix" ]; then
   fi
   export TARGET_BRANCH
 
+  # Fetch MR source branch so the fix agent can check it out and push commits.
+  # On GitHub, reusable-fix.yml does an explicit checkout with ref: head_ref.
+  # On GitLab, dispatch pipelines run on main — only origin/main is present.
+  # The MR API response includes source_branch; fetch it so the local repo
+  # has the ref before fullsend run copies --target-repo into the sandbox.
+  if [ "${MR_IID}" != "0" ]; then
+    SOURCE_BRANCH=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}" \
+      -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}" \
+      | jq -r '.source_branch // empty' 2>/dev/null || echo "")
+    if [ -n "${SOURCE_BRANCH}" ]; then
+      echo "Fetching MR source branch: ${SOURCE_BRANCH}"
+      git fetch origin "${SOURCE_BRANCH}" || echo "WARNING: failed to fetch source branch ${SOURCE_BRANCH}"
+    fi
+  fi
+
   # Trigger source — the forge username that triggered this fix.
   # Bot-triggered (changes-requested note via poller): the bot's
   # username (ends in _bot_*, matching GitLab project access token
