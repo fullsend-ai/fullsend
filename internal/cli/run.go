@@ -2151,13 +2151,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 9b-2. Pre-flight GitHub API connectivity check.
-	// Validates that the sandbox can reach api.github.com through the proxy
-	// before starting the agent. Without this, agents that depend on gh CLI
-	// burn their entire timeout on doomed API calls. See #2143.
+	// Validates proxy CONNECT, REST token validity, and GraphQL (the path
+	// gh CLI uses) before starting the agent. Without this, agents that
+	// depend on gh CLI burn their entire timeout on doomed API calls.
+	// See #2143, #4016.
 	{
 		preflightStart := time.Now()
 		printer.StepStart("Checking GitHub API connectivity from sandbox")
 		result, connectErr := checkSandboxGitHubConnectivity(sandboxName)
+		logGitHubPreflight(printer, result)
 		if connectErr != nil {
 			printer.StepFail("GitHub API unreachable from sandbox")
 			return fmt.Errorf("pre-flight connectivity check: %w", connectErr)
@@ -5770,6 +5772,7 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 		}
 		return -1
 	}, result.ExpiresAt)
+	recordGitHubTokenMint(expiresAt, time.Now().UTC())
 	printer.StepDone("Agent token minted (expires " + expiresAt + ")")
 	return true, cleanup, nil
 }

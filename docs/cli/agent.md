@@ -363,7 +363,11 @@ Three things that stop a local run before it starts, all of them easy to hit:
   copies it into the sandbox, so the run fails validation without it — even
   under `dummy`, which does no inference.
 - `GH_TOKEN` must be a real token. A GitHub connectivity check runs before the
-  agent, and a placeholder fails it with `Bad credentials (HTTP 401)`.
+  agent: it probes HTTPS CONNECT to `api.github.com`, then an authenticated REST
+  GET (`/rate_limit`), then a GraphQL query (the path `gh` uses for most reads).
+  A placeholder token fails with `Bad credentials (HTTP 401)`; a proxy that
+  allows REST but blocks GraphQL is also fatal. The outcome is written to
+  `/sandbox/workspace/.preflight-results.json` inside the sandbox.
 
 In CI, commit `.fullsend/` and fire the agent with whatever its trigger
 describes — for the default preset, comment `/fs-<name>` on an issue or pull
