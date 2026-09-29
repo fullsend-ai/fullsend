@@ -314,6 +314,47 @@ func TestMergeSkills_RelativeChildCannotSpoofBaseIdentity(t *testing.T) {
 	assert.Equal(t, []string{"/abs/base/code-review", "attacker-dir"}, SkillSources(got))
 }
 
+// TestMergeSkills_LocalOverrideMatchesByBasenameNotDeclaredName documents a
+// caveat of the CWD-spoof fix above: a legitimate local project override
+// (relative child Source, not yet resolved by ResolveRelativeTo) whose
+// SKILL.md declares the same name: as an already-resolved absolute base
+// skill does NOT override it when the directory basenames differ — declared
+// names are only consulted for absolute paths (skill.SandboxName). Only a
+// matching directory basename lets a local override take effect. See the
+// "Local overrides must match by directory name" note in
+// docs/guides/user/customizing-with-skills.md and the skills row in
+// docs/contributing/harness-fields.md.
+func TestMergeSkills_LocalOverrideMatchesByBasenameNotDeclaredName(t *testing.T) {
+	dir := t.TempDir()
+	baseDir := filepath.Join(dir, "cache", "code-review")
+	require.NoError(t, os.MkdirAll(baseDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseDir, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# base\n"), 0o644))
+
+	oldwd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(oldwd)) })
+	require.NoError(t, os.Chdir(dir))
+
+	// Relative child directory basename ("my-override") differs from the
+	// base's basename ("code-review"), even though the child's own SKILL.md
+	// declares the matching name. Because the child Source is still
+	// relative at merge time, SandboxName falls back to basename and the
+	// declared name is never consulted, so the override does not attach to
+	// the base entry.
+	childDir := "my-override"
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# child\n"), 0o644))
+
+	got := mergeSkills(
+		[]SkillEntry{{Source: baseDir}},
+		[]SkillEntry{{Source: childDir}},
+	)
+	require.Len(t, got, 2, "declared-name match alone must not override when the child path is still relative")
+	assert.Equal(t, []string{baseDir, childDir}, SkillSources(got))
+}
+
 func TestLoadWithBase_LocalBase_PrivilegeLevelsMerge(t *testing.T) {
 	dir := t.TempDir()
 
