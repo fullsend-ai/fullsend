@@ -401,9 +401,10 @@ not included in `input` or `output`, and — for Codex and pi specifically —
 zero rather than being attached as `0` — do not rely on its presence or
 absence when filtering OTel spans.
 
-For a cancelled GitHub Actions run, use `metrics.json` — it is the
-run-level aggregate and is uploaded even when the job is cancelled. Span
-attributes are per-iteration.
+For a cancelled GitHub Actions run, use `run-telemetry.jsonl` as the primary
+telemetry source when available; it contains the per-iteration span
+attributes. `metrics.json` is the run-level aggregate and is uploaded even
+when the job is cancelled.
 
 `token_usage.reasoning` (span: `gen_ai.usage.reasoning_tokens`) is also
 recorded on completed runs. On cancelled Claude runs it is typically zero,
@@ -411,8 +412,9 @@ because reasoning is taken from the terminal result event that cancellation
 never emits. Cancelled Codex and pi runs behave differently: both parsers
 synthesize a result on every stream — including killed or interrupted
 ones — from the high-water/accumulated token counters observed before
-cancellation, so `reasoning` is non-zero there whenever at least one turn
-(Codex) or assistant message (pi) finished before the run was cancelled.
+cancellation, so `reasoning` is persisted there when at least one turn
+(Codex) or assistant message (pi) finished before the run was cancelled, and
+is non-zero only when that turn or message reported reasoning tokens.
 Whether `reasoning` needs adding to the cost formula depends on the
 runtime, not on whether the run completed: for Codex and pi, reasoning
 tokens are counted separately from `output` (`output` excludes them), so
