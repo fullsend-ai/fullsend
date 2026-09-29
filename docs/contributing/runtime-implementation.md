@@ -48,31 +48,31 @@ content that must be updated whenever a runtime is added or renamed.
 
 **Registration and config:**
 
-- [ ] `internal/runtime/registry.go` — add a `case` to `Resolve()` that
+- [x] `internal/runtime/registry.go` — add a `case` to `Resolve()` that
   returns the new backend (mirrors step 1 above — listed here so the
   walkthrough is self-contained).
-- [ ] `internal/config/config.go` — add the runtime name to the slice
+- [x] `internal/config/config.go` — add the runtime name to the slice
   returned by `ValidRuntimes()`.
 
 **Tests:**
 
-- [ ] `internal/runtime/registry_test.go` — add a `Resolve("<name>")`
+- [x] `internal/runtime/registry_test.go` — add a `Resolve("<name>")`
   assertion block to `TestResolve` (and to `TestResolveFromConfig` /
   `TestResolveFromPerRepoConfig` if the runtime is user-selectable).
-- [ ] `internal/config/config_test.go` — update any assertion on
+- [x] `internal/config/config_test.go` — update any assertion on
   `ValidRuntimes()` to include the new name.
 
 **CLI:**
 
-- [ ] `internal/cli/runtime_prompt.go` — if the runtime is test-only
+- [x] `internal/cli/runtime_prompt.go` — if the runtime is test-only
   (e.g. `dummy`, `dummy-playback`), filter it from
   `userRuntimeChoices()` so it does not appear in the interactive
   prompt.
-- [ ] `internal/cli/run.go` — update the `--runtime` flag description
+- [x] `internal/cli/run.go` — update the `--runtime` flag description
   to list the new runtime name.
-- [ ] `internal/cli/admin.go` — update the `--runtime` flag description
+- [x] `internal/cli/admin.go` — update the `--runtime` flag description
   in `newInstallCmd()` to include the new runtime name.
-- [ ] `internal/cli/github.go` — update the `--runtime` flag description
+- [x] `internal/cli/github.go` — update the `--runtime` flag description
   in `newGitHubSetupCmd()` to include the new runtime name.
 
 **Documentation:**
@@ -426,7 +426,7 @@ The inference profiles (`profiles/fullsend-vertex-ai.yaml` in this repo and in f
 | Claude Code | `bin/claude.exe` in the npm package — 2.1.2xx's `install.cjs` places the native binary there ("Always write to bin/claude.exe"); the Containerfile installs it *with* scripts so that runs | `**/claude`, `**/claude.exe` | gateway deny log in #6971; `npm view @anthropic-ai/claude-code@<pin> bin` |
 | pi | `node` (`bin = dist/bundle/cli.js`; no native network path in the package) | `**/node` | `images/sandbox/Containerfile`, `npm view @earendil-works/pi-coding-agent@<pin> bin` |
 | Codex | `vendor/<triple>/bin/codex`, spawned by the npm launcher `bin/codex.js` under node; codex also spawns `codex-code-mode-host` (default-enabled in 0.152.1), covered by ancestor matching, not by name | `**/node` (ancestor), `**/codex` (the process) | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
-| OpenCode | `/usr/local/bin/opencode`, the per-architecture static musl release binary installed directly by the Containerfile | `**/opencode`, `**/opencode.exe` | `images/sandbox/Containerfile`; `internal/cli/runtime_binaries_test.go` |
+| OpenCode | `/usr/local/bin/opencode`, the per-architecture glibc release binary installed directly by the Containerfile | `**/opencode`, `**/opencode.exe` | `images/sandbox/Containerfile`; `internal/cli/runtime_binaries_test.go` |
 
 ## Sandbox workspace layout
 

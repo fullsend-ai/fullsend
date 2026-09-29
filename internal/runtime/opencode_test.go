@@ -492,6 +492,26 @@ func TestOpenCodeHooksExtensionPath(t *testing.T) {
 	assert.Equal(t, "/sandbox/opencode-config/plugins/fullsend-hooks.ts", r.openCodeHooksExtensionPath())
 }
 
+func TestOpenCodeRunFailsClosedWhenHooksEnabledButAdapterMissing(t *testing.T) {
+	t.Parallel()
+	// When a harness enables hooks (HooksSettingsPath non-empty) but the
+	// adapter bytes are nil (not yet available — #515), Run must refuse to
+	// start rather than running unhooked.
+	require.Nil(t, openCodeHooksExtensionBytes(), "precondition: adapter bytes are nil until #515")
+
+	r := OpenCodeRuntime{}
+	params := RunParams{
+		AgentBaseName:     "fix",
+		RepoDir:           "/repo",
+		HooksSettingsPath: "/sandbox/opencode-config/hooks.json",
+	}
+	exitCode, err := r.Run(t.Context(), params, nil, time.Now(), &RunMetrics{})
+	require.Error(t, err)
+	assert.Equal(t, -1, exitCode)
+	assert.Contains(t, err.Error(), "hooks adapter not yet available")
+	assert.Contains(t, err.Error(), "#515")
+}
+
 func TestParseOpenCodeTranscriptFile(t *testing.T) {
 	t.Parallel()
 

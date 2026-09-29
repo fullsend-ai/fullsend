@@ -295,16 +295,19 @@ RUN mkdir -p /etc/codex \
 
 # ---------------------------------------------------------------------------
 # OpenCode — opt-in agent runtime (anomalyco/opencode, unbound-force#510).
-# Static musl build from GitHub releases, SHA256-verified per architecture.
+# glibc builds (the musl tarballs dynamically link libc.musl — absent in the
+# Debian-based OpenShell base image).  The base image may ship its own
+# opencode at /usr/local/bin; rm -f before extract so the pinned version wins
+# (same shadow-proof pattern as Claude Code above).
 # To update: bump OPENCODE_VERSION and OPENCODE_SHA256_{AMD64,ARM64} from:
 #   https://github.com/anomalyco/opencode/releases
 ARG OPENCODE_VERSION=1.18.30
-ARG OPENCODE_SHA256_AMD64=a4eb84374d4f262ac46fe8b25c9e193a54a6f40f44bbe155a29c9c6309a34a5e
-ARG OPENCODE_SHA256_ARM64=7a4dc1171ca78426a4611f9a1e15c0168dc0408475d24aab32bb51187e1865ad
+ARG OPENCODE_SHA256_AMD64=55007246858165496ff85ba1c2b648f7421e8e2013bf4189a680c9ff8e699d17
+ARG OPENCODE_SHA256_ARM64=4111a55c2a02c0fac314bd51e9a2330280e6d29d2b85b9554fff6d62612566ed
 RUN case "$TARGETARCH" in \
-      amd64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64-musl.tar.gz" \
+      amd64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
              EXPECTED="${OPENCODE_SHA256_AMD64}" ;; \
-      arm64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64-musl.tar.gz" \
+      arm64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz" \
              EXPECTED="${OPENCODE_SHA256_ARM64}" ;; \
       *)     echo "unsupported TARGETARCH=$TARGETARCH for opencode" >&2; exit 1 ;; \
     esac \
@@ -314,6 +317,7 @@ RUN case "$TARGETARCH" in \
          echo "opencode checksum mismatch: got ${GOT}, expected ${EXPECTED}" >&2; \
          exit 1; \
        fi \
+    && rm -f /usr/local/bin/opencode \
     && tar xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode \
     && chmod 0755 /usr/local/bin/opencode \
     && rm -f /tmp/opencode.tar.gz \

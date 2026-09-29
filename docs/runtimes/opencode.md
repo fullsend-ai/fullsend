@@ -18,6 +18,18 @@ page is what changes once you are on it.
 > exit 97 (hook adapter missing); set `security.enabled: false` on the harness entry until #515
 > lands. This is not a role-aware gate: disabling security also removes the exit-97 guard, including
 > for write-capable agents. Select OpenCode only for read-only agents and pilot on a disposable repo.
+>
+> **What `security.enabled: false` turns off.** The flag gates more than the exit-97 hook guard.
+> Setting it to `false` also suppresses:
+>
+> 1. the pre-upload runtime content scan (agent def, skills, plugins),
+> 2. the host-side context file scan (unicode, SSRF patterns on repo context files),
+> 3. the pre-agent sandbox `scan context` pass,
+> 4. the post-agent output scan and secret redaction (`scanOutputFiles`).
+>
+> OpenCode transcripts tee raw JSON to the host and download a second copy; with this workaround,
+> neither copy receives secret redaction and untrusted repo context files are not scanned.
+> Use only on disposable repos with no real credentials until #515 lands.
 
 ## Models and providers
 
@@ -63,17 +75,9 @@ must therefore execute in the same fullsend process, as they do in the normal CL
 ## Running it locally
 
 Complete [Running agents locally](../guides/user/running-agents-locally.md) first — the CLI,
-OpenShell, credentials and the fleet clone are the same. Every example there runs on OpenCode by
-adding `--runtime opencode` to the same command:
-
-```bash
-fullsend run triage \
-  --fullsend-dir /tmp/fullsend-agents/ \
-  --target-repo /tmp/target-repo/ \
-  --env-file fullsend-gcp.env \
-  --env-file fullsend-triage.env \
-  --runtime opencode
-```
+OpenShell, credentials and the fleet clone are the same. An OpenCode run additionally needs the
+`OPENCODE_CONFIG_CONTENT` env var (see below) and `security.enabled: false` on the harness until
+#515 lands.
 
 The plan block confirms the selection, and `metrics.json` records `runtime`, `runtime_source`,
 `requested_model` and `override_source`.
@@ -86,14 +90,43 @@ What a local OpenCode run needs, beyond the guide:
 - **A sandbox image that includes `opencode`** — Bootstrap preflights `opencode --version` and fails
   fast if the pinned binary is missing or broken, rather than producing an empty transcript.
 - **Read-only agents** — pilot `triage`/`prioritize`; `code`/`fix` are gated on #515.
+- **`OPENCODE_CONFIG_CONTENT`** — Bootstrap validates this env var and fails closed when it is
+  missing or has no `permission` policy. Supply it via `--env-file`. A minimal example:
+
+  ```bash
+  # fullsend-opencode.env
+  OPENCODE_CONFIG_CONTENT='{"provider":{"google-vertex-anthropic":{"id":"google-vertex-anthropic"}},"permission":{"read":"allow","glob":"allow","grep":"allow","list":"allow","bash":"allow","write":"deny","edit":"deny","skill":"deny","agent":"deny","sourcegraph":"deny","mcp":"deny","task":"deny"}}'
+  ```
+
+  Adjust the `permission` record to match the agent's `tools:` frontmatter. The injected config
+  merges last in OpenCode's config stack (see [Config discovery](#config-discovery)).
+- **`security.enabled: false`** — required on the harness entry until #515 lands. Without it the
+  run exits 97 (hook adapter missing). See the warning at the top of this page for the full
+  implications — it also suppresses all scan pipelines and secret redaction.
 - **Knobs** — `FULLSEND_OPENCODE_PROVIDER` sets the provider for bare model ids (default
   `google-vertex-anthropic`).
 - **Debugging** — `--debug='*'` (the `=` is required); sandbox-side failures land in
   `opencode-debug.log` inside the run directory, next to the transcripts.
 
+The local-run command therefore becomes:
+
+```bash
+fullsend run triage \
+  --fullsend-dir /tmp/fullsend-agents/ \
+  --target-repo /tmp/target-repo/ \
+  --env-file fullsend-gcp.env \
+  --env-file fullsend-triage.env \
+  --env-file fullsend-opencode.env \
+  --runtime opencode
+```
+
 ## Behaviour differences worth knowing
 
-- **Reads `AGENTS.md` natively** — no `CLAUDE.md` bridge is injected (like pi).
+- **Reads `AGENTS.md` only** — unlike Claude Code, which supports multiple instruction files
+  (`CLAUDE.md`, per-directory overrides), OpenCode currently reads only `AGENTS.md`. No
+  `CLAUDE.md` bridge is injected (like pi). `OPENCODE_DISABLE_PROJECT_CONFIG=true` suppresses
+  OpenCode's own project-level config walk; the runner re-injects `AGENTS.md` through
+  `config.instructions` in the runner-owned `opencode.json`.
 - **The Claude-style agent definition is translated** into OpenCode's `agent/<name>.md` layout with
   JSON frontmatter (`mode: primary`, `permission:` as a `{toolID: "allow"|"deny"}` record). Claude
   tool names are mapped to OpenCode tool ids; names without an OpenCode equivalent are dropped with
