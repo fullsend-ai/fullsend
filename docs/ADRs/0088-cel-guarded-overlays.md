@@ -31,6 +31,12 @@ Accepted
 > and [#6686](https://github.com/fullsend-ai/fullsend/issues/6686) for
 > the current behavior.
 
+> **Note (2026-10-01):**
+> [ADR 0112](0112-overlays-may-set-any-harness-field.md) lets overlays set
+> any harness field except `base`, `trigger`, `overlays`, `slug`, `role` and
+> `forge`. An overlay that sets a guarded field may read only trusted event
+> and entity fields, `runtime.forge` and `config`.
+
 ## Context
 
 [ADR 0045](0045-forge-portable-harness-schema.md) added a `forge:` block to
