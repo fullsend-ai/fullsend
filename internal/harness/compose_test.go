@@ -111,7 +111,7 @@ skills:
 }
 
 // TestLoadWithBase_ChildSkillOverridesBaseByBasename verifies that a child
-// skill whose directory basename matches a base skill replaces the base entry
+// skill whose identity matches a base skill replaces the base entry
 // instead of producing a duplicate that trips duplicateDestinationNameError
 // at bootstrap time (see #5408).
 func TestLoadWithBase_ChildSkillOverridesBaseByBasename(t *testing.T) {
@@ -228,10 +228,16 @@ func TestMergeSkills(t *testing.T) {
 			want:  []string{"skills/code-implementation"},
 		},
 		{
-			name:  "duplicate child basename deduplicates",
+			name:  "sibling child basename collision keeps both",
 			base:  se("/base/skill-a"),
+			child: se("skills/issue-labels/github", "skills/pr-review/github"),
+			want:  []string{"/base/skill-a", "skills/issue-labels/github", "skills/pr-review/github"},
+		},
+		{
+			name:  "last child wins when replacing a matching base skill",
+			base:  se("/base/skill-b"),
 			child: se("/child1/skill-b", "/child2/skill-b"),
-			want:  []string{"/base/skill-a", "/child2/skill-b"},
+			want:  []string{"/child2/skill-b"},
 		},
 	}
 	for _, tt := range tests {
@@ -240,6 +246,43 @@ func TestMergeSkills(t *testing.T) {
 			assert.Equal(t, tt.want, SkillSources(got))
 		})
 	}
+}
+
+func TestMergeSkills_DeclaredNameDistinguishesNestedDirs(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill := func(rel, name string) string {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(p, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(p, "SKILL.md"),
+			[]byte("---\nname: "+name+"\n---\n"), 0o644))
+		return p
+	}
+	labels := writeSkill("issue-labels/github", "issue-labels")
+	review := writeSkill("pr-review/github", "pr-review-github")
+
+	got := mergeSkills(nil, []SkillEntry{{Source: labels}, {Source: review}})
+	assert.Equal(t, []string{labels, review}, SkillSources(got))
+}
+
+func TestMergeSkills_DeclaredNameOverridesMatchingBase(t *testing.T) {
+	dir := t.TempDir()
+	baseDir := filepath.Join(dir, "cache", "github")
+	require.NoError(t, os.MkdirAll(baseDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# base\n"), 0o644))
+
+	childDir := filepath.Join(dir, "issue-labels")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# child\n"), 0o644))
+
+	got := mergeSkills(
+		[]SkillEntry{{Source: baseDir}},
+		[]SkillEntry{{Source: childDir}},
+	)
+	require.Len(t, got, 1)
+	assert.Equal(t, childDir, got[0].Source)
 }
 
 func TestLoadWithBase_LocalBase_PrivilegeLevelsMerge(t *testing.T) {

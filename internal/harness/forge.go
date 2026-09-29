@@ -349,7 +349,7 @@ func (h *Harness) ResolveForge(platform string) error {
 //
 // Merge rules per ADR-0045:
 //   - Scalars: forge overrides if non-empty
-//   - Skills: top-level + forge (concatenated)
+//   - Skills: top-level + forge (merged by skill identity; forge overrides matching top-level)
 //   - Providers: top-level + forge (concatenated)
 //   - OpenShell.Profiles: top-level + forge (concatenated)
 //   - HostFiles: top-level + forge (concatenated with last-writer-wins dedup by Dest)

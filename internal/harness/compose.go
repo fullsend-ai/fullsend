@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/pluginformat"
+	"github.com/fullsend-ai/fullsend/internal/skill"
 	"gopkg.in/yaml.v3"
 )
 
@@ -723,10 +724,10 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.SandboxTimeoutSeconds = base.SandboxTimeoutSeconds
 	}
 
-	// Skills: base + child with child-overrides-base-by-basename.
-	// A child skill whose directory basename matches a base skill replaces
-	// the base entry (same as host_files' override-by-dest). This allows
-	// child harnesses to override built-in skills via base: composition.
+	// Skills: base + child with child-overrides-base by skill identity
+	// (declared SKILL.md name, else basename). A child skill whose identity
+	// matches a base skill replaces the base entry. This allows child
+	// harnesses to override built-in skills via base: composition.
 	if base.Skills != nil || child.Skills != nil {
 		child.Skills = mergeSkills(base.Skills, child.Skills)
 	}
@@ -2270,41 +2271,50 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 }
 
 // mergeSkills concatenates base and child skill entries, with child entries
-// overriding base entries that resolve to the same sandbox directory name
-// (filepath.Base). When both base and child define the same basename, the
-// child's source replaces the base's, and their Overrides maps are merged
-// (child keys win). This mirrors mergeHostFiles' override-by-dest behavior
-// and allows a child harness to replace a built-in skill via base:
-// composition (see #5408).
-//
-// Known limitation: if the base slice itself contains two entries with the
-// same basename (e.g., /cache/a/skill-x and /cache/b/skill-x), the second
-// entry silently overwrites the first in baseIndex. In practice this is
-// benign because duplicateDestinationNameError at bootstrap time catches
-// duplicate basenames within a single harness.
+// overriding base entries that share a skill identity. Identity is
+// skill.SandboxName: a valid SKILL.md name when the directory is on disk,
+// otherwise filepath.Base. Child-vs-base override by basename (when files
+// are not yet resolved) is how a child harness replaces a built-in skill
+// via base: composition (#5408). Nested forge skills that share a leaf
+// directory (skills/issue-labels/github vs skills/pr-review/github) keep
+// distinct identities once SKILL.md is readable, and even before that they
+// do not collapse against each other: only a *base* entry is an override
+// target. True destination collisions fail at bootstrap via
+// duplicateDestinationNameError rather than silently dropping a skill
+// (#7830).
 func mergeSkills(base, child []SkillEntry) []SkillEntry {
 	baseIndex := make(map[string]int, len(base))
 	result := make([]SkillEntry, 0, len(base)+len(child))
 
-	// Add base entries
 	for _, s := range base {
-		name := filepath.Base(s.Source)
+		name := skill.SandboxName(s.Source)
 		baseIndex[name] = len(result)
 		result = append(result, s)
 	}
 
-	// Add/override with child entries
+	// Snapshot of names that originated in base. Child entries may override
+	// those slots; they must not override other child entries that happen
+	// to share a basename (the review/retro forge-skill collision).
+	childOverride := make(map[string]int, len(child))
 	for _, s := range child {
-		name := filepath.Base(s.Source)
+		name := skill.SandboxName(s.Source)
 		if idx, exists := baseIndex[name]; exists {
-			// Merge overrides: child values win per key
+			merged := SkillEntry{
+				Source:    s.Source,
+				Overrides: mergeOverrides(result[idx].Overrides, s.Overrides),
+			}
+			result[idx] = merged
+			delete(baseIndex, name)
+			childOverride[name] = idx
+		} else if idx, exists := childOverride[name]; exists {
+			// Last child wins when several children replace the same base
+			// skill (#5408 last-writer-wins).
 			merged := SkillEntry{
 				Source:    s.Source,
 				Overrides: mergeOverrides(result[idx].Overrides, s.Overrides),
 			}
 			result[idx] = merged
 		} else {
-			baseIndex[name] = len(result)
 			result = append(result, s)
 		}
 	}
@@ -2385,7 +2395,7 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 		child.PostScript = base.PostScript
 	}
 
-	// Skills: base + child with child-overrides-base-by-basename
+	// Skills: base + child with child-overrides-base by skill identity
 	if base.Skills != nil || child.Skills != nil {
 		child.Skills = mergeSkills(base.Skills, child.Skills)
 	}

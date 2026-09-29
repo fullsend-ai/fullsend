@@ -92,18 +92,8 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("copying agent definition: %w", err)
 	}
 
-	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {
+	if err := uploadHarnessSkills(sandboxName, configDir+"/skills", input.SkillDirs()); err != nil {
 		return err
-	}
-	for _, skillPath := range input.SkillDirs() {
-		if skillPath == "" {
-			continue
-		}
-		if err := sandbox.Upload(sandboxName, skillPath,
-			fmt.Sprintf("%s/skills/", configDir)); err != nil {
-			return fmt.Errorf("copying skill %q: %w", skillPath, err)
-		}
-		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
 	// Mirror of the pi runtime's skip: a pi extension is code with no
@@ -333,20 +323,47 @@ func duplicateDestinationNameError(kind string, paths []string, reserved ...stri
 	return nil
 }
 
-// resolveSkillDisplayName returns a human-friendly name for a skill directory.
-// It reads the SKILL.md frontmatter name if available, falling back to
-// filepath.Base for local skills where the directory name is already correct.
+// resolveSkillDisplayName returns the sandbox directory name for a skill
+// (declared SKILL.md name when valid, otherwise filepath.Base).
 func resolveSkillDisplayName(skillPath string) string {
-	base := filepath.Base(skillPath)
-	data, err := os.ReadFile(filepath.Join(skillPath, "SKILL.md"))
-	if err != nil {
-		return base
+	return skill.SandboxName(skillPath)
+}
+
+// skillDestPaths rewrites each skill directory to a synthetic path whose
+// basename is skill.SandboxName, so duplicateDestinationNameError keys on
+// the sandbox destination rather than the host directory leaf. Nested
+// forge skills that share a leaf (github) but declare distinct names
+// therefore do not collide (#7830).
+func skillDestPaths(skillDirs []string) []string {
+	out := make([]string, 0, len(skillDirs))
+	for _, p := range skillDirs {
+		if p == "" {
+			continue
+		}
+		out = append(out, filepath.Join(filepath.Dir(p), skill.SandboxName(p)))
 	}
-	meta, err := skill.ParseFrontmatter(data)
-	if err != nil || meta == nil || meta.Name == "" {
-		return base
+	return out
+}
+
+// uploadHarnessSkills copies each skill directory into skillsRoot/<sandboxName>.
+// Destination identity is skill.SandboxName (declared SKILL.md name, else
+// basename) so nested forge skills that share a leaf directory upload to
+// distinct destinations. Collisions fail before any upload.
+func uploadHarnessSkills(sandboxName, skillsRoot string, skillDirs []string) error {
+	if err := duplicateDestinationNameError("skill", skillDestPaths(skillDirs)); err != nil {
+		return err
 	}
-	return meta.Name
+	for _, skillPath := range skillDirs {
+		if skillPath == "" {
+			continue
+		}
+		dest := skillsRoot + "/" + skill.SandboxName(skillPath)
+		if err := sandbox.Upload(sandboxName, skillPath, dest); err != nil {
+			return fmt.Errorf("copying skill %q: %w", skillPath, err)
+		}
+		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
+	}
+	return nil
 }
 
 // remapModel returns the models.aliases target for name when the repo

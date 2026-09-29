@@ -1,6 +1,8 @@
 package skill
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -311,5 +313,83 @@ policy: policies/rust-sandbox.yaml#sha256=bbb222
 	}
 	if len(meta.Dependencies) != 1 {
 		t.Fatalf("dependencies length = %d, want 1", len(meta.Dependencies))
+	}
+}
+
+func TestValidName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"issue-labels", true},
+		{"pr-review-github", true},
+		{"skill_v1.0", true},
+		{"", false},
+		{".", false},
+		{"..", false},
+		{"foo/bar", false},
+		{"foo bar", false},
+		{"github", true},
+	}
+	for _, tt := range tests {
+		if got := ValidName(tt.name); got != tt.want {
+			t.Errorf("ValidName(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestSandboxName(t *testing.T) {
+	dir := t.TempDir()
+
+	nested := filepath.Join(dir, "issue-labels", "github")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "SKILL.md"), []byte("---\nname: issue-labels\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := SandboxName(nested); got != "issue-labels" {
+		t.Errorf("declared name: SandboxName() = %q, want %q", got, "issue-labels")
+	}
+
+	plain := filepath.Join(dir, "code-implementation")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := SandboxName(plain); got != "code-implementation" {
+		t.Errorf("missing SKILL.md: SandboxName() = %q, want %q", got, "code-implementation")
+	}
+
+	slashName := filepath.Join(dir, "bad-name")
+	if err := os.MkdirAll(slashName, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(slashName, "SKILL.md"), []byte("---\nname: foo/bar\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := SandboxName(slashName); got != "bad-name" {
+		t.Errorf("invalid declared name: SandboxName() = %q, want %q", got, "bad-name")
+	}
+
+	noName := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(noName, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noName, "SKILL.md"), []byte("---\ndescription: x\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := SandboxName(noName); got != "tree" {
+		t.Errorf("nameless frontmatter: SandboxName() = %q, want %q", got, "tree")
+	}
+
+	badYAML := filepath.Join(dir, "broken")
+	if err := os.MkdirAll(badYAML, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badYAML, "SKILL.md"), []byte("---\nname: [unterminated\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := SandboxName(badYAML); got != "broken" {
+		t.Errorf("malformed frontmatter: SandboxName() = %q, want %q", got, "broken")
 	}
 }

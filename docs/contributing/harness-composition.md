@@ -32,7 +32,7 @@ and update the others as needed.
 | `mergeBaseIntoChild` | `internal/harness/compose.go` | Merges base harness fields into child during `base:` composition |
 | `mergeForgeConfig` | `internal/harness/forge.go` | Applies `forge.<platform>` or overlay overrides onto top-level harness fields |
 | `mergeForgeConfigInto` | `internal/harness/compose.go` | **Deprecated** — was used to merge base `ForgeConfig` fields into child `ForgeConfig` during `base:` composition; no longer called after #6798 introduced per-layer resolution |
-| `mergeSkills` | `internal/harness/compose.go` | Deduplicates skills by basename (base + child); merges file-level override maps when both define the same basename (child keys win) |
+| `mergeSkills` | `internal/harness/compose.go` | Deduplicates skills by identity (declared `SKILL.md` name when the directory is on disk, otherwise basename). Child entries override a matching *base* entry and merge file-level override maps (child keys win). Sibling entries that share a directory basename (nested forge skills such as `skills/issue-labels/github` and `skills/pr-review/github`) are kept; destination collisions fail at bootstrap. |
 | `mergeHostFiles` | `internal/harness/compose.go` | Deduplicates host files by dest path (base + child) |
 | `mergeForgeBlocks` | `internal/harness/compose.go` | **Deprecated** — was used to merge `forge:` maps key-by-key across base and child; no longer called after #6798 introduced per-layer resolution |
 

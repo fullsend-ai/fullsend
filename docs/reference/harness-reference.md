@@ -218,7 +218,7 @@ More-specific entries go last so they override broader defaults.
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
-| `skills` | Merged with deduplication by basename (child overrides base) |
+| `skills` | Merged with deduplication by skill identity (declared `SKILL.md` name when on disk, otherwise basename). Child overrides a matching base entry; sibling nested dirs that share a leaf name are kept |
 | `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
 | `plugins`, `api_servers` | Concatenated (base + child); each entry keeps its own `env`/`pi` |
 | `host_files` | Concatenated; child overrides by `dest` |
