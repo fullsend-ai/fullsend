@@ -61,6 +61,7 @@ per-overlay:
 | `allow_runtime_fetch` | Runtime fetch opt-in is forge-agnostic          |
 | `max_runtime_fetches` | Fetch cap is operational, not forge-specific     |
 | `trigger`          | CEL trigger expression is evaluated against normalized events, not forge-specific (ADR-0061) |
+| `privilege_levels` | Mint privilege per run-stage is forge-agnostic (ADR-0073). **Top level only** — not a `ForgeConfig` field |
 
 ## Merge and inheritance rules
 
@@ -84,7 +85,8 @@ Two independent precedence axes govern field resolution
 | Scalar fields    | Forge/child value overrides top-level/base value     | Absent = inherit from top level / base                |
 | `skills`         | Merged with deduplication by basename (forge/child overrides top-level/base) | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
 | `runner_env`     | Top-level/base map merged with forge/child map; forge/child keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
-| `validation_loop`| Forge/child value replaces top-level/base value entirely | Absent (nil) = inherit from top level / base; explicit empty struct = intended to mean "no validation" (see ADR-0045 open questions) |
+| `privilege_levels` | Top-level/base map merged with child map; child keys win (not in `ForgeConfig`, so no forge/overlay override) | Absent (nil) = inherit from base; omitted entirely at every layer defaults every run-stage to `write` |
+| `validation_loop`| Field-level merge; forge/child non-zero values win, base/top-level fills gaps | Absent (nil) = inherit from top level / base; `validation_loop: {}` inherits all fields (zero-value-as-unset). Post-merge `Validate()` still requires `script`. There is no way to disable an inherited validation loop. |
 | `providers`      | Concatenated (top-level/base + forge/child)           | Absent (nil) = inherit; `providers: []` = no forge-specific additions (top-level providers still apply) |
 | `openshell`      | `profiles` concatenated (top-level/base + forge/child) | Absent (nil) = inherit; empty `profiles: []` = no forge-specific additions |
 | `host_files`     | Concatenated (base + child); deduplicated by `dest` path (child wins) | Absent (nil) = inherit |

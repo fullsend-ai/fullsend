@@ -18,6 +18,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/poll"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func newPollCmd() *cobra.Command {
@@ -47,10 +48,11 @@ func newPollCmd() *cobra.Command {
 				return fmt.Errorf("poll command supports --forge gitlab or --input-driver jira-poll (got forge=%q, input-driver=%q)", forgeFlag, inputDriver)
 			}
 
-			forgeToken := os.Getenv(forge.SecretForgeToken)
-			if forgeToken == "" {
-				return fmt.Errorf("%s is required", forge.SecretForgeToken)
+			sel, forgeToken, err := resolveGitLabPollerCredential(os.Getenv)
+			if err != nil {
+				return err
 			}
+			logGitLabRoleDiagnostics(sel, ui.New(cmd.ErrOrStderr()))
 
 			if projectPath == "" {
 				projectPath = os.Getenv("CI_PROJECT_PATH")
@@ -76,7 +78,7 @@ func newPollCmd() *cobra.Command {
 
 			botUserID, err := pollClient.GetAuthenticatedUserID(cmd.Context())
 			if err != nil {
-				return fmt.Errorf("resolve bot user ID: %w", err)
+				return wrapGitLabAuthFailure(sel, fmt.Errorf("resolve bot user ID: %w", err))
 			}
 
 			// Build the event router from config + agents-repo known agents.
@@ -103,7 +105,7 @@ func newPollCmd() *cobra.Command {
 			}
 
 			poller := poll.New(pollClient, router, projectPath, opts)
-			return poller.Run(cmd.Context())
+			return wrapGitLabAuthFailure(sel, poller.Run(cmd.Context()))
 		},
 	}
 

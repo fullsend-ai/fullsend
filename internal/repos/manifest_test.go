@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -22,8 +23,8 @@ const validManifest = `
 version: 1
 defaults:
   allowed_remote_resources:
-    - resource-a
-    - resource-b
+    - https://resource-a.example.com/
+    - https://resource-b.example.com/
 github:
   mint_url: https://mint.example.com
   fullsend_ref: main
@@ -41,7 +42,7 @@ func TestParseSimpleManifest(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, "https://mint.example.com", m.GitHub.MintURL)
 	assert.Equal(t, "main", m.GitHub.FullsendRef)
-	assert.Equal(t, []string{"resource-a", "resource-b"}, m.Defaults.AllowedRemoteResources)
+	assert.Equal(t, []string{"https://resource-a.example.com/", "https://resource-b.example.com/"}, m.Defaults.AllowedRemoteResources)
 	require.Len(t, m.GitHub.Repos, 2)
 	assert.Equal(t, "acme/repo-one", m.GitHub.Repos[0].Name)
 	assert.Equal(t, "acme/repo-two", m.GitHub.Repos[1].Name)
@@ -551,6 +552,63 @@ github:
 	}
 }
 
+func TestExpandGlobsFor_SkipsUnselectedPlatform(t *testing.T) {
+	// GitHub has only a glob entry; GitLab has the concrete repo actually
+	// targeted by the filter. A GitLab-only install must not need to
+	// expand (and therefore must not need credentials for) the GitHub
+	// glob entry.
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/*
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	gl := forge.NewFakeClient()
+	gl.Repos = []forge.Repository{{Name: "project", FullName: "group/project"}}
+
+	factory := &perForgeClientFactory{
+		clients: map[string]forge.Client{ForgeGitLab: gl},
+		errs:    map[string]error{ForgeGitHub: assert.AnError},
+	}
+
+	ctx := context.Background()
+	resolved, err := m.ExpandGlobsFor(ctx, factory, []string{"group/project"})
+	require.NoError(t, err, "expanding the GitHub glob entry must be skipped when the filter only selects GitLab repos")
+	require.Len(t, resolved, 1)
+	assert.Equal(t, "group", resolved[0].Owner)
+	assert.Equal(t, "project", resolved[0].Repo)
+	assert.Equal(t, ForgeGitLab, resolved[0].Forge)
+}
+
+func TestExpandGlobsFor_EmptyFilterExpandsEveryPlatform(t *testing.T) {
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/*
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{{Name: "api", FullName: "acme/api"}}
+
+	ctx := context.Background()
+	resolved, err := m.ExpandGlobsFor(ctx, newTestClientFactory(fc), nil)
+	require.NoError(t, err)
+	require.Len(t, resolved, 1)
+	assert.Equal(t, "api", resolved[0].Repo)
+}
+
 func TestExpandGlobs_ListOrgReposError(t *testing.T) {
 	input := `
 version: 1
@@ -606,7 +664,7 @@ func TestResolveConfig_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, "repo-one", cfg.Repo)
 	assert.Equal(t, "https://mint.example.com", cfg.MintURL)
 	assert.Equal(t, "main", cfg.FullsendRef)
-	assert.Equal(t, []string{"resource-a", "resource-b"}, cfg.AllowedRemoteResources)
+	assert.Equal(t, []string{"https://resource-a.example.com/", "https://resource-b.example.com/"}, cfg.AllowedRemoteResources)
 }
 
 func TestResolveConfig_PlatformFields(t *testing.T) {
@@ -1128,6 +1186,100 @@ func TestDistinctForges_SingleForge(t *testing.T) {
 
 	forges := m.DistinctForges()
 	assert.Equal(t, []string{"github"}, forges)
+}
+
+func TestDistinctForgesFor(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/api"}, {Name: "acme/web"}},
+		},
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []RepoEntry{{Name: "gallen/integration-service"}, {Name: "acme/ml"}},
+		},
+	}
+
+	t.Run("empty filter returns both forges", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor(nil)
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub, ForgeGitLab}, forges)
+
+		forges, err = m.DistinctForgesFor([]string{})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub, ForgeGitLab}, forges)
+	})
+
+	t.Run("gitlab-only filter", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor([]string{"gallen/integration-service"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitLab}, forges)
+	})
+
+	t.Run("github-only filter", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor([]string{"acme/api"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub}, forges)
+	})
+
+	t.Run("filter spanning both forges", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor([]string{"acme/api", "gallen/integration-service"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub, ForgeGitLab}, forges)
+	})
+
+	t.Run("glob filter matching only github", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor([]string{"acme/w*"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub}, forges)
+	})
+
+	t.Run("unmatched filter returns empty", func(t *testing.T) {
+		forges, err := m.DistinctForgesFor([]string{"missing/repo"})
+		require.NoError(t, err)
+		assert.Empty(t, forges)
+	})
+
+	t.Run("glob manifest entry selected by concrete filter", func(t *testing.T) {
+		globManifest := &Manifest{
+			Version: 1,
+			GitHub: &PlatformConfig{
+				MintURL: "https://mint.example.com",
+				Repos:   []RepoEntry{{Name: "acme/*"}},
+			},
+			GitLab: &PlatformConfig{
+				URL:   "https://gitlab.example.com",
+				Repos: []RepoEntry{{Name: "gallen/integration-service"}},
+			},
+		}
+		forges, err := globManifest.DistinctForgesFor([]string{"acme/api"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub}, forges)
+	})
+
+	t.Run("glob manifest entry and glob filter that overlap after expansion", func(t *testing.T) {
+		// entry "acme/*" and filter "*/api" don't match as literal
+		// pattern strings in either direction, but both can resolve to
+		// "acme/api" once expanded against the real repo list.
+		// platformEntriesMatchFilter can't expand globs itself, so it
+		// must conservatively treat this as a match rather than silently
+		// dropping GitHub from the targeted forges.
+		globManifest := &Manifest{
+			Version: 1,
+			GitHub: &PlatformConfig{
+				MintURL: "https://mint.example.com",
+				Repos:   []RepoEntry{{Name: "acme/*"}},
+			},
+			GitLab: &PlatformConfig{
+				URL:   "https://gitlab.example.com",
+				Repos: []RepoEntry{{Name: "gallen/integration-service"}},
+			},
+		}
+		forges, err := globManifest.DistinctForgesFor([]string{"*/api"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{ForgeGitHub}, forges)
+	})
 }
 
 func TestValidate_GitHubURL_DefaultsToGitHubCom(t *testing.T) {
@@ -1843,6 +1995,220 @@ func TestIsValidGCPProjectID(t *testing.T) {
 	assert.False(t, IsValidGCPProjectID("my-project-"))
 }
 
+func TestValidate_PerRepoInvalidConfigScheme(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos: []RepoEntry{{
+				Name:       "acme/app",
+				ConfigBase: ConfigBase{Source: "ftp://example.com/preset.yaml"},
+			}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported URL scheme")
+}
+
+func TestValidate_InvalidHTTPSConfigURL(t *testing.T) {
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "https://"}},
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/app"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a valid HTTPS URL")
+}
+
+func TestValidate_InvalidConfigHashHex(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		Defaults: DefaultsConfig{
+			ConfigBase: ConfigBase{
+				Source: "https://example.com/preset.yaml",
+				SHA256: strings.Repeat("g", 64),
+			},
+		},
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/app"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not valid hex")
+}
+
+func TestValidate_ConfigHashWithoutSource(t *testing.T) {
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{SHA256: strings.Repeat("a", 64)}},
+		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "defaults.config_base.sha256 is set without defaults.config_base.source")
+}
+
+func TestValidate_PerRepoConfigHashWithoutSource(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{Repos: []RepoEntry{{
+			Name:       "acme/app",
+			ConfigBase: ConfigBase{SHA256: strings.Repeat("a", 64)},
+		}}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config_base.sha256 is set but no config_base.source is declared")
+}
+
+func TestValidate_ConfigHashWithDisabledSource(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{Repos: []RepoEntry{{
+			Name:       "acme/app",
+			ConfigBase: ConfigBase{Source: NoneSentinel, SHA256: strings.Repeat("a", 64)},
+		}}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config_base.sha256 is set but config_base.source is")
+}
+
+func TestValidate_InvalidConfigScheme(t *testing.T) {
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "http://example.com/preset.yaml"}},
+		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported URL scheme")
+}
+
+func TestValidate_InvalidConfigHashLength(t *testing.T) {
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "https://example.com/preset.yaml", SHA256: "abc"}},
+		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "64-character")
+}
+
+func TestValidate_HTTPSConfigAccepted(t *testing.T) {
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: "https://example.com/preset.yaml"}},
+		GitHub:   &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	require.NoError(t, m.Validate())
+}
+
+func TestLoadManifest_LegacyConfigFieldsRejected(t *testing.T) {
+	// The legacy string form of defaults.config (a preset URL before
+	// config_base) is now a typed overlay mapping, so a URL scalar is
+	// rejected as the wrong shape. The retired config_hash key is covered
+	// by TestLoadManifest_LegacyConfigHashStillUnknown.
+	input := `
+version: 1
+defaults:
+  config: https://example.com/preset.yaml
+github:
+  repos:
+    - name: acme/app
+`
+	dir := t.TempDir()
+	p := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(input), 0o644))
+	_, err := LoadManifest(context.Background(), p)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a YAML mapping")
+}
+
+func TestParseManifest_ConfigFieldsRoundTrip(t *testing.T) {
+	input := `
+version: 1
+defaults:
+  config_base:
+    source: https://example.com/preset.yaml
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+github:
+  repos:
+    - name: acme/app
+      config_base:
+        source: /tmp/override.yaml
+        sha256: none
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+	assert.Equal(t, "https://example.com/preset.yaml", m.Defaults.ConfigBase.Source)
+	assert.Equal(t, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", m.Defaults.ConfigBase.SHA256)
+	assert.Equal(t, "/tmp/override.yaml", m.GitHub.Repos[0].ConfigBase.Source)
+	assert.Equal(t, NoneSentinel, m.GitHub.Repos[0].ConfigBase.SHA256)
+}
+
+func TestValidate_RemoteManifestRejectsLocalConfigSource(t *testing.T) {
+	m := &Manifest{
+		Version:      1,
+		sourceRemote: true,
+		Defaults:     DefaultsConfig{ConfigBase: ConfigBase{Source: "preset.yaml"}},
+		GitHub:       &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "remote manifests must use HTTPS config_base sources")
+}
+
+func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *testing.T) {
+	base := t.TempDir()
+	m := &Manifest{
+		Version:   1,
+		sourceDir: base,
+		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "presets/base.yaml"}},
+		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	require.NoError(t, m.Validate())
+	// The user-facing Source field must stay the relative path the
+	// operator wrote so a subsequent marshal (e.g. AddToManifest,
+	// RemoveFromManifest) round-trips it unchanged; only the internal
+	// fetch-time source is resolved to an absolute, manifest-relative path.
+	assert.Equal(t, "presets/base.yaml", m.Defaults.ConfigBase.Source)
+	assert.Equal(t, filepath.Join(base, "presets/base.yaml"), m.Defaults.ConfigBase.configSource())
+
+	escaping := &Manifest{
+		Version:   1,
+		sourceDir: base,
+		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "../outside.yaml"}},
+		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	err := escaping.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes manifest directory")
+
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	require.NoError(t, os.WriteFile(outside, []byte("version: \"1\"\n"), 0o644))
+	link := filepath.Join(base, "linked.yaml")
+	require.NoError(t, os.Symlink(outside, link))
+	symlinked := &Manifest{
+		Version:   1,
+		sourceDir: base,
+		Defaults:  DefaultsConfig{ConfigBase: ConfigBase{Source: "linked.yaml"}},
+		GitHub:    &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}},
+	}
+	err = symlinked.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes manifest directory")
+}
+
 func TestManifest_RuntimeResolvesAndValidates(t *testing.T) {
 	t.Parallel()
 	m := &Manifest{
@@ -1985,4 +2351,199 @@ github:
 		require.NotNil(t, roundTripped.GitHub.Repos[1].Vendor)
 		assert.False(t, *roundTripped.GitHub.Repos[1].Vendor)
 	})
+}
+
+func TestParseManifest_DeprecatedRunnerTagsAlias(t *testing.T) {
+	input := []byte(`version: 1
+gitlab:
+  url: https://gitlab.example.com
+  runner_tags:
+    - fullsend-agent
+  repos: []
+`)
+	var m Manifest
+	require.NoError(t, parseManifestBytes(input, &m))
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"fullsend-agent"}, m.GitLab.AgentRunnerTags,
+		"runner_tags alias must populate agent_runner_tags")
+	assert.Nil(t, m.GitLab.DeprecatedRunnerTags)
+	assert.Equal(t, []string{"fullsend-agent"}, gitlabAgentRunnerTags(&m))
+	assert.Empty(t, m.GitLab.ControlRunnerTags,
+		"runner_tags alias must not populate the ControlRunnerTags field directly")
+	assert.Empty(t, gitlabControlRunnerTags(&m),
+		"unset control_runner_tags must not inherit the migrated agent_runner_tags")
+}
+
+func TestGitLabControlRunnerTags_UnsetDoesNotInheritAgentTags(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:             "https://gitlab.example.com",
+			AgentRunnerTags: []string{"fullsend-agent"},
+			Repos:           []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	assert.Equal(t, []string{"fullsend-agent"}, gitlabAgentRunnerTags(m))
+	assert.Empty(t, gitlabControlRunnerTags(m),
+		"unset control_runner_tags must not inherit agent_runner_tags (independent fields, no cross-fallback)")
+	assert.Equal(t, "[]", scaffold.FormatRunnerTags(gitlabControlRunnerTags(m)),
+		"unset control_runner_tags renders tags: [], not the agent tags")
+}
+
+func TestGitLabAgentRunnerTags_UnsetRendersEmpty(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	assert.Nil(t, gitlabAgentRunnerTags(m))
+	assert.Equal(t, "[]", scaffold.FormatRunnerTags(gitlabAgentRunnerTags(m)),
+		"unset agent_runner_tags renders tags: []")
+}
+
+func TestParseManifest_AgentRunnerTagsWinsOverDeprecated(t *testing.T) {
+	input := []byte(`version: 1
+gitlab:
+  url: https://gitlab.example.com
+  agent_runner_tags:
+    - agent-fleet
+  runner_tags:
+    - old-fleet
+  repos: []
+`)
+	var m Manifest
+	require.NoError(t, parseManifestBytes(input, &m))
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"agent-fleet"}, m.GitLab.AgentRunnerTags)
+	assert.Nil(t, m.GitLab.DeprecatedRunnerTags)
+}
+
+func TestParseManifest_ControlRunnerTagsIndependentOfAgentTags(t *testing.T) {
+	input := []byte(`version: 1
+gitlab:
+  url: https://gitlab.example.com
+  agent_runner_tags:
+    - agent-fleet
+  control_runner_tags:
+    - api-fleet
+  repos: []
+`)
+	var m Manifest
+	require.NoError(t, parseManifestBytes(input, &m))
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"agent-fleet"}, gitlabAgentRunnerTags(&m))
+	assert.Equal(t, []string{"api-fleet"}, gitlabControlRunnerTags(&m))
+}
+
+func TestMarshal_DropsDeprecatedRunnerTags(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:                  "https://gitlab.example.com",
+			DeprecatedRunnerTags: []string{"fullsend-agent"},
+			Repos:                []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	data, err := m.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "agent_runner_tags:")
+	assert.NotRegexp(t, `(?m)^\s*runner_tags:`, string(data),
+		"deprecated runner_tags key must not be marshaled")
+	assert.Contains(t, string(data), "fullsend-agent")
+}
+
+func TestMarshal_DoesNotMutateReceiver(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:                  "https://gitlab.example.com",
+			DeprecatedRunnerTags: []string{"fullsend-agent"},
+			Repos:                []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+
+	_, err := m.Marshal()
+	require.NoError(t, err)
+
+	require.NotNil(t, m.GitLab)
+	assert.Equal(t, []string{"fullsend-agent"}, m.GitLab.DeprecatedRunnerTags,
+		"Marshal must not clear the caller's DeprecatedRunnerTags")
+	assert.Empty(t, m.GitLab.AgentRunnerTags,
+		"Marshal must not migrate the caller's AgentRunnerTags in place")
+
+	_, err = MarshalWithHeader(m)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"fullsend-agent"}, m.GitLab.DeprecatedRunnerTags,
+		"MarshalWithHeader must not clear the caller's DeprecatedRunnerTags")
+	assert.Empty(t, m.GitLab.AgentRunnerTags,
+		"MarshalWithHeader must not migrate the caller's AgentRunnerTags in place")
+}
+
+func TestLoadManifest_GitHubRunnerTags_RejectedByOperatorKey(t *testing.T) {
+	// github.runner_tags is never a legitimate key (runner_tags is a
+	// GitLab-only alias), but parsing must not silently migrate it onto
+	// agent_runner_tags before Validate runs — the error must name the
+	// key the operator actually wrote.
+	manifest := `
+version: 1
+github:
+  runner_tags:
+    - some-tag
+  repos:
+    - name: acme/repo
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(manifest), 0644))
+
+	m, err := LoadManifest(context.Background(), path)
+	require.NoError(t, err)
+
+	err = m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "github.runner_tags is not supported")
+	assert.NotContains(t, err.Error(), "agent_runner_tags")
+}
+
+func TestValidate_GitHubRejectsRunnerTagFields(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  PlatformConfig
+		want string
+	}{
+		{
+			name: "agent_runner_tags",
+			cfg:  PlatformConfig{AgentRunnerTags: []string{"x"}, Repos: []RepoEntry{{Name: "acme/repo"}}},
+			want: "github.agent_runner_tags is not supported",
+		},
+		{
+			name: "control_runner_tags",
+			cfg:  PlatformConfig{ControlRunnerTags: []string{"x"}, Repos: []RepoEntry{{Name: "acme/repo"}}},
+			want: "github.control_runner_tags is not supported",
+		},
+		{
+			name: "runner_tags",
+			cfg:  PlatformConfig{DeprecatedRunnerTags: []string{"x"}, Repos: []RepoEntry{{Name: "acme/repo"}}},
+			want: "github.runner_tags is not supported",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfg
+			m := Manifest{Version: 1, GitHub: &cfg}
+			err := m.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
+}
+
+func TestGitLabControlRunnerTags_NilManifest(t *testing.T) {
+	assert.Nil(t, gitlabAgentRunnerTags(nil))
+	assert.Nil(t, gitlabControlRunnerTags(nil))
+	assert.Nil(t, gitlabAgentRunnerTags(&Manifest{}))
+	assert.Nil(t, gitlabControlRunnerTags(&Manifest{}))
+	migrateDeprecatedRunnerTags(nil)
 }

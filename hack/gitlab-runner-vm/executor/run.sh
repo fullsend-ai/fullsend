@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # GitLab Runner custom executor — run stage.
 # Executes each build script inside the container, forwarding CI env vars.
+# Idempotent: safe to re-run and must stay that way.
 set -uo pipefail
 
 SCRIPT_PATH="${1:-}"

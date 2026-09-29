@@ -14,7 +14,7 @@ When you register a custom agent and give it a `trigger` expression, fullsend ha
 
 3. **Authorize.** `fullsend dispatch` enforces the platform authorization gate before any agent is considered. Authorization is a platform-level decision — your CEL trigger does not need to implement permission checks (though you can add guards like `event.actor.role` if your agent has stricter requirements).
 
-4. **Enumerate.** Dispatch loads all registered agents from the merged config (`agents:` list in org and per-repo `config.yaml`, plus scaffold discovery). Each harness with a non-empty `trigger` field is a candidate.
+4. **Enumerate.** Dispatch loads all registered agents from the merged config (`agents:` list in org and per-repo `config.yaml`, plus scaffold discovery). Each harness with a non-empty `trigger` field is a candidate. If a registered agent's harness cannot be resolved or loaded, dispatch logs a GitHub Actions `::error::` annotation and skips that agent so other agents can still run. If every registered agent fails to load, `fullsend dispatch` exits non-zero instead of emitting an empty matrix — a fully unreadable harness set is a configuration error, not a "no trigger matched" result.
 
 5. **Evaluate.** Each candidate's CEL `trigger` expression is evaluated with `event` bound to the `NormalizedEvent`. Every harness whose trigger returns `true` is selected. Multiple agents can match the same event (parallel fan-out).
 
@@ -98,16 +98,31 @@ trigger: >
     && event.transition.label.action == "added"
 ```
 
-**Run on a slash command (on a PR, non-fork):**
+**Run on a slash command (issues and non-fork PRs):**
 ```yaml
 trigger: >
   event.transition.kind == "comment_added"
+    && event.entity.kind == "work_item"
     && has(event.transition.comment.command)
     && event.transition.comment.command == "/my-command"
-    && event.entity.kind == "work_item"
-    && event.state.change_proposal != null
-    && !event.state.change_proposal.is_fork
+    && (!has(event.state.change_proposal) || !event.state.change_proposal.is_fork)
 ```
+
+This is exactly what [`fullsend agent new --on command:/my-command`](../../cli/agent.md#agent-new)
+emits, so a generated trigger and a hand-written one stay the same expression.
+
+`event.entity.kind == "work_item"` restricts this to issues and pull requests.
+A comment on a GitHub Discussion arrives with `entity.kind` of `conversation`,
+so without that clause the agent also fires on discussions.
+
+Use `!has(...)` rather than `!= null` for the fork guard. `state.change_proposal`
+is **absent** on a comment posted to a plain issue, not present-and-null — the
+[NormalizedEvent schema](../../normative/normalized-event/v1/normalized-event.schema.json)
+requires only `labels` under `state`. Comparing an absent key against `null`
+raises a missing-key error, and dispatch reports that as
+`::error:: harness dispatch: skipping agent <name>: trigger eval failed` on
+**every** issue comment in the repository, so the agent looks permanently
+broken. The `!has(...)` form evaluates cleanly on both surfaces.
 
 **Run when a PR is opened or updated (non-fork):**
 ```yaml

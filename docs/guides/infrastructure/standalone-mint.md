@@ -292,6 +292,8 @@ Valid examples: `scanner`, `deploy-prod`, `code_review`, `my-agent-v2`
 
 Invalid examples: `Scanner` (uppercase), `123scanner` (starts with digit), `my--agent` (double hyphen)
 
+Role-prefixed identifiers (environment variables, GitHub Actions secrets and variables such as `FULLSEND_<ROLE>_APP_PRIVATE_KEY`, `FULLSEND_<ROLE>_CLIENT_ID`, `<ROLE>_FULLSEND_MODEL`, and `FULLSEND_FOREIGN_<ROLE>_REPOS`) map the role with `role.upper().replace("-", "_")`. For `ci-check` that is `CI_CHECK`, so the foreign allow-list variable is `FULLSEND_FOREIGN_CI_CHECK_REPOS` and the model override is `CI_CHECK_FULLSEND_MODEL`. Roles that differ only by hyphen vs underscore (`ci-check` vs `ci_check`) share an identifier.
+
 ### Permissions must match the GitHub App
 
 The permissions in `CUSTOM_ROLE_PERMISSIONS` must be a subset of what the GitHub App is installed with. When the installation lookup includes its granted permissions, custom-role permissions are required by default: if an installation does not grant one, the mint reports the missing permission before making the token request. If GitHub omits that map, the mint preserves the requested permissions and lets the token request validate them. During a built-in permission rollout, only permissions explicitly listed in the mint's `optionalRolePermissions` map may be omitted; see the [permission rollout runbook](infrastructure-reference.md#roll-out-a-github-app-permission).
@@ -319,6 +321,31 @@ When `FALLBACK_MINT_URL` is not set, requests for roles without local PEMs are r
 curl http://localhost:8080/health
 # {"status":"ok"}
 ```
+
+### Check status via the CLI
+
+If `FULLSEND_MINT_URL` is set (or you pass `--mint-url`), the CLI can
+query the mint's `/v1/status` endpoint using auto-discovered GitHub
+credentials — but only GitHub Actions OIDC succeeds against a standalone
+mint built per Step 3 above (`go build -o fullsend-mint .`, no
+`-tags github`): the `GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token`
+fallback always returns HTTP 401 unless the binary was compiled with
+`-tags github` and `StatusGitHubGroup` is set to a non-empty
+`ORG/TEAM` (see [Enabling optional
+validators](infrastructure-reference.md#status-endpoint)). Run it from
+within a GitHub Actions workflow to use OIDC:
+
+```bash
+fullsend mint status --mint-url="$FULLSEND_MINT_URL"
+```
+
+Under GitHub Actions OIDC, this reports the mint's version, build commit,
+the calling workflow's organization, configured roles, and workflow host
+repos — without requiring any GCP IAM roles. It does not list all enrolled
+organizations; that field (`allowed_orgs`) is only populated on the
+non-OIDC (GitHub token) path, which a default standalone mint rejects with
+HTTP 401 as described above. To verify locally without GitHub Actions
+OIDC, use the health endpoint above instead.
 
 ### Test from a GitHub Actions workflow
 

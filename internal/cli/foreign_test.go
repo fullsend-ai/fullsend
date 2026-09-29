@@ -30,6 +30,10 @@ func TestParseForeignVariableName(t *testing.T) {
 	if !ok || role != "e2e" {
 		t.Fatalf("got role=%q ok=%v", role, ok)
 	}
+	role, ok = parseForeignVariableName("FULLSEND_FOREIGN_CI_CHECK_REPOS")
+	if !ok || role != "ci_check" {
+		t.Fatalf("hyphen-mapped identifier: got role=%q ok=%v", role, ok)
+	}
 	if _, ok := parseForeignVariableName("FULLSEND_MINT_URL"); ok {
 		t.Fatal("expected non-foreign name to fail")
 	}
@@ -268,6 +272,16 @@ func TestForeignAllowCmd_CreatesVariable(t *testing.T) {
 	require.NoError(t, err)
 	_ = out
 	assert.Equal(t, "fullsend-ai/fullsend", state.vars["FULLSEND_FOREIGN_E2E_REPOS"])
+}
+
+func TestForeignAllowCmd_HyphenatedRole(t *testing.T) {
+	state := &foreignVarState{vars: map[string]string{}}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "allow", "--org", "pool-org", "--role", "ci-check", "--caller", "fullsend-ai/fullsend")
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-ai/fullsend", state.vars["FULLSEND_FOREIGN_CI_CHECK_REPOS"])
 }
 
 func TestForeignAllowCmd_AppendsCaller(t *testing.T) {

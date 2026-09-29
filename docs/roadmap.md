@@ -85,7 +85,6 @@ Move from the current foundation through a usable release path. Prove default
 stages and MLflow export on the same GitLab run, not as separate pieces.
 
 - [fullsend#6684 — feat(cli): add `--gitlab-url` flag to `repos install` for GitLab bootstrapping](https://github.com/fullsend-ai/fullsend/issues/6684)
-- [fullsend#6816 — GitLab MR-event dispatch (fullsend-dispatch.yml) does not pass REPO_FULL_NAME for review stage](https://github.com/fullsend-ai/fullsend/issues/6816)
 - [fullsend#6893 — GitLab default agent stages and MLflow trace export are not validated together](https://github.com/fullsend-ai/fullsend/issues/6893)
 
 ### Jira

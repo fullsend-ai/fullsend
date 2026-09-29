@@ -15,9 +15,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 const (
@@ -121,15 +121,19 @@ func buildStageMintDriver(
 
 	// Non-vendored setup opts — use --fullsend-ref=main.
 	setupOpts := common.GitHubSetupOpts{
-		Vendor:      false,
-		FullsendRef: stageFullsendRef,
+		Vendor:       false,
+		FullsendRef:  stageFullsendRef,
+		ConfigPreset: envConfigPreset(),
 	}
 
 	e2eCfg := e2etest.EnvConfig{
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf)
+	ens, err := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf)
+	if err != nil {
+		return nil, fmt.Errorf("stage cfmint factory: %w", err)
+	}
 
 	d, err := newComposedDriver(StageOrg, md, ens, poolSize, logf)
 	if err != nil {

@@ -16,6 +16,12 @@ what authenticates your agent, and changing it does not change identity or
 permissions. If you set a `role` the mint doesn't serve, you get a `403`, not a
 new identity.
 
+Within that ceiling, `privilege_levels` selects which named level (`read` or
+`write`, plus any extra levels on a custom role) each run-stage receives. Omit
+the field and every stage gets `write`. Set `runtime: read` so the LLM sandbox
+gets a read-only token while pre/post scripts keep `write`. See
+[`privilege_levels` in the harness reference](../../reference/harness-reference.md).
+
 So the real question is: **whose mint issues your token?**
 
 ## Two paths, one decision
@@ -46,6 +52,9 @@ identity. You usually don't:
   what it does. A code-writing agent uses `role: coder`; a triage-like agent
   uses `role: triage`. The agent's own name lives in `name:` in its `.md`, not
   in `role:`.
+- **Acting on the result after the run** — to re-run CI jobs, dispatch a
+  workflow, deploy, and so on, chain your own workflow on the run's artifact;
+  see [Chaining Follow-up Workflows](chaining-follow-up-workflows.md).
 
 > **Rule of thumb.** Pick the built-in role whose permission ceiling is the
 > closest fit for what your agent needs to do. You only need your own mint when

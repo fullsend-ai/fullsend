@@ -107,6 +107,49 @@ func TestValidatePerRepoPostInstallNonVendored_WrongRuntime(t *testing.T) {
 	assert.Contains(t, err.Error(), "want dummy")
 }
 
+func TestValidatePerRepoPostInstall_RuntimeFromBaseLayer(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	// Overlay has no runtime (stub written by --config); dummy lives in the base layer.
+	overlay := []byte("version: \"1\"\n")
+	base := []byte("version: \"1\"\nruntime: dummy\n")
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml":  []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":            overlay,
+		org + "/" + repo + "/.fullsend/config.base.yaml":       base,
+		org + "/" + repo + "/" + scaffold.VendoredMarkerPath(): []byte("marker"),
+		org + "/" + repo + "/.fullsend/bin/fullsend":           []byte("binary"),
+	}
+
+	err := ValidatePerRepoPostInstall(context.Background(), client, org, repo)
+	require.NoError(t, err)
+}
+
+func TestValidatePerRepoPostInstall_BaseLayerReadError(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml":  []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":            cfg,
+		org + "/" + repo + "/" + scaffold.VendoredMarkerPath(): []byte("marker"),
+		org + "/" + repo + "/.fullsend/bin/fullsend":           []byte("binary"),
+	}
+	client.GetFileContentErrors = map[string]error{
+		org + "/" + repo + "/.fullsend/config.base.yaml": fmt.Errorf("boom"),
+	}
+
+	err = ValidatePerRepoPostInstall(context.Background(), client, org, repo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config.base.yaml")
+	assert.Contains(t, err.Error(), "boom")
+}
+
 func TestValidatePerRepoPostInstall_WrongRuntime(t *testing.T) {
 	client := forge.NewFakeClient()
 	org, repo := "acme", "test-repo"

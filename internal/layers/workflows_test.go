@@ -314,7 +314,7 @@ func TestWorkflowsLayer_Install_ProtectedBranch_ExistingBranch(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{{FullName: "test-org/.fullsend", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
-	client.Errors["CreateBranch"] = fmt.Errorf("branch: %w", forge.ErrAlreadyExists)
+	client.ExistingBranches["test-org/.fullsend/fullsend/scaffold-install"] = true
 	layer, _ := newWorkflowsLayer(t, client, false)
 
 	err := layer.Install(context.Background())

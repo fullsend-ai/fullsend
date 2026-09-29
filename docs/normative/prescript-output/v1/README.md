@@ -41,7 +41,7 @@ others).
 |-----------|----------|
 | 0 | Parse the output file; `skipped=true` requests a skip. |
 | 78 | Skip unconditionally. Output file is parsed best-effort for `reason` and other outputs; a parse error does not block the skip. |
-| Any other non-zero | Hard failure, unchanged by this protocol. |
+| Any other non-zero | Hard failure. Captured stdout/stderr is attached to the error so the completion status comment can show the script's own message (see [Hard-failure diagnostics](#hard-failure-diagnostics)). |
 
 Exit 78 is complementary to the file-based `skipped=true` mechanism.
 Either one alone is sufficient to request a skip. When a script exits 78,
@@ -60,7 +60,54 @@ exit 78
 
 The stdout-derived reason is sanitized before use: control characters
 (`U+0000`–`U+001F`, `U+007F`) are stripped — matching the file-based
-value validation — and the result is capped at 1024 bytes.
+value validation — and the result is capped at 1024 bytes. It is also run
+through the same credential-redaction pass used for [hard-failure
+diagnostics](#hard-failure-diagnostics) (literal runner-env values plus the
+shared secret-pattern scanner), since it is derived from incidental stdout
+rather than a value the script author chose to put in a `reason=` line. A
+file-based `reason=` value is not redacted.
+
+### Hard-failure diagnostics
+
+When a pre-script exits with a non-zero code other than 78, `fullsend run`
+captures stdout and stderr and includes a human-readable explanation in the
+returned error. The completion status comment renders that error as its
+failure detail, so a circuit-breaker or validation failure is visible on the
+PR instead of a bare `exit status 1` ([issue #7363](https://github.com/fullsend-ai/fullsend/issues/7363)).
+
+Preference, first match wins:
+
+1. GitHub Actions error annotations (`::error::message` or `##[error]message`)
+   from either stream: all stdout annotations first, then all stderr
+   annotations, each group in the order it appeared on its own stream. This
+   is stream order, not true chronological order across the two streams — an
+   annotation written to stderr before one written to stdout will still be
+   listed after it. Parameterized workflow commands (`::error title=…::message`)
+   contribute the message.
+2. The last non-empty stderr line.
+3. The last non-empty stdout line.
+
+Print an error annotation when the failure is something a human should act
+on:
+
+```sh
+echo "::error::Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
+exit 1
+```
+
+Captured text is sanitized the same way as the exit-78 stdout fallback:
+control characters stripped, capped at 1024 bytes. The status comment further
+truncates the rendered detail so it stays on one line.
+
+**Secrets.** Captured stdout/stderr is redacted with the same pass used for
+validation feedback (literal replacement of known credential env values, plus
+the shared secret-pattern scanner) before it reaches the status comment, span,
+or log — but this is a trust boundary, not a guarantee. Do not rely on it: a
+pre-script (including one fetched from `fullsend-ai/agents@main`, or a custom
+`.fullsend/scripts/pre-*.sh`) must not intentionally print secrets, partial
+tokens, internal hostnames, or `set -x` traces on a hard-failure path, since
+up to 1024 bytes of stdout/stderr is now rendered on the visible PR/MR status
+comment.
 
 ### Reserved keys
 
@@ -189,6 +236,7 @@ Breaking changes require `docs/normative/prescript-output/v2/`.
 |--------|-----------|
 | **Breaking** (requires v2): rename or remove a reserved key, change the meaning of a reserved value, tighten the grammar so previously valid files are rejected | Pre-scripts must migrate |
 | **Non-breaking** (allowed in v1): add a reserved key, relax the grammar, add exit-code handling that relaxes failure conditions, clarify documentation | Existing pre-scripts keep working |
+| **Non-breaking** (allowed in v1): capture and surface additional diagnostic information (e.g. stdout/stderr) on an already-hard-failing exit code, provided the exit code's failure semantics and the file protocol are unchanged | Existing pre-scripts keep working; scripts that print output on a hard failure should assume it may now be shown to a human (see [Hard-failure diagnostics](#hard-failure-diagnostics)) |
 
 Exit code semantics are part of the v1 protocol surface. Adding a new
 recognized exit code (like 78) is non-breaking because it turns a

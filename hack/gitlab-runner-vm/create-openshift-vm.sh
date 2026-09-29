@@ -13,6 +13,10 @@
 #
 # When done, the runner is online and accepting jobs tagged with RUNNER_TAG.
 #
+# setup.sh (step 5) is idempotent — safe to re-run in place as a
+# developer/debug convenience. Recreation is the two-command compliance
+# path: drain and delete with ./delete-openshift-vm.sh, then re-run create.
+#
 # Two modes:
 #   RUNNER_TOKEN — join an existing runner pool. Multiple VMs share one
 #                  GitLab runner registration (glrt-* token). GL_TOKEN and
@@ -189,8 +193,8 @@ for tool in oc virtctl python3 curl timeout sha256sum; do
     _missing=1
   fi
 done
-for _f in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh \
-  executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh; do
+for _f in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh podman-prune.sh \
+  executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh executor/gateway.sh; do
   if [ ! -f "${SCRIPT_DIR}/${_f}" ]; then
     echo "ERROR: required file not found: ${SCRIPT_DIR}/${_f}" >&2
     _missing=1
@@ -236,7 +240,7 @@ echo "==> Creating VM: ${vm_name} in ${NAMESPACE}"
 # 2. Apply the VM manifest
 # ----------------------------------------------------------------------
 if oc -n "${NAMESPACE}" get vm "${vm_name}" >/dev/null 2>&1; then
-  echo "ERROR: VM ${vm_name} already exists in ${NAMESPACE} — delete it first or choose a different number" >&2
+  echo "ERROR: VM ${vm_name} already exists in ${NAMESPACE}. To recreate it, drain and delete with ./delete-openshift-vm.sh ${vm_name} (which drains in-flight jobs), then re-run create. Or choose a different number." >&2
   exit 1
 fi
 
@@ -396,13 +400,13 @@ virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
   -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
   -c "mkdir -p ~/gitlab-runner-vm/executor ~/gitlab-runner-vm/.github/scripts"
 
-for file in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh; do
+for file in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh podman-prune.sh; do
   virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
     -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
     -c "cat > ~/gitlab-runner-vm/${file}" < "${SCRIPT_DIR}/${file}"
 done
 
-for file in job_id.sh prepare.sh run.sh cleanup.sh; do
+for file in job_id.sh prepare.sh run.sh cleanup.sh gateway.sh; do
   virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
     -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
     -c "cat > ~/gitlab-runner-vm/executor/${file}" < "${SCRIPT_DIR}/executor/${file}"
@@ -417,15 +421,15 @@ done
 
 virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
   -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
-  -c "chmod +x ~/gitlab-runner-vm/setup.sh ~/gitlab-runner-vm/create-openshift-vm.sh ~/gitlab-runner-vm/executor/*.sh ~/gitlab-runner-vm/.github/scripts/*.sh"
+  -c "chmod +x ~/gitlab-runner-vm/setup.sh ~/gitlab-runner-vm/create-openshift-vm.sh ~/gitlab-runner-vm/podman-prune.sh ~/gitlab-runner-vm/executor/*.sh ~/gitlab-runner-vm/.github/scripts/*.sh"
 
 # `cat > file` exits 0 on a short write, so a dropped SSH channel can leave a
 # truncated setup.sh that then executes an arbitrary prefix of provisioning.
 # Verify every copy against a locally computed manifest before running it.
 echo "==> Verifying copied files"
 {
-  (cd "${SCRIPT_DIR}" && sha256sum setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh \
-    executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh)
+  (cd "${SCRIPT_DIR}" && sha256sum setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh podman-prune.sh \
+    executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh executor/gateway.sh)
   (cd "${REPO_ROOT}/.github/scripts" \
     && sha256sum install-openshell.sh openshell-version.sh \
     | sed 's|  |  .github/scripts/|')

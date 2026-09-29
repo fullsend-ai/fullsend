@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Claude Code PostToolUse hook for secret redaction.
 
-Intercepts tool results (Bash, WebFetch, Read) and redacts secrets
+Intercepts tool results (Bash, WebFetch, Read, ...) and redacts secrets
 before they enter the LLM context window. This prevents the agent from
-seeing or leaking credentials in subsequent output.
+seeing or leaking credentials in subsequent output. The bare-JWT pattern
+is skipped when a file-content tool is called with a path inside the
+checkout — see ``content_skips``.
 
-Protocol: reads JSON from stdin (``tool_response`` preferred, ``tool_result``
-fallback). Writes ``hookSpecificOutput.updatedToolOutput`` (and ``tool_result``)
-when secrets are found. Exit code 0 always (never blocks).
+Protocol: reads JSON from stdin (``tool_name``, ``tool_input``, ``cwd`` and
+``tool_response`` preferred, ``tool_result`` fallback). Writes
+``hookSpecificOutput.updatedToolOutput`` (and ``tool_result``) when secrets
+are found. Exit code 0 always (never blocks).
 """
 
 from __future__ import annotations
@@ -24,8 +27,22 @@ FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 
 # --- Known secret prefix patterns ---
 
+# The bare-JWT pattern's start anchor: within five characters of a
+# non-token character or of the output's start — see the "jwt" entry.
+_TOKEN_CHAR = "[A-Za-z0-9_-]"
+_NOT_TOKEN_CHAR = f"[^{_TOKEN_CHAR[1:-1]}]"
+_JWT_START = "|".join(
+    [f"(?<!{_TOKEN_CHAR})"]
+    + [f"(?<={edge}{_TOKEN_CHAR}{{{n}}})" for n in range(1, 6) for edge in ("^", _NOT_TOKEN_CHAR)]
+)
+
 _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("openai_key", re.compile(r"sk-(?:proj-)?[A-Za-z0-9_-]{20,}")),
+    # Before github_pat: dots in the class cover the 2026 JWT-wrapped
+    # installation-token format whole (mirrors the Go redactor's
+    # github_server_token); the combined pattern below would otherwise
+    # stop at the first dot and leave payload+signature in the clear.
+    ("github_server_token", re.compile(r"ghs_[A-Za-z0-9_.\-]{36,}")),
     ("github_pat", re.compile(r"(?:ghp|github_pat|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}")),
     ("slack_token", re.compile(r"xox[baprs]-[A-Za-z0-9\-]{10,}")),
     ("google_api_key", re.compile(r"AIza[A-Za-z0-9_-]{35}")),
@@ -38,7 +55,31 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("stripe_key", re.compile(r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}")),
     ("sendgrid_key", re.compile(r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}")),
     ("gitlab_pat", re.compile(r"gl(?:pat|rt|ptt|dt|ft|soat|cs)-[A-Za-z0-9_-]{20,}")),
-    ("google_oauth_token", re.compile(r"ya29\.[A-Za-z0-9_-]{30,}")),
+    # Mirrors the pattern #6603 adds to the Go redactor (main's has no
+    # ya29 shape yet). The optional one- or two-letter type segment covers
+    # service-account tokens (ya29.c.) and STS-minted ones (Google's
+    # workforce doc shows ya29.dr.), whose short first segment would
+    # otherwise defeat the length quantifier.
+    ("google_oauth_token", re.compile(r"ya29\.(?:[a-z]{1,2}\.)?[A-Za-z0-9_-]{20,}")),
+    # Bare three-segment JWTs (OIDC/WIF STS tokens included) have no
+    # surrounding context for the structural patterns; the Go side is in
+    # #6603. Skipped for file content inside the checkout — see content_skips.
+    # The start anchor keeps the scan linear: unanchored, every `eyJ` in a
+    # dot-free run restarted the greedy segment (quadratic — minutes at 1 MB,
+    # past the hook timeout on every runtime). A token must start within five
+    # characters of a non-token character or of the output's start, which
+    # still reaches delimiters made of token characters (a diff's `-`, a JSON
+    # `\n`, a `%3D`, a glued ` -p`), and each alternative fires at one fixed
+    # offset, so a run is scanned at most twice. Dropped: a token glued to six
+    # or more token characters mid-line. Go's RE2 is linear and has no
+    # lookbehind, so #6603's pattern stays unanchored.
+    (
+        "jwt",
+        re.compile(
+            f"(?:{_JWT_START})"
+            r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"
+        ),
+    ),
     ("aws_sts_key", re.compile(r"ASIA[A-Z0-9]{16}")),
     ("hf_token", re.compile(r"hf_[A-Za-z0-9]{20,}")),
     ("npm_token", re.compile(r"npm_[A-Za-z0-9]{36}")),
@@ -54,6 +95,132 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
         ),
     ),
 ]
+
+# File-content tools and the tool_input key naming the path they read. The
+# bare-JWT pattern is skipped for these when the path is inside the checkout:
+# a jwt.io-style fixture is byte-for-byte a valid token, so masking it there
+# rewrites what the agent edits against without catching a live credential
+# (those surface in Bash, WebFetch and MCP output, which stay covered). The
+# runner's own OIDC token file sits beside the checkout, not in it, and still
+# masks. See content_skips for how the checkout is found and which paths are
+# refused. Adapters translate tool names to Claude's vocabulary before the
+# chain runs, so the names here apply everywhere.
+_TOOL_PATH_KEY = {
+    "Read": "file_path",
+    "Edit": "file_path",
+    "MultiEdit": "file_path",
+    "Write": "file_path",
+    "NotebookEdit": "notebook_path",
+    "NotebookRead": "notebook_path",
+    "Grep": "path",
+}
+_CHECKOUT_SKIPS = frozenset({"jwt"})
+# Path forms a runtime rewrites before opening while its adapter forwards the
+# raw argument, so the hook cannot see what was opened. pi 0.85.0 (dist/utils/
+# paths.js, dist/core/tools/path-utils.js) strips a leading '@', expands '~',
+# turns a file:// URL into a path, replaces Unicode spaces with an ASCII space
+# and retries NFD/curly-quote variants of a missing name. Refused here: '@'
+# and any URL scheme (broader than pi's rewrite on purpose). Refused in
+# content_skips: '~', non-ASCII whitespace, and a resolved target that does
+# not exist (the hook runs after the tool, so what pi opened exists by then).
+_REWRITTEN_PATH = re.compile(r"^(?:@|[A-Za-z][A-Za-z0-9+.\-]*://)")
+
+# The sandbox workspace: the checkout is a proper subdirectory of it and the
+# runner's own files (the OIDC token among them) sit beside the checkout. The
+# checkout root is only ever looked for strictly BELOW this boundary, so a
+# .git an agent plants at or above it cannot widen the root to those files.
+# The value is the runner's constant (internal/sandbox.SandboxWorkspace,
+# pinned by a Go test). The only override is this process's own command line
+# (sandbox_workspace_from_argv, the seam the subprocess tests use) — never the
+# environment, which a checkout's .claude/settings.json env block can shape
+# under Claude Code. Residuals, pre-existing or out of scope: under claude and
+# pi the hook runs as a bare python3 resolved through an agent-writable PATH
+# (codex isolates its adapter, see codex_config.go); and a .git planted in
+# another runner-owned subdirectory (.env.d) can still be a root for files
+# under it, where only a bare JWT no structural shape covers would skip.
+SANDBOX_WORKSPACE: str = "/sandbox/workspace"
+_WORKSPACE_FLAG = "--sandbox-workspace="
+
+
+def sandbox_workspace_from_argv(argv: list[str]) -> str | None:
+    """The boundary override, from this process's command line only (the
+    subprocess tests' seam; the runner-owned hooks.json and the pi adapter
+    never pass it). The first flag decides; a relative value is ignored."""
+    for arg in argv:
+        if arg.startswith(_WORKSPACE_FLAG):
+            value = arg[len(_WORKSPACE_FLAG) :]
+            return value if os.path.isabs(value) else None
+    return None
+
+
+def _checkout_root(cwd: str, workspace: str) -> str | None:
+    """The nearest ancestor of cwd (itself included) holding a .git entry,
+    searched only strictly below workspace; None when cwd is not under the
+    workspace, is the workspace itself, or no .git lies between them."""
+    try:
+        if os.path.commonpath([workspace, cwd]) != workspace:
+            return None
+    except ValueError:
+        return None
+    probe = cwd
+    while probe != workspace:
+        if os.path.lexists(os.path.join(probe, ".git")):
+            return probe
+        probe = os.path.dirname(probe)
+    return None
+
+
+def content_skips(hook_input: dict) -> frozenset[str]:
+    """Patterns redact_text skips for this call: the bare-JWT pattern when a
+    file-content tool is called with a path inside the checkout, nothing
+    otherwise.
+
+    The checkout is the nearest ancestor of cwd holding a .git entry, searched
+    strictly below SANDBOX_WORKSPACE (a cwd inside a submodule narrows the root
+    to it, the safe direction). The path is normalized, then resolved; a '..'
+    segment, a '~' path, a rewritten form (_REWRITTEN_PATH), non-ASCII
+    whitespace or a missing target refuses the skip. An adapter that sends no
+    cwd gets no skip. Anything malformed or unresolvable means no skip, never
+    an exception."""
+    tool_name = hook_input.get("tool_name")
+    cwd = hook_input.get("cwd")
+    if not isinstance(tool_name, str) or tool_name not in _TOOL_PATH_KEY:
+        return frozenset()
+    if not isinstance(cwd, str) or not os.path.isabs(cwd):
+        return frozenset()
+    tool_input = hook_input.get("tool_input")
+    if isinstance(tool_input, str):
+        try:
+            tool_input = json.loads(tool_input)
+        except (json.JSONDecodeError, TypeError):
+            return frozenset()
+    if not isinstance(tool_input, dict):
+        return frozenset()
+    path = tool_input.get(_TOOL_PATH_KEY[tool_name])
+    if path is None:
+        # Grep searches cwd by default; every other tool here names its path.
+        if tool_name != "Grep":
+            return frozenset()
+        path = cwd
+    if not isinstance(path, str) or not path:
+        return frozenset()
+    if path.startswith("~") or _REWRITTEN_PATH.match(path) or ".." in path.split("/"):
+        return frozenset()
+    if any(ch.isspace() and ord(ch) > 0x7F for ch in path):
+        return frozenset()
+    try:
+        base = os.path.realpath(cwd)
+        root = _checkout_root(base, os.path.realpath(SANDBOX_WORKSPACE))
+        if root is None:
+            return frozenset()
+        target = os.path.realpath(os.path.normpath(os.path.join(base, path)))
+        if not os.path.exists(target):
+            return frozenset()
+        inside = os.path.commonpath([root, target]) == root
+    except (ValueError, OSError):
+        return frozenset()
+    return _CHECKOUT_SKIPS if inside else frozenset()
+
 
 # --- Structural patterns ---
 #
@@ -433,11 +600,13 @@ def mask_token(token: str) -> str:
     return f"{token[:4]}..."
 
 
-def redact_text(text: str) -> tuple[str, list[dict]]:
+def redact_text(text: str, *, skip: frozenset[str] = frozenset()) -> tuple[str, list[dict]]:
     findings: list[dict] = []
     result = text
 
     for name, pattern in _PREFIX_PATTERNS:
+        if name in skip:
+            continue
         for match in pattern.finditer(result):
             token = match.group(0)
             masked = mask_token(token)
@@ -463,6 +632,10 @@ MAX_INPUT_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 def main():
+    global SANDBOX_WORKSPACE
+    override = sandbox_workspace_from_argv(sys.argv[1:])
+    if override:
+        SANDBOX_WORKSPACE = override
     try:
         raw = sys.stdin.read(MAX_INPUT_BYTES + 1)
         if len(raw) > MAX_INPUT_BYTES:
@@ -476,13 +649,14 @@ def main():
         sys.exit(0)
 
     original = hook_io.payload(hook_input)
+    skips = content_skips(hook_input)
     findings: list[dict] = []
 
     def _redact_field(text: str) -> str:
         if not text:
             return text
         try:
-            redacted, field_findings = redact_text(text)
+            redacted, field_findings = redact_text(text, skip=skips)
         except Exception as e:
             log_finding("redaction_error", f"Redaction failed (passing original): {e}")
             return text

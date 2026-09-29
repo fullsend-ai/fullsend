@@ -22,10 +22,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/layers"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 // e2eEnv holds the shared state for an e2e test run.

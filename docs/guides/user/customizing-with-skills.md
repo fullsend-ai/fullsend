@@ -189,6 +189,8 @@ Bring Your Own Agent covers the same decision frame in
 
 ## See also
 
+- [`fullsend agent new`](../../cli/agent.md#agent-new) — generate a custom agent that can then mount these skills
+
 - [Customizing Agents](customizing-overview.md) — overview of all customization approaches
 - [Bring Your Own Agent](bring-your-own-agent.md) — building, registering, and
   [tuning existing agents](customizing-agents.md#tuning-agents-with-augmentation-skills)

@@ -23,7 +23,12 @@ pkg/behaviourtest/   # RunSuite public entry (build tag: behaviour)
   artifacts/         # Artifact lookup helpers
   drivers/           # SCM, CI, env, install interfaces + v1 impls
   suite/             # InitScenario (tags, hooks, step registration)
-pkg/e2etest/         # Org pool, CLI runner, cleanup (shared with admin e2e)
+```
+
+In-repo live-test infrastructure (not a public API):
+
+```
+internal/e2etest/    # Org pool, CLI runner, cleanup (shared with admin e2e)
 ```
 
 In-repo runner and scenarios:
@@ -76,7 +81,7 @@ And the agent will output issues.out with:
 
 Every scenario runs the stage under the dummy runtime selected at install time (`github setup … --runtime dummy`). The runtime layer gets two kinds of coverage without leasing extra repos or adding wall time:
 
-- **Core (every run):** `Then the run selected the "dummy" runtime` reads the `runtime` field the runner writes into `metrics.json`, proving the repo's `.fullsend/config.yaml` `runtime:` reached backend selection. Use it in one representative scenario per stage; the artifact is already downloaded for the other assertions.
+- **Core (every run):** `Then the run selected the "dummy" runtime` reads the `runtime` field the runner writes into `metrics.json`, proving the repo's `.fullsend/config.yaml` `runtime:` reached backend selection (or `config.base.yaml` when `BEHAVIOUR_CONFIG_PRESET` supplied a preset). Use it in one representative scenario per stage; the artifact is already downloaded for the other assertions.
 - **Runtime-specific (gated):** `Given the repository runtime is "<name>"` commits `runtime: <name>` to the leased repo's config for this scenario only (CleanupScenario restores `dummy` — slots are reused, so never set it any other way; the step refuses if the slot is not on `dummy` to begin with). The custom-harness step commits only a placeholder for a relative `agent:` path, which a real runtime cannot act on, so follow it with the agent step for the runtime under test (`And a pi agent "<name>" defined as:`, `And a codex agent "<name>" defined as:` — both commit the same file) and a docstring holding the full agent file (frontmatter + body) — `{{fixture:fixtures/<stage>/<file>.json}}` inlines a result fixture so the model has a concrete, deterministic file to write (the custom harness carries no post-script, so nothing validates it; the assertions are on the transcript and metrics). Then the scenario dispatches the harness and asserts on artifacts: `the run selected the "pi" runtime`, `the pi session transcript records at least one tool call` (the agent used a tool through pi; with security enabled the run refuses to start without the intact hook adapter, so the call was mediated by it — the step does not inspect hook output), `the run metrics report tokens`. Such scenarios cost a real model run on the pool repo's repo-scoped Vertex WIF and must be tagged `@requires:capability:runtime-<name>` so they only run where the runner declares the capability; `make behaviour-test` declares `runtime-pi` by default (a `Makefile` variable, so a PR adding a gated scenario exercises it on its own `pull_request_target` run — the workflow file itself comes from `main`); `BEHAVIOUR_CAPABILITIES= make behaviour-test` skips them. See `features/runtime/pi.feature`. `features/runtime/pi-openai.feature` is the same shape on `openai/gpt-5.6-luna` with the `openai` provider instead of Vertex host files; it is gated on `runtime-pi-openai`, which is **not** declared by default because it needs an OpenAI organization mapped to the pool repositories plus their `FULLSEND_OPENAI_*` variables ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)). `features/runtime/codex-openai.feature` is that same shape on the codex runtime — `And a codex agent "<name>" defined as:` for the agent, and `the codex output stream records at least one tool call`, which reads the tee'd `codex exec --json` stream (`output.jsonl`) rather than a session transcript. It is gated on `runtime-codex-openai` for the same reason, and codex has no Vertex path, so — unlike pi, whose `runtime-pi` scenario runs on every job — codex has **no default behaviour coverage at all** until that organization exists; its evidence until then is unit tests, recorded fixtures and local smoke runs.
 - **Per-agent (every run):** `Given the repository agents are configured with:` with a YAML docstring (`triage:\n  runtime: dummy`) sets runtime/model/effort on the leased repo's `agents:` entries (a name-only entry for a built-in, the sourced entry for a custom agent; only the settings given change) — validated the way `fullsend run` validates them — and CleanupScenario restores the pre-scenario `agents:` list. Pair it with `the repository runtime is "<real runtime>"` and pin every agent the scenario can dispatch (triage hands off to `code` via `ready-to-code`) back to `dummy`, then assert `the run selected the "dummy" runtime from "agents.triage"`, which also checks `runtime_source` in `metrics.json` ends with that entry — proof the per-agent entry decided, at dummy cost. The gated second scenario in the same file leaves the repo on `dummy` and puts one custom agent on pi with `model: haiku` from its entry (the harness says `opus`); `the run requested model "haiku" from "agents.<name>" and the provider reported a "haiku" model` checks `requested_model`, `override_source`, the reported `model` and `num_turns` in `metrics.json`. See `features/runtime/agent-settings.feature`.
 
@@ -223,17 +228,17 @@ In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same 
 The `Given the enrolled test repository` step allocates a repo via `Driver.AllocateRepo(ctx)`. The unified `install.Driver` (constructed by a `Factory` during suite setup) owns pool leasing and lazy create+install internally:
 
 1. Leases a slot from the internal pool (blocks until one is free or ctx is cancelled).
-2. Creates the repo if it does not exist (the forge's `auto_init` provides the initial commit).
-3. Validates post-install files; if validation fails, runs `fullsend github setup` (and inference provision when configured).
-4. Caches results by `org/repo` key so subsequent scenarios reuse the same State.
+2. If the repo already exists, deletes it (and any leftover `{name}-fork`) so the scenario cannot inherit labels, branches, PRs, workflow runs, or config from a previous lessee.
+3. Creates the repo (the forge's `auto_init` provides the initial commit) and runs `fullsend github setup` (and inference provision when configured).
+4. Caches the successful ensure for the duration of this lease so duplicate `EnsureRepo` calls skip redundant work.
 
-The After hook calls `Driver.DeallocateRepo` to return the slot. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error.
+The After hook runs `CleanupScenario` (issues, PRs, ephemeral forks, hosting repos) and then `Driver.DeallocateRepo`, which deletes the leased base — after in-scenario debug collection has written workflow logs and agent artifacts under `BEHAVIOUR_ARTIFACT_DIR` — and returns the name to the pool. The next lessee of that name recreates the repo from scratch. Mint enrollment of the numbered *names* can remain pre-provisioned; the GitHub repos themselves are ephemeral around a lease. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error.
 
 Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
 
 **Credential context separation:** The suite's e2e installation token and dispatch's per-repo `GITHUB_TOKEN` are distinct credential contexts with independent permission propagation graphs. After a pool repo is deleted and recreated, the suite can confirm the repo exists (via `GetRepo`), but it **cannot** observe or predict when dispatch-side collaborator permissions will be ready. Do not add `GetCollaboratorPermission` polling to the suite-side readiness checks — the suite's token resolves permissions through a different GitHub subsystem than dispatch's token. See the [package doc comment](../../../pkg/behaviourtest/drivers/install/doc.go) for details and the empirical evidence from [#6701](https://github.com/fullsend-ai/fullsend/issues/6701).
 
-**Suite duration:** Because each leased `test-repo-NN` pays create + inference provision + `github setup` on first use in a run, serial godog suites take longer than the old shared-`test-repo` model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
+**Suite duration:** Because each lease of `test-repo-NN` pays create + inference provision + `github setup` (not only the first use in a run), serial godog suites take longer than a shared-repo model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
 
 Runner env (defaults shown):
 
@@ -242,6 +247,7 @@ BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
 BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
 BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
+BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs) or stage (push to main)
 E2E_GCP_PROJECT_ID=...        # inference project; install runs inference provision per pool repo
 E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
@@ -251,6 +257,8 @@ TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on b
 ```
 
 `ENVIRONMENT` is `dev` or `stage`. Local runs default to `dev` when unset. CI sets it to match the GitHub Environment on the behaviour job (`dev` on pull requests and the merge queue, `stage` on push to `main`).
+
+When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>` and omit `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. Unset (the default) leaves install behaviour unchanged.
 
 When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver which deploys a durable CF Worker mint at `stage-mint.fullsend.sh` and uses the `halfsend` org with a non-vendored per-repo install (referencing main HEAD via `--fullsend-ref=main`). The `halfsend` org uses the same repo pool pattern as the DEV pool orgs.
 
@@ -265,9 +273,9 @@ The three test actor accounts (`fstest-write`, `fstest-triage`, `fstest-outsider
 | fullsend-ai org member | No | No | No |
 | Permission on `fullsend-ai/fullsend` | Read | Read | Read |
 | Permission on `fullsend-ai/agents` | Read | Read | Read |
-| Write access | Pool-org `test-repo-NN` repos (DEV) and `halfsend/test-repo-NN` repos (STAGE) | Pool-org `test-repo-NN` repos (DEV) and `halfsend/test-repo-NN` repos (STAGE) | None (outsider) |
+| Write access | Pool-org repos via all-repository write (DEV `halfsend-NN`, STAGE `halfsend`) | Pool-org repos via all-repository triage (DEV `halfsend-NN`, STAGE `halfsend`) | None (outsider) |
 
-**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the DEV pool orgs (ephemeral, rebuilt each CI run) and the `halfsend` STAGE org (durable repos reused across runs). No write access extends beyond these test-only organisations.
+**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write and triage capability comes from all-repository organization roles on the DEV pool orgs (`halfsend-NN`) and the `halfsend` STAGE org, so it survives the ephemeral `test-repo-NN` delete/recreate lifecycle. No write access extends beyond these test-only organisations. The outsider account is not an org member and has no all-repository role.
 
 **Re-verification guidance:** Re-verify account permissions whenever:
 
@@ -382,9 +390,9 @@ Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ens
 
 ### CI timeout budgeting for lazy provisioning
 
-Each lazily provisioned repo adds approximately 3–5 minutes of overhead (create + inference provision + `github setup` + Actions settle). The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leased repos in the suite.
+Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete leftover state + create + inference provision + `github setup` + Actions settle), including when a later scenario reuses the same `test-repo-NN` name. The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leases in the suite.
 
-Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos, verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection.
+Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection.
 
 Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
 
@@ -429,7 +437,7 @@ URL-dispatch scenarios require a vendored CLI binary that includes `FetchPolicy`
 
 The install driver's internal ensurer always re-vendors the CLI binary (`github setup --vendor`) even when a prior install's post-install validation passes. This guarantees leased pool repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-vendoring, pool repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
 
-The settle step (polling for GitHub Actions workflow readiness) is skipped on re-vendors since the workflow file already existed — only fresh installs incur the settle wait.
+`doEnsure` always resets (delete + recreate), installs, and settles: every lease starts from a freshly created repo, so there is no re-vendor path that skips the settle wait — the settle step runs on every ensure.
 
 ## Version pinning for `fullsend-ai/agents`
 
@@ -439,7 +447,9 @@ External behaviour runners import the shared libraries from this module:
 require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 ```
 
-The supported entry point is `behaviourtest.RunSuite`. Driver selection, org acquisition, CLI build, concurrency, tags, and step registration are handled internally from the same environment variables as the in-repo suite (`BEHAVIOUR_SCM`, `BEHAVIOUR_CI`, `BEHAVIOUR_INSTALL_MODE`, `ENVIRONMENT`, `BEHAVIOUR_CAPABILITIES`, `GODOG_TAGS`, `GODOG_CONCURRENCY`):
+Do not import `internal/mintcore` (or `internal/mintcore/mintconsts`) from packages reachable from `pkg/behaviourtest`. The nested mintcore module is resolved only by a local `replace` that downstream modules do not inherit; a leak makes `go build github.com/fullsend-ai/fullsend/pkg/behaviourtest` fail with `unknown revision internal/mintcore/v0.0.0`. Duplicate constants locally and keep the graph clean — see [Go Code](../../contributing/go-code.md).
+
+The supported entry point is `behaviourtest.RunSuite`. Driver selection, org acquisition, CLI build, concurrency, tags, and step registration are handled internally from the same environment variables as the in-repo suite (`BEHAVIOUR_SCM`, `BEHAVIOUR_CI`, `BEHAVIOUR_INSTALL_MODE`, `ENVIRONMENT`, `BEHAVIOUR_CAPABILITIES`, `BEHAVIOUR_CONFIG_PRESET`, `GODOG_TAGS`, `GODOG_CONCURRENCY`):
 
 ```go
 //go:build behaviour
@@ -467,7 +477,7 @@ func TestBehaviourSuite(t *testing.T) {
 
 `RunSuite` builds the CLI from module `github.com/fullsend-ai/fullsend` (equivalent to `e2etest.BuildModuleBinary`), so the caller's module root is not used. Run with `-tags behaviour` and the same env vars as CI (see above).
 
-Lower-level packages (`world`, `steps`, `drivers`, `suite.InitScenario`, `pkg/e2etest`) remain available for custom bootstraps. Prefer `RunSuite` unless you need to inject drivers the env-based selector does not cover.
+Lower-level packages (`world`, `steps`, `drivers`, `suite.InitScenario`) remain available for custom bootstraps. Org pool and CLI helpers live in `internal/e2etest` and are not importable outside this module. Prefer `RunSuite` unless you need to inject drivers the env-based selector does not cover.
 
 ### API changes
 
@@ -510,4 +520,4 @@ suiteRunner := godog.TestSuite{
 
 **`ci.Driver.WaitForFailedHarnessAgent` addition:** `WaitForFailedHarnessAgent(ctx, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error)` waits for the named agent's harness run to complete with a terminal failure conclusion (artifact-first detection, job-name fallback) and errors out early when the run succeeds instead. External `ci.Driver` implementations must add this method.
 
-Bump the pinned version when behaviour step vocabulary or `pkg/e2etest` / `pkg/behaviourtest` APIs change.
+Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.

@@ -475,7 +475,7 @@ func isBlockType(nodeType string) bool {
 	switch nodeType {
 	case "doc", "paragraph", "heading", "blockquote", "codeBlock",
 		"bulletList", "orderedList", "listItem", "panel", "rule",
-		"expand":
+		"expand", "table", "tableRow", "tableHeader", "tableCell":
 		return true
 	default:
 		return false

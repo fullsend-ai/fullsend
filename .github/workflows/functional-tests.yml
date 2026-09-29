@@ -65,6 +65,7 @@ jobs:
           event_action: ${{ github.event.action }}
           pr_author_association: ${{ github.event.pull_request.author_association }}
           pr_author_login: ${{ github.event.pull_request.user.login }}
+          label_actor_login: ${{ github.event.sender.login }}
 
   functional-tests:
     # For pull_request_target, runs only when gate sets authorized=true.

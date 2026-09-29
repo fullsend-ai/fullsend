@@ -12,6 +12,7 @@ func TestDefaultGitHubSetupOpts_HasVendor(t *testing.T) {
 	opts := DefaultGitHubSetupOpts()
 	assert.True(t, opts.Vendor, "default should enable vendoring")
 	assert.Empty(t, opts.FullsendRef, "default should not set a fullsend ref")
+	assert.Empty(t, opts.ConfigPreset, "default should not set a config preset")
 }
 
 func TestRunGitHubSetupWithOpts_VendoredMode(t *testing.T) {
@@ -101,6 +102,79 @@ func TestRunGitHubSetupWithOpts_VendoredWithRef_ReturnsError(t *testing.T) {
 	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "vendored mode conflicts with FullsendRef")
+}
+
+func TestRunGitHubSetupWithOpts_ConfigPreset(t *testing.T) {
+	var capturedArgs []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+
+	opts := GitHubSetupOpts{Vendor: true, ConfigPreset: "https://example.com/preset.yaml"}
+	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{
+		"github", "setup", "org/repo",
+		"--direct",
+		"--skip-app-setup",
+		"--mint-url", "https://mint.test",
+		"--config", "https://example.com/preset.yaml",
+		"--vendor",
+	}, capturedArgs)
+}
+
+func TestRunGitHubSetupWithOpts_ConfigPresetOmitsRuntime(t *testing.T) {
+	var capturedArgs []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+
+	opts := GitHubSetupOpts{Vendor: true, ConfigPreset: "./presets/bt.yaml"}
+	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	require.NoError(t, err)
+
+	joined := strings.Join(capturedArgs, " ")
+	assert.Contains(t, joined, "--config")
+	assert.NotContains(t, joined, "--runtime")
+}
+
+func TestRunGitHubSetupWithOpts_ConfigPresetWithFullsendRef(t *testing.T) {
+	var capturedArgs []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+
+	opts := GitHubSetupOpts{Vendor: false, FullsendRef: "main", ConfigPreset: "https://example.com/preset.yaml"}
+	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	require.NoError(t, err)
+
+	joined := strings.Join(capturedArgs, " ")
+	assert.Contains(t, joined, "--config")
+	assert.Contains(t, joined, "https://example.com/preset.yaml")
+	assert.Contains(t, joined, "--fullsend-ref")
+	assert.Contains(t, joined, "main")
+	assert.NotContains(t, joined, "--vendor")
+	assert.NotContains(t, joined, "--runtime")
+}
+
+func TestRunGitHubSetupWithOpts_WhitespaceConfigPreset_KeepsRuntime(t *testing.T) {
+	var capturedArgs []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+
+	opts := GitHubSetupOpts{Vendor: true, ConfigPreset: "   "}
+	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	require.NoError(t, err)
+
+	joined := strings.Join(capturedArgs, " ")
+	assert.NotContains(t, joined, "--config")
+	assert.Contains(t, joined, "--runtime")
 }
 
 func TestRunGitHubSetup_DelegatesToWithOpts(t *testing.T) {

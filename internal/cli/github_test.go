@@ -195,15 +195,21 @@ func TestGitHubSetupCmd_PerRepoDryRun_Vendor(t *testing.T) {
 }
 
 func TestGitHubSetupCmd_PerRepoRequiresInferenceProject(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "setup", "acme/widget",
-		"--mint-url", "https://mint-test-abc123.run.app"})
-	err := cmd.Execute()
+	// No existing .fullsend/config.yaml (first install, modeled via an
+	// empty FakeClient — loadExistingPerRepoConfig sees a 404 and
+	// returns a nil top layer) and no FULLSEND_GCP_PROJECT_ID secret:
+	// --inference-project has no source to resolve from, so setup must
+	// fail the required-value check in resolveInferenceReuse.
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		mintURL:      "https://mint-test-abc123.run.app",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{"mint-url": true},
+	})
 	require.Error(t, err)
-	// With a fake token the RepoSecretExists call fails, surfacing an API
-	// error. Either the API-error path or the not-found path is acceptable
-	// here — both mention the secret name or the flag.
 	errMsg := err.Error()
 	assert.True(t, strings.Contains(errMsg, "--inference-project") ||
 		strings.Contains(errMsg, "FULLSEND_GCP_PROJECT_ID"),
@@ -211,17 +217,65 @@ func TestGitHubSetupCmd_PerRepoRequiresInferenceProject(t *testing.T) {
 }
 
 func TestGitHubSetupCmd_PerRepoRequiresWIFProvider(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "setup", "acme/widget",
-		"--mint-url", "https://mint-test-abc123.run.app",
-		"--inference-project", "my-project"})
-	err := cmd.Execute()
+	// --inference-project is supplied explicitly, but neither the (first
+	// install, no top layer) config nor a repo secret supplies the WIF
+	// provider, so setup must fail the required-value check for it.
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:           "acme/widget",
+		mintURL:          "https://mint-test-abc123.run.app",
+		inferenceProject: "my-project",
+		agents:           strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags:     map[string]bool{"mint-url": true, "inference-project": true},
+	})
 	require.Error(t, err)
 	errMsg := err.Error()
 	assert.True(t, strings.Contains(errMsg, "--inference-wif-provider") ||
 		strings.Contains(errMsg, "FULLSEND_GCP_WIF_PROVIDER"),
 		"expected error to mention --inference-wif-provider or FULLSEND_GCP_WIF_PROVIDER, got: %s", errMsg)
+}
+
+func TestGitHubSetupCmd_PerRepoInferenceValuesFromExistingConfig(t *testing.T) {
+	// A re-run must resolve required inference values from the existing
+	// .fullsend/config.yaml top layer — loaded remotely via
+	// loadExistingPerRepoConfig — without requiring
+	// --inference-project/--inference-wif-provider or a pre-existing
+	// repo secret. This models the "supplied by that layer" path that
+	// the required-value tests above don't exercise on their own.
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.yaml": []byte(`version: "1"
+mint_url: https://mint-test-abc123.run.app
+inference:
+  provider: vertex
+  project: existing-project
+  region: us-central1
+  wif_provider: projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc
+`),
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{}, // no CLI flags: values must come from the existing config
+	})
+	require.NoError(t, err)
+
+	// Both required values were resolved from the existing config layer
+	// — not reused from a pre-existing secret (none exists) and not
+	// supplied via CLI flags (none were passed).
+	secrets := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secrets[s.Name] = s.Value
+	}
+	assert.Equal(t, "existing-project", secrets["FULLSEND_GCP_PROJECT_ID"])
+	assert.Equal(t, "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc", secrets["FULLSEND_GCP_WIF_PROVIDER"])
 }
 
 func TestGitHubSetupCmd_FullsendRefConflictsWithVendor(t *testing.T) {
@@ -357,7 +411,7 @@ func TestBuildPresetOverlay_NoFlagsChanged(t *testing.T) {
 		inferenceRegion: "global",
 		changedFlags:    map[string]bool{},
 	}
-	overlay := buildPresetOverlay(cfg)
+	overlay := buildPresetOverlay(cfg, nil)
 
 	// No flags changed: returns nil so the caller uses stubConfigYAML.
 	assert.Nil(t, overlay)
@@ -378,7 +432,7 @@ func TestBuildPresetOverlay_FlagsPopulateOverlay(t *testing.T) {
 			"inference-wif-provider": true,
 		},
 	}
-	overlay := buildPresetOverlay(cfg)
+	overlay := buildPresetOverlay(cfg, nil)
 
 	assert.Equal(t, "https://custom-mint.example.com", overlay.ConfigMintURL())
 	assert.Equal(t, "vertex", overlay.ConfigInferenceProvider())
@@ -397,7 +451,7 @@ func TestBuildPresetOverlay_PartialFlags(t *testing.T) {
 			// inference-project, inference-region, inference-wif-provider not changed
 		},
 	}
-	overlay := buildPresetOverlay(cfg)
+	overlay := buildPresetOverlay(cfg, nil)
 
 	// Only mint-url was changed, so only it should be locally set in
 	// the overlay.  Other accessors resolve through the parent chain
@@ -651,6 +705,33 @@ func TestGitHubSetCmd_SetsRepoSecret(t *testing.T) {
 	assert.Equal(t, "my-project-123", client.CreatedSecrets[0].Value)
 }
 
+func TestGitHubSetCmd_SetsOpenAIAPIKey(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSet(context.Background(), client, printer, "acme/widget", openAIRepoSecretName, "test-openai-key")
+	require.NoError(t, err)
+
+	require.Len(t, client.CreatedSecrets, 1)
+	assert.Equal(t, openAIRepoSecretName, client.CreatedSecrets[0].Name)
+	assert.Equal(t, "test-openai-key", client.CreatedSecrets[0].Value)
+	assert.Equal(t, "acme", client.CreatedSecrets[0].Owner)
+	assert.Equal(t, "widget", client.CreatedSecrets[0].Repo)
+}
+
+func TestGitHubSetCmd_RejectsEmptyValue(t *testing.T) {
+	client := forge.NewFakeClient()
+	printer := ui.New(&discardWriter{})
+
+	for _, value := range []string{"", "   "} {
+		err := runGitHubSet(context.Background(), client, printer, "acme/widget", openAIRepoSecretName, value)
+		require.Error(t, err, "empty value %q should be rejected", value)
+		assert.Contains(t, err.Error(), "must not be empty")
+	}
+	assert.Empty(t, client.CreatedSecrets, "an empty value must not be stored")
+}
+
 func TestConfigKeyMapping_AllKeys(t *testing.T) {
 	expectedKeys := []string{
 		"FULLSEND_GCP_REGION",
@@ -658,6 +739,7 @@ func TestConfigKeyMapping_AllKeys(t *testing.T) {
 		forge.PerRepoGuardVar,
 		"FULLSEND_GCP_PROJECT_ID",
 		"FULLSEND_GCP_WIF_PROVIDER",
+		openAIRepoSecretName,
 	}
 	for _, key := range expectedKeys {
 		_, ok := configKeyMapping[key]
@@ -668,6 +750,9 @@ func TestConfigKeyMapping_AllKeys(t *testing.T) {
 
 	reviewInfo := configKeyMapping["FULLSEND_REVIEW_CLIENT_ID"]
 	assert.Equal(t, storageVariable, reviewInfo.storage)
+
+	openAIInfo := configKeyMapping[openAIRepoSecretName]
+	assert.Equal(t, storageSecret, openAIInfo.storage)
 }
 
 func TestGitHubSetCmd_ValidatesWIFProvider(t *testing.T) {
@@ -741,6 +826,29 @@ func TestRunGitHubStatus_BasicReport(t *testing.T) {
 
 	err := runGitHubStatus(context.Background(), client, printer, "acme")
 	require.NoError(t, err)
+}
+
+func TestRunGitHubStatus_ForeignVariableOmitsParsedRole(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: ".fullsend", FullName: "acme/.fullsend"},
+	}
+	client.OrgVariables = map[string]bool{
+		"acme/FULLSEND_MINT_URL":               true,
+		"acme/FULLSEND_FOREIGN_CI_CHECK_REPOS": true,
+	}
+	client.OrgVariableValues = map[string]string{
+		"acme/FULLSEND_FOREIGN_CI_CHECK_REPOS": "fullsend-ai/fullsend",
+	}
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubStatus(context.Background(), client, printer, "acme")
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "FULLSEND_FOREIGN_CI_CHECK_REPOS: fullsend-ai/fullsend")
+	assert.NotContains(t, out, "(ci_check)")
+	assert.NotContains(t, out, "(ci-check)")
 }
 
 func TestRunGitHubStatus_NoConfigRepo(t *testing.T) {
@@ -1582,7 +1690,7 @@ func TestRunGitHubSetupPerRepo_InvalidRuntime(t *testing.T) {
 		runtime:         "invalid-runtime",
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid runtime")
+	assert.Contains(t, err.Error(), "invalid --runtime")
 }
 
 // existingPerRepoConfigForRerun is a customized config as a repo would have
@@ -1845,8 +1953,136 @@ func TestBuildPresetOverlay_OpenAI(t *testing.T) {
 		openaiIdentityProviderID: "idp_1",
 		openaiServiceAccountID:   "sa_1",
 	}
-	o := buildPresetOverlay(cfg)
+	o := buildPresetOverlay(cfg, nil)
 	require.NotNil(t, o)
 	assert.Equal(t, config.OpenAIWIFConfig{Audience: "fullsend://acme", IdentityProviderID: "idp_1", ServiceAccountID: "sa_1"}, o.ConfigInferenceOpenAI())
 	assert.True(t, setupConfigFlagsChanged(cfg), "the openai flags turn a re-run into a config change")
+}
+
+func TestBuildPresetOverlay_RuntimeAndAgents(t *testing.T) {
+	cfg := githubSetupConfig{
+		runtime:      "pi",
+		changedFlags: map[string]bool{"runtime": true, "agents": true},
+	}
+	o := buildPresetOverlay(cfg, []string{"triage", "review"})
+	require.NotNil(t, o)
+	assert.Equal(t, "pi", o.ConfigRuntime())
+	assert.Equal(t, []string{"triage", "review"}, o.ConfigRoles())
+	data, err := o.Marshal()
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, "runtime:")
+	assert.Contains(t, s, "roles:")
+}
+
+func TestValidatePresetLayer(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, validatePresetLayer([]byte("version: \"1\"\nruntime: claude\n")))
+
+	err := validatePresetLayer([]byte("version: \"1\"\ndispatch:\n  platform: github\ndefaults:\n  roles: [triage]\nrepos: {}\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a per-repo configuration")
+
+	err = validatePresetLayer([]byte("version: \"1\"\nruntime: not-a-runtime\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid preset")
+
+	err = validatePresetLayer([]byte("version: \"1\"\nmint_url: http://insecure.example.com\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preset mint_url")
+}
+
+func TestValidateCLISetupValues(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, validateCLISetupValues(githubSetupConfig{}))
+
+	err := validateCLISetupValues(githubSetupConfig{inferenceProvider: "openai"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --inference-provider")
+
+	err = validateCLISetupValues(githubSetupConfig{inferenceWIFProvider: "not-a-wif"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--inference-wif-provider must be a full WIF provider")
+}
+
+func TestValidateSetupValueFormats(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, validateSetupValueFormats(nil, "composed config"))
+
+	cfg := config.NewEmptyPerRepoOverlay()
+	cfg.SetMintURL("https://mint.example.com")
+	require.NoError(t, validateSetupValueFormats(cfg, "composed config"))
+
+	cfg.SetMintURL("http://insecure.example.com")
+	err := validateSetupValueFormats(cfg, "composed config")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "composed config mint_url")
+
+	cfg = config.NewEmptyPerRepoOverlay()
+	cfg.SetInferenceWIFProvider("not-a-wif")
+	err = validateSetupValueFormats(cfg, "composed config")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "composed config inference.wif_provider")
+}
+
+func TestComposeSetupLayers(t *testing.T) {
+	t.Parallel()
+	overlay := config.NewEmptyPerRepoOverlay()
+	overlay.SetInferenceProject("cli-project")
+
+	effective, err := composeSetupLayers(nil, overlay, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "cli-project", effective.ConfigInferenceProject())
+
+	effective, err = composeSetupLayers(nil, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, effective)
+
+	base := []byte("version: \"1\"\ninference:\n  project: preset-project\n  wif_provider: projects/1/locations/global/workloadIdentityPools/p/providers/x\n")
+	effective, err = composeSetupLayers(nil, overlay, base)
+	require.NoError(t, err)
+	assert.Equal(t, "cli-project", effective.ConfigInferenceProject())
+	assert.Equal(t, "projects/1/locations/global/workloadIdentityPools/p/providers/x", effective.ConfigInferenceWIFProvider())
+}
+
+func TestEffectiveSetupAccessors(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "from-flag", effectiveInferenceProject(githubSetupConfig{inferenceProject: "from-flag"}, nil))
+	assert.Equal(t, "", effectiveInferenceProject(githubSetupConfig{}, nil))
+	assert.Equal(t, "from-flag", effectiveInferenceWIF(githubSetupConfig{inferenceWIFProvider: "from-flag"}, nil))
+	assert.Equal(t, "", effectiveInferenceWIF(githubSetupConfig{}, nil))
+	assert.Equal(t, "https://flag.example.com", effectiveSetupMintURL(githubSetupConfig{mintURL: "https://flag.example.com"}, nil))
+	assert.Equal(t, config.DefaultPerRepoMintURL, effectiveSetupMintURL(githubSetupConfig{}, nil))
+	assert.Equal(t, "us-west2", effectiveInferenceRegion(githubSetupConfig{inferenceRegion: "us-west2"}, nil))
+	assert.Equal(t, config.DefaultPerRepoInferenceRegion, effectiveInferenceRegion(githubSetupConfig{}, nil))
+	assert.Equal(t, "pi", effectiveSetupRuntime(githubSetupConfig{runtime: "pi"}, nil))
+	assert.Equal(t, "", effectiveSetupRuntime(githubSetupConfig{}, nil))
+
+	cfg := config.NewEmptyPerRepoOverlay()
+	cfg.SetMintURL("https://preset.example.com")
+	cfg.SetInferenceRegion("europe-west1")
+	cfg.SetRuntime("codex")
+	cfg.SetInferenceProject("preset-project")
+	cfg.SetInferenceWIFProvider("preset-wif")
+	assert.Equal(t, "https://preset.example.com", effectiveSetupMintURL(githubSetupConfig{}, cfg))
+	assert.Equal(t, "europe-west1", effectiveInferenceRegion(githubSetupConfig{}, cfg))
+	assert.Equal(t, "codex", effectiveSetupRuntime(githubSetupConfig{}, cfg))
+	assert.Equal(t, "preset-project", effectiveInferenceProject(githubSetupConfig{}, cfg))
+	assert.Equal(t, "preset-wif", effectiveInferenceWIF(githubSetupConfig{}, cfg))
+}
+
+func TestResolveInferenceReuse_SecretCheckErrors(t *testing.T) {
+	t.Parallel()
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{"RepoSecretExists": fmt.Errorf("boom")}
+	_, _, err := resolveInferenceReuse(context.Background(), client, "acme", "widget", githubSetupConfig{}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking existing secret FULLSEND_GCP_PROJECT_ID")
+
+	client = forge.NewFakeClient()
+	client.Secrets = map[string]bool{"acme/widget/FULLSEND_GCP_PROJECT_ID": true}
+	client.Errors = map[string]error{"RepoSecretExists": fmt.Errorf("boom")}
+	_, _, err = resolveInferenceReuse(context.Background(), client, "acme", "widget", githubSetupConfig{inferenceProject: "p"}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking existing secret FULLSEND_GCP_WIF_PROVIDER")
 }

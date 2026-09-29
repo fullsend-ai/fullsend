@@ -55,6 +55,11 @@ func newPostReviewCmd() *cobra.Command {
 		Long: `Posts review findings as a sticky issue comment on a pull request
 or merge request, then submits a formal review with the disposition.
 
+The sticky comment is the success criterion. If it is posted, the
+command exits 0 even when the subsequent formal review submission
+fails; that failure is logged as a warning so a posted verdict is
+not reported as a workflow Failure.
+
 On first run, creates a new comment with a hidden HTML marker.
 On re-runs, finds the existing comment, collapses old content into
 a <details> block, and edits in-place. Stale formal reviews by the
@@ -111,6 +116,10 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 
 			printer.Header("Post Review")
 
+			if err := checkGitLabApprovalCapability(forgeName, parsed.Action, token, os.Getenv); err != nil {
+				return err
+			}
+
 			client, err := resolvePostReviewClient(forgeName, token, baseURL)
 			if err != nil {
 				return err
@@ -153,16 +162,7 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 				return postFailureNotice(cmd.Context(), client, owner, repoName, pr, parsed, cfg, printer)
 			}
 
-			commentURL, err := sticky.Post(cmd.Context(), client, owner, repoName, pr, parsed.Body, cfg, printer)
-			if err != nil {
-				return err
-			}
-
-			if err := submitFormalReview(cmd.Context(), client, owner, repoName, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer); err != nil {
-				return err
-			}
-
-			return postApprovedFollowUpIssues(cmd.Context(), owner, repoName, pr, parsed, printer)
+			return postReviewContent(cmd.Context(), client, owner, repoName, pr, parsed, cfg, dryRun, printer)
 		},
 	}
 
@@ -302,6 +302,23 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 	}
 	printer.StepDone("Failure notice posted")
 	return nil
+}
+
+// postReviewContent posts the sticky review comment, then attempts a
+// formal PR/MR review. Once the sticky comment is on the PR, formal
+// review submission is best-effort: a forge API failure must not turn
+// a posted verdict into a workflow Failure (#3548).
+func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, dryRun bool, printer *ui.Printer) error {
+	commentURL, err := sticky.Post(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
+	if err != nil {
+		return err
+	}
+
+	if err := submitFormalReview(ctx, client, owner, repo, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer); err != nil {
+		printer.StepWarn(fmt.Sprintf("Formal review submission failed (%v); sticky review comment was posted", err))
+	}
+
+	return postApprovedFollowUpIssues(ctx, owner, repo, pr, parsed, printer)
 }
 
 // submitFormalReview minimizes stale reviews by the same user, then
@@ -531,8 +548,8 @@ func formatFindingComment(f ReviewFinding) string {
 // is422Error reports whether err wraps a GitHub 422 Unprocessable Entity
 // API error. Used to detect inline comment validation failures.
 // NOTE: only matches *gh.APIError — GitLab errors won't trigger the
-// 422 fallback. This is acceptable because GitLab posts inline findings
-// as plain note text, not positioned diff comments.
+// 422 fallback. The GitLab client handles unpositionable findings
+// internally (positioned discussion, then note fallback).
 func is422Error(err error) bool {
 	var apiErr *gh.APIError
 	if errors.As(err, &apiErr) {
@@ -636,16 +653,9 @@ func lineInHunks(line int, hunks [][2]int) bool {
 }
 
 // resolvePostReviewClient creates a forge.Client for the post-review
-// command. It resolves the token and base URL based on the forge name,
-// reusing the existing newForgeClient factory that already supports
-// both GitHub and GitLab.
-//
-// When an explicit token is provided (via --token), GitHub short-circuits
-// to newGitHubLiveClient to skip redundant token resolution, while
-// GitLab always delegates to newForgeClient. Without an explicit token
-// the standard resolution chain runs:
-// GitHub → GH_TOKEN / GITHUB_TOKEN / gh auth token;
-// GitLab → GITLAB_TOKEN.
+// command. GitHub goes through newAuthenticatedGitHubClient so --token
+// overrides the standard GH_TOKEN / GITHUB_TOKEN / gh auth token chain.
+// GitLab delegates to newForgeClient (GITLAB_TOKEN or --token).
 func resolvePostReviewClient(forgeName, token, baseURL string) (forge.Client, error) {
 	if baseURL != "" {
 		u, err := url.Parse(baseURL)
@@ -667,12 +677,12 @@ func resolvePostReviewClient(forgeName, token, baseURL string) (forge.Client, er
 		}
 		return client, nil
 	case repos.ForgeGitHub, "":
-		if token != "" {
-			return newGitHubLiveClient(token, baseURL), nil
-		}
-		client, err := newForgeClient(repos.ForgeGitHub, "", baseURL)
+		client, err := newAuthenticatedGitHubClient(token, baseURL)
 		if err != nil {
-			return nil, fmt.Errorf("no GitHub token found: set GH_TOKEN, GITHUB_TOKEN, or pass --token")
+			if errors.Is(err, errGitHubTokenMissing) {
+				return nil, githubTokenFlagError("--token")
+			}
+			return nil, err
 		}
 		return client, nil
 	default:
@@ -777,9 +787,11 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 		}
 	}
 
-	// Sanitize finding fields — severity, category, description, and
+	// Sanitize finding fields — severity, category, file, description, and
 	// remediation are all interpolated into Markdown posted to the
-	// forge and could carry secrets from agent output.
+	// forge (and, for File, into a structured GitLab Discussions API
+	// position field via forge.ReviewComment.Path) and could carry
+	// secrets from agent output.
 	for i := range r.Findings {
 		if r.Findings[i].Severity != "" {
 			result := pipeline.Scan(r.Findings[i].Severity)
@@ -791,6 +803,12 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 			result := pipeline.Scan(r.Findings[i].Category)
 			if result.Sanitized != "" {
 				r.Findings[i].Category = result.Sanitized
+			}
+		}
+		if r.Findings[i].File != "" {
+			result := pipeline.Scan(r.Findings[i].File)
+			if result.Sanitized != "" {
+				r.Findings[i].File = result.Sanitized
 			}
 		}
 		if r.Findings[i].Description != "" {

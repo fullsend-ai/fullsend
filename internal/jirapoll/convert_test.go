@@ -338,6 +338,7 @@ func TestActorKind_DisplayNameAutomationSuffix(t *testing.T) {
 		{"bot as literal suffix, no delimiter", "Dependabot", "human"},
 		{"plain human name", "Wayne Sun", "human"},
 	}
+	p := &Poller{}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			event := JiraEvent{
@@ -347,10 +348,133 @@ func TestActorKind_DisplayNameAutomationSuffix(t *testing.T) {
 					DisplayName: tc.displayName,
 				},
 			}
-			if got := actorKind(event); got != tc.want {
+			if got := p.actorKind(event); got != tc.want {
 				t.Errorf("actorKind(%q) = %q, want %q", tc.displayName, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestActorKind_SelfAccount(t *testing.T) {
+	const selfID = "poller-service-account"
+	p := &Poller{selfAccountID: selfID}
+
+	cases := []struct {
+		name  string
+		p     *Poller
+		event JiraEvent
+		want  string
+	}{
+		{
+			name: "self comment with atlassian accountType",
+			p:    p,
+			event: JiraEvent{
+				Type: "comment_added",
+				CommentAuthor: jira.User{
+					AccountID:   selfID,
+					AccountType: "atlassian",
+					DisplayName: "Fullsend Test Account",
+				},
+			},
+			want: "bot",
+		},
+		{
+			name: "human comment with atlassian accountType",
+			p:    p,
+			event: JiraEvent{
+				Type: "comment_added",
+				CommentAuthor: jira.User{
+					AccountID:   "someone-else",
+					AccountType: "atlassian",
+					DisplayName: "Jane Doe",
+				},
+			},
+			want: "human",
+		},
+		{
+			name: "self changelog label change",
+			p:    p,
+			event: JiraEvent{
+				Type: "label_changed",
+				ChangeAuthor: jira.User{
+					AccountID:   selfID,
+					AccountType: "atlassian",
+				},
+			},
+			want: "bot",
+		},
+		{
+			name: "self opened event uses reporter",
+			p:    p,
+			event: JiraEvent{
+				Type: "opened",
+				Reporter: jira.User{
+					AccountID:   selfID,
+					AccountType: "atlassian",
+				},
+			},
+			want: "bot",
+		},
+		{
+			name: "empty selfAccountID does not match empty actor",
+			p:    &Poller{},
+			event: JiraEvent{
+				Type:          "comment_added",
+				CommentAuthor: jira.User{AccountType: "atlassian"},
+			},
+			want: "human",
+		},
+		{
+			name: "self-account match via Data Center name fallback",
+			p:    &Poller{selfAccountID: "fs-bot"},
+			event: JiraEvent{
+				Type: "comment_added",
+				CommentAuthor: jira.User{
+					Name:        "fs-bot",
+					AccountType: "atlassian",
+				},
+			},
+			want: "bot",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.p.actorKind(tc.event); got != tc.want {
+				t.Errorf("actorKind() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToNormalizedEvent_SelfAccountBot(t *testing.T) {
+	p := &Poller{
+		opts: Options{
+			TargetRepo:  "acme/platform",
+			JiraBaseURL: "https://acme.atlassian.net",
+		},
+		selfAccountID: "poller-service-account",
+	}
+
+	event := JiraEvent{
+		Type:     "comment_added",
+		IssueID:  "10042",
+		IssueKey: "PROJ-123",
+		IssueURL: "https://acme.atlassian.net/browse/PROJ-123",
+		CommentAuthor: jira.User{
+			AccountID:   "poller-service-account",
+			AccountType: "atlassian",
+			DisplayName: "Fullsend Test Account",
+		},
+	}
+
+	ne := p.toNormalizedEvent(event)
+
+	if ne.Actor.Kind != "bot" {
+		t.Errorf("actor.kind = %q, want %q", ne.Actor.Kind, "bot")
+	}
+	if ne.Actor.ID != "poller-service-account" {
+		t.Errorf("actor.id = %q, want poller-service-account", ne.Actor.ID)
 	}
 }
 
@@ -469,6 +593,51 @@ func TestExtractPlainText_DeepNestingIsBounded(t *testing.T) {
 	}
 	if strings.Contains(got, fmt.Sprintf("level-%d", depth-1)) {
 		t.Errorf("extractPlainText(deeply nested ADF) walked all %d levels; want it capped well below that", depth)
+	}
+}
+
+func TestExtractPlainText_Table(t *testing.T) {
+	// A GFM pipe table posted through jira.MarkdownToADF now round-trips as
+	// a native ADF "table" node (table/tableRow/tableHeader/tableCell)
+	// instead of the old pipe-paragraph fallback. isBlockType must treat
+	// those types as blocks too, or cell text mashes together with no
+	// separator when a comment_added event polls it back (see PR #7369
+	// review).
+	adf := map[string]any{
+		"type":    "doc",
+		"version": 1,
+		"content": []any{
+			map[string]any{
+				"type": "table",
+				"content": []any{
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "col1"}}},
+						}},
+						map[string]any{"type": "tableHeader", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "col2"}}},
+						}},
+					}},
+					map[string]any{"type": "tableRow", "content": []any{
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "a"}}},
+						}},
+						map[string]any{"type": "tableCell", "content": []any{
+							map[string]any{"type": "paragraph", "content": []any{map[string]any{"type": "text", "text": "b"}}},
+						}},
+					}},
+				},
+			},
+		},
+	}
+
+	got := extractPlainText(adf)
+	if strings.Contains(got, "col1col2") || strings.Contains(got, "ab") {
+		t.Errorf("extractPlainText(table ADF) = %q, cells were concatenated without separators", got)
+	}
+	want := "col1\ncol2\na\nb"
+	if got != want {
+		t.Errorf("extractPlainText(table ADF) = %q, want %q", got, want)
 	}
 }
 

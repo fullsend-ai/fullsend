@@ -3,6 +3,7 @@ package runtime
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -101,7 +102,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 
 	// The guard runs before the agent-writable .env is sourced; the
 	// runner-owned locations are re-pinned right after it.
-	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && . '/sandbox/workspace/.env' && `+piLoaderEnvUnset()+` && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && "$FULLSEND_PI_BIN" --print --mode json`), cmd)
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && . '/sandbox/workspace/.env' && `+piLoaderEnvUnset()+` && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && "$FULLSEND_PI_BIN" --print --mode json`), cmd)
 	// Gemini on Vertex needs GOOGLE_CLOUD_LOCATION; the fleet exports the
 	// region as CLOUD_ML_REGION, so it is mirrored after .env is sourced.
 	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`)
@@ -124,7 +125,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 
 	// Claude-on-Vertex: stray direct-API variables never reach pi, and the
 	// project is pinned to the variable Claude Code on Vertex uses.
-	unsetIdx := strings.Index(cmd, "&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL")
+	unsetIdx := strings.Index(cmd, "&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL")
 	envIdx := strings.Index(cmd, ". '/sandbox/workspace/.env'")
 	piIdx := strings.Index(cmd, `&& "$FULLSEND_PI_BIN" `)
 	assert.True(t, unsetIdx > envIdx && unsetIdx < piIdx, "unset runs after sourcing .env and before pi: %s", cmd)
@@ -139,14 +140,16 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 
 // TestBuildPiRunCommand_AgentTool is the golden for the Agent tool wiring:
 // the extension's integrity guard runs before .env whether or not hooks are
-// on, its -e comes right after the hook adapter and before declared
-// extensions, --tools carries Agent,Task, and the parent's own provider
-// -e set is unchanged (the manifest's child extension list is for children).
+// on, its -e comes right after the hook adapter and before the edit repair
+// and declared extensions, --tools carries Agent,Task, and the parent's own
+// provider -e set is unchanged (the manifest's child extension list is for
+// children).
 func TestBuildPiRunCommand_AgentTool(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "")
 	agentExt := "/sandbox/pi-config/fullsend-agent.js"
 	hooksExt := "/sandbox/pi-config/fullsend-hooks.js"
+	editExt := "/sandbox/pi-config/fullsend-edit-repair.js"
 	agent := &piAgentManifest{Enabled: true, Extensions: []string{piVertexExtensionPath, piXaiVertexExtensionPath, hooksExt}}
 	declared := []piManifestExtension{{Name: "go-diagnostics", Path: "/sandbox/pi-config/extensions/go-diagnostics", SHA256: strings.Repeat("a", 64)}}
 
@@ -155,13 +158,13 @@ func TestBuildPiRunCommand_AgentTool(t *testing.T) {
 	params := piTestParams()
 	params.HooksSettingsPath = "/sandbox/claude-config/hooks.json"
 	cmd := buildPiRunCommand(params, m, declared, "")
-	assert.Contains(t, cmd, "-e '"+hooksExt+"' -e '"+agentExt+"' -e '/sandbox/pi-config/extensions/go-diagnostics'",
-		"load order: hook adapter, Agent extension, declared extensions")
+	assert.Contains(t, cmd, "-e '"+hooksExt+"' -e '"+agentExt+"' -e '"+editExt+"' -e '/sandbox/pi-config/extensions/go-diagnostics'",
+		"load order: hook adapter, Agent extension, edit repair, declared extensions")
 	assert.Contains(t, cmd, "-e '"+piVertexExtensionPath+"' -e '"+hooksExt+"'", "the provider extension still comes first")
 	assert.NotContains(t, cmd, "-e '"+piXaiVertexExtensionPath+"'", "the parent loads only its own provider; the child list in the manifest is not the parent's")
 	assert.NotContains(t, cmd, "--tools", "no tools: frontmatter → pi's default set plus the extension's tools")
 	guard := piAgentGuard(agentExt)
-	assert.Contains(t, cmd, "&& "+piHooksGuard(hooksExt, "/sandbox/pi-config/fullsend-manifest.json")+" && "+guard+" && "+piExtensionsGuard(declared),
+	assert.Contains(t, cmd, "&& "+piHooksGuard(hooksExt, "/sandbox/pi-config/fullsend-manifest.json")+" && "+guard+" && "+piEditRepairGuard(editExt)+" && "+piExtensionsGuard(declared),
 		"the runner-owned guards run in order, ahead of the declared-extension guard")
 	assert.Contains(t, cmd, piExtensionsGuard(declared)+" && . '/sandbox/workspace/.env'",
 		"every guard runs before the agent-writable .env is sourced")
@@ -175,13 +178,15 @@ func TestBuildPiRunCommand_AgentTool(t *testing.T) {
 	params.HooksSettingsPath = ""
 	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.NotContains(t, cmd, hooksExt)
-	assert.Contains(t, cmd, "&& "+guard+" && . '/sandbox/workspace/.env'")
-	assert.Contains(t, cmd, "-e '"+piVertexExtensionPath+"' -e '"+agentExt+"' --model")
+	assert.Contains(t, cmd, "&& "+guard+" && "+piEditRepairGuard(editExt)+" && . '/sandbox/workspace/.env'")
+	assert.Contains(t, cmd, "-e '"+piVertexExtensionPath+"' -e '"+agentExt+"' -e '"+editExt+"' --model")
 
-	// A declared tools: list naming Agent carries both names into --tools.
+	// A declared tools: list naming Agent carries both names into --tools;
+	// it names no edit, so the edit repair is not loaded.
 	m.Tools = []string{"bash", "read", "Agent", "Task"}
 	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, "--tools 'bash,read,Agent,Task'")
+	assert.NotContains(t, cmd, "fullsend-edit-repair")
 
 	// Tool off: nothing of it in the command line.
 	off := &piManifest{AgentName: "triage", Tools: []string{"bash"}, Hooks: &piHooksManifest{}}
@@ -728,7 +733,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 	assert.NotContains(t, cmd, "--tools", "nil tools keeps pi's default tool set")
 	assert.NotContains(t, cmd, "--no-builtin-tools")
 	assert.NotContains(t, cmd, "fullsend-hooks.js", "no hook extension when the runner has security disabled")
-	assert.NotContains(t, cmd, "test -f")
+	assert.NotContains(t, cmd, "pi hook adapter or manifest missing", "and no hook guard")
 	assert.Contains(t, cmd, "-e '/usr/local/share/pi-extensions/anthropic-vertex'")
 	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task' </dev/null 2>>'/sandbox/workspace/pi-debug.log'"), cmd)
 }
@@ -1010,4 +1015,308 @@ func TestBuildPiRunCommand_LoaderEnvHygiene(t *testing.T) {
 	// `unset` is a special builtin, so a function defined by .env cannot
 	// stand in for it — but it still has to be spelled as one word.
 	assert.True(t, strings.HasPrefix(unset, "unset "), "the fragment is a bare `unset` invocation: %q", unset)
+}
+
+// --- Vertex fallback tests (#7026) ---
+
+func TestIsVertexModelUnavailable(t *testing.T) {
+	t.Parallel()
+	// 404: Publisher model not found.
+	assert.True(t, isVertexModelUnavailable(
+		`Publisher model `+"`"+`projects/my-project/locations/global/publishers/anthropic/models/claude-opus-5`+"`"+` not found`))
+	// 403: Data sharing not enabled.
+	assert.True(t, isVertexModelUnavailable(
+		"Access to this model requires data sharing to be enabled for publisher 'anthropic'"))
+	// Case-insensitive.
+	assert.True(t, isVertexModelUnavailable(
+		"PUBLISHER MODEL ... NOT FOUND"))
+	assert.True(t, isVertexModelUnavailable(
+		"DATA SHARING ... ENABLED FOR PUBLISHER"))
+	// Non-model errors: must not match.
+	assert.False(t, isVertexModelUnavailable("rate limit exceeded"))
+	assert.False(t, isVertexModelUnavailable("authentication failed"))
+	assert.False(t, isVertexModelUnavailable("internal server error"))
+	assert.False(t, isVertexModelUnavailable(""))
+	// Model Garden enablement / wrong project is a different error class
+	// and must stay terminal.
+	assert.False(t, isVertexModelUnavailable(`403 PERMISSION_DENIED: Permission 'aiplatform.endpoints.predict' denied on resource`))
+	assert.False(t, isVertexModelUnavailable("the model is not enabled in this project's Model Garden"))
+}
+
+// TestPiVertexNotServedThroughStream feeds the captured Vertex answers
+// through parsePiStream and the attempt gate, so a change to stream
+// parsing or error redaction that stops them matching fails here.
+func TestPiVertexNotServedThroughStream(t *testing.T) {
+	for _, msg := range []string{
+		`404 {"error":{"code":404,"message":"Publisher model ` + "`projects/p/locations/global/publishers/anthropic/models/claude-opus-5`" + ` not found.","status":"NOT_FOUND"}}`,
+		`403 {"error":{"code":403,"message":"Access to this model requires data sharing to be enabled for publisher 'anthropic'.","status":"PERMISSION_DENIED"}}`,
+	} {
+		assistant := map[string]any{
+			"role": "assistant", "model": "claude-opus-5", "stopReason": "error", "errorMessage": msg,
+			"usage": map[string]any{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "cost": map[string]any{"total": 0}},
+		}
+		var lines []string
+		for _, evt := range []map[string]any{
+			{"type": "session", "version": 3, "id": "ses_404", "timestamp": "2026-09-04T12:00:00.000Z", "cwd": "/tmp"},
+			{"type": "message_end", "message": assistant},
+			{"type": "agent_end", "messages": []any{assistant}, "willRetry": false},
+		} {
+			b, err := json.Marshal(evt)
+			require.NoError(t, err)
+			lines = append(lines, string(b))
+		}
+
+		var forwarded []AgentEvent
+		gate := &piAttemptGate{next: func(evt AgentEvent) { forwarded = append(forwarded, evt) }, hold: true}
+		var last *ResultEvent
+		_, err := parsePiStream(strings.NewReader(strings.Join(lines, "\n")+"\n"), func(evt AgentEvent) {
+			if e, ok := evt.(ResultEvent); ok {
+				last = &e
+				return
+			}
+			gate.handle(evt)
+		})
+		require.NoError(t, err)
+		require.NotNil(t, last)
+		assert.Empty(t, forwarded, "a not-served attempt forwards nothing while a fallback is possible")
+		assert.True(t, piShouldFallBack(piRunResult{lastResult: last, answered: gate.answered}),
+			"captured answer must still trigger the fallback after parsing: %q", last.ErrorMessage)
+	}
+}
+
+func TestIsPiAliasedModel(t *testing.T) {
+	t.Parallel()
+	// Documented aliases.
+	for alias := range piDocumentedAliases {
+		assert.True(t, isPiAliasedModel(alias, nil), "documented alias %q", alias)
+	}
+	// Empty model defaults to the default alias.
+	assert.True(t, isPiAliasedModel("", nil))
+	// Bare catalog ids are not aliases.
+	assert.False(t, isPiAliasedModel("claude-opus-4-6", nil))
+	assert.False(t, isPiAliasedModel("claude-sonnet-4-6", nil))
+	// Provider/id specs are not aliases.
+	assert.False(t, isPiAliasedModel("anthropic-vertex/claude-opus-4-6", nil))
+	assert.False(t, isPiAliasedModel("xai/grok-4.6", nil))
+	// Config aliases extend the set.
+	assert.True(t, isPiAliasedModel("sonnet", map[string]string{"sonnet": "claude-sonnet-5"}))
+}
+
+func TestPiFallbackChain(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+	// Alias with fallbacks: chain includes primary + translated fallbacks.
+	chain, _ := piFallbackChain("opus", []string{"sonnet", "haiku"}, nil)
+	assert.Equal(t, []string{
+		"anthropic-vertex/claude-opus-4-6",
+		"anthropic-vertex/claude-sonnet-4-6",
+		"anthropic-vertex/claude-haiku-4-5",
+	}, chain)
+
+	// Pinned id: single-element chain, no fallback.
+	chain, _ = piFallbackChain("claude-opus-4-6", []string{"sonnet", "haiku"}, nil)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-4-6"}, chain,
+		"pinned id must not fall back")
+
+	// Provider/id: single-element chain.
+	chain, _ = piFallbackChain("anthropic-vertex/claude-opus-5", []string{"sonnet"}, nil)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-5"}, chain,
+		"provider/id must not fall back")
+
+	// Alias with no fallbacks: single-element chain.
+	chain, _ = piFallbackChain("opus", nil, nil)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-4-6"}, chain)
+	chain, _ = piFallbackChain("opus", []string{}, nil)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-4-6"}, chain)
+
+	// Deduplication: a fallback that resolves to the same spec is skipped.
+	chain, _ = piFallbackChain("opus", []string{"opus", "sonnet"}, nil)
+	assert.Equal(t, []string{
+		"anthropic-vertex/claude-opus-4-6",
+		"anthropic-vertex/claude-sonnet-4-6",
+	}, chain, "duplicate fallback is skipped")
+
+	// Config aliases are honoured.
+	chain, _ = piFallbackChain("sonnet", []string{"haiku"},
+		map[string]string{"sonnet": "claude-sonnet-5"})
+	assert.Equal(t, "anthropic-vertex/claude-sonnet-5", chain[0],
+		"config alias overrides the primary")
+	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", chain[1])
+
+	// Empty model defaults to piDefaultModel alias.
+	chain, _ = piFallbackChain("", []string{"sonnet"}, nil)
+	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", chain[0])
+	assert.Len(t, chain, 2)
+
+	// A fallback on another provider is dropped: the runner seeds provider
+	// credentials from the primary model alone.
+	chain, skipped := piFallbackChain("opus", []string{"openai/gpt-5.6-luna", "sonnet"}, nil)
+	assert.Equal(t, []string{
+		"anthropic-vertex/claude-opus-4-6",
+		"anthropic-vertex/claude-sonnet-4-6",
+	}, chain, "cross-provider fallback is dropped")
+	assert.Equal(t, []string{"openai/gpt-5.6-luna"}, skipped)
+
+	// A config alias that remaps a fallback onto another provider is dropped too.
+	chain, skipped = piFallbackChain("opus", []string{"haiku"},
+		map[string]string{"haiku": "openai/gpt-5.6-luna"})
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-4-6"}, chain)
+	assert.Equal(t, []string{"haiku"}, skipped)
+
+	// A fallback validatePiModel rejects (a documented alias with no
+	// mapping) is dropped rather than launched with a spec pi cannot serve.
+	saved := piModelAliases["fable"]
+	delete(piModelAliases, "fable")
+	t.Cleanup(func() { piModelAliases["fable"] = saved })
+	chain, skipped = piFallbackChain("opus", []string{"fable", "sonnet"}, nil)
+	assert.Equal(t, []string{
+		"anthropic-vertex/claude-opus-4-6",
+		"anthropic-vertex/claude-sonnet-4-6",
+	}, chain)
+	assert.Equal(t, []string{"fable"}, skipped)
+	piModelAliases["fable"] = saved
+
+	// Pinned ids report nothing skipped: they never build a chain.
+	_, skipped = piFallbackChain("claude-opus-4-6", []string{"openai/gpt-5.6-luna"}, nil)
+	assert.Empty(t, skipped)
+}
+
+func TestPiAttemptGate(t *testing.T) {
+	var got []AgentEvent
+	next := func(evt AgentEvent) { got = append(got, evt) }
+
+	// Holding: a Vertex "model not served" answer carries no output, so
+	// nothing reaches the handler.
+	g := &piAttemptGate{next: next, hold: true}
+	g.handle(ErrorEvent{ErrorType: "error", Message: "Publisher model not found"})
+	g.handle(TokensEvent{InputTokens: 1})
+	assert.Empty(t, got, "held events must not be forwarded")
+	assert.False(t, g.answered)
+	assert.Len(t, g.held, 2)
+
+	// The first output event flushes what was held, in order, and
+	// everything after it passes straight through.
+	g = &piAttemptGate{next: next, hold: true}
+	got = nil
+	g.handle(RetryEvent{Attempt: 1})
+	g.handle(TextEvent{Text: "hi"})
+	g.handle(ToolUseEvent{Name: "bash"})
+	assert.True(t, g.answered)
+	assert.Empty(t, g.held)
+	assert.Equal(t, []AgentEvent{RetryEvent{Attempt: 1}, TextEvent{Text: "hi"}, ToolUseEvent{Name: "bash"}}, got)
+
+	// Not holding: pass-through, but answered is still tracked.
+	g = &piAttemptGate{next: next}
+	got = nil
+	g.handle(ErrorEvent{Message: "x"})
+	g.handle(ThinkingEvent{Text: "t"})
+	assert.Equal(t, []AgentEvent{ErrorEvent{Message: "x"}, ThinkingEvent{Text: "t"}}, got)
+	assert.True(t, g.answered)
+}
+
+func TestPiShouldFallBack(t *testing.T) {
+	notServed := &ResultEvent{IsError: true, ErrorMessage: "Publisher model `projects/p/locations/global/publishers/anthropic/models/claude-opus-5` not found"}
+	assert.True(t, piShouldFallBack(piRunResult{lastResult: notServed}))
+	assert.False(t, piShouldFallBack(piRunResult{lastResult: notServed, answered: true}),
+		"an attempt where the model answered is never retried")
+	assert.False(t, piShouldFallBack(piRunResult{lastResult: notServed, exitCode: 1}))
+	assert.False(t, piShouldFallBack(piRunResult{lastResult: notServed, execErr: errors.New("exec")}))
+	assert.False(t, piShouldFallBack(piRunResult{lastResult: notServed, guardErr: errors.New("guard")}))
+	assert.False(t, piShouldFallBack(piRunResult{lastResult: &ResultEvent{IsError: true, ErrorMessage: "429 quota exceeded"}}))
+	assert.False(t, piShouldFallBack(piRunResult{lastResult: &ResultEvent{}}))
+	assert.False(t, piShouldFallBack(piRunResult{}))
+}
+
+func TestPiFallbackLoop(t *testing.T) {
+	notServed := piRunResult{lastResult: &ResultEvent{IsError: true, ErrorMessage: "Publisher model x not found"}}
+	ok := piRunResult{lastResult: &ResultEvent{}}
+	chain := []string{"p/a", "p/b", "p/c"}
+
+	type call struct {
+		spec        string
+		timeout     time.Duration
+		mayFallBack bool
+	}
+	run := func(results map[string]piRunResult, timeout time.Duration, clock *time.Time, step time.Duration, cleanup ...func() bool) (piRunResult, []call, [][2]string) {
+		var calls []call
+		var fallbacks [][2]string
+		now := func() time.Time { return *clock }
+		attempt := func(spec string, to time.Duration, may bool) piRunResult {
+			calls = append(calls, call{spec, to, may})
+			*clock = clock.Add(step)
+			res := results[spec]
+			res.modelSpec = spec
+			return res
+		}
+		res := piFallbackLoop(chain, timeout, now, attempt, func(prev, next string, budget time.Duration) bool {
+			assert.GreaterOrEqual(t, deadlineLeft(*clock, timeout, budget), piMinAttemptTimeout,
+				"cleanup budget leaves the next attempt piMinAttemptTimeout")
+			fallbacks = append(fallbacks, [2]string{prev, next})
+			for _, c := range cleanup {
+				if !c() {
+					return false
+				}
+			}
+			return true
+		})
+		return res, calls, fallbacks
+	}
+
+	// Not served → falls back; the next model answers and is final.
+	clock := time.Unix(0, 0)
+	res, calls, fbs := run(map[string]piRunResult{"p/a": notServed, "p/b": ok}, time.Minute, &clock, 10*time.Second)
+	assert.Equal(t, "p/b", res.modelSpec)
+	assert.Equal(t, []call{{"p/a", time.Minute, true}, {"p/b", 50 * time.Second, true}}, calls,
+		"attempts share one deadline")
+	assert.Equal(t, [][2]string{{"p/a", "p/b"}}, fbs)
+
+	// The last model is attempted without holding its events.
+	clock = time.Unix(0, 0)
+	res, calls, _ = run(map[string]piRunResult{"p/a": notServed, "p/b": notServed}, time.Minute, &clock, time.Second)
+	assert.Equal(t, "p/c", res.modelSpec)
+	assert.False(t, calls[2].mayFallBack)
+
+	// A non-model error is final.
+	clock = time.Unix(0, 0)
+	quota := piRunResult{lastResult: &ResultEvent{IsError: true, ErrorMessage: "429"}}
+	res, calls, fbs = run(map[string]piRunResult{"p/a": quota}, time.Minute, &clock, time.Second)
+	assert.Equal(t, "p/a", res.modelSpec)
+	assert.Len(t, calls, 1)
+	assert.Empty(t, fbs)
+
+	// An attempt where the model already answered is never retried.
+	clock = time.Unix(0, 0)
+	answered := notServed
+	answered.answered = true
+	res, calls, _ = run(map[string]piRunResult{"p/a": answered}, time.Minute, &clock, time.Second)
+	assert.Equal(t, "p/a", res.modelSpec)
+	assert.Len(t, calls, 1)
+
+	// An exhausted budget stops the chain instead of starting a fallback.
+	clock = time.Unix(0, 0)
+	res, calls, fbs = run(map[string]piRunResult{"p/a": notServed}, time.Minute, &clock, time.Minute)
+	assert.Equal(t, "p/a", res.modelSpec)
+	assert.Len(t, calls, 1)
+	assert.Empty(t, fbs)
+
+	// A failed cleanup makes the abandoned attempt final: its session file
+	// would otherwise report an error on a run that then succeeds.
+	clock = time.Unix(0, 0)
+	res, calls, fbs = run(map[string]piRunResult{"p/a": notServed, "p/b": ok}, time.Minute, &clock, time.Second,
+		func() bool { return false })
+	assert.Equal(t, "p/a", res.modelSpec)
+	assert.Len(t, calls, 1)
+	assert.Len(t, fbs, 1)
+
+	// Cleanup that eats the rest of the budget stops the chain too.
+	clock = time.Unix(0, 0)
+	res, calls, _ = run(map[string]piRunResult{"p/a": notServed, "p/b": ok}, time.Minute, &clock, 50*time.Second,
+		func() bool { clock = clock.Add(9500 * time.Millisecond); return true })
+	assert.Equal(t, "p/a", res.modelSpec)
+	assert.Len(t, calls, 1, "no attempt is started with less than piMinAttemptTimeout left")
+}
+
+// deadlineLeft is what a fallback attempt would have left if onFallback
+// used all of budget, in TestPiFallbackLoop's clock (which starts at 0).
+func deadlineLeft(now time.Time, timeout, budget time.Duration) time.Duration {
+	return time.Unix(0, 0).Add(timeout).Sub(now.Add(budget))
 }

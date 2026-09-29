@@ -24,10 +24,11 @@ type CodexRuntime struct{}
 
 func (CodexRuntime) Name() string { return "codex" }
 
-// System returns the OTEL GenAI gen_ai.system value. Unlike pi and opencode,
-// codex serves a single model vendor — it speaks the OpenAI Responses API and
-// has no Vertex, Anthropic or Gemini path — so the system is the vendor
-// ("openai"), not the runtime name.
+// System returns the OTEL GenAI provider identity. Unlike pi, which is
+// multi-provider and implements ProviderResolver, codex serves a single
+// model vendor — it speaks the OpenAI Responses API and has no Vertex,
+// Anthropic or Gemini path — so the system is the vendor ("openai"), not
+// the runtime name.
 func (CodexRuntime) System() string { return "openai" }
 
 // ConfigDir returns the codex config directory inside the sandbox. It is
@@ -37,6 +38,11 @@ func (CodexRuntime) System() string { return "openai" }
 // agent process runs as the same user, so the runner-written files under it
 // must be checksum-guarded before each launch rather than trusted.
 func (CodexRuntime) ConfigDir() string { return sandbox.SandboxCodexConfig }
+
+// HomeAgentsMDPath is $CODEX_HOME/AGENTS.md. codex skips a project's own
+// AGENTS.md while the project is untrusted, which it always is here, but
+// loads this one as user instructions regardless of trust.
+func (r CodexRuntime) HomeAgentsMDPath() string { return r.ConfigDir() + "/AGENTS.md" }
 
 func (CodexRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 

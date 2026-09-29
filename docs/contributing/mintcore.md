@@ -39,6 +39,9 @@ internal/dispatch/gcf/
 parsing, OIDC verification, claims validation, authorization (org,
 workflow-ref, repos scope), GitHub App token creation, and status
 endpoints. It compiles to both native (`!js`) and WASM (`js`) targets.
+It is a nested module with a local-only `replace`; packages reachable
+from `pkg/behaviourtest` must not import it (including `mintconsts`).
+See [Go Code](go-code.md).
 
 **Entrypoints** (`internal/mint`, `cmd/mint`, `cmd/mint-wasm`) are thin.
 They construct the appropriate `OIDCVerifier` + `PEMAccessor` for their
@@ -303,6 +306,28 @@ When **adding a new file** to `internal/mintcore/`:
 Current `gcfSkip` entries: `env_js.go`, `fetch_js.go`,
 `http_client_js.go`, `pem_js.go` (all `//go:build js`), and
 `file_pem.go` (standalone-mint-only, `//go:build !js`).
+
+### Build metadata stamping
+
+The mint Cloud Function receives version and commit metadata via
+deploy-time source stamping, not runtime environment variables. The
+provisioner writes `mintcore/version.go` into the function source zip
+at bundle time (`writeVersionGoToZip` in
+`internal/dispatch/gcf/provisioner.go`) with version and commit values
+baked in. The same technique stamps GitHub status-auth config into
+`mintcore/status_consts.go`. On-disk copies of these generated files
+are skipped during bundling so stale source cannot overwrite the
+stamped values.
+
+The Cloudflare Worker follows the same principle: `wasmLDFlags` in
+`internal/dispatch/cf/provisioner.go` stamps `mintcore.Version`,
+`mintcore.Commit`, and status-auth config into the WASM binary via
+`-ldflags` at compile time rather than injecting runtime env vars.
+
+This keeps metadata in lockstep with the deployed code. Follow this
+pattern for any future build metadata the function needs — never use
+environment variables for values that must stay in lockstep with the
+deployed source.
 
 ### WASM binary size gate
 

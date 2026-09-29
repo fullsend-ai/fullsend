@@ -1,16 +1,19 @@
 ---
 name: check-patch-coverage
 description: >-
-  Verify approximate Go patch coverage meets the repo's 80% Codecov threshold.
-  Use after writing or updating Go production code — before committing — to
-  catch coverage gaps that would fail the codecov/patch status check.
+  Verify approximate Go patch coverage meets the repo's Codecov patch gate:
+  80% target, 75% enforced floor (5% threshold). Use after writing or updating
+  Go production code — before committing — to catch coverage gaps that would
+  fail the codecov/patch status check.
 ---
 
 # Check Patch Coverage
 
-Verify that new or changed Go production code meets the **80% patch
-coverage** threshold configured in [`.codecov.yml`](../../.codecov.yml)
-before committing. This prevents `codecov/patch` failures on first push.
+Verify that new or changed Go production code meets the Codecov **patch
+coverage** gate in [`.codecov.yml`](../../.codecov.yml) before committing.
+The **target is 80%** with a **5% threshold**, so `codecov/patch` passes at
+**≥ 75%**. Codecov PR comments still mark ✗ below 80% even when that
+status check is green. Target 80% locally to stay above both signals.
 
 ## When to use
 
@@ -70,7 +73,7 @@ done
 ```
 
 If any packages were flagged: **stop and create test files** in those
-packages before continuing. The 80% threshold cannot be met when no
+packages before continuing. The 75% enforced floor cannot be met when no
 coverage profile is generated for a package. Treat this as a coverage
 gap regardless of the threshold — add at least one `_test.go` file
 with direct unit tests for the new or modified exported functions,
@@ -102,7 +105,7 @@ Codecov will report 0% for that file's changed lines.
 
 Each output line shows `file:line: function  coverage%`.
 
-### 6. Assess against the 80% threshold
+### 6. Assess against the 80% target (75% floor)
 
 Look at the functions you added or modified:
 
@@ -132,16 +135,21 @@ and which are not (red). Use this to target your test additions.
 This procedure approximates Codecov's **line-level patch coverage**
 using Go's **function-level coverage** (`go tool cover -func`). The
 local check is coarser — Codecov counts individual lines in the diff,
-while `go tool cover -func` reports per-function percentages. Aim for
-**≥ 80%** on touched functions to stay above the threshold with margin.
+while `go tool cover -func` reports per-function percentages.
 
-The configured tolerance is **5%** (from `.codecov.yml`), so Codecov
-will pass at 75% in practice. But targeting 80% locally accounts for
-the approximation gap between function-level and line-level metrics.
+The `codecov/patch` status check **enforces 75%** (80% target minus the
+5% threshold in `.codecov.yml`). Codecov PR comments still mark ✗ when
+coverage is below the **80% target**, even if the status check is green.
+Aim for **≥ 80%** on touched functions so both the comment glyph and the
+status check stay consistent, and to cover the approximation gap between
+function-level and line-level metrics.
 
 ## Thresholds reference
 
 From [`.codecov.yml`](../../.codecov.yml):
 
-- **Patch coverage target:** 80% (5% tolerance)
+- **Patch coverage target:** 80%
+- **Enforced floor (`codecov/patch` status check):** 75% (5% threshold)
+- **Codecov PR comment glyph:** ✗ below the 80% target, even if the
+  status check passes
 - **Project coverage:** must not drop more than 1% below base branch

@@ -191,11 +191,18 @@ func codexReadBounded(path string) ([]byte, error) {
 }
 
 // codexRolloutEnvelopes are the top-level `type` values a codex rollout line
-// carries (codex-rs/thread-store). They are underscored, where the tee'd
-// `exec --json` stream uses dotted names, so the two never collide.
+// carries: every variant of RolloutItemWire in
+// codex-rs/history/src/rollout_payload.rs, 0.152.1 through 0.157.0. Update it
+// on a CODEX_VERSION bump, since one unknown line discards the whole file.
+// They are underscored, where the tee'd `exec --json` stream uses dotted
+// names, so the two never collide.
 var codexRolloutEnvelopes = map[string]bool{
 	"session_meta": true, "response_item": true, "event_msg": true,
-	"turn_context": true, "compacted": true,
+	"turn_context": true, "compacted": true, "world_state": true,
+	"inter_agent_communication": true, "inter_agent_communication_metadata": true,
+	"security_risk_score": true, "realtime_item": true,
+	// Added in 0.157.0; token_usage_record is on every response.
+	"token_usage_record": true, "retained_context": true,
 }
 
 // codexMaxArtifactBytes bounds what the artifact filters will read. A codex

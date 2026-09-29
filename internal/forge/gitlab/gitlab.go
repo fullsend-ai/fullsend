@@ -119,6 +119,9 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	if c.noteTarget != "issues" && c.noteTarget != "merge_requests" {
 		return nil, fmt.Errorf("gitlab: invalid note target %q; must be %q or %q", c.noteTarget, "issues", "merge_requests")
 	}
+	if err := applyCIServerTLSCA(c.http); err != nil {
+		return nil, fmt.Errorf("gitlab: %w", err)
+	}
 	return c, nil
 }
 
@@ -370,6 +373,17 @@ func (c *LiveClient) post(ctx context.Context, path string, body any) (*http.Res
 
 func (c *LiveClient) put(ctx context.Context, path string, body any) (*http.Response, error) {
 	resp, err := c.do(ctx, http.MethodPut, path, body)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusCreated, http.StatusNoContent); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *LiveClient) patch(ctx context.Context, path string, body any) (*http.Response, error) {
+	resp, err := c.do(ctx, http.MethodPatch, path, body)
 	if err != nil {
 		return nil, err
 	}

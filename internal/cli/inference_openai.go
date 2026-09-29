@@ -812,6 +812,12 @@ func newInferenceOpenAIStatusCmd() *cobra.Command {
 		Long: `Prints the resolved OpenAI WIF identifiers and their source
 (config.yaml or environment variables), and flags a partial trio.
 
+When nothing is configured, reports that a run will refuse the openai
+provider and names both remedies: the WIF trio, or the
+FULLSEND_OPENAI_API_KEY repository secret (exported as OPENAI_API_KEY).
+A static OPENAI_API_KEY already in the environment is reported as the
+source; in CI the runner warns and WIF remains preferred.
+
 When run inside a GitHub Actions job with id-token: write, performs
 one exchange through internal/inference/openaiwif and reports the
 returned scope and expiry (the same code path as 'fullsend run')
@@ -871,16 +877,6 @@ func resolveOpenAIStatusSources(fullsendDir string) (openAIStatusSource, error) 
 		return s, nil
 	}
 
-	// The run path ignores the committed block where an exchange is
-	// impossible and a static key is present — a developer's
-	// OPENAI_API_KEY is not overridden by the repository's CI
-	// configuration (run_openai.go, configApplies). Reporting the block
-	// as the source there would describe a run that will not happen.
-	if os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL") == "" && strings.TrimSpace(os.Getenv(openAIStaticKeyEnv)) != "" {
-		s.Source = "static key"
-		return s, nil
-	}
-
 	writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
 		// A malformed or unreadable config must not read as "nothing
@@ -895,6 +891,28 @@ func resolveOpenAIStatusSources(fullsendDir string) (openAIStatusSource, error) 
 		return s, fmt.Errorf("%s contains an org-mode config; OpenAI WIF enrolment is per-repo", fullsendDir)
 	}
 	cfgIDs := perRepo.ConfigInferenceOpenAI().Trimmed()
+
+	staticKey := strings.TrimSpace(os.Getenv(openAIStaticKeyEnv))
+	// Mirrors resolveOpenAICredential's configApplies (run_openai.go): the
+	// committed block applies where an exchange is possible (a GitHub OIDC
+	// endpoint, i.e. in CI) or where nothing else is available. WIF from
+	// config.yaml still wins over a static key whenever it's usable here;
+	// the static key wins only when it isn't — a developer's laptop, or a
+	// CI run with no committed WIF config.
+	configApplies := !cfgIDs.IsZero() && (os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" || staticKey == "")
+	if configApplies {
+		s.Source = "config.yaml"
+		s.Audience, s.AudienceSource = cfgIDs.Audience, "config.yaml"
+		s.IdentityProviderID, s.IDPSource = cfgIDs.IdentityProviderID, "config.yaml"
+		s.ServiceAccountID, s.SASource = cfgIDs.ServiceAccountID, "config.yaml"
+		return s, nil
+	}
+
+	if staticKey != "" {
+		s.Source = "static key"
+		return s, nil
+	}
+
 	s.Source = "config.yaml"
 	s.Audience, s.AudienceSource = cfgIDs.Audience, "config.yaml"
 	s.IdentityProviderID, s.IDPSource = cfgIDs.IdentityProviderID, "config.yaml"
@@ -929,12 +947,21 @@ func runInferenceOpenAIStatus(cmd *cobra.Command, printer *ui.Printer, repo, ful
 
 	if ids.IsZero() {
 		if sources.Source == "static key" {
-			printer.StepInfo(openAIStaticKeyEnv + " is set and this is not a GitHub Actions job, so a run here would use that key and ignore inference.openai — the same rule fullsend run applies")
+			if os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" {
+				printer.StepInfo(openAIStaticKeyEnv + " is set and the WIF trio is not, so a run here would use that key and ignore inference.openai — the same rule fullsend run applies")
+				printer.StepInfo("In CI the runner warns that a static OPENAI_API_KEY is in use; Workload Identity Federation remains preferred")
+			} else {
+				printer.StepInfo(openAIStaticKeyEnv + " is set and this is not a GitHub Actions job, so a run here would use that key and ignore inference.openai — the same rule fullsend run applies")
+				printer.StepInfo("Workload Identity Federation remains preferred")
+			}
 			return nil
 		}
-		printer.StepFail("No OpenAI WIF identifiers configured")
-		printer.StepInfo("Run 'fullsend inference openai import' or 'fullsend github setup --openai-*' to configure")
-		return fmt.Errorf("no OpenAI WIF identifiers configured for %s", repo)
+		printer.StepFail("No OpenAI credential configured")
+		printer.StepInfo("A run will refuse the openai provider until a credential is configured")
+		printer.StepInfo("Enrol Workload Identity Federation with 'fullsend inference openai import' or 'fullsend github setup --openai-*'")
+		printer.StepInfo("Or set the " + openAIRepoSecretName + " repository secret ('fullsend github set <owner/repo> " + openAIRepoSecretName + " <value>'); the runner exports it as " + openAIStaticKeyEnv)
+		printer.StepInfo("Workload Identity Federation remains preferred")
+		return fmt.Errorf("no OpenAI credential configured for %s", repo)
 	}
 
 	if missing := ids.Missing(); len(missing) > 0 {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,11 +12,32 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
 )
 
 var httpClient HTTPDoer = &http.Client{Timeout: 30 * time.Second}
+
+// MaxMintDuration is a practical upper bound on how long a single
+// MintToken call can take, informed by its retry schedule: fetchOIDCJWT
+// retries up to 3 times (1s+2s backoff between attempts) and callMint
+// retries up to 5 times (1s+2s+4s+8s backoff), for 18s of backoff spread
+// across up to 8 HTTP round trips — each individually bounded by
+// httpClient's 30s timeout (see doWithRetry, fetchOIDCJWT, callMint).
+//
+// The literal worst case — every one of the 8 attempts hanging for the
+// full 30s client timeout — is 258s, unrealistically long for a caller
+// to wait out during teardown. In practice a mint-service outage produces
+// fast failing responses dominated by the backoff schedule, not attempts
+// that each hang the full client timeout, so MaxMintDuration is a
+// documented practical ceiling rather than that literal worst case:
+// comfortably above the ~18s backoff-only estimate — leaving headroom for
+// real per-request latency across up to 8 round trips, including a slow
+// attempt or two — while remaining well inside a CI job's own timeout.
+//
+// Callers that bound MintToken with a context deadline (e.g. the
+// post-script remint in internal/cli, #7231) should use at least this
+// value: a shorter bound routinely cuts off retries the client itself
+// would have completed.
+const MaxMintDuration = 120 * time.Second
 
 // HTTPDoer abstracts http.Client for testability.
 type HTTPDoer interface {
@@ -23,8 +45,10 @@ type HTTPDoer interface {
 }
 
 // defaultAudience is the canonical OIDC audience for the fullsend
-// token mint, sourced from the shared mintconsts package.
-const defaultAudience = mintconsts.OIDCAudience
+// token mint. Duplicated from mintconsts.OIDCAudience so this package
+// does not import the nested mintcore module (mintconsts lives inside
+// that module even though it has no mintcore imports of its own).
+const defaultAudience = "fullsend-mint"
 
 // MintRequest holds the parameters for minting a token via the fullsend mint service.
 type MintRequest struct {
@@ -233,6 +257,15 @@ func callMint(ctx context.Context, mintURL, oidcJWT string, req MintRequest) (*M
 
 type retryableError struct{ error }
 
+// Unwrap exposes the wrapped error to errors.Is/errors.As so callers can
+// detect e.g. a context.DeadlineExceeded that occurred mid-request (wrapped
+// here to mark it retryable) rather than only one that fired between
+// retries (returned unwrapped by doWithRetry's ctx.Done() case below).
+// Without this, a caller bounding MintToken with a context deadline can't
+// distinguish a truncated retry from a genuine rejection when the deadline
+// happens to land while an HTTP request is in flight.
+func (e *retryableError) Unwrap() error { return e.error }
+
 var retryBaseDelay = time.Second
 
 func doWithRetry(ctx context.Context, maxAttempts int, fn func() error) error {
@@ -263,4 +296,193 @@ func truncateBody(b []byte, max int) string {
 		return s
 	}
 	return string([]rune(s)[:max]) + "..."
+}
+
+// StatusResult holds the response from GET /v1/status.
+type StatusResult struct {
+	Org               string   `json:"org,omitempty"`
+	AllowedOrgs       []string `json:"allowed_orgs,omitempty"`
+	Roles             []string `json:"roles,omitempty"`
+	WorkflowHostRepos []string `json:"workflow_host_repos,omitempty"`
+	Version           string   `json:"version,omitempty"`
+	Commit            string   `json:"commit,omitempty"`
+}
+
+// StatusRequest holds the parameters for querying GET /v1/status.
+type StatusRequest struct {
+	MintURL  string
+	Audience string // OIDC audience; defaults to the standard mint audience when empty.
+}
+
+// StatusAuthMethod describes which mechanism authenticated a
+// successful /v1/status call.
+type StatusAuthMethod string
+
+const (
+	// StatusAuthOIDC indicates authentication via GitHub Actions OIDC.
+	StatusAuthOIDC StatusAuthMethod = "OIDC"
+	// StatusAuthGitHub indicates authentication via a GitHub user token
+	// (GH_TOKEN, GITHUB_TOKEN, or gh auth token).
+	StatusAuthGitHub StatusAuthMethod = "GitHub"
+)
+
+// hasOIDCEnv reports whether the GitHub Actions OIDC environment
+// variables are present. QueryStatus uses this to decide whether to
+// attempt the OIDC auth path.
+func hasOIDCEnv() bool {
+	return envLookup("ACTIONS_ID_TOKEN_REQUEST_URL") != "" &&
+		envLookup("ACTIONS_ID_TOKEN_REQUEST_TOKEN") != ""
+}
+
+// QueryStatus calls GET /v1/status with auto-discovered authentication.
+//
+// Discovery order (per #5879):
+//  1. GitHub Actions OIDC — attempted when ACTIONS_ID_TOKEN_REQUEST_URL
+//     and ACTIONS_ID_TOKEN_REQUEST_TOKEN are set.
+//  2. GitHub user token — GH_TOKEN, GITHUB_TOKEN, or the output of
+//     `gh auth token`.
+//
+// The first mechanism that yields a 200 response wins. A 401 from the
+// first mechanism triggers fallback to the next. If all mechanisms
+// fail, the error lists what was attempted.
+//
+// resolveGitHubToken is a callback that resolves a GitHub user token.
+// The CLI passes its resolveToken function; tests supply a stub.
+func QueryStatus(ctx context.Context, req StatusRequest, resolveGitHubToken func() (string, error)) (*StatusResult, StatusAuthMethod, error) {
+	if req.MintURL == "" {
+		return nil, "", fmt.Errorf("mint URL is required")
+	}
+	parsed, err := url.Parse(req.MintURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid mint URL: %w", err)
+	}
+	isLocalhost := parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1"
+	if parsed.Scheme != "https" && !isLocalhost {
+		return nil, "", fmt.Errorf("mint URL must use HTTPS")
+	}
+
+	statusEndpoint, err := url.JoinPath(req.MintURL, "/v1/status")
+	if err != nil {
+		return nil, "", fmt.Errorf("constructing status URL: %w", err)
+	}
+
+	audience := req.Audience
+	if audience == "" {
+		audience = defaultAudience
+	}
+
+	var attempted []string
+
+	// Attempt 1: OIDC
+	if hasOIDCEnv() {
+		oidcJWT, oidcErr := fetchOIDCJWT(ctx, audience)
+		if oidcErr == nil {
+			result, callErr := callStatus(ctx, statusEndpoint, oidcJWT)
+			if callErr == nil {
+				return result, StatusAuthOIDC, nil
+			}
+			// Only fall through on 401; other errors are terminal.
+			if !isUnauthorizedErr(callErr) {
+				return nil, "", fmt.Errorf("calling /v1/status with OIDC: %w", callErr)
+			}
+			attempted = append(attempted, "OIDC (rejected)")
+		} else {
+			if errors.Is(oidcErr, context.Canceled) || errors.Is(oidcErr, context.DeadlineExceeded) {
+				return nil, "", fmt.Errorf("fetching OIDC JWT: %w", oidcErr)
+			}
+			attempted = append(attempted, fmt.Sprintf("OIDC (%s)", oidcErr))
+		}
+	} else {
+		attempted = append(attempted, "OIDC (env vars not set)")
+	}
+
+	// Attempt 2: GitHub user token
+	if resolveGitHubToken != nil {
+		ghToken, ghErr := resolveGitHubToken()
+		if ghErr == nil && ghToken != "" {
+			result, callErr := callStatus(ctx, statusEndpoint, ghToken)
+			if callErr == nil {
+				return result, StatusAuthGitHub, nil
+			}
+			if !isUnauthorizedErr(callErr) {
+				return nil, "", fmt.Errorf("calling /v1/status with GitHub token: %w", callErr)
+			}
+			attempted = append(attempted, "GitHub token (rejected)")
+		} else {
+			if ghErr != nil {
+				attempted = append(attempted, fmt.Sprintf("GitHub token (%s)", ghErr))
+			} else {
+				attempted = append(attempted, "GitHub token (empty)")
+			}
+		}
+	}
+
+	return nil, "", fmt.Errorf("%w for /v1/status; attempted: %s", ErrAuthenticationFailed, strings.Join(attempted, ", "))
+}
+
+// ErrAuthenticationFailed indicates that every available authentication
+// mechanism was attempted and rejected (401) by the mint's /v1/status
+// endpoint. Callers can use errors.Is to distinguish this from other
+// terminal QueryStatus errors (e.g. network failures, non-2xx/non-401
+// responses, malformed URLs) that are not auth-related.
+var ErrAuthenticationFailed = errors.New("authentication failed")
+
+// errUnauthorized is returned by callStatus when the server responds
+// with 401. QueryStatus uses this to decide whether to fall through
+// to the next auth mechanism.
+var errUnauthorized = errors.New("unauthorized")
+
+// isUnauthorizedErr reports whether err wraps errUnauthorized.
+func isUnauthorizedErr(err error) bool {
+	return errors.Is(err, errUnauthorized)
+}
+
+// callStatus performs GET /v1/status with the given bearer token and
+// decodes the response into a StatusResult.
+func callStatus(ctx context.Context, statusURL, bearerToken string) (*StatusResult, error) {
+	var body []byte
+	var statusCode int
+	err := doWithRetry(ctx, 3, func() error {
+		httpReq, rerr := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
+		if rerr != nil {
+			return fmt.Errorf("creating request: %w", rerr)
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+bearerToken)
+
+		resp, rerr := httpClient.Do(httpReq)
+		if rerr != nil {
+			return &retryableError{fmt.Errorf("requesting status: %w", rerr)}
+		}
+		defer resp.Body.Close()
+
+		body, rerr = io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		if rerr != nil {
+			return fmt.Errorf("reading response: %w", rerr)
+		}
+		statusCode = resp.StatusCode
+
+		if statusCode >= 500 {
+			return &retryableError{fmt.Errorf("status endpoint returned HTTP %d: %s", statusCode, truncateBody(body, 200))}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if statusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("status endpoint returned HTTP 401: %w", errUnauthorized)
+	}
+
+	if statusCode != http.StatusOK {
+		excerpt := truncateBody(body, 200)
+		return nil, fmt.Errorf("status endpoint returned HTTP %d: %s", statusCode, excerpt)
+	}
+
+	var result StatusResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parsing status response: %w", err)
+	}
+
+	return &result, nil
 }

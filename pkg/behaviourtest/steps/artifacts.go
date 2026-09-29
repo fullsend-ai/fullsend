@@ -12,6 +12,7 @@ import (
 )
 
 const issueOpenEvent = "issues"
+const issueCommentEvent = "issue_comment"
 
 func triageWorkflowEvent(w *world.World) string {
 	if w.TriageTriggerEvent != "" {

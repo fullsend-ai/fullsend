@@ -101,3 +101,9 @@ mechanism with repo-level `FULLSEND_FOREIGN_<ROLE>_REPOS` variables.
 Repo-level grants additionally require `actions_variables: read` on the
 target repos (in addition to the `organization_actions_variables: read`
 needed for org-level grants from this ADR).
+
+## Later note (hyphenated roles)
+
+GitHub Actions variable names cannot contain hyphens. Role suffixes now map
+hyphens to underscores (`ci-check` → `FULLSEND_FOREIGN_CI_CHECK_REPOS`) via
+`mintcore.RoleIdentifier`. See [#7140](https://github.com/fullsend-ai/fullsend/issues/7140).

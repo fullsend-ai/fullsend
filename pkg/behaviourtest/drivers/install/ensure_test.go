@@ -12,20 +12,22 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 // fakeEnsurer is a test double for ensurer that records calls.
 // It lets callers verify caching and call-count behaviour without a
 // real forge client or CLI binary.
 type fakeEnsurer struct {
-	calls atomic.Int32
-	mu    sync.Mutex
-	cache map[string]struct{}
+	calls       atomic.Int32
+	deleteCalls atomic.Int32
+	deleteErr   error
+	mu          sync.Mutex
+	cache       map[string]struct{}
 }
 
 func newFakeEnsurer() *fakeEnsurer {
@@ -48,6 +50,15 @@ func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string) error 
 	f.mu.Unlock()
 
 	return nil
+}
+
+func (f *fakeEnsurer) DeleteRepo(_ context.Context, org, repoName string) error {
+	key := org + "/" + repoName
+	f.mu.Lock()
+	delete(f.cache, key)
+	f.mu.Unlock()
+	f.deleteCalls.Add(1)
+	return f.deleteErr
 }
 
 var _ ensurer = (*fakeEnsurer)(nil)
@@ -82,6 +93,18 @@ func TestFakeEnsurer_IndependentRepos(t *testing.T) {
 	assert.Equal(t, int32(2), e.calls.Load())
 }
 
+func TestFakeEnsurer_DeleteRepoClearsCache(t *testing.T) {
+	e := newFakeEnsurer()
+	ctx := context.Background()
+
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+	require.NoError(t, e.DeleteRepo(ctx, "org", "test-repo-01"))
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+
+	assert.Equal(t, int32(1), e.deleteCalls.Load())
+	assert.Equal(t, int32(2), e.calls.Load(), "ensure after delete should not hit cache")
+}
+
 // --- repoEnsurer unit tests (caching layer + create logic) ---
 
 // noopCLI is a CLIRunnerFunc that succeeds without doing anything.
@@ -101,7 +124,12 @@ var installedStubFiles = map[string][]byte{
 	".github/workflows/fullsend.yaml": []byte("# shim"),
 	".fullsend/config.yaml":           []byte(validPerRepoConfig),
 	scaffold.VendoredMarkerPath():     []byte("marker"),
-	layers.VendoredBinaryPathPerRepo:  []byte("binary"),
+	vendoredBinaryPathPerRepo:         []byte("binary"),
+}
+
+func TestVendoredBinaryPathMatchesLayers(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, layers.VendoredBinaryPathPerRepo, vendoredBinaryPathPerRepo)
 }
 
 // stubClient implements the forge.Client methods used by repoEnsurer.
@@ -205,11 +233,32 @@ func (s *stubClient) GetWorkflow(_ context.Context, _, _, _ string) (*forge.Work
 
 func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
 	sc := &stubClient{}
-	e := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	require.NoError(t, err)
 	require.NotNil(t, e, "newRepoEnsurer should return a non-nil ensurer")
 
 	// Verify the returned value implements the interface.
 	var _ ensurer = e
+}
+
+func TestNewRepoEnsurer_ConfigPresetFromEnv(t *testing.T) {
+	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "https://example.com/preset.yaml")
+	sc := &stubClient{}
+	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	require.NoError(t, err)
+	re, ok := e.(*repoEnsurer)
+	require.True(t, ok)
+	assert.Equal(t, "https://example.com/preset.yaml", re.setupOpts.ConfigPreset)
+}
+
+func TestNewRepoEnsurer_ConfigPresetUnset(t *testing.T) {
+	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "")
+	sc := &stubClient{}
+	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	require.NoError(t, err)
+	re, ok := e.(*repoEnsurer)
+	require.True(t, ok)
+	assert.Empty(t, re.setupOpts.ConfigPreset)
 }
 
 func TestEnsurer_CachesSuccessfulEnsure(t *testing.T) {
@@ -775,6 +824,38 @@ func TestEnsurer_NonVendoredMode_UsesNonVendoredValidation(t *testing.T) {
 	assert.NotContains(t, cliCalls[0], "--vendor")
 }
 
+func TestEnsurer_ConfigPreset_ForwardsConfigFlag(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	var cliCalls [][]string
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: &stubClient{installed: true},
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		setupOpts: common.GitHubSetupOpts{
+			Vendor:       true,
+			ConfigPreset: "https://example.com/preset.yaml",
+		},
+		runCLI: func(_ string, _ string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			return "", nil
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-preset")
+	require.NoError(t, err)
+
+	require.Len(t, cliCalls, 1)
+	assert.Contains(t, cliCalls[0], "--config")
+	assert.Contains(t, cliCalls[0], "https://example.com/preset.yaml")
+	assert.NotContains(t, cliCalls[0], "--runtime")
+	assert.Contains(t, cliCalls[0], "--vendor")
+}
+
 // stubClientWithCustomFiles is a test double that returns custom file
 // contents instead of using the global installedStubFiles map.
 type stubClientWithCustomFiles struct {
@@ -816,6 +897,79 @@ func TestDoEnsure_SettleError_Propagated(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "waiting for Actions readiness")
 	assert.Contains(t, err.Error(), "Actions not ready")
+}
+
+// --- DeleteRepo unit tests ---
+
+func TestEnsurer_DeleteRepo_MissingRepo_OK(t *testing.T) {
+	sc := &stubClient{getRepoErr: forge.ErrNotFound}
+	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: make(map[string]struct{})}
+
+	err := e.DeleteRepo(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), sc.deleteRepoCalled.Load(), "should not delete missing repo")
+}
+
+func TestEnsurer_DeleteRepo_DeletesExistingAndClearsCache(t *testing.T) {
+	sc := &stubClient{}
+	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: map[string]struct{}{"org/repo": {}}}
+
+	err := e.DeleteRepo(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
+
+	e.mu.Lock()
+	_, cached := e.ensured["org/repo"]
+	e.mu.Unlock()
+	assert.False(t, cached, "ensure cache must be invalidated on delete")
+}
+
+func TestEnsurer_DeleteRepo_InvalidatesCacheOnGetRepoError(t *testing.T) {
+	sc := &stubClient{getRepoErr: assert.AnError}
+	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: map[string]struct{}{"org/repo": {}}}
+
+	err := e.DeleteRepo(context.Background(), "org", "repo")
+	require.Error(t, err)
+
+	e.mu.Lock()
+	_, cached := e.ensured["org/repo"]
+	e.mu.Unlock()
+	assert.False(t, cached, "cache must be invalidated even when delete fails")
+}
+
+func TestEnsurer_DeleteRepo_DeletesFork(t *testing.T) {
+	sc := &stubClient{forkExists: true}
+	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: make(map[string]struct{})}
+
+	err := e.DeleteRepo(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), sc.forkDeleteCalled.Load())
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
+}
+
+func TestEnsurer_DeleteThenEnsure_Recreates(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{installed: true}
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{},
+		client:    sc,
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	ctx := context.Background()
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+	createsAfterFirst := sc.createRepoCalled.Load()
+
+	require.NoError(t, e.DeleteRepo(ctx, "org", "test-repo-01"))
+
+	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
+	assert.Greater(t, sc.createRepoCalled.Load(), createsAfterFirst,
+		"re-ensure after delete must recreate rather than hit the lease cache")
 }
 
 // --- resetRepo unit tests ---

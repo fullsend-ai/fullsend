@@ -1,0 +1,235 @@
+package cli
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/security"
+)
+
+// maxToolSpansPerIteration bounds how many execute_tool spans one iteration
+// may record. The count of calls is under the sandboxed agent's control,
+// and Finish ends every open call in a burst when the stream ends, before
+// the agent span ends: the OTLP batch processor's queue (2048 by default) drops newest
+// spans when full, so an unbounded burst would evict the agent span — the
+// one carrying the iteration's content. Half the queue leaves room for the
+// rest of the trace (the PR's evidence review run made 47 calls). This
+// assumes the default OTEL_BSP_MAX_QUEUE_SIZE; a smaller queue lowers the
+// protection.
+const maxToolSpansPerIteration = 1024
+
+// maxToolNameBytes bounds gen_ai.tool.name. The name comes from the
+// sandboxed agent's stream; real names (mcp__server__tool included) are
+// well under 100 bytes.
+const maxToolNameBytes = 256
+
+// maxToolSpanNameBytes bounds the tool-name part of an execute_tool span
+// name. A span name is not an attribute, so no SDK limit ever applied to
+// it.
+const maxToolSpanNameBytes = 128
+
+// toolSpanTracker turns the tool calls one iteration's runtime stream
+// reports into execute_tool child spans of that iteration's agent span
+// (semconv v1.37.0: gen_ai.operation.name, gen_ai.tool.name,
+// gen_ai.tool.call.id, error.type on failure; span kind Internal). Tool
+// content stays on the agent span's gen_ai.output.messages record — these
+// spans are Level 1 metadata and are emitted whether or not the content
+// gate is on.
+//
+// A span starts when the tracker handles the ToolUseEvent and ends when it
+// handles the matching ToolResultEvent. iterationEventHandler runs the
+// console renderer first (it prints for a call, nothing for a result), then
+// this tracker, then the Level 3 collector, so the collector's redaction pass
+// over an event never delays that event's own stamp. Events are handled one
+// at a time: with several calls open, a stamp can still trail the collector's
+// pass over an event queued ahead of it. Both timestamps are runner-side
+// receipt instants
+// on the parent agent span's clock — no cross-host skew, and the one source
+// every runtime provides (Claude Code's tool_use and tool_result lines carry
+// sandbox-clock timestamps the parser does not decode; pi's tool-execution
+// lines and codex's items carry none). The cost is loose timing in both
+// directions: tool_use arrival is arguments-complete rather than execution
+// start (early), but its stamp also trails the pipe, the parser's decode, the
+// renderer's print and any event queued ahead of it (late), and tool_result
+// arrival trails execution end by the pipe latency and the parser's decode of
+// the line — so a span can be shorter than the execution it covers as well as
+// longer. Calls are keyed by id
+// because the stream interleaves several open calls (parallel sub-agent
+// dispatch); a call that never gets a result — the runtime was stopped, or its
+// over-long result line showed no id in the prefix the parser keeps — is ended
+// by Finish as error.type=unanswered; a result whose line exceeded the parser's
+// 1 MiB bound (ToolResultEvent.Oversized) ends its span at receipt, marked
+// fullsend.tool.result_oversized and left without a status, since the tool
+// answered and its is_error was never decoded; and a result whose call was
+// never seen (its tool_use line was skipped) becomes a marked span of
+// near-zero duration. Events
+// without an id — pi and codex emit none — produce no span, and neither does
+// a server-side tool: its result never arrives as a tool_result, so the parser
+// reports it without an id (stream_event lines) or not at all (assistant
+// lines, the live path). The
+// name and the call id go through the same output pipeline as span content
+// (Unicode normalization, then secret redaction): the name is bounded, the id
+// is dropped on any finding (safeID) — both land on a Level 1 span in the
+// telemetry file the output scan exempts on the strength of that treatment.
+// Delivery is synchronous on one goroutine, so no lock.
+type toolSpanTracker struct {
+	tracer   trace.Tracer
+	ctx      context.Context
+	pipeline *security.Pipeline
+	open     map[string]trace.Span
+	created  int
+	dropped  int
+}
+
+func newToolSpanTracker(tracer trace.Tracer, agentCtx context.Context) *toolSpanTracker {
+	return &toolSpanTracker{
+		tracer:   tracer,
+		ctx:      agentCtx,
+		pipeline: security.OutputPipeline(),
+		open:     map[string]trace.Span{},
+	}
+}
+
+// Handle opens a span for a tool call and ends it on the call's result. A
+// nil tracker is inert.
+func (t *toolSpanTracker) Handle(evt agentruntime.AgentEvent) {
+	if t == nil {
+		return
+	}
+	switch e := evt.(type) {
+	case agentruntime.ToolUseEvent:
+		id := boundedID(e.ID)
+		if id == "" || !t.allow() {
+			return
+		}
+		if prev, ok := t.open[id]; ok {
+			endUnanswered(prev)
+		}
+		t.open[id] = t.start(id, e.Name)
+	case agentruntime.ToolResultEvent:
+		id := boundedID(e.ID)
+		if id == "" {
+			return
+		}
+		span, ok := t.open[id]
+		if ok {
+			delete(t.open, id)
+		} else {
+			// Past the cap a result is not charged: its call was already
+			// counted at its use event, and telling that apart from an
+			// orphan would need a set of rejected ids of agent-controlled
+			// size.
+			if t.created >= maxToolSpansPerIteration {
+				return
+			}
+			t.created++
+			span = t.start(id, "")
+			span.SetAttributes(attribute.Bool("fullsend.tool.unmatched", true))
+		}
+		if e.Oversized {
+			// The parser dropped the line, not the tool: no error.type, and
+			// no Ok either — is_error lay beyond the prefix the parser kept.
+			span.SetAttributes(attribute.Bool("fullsend.tool.result_oversized", true))
+			span.End()
+			return
+		}
+		finalizeToolSpan(span, e.IsError)
+	}
+}
+
+// Finish ends every call still open as unanswered and returns how many
+// calls got no span because the iteration passed maxToolSpansPerIteration —
+// one per rejected tool_use event, whatever its result later does; call it
+// before the agent span ends. A nil tracker is inert.
+func (t *toolSpanTracker) Finish() int {
+	if t == nil {
+		return 0
+	}
+	for id, span := range t.open {
+		endUnanswered(span)
+		delete(t.open, id)
+	}
+	return t.dropped
+}
+
+// allow reports whether one more span may be created for a tool_use event
+// this iteration, charging the overflow once per rejected tool_use event.
+func (t *toolSpanTracker) allow() bool {
+	if t.created >= maxToolSpansPerIteration {
+		t.dropped++
+		return false
+	}
+	t.created++
+	return true
+}
+
+// safeName sanitizes the stream-derived tool name and bounds it — in that
+// order, so a cut can never split a credential past recognition. An empty
+// result with findings means the whole name was sanitized away (the same
+// reading contentCollector.redact applies), so nothing is shown.
+func (t *toolSpanTracker) safeName(name string) string {
+	scanned := t.pipeline.Scan(name)
+	if scanned.Sanitized != "" {
+		name = scanned.Sanitized
+	} else if len(scanned.Findings) > 0 {
+		return ""
+	}
+	return strings.ToValidUTF8(truncateStatusMsgTo(name, maxToolNameBytes), "")
+}
+
+// safeID returns the call id fit for a span attribute: scanned like every
+// other stream-derived string, and dropped on any finding — a substituted
+// id could falsely collide with another call's. The raw id still keys
+// use/result correlation, so a dropped attribute never breaks a pair.
+func (t *toolSpanTracker) safeID(id string) string {
+	if len(t.pipeline.Scan(id).Findings) > 0 {
+		return ""
+	}
+	return id
+}
+
+func (t *toolSpanTracker) start(id, name string) trace.Span {
+	// Stamped before the scans below: the name is sanitized at full length
+	// and bounded only afterwards, so their cost is the stream's to set.
+	now := time.Now()
+	attrs := []attribute.KeyValue{attribute.String("gen_ai.operation.name", "execute_tool")}
+	if safe := t.safeID(id); safe != "" {
+		attrs = append(attrs, stringAttr("gen_ai.tool.call.id", safe))
+	}
+	spanName := "execute_tool"
+	if name != "" {
+		name = t.safeName(name)
+	}
+	if name != "" {
+		attrs = append(attrs, attribute.String("gen_ai.tool.name", name))
+		spanName += " " + strings.ToValidUTF8(truncateStatusMsgTo(name, maxToolSpanNameBytes), "")
+	}
+	_, span := t.tracer.Start(t.ctx, spanName, trace.WithTimestamp(now),
+		trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...))
+	return span
+}
+
+// finalizeToolSpan ends a tool span from the wire's is_error flag — the
+// only failure signal the stream carries, so error.type is a fixed value
+// and no exception event is recorded.
+func finalizeToolSpan(span trace.Span, isError bool) {
+	if isError {
+		span.SetAttributes(attribute.String("error.type", "tool_error"))
+		span.SetStatus(codes.Error, "tool reported is_error")
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+	span.End()
+}
+
+func endUnanswered(span trace.Span) {
+	span.SetAttributes(attribute.String("error.type", "unanswered"))
+	span.SetStatus(codes.Error, "no tool_result before the iteration ended")
+	span.End()
+}

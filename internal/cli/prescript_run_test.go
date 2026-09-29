@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -70,6 +72,8 @@ func TestRunPreScript_ScriptFailureIsHardError(t *testing.T) {
 
 	_, err := runPreScript(h, t.TempDir(), "", printer)
 	require.ErrorContains(t, err, "running pre-script")
+	// No captured output: the error stays the opaque exec.ExitError text.
+	require.ErrorContains(t, err, "exit status 3")
 }
 
 func TestRunPreScript_MalformedOutputIsHardError(t *testing.T) {
@@ -360,6 +364,205 @@ func TestRunPreScript_OtherNonZeroExitIsStillHardError(t *testing.T) {
 				fmt.Sprintf("exit %d\n", code))}
 			_, err := runPreScript(h, t.TempDir(), "", printer)
 			require.ErrorContains(t, err, "running pre-script")
+		})
+	}
+}
+
+// --- Hard-failure diagnostics (issue #7363) ---
+
+func TestRunPreScript_HardFailureIncludesStderr(t *testing.T) {
+	printer := ui.New(io.Discard)
+	h := &harness.Harness{PreScript: writePreScript(t,
+		"echo checking...\n"+
+			"echo 'Fix iteration 6 exceeds bot cap of 5. Escalating to human.' >&2\n"+
+			"exit 1\n")}
+
+	_, err := runPreScript(h, t.TempDir(), "", printer)
+	require.ErrorContains(t, err, "running pre-script")
+	require.ErrorContains(t, err, "Fix iteration 6 exceeds bot cap of 5. Escalating to human.")
+}
+
+func TestRunPreScript_HardFailureIncludesGHAErrorOnStdout(t *testing.T) {
+	printer := ui.New(io.Discard)
+	// pre-fix.sh emits workflow-command annotations on stdout via gha_echo.
+	h := &harness.Harness{PreScript: writePreScript(t,
+		"echo '::error::Fix iteration 6 exceeds bot cap of 5. Escalating to human.'\n"+
+			"echo '::error::A human can still direct the agent with /fs-fix (up to 10 total iterations).'\n"+
+			"exit 1\n")}
+
+	_, err := runPreScript(h, t.TempDir(), "", printer)
+	require.ErrorContains(t, err, "running pre-script")
+	require.ErrorContains(t, err, "Fix iteration 6 exceeds bot cap of 5. Escalating to human.")
+	require.ErrorContains(t, err, "A human can still direct the agent with /fs-fix (up to 10 total iterations).")
+}
+
+// A pre-script's hard-failure detail is posted to the visible PR status
+// comment, so a credential value from the runner env that a script echoes
+// on its way to a hard failure must not reach that comment verbatim.
+func TestRunPreScript_HardFailureRedactsRunnerEnvSecret(t *testing.T) {
+	printer := ui.New(io.Discard)
+	h := &harness.Harness{
+		PreScript: writePreScript(t,
+			"echo \"remote is https://x-access-token:${PUSH_TOKEN}@github.com/o/r.git\" >&2\n"+
+				"exit 1\n"),
+		RunnerEnv: map[string]string{"PUSH_TOKEN": "supersecretpushtokenvalue1234567890"},
+	}
+
+	_, err := runPreScript(h, t.TempDir(), "", printer)
+	require.ErrorContains(t, err, "running pre-script")
+	assert.NotContains(t, err.Error(), "supersecretpushtokenvalue1234567890")
+	assert.Contains(t, err.Error(), "[REDACTED:PUSH_TOKEN]")
+}
+
+// The exit-78 stdout-derived reason has the same exposure as the
+// hard-failure detail — it is incidental script output, not a value the
+// script author deliberately chose to put in a reason= line — and gets the
+// same redaction pass.
+func TestRunPreScript_Exit78StdoutReasonRedactsRunnerEnvSecret(t *testing.T) {
+	printer := ui.New(io.Discard)
+	h := &harness.Harness{
+		PreScript: writePreScript(t,
+			"echo \"skip check used token ${PUSH_TOKEN}\"\n"+
+				"exit 78\n"),
+		RunnerEnv: map[string]string{"PUSH_TOKEN": "supersecretpushtokenvalue1234567890"},
+	}
+
+	res, err := runPreScript(h, t.TempDir(), "", printer)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped)
+	assert.NotContains(t, res.Reason, "supersecretpushtokenvalue1234567890")
+	assert.Contains(t, res.Reason, "[REDACTED:PUSH_TOKEN]")
+}
+
+func TestPreScriptFailureDetail(t *testing.T) {
+	tests := []struct {
+		name           string
+		stdout, stderr string
+		want           string
+	}{
+		{
+			name: "empty",
+			want: "",
+		},
+		{
+			name:   "stderr last line",
+			stdout: "checking...\n",
+			stderr: "boom\n",
+			want:   "boom",
+		},
+		{
+			name:   "stdout fallback when stderr empty",
+			stdout: "boom\n",
+			want:   "boom",
+		},
+		{
+			name:   "stderr preferred over stdout without annotations",
+			stdout: "progress\n",
+			stderr: "real error\n",
+			want:   "real error",
+		},
+		{
+			name:   "gha workflow command on stdout",
+			stdout: "::error::Fix iteration 6 exceeds bot cap of 5\n",
+			stderr: "noise\n",
+			want:   "Fix iteration 6 exceeds bot cap of 5",
+		},
+		{
+			name:   "gha logging command on stderr",
+			stderr: "##[error]Fix iteration 6 exceeds bot cap of 5\n",
+			want:   "Fix iteration 6 exceeds bot cap of 5",
+		},
+		{
+			name:   "gha error with parameters",
+			stdout: "::error title=pre-fix,file=pre-fix.sh::input validation failed\n",
+			want:   "input validation failed",
+		},
+		{
+			name: "multiple gha errors joined in order",
+			stdout: "::error::Fix iteration 6 exceeds bot cap of 5. Escalating to human.\n" +
+				"::error::The review-fix loop has run 6 times without converging.\n" +
+				"::error::A human can still direct the agent with /fs-fix (up to 10 total iterations).\n",
+			want: "Fix iteration 6 exceeds bot cap of 5. Escalating to human. " +
+				"The review-fix loop has run 6 times without converging. " +
+				"A human can still direct the agent with /fs-fix (up to 10 total iterations).",
+		},
+		{
+			name:   "blank and warning lines ignored",
+			stdout: "::warning::not an error\n\n::error::the real problem\n",
+			want:   "the real problem",
+		},
+		{
+			name:   "empty annotation skipped",
+			stdout: "::error::\n::error::kept\n",
+			want:   "kept",
+		},
+		{
+			name:   "control characters stripped",
+			stderr: "Has\ttab and \x01control\n",
+			want:   "Hastab and control",
+		},
+		{
+			name:   "whitespace-only streams",
+			stdout: "  \n\n",
+			stderr: "\t\n",
+			want:   "",
+		},
+		{
+			// The implementation scans a stdout+stderr concatenation, so
+			// stdout annotations always sort first even when the stderr
+			// annotation was actually written first — stream order, not
+			// true chronological order (see the doc comment).
+			name:   "mixed-stream annotations: stdout group first regardless of write order",
+			stdout: "::error::from stdout\n",
+			stderr: "::error::from stderr\n",
+			want:   "from stdout from stderr",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, preScriptFailureDetail(tc.stdout, tc.stderr))
+		})
+	}
+}
+
+func TestPreScriptFailureDetail_CapsAt1024(t *testing.T) {
+	long := strings.Repeat("x", 2000)
+	got := preScriptFailureDetail("", long)
+	require.Len(t, got, 1024)
+	assert.Equal(t, strings.Repeat("x", 1024), got)
+}
+
+func TestPreScriptFailureDetail_TruncatesInvalidUTF8(t *testing.T) {
+	// 1023 ASCII bytes plus the first byte of a 2-byte rune, so the
+	// 1024-byte cap lands mid-character and must be trimmed back.
+	long := strings.Repeat("x", 1023) + "é"
+	got := preScriptFailureDetail("", long)
+	require.True(t, utf8.ValidString(got))
+	assert.Equal(t, strings.Repeat("x", 1023), got)
+}
+
+func TestParseGHAErrorLine(t *testing.T) {
+	tests := []struct {
+		line   string
+		want   string
+		wantOK bool
+	}{
+		{"::error::hello", "hello", true},
+		{"::error title=t::hello", "hello", true},
+		{"##[error]hello", "hello", true},
+		{"##[error]  hello  ", "hello", true},
+		{"::warning::hello", "", false},
+		{"::error", "", false},
+		{"not an annotation", "", false},
+		{"::errorfoo::hello", "", false},
+		{"::error::", "", true},
+		{"::error title=t", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.line, func(t *testing.T) {
+			got, ok := parseGHAErrorLine(tc.line)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }

@@ -20,6 +20,10 @@ Before enabling any agents, you need to get fullsend running in your environment
 
 These guides walk through each step in detail. Once installed, you're ready to prepare your repo.
 
+GitLab teams follow a different path: no token mint, `fullsend repos install --forge gitlab`
+to scaffold, and `--roles` to scope which agents install. See
+[Configuring GitLab](../getting-started/configuring-gitlab.md).
+
 ### Prepare Your Repo
 
 The following items benefit any team regardless of how far you go with fullsend. Think of these as good engineering hygiene that happens to make agents more effective — not fullsend-specific requirements.

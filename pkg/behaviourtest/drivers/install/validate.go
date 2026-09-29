@@ -8,9 +8,14 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
+
+// vendoredBinaryPathPerRepo is the upload path inside a per-repo target.
+// Duplicated from layers.VendoredBinaryPathPerRepo so this package does
+// not import internal/layers (which transitively pulls the nested mintcore
+// module via internal/repos).
+const vendoredBinaryPathPerRepo = ".fullsend/bin/fullsend"
 
 // validateMaxAttempts is the number of GetFileContent attempts before
 // giving up. GitHub's API can return transient 404s immediately after a
@@ -49,28 +54,37 @@ func getFileWithRetry(ctx context.Context, client forge.Client, org, repo, path 
 
 // validateShimAndConfig checks that a per-repo install left the expected
 // workflow shim and config with a "dummy" runtime. Shared by both
-// vendored and non-vendored validation.
+// vendored and non-vendored validation. When config.base.yaml is present
+// (a --config preset install), runtime is resolved through the overlay
+// → base → defaults chain so a preset that sets runtime: dummy passes.
 func validateShimAndConfig(ctx context.Context, client forge.Client, org, repo string) error {
 	shimPath := ".github/workflows/fullsend.yaml"
 	if _, err := getFileWithRetry(ctx, client, org, repo, shimPath); err != nil {
 		return fmt.Errorf("post-install: missing %s on %s/%s: %w", shimPath, org, repo, err)
 	}
 
-	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgPath := filepath.Join(".fullsend", config.OverlayConfigFile)
 	cfgData, err := getFileWithRetry(ctx, client, org, repo, cfgPath)
 	if err != nil {
 		return fmt.Errorf("post-install: reading %s: %w", cfgPath, err)
 	}
-	cfgW, err := config.ParsePerRepoConfigWriter(cfgData)
+	basePath := filepath.Join(".fullsend", config.BaseConfigFile)
+	baseData, baseErr := client.GetFileContent(ctx, org, repo, basePath)
+	if baseErr != nil {
+		if !forge.IsNotFound(baseErr) {
+			return fmt.Errorf("post-install: reading %s: %w", basePath, baseErr)
+		}
+		baseData = nil
+	}
+	cfgW, err := config.ParsePerRepoConfigWriterLayered(cfgData, baseData)
 	if err != nil {
 		return fmt.Errorf("post-install: parsing %s: %w", cfgPath, err)
 	}
 	if err := cfgW.Validate(); err != nil {
 		return fmt.Errorf("post-install: invalid %s: %w", cfgPath, err)
 	}
-	cfg := cfgW.(config.PerRepoConfigReader)
-	if cfg.ConfigRuntime() != "dummy" {
-		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfg.ConfigRuntime())
+	if cfgW.ConfigRuntime() != "dummy" {
+		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfgW.ConfigRuntime())
 	}
 	return nil
 }
@@ -86,8 +100,8 @@ func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, r
 	if _, err := getFileWithRetry(ctx, client, org, repo, markerPath); err != nil {
 		return fmt.Errorf("post-install: missing vendored marker %s: %w", markerPath, err)
 	}
-	if _, err := getFileWithRetry(ctx, client, org, repo, layers.VendoredBinaryPathPerRepo); err != nil {
-		return fmt.Errorf("post-install: missing vendored binary at %s: %w", layers.VendoredBinaryPathPerRepo, err)
+	if _, err := getFileWithRetry(ctx, client, org, repo, vendoredBinaryPathPerRepo); err != nil {
+		return fmt.Errorf("post-install: missing vendored binary at %s: %w", vendoredBinaryPathPerRepo, err)
 	}
 	return nil
 }

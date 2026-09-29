@@ -418,10 +418,8 @@ repos:
 
 func TestDiscoverRepo_GitLabForge_UsesGitLabPaths(t *testing.T) {
 	fc := forge.NewFakeClient()
-	setRepoVars(fc, "acme", "api", map[string]string{
-		"FULLSEND_LAST_POLL_AT_FAST": "2026-01-01T00:00:00Z",
-	})
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte(
 		"  ref: v2.5.0\n")
 
 	d, err := discoverRepo(context.Background(), fc, "acme", "api", nil, ForgeGitLab, nopProgress)
@@ -432,7 +430,7 @@ func TestDiscoverRepo_GitLabForge_UsesGitLabPaths(t *testing.T) {
 
 func TestDiscoverRepo_GitLabForge_PerOrg_UsesGitLabPaths(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte(
 		"  ref: v2.4.0\n")
 
 	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"

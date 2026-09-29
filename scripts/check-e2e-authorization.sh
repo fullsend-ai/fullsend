@@ -4,7 +4,7 @@
 # Authorized when the PR author is OWNER/MEMBER/COLLABORATOR, when the author
 # is a trusted bot (e.g. renovate-fullsend[bot]), when the collaborator
 # permission API confirms write+ access, or when a fresh ok-to-test label was
-# applied after the latest push.
+# applied by a user with write+ access after the latest push.
 #
 # The author_association field from the event payload can misreport org members
 # whose membership visibility is private (returns CONTRIBUTOR/NONE instead of
@@ -12,7 +12,7 @@
 # collaborator permission API which correctly resolves regardless of visibility.
 #
 # Freshness uses PR updated_at from the frozen workflow event (PR_UPDATED_AT).
-# On ok-to-test labeled events, authorization is immediate. Does not use
+# On ok-to-test labeled events, freshness is not checked. Does not use
 # committer.date (author-controlled).
 #
 # Usage: check-e2e-authorization.sh PR_NUMBER OWNER/REPO
@@ -22,6 +22,8 @@
 #   PR_AUTHOR_LOGIN — github.event.pull_request.user.login
 #   PR_UPDATED_AT — github.event.pull_request.updated_at
 #   EVENT_ACTION  — github.event.action
+#   LABEL_ACTOR_LOGIN — github.event.sender.login (who applied the label on
+#     labeled events)
 #
 # Writes authorized, reason, and label_removed to GITHUB_OUTPUT when set.
 # Exits 0 always; callers inspect outputs.
@@ -76,10 +78,22 @@ has_write_permission() {
   local perm_json role
   perm_json=$(gh api "repos/${REPOSITORY}/collaborators/${username}/permission" 2>/dev/null) || return 1
   role=$(jq -r '.role_name' <<<"${perm_json}") || return 1
-  case "${role}" in
+  is_write_role "${role}"
+}
+
+is_write_role() {
+  case "${1:-}" in
     admin|maintain|write) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# The ERR trap is not inherited by functions: return 1 so it fires at the call.
+remove_ok_to_test_label() {
+  if [[ "${CHECK_E2E_AUTH_DRY_RUN:-}" != "true" ]]; then
+    gh api -X DELETE "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/${OK_TO_TEST_LABEL}" >/dev/null || return 1
+  fi
+  label_removed=true
 }
 
 label_removed=false
@@ -131,11 +145,51 @@ else
       authorized=true
       reason="ok_to_test"
     else
-      if [[ "${CHECK_E2E_AUTH_DRY_RUN:-}" != "true" ]]; then
-        gh api -X DELETE "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/${OK_TO_TEST_LABEL}" >/dev/null
-      fi
-      label_removed=true
+      remove_ok_to_test_label
       reason="stale_ok_to_test"
+    fi
+  fi
+fi
+
+# A label is an authorization boundary: the user who last applied ok-to-test
+# must currently have write+ permission. Triage-role users can apply labels
+# without it, so the label alone does not prove a maintainer approved the run.
+latest_labeler() {
+  if [[ -z "${events_json:-}" ]]; then
+    events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')" || return 1
+  fi
+  jq -r --arg label "${OK_TO_TEST_LABEL}" '
+    [.[] | select(.event == "labeled" and (.label.name // "") == $label)]
+    | max_by(.created_at // "") | .actor.login // empty
+  ' <<<"${events_json}"
+}
+
+if [[ "${reason}" == "ok_to_test" ]]; then
+  # On labeled events the frozen payload names the labeler of this run. A
+  # later re-label by someone else must not authorize this run's head.
+  frozen_labeler=""
+  if [[ "${EVENT_ACTION:-}" == "labeled" ]]; then
+    frozen_labeler="${LABEL_ACTOR_LOGIN:-}"
+  fi
+  labeler_login="${frozen_labeler}"
+  if [[ -z "${labeler_login}" ]]; then
+    labeler_login="$(latest_labeler)"
+  fi
+
+  # The API answers 200 for any user or bot, so a failed lookup is an API
+  # error (reason=error via the ERR trap), not a denial.
+  labeler_role=""
+  if [[ -n "${labeler_login}" ]]; then
+    labeler_role="$(gh api "repos/${REPOSITORY}/collaborators/${labeler_login}/permission" | jq -r '.role_name // ""')"
+  fi
+
+  # Remove the label so a maintainer's re-apply fires a new labeled event.
+  # Keep it when someone else has re-applied it since: that run decides.
+  if ! is_write_role "${labeler_role}"; then
+    authorized=false
+    reason="untrusted_labeler"
+    if [[ -z "${frozen_labeler}" || "$(latest_labeler)" == "${frozen_labeler}" ]]; then
+      remove_ok_to_test_label
     fi
   fi
 fi

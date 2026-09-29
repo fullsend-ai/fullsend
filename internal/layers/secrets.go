@@ -3,9 +3,9 @@ package layers
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -181,9 +181,9 @@ func (s *SecretsLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 }
 
 func secretName(role string) string {
-	return fmt.Sprintf("FULLSEND_%s_APP_PRIVATE_KEY", strings.ToUpper(role))
+	return fmt.Sprintf("FULLSEND_%s_APP_PRIVATE_KEY", mintcore.RoleIdentifier(role))
 }
 
 func variableName(role string) string {
-	return fmt.Sprintf("FULLSEND_%s_CLIENT_ID", strings.ToUpper(role))
+	return fmt.Sprintf("FULLSEND_%s_CLIENT_ID", mintcore.RoleIdentifier(role))
 }

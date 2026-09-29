@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -1168,4 +1169,45 @@ func (f *fakeRetryCleanupSCM) CommitFileToFork(context.Context, string, string, 
 
 func (f *fakeRetryCleanupSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
+}
+
+func slotConfig(t *testing.T, set func(config.PerRepoConfigWriter)) []byte {
+	t.Helper()
+	cfg := config.NewPerRepoConfig(nil, "org/repo")
+	if set != nil {
+		set(cfg)
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	return data
+}
+
+func TestValidateSlotClean(t *testing.T) {
+	t.Parallel()
+
+	leased := func(content []byte) *world.World {
+		return &world.World{Org: "org", RepoName: "repo", SCM: &fakeCleanupSCM{fileContent: content}}
+	}
+
+	t.Run("clean slot", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, ValidateSlotClean(leased(slotConfig(t, nil))))
+	})
+
+	t.Run("owners auth left enabled", func(t *testing.T) {
+		t.Parallel()
+		err := ValidateSlotClean(leased(slotConfig(t, func(c config.PerRepoConfigWriter) { c.SetOwnersFileAuthEnabled(true) })))
+		require.ErrorContains(t, err, "owners_file authorization is enabled")
+	})
+
+	t.Run("kill switch left on", func(t *testing.T) {
+		t.Parallel()
+		err := ValidateSlotClean(leased(slotConfig(t, func(c config.PerRepoConfigWriter) { c.SetKillSwitch(true) })))
+		require.ErrorContains(t, err, "kill_switch is active")
+	})
+
+	t.Run("no leased repo", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, ValidateSlotClean(&world.World{Org: "org", SCM: &fakeCleanupSCM{}}))
+	})
 }

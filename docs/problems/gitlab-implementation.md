@@ -1,10 +1,15 @@
 # GitLab Support Implementation Details
 
-> **Note:** The webhook-based dispatch approach described in this document is
-> superseded by [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md)
-> (cron-polling event dispatch), which eliminates webhooks entirely.
-> The sections below on CI/CD pipeline mapping, PAT-based auth, and forge
-> interface evolution remain valid reference material.
+> **Note:** The external webhook-bridge dispatch approach described in this
+> document is superseded. [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md)
+> adopted cron-polling and removed that bridge.
+> [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) then
+> adopted a hybrid: GitLab-native webhook fast-path (no translation
+> bridge; `:ref` pinned to the protected default branch) with the
+> ADR 0067 cron-poller as reconciliation backstop. The sections below on
+> CI/CD pipeline mapping, PAT-based auth, and forge interface evolution
+> remain valid reference material; the "Webhook-to-trigger API
+> incompatibility" analysis is historical.
 
 This document contains implementation details for GitLab support in fullsend. For the architectural decision and rationale, see [ADR-0028](../ADRs/0028-gitlab-support.md) (status: Deprecated — CI/CD pipeline mapping, PAT-based auth, and webhook bridging sections remain valid reference material; harness-level forge abstraction is now covered by [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md)).
 
@@ -26,7 +31,7 @@ This document contains implementation details for GitLab support in fullsend. Fo
 
 **GitLab**: No `pull_request_target` equivalent. The protected-branch pipeline approach (using `CI_COMMIT_REF_PROTECTED == "true"`) conflicts with MR-event triggering (which runs on unprotected MR source branches), so a different architecture is required.
 
-**Webhook-based approach**: Instead of a shim pipeline in the enrolled repo, use GitLab webhooks to trigger `.fullsend` pipelines directly:
+**Webhook-based approach** *(historical — this per-org `.fullsend` config-repo webhook-target design predates [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) and the per-org-installation deprecation in ADR 0044; the current model is ADR 0125's same-project native "use a webhook" trigger on the protected default branch plus the ADR 0067 poller backstop — no intermediary, no per-org config repo)*: Instead of a shim pipeline in the enrolled repo, use GitLab webhooks to trigger `.fullsend` pipelines directly:
 
 1. **Webhook configuration**: Enrolled repos configure webhooks that POST to `.fullsend` project's pipeline trigger endpoint
 2. **Webhook authentication**: GitLab webhooks include a secret token, which `.fullsend` validates before processing
@@ -35,16 +40,16 @@ This document contains implementation details for GitLab support in fullsend. Fo
 
 **Why webhooks for GitLab but not GitHub**: ADR-0009 (pull_request_target security model for GitHub) explicitly rejected webhook-based dispatch because it "requires a hosted webhook receiver, breaking compute-platform agnosticism." GitLab's situation is similar but with a critical difference:
 
-**Webhook-to-trigger API incompatibility**: GitLab webhooks send JSON event payloads (merge request objects, issue events), while the pipeline trigger API (`/api/v4/projects/:id/trigger/pipeline`) expects form-encoded parameters (`token`, `ref`, `variables[KEY]=value`). These are not wire-compatible — pointing a webhook URL directly at the trigger endpoint results in a malformed request. This means an intermediary is required to translate webhook payloads to trigger API calls.
+**Webhook-to-trigger API incompatibility** *(historical — refuted by [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md); see the "Decided" note below)*: ~~GitLab webhooks send JSON event payloads (merge request objects, issue events), while the pipeline trigger API (`/api/v4/projects/:id/trigger/pipeline`) expects form-encoded parameters (`token`, `ref`, `variables[KEY]=value`). These are not wire-compatible — pointing a webhook URL directly at the trigger endpoint results in a malformed request. This means an intermediary is required to translate webhook payloads to trigger API calls.~~ ADR 0125 refutes this: GitLab's native "use a webhook" pipeline trigger pins `:ref` in the URL, which overrides the payload ref, so GitLab delivers to GitLab with no translation and no inbound endpoint we operate.
 
-**Options for webhook translation**:
-1. **GitLab CI/CD webhook integration**: Use a lightweight `.gitlab-ci.yml` job in the enrolled repo (there is no native GitLab mechanism to trigger a pipeline directly from a webhook event; the enrolled repo would need a pipeline triggered by another mechanism that then calls the trigger API) and calls the `.fullsend` trigger API. This keeps everything within GitLab CI/CD but **does not solve the security model** — enforcing protected-branch-only execution via `workflow:rules` prevents the pipeline from reacting to merge request events (which occur on unprotected branches), defeating the purpose. Without protected-branch enforcement, MR code can modify the webhook job.
+**Options for webhook translation** *(historical — see the "Decided" note below)*:
+1. **GitLab CI/CD webhook integration**: Use a lightweight `.gitlab-ci.yml` job in the enrolled repo (~~there is no native GitLab mechanism to trigger a pipeline directly from a webhook event~~ — ADR 0125 found GitLab's native "use a webhook" pipeline trigger does this directly, with no intermediary pipeline required) and calls the `.fullsend` trigger API. This keeps everything within GitLab CI/CD but **does not solve the security model** — enforcing protected-branch-only execution via `workflow:rules` prevents the pipeline from reacting to merge request events (which occur on unprotected branches), defeating the purpose. Without protected-branch enforcement, MR code can modify the webhook job.
 2. **GitLab serverless functions**: Use GitLab's serverless integration to deploy a function that receives webhooks and translates to trigger API calls. Maintains compute-platform agnosticism (runs within GitLab infrastructure) but requires GitLab Premium/Ultimate tier.
 3. **Minimal bridge service**: Deploy a lightweight translation service (e.g., Cloud Run, Lambda) that receives webhooks and POSTs to the trigger API. This reintroduces the "hosted webhook receiver" concern from ADR-0009 but may be acceptable given GitLab's lack of a direct webhook-to-pipeline primitive.
 
-**Open question**: The webhook-to-trigger translation requirement creates an architectural tension. Options 2 and 3 both introduce additional infrastructure (serverless functions or hosted bridge), while option 1 reintroduces the security concern that webhooks were meant to solve. For GitLab Free tier deployments, option 3 (minimal bridge) is likely the only viable path. For Premium/Ultimate, option 2 (serverless) keeps compute within GitLab infrastructure. See ADR-0028 "Open Questions" for full analysis. **Decided:** [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) eliminates webhooks entirely — cron-based polling via scheduled GitLab CI/CD pipelines replaces the webhook bridge, removing the need for any translation intermediary.
+**Open question**: The webhook-to-trigger translation requirement creates an architectural tension. Options 2 and 3 both introduce additional infrastructure (serverless functions or hosted bridge), while option 1 reintroduces the security concern that webhooks were meant to solve. For GitLab Free tier deployments, option 3 (minimal bridge) is likely the only viable path. For Premium/Ultimate, option 2 (serverless) keeps compute within GitLab infrastructure. See ADR-0028 "Open Questions" for full analysis. **Decided:** ~~[ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) eliminates webhooks entirely — cron-based polling via scheduled GitLab CI/CD pipelines replaces the webhook bridge, removing the need for any translation intermediary.~~ [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) refutes the translation-bridge requirement: GitLab's native "use a webhook" trigger pins `:ref` to the protected default branch. The ADR 0067 cron-poller remains the reconciliation backstop.
 
-**Security requirements for webhook translation intermediary**:
+**Security requirements for webhook translation intermediary** *(historical — describes the rejected translation-bridge design ([ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) Option C); no intermediary exists in the current same-project native-trigger model, where `:ref` is pinned in the trigger URL rather than enforced by a bridge)*:
 
 The intermediary (serverless function or bridge service) is a critical security component. It MUST:
 
@@ -491,11 +496,14 @@ func detectForge(repoURL string) (string, error) {
 ```yaml
 # repos.yaml (manifest)
 gitlab:
-  url: https://gitlab.example.com  # optional, defaults to gitlab.com
+  url: https://gitlab.example.com  # required whenever GitLab repos are present, including gitlab.com
 ```
 
 > **Note:** The original design proposed `gitlab_instance_url` in `config.yaml`;
-> the implementation uses `gitlab.url` in the repos manifest instead.
+> the implementation uses `gitlab.url` in the repos manifest instead, and requires it
+> (rather than defaulting to gitlab.com) whenever GitLab repos are present. See
+> [Configuring GitLab](../guides/getting-started/configuring-gitlab.md) for the
+> current setup flow.
 
 ### New Packages
 
@@ -531,6 +539,22 @@ Modified packages (minimized via forge.Client abstraction):
 - `FULLSEND_TRIAGE_TOKEN`, `FULLSEND_CODE_TOKEN`, `FULLSEND_REVIEW_TOKEN`, `FULLSEND_FIX_TOKEN` (per-role credentials)
 - `WEBHOOK_TOKEN_<sha256(project_path)>` (webhook validation tokens for each enrolled repo)
 - Any GCP/Anthropic/cloud provider credentials used by agents
+
+> The per-agent token names above are the abandoned webhook-era sketch
+> (one PAT per agent). The current registered-role contract — built-in
+> Poller, Analyst, and Coder plus administrator-registered custom roles,
+> with `FULLSEND_GITLAB_*_TOKEN` identifiers, a trusted install-state
+> registry, and an explicit role-identity gate — is defined in
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+> `repos install` provisions built-in and custom role credentials on
+> fresh and existing shared-token installs and, when every registered
+> role is ready, cuts over to `enforced` mode and retires
+> `FULLSEND_FORGE_TOKEN` automatically. GitLab CI poll/agent jobs and
+> `fullsend poll` / `fullsend run` select the registered role credential
+> in every gate mode and fail closed if it is missing; leftover
+> `disabled` and explicit `rollback` no longer authenticate with
+> `FULLSEND_FORGE_TOKEN`. Role registration is not accepted from
+> repository or merge-request content.
 
 **How protected variables work**: GitLab restricts protected variables to pipelines running on protected branches only. Pipelines triggered on unprotected branches cannot access these variables, regardless of how the pipeline was triggered (webhook, trigger API, manual, etc.).
 
@@ -589,14 +613,14 @@ GitLab supports [multi-project pipelines](https://docs.gitlab.com/ee/ci/pipeline
 
 ### Webhook-to-Trigger Translation Architecture
 
-**Problem**: GitLab webhooks (JSON payloads) and the pipeline trigger API (form-encoded parameters) are not wire-compatible. An intermediary is required to translate webhook events to trigger API calls.
+~~**Problem**: GitLab webhooks (JSON payloads) and the pipeline trigger API (form-encoded parameters) are not wire-compatible. An intermediary is required to translate webhook events to trigger API calls.~~ Decided in [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md): GitLab's native "use a webhook" trigger pins `:ref` in the URL, so no translation bridge is required. The ADR 0067 cron-poller remains the reconciliation backstop.
 
-**Options**:
+**Options** (historical):
 1. **GitLab CI/CD webhook integration**: Runs in enrolled repo, but cannot enforce protected-branch-only execution without blocking MR reactions entirely. Reintroduces security concern.
 2. **GitLab serverless functions**: Keeps compute within GitLab infrastructure, but requires GitLab Premium/Ultimate tier.
 3. **Minimal bridge service**: Works on GitLab Free tier, but reintroduces hosted webhook receiver concern from ADR-0009.
 
-**Status**: For GitLab Free tier, option 3 appears to be the only viable path. For Premium/Ultimate, option 2 keeps compute within GitLab infrastructure. This question should be resolved before production deployment. See ADR-0028 (Deprecated — see [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md)) "Open Questions" section for full analysis of trade-offs.
+**Status**: ~~For GitLab Free tier, option 3 appears to be the only viable path. For Premium/Ultimate, option 2 keeps compute within GitLab infrastructure. This question should be resolved before production deployment.~~ Resolved by [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md). See ADR-0028 (Deprecated — see [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md)) "Open Questions" section for the historical trade-off analysis.
 
 ### Forge Interface Design Details
 
@@ -612,6 +636,8 @@ GitLab supports [multi-project pipelines](https://docs.gitlab.com/ee/ci/pipeline
 - Agent Infrastructure design doc (for compute/isolation model)
 - Implementation PR for GitLab runner setup (for executor configuration)
 - Deployment guide (for runner registration and management)
+
+Private-CA trust is split the same way: job containers consume GitLab Runner's `CI_SERVER_TLS_CA_FILE`, while sandbox hosts are provisioned independently (the Kubernetes executor does not inherit the Podman VM OCI CA hook). See [Private CA (self-hosted GitLab)](../guides/getting-started/operations.md#private-ca-self-hosted-gitlab).
 
 **Assumption**: Agents will execute in isolated environments (containers or VMs) managed by GitLab runners, similar to the current GitHub Actions model. The dispatch pipelines (covered in this doc) trigger agent jobs; the agent execution details are implementation-specific.
 

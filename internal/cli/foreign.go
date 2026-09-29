@@ -18,7 +18,9 @@ func newForeignCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "foreign",
 		Short: "Manage cross-org mint authorization on a target org or repo",
-		Long: "Manage FULLSEND_FOREIGN_<role>_REPOS variables that authorize foreign workflows to mint tokens.\n\n" +
+		Long: "Manage FULLSEND_FOREIGN_<ROLE>_REPOS variables that authorize foreign workflows to mint tokens.\n\n" +
+			"<ROLE> is the role name uppercased with hyphens mapped to underscores\n" +
+			"(ci-check → FULLSEND_FOREIGN_CI_CHECK_REPOS).\n\n" +
 			"Without --repo, manages org-level variables (installation-wide grants).\n" +
 			"With --repo, manages repo-level variables (repo-scoped grants).\n\n" +
 			"--repo accepts owner/repo (e.g. acme/api) so --org can be omitted,\n" +

@@ -2,12 +2,14 @@ package security
 
 import (
 	"encoding/json"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
 
 // hookLibraryFile reports scripts shipped as imports for other hooks, not
@@ -620,4 +622,15 @@ func TestHookPlan_FailurePhaseFollowsSanitizersToo(t *testing.T) {
 	plan = HookPlan(SandboxHookConfigFromHarness(h))
 	assert.Equal(t, 0, countPhase(plan, HookPhasePostToolUseFailure))
 	assert.Equal(t, 0, countPhase(plan, HookPhasePostToolUse))
+}
+
+func TestSecretRedactHookPinsSandboxWorkspace(t *testing.T) {
+	// The hook hardcodes the checkout boundary as a Python literal that must
+	// match the runner's constant; a rename or move of SandboxWorkspace fails
+	// here instead of silently mis-scoping the checkout-scoped JWT skip.
+	pin := regexp.MustCompile(`(?m)^SANDBOX_WORKSPACE(?:\s*:\s*str)?\s*=\s*"` +
+		regexp.QuoteMeta(sandbox.SandboxWorkspace) + `"\s*$`)
+	if !pin.MatchString(string(SecretRedactPostToolHook)) {
+		t.Fatalf("secret_redact_posttool.py does not pin SANDBOX_WORKSPACE to %q", sandbox.SandboxWorkspace)
+	}
 }

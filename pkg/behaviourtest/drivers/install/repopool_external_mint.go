@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 // NewRepoPoolExternalMint is a Factory that returns a unified Driver
@@ -43,7 +43,10 @@ func NewRepoPoolExternalMint(
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens := newRepoEnsurer(ensCfg, client, token, binary, logf)
+	ens, err := newRepoEnsurer(ensCfg, client, token, binary, logf)
+	if err != nil {
+		return nil, fmt.Errorf("external mint factory: %w", err)
+	}
 	d, err := newComposedDriver(org, md, ens, poolSize, logf)
 	if err != nil {
 		return nil, err

@@ -56,8 +56,9 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
       # host files, and the project/region env is inlined here because the
       # scaffold ships no gcp-vertex.env. ${VAR} expands from the runner
       # environment set by setup-gcp.
-      profiles:
-        - profiles/fullsend-vertex-ai.yaml
+      openshell:
+        profiles:
+          - profiles/fullsend-vertex-ai.yaml
       providers:
         - providers/vertex-ai.yaml
       host_files:

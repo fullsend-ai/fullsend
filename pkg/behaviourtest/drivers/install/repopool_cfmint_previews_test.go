@@ -462,6 +462,21 @@ func TestEnvAppSet_Override(t *testing.T) {
 	assert.Equal(t, "my-app-set", envAppSet())
 }
 
+func TestEnvConfigPreset_Unset(t *testing.T) {
+	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "")
+	assert.Empty(t, envConfigPreset())
+}
+
+func TestEnvConfigPreset_Path(t *testing.T) {
+	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "./presets/bt.yaml")
+	assert.Equal(t, "./presets/bt.yaml", envConfigPreset())
+}
+
+func TestEnvConfigPreset_URL(t *testing.T) {
+	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "https://example.com/preset.yaml")
+	assert.Equal(t, "https://example.com/preset.yaml", envConfigPreset())
+}
+
 // --- NewRepoPoolCFMintPreviews factory tests ---
 
 func TestNewRepoPoolCFMintPreviews_NoPEMs_FailsEarly(t *testing.T) {

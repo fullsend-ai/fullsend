@@ -21,6 +21,11 @@ Accepted (partially supersedes static stage routing from
 [ADR 0041](0041-synchronous-workflow-call-event-dispatch.md); preserves its
 synchronous `workflow_call` execution model)
 
+Only the event-only CEL context is superseded by
+[ADR 0098](0098-entity-first-harness-evaluation.md), which retains one harness
+predicate but evaluates it against a resolved entity and optional event. The
+remaining decisions in this ADR remain accepted.
+
 ## Context
 
 Custom agents should be easy to author and portable across forges. Today, adding
@@ -72,9 +77,11 @@ Adopt **Option C**.
   [ADR 0015](0015-normative-specifications-directory.md)). **v1 normative scope
   is GitHub Actions** (`gha-event` driver); other forges are documented as
   future illustrations only. (Scope extended to GitLab cron-poll input by
-  [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md) and to Jira poll input
-  by [ADR 0063](0063-polling-based-work-discovery.md).) Examples and projection
-  rules live in the normative tree — not duplicated here.
+  [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md), to a GitLab native
+  webhook input by
+  [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md), and to Jira poll
+  input by [ADR 0063](0063-polling-based-work-discovery.md).) Examples and
+  projection rules live in the normative tree — not duplicated here.
 - **Authorization:** `fullsend dispatch` enforces
   [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md) as a
   **platform-level gate** after the input driver normalizes the event and

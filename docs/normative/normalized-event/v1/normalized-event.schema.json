@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://fullsend.ai/normative/normalized-event/v1/normalized-event.schema.json",
   "title": "NormalizedEvent",
-  "description": "Forge-neutral routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0061). v1 targets GitHub Actions webhooks (including Discussions via entity.kind conversation and transition.comment id/parent_id per ADR 0086), GitLab cron-poll input (ADR 0067), and Jira poll input (ADR 0063).",
+  "description": "Forge-neutral routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0061). v1 targets GitHub Actions webhooks (including Discussions via entity.kind conversation and transition.comment id/parent_id per ADR 0086), GitLab cron-poll input (ADR 0067) and planned GitLab native-webhook input (ADR 0125), and Jira poll input (ADR 0063).",
   "type": "object",
   "additionalProperties": false,
   "required": ["repo", "entity", "transition", "actor", "state", "source"],
@@ -444,7 +444,7 @@
         "system": {
           "type": "string",
           "enum": ["github", "gitlab", "jira", "manual", "schedule"],
-          "description": "Event provenance. v1 adapters emit github (webhooks), gitlab (cron-poll input), jira (poll input), manual, or schedule."
+          "description": "Event provenance. v1 adapters emit github (webhooks), gitlab (cron-poll input per ADR 0067; planned native-webhook input per ADR 0125), jira (poll input), manual, or schedule."
         },
         "raw_type": {
           "type": "string",

@@ -881,6 +881,8 @@ func TestPemSecretName(t *testing.T) {
 		{"coder", "CODER_APP_PEM"},
 		{"triage", "TRIAGE_APP_PEM"},
 		{"review", "REVIEW_APP_PEM"},
+		{"ci-check", "CI_CHECK_APP_PEM"},
+		{"fix", "CODER_APP_PEM"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.role, func(t *testing.T) {

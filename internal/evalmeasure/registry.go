@@ -79,6 +79,8 @@ func ScoreTrace(tr Trace, reg Registry) []EvaluationResult {
 		switch m.Scorer {
 		case ScorerFitness:
 			out = append(out, ScoreFitnessNamed(tr, m.evalName(), m.versionString()))
+		case ScorerRunHealth:
+			out = append(out, ScoreRunHealthNamed(tr, m.evalName(), m.versionString()))
 		default:
 			out = append(out, EvaluationResult{
 				Name:        m.evalName(),

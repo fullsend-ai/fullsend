@@ -14,6 +14,58 @@ This guide uses the [fullsend-ai/agents](https://github.com/fullsend-ai/agents) 
 
 ## Overview
 
+Building a custom agent takes four steps. `fullsend agent new` does the
+first one, which is most of the work:
+
+0. **Generate the skeleton** with `fullsend agent new`. It writes every file
+   an agent needs — how it runs, what it is allowed to do, which events start
+   it, and what happens to its output — and registers it. See below.
+1. **Write the instructions the agent follows.** This is the one file the
+   generator cannot fill in for you, because it is the actual job.
+2. **Test locally** with `fullsend run`. See [Testing locally](#testing-locally).
+3. **Commit and trigger it in CI.**
+
+The rest of this guide explains what step 0 generated, names each file, and
+shows how to change it. Read it when you need to go beyond the defaults, or if
+you would rather write everything yourself — the
+[four steps by hand](#the-four-steps-by-hand) below are the long form.
+
+### Step 0: generate the skeleton
+
+First complete [Before you begin](#before-you-begin) — `agent new` needs the
+fullsend CLI on your PATH and a repository you have already run
+`fullsend github setup` on. Actually running the agent afterwards needs the
+inference and GitHub App setup listed there too.
+
+Then [`fullsend agent new`](../../cli/agent.md#agent-new) writes a complete,
+valid, registered agent from a name and a role, so you edit prose rather than
+plumbing:
+
+```bash
+fullsend agent new lint-docs --fullsend-dir .fullsend \
+  --role triage --description "Check docs changes for broken links"
+```
+
+```
+  ✓ Created agent "lint-docs" in .fullsend
+  harness/lint-docs.yaml
+  agents/lint-docs.md
+  schemas/lint-docs-result.schema.json
+  scripts/post-lint-docs.sh
+  policies/base.yaml
+  providers/vertex-ai.yaml
+  providers/github-ro.yaml
+  profiles/fullsend-vertex-ai.yaml
+  profiles/fullsend-github-ro.yaml
+  ✓ Added agent "lint-docs"
+```
+
+That covers steps 1, 2 and 4 of the by-hand sequence below. Fill in the marked
+sections of `agents/lint-docs.md`, then go to
+[Testing locally](#testing-locally).
+
+### The four steps, by hand
+
 Building and deploying a custom agent takes four steps:
 
 1. **Create the harness and agent definition** — write a harness YAML file that defines _how_ the agent runs and a Markdown file that defines _what_ it does. See [Minimum viable agent](#minimum-viable-agent).
@@ -24,7 +76,7 @@ Building and deploying a custom agent takes four steps:
 ## Before you begin
 
 - **fullsend CLI** installed and available on your PATH.
-- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates the `.fullsend/` directory with `policies/`, `providers/`, and `profiles/` from the scaffold. For a standalone agent repo, you can create these files manually (see [Minimum viable agent](#minimum-viable-agent)).
+- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates `.fullsend/config.yaml` and the dispatch workflow. It does **not** create `policies/`, `providers/` or `profiles/`; [`fullsend agent new`](#step-0-generate-the-skeleton) writes those, and you commit them with the agent. Writing the harness by hand instead? [Minimum viable agent](#minimum-viable-agent) lists what to supply. GitLab repositories are scaffolded instead with `fullsend repos install --forge gitlab` and use role-specific project access tokens rather than GitHub Apps — see [Configuring GitLab](../getting-started/configuring-gitlab.md).
 - **GCP inference provisioned (CI only).** For agents running in GitHub Actions, run [`fullsend inference provision`](../../cli/inference.md) to set up Workload Identity Federation.
 - **GitHub Apps installed (CI only).** Your org needs the fullsend GitHub Apps — see [Configuring GitHub](../getting-started/configuring-github.md).
 
@@ -64,20 +116,22 @@ You do not need to write a GitHub Actions workflow file for each custom agent. T
 
 For local development and debugging, you can also run an agent directly with `fullsend run my-agent` — see [Testing locally](#testing-locally).
 
-**Security model:** agents run inside a sandboxed environment. The sandbox policy enforces filesystem access, landlock, and process identity. Network access is typically managed via **provider profiles** (YAML files in a `providers/` directory) referenced by name in the harness `providers:` list — the scaffold's shared `policies/base.yaml` contains no network rules, since built-in agents use providers. Custom agents can also use inline `network_policies` in a per-agent policy file if providers don't cover their needs. Pre-scripts run on the trusted runner _before_ the sandbox starts; post-scripts run _after_ it exits.
+**Security model:** agents run inside a sandboxed environment. The sandbox policy enforces filesystem access, landlock, and process identity. Network access is typically managed via **provider profiles** (YAML files in a `providers/` directory) referenced by name in the harness `providers:` list — the shared `policies/base.yaml` that `agent new` writes contains no network rules, since built-in agents use providers. Custom agents can also use inline `network_policies` in a per-agent policy file if providers don't cover their needs. Pre-scripts run on the trusted runner _before_ the sandbox starts; post-scripts run _after_ it exits.
 
 ## Minimum viable agent
 
-You need a harness, an agent definition, and supporting scaffold files. If your repo was set up with `fullsend github setup`, the `.fullsend/` directory already contains `policies/`, `providers/`, and `profiles/` from the scaffold — you only need to add `harness/my-agent.yaml` and `agents/my-agent.md`. For a standalone agent repo, copy the scaffold files or create the full layout:
+You need a harness, an agent definition, and three supporting files. [`fullsend agent new`](#step-0-generate-the-skeleton) writes all of them; the layout below is what it produces, and what you create yourself if you are building from scratch:
 
 ```
 .fullsend/
-+-- harness/my-agent.yaml                  # Execution config (you create)
-+-- agents/my-agent.md                     # Agent prompt (you create)
-+-- providers/vertex-ai.yaml               # Provider definition (from scaffold)
-+-- profiles/fullsend-vertex-ai.yaml       # Profile definition (from scaffold)
-+-- policies/base.yaml                     # Sandbox policy (from scaffold)
++-- harness/my-agent.yaml                  # Execution config (you write)
++-- agents/my-agent.md                     # Agent prompt (you write)
++-- providers/vertex-ai.yaml               # Provider definition — commit it; CI re-layers it from the scaffold
++-- profiles/fullsend-vertex-ai.yaml       # Profile definition — commit it; CI never supplies one (see note below)
++-- policies/base.yaml                     # Sandbox policy — commit it; CI never supplies one
 ```
+
+Commit all five. `fullsend github setup` creates none of the three supporting files, and in CI only `providers/` is layered in from the scaffold — the policy and the profile a run uses are the ones in your repository.
 
 **`harness/my-agent.yaml`:**
 ```yaml
@@ -86,6 +140,9 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest  # Pin to a digest before CI 
 policy: policies/base.yaml
 providers:
   - vertex-ai
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml  # required — see note below
 role: triage                        # a role your mint SERVES — not the agent's name (see note below)
 slug: my-org-my-agent               # install-time App discovery only; the mint never reads it
 trigger: |
@@ -94,6 +151,8 @@ trigger: |
     && event.transition.label.name == "ready-for-my-agent"
     && event.transition.label.action == "added"
 timeout_minutes: 15
+# privilege_levels:            # optional; omitted = write for every stage
+#   runtime: read              # LLM sandbox token; pre/post scripts stay write
 ```
 
 > **`role` is not the agent's name.** The agent's name is `name:` in its `.md`;
@@ -113,7 +172,7 @@ credentials:
   _NOOP_VERTEX_AI: ""
 ```
 
-**`profiles/fullsend-vertex-ai.yaml`** — profile definition (tells OpenShell what endpoints the `fullsend-vertex-ai` type grants access to). Copy this from the scaffold or [fullsend-ai/agents](https://github.com/fullsend-ai/agents):
+**`profiles/fullsend-vertex-ai.yaml`** — profile definition (tells OpenShell what endpoints the `fullsend-vertex-ai` type grants access to). `agent new` writes this; by hand, copy it from [fullsend-ai/agents](https://github.com/fullsend-ai/agents), which holds the fleet's copy:
 ```yaml
 id: fullsend-vertex-ai
 display_name: Fullsend Vertex AI
@@ -136,6 +195,8 @@ binaries:
   - "**/node"
   - "**/pi"
 ```
+
+> **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/fullsend-vertex-ai.yaml`).
 
 > **Note (CI only):** the provider profile above controls network access only; real credentials are delivered via `host_files` (see [real-world example](#real-world-example-the-triage-agent)). Make sure you've completed the GCP prerequisites in [Before you begin](#before-you-begin).
 
@@ -160,10 +221,12 @@ Your only output is the JSON result file.
 ````
 
 The agent's environment also carries its budget: `FULLSEND_TIMEOUT_MINUTES` (the harness's
-`timeout_minutes`) and `FULLSEND_ITERATION_DEADLINE` (Unix seconds at which the iteration is killed).
-Write the result before the deadline — see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline).
+`timeout_minutes`) and `FULLSEND_ITERATION_DEADLINE` (Unix seconds at which the iteration is killed),
+and `TRACEPARENT` (this iteration's agent-span W3C trace context, so runtime telemetry joins the
+Fullsend trace; empty when telemetry produced no valid span context). Write the result before the
+deadline — see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline).
 
-Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The six built-in profiles (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`) use framework-known `type` values (e.g. `fullsend-vertex-ai`, `fullsend-github`). To define a fully custom provider type, reference a remote provider definition together with a matching `openshell.profiles` entry (see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles)). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
+Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The six built-in profiles (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`) use framework-known `type` values (e.g. `fullsend-vertex-ai`, `fullsend-github`), but — like a fully custom provider type — still need a matching `openshell.profiles` entry (or one inherited via `base:` composition) to be imported; only the profile's `type` value is framework-known, not its import path. When defining a fully custom provider type, reference a remote provider definition together with a matching `openshell.profiles` entry (see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles)). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
 
 **Next steps:** [Register your agent](#registering-your-agent) so dispatch discovers it, then [write a CEL trigger](cel-triggers-reference.md#writing-cel-triggers) to control when it runs. To iterate on your agent locally before registering, see [Testing locally](#testing-locally).
 
@@ -273,6 +336,8 @@ Pre and post scripts run on the trusted runner outside the sandbox.
 
 **Security:** treat agent output as untrusted input. Validate JSON structure, validate field values against allowlists, quote all variables, and limit string lengths.
 
+Post-scripts act with the role's minted token. Actions that need permissions no role grants (re-running CI jobs, dispatching workflows, deploying) belong in a follow-up workflow you own, chained on the run's artifact — see [Chaining Follow-up Workflows](chaining-follow-up-workflows.md).
+
 ## Harness composition with `base`
 
 Inherit from an existing harness and override only what differs:
@@ -316,7 +381,7 @@ Most agents need additional flags for credentials and target repo — see [Runni
 
 Register agents in `.fullsend/config.yaml` so fullsend discovers them. Registration is what makes your agent visible to dispatch — without it, the agent can only be invoked via `fullsend run`.
 
-Authentication for CLI commands uses the `gh` CLI or `GH_TOKEN` environment variable. For URL agents, the CLI resolves GitHub blob URLs to `raw.githubusercontent.com` URLs automatically.
+Authentication for CLI commands uses `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token` (in that order). For URL agents, the CLI resolves GitHub blob URLs to `raw.githubusercontent.com` URLs automatically.
 
 Harness agents route via CEL triggers on arbitrary labels — there is no prefix constraint.
 
@@ -334,6 +399,7 @@ fullsend agent add harness/my-agent.yaml --name my-agent --fullsend-dir .fullsen
 # List / update / remove:
 fullsend agent list --fullsend-dir .fullsend
 fullsend agent update triage <sha> --fullsend-dir .fullsend
+fullsend agent update code --fullsend-dir .fullsend   # re-pins base: in a local harness
 fullsend agent remove triage --fullsend-dir .fullsend
 ```
 
@@ -365,6 +431,8 @@ allowed_remote_resources:
 |---------|-----|
 | `API Error: Error code policy_denied` on the first model call (agent exits after ~2 s, 0 tokens) | The sandbox gateway denied the agent's *binary*, not the model. Check your profile's `binaries:` list has both `**/claude` and `**/claude.exe` (Claude Code 2.1.2xx runs as `claude.exe`). To see exactly which binary was denied: `grep DENIED <run-dir>/logs/openshell-sandbox.log` — see [Debugging network policies locally](running-agents-locally.md#debugging-network-policies-locally) |
 | Agent crashes at 0s | Sandbox can't reach Vertex AI — verify that `providers/vertex-ai.yaml` is listed in your harness `providers:` and that `ANTHROPIC_VERTEX_PROJECT_ID`/`CLOUD_ML_REGION` are set (in your `--env-file` for local runs, or in the workflow `env` block for CI) |
+| `unknown role "..."` from `agent new` | The hosted mint serves five roles — see the table in [`agent new`](../../cli/agent.md#roles); for a custom role see [Custom Agent Identity](custom-agent-identity.md) |
+| Agent never fires, no error anywhere | The harness has no `trigger:`. A trigger-less agent registers and validates but is silently skipped by dispatch — `fullsend agent new` always writes one |
 | "role field is required" | Add `role:` to harness |
 | `403` / "role not allowed" from the mint | Your `role:` is not one the mint serves. On the hosted mint use a built-in role (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); for a custom role, point `FULLSEND_MINT_URL` at your own mint — see [Custom Agent Identity](custom-agent-identity.md) |
 | Agent can't find input files | Pre-script output paths must match `host_files` entries |
@@ -382,6 +450,7 @@ allowed_remote_resources:
 - [fullsend-ai/agents](https://github.com/fullsend-ai/agents) — reference implementation used throughout this guide
 - [Harness Field Reference](../../reference/harness-reference.md) — complete harness YAML field reference, merge rules, and resource referencing
 - [Custom Agent Identity](custom-agent-identity.md) — using a standalone mint for custom GitHub App identity
+- [Chaining Follow-up Workflows](chaining-follow-up-workflows.md) — act on an agent's result from your own workflow with the job token
 - [CEL Triggers Reference](cel-triggers-reference.md) — dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Configuring with Skills](customizing-with-skills.md) — creating and managing skills; [authoring augmentations](customizing-with-skills.md#authoring-skills-that-augment-defaults)
 - [`author-fullsend-augmentations` skill](../../../skills/author-fullsend-augmentations/SKILL.md) — discovery-driven guide for writing skills and sub-agents that complement shipped defaults

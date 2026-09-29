@@ -46,6 +46,9 @@ func TestKillStrayProcessesScript_Invariants(t *testing.T) {
 	assert.Contains(t, script, "kill -s KILL")
 	// A failed listing must be distinguishable from "nothing to kill".
 	assert.Contains(t, script, "echo 'stray processes: ps failed' >&2\n  exit 3\n")
+	// So must a failed awk that turns that listing into targets: without
+	// the guard, an empty targets is reported as a clean sweep.
+	assert.Contains(t, script, "echo 'stray processes: awk failed' >&2\n  exit 3\n")
 	// So must a failed liveness probe, which prints nothing and exits 1
 	// exactly like "none of those pids exist"; the KILL pass still runs
 	// over everything that was TERMed before the snippet gives up.
@@ -126,6 +129,19 @@ func TestKillStrayProcesses_PsFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "ps failed")
 }
 
+// Same for the awk that turns the listing into targets: a silent zero
+// would leave a stray holding the mailbox between steered turns.
+func TestKillStrayProcesses_AwkFailure(t *testing.T) {
+	t.Parallel()
+
+	var calls []string
+	n, err := killStrayProcesses(recordingExec(&calls, "", "stray processes: awk failed\n", 3, nil), "sb")
+	require.Error(t, err)
+	assert.Equal(t, 0, n)
+	assert.Contains(t, err.Error(), "exit 3")
+	assert.Contains(t, err.Error(), "awk failed")
+}
+
 func TestKillStrayProcesses_UnexpectedOutput(t *testing.T) {
 	t.Parallel()
 
@@ -192,4 +208,32 @@ func TestClearStrayProcesses_WarnsOnPsFailure(t *testing.T) {
 	clearStrayProcesses(recordingExec(&calls, "", "stray processes: ps failed\n", 3, nil), "sb", &out, "the previous iteration")
 	assert.Contains(t, out.String(), "Warning")
 	assert.Contains(t, out.String(), "ps failed")
+}
+
+// Between-iteration rendering: awk failure is a warning, never a clean sweep.
+func TestClearStrayProcesses_WarnsOnAwkFailure(t *testing.T) {
+	t.Parallel()
+
+	var calls []string
+	var out bytes.Buffer
+	clearStrayProcesses(recordingExec(&calls, "", "stray processes: awk failed\n", 3, nil), "sb", &out, "the previous iteration")
+	assert.Contains(t, out.String(), "Warning")
+	assert.Contains(t, out.String(), "awk failed")
+}
+
+// Timeout rendering (TerminateStrayProcesses): the same awk-failure exit
+// must warn rather than look like a clean sweep of the timed-out iteration.
+func TestTerminateStrayProcesses_WarnsOnAwkFailure(t *testing.T) {
+	var calls []string
+	orig := terminateExecFn
+	terminateExecFn = recordingExec(&calls, "", "stray processes: awk failed\n", 3, nil)
+	t.Cleanup(func() { terminateExecFn = orig })
+
+	var out bytes.Buffer
+	TerminateStrayProcesses("sb", &out)
+	require.Len(t, calls, 1)
+	assert.Equal(t, killStrayProcessesScript(), calls[0])
+	assert.Contains(t, out.String(), "Warning")
+	assert.Contains(t, out.String(), "the timed-out iteration")
+	assert.Contains(t, out.String(), "awk failed")
 }

@@ -5,7 +5,8 @@ through the layered config system introduced by
 [ADR 0069](../../ADRs/0069-ready-made-configuration-presets.md) Decision 2.
 
 For initial setup instructions, see
-[Configuring GitHub](../getting-started/configuring-github.md). For advanced
+[Configuring GitHub](../getting-started/configuring-github.md) or
+[Configuring GitLab](../getting-started/configuring-gitlab.md). For advanced
 installation variants, see [Advanced Setup](advanced-setup.md).
 
 ## Overview
@@ -33,6 +34,45 @@ code defaults (compiled into fullsend)
 
 Existing installations without `config.base.yaml` are unaffected — the
 overlay falls through directly to code defaults.
+
+`fullsend github setup --config` commits the preset as `config.base.yaml`
+and writes only explicitly passed persistent setup flags into
+`config.yaml`. Required values such as `inference.project` may come from
+the preset alone; CLI flags override the same keys without rewriting the
+preset file.
+
+`fullsend repos install` uses the same preset implementation. Declare a
+default source in `defaults.config_base.source` (optional
+`defaults.config_base.sha256`) or override it per repository with
+`config_base`. The `none` sentinel disables inheritance. Convergence writes the fetched bytes to
+`config.base.yaml`; this preset-application step never edits the overlay
+itself (see below for managed-configuration convergence, which does rewrite the
+overlay on drift). `repos status` reports base-file drift only when a
+preset is declared. See
+[Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
+
+Fleet manifests may also declare managed configuration via
+`defaults.config` and per-repository `config` ([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)).
+Those blocks are not `config_base` presets: `config` is a sparse overlay
+written to `.fullsend/config.yaml`, while `config_base` copies a preset
+byte-for-byte to `.fullsend/config.base.yaml`. Managed blocks use this
+same schema and the per-field merge rules below.
+`runtime` and `allowed_remote_resources` stay on the existing manifest
+shorthands and are rejected inside `config`. Managed configuration is
+opt-in: `defaults.config` opts every repository in; a repository `config`
+opts in only that repository. Every managed file carries an ownership
+marker; a pre-existing `config.yaml` that lacks the marker requires
+adoption — `repos status` reports "managed configuration (adoption
+required)" instead of ordinary drift, and install/convergence leave that
+file untouched until it is adopted. Once a file carries the marker,
+`repos install` writes the canonical sparse configuration for opted-in
+repositories, `repos status` reports whole-file managed-configuration
+drift, and convergence rewrites a drifted file unless the candidate would
+become less restrictive than the current effective configuration without
+an explicit manifest declaration. That comparison uses the overlay → base
+→ code-defaults accessor chain, including omitted-key fallthrough. Unmanaged
+repositories are left untouched. See
+[Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration).
 
 ### Marshal behavior
 
@@ -91,6 +131,10 @@ the overlay → base → code defaults chain.
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
+| `authorization` | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |
+
+`authorization` is overlay-only: setting it in `config.base.yaml` has no
+effect, so each repo must opt in explicitly.
 
 ### Per-agent `runtime`, `model`, `effort`, `subagents` on `agents:` entries
 
@@ -385,6 +429,44 @@ The `status_notifications` field uses the same replace-if-set semantics as
 - Non-nil — replaces the parent value entirely, including nested
   `comment.start`/`comment.completion` settings.
 
+### `authorization` — provider list
+
+The `authorization` field is a list of authorization providers that
+supplement the default collaborator-API permission check. Native GitHub
+collaborator-API auth always runs implicitly; the list names additional
+backends. Currently one provider is supported:
+
+- `owners_file` — the dispatch routing logic checks the repo-root
+  `OWNERS` file (and `OWNERS_ALIASES` if present) before falling back
+  to the GitHub collaborator API. OWNERS approvers get write-equivalent
+  access; reviewers get triage-equivalent. If the user is not listed in
+  OWNERS, authorization falls through to the collaborator API — OWNERS
+  never blocks a collaborator who isn't in the file. An entry that names
+  an `OWNERS_ALIASES` key matches only that alias's members. A login
+  equal to any alias key never matches, and nested aliases are not
+  expanded.
+
+Both the bash routing path (built-in stages) and the Go harness-dispatch
+path (custom agents) consult OWNERS. The Go path admits write-level roles
+only, so a reviewer's triage-level grant covers built-in observation stages
+(`/fs-triage`, `/fs-review`) but not custom agents. A missing or malformed `OWNERS`
+file, or a malformed `OWNERS_ALIASES` file, fails closed: the OWNERS check is
+skipped and authorization falls through to the collaborator API.
+
+v1 limitation: only the repo-root flat `approvers`/`reviewers` lists
+are read. Prow `filters:` blocks and nested per-directory OWNERS files
+are not supported.
+
+Example:
+
+```yaml
+authorization:
+  - provider: owners_file
+```
+
+See [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
+for the full design rationale.
+
 ## Code defaults reference
 
 When neither the overlay nor the base layer sets a field, the following
@@ -409,6 +491,7 @@ compiled-in defaults apply:
 | `models.aliases` | `nil` (fleet alias table compiled into the runtimes) |
 | `create_issues` | `nil` |
 | `status_notifications` | `nil` |
+| `authorization` | `nil` |
 
 ## Related
 
@@ -419,4 +502,6 @@ compiled-in defaults apply:
 - [ADR 0033 — Per-repo installation mode](../../ADRs/0033-per-repo-installation-mode.md)
   — per-repo config file location and format.
 - [Configuring GitHub](../getting-started/configuring-github.md) — initial
+  per-repo setup guide.
+- [Configuring GitLab](../getting-started/configuring-gitlab.md) — initial
   per-repo setup guide.

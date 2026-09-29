@@ -6,14 +6,17 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
-	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
+	"github.com/fullsend-ai/fullsend/internal/poll"
+	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -81,9 +84,14 @@ type InstallConfig struct {
 	// provenance of prior review comments.
 	ReviewAppClientID string
 
-	// RunnerTags is a list of GitLab CI runner tags to embed in scaffold
-	// pipeline YAML so that agent jobs are routed to specific runners.
-	RunnerTags []string
+	// AgentRunnerTags is a list of GitLab CI runner tags embedded in the
+	// agent job so sandbox work is routed to the data-plane fleet.
+	AgentRunnerTags []string
+
+	// ControlRunnerTags is a list of GitLab CI runner tags embedded in
+	// control-plane jobs (poll today). Independent of AgentRunnerTags:
+	// unset renders an empty (untagged) tag list, not the agent tags.
+	ControlRunnerTags []string
 
 	// Direct controls scaffold delivery: true pushes directly to the default
 	// branch; false creates a PR.
@@ -95,11 +103,44 @@ type InstallConfig struct {
 	// empty and secret writes are skipped.
 	ReuseSecrets bool
 
+	// ExistingSecrets lists the repo secret names (e.g.
+	// FULLSEND_GCP_PROJECT_ID) already confirmed present on the repo
+	// before this install runs. Install skips writing any secret named
+	// here individually, so an already-present secret is left untouched
+	// even when ReuseSecrets is false because only some of the required
+	// secrets exist yet (a partial-secret, workflow-missing re-install —
+	// see convergeRepo). ReuseSecrets remains the all-or-nothing signal
+	// used for the WIF-provider validation and progress messaging when
+	// every required secret already exists.
+	ExistingSecrets []string
+
 	// PrebuiltScaffoldFiles, when non-nil, replaces the embedded scaffold
 	// template collection. Used when fullsend_ref pins to a version that
 	// differs from the running binary, so templates are fetched from the
 	// fullsend-ai/fullsend repo at the pinned ref.
 	PrebuiltScaffoldFiles scaffold.InstallFiles
+
+	// Preset, when non-nil, is written byte-for-byte as
+	// .fullsend/config.base.yaml. The overlay is generated independently
+	// unless ManagedConfig is set.
+	Preset []byte
+
+	// ManagedConfig, when non-nil, is written as .fullsend/config.yaml
+	// instead of generating an installer overlay. Used for config-managed
+	// repositories (ADR 0122). Unmanaged repos leave this nil so existing
+	// installer generation is preserved.
+	ManagedConfig []byte
+
+	// ManagedConfigAdoptionRequired, when true, skips writing
+	// .fullsend/config.yaml entirely, even though ManagedConfig may be
+	// set: the caller found an existing file that does not carry the
+	// ADR-0122 ownership marker, or the pre-write safety gate rejected
+	// the candidate, so the file must be left untouched — the same
+	// contract convergeManagedConfigFiles enforces on the already-
+	// installed path. Callers that do not check for adoption or the
+	// safety gate (repos outside the managed-configuration install/
+	// converge flow) leave this false so existing behavior is unchanged.
+	ManagedConfigAdoptionRequired bool
 }
 
 // InstallResult holds the outcome of a per-repo installation.
@@ -118,10 +159,12 @@ type InstallResult struct {
 // ScaffoldCommitFunc delivers scaffold files to a repository and returns
 // any error encountered.
 //
-// The installed parameter indicates whether this repo already had fullsend
-// components before this operation (true = upgrade, false = fresh install).
-// CLI implementations use this to select the appropriate commit message and
-// PR title without making extra API calls.
+// The installed parameter indicates whether the shim workflow is already
+// on the default branch (true = upgrade, false = fresh install). CLI
+// implementations use this to select the appropriate commit message, PR
+// title, and branch. Fresh-install metadata (DefaultScaffoldBranch) must
+// be used until that workflow lands, even if variables or secrets already
+// exist from a previous incomplete run.
 //
 // The CLI layer provides an implementation wrapping layers.CommitScaffoldFiles,
 // which adds retry on non-fast-forward errors, branch-protection fallback to
@@ -240,18 +283,51 @@ func Install(ctx context.Context, cfg InstallConfig,
 	}
 	progress(repoFullName, "vars", fmt.Sprintf("Set %d repository variables", len(repoVars)))
 
-	// Step 6: Write repository secrets. Skipped when reusing existing secrets.
+	// Step 5b: GitLab poll-state branches. Create both HMAC-signed
+	// state documents now, seeded from any leftover legacy CI/CD
+	// vars, then delete those vars so they are not re-seeded.
+	if cfg.Forge == ForgeGitLab {
+		progress(repoFullName, "poll-state", "Seeding poll-state branches")
+		if err := seedGitLabPollState(ctx, client, cfg.Owner, cfg.Repo); err != nil {
+			return result, err
+		}
+		progress(repoFullName, "poll-state", "Poll-state branches seeded")
+		progress(repoFullName, "poll-state", "Retiring legacy poll-state variables")
+		for _, a := range retireGitLabLegacyVars(ctx, client, cfg.Owner, cfg.Repo, false, progress) {
+			if a.Action == "error" {
+				return result, errors.New(a.Detail)
+			}
+		}
+	}
+
+	// Step 6: Write repository secrets. Skipped entirely when reusing all
+	// existing secrets; otherwise each secret already present (per
+	// ExistingSecrets) is left untouched and only the missing ones are
+	// written, so a partial secret state does not get an already-written
+	// secret silently retargeted (e.g. by a re-run with a different
+	// --inference-project or resolved WIF provider).
 	repoSecrets := installSecretsForForge(cfg, wifProvider)
 	if cfg.ReuseSecrets {
 		progress(repoFullName, "secrets", "Reusing existing repository secrets")
 	} else if len(repoSecrets) > 0 {
+		existing := make(map[string]bool, len(cfg.ExistingSecrets))
+		for _, name := range cfg.ExistingSecrets {
+			existing[name] = true
+		}
 		progress(repoFullName, "secrets", "Configuring repository secrets")
+		written := 0
 		for _, name := range maputil.SortedKeys(repoSecrets) {
+			if existing[name] {
+				continue
+			}
 			if err := client.CreateRepoSecret(ctx, cfg.Owner, cfg.Repo, name, repoSecrets[name]); err != nil {
 				return result, fmt.Errorf("setting repo secret %s: %w", name, err)
 			}
+			written++
 		}
-		progress(repoFullName, "secrets", fmt.Sprintf("Set %d repository secrets", len(repoSecrets)))
+		if written > 0 {
+			progress(repoFullName, "secrets", fmt.Sprintf("Set %d repository secrets", written))
+		}
 	}
 
 	// Step 7: Commit scaffold files via the caller-provided commit function.
@@ -281,9 +357,15 @@ type DriftConfig struct {
 	// GitHub App. Only available from CLI flags on repos install.
 	ReviewAppClientID string
 
-	// RunnerTags is a list of GitLab CI runner tags from the manifest's
-	// GitLab platform section.
-	RunnerTags []string
+	// AgentRunnerTags is a list of GitLab CI runner tags from the
+	// manifest's GitLab platform section for agent (data-plane) jobs.
+	AgentRunnerTags []string
+
+	// ControlRunnerTags is a list of GitLab CI runner tags from the
+	// manifest's GitLab platform section for control-plane jobs. Already
+	// resolved through gitlabControlRunnerTags; independent of
+	// AgentRunnerTags, so an unset control_runner_tags stays empty here.
+	ControlRunnerTags []string
 }
 
 // driftInstallConfig constructs the InstallConfig used by both the
@@ -305,7 +387,8 @@ func driftInstallConfig(resolved ResolvedConfig, dcfg DriftConfig) InstallConfig
 		VendorBinary:      resolved.Vendor,
 		InferenceRegion:   dcfg.InferenceRegion,
 		ReviewAppClientID: dcfg.ReviewAppClientID,
-		RunnerTags:        dcfg.RunnerTags,
+		AgentRunnerTags:   dcfg.AgentRunnerTags,
+		ControlRunnerTags: dcfg.ControlRunnerTags,
 	}
 }
 
@@ -349,7 +432,7 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 		scaffoldFiles, fetchErr := FetchRemoteScaffold(
 			ctx, refResolver.client,
 			manifestRef, ref, resolved.Forge,
-			dcfg.RunnerTags,
+			dcfg.AgentRunnerTags, dcfg.ControlRunnerTags,
 			installCfg.VendorBinary,
 		)
 		if fetchErr == nil {
@@ -366,22 +449,50 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 // Exported so the CLI dry-run path can display the file list without running
 // the full install.
 func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
-	var perRepoCfg config.PerRepoConfigWriter
-	if cfg.PerRepoConfig != nil {
-		perRepoCfg = cfg.PerRepoConfig
-	} else {
-		generated := config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
-		if cfg.Runtime != "" {
-			generated.SetRuntime(cfg.Runtime)
+	var cfgYAML []byte
+	var err error
+	if !cfg.ManagedConfigAdoptionRequired {
+		if cfg.ManagedConfig != nil {
+			cfgYAML = cfg.ManagedConfig
+		} else {
+			var perRepoCfg config.PerRepoConfigWriter
+			switch {
+			case cfg.PerRepoConfig != nil:
+				perRepoCfg = cfg.PerRepoConfig
+			case len(cfg.Preset) > 0:
+				// A base preset layer is declared: build a stub overlay with
+				// only explicit fleet overrides (mirroring buildPresetOverlay
+				// in `github setup --config`), rather than NewPerRepoConfig's
+				// full defaults. Layered accessors prefer the overlay over the
+				// base, so materializing default roles/allowed_remote_resources/
+				// create_issues here would silently shadow the preset's values.
+				// cfg.Roles is only non-empty when the caller explicitly
+				// requested roles (see defaultRoles in converge.go); an unset
+				// Roles here lets the preset (or its own fallback defaults)
+				// take effect through the overlay -> base -> code-default chain.
+				overlay := config.NewEmptyPerRepoOverlay()
+				if len(cfg.Roles) > 0 {
+					overlay.SetRoles(cfg.Roles)
+				}
+				if cfg.Runtime != "" {
+					overlay.SetRuntime(cfg.Runtime)
+				}
+				perRepoCfg = overlay
+			default:
+				generated := config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
+				if cfg.Runtime != "" {
+					generated.SetRuntime(cfg.Runtime)
+				}
+				perRepoCfg = generated
+			}
+			if err := perRepoCfg.Validate(); err != nil {
+				return nil, fmt.Errorf("invalid config: %w", err)
+			}
+			cfgYAML, err = perRepoCfg.Marshal()
+			if err != nil {
+				return nil, fmt.Errorf("marshaling config: %w", err)
+			}
 		}
-		perRepoCfg = generated
-	}
-	if err := perRepoCfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
-	}
-	cfgYAML, err := perRepoCfg.Marshal()
-	if err != nil {
-		return nil, fmt.Errorf("marshaling config: %w", err)
 	}
 
 	var installFiles scaffold.InstallFiles
@@ -392,7 +503,7 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 		case ForgeGitHub:
 			installFiles, err = scaffold.CollectPerRepoInstallFiles(cfg.VendorBinary, cfg.UpstreamRef, cfg.UpstreamTag)
 		case ForgeGitLab:
-			installFiles, err = scaffold.CollectGitLabPerRepoInstallFiles(cfg.RunnerTags, cfg.UpstreamRef, cfg.UpstreamTag)
+			installFiles, err = scaffold.CollectGitLabPerRepoInstallFiles(cfg.AgentRunnerTags, cfg.ControlRunnerTags, cfg.UpstreamRef, cfg.UpstreamTag)
 		default:
 			return nil, fmt.Errorf("unsupported forge %q for scaffold generation", cfg.Forge)
 		}
@@ -409,11 +520,21 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 			Mode:    f.Mode,
 		})
 	}
-	files = append(files, forge.TreeFile{
-		Path:    ".fullsend/config.yaml",
-		Content: cfgYAML,
-		Mode:    "100644",
-	})
+	if !cfg.ManagedConfigAdoptionRequired {
+		files = append(files, forge.TreeFile{
+			Path:    ".fullsend/config.yaml",
+			Content: cfgYAML,
+			Mode:    "100644",
+		})
+	}
+	if len(cfg.Preset) > 0 {
+		plan := preset.Apply(cfg.Preset, nil, nil)
+		files = append(files, forge.TreeFile{
+			Path:    preset.BasePath,
+			Content: plan.Base,
+			Mode:    "100644",
+		})
+	}
 
 	return files, nil
 }
@@ -447,16 +568,7 @@ func managedVarsForForge(cfg InstallConfig, mintURL string) ([]ManagedVar, error
 		}
 		return vars, nil
 	case ForgeGitLab:
-		now := time.Now().UTC().Format(time.RFC3339)
-		vars := []ManagedVar{
-			{Name: forge.VarLastPollAtFast, Value: now, Dynamic: true},
-			{Name: forge.VarLastPollAtFull, Value: now, Dynamic: true},
-			{Name: forge.VarLabelState, Value: "{}", Dynamic: true},
-			{Name: forge.VarDispatchedKeysFast, Value: "{}", Dynamic: true},
-			{Name: forge.VarDispatchedKeysFull, Value: "{}", Dynamic: true},
-			{Name: forge.VarFailedKeysFast, Value: "{}", Dynamic: true},
-			{Name: forge.VarFailedKeysFull, Value: "{}", Dynamic: true},
-		}
+		var vars []ManagedVar
 		if cfg.InferenceRegion != "" {
 			vars = append(vars, ManagedVar{Name: forge.VarGCPRegion, Value: cfg.InferenceRegion})
 		}
@@ -523,15 +635,115 @@ var requiredVariables = []string{forge.VarMintURL}
 // and uninstall.
 var requiredSecrets = []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider}
 
-var gitlabRequiredVariables = []string{
+// gitlabRetiredLegacyVars is the set of GitLab poller CI/CD variables
+// superseded by HMAC-signed state.json on fullsend-poll-state-slash
+// and fullsend-poll-state-events. Distinct from the active managed
+// set: install does not seed them, CheckOrphanVars treats them as
+// known-retired (no spurious warnings), and converge migrate-then-
+// deletes any that are still present.
+var gitlabRetiredLegacyVars = []string{
 	forge.VarLastPollAtFast, forge.VarLastPollAtFull, forge.VarLabelState,
 	forge.VarDispatchedKeysFast, forge.VarDispatchedKeysFull,
 	forge.VarFailedKeysFast, forge.VarFailedKeysFull,
 }
 
+// gitlabPollStateBranches are the two HMAC-signed poll-state branches
+// created at install/converge. They are managed git refs, not scaffold
+// files on the default branch, so orphan-file detection never sees
+// them; any future orphan-branch detector must treat this set as
+// known-managed.
+var gitlabPollStateBranches = []string{
+	poll.PollStateBranchSlash,
+	poll.PollStateBranchEvents,
+}
+
+// seedGitLabPollState provisions FULLSEND_DISPATCH_SECRET if missing
+// and creates both poll-state branches with HMAC-signed state.json,
+// migrating any present legacy CI/CD variables. Idempotent: existing
+// signed documents are left untouched.
+func seedGitLabPollState(ctx context.Context, client forge.Client, owner, repo string) error {
+	secret, _, err := poll.EnsureDispatchSecret(ctx, client, owner, repo)
+	if err != nil {
+		return fmt.Errorf("provisioning dispatch secret: %w", err)
+	}
+	if _, err := poll.SeedGitLabPollStateBranches(ctx, client, owner, repo, secret); err != nil {
+		return fmt.Errorf("seeding poll-state branches: %w", err)
+	}
+	return nil
+}
+
+// retireGitLabLegacyVars migrates still-present retired poll-state
+// CI/CD variables into the branch-backed store (if the branches are
+// missing) and then deletes the variables. Idempotent: a repo whose
+// retired vars are already gone is a no-op. Dry-run reports the
+// deletions without writing.
+func retireGitLabLegacyVars(ctx context.Context, client forge.Client, owner, repo string, dryRun bool, progress ProgressFunc) []ComponentAction {
+	repoFullName := owner + "/" + repo
+	vars, err := client.ListRepoVariables(ctx, owner, repo)
+	if err != nil {
+		return []ComponentAction{{
+			Component: "variables",
+			Action:    "error",
+			Detail:    fmt.Sprintf("listing variables to retire legacy poll state: %v", err),
+		}}
+	}
+
+	var present []string
+	for _, name := range gitlabRetiredLegacyVars {
+		if _, ok := vars[name]; ok {
+			present = append(present, name)
+		}
+	}
+	if len(present) == 0 {
+		return nil
+	}
+
+	if dryRun {
+		var actions []ComponentAction
+		for _, name := range present {
+			actions = append(actions, ComponentAction{
+				Component: "var:" + name,
+				Action:    "delete",
+				Detail:    fmt.Sprintf("would migrate then delete retired variable %s", name),
+			})
+			progress(repoFullName, "dry-run", fmt.Sprintf("Would migrate then delete retired variable %s", name))
+		}
+		return actions
+	}
+
+	if err := seedGitLabPollState(ctx, client, owner, repo); err != nil {
+		return []ComponentAction{{
+			Component: "poll-state",
+			Action:    "error",
+			Detail:    fmt.Sprintf("migrating retired poll-state variables into branches: %v", err),
+		}}
+	}
+
+	var actions []ComponentAction
+	for _, name := range present {
+		if err := client.DeleteRepoVariable(ctx, owner, repo, name); err != nil {
+			actions = append(actions, ComponentAction{
+				Component: "var:" + name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("failed to delete retired variable %s: %v", name, err),
+			})
+			continue
+		}
+		actions = append(actions, ComponentAction{
+			Component: "var:" + name,
+			Action:    "delete",
+			Detail:    fmt.Sprintf("migrated then deleted retired variable %s", name),
+		})
+		progress(repoFullName, "sync", fmt.Sprintf("Deleted retired variable %s", name))
+	}
+	return actions
+}
+
 func requiredVarsForForge(forgeName string) []string {
 	if forgeName == ForgeGitLab {
-		return gitlabRequiredVariables
+		// GitLab poller state lives on poll-state branches, not CI/CD
+		// variables. There are no required GitLab variables.
+		return nil
 	}
 	return requiredVariables
 }
@@ -541,8 +753,25 @@ func requiredVarsForForge(forgeName string) []string {
 // secrets are stored as masked CI/CD variables and ListRepoVariables
 // returns them — excluding them from the required set would cause
 // orphan detection to flag them as false positives.
+//
+// GitLab role tokens (FULLSEND_GITLAB_*_TOKEN) and the role registry
+// stay optional in this required set so existing installations and
+// partial migrations do not fail health checks. Missing role secrets
+// under an enabled gate are reported by Diagnose / repos status, not
+// by requiredSecretsForForge. See internal/gitlabroles.
 func requiredSecretsForForge(forgeName string) []string {
+	return requiredSecretsForForgeMode(forgeName, "", false)
+}
+
+func requiredSecretsForForgeMode(forgeName, migrationMode string, migrationExists bool) []string {
 	if forgeName == ForgeGitLab {
+		mode, err := gitlabroles.ParseMode(migrationMode)
+		if migrationExists && err == nil && mode == gitlabroles.ModeEnforced {
+			return requiredSecrets
+		}
+		if migrationExists && err != nil {
+			return requiredSecrets
+		}
 		return slices.Concat(requiredSecrets, []string{forge.SecretForgeToken})
 	}
 	return requiredSecrets
