@@ -98,7 +98,23 @@ func ValidName(name string) bool {
 // share a leaf directory (github, gitlab) upload to distinct destinations.
 // When the frontmatter is missing, unreadable, or not a valid name, it
 // falls back to filepath.Base.
+//
+// Declared names are only consulted for already-resolved absolute paths
+// (cache paths, or paths that went through ResolveRelativeTo). mergeSkills
+// calls SandboxName during base composition, which runs before
+// ResolveRelativeTo for local (non-URL) harnesses — at that point a
+// relative Source still resolves against the process's current working
+// directory, not the harness tree, so reading SKILL.md there would let a
+// CWD-relative path attacker-influence which skill identity mergeSkills
+// sees. Skipping the read for non-absolute paths keeps that case on the
+// pre-existing filepath.Base behavior.
 func SandboxName(skillPath string) string {
+	if skillPath == "" {
+		return ""
+	}
+	if !filepath.IsAbs(skillPath) {
+		return filepath.Base(skillPath)
+	}
 	base := filepath.Base(skillPath)
 	declared := declaredName(skillPath)
 	if ValidName(declared) {

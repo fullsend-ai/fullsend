@@ -302,45 +302,71 @@ var reservedPluginDestNames = []string{"marketplaces", "cache", "known_marketpla
 // isn't there" failure mode as #5247, just reached through a naming
 // collision instead of a broken symlink.
 func duplicateDestinationNameError(kind string, paths []string, reserved ...string) error {
-	reservedSet := make(map[string]bool, len(reserved))
-	for _, r := range reserved {
-		reservedSet[r] = true
-	}
-	seen := make(map[string]string, len(paths))
+	entries := make([]nameEntry, 0, len(paths))
 	for _, p := range paths {
 		if p == "" {
 			continue
 		}
-		base := filepath.Base(p)
-		if reservedSet[base] {
-			return fmt.Errorf("%s path %q resolves to %q, which is reserved for internal use", kind, p, base)
+		entries = append(entries, nameEntry{name: filepath.Base(p), path: p})
+	}
+	return duplicateNameError(kind, entries, reserved...)
+}
+
+// nameEntry pairs a sandbox destination name with the original host path it
+// was derived from. duplicateNameError compares the original paths, not a
+// synthetic rewrite of them, so two distinct paths that happen to produce an
+// identical synthetic string (e.g. the same parent directory plus the same
+// declared name) still register as a collision instead of looking like the
+// same entry seen twice.
+type nameEntry struct {
+	name string
+	path string
+}
+
+// duplicateNameError returns an error if two entries with distinct paths
+// share the same name, or if a name collides with one of reserved.
+// sandbox.UploadDir replaces its destination wholesale rather than merging
+// into it, so two different skills or plugins resolving to the same sandbox
+// directory name would otherwise upload one, then silently discard it when
+// the second overwrites it — the same "expected content silently isn't
+// there" failure mode as #5247, just reached through a naming collision
+// instead of a broken symlink.
+func duplicateNameError(kind string, entries []nameEntry, reserved ...string) error {
+	reservedSet := make(map[string]bool, len(reserved))
+	for _, r := range reserved {
+		reservedSet[r] = true
+	}
+	seen := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if e.path == "" {
+			continue
 		}
-		if prior, ok := seen[base]; ok && prior != p {
-			return fmt.Errorf("two %s paths both resolve to the sandbox name %q: %q and %q", kind, base, prior, p)
+		if reservedSet[e.name] {
+			return fmt.Errorf("%s path %q resolves to %q, which is reserved for internal use", kind, e.path, e.name)
 		}
-		seen[base] = p
+		if prior, ok := seen[e.name]; ok && prior != e.path {
+			return fmt.Errorf("two %s paths both resolve to the sandbox name %q: %q and %q", kind, e.name, prior, e.path)
+		}
+		seen[e.name] = e.path
 	}
 	return nil
 }
 
-// resolveSkillDisplayName returns the sandbox directory name for a skill
-// (declared SKILL.md name when valid, otherwise filepath.Base).
-func resolveSkillDisplayName(skillPath string) string {
-	return skill.SandboxName(skillPath)
-}
-
-// skillDestPaths rewrites each skill directory to a synthetic path whose
-// basename is skill.SandboxName, so duplicateDestinationNameError keys on
-// the sandbox destination rather than the host directory leaf. Nested
-// forge skills that share a leaf (github) but declare distinct names
-// therefore do not collide (#7830).
-func skillDestPaths(skillDirs []string) []string {
-	out := make([]string, 0, len(skillDirs))
+// skillDestNames pairs each skill directory with its sandbox destination
+// name (skill.SandboxName), so duplicateNameError keys the collision check
+// on the declared identity of the *original* directories. Rewriting to a
+// synthetic joined path (dir + name) instead of keeping the original path
+// would let two distinct directories that share both a parent and a
+// declared name (e.g. skills/issue-labels/github and
+// skills/issue-labels/gitlab both declaring `name: issue-labels`) collapse
+// to the same synthetic string and skip detection entirely.
+func skillDestNames(skillDirs []string) []nameEntry {
+	out := make([]nameEntry, 0, len(skillDirs))
 	for _, p := range skillDirs {
 		if p == "" {
 			continue
 		}
-		out = append(out, filepath.Join(filepath.Dir(p), skill.SandboxName(p)))
+		out = append(out, nameEntry{name: skill.SandboxName(p), path: p})
 	}
 	return out
 }
@@ -350,18 +376,19 @@ func skillDestPaths(skillDirs []string) []string {
 // basename) so nested forge skills that share a leaf directory upload to
 // distinct destinations. Collisions fail before any upload.
 func uploadHarnessSkills(sandboxName, skillsRoot string, skillDirs []string) error {
-	if err := duplicateDestinationNameError("skill", skillDestPaths(skillDirs)); err != nil {
+	if err := duplicateNameError("skill", skillDestNames(skillDirs)); err != nil {
 		return err
 	}
 	for _, skillPath := range skillDirs {
 		if skillPath == "" {
 			continue
 		}
-		dest := skillsRoot + "/" + skill.SandboxName(skillPath)
+		name := skill.SandboxName(skillPath)
+		dest := skillsRoot + "/" + name
 		if err := sandbox.Upload(sandboxName, skillPath, dest); err != nil {
 			return fmt.Errorf("copying skill %q: %w", skillPath, err)
 		}
-		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
+		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", name)
 	}
 	return nil
 }

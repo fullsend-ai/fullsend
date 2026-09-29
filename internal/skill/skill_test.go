@@ -393,3 +393,56 @@ func TestSandboxName(t *testing.T) {
 		t.Errorf("malformed frontmatter: SandboxName() = %q, want %q", got, "broken")
 	}
 }
+
+// TestSandboxName_EmptyPath guards against SandboxName("") probing the
+// process's current working directory: filepath.Join("", "SKILL.md")
+// resolves to "SKILL.md", so an unguarded declaredName would read whatever
+// SKILL.md happens to exist in the CWD.
+func TestSandboxName_EmptyPath(t *testing.T) {
+	if got := SandboxName(""); got != "" {
+		t.Errorf("SandboxName(\"\") = %q, want empty string", got)
+	}
+}
+
+// TestSandboxName_NonAbsolutePathSkipsDeclaredName is a regression test for
+// a merge-time identity spoof: mergeSkills (internal/harness/compose.go)
+// calls SandboxName during base composition, which runs before
+// ResolveRelativeTo for local (non-URL) harnesses. At that point a relative
+// Source path resolves against the process's current working directory,
+// not the harness tree. A CWD-relative SKILL.md declaring a name that
+// matches a top-level/base skill must not be able to hijack that skill's
+// merge identity — SandboxName must fall back to filepath.Base for any
+// non-absolute path instead of reading SKILL.md at all.
+func TestSandboxName_NonAbsolutePathSkipsDeclaredName(t *testing.T) {
+	dir := t.TempDir()
+	rel := filepath.Join("issue-labels", "github")
+	abs := filepath.Join(dir, rel)
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(abs, "SKILL.md"), []byte("---\nname: spoofed-top-level-skill\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if chErr := os.Chdir(oldwd); chErr != nil {
+			t.Fatal(chErr)
+		}
+	}()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := SandboxName(rel); got != "github" {
+		t.Errorf("relative path: SandboxName() = %q, want %q (declared name must not be consulted for relative paths)", got, "github")
+	}
+
+	// The same directory, referenced absolutely, is safe to consult.
+	if got := SandboxName(abs); got != "spoofed-top-level-skill" {
+		t.Errorf("absolute path: SandboxName() = %q, want %q", got, "spoofed-top-level-skill")
+	}
+}

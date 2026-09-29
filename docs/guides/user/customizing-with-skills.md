@@ -122,10 +122,19 @@ To intentionally **replace** a built-in skill with your own version, use
 `base:` composition and config-driven agent registration. Register the
 agent in `config.yaml` with a harness that uses `base:` to inherit from the
 upstream harness, and include your replacement skill in the `skills:` list.
-The directory name must match the built-in skill name exactly.
+The replacement's skill identity — its declared `SKILL.md` `name:` when the
+directory is on disk, otherwise its directory basename — must match the
+built-in skill's identity exactly.
 
 See [Bring Your Own Agent](bring-your-own-agent.md) for the full
 composition model and config-driven registration.
+
+> **Compatibility note:** Skill identity (and the sandbox destination a
+> skill uploads to) now follows the declared `SKILL.md` `name:` when one is
+> present, not just the directory basename. If an existing built-in or
+> custom skill's declared `name:` differs from its directory name, its
+> sandbox path and override-matching behavior change starting with this
+> release.
 
 ### Built-in skills
 
@@ -183,8 +192,9 @@ Bring Your Own Agent covers the same decision frame in
 
 - **Don't duplicate AGENTS.md content in skills.** If an instruction applies
   to all agents, put it in `AGENTS.md`. Skills are for agent-specific behavior.
-- **Don't reuse a built-in skill directory name** unless you intend a
-  supported whole-skill override path — same-named project skills are
+- **Don't reuse a built-in skill's identity** (its declared `SKILL.md`
+  `name:`, or directory name when there is no `SKILL.md`) unless you intend a
+  supported whole-skill override path — same-identity project skills are
   shadowed by built-ins (see [Skill precedence](#skill-precedence)).
 
 ## See also

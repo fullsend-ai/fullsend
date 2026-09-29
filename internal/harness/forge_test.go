@@ -207,6 +207,43 @@ func TestResolveForge_GitlabNestedForgeSkillsShareBasename(t *testing.T) {
 	}, SkillSources(h.Skills))
 }
 
+// TestResolveForge_ForgeSkillDeclaredNameOverridesUnrelatedTopLevelSkill
+// documents a known gap (#7830 follow-up, still open): mergeSkills's
+// override key is skill.SandboxName, which for an already-resolved
+// absolute path is the declared SKILL.md `name:` rather than the
+// directory basename. A forge skill living at a directory with no
+// relation to a top-level skill can still silently replace it, purely by
+// declaring the same name — mergeSkills has no way to distinguish that
+// from an intentional override (the same #5408 child-replaces-base
+// mechanism this test exercises is by design; only the identity source
+// changed). There is no error or log for this case today.
+func TestResolveForge_ForgeSkillDeclaredNameOverridesUnrelatedTopLevelSkill(t *testing.T) {
+	dir := t.TempDir()
+
+	topLevel := filepath.Join(dir, "code-review")
+	require.NoError(t, os.MkdirAll(topLevel, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(topLevel, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# top-level code-review\n"), 0o644))
+
+	unrelated := filepath.Join(dir, "totally-unrelated-dir")
+	require.NoError(t, os.MkdirAll(unrelated, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(unrelated, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# unrelated skill declaring the same name\n"), 0o644))
+
+	h := &Harness{
+		Agent:  "agents/review.md",
+		Skills: []SkillEntry{{Source: topLevel}},
+		Forge: map[string]*ForgeConfig{
+			"github": {Skills: []SkillEntry{{Source: unrelated}}},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	// The unrelated directory silently replaced the top-level skill slot
+	// because both declare the same SKILL.md name — no error, no log.
+	assert.Equal(t, []string{unrelated}, SkillSources(h.Skills))
+}
+
 func TestResolveForge_NilSkillsInherits(t *testing.T) {
 	h := &Harness{
 		Agent:  "agents/test.md",

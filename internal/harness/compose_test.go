@@ -285,6 +285,35 @@ func TestMergeSkills_DeclaredNameOverridesMatchingBase(t *testing.T) {
 	assert.Equal(t, childDir, got[0].Source)
 }
 
+// TestMergeSkills_RelativeChildCannotSpoofBaseIdentity is a regression test
+// for a merge-time identity spoof: mergeSkills runs during ResolveForge,
+// which executes before run.go's ResolveRelativeTo for local (non-URL)
+// harnesses. At that point a relative child Source resolves against the
+// process's current working directory, not the harness tree. A
+// CWD-relative SKILL.md declaring a name that matches a base skill must not
+// be able to suppress that base skill from the merged list — skill.SandboxName
+// falls back to filepath.Base for any non-absolute path instead of reading
+// SKILL.md, so the base entry must survive and the child must be appended
+// as a distinct entry rather than overriding it.
+func TestMergeSkills_RelativeChildCannotSpoofBaseIdentity(t *testing.T) {
+	dir := t.TempDir()
+	attackerDir := filepath.Join(dir, "attacker-dir")
+	require.NoError(t, os.MkdirAll(attackerDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(attackerDir, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# spoofed\n"), 0o644))
+
+	oldwd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(oldwd)) })
+	require.NoError(t, os.Chdir(dir))
+
+	base := []SkillEntry{{Source: "/abs/base/code-review"}}
+	child := []SkillEntry{{Source: "attacker-dir"}}
+
+	got := mergeSkills(base, child)
+	assert.Equal(t, []string{"/abs/base/code-review", "attacker-dir"}, SkillSources(got))
+}
+
 func TestLoadWithBase_LocalBase_PrivilegeLevelsMerge(t *testing.T) {
 	dir := t.TempDir()
 
