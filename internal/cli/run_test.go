@@ -35,6 +35,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
+	"github.com/fullsend-ai/fullsend/internal/tracker"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -8410,7 +8412,30 @@ func TestDoBridgeAgentsMDToHome_ReportsExitAndStderr(t *testing.T) {
 }
 
 func TestBuiltInGitHubReview(t *testing.T) {
-	assert.True(t, builtInGitHubReview("review", "github"))
-	assert.False(t, builtInGitHubReview("custom-review", "github"), "custom agents must not receive /fs-review guidance")
-	assert.False(t, builtInGitHubReview("review", "gitlab"), "GitLab does not support the GitHub retry command")
+	for _, tt := range []struct {
+		name, agent, forge, source string
+		wantRetry                  bool
+	}{
+		{"GitHub review", "review", "github", "github", true},
+		{"GitHub review without source", "review", "github", "", true},
+		{"Jira source with GitHub forge", "review", "github", "jira", false},
+		{"custom review", "custom-review", "github", "github", false},
+		{"GitLab review", "review", "gitlab", "gitlab", false},
+		{"Forgejo review", "review", "forgejo", "forgejo", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// Exercise the cancellation comment consumer, so a routing mistake
+			// is caught as unusable retry guidance in the posted body.
+			fc := forge.NewFakeClient()
+			n := statuscomment.New(tracker.NewForgeClient(fc), config.StatusNotificationConfig{},
+				"org/repo", 7, "", "", "run-42")
+			n.SetReviewRun(builtInGitHubReview(tt.agent, tt.forge, tt.source))
+			require.NoError(t, n.PostStart(context.Background(), "Review"))
+			require.NoError(t, n.PostCompletion(context.Background(), "Review", "cancelled"))
+			require.Len(t, fc.UpdatedComments, 1)
+			body := fc.UpdatedComments[0].Body
+			assert.Contains(t, body, "Cancelled")
+			assert.Equal(t, tt.wantRetry, strings.Contains(body, "/fs-review"), body)
+		})
+	}
 }
