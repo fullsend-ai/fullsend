@@ -29,220 +29,93 @@ Accepted
 
 ## Context
 
-A repo can say *which* runtime, model, effort and per-persona model an agent
-uses ([ADR 0091](0091-per-agent-runtime-model-effort.md),
-[ADR 0104](0104-per-persona-model-resolution.md)), but not *when*. Every
-choice is static per agent, so a one-line docs change and a 2,000-line CI
-refactor get the same opus-at-high review. CEL overlays cannot set `model`
-or `effort` ([ADR 0088](0088-cel-guarded-overlays.md): both are operational,
-not forge-specific), and the normalized event carries no diff size or paths.
-Open issues ask for the next step from three directions: a cheaper model or
-effort for trivially scoped changes
-([#5777](https://github.com/fullsend-ai/fullsend/issues/5777),
-[#6891](https://github.com/fullsend-ai/fullsend/issues/6891),
-[#2842](https://github.com/fullsend-ai/fullsend/issues/2842),
-[agents#497](https://github.com/fullsend-ai/agents/issues/497)), deeper
-review when security signals are present
-([agents#535](https://github.com/fullsend-ai/agents/issues/535)), and a way
-to see the cost effect of a model change before merging it
-([#6560](https://github.com/fullsend-ai/fullsend/issues/6560)).
-
-Two facts bound the design. The runtime-parity rule that *the deciding
-session is never downgraded* ([#6527](https://github.com/fullsend-ai/fullsend/issues/6527))
-still holds. And catalog membership is not availability: four incidents
-([#6964](https://github.com/fullsend-ai/fullsend/issues/6964),
-[agents#1225](https://github.com/fullsend-ai/agents/issues/1225)) discovered
-an unservable id at the first model call, after the sandbox existed, and
-retried on opus at several times the cost. A closed draft
-([#6361](https://github.com/fullsend-ai/fullsend/pull/6361)) prototyped
-per-prompt routing with Claude Code hooks inside the sandbox and measured a
-13-issue by 3-model grid on the code agent (opus a median 3.6× haiku; every
-model stopped early on the no-change issues); it measured cost and
-completion, not quality.
-[adaptive-agent-selection.md](../problems/adaptive-agent-selection.md) asks
-how selection should learn from outcomes and names the constraints any
-learned policy must keep: selection only, shadow mode first, safety as a
-constraint rather than an objective, no self-deployment.
+A repo can say *which* runtime, model, effort and persona model an agent uses
+([ADR 0091](0091-per-agent-runtime-model-effort.md), [ADR
+0104](0104-per-persona-model-resolution.md)) but not *when*.
+Issues ask for cheaper runs on trivial changes (#5777, #2842, agents#497),
+deeper review on security signals (agents#535) and a cost preview (#6560). The
+deciding session's model is never downgraded (#6527), a listed model may be
+unservable (#6964, agents#1225), and a learned policy keeps the constraints in
+[adaptive-agent-selection.md](../problems/adaptive-agent-selection.md).
 
 ## Options
 
-**Per-prompt routing inside the sandbox** (the #6361 hooks). Rejected: the
-sandbox sees only the prompt, which is author-controlled text; routing state
-is per sandbox and lost; it is Claude-Code-only; and the decision comes after
-the review has already read a diff it could have sized for free.
-Prompt routing that only ever escalates, as it does in our internal chai
-bot, is the safe case, since steering it costs only spend; fullsend's hard
-case is the downgrade.
-
-**Routing in an LLM gateway.** Rejected as the place for the decision, kept
-as an optional provider. On Vertex the model is addressed in the URL path, so
-a gateway can route only if the client moves to the Anthropic Messages
-endpoint and the gateway holds the credential the sandbox never sees today; a
-silent rewrite also breaks the status-comment model echo, `per_model_usage`
-and ADR 0104's closed set, so a gateway provider must report the model that
-served and fullsend accounts against that model. Nothing a gateway sees
-carries the outcome that arrives on a later forge event.
-
-**A heuristic in the GitHub Route job** (#6891's proposal). Rejected: GitHub
-only, and a second place that decides model and effort next to the ADR 0091
-chain.
+Rejected: **per-prompt routing in the sandbox** (#6361), which reads
+author-controlled prompts and loses the prompt cache mid-loop, and a
+**Route-job heuristic** (#6891), GitHub-only and a second decision point. An
+**LLM gateway** stays only an optional provider that reports the model that
+served.
 
 ## Decision
 
 `fullsend run` resolves runtime, model, effort and persona models **per task,
 on the host, before the sandbox exists**, from a `routing:` block in
-`.fullsend/config.yaml`. Routing configures a run that dispatch has already
-authorized and matched ([ADR 0098](0098-entity-first-harness-evaluation.md));
-it never decides whether a run happens.
+`.fullsend/config.yaml`, declared in `repos.yaml` for repositories [ADR
+0122](0122-declarative-repo-configuration.md) manages, where any change that
+loosens routing is a relaxation under its safety gate. It configures a run that
+dispatch has already authorized ([ADR
+0098](0098-entity-first-harness-evaluation.md)) and never decides whether a run
+happens.
 
-1. **Shape.** `routing.rules[]` each carry `agents:`, a CEL `when:` and a
-   `set:` that holds exactly the four fields an `agents:` entry holds
-   (`runtime`, `model`, `effort`, `subagents`); nothing else is routable. All
-   matching rules merge, later entries win per field (the ADR 0088
-   semantics), except that when any matching rule for an agent is an
-   escalation, no field of the merged result falls below the static choice.
-   `subagents` merges per persona key with ADR 0104's rules, as one more
-   layer above the `agents:` entry, but a routed value may not tombstone
-   (`~`) a persona. When omitted, `routing.mode` is `off` (the others are
-   `shadow` and `enforce`) and `routing.allowed_models` and
-   `routing.trusted_labels` are empty, so no rule may name a model or key a
-   downgrade on a label. `fullsend run` validates `routing:` itself on every
-   run, as it does `agents:` (ADR 0091); a malformed block fails the run
-   before the sandbox exists rather than running without its escalations.
-2. **Inputs are system-reported and allowlisted.** Rules evaluate in
-   routing's own CEL environment: ADR 0088's `runtime` and `config`, an
-   allowlisted view of ADR 0098's `entity` and nullable `event` (kind, id,
-   source system, state, and labels with their provenance; fields the
-   normalized schema gains later stay hidden until this list names them), and
-   a new `task` variable: change stats and paths from the forge files API, a
-   deterministic change pattern, actor kind and role, labels, an attempt
-   count that routing derives from ADR 0098's handled-state evidence, and the
-   linked issue's number, state and labels. Titles, bodies, comments, command
-   and instruction fields, commit messages and branch names are never
-   visible, and a `when:` that references a field outside the allowlist fails
-   validation. Paths and stats are reported by the forge but chosen by the
-   author, so a downgrade threshold on them is a risk the reviewed policy
-   accepts, not a trusted signal. A downgrade rule may key on a PR or issue
-   label only from `routing.trusted_labels`, and only when ADR 0098's
-   provenance shows it was applied by a human (never a bot, App or fullsend
-   identity) other than the PR author whose current permission is at least
-   write; ADR 0098 reports permission at evaluation time, not when the label
-   was applied. An escalation rule may key on any label. `task.actor` is the
-   prompting event's actor and is null on poll, schedule and manual runs,
-   never the service identity the normalized event names there, so an
-   actor-keyed downgrade never matches them.
-3. **Precedence.** A rule sits below the `--runtime`/`--model`/`--effort`
-   flags and `FULLSEND_*` variables and above the agent's `agents:` entry,
-   so an explicit per-run override still wins and a rule only refines the
-   static choice.
-4. **Guards, validated at config time and before the sandbox.**
-   Classification uses the fully resolved result for each agent and persona:
-   a rule is an *escalation* only when every resolved field is equal to or
-   above the static choice and at least one is above it, with effort ordered
-   `low` < `medium` < `high` < `xhigh` < `max` and models by the ordinal
-   model tier (economy < standard < premium) that each catalog entry carries
-   beside its `vendor`. Anything else, including a runtime change or a
-   same-tier model swap, is a *downgrade*, and every guard below applies to
-   that result. Every model a rule names is in `routing.allowed_models` ∩ the
-   catalog, and persona models stay in ADR 0104's closed set. A persona file
-   may declare `min_tier:`, a floor on *routed* persona models only: a rule
-   cannot place the persona below it, while a static `subagents.<persona>`
-   entry still resolves by ADR 0104's order. A runtime change must keep the
-   agent's needs (fallback chain on Claude only), and routed `subagents` must
-   be servable on the resolved runtime: on codex, which has no persona
-   roster, any `subagents` key is rejected; on Claude Code,
-   `subagents.default` is applied through `CLAUDE_CODE_SUBAGENT_MODEL` (never
-   `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`, which would override persona
-   frontmatter) and named-persona keys are rejected until ADR 0104's Claude
-   half lands. The agents in `routing.never_downgrade` (default `triage`,
-   `prioritize` and `review`; config can add to the set but never remove a
-   default) keep their static model or move to a higher one, and their
-   personas are floored at their static model's tier unless the persona file
-   declares a lower `min_tier`. A downgrade rule for `review` may therefore
-   lower its effort and the personas that opt in, never the orchestrator's
-   model or a persona that does not. The resolved model and every persona
-   model are checked against the project's served list once per run; a routed
-   model that is not served falls back to the static choice, and a static
-   model that is not served fails the run before the sandbox exists, naming
-   the model. An unservable id is never discovered and retried inside the
-   sandbox; Claude's existing `--fallback-model` chain is unchanged.
-5. **Effort before model, model before runtime** (authoring guidance, not
-   validated). A downgrade should lower effort on the same model first, then
-   move to a lower model tier on the same vendor, then across vendors; a
-   runtime move is not a downgrade rule's job. A rule may still set several
-   fields at once.
-6. **Every choice is echoed** with the rules that set each field: plan block,
-   `metrics.json` (`routing.{mode,rules,applied,static_model,static_effort}`),
-   root-span attributes `fullsend.routing.*`, status-comment footer. In
-   `shadow` the rules are evaluated and recorded and the static choice runs.
-7. **Learning is offline and lands as a pull request.** The root span carries
-   the routing ledger (choice, rules, task facts, cost, status, verdict) on
-   the OTLP path of [ADR 0050](0050-distributed-tracing-instrumentation.md);
-   the outcome (merged, rework rounds) comes from later forge events joined
-   on the entity's stable identity, never from the agent that ran; a replay
-   over that ledger scores a candidate policy, and the only path from a
-   learned change to production is a reviewed edit to `routing:`.
-   No in-run adaptation, no self-deployment.
+1. **Shape.** `routing.rules[]` carry `agents:`, a CEL `when:`, an optional
+   `mode:` and a `set:` of the four fields an `agents:` entry holds. Matching
+   rules merge later-wins per field. While any matching escalation applies,
+   no field falls below the static choice or below the highest value an
+   escalation set, and a field with no order (runtime, a model of the same
+   model tier) keeps its static value. `routing.mode` is `off` (default),
+   `shadow` (rules are recorded, the static choice runs) or `enforce`, and a
+   rule may act less than its block, never more. A malformed block fails the
+   run before the sandbox exists. Rules override the agent's `agents:` entry
+   and the repo default; flags and `FULLSEND_*` variables still beat any
+   rule.
+2. **Inputs are system-reported.** Rules see an allowlisted environment:
+   change stats and paths, actor, labels, attempt count and the linked
+   issue's number, state and labels. Author-written text is never visible;
+   paths and stats are author-chosen, a risk the reviewed policy accepts, but
+   a downgrade never applies to a change that touches agent-instruction or
+   policy files. A downgrade may key on a label or actor only through a
+   reviewed trust list that fails closed, and only on evidence the change's
+   author cannot supply. An escalation may key on anything visible.
+3. **Guards.** A rule is an escalation only if it keeps the static runtime
+   and every other field it resolves is unchanged or above the static choice
+   (effort `low` to `max`; a changed model only on a higher catalog model
+   tier); anything else, including a runtime change or a swap to another
+   model of the same model tier, is a downgrade. Models come from
+   `routing.allowed_models` (empty by default) and the catalog. Agents in
+   `routing.never_downgrade` (default `triage`, `prioritize`, `review`; it
+   can only grow) keep their static runtime and keep their static model or
+   move to a higher model tier, and their personas never go below their
+   static model tier unless a persona file sets a lower `min_tier`;
+   escalations may raise both.
+   `routing:` and `min_tier:` come from the base branch or pinned harness,
+   never the change being routed. When `routing.mode` is not `off`, every
+   model is checked against its provider's served list before the sandbox
+   exists: a routed miss falls back to static, and a static miss fails the
+   run only when no model in its existing fallback chain is served.
+4. **Echo.** The plan block, `metrics.json`, root span and status comment
+   name the rules that set each field and those a guard suppressed.
+5. **Learning is offline.** A routing ledger on the root span ([ADR
+   0050](0050-distributed-tracing-instrumentation.md)), outcomes from later
+   forge events and a replay score candidate policies; a reviewed edit to
+   `routing:` is the only path to production, and a downgrade rule moves to
+   `enforce` only after replay shows it never downgraded a PR whose review
+   later requested changes.
 
 ## Consequences
 
-- A repo can express "sonnet at low effort for docs-only changes" and "opus
-  at xhigh with opus security and challenger personas when `internal/scaffold/`
-  changes" as reviewed config, resolving the downgrade and escalation issues
-  above with the same mechanism.
-- Shadow mode plus the ledger produce the quality evidence #6361 lacked
-  before any default changes; cost is judged per work item including
-  re-review and fix rounds, never per run. A downgrade rule moves from
-  `shadow` to `enforce` only after replay shows it never downgraded a PR
-  whose review later requested changes.
-- The served-model preflight ends the retry-on-unavailable incident class for
-  routed and static runs alike.
-- Presets may not ship `routing.rules` until the layered merge records which
-  layer a key came from (the provenance gap ADR 0104 deferred); a lower layer
-  may only tighten `never_downgrade` and `allowed_models`.
-- A rule can raise the review orchestrator's model; lowering it needs a later
-  ADR that amends #6527, on shadow `per_model_usage` evidence. Persona
-  routing on the Claude Code runtime remains the second half of ADR 0104.
-- "Tier" gains a fourth meaning here; when the catalog's model tier ships,
-  [tier-conventions.md](../contributing/tier-conventions.md) gains a "model
-  tier" entry.
+- Docs-only downgrades and security escalations become reviewed config; a
+  downgrade of `review` reaches only its effort and opted-in personas, while
+  an escalation may also raise its model.
+- For repos that turn routing on, the preflight ends the
+  retry-on-unavailable incident class on every provider that exposes a
+  served list; repos with routing `off` see no new failure mode.
+- Implementing this adds a model tier to catalog entries and provenance fields
+  to ADR 0098's entity specification.
 
 ### Deferred
 
-- **A routing advisor.** Rules cannot read a diff; a short, read-only run on
-  the fast model tier can, and its schema-validated verdict (`scope`, `risk`,
-  `domains`) can become a `task.assessment` fact beside the system-derived
-  ones, with an in-run counterpart that lets a worker consult a stronger model
-  without switching session model
-  ([#6531](https://github.com/fullsend-ai/fullsend/issues/6531)). That is a
-  follow-on decision. The constraint this record fixes for it: an assessment
-  read from author-controlled content may fire an escalation rule alone but
-  may satisfy a downgrade rule only together with system-derived facts that
-  would justify the downgrade on their own (with every `task.assessment`
-  predicate replaced by `true`, the rule's `when:` must still match on the
-  same task facts), and it never widens the allowed set or crosses the
-  never-downgrade floor. The advisor is an ordinary sandboxed `fullsend run`
-  on the repo's own inference path, never an external classifier or decision
-  API; an unsure, timed-out or failed assessment leaves the static choice in
-  place; and the advisor never labels its own outcome.
-- **A decision model as the advisor's classifier (open question).** Our
-  internal chai bot classifies each request with a small general model that
-  reads plain-language model-tier descriptions and answers with a model tier,
-  a confidence and a one-line reason; every decision is logged, and a
-  human-labelled case set scores the classifier before it changes. A decision
-  model such as
-  [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev) or
-  [Laya](https://www.layer3labs.io/guides/laya-explained) could take the
-  fast-tier LLM's place. These models generate no text: one pass returns a
-  calibrated probability for each label of a closed set, in tens to hundreds
-  of milliseconds by their vendors' figures, so the `scope`, `risk` and
-  `domains` enums map onto them directly, a confidence floor reads a real
-  probability, and the ledger records the distribution in place of a reason.
-  With no tools and no free-text output, a steered input can only pick a wrong
-  label, which the asymmetric-trust rule already bounds. Open: whether one
-  matches a fast-tier LLM on a labelled set of fullsend tasks, since these
-  models are not built for multi-step reasoning over a diff; whether a call
-  this narrow still needs a sandboxed run or can be made from the host; and
-  serving. An open-weight, self-hosted model (Laya) fits the repo's own
-  inference path; a hosted decision API (Jev today) fails the constraint above
-  unless it becomes a provider on that path.
+- **A routing advisor** that reads the diff (#6531) may fire an escalation
+  alone, but a downgrade rule may use its assessment only as one condition and
+  must still match with that condition removed; its classifier is an open
+  question in
+  [adaptive-agent-selection.md](../problems/adaptive-agent-selection.md).
