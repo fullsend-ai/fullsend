@@ -607,3 +607,61 @@ func TestPiSteerGate_NoFallbackSteers(t *testing.T) {
 		t.Fatal("an unsteered request must not be recorded as a decline")
 	}
 }
+
+// TestPiSteerDeclineReason pins that the runner's eligibility check and
+// piSteerGate reach the same verdict from the same chain, so a pi run is
+// refused before its watcher starts rather than on its first Steer.
+func TestPiSteerDeclineReason(t *testing.T) {
+	orig := readPiManifestFn
+	t.Cleanup(func() { readPiManifestFn = orig })
+
+	tests := []struct {
+		name         string
+		params       RunParams
+		manifest     *piManifest
+		manifestErr  error
+		wantDeclined bool
+	}{
+		{"alias with a fallback", RunParams{Model: "opus", FallbackModels: []string{"sonnet"}}, nil, nil, true},
+		{"alias with no fallbacks", RunParams{Model: "opus"}, nil, nil, false},
+		{"pinned id never falls back", RunParams{Model: "anthropic-vertex/claude-opus-5", FallbackModels: []string{"sonnet"}}, nil, nil, false},
+		{"model from the manifest", RunParams{FallbackModels: []string{"sonnet"}}, &piManifest{Model: "opus"}, nil, true},
+		{"unreadable manifest is Run's to report", RunParams{FallbackModels: []string{"sonnet"}}, nil, errors.New("no manifest"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			read := false
+			readPiManifestFn = func(string, string) (*piManifest, error) {
+				read = true
+				if tt.manifestErr != nil {
+					return nil, tt.manifestErr
+				}
+				return tt.manifest, nil
+			}
+			reason, declined := PiRuntime{}.SteerDeclineReason(tt.params)
+			if declined != tt.wantDeclined {
+				t.Fatalf("declined = %v, want %v", declined, tt.wantDeclined)
+			}
+			if declined && reason != piSteerFallbackReason {
+				t.Fatalf("reason = %q, want the runtime's own", reason)
+			}
+			if tt.params.Model != "" && read {
+				t.Fatal("a run that names its model must not read the manifest")
+			}
+			if tt.manifestErr != nil {
+				return
+			}
+
+			m := tt.manifest
+			if m == nil {
+				m = &piManifest{}
+			}
+			chain, _ := piRunChain(tt.params, m)
+			sbx := "sbx-pi-decline-" + strings.ReplaceAll(tt.name, " ", "-")
+			defer clearPiSteerDecline(sbx)
+			if gated := piSteerGate(true, sbx, chain, ui.New(io.Discard)); gated == declined {
+				t.Fatalf("piSteerGate steerable=%v disagrees with SteerDeclineReason declined=%v", gated, declined)
+			}
+		})
+	}
+}

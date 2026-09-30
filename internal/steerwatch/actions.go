@@ -13,10 +13,18 @@ package steerwatch
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
+
+// listPerPage is the page size of one follow-up run listing. The client
+// paginates, so this is not a ceiling on what a poll can see; it is GitHub's
+// maximum, chosen to reach a given depth in as few requests as possible
+// because the poll re-lists on every tick against a job token's hourly
+// budget. The depth ceiling is the client's own page cap.
+const listPerPage = 100
 
 // ActionsReader is the execution-platform read surface the provenance checks
 // need: a subset of forge.Client, so any forge client satisfies it. The
@@ -30,6 +38,9 @@ type ActionsReader interface {
 	GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*forge.WorkflowRun, error)
 	// ListWorkflowRunJobs returns the jobs of one run.
 	ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error)
+	// ListWorkflowRunsSince returns runs of one workflow file created at or
+	// after since.
+	ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time, perPage int) ([]forge.WorkflowRun, error)
 }
 
 // actorLogin returns the login whose event created the run — `actor` on the
@@ -54,4 +65,20 @@ func runCreatedAt(r forge.WorkflowRun) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// runsSince lists follow-up runs of the shim, oldest first.
+func (w *Watcher) runsSince(ctx context.Context, workflowFile string, since time.Time) ([]forge.WorkflowRun, error) {
+	owner, repo, err := splitRepo(w.cfg.Repo)
+	if err != nil {
+		return nil, err
+	}
+	runs, err := w.actions.ListWorkflowRunsSince(ctx, owner, repo, workflowFile, since, listPerPage)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		return runCreatedAt(runs[i]).Before(runCreatedAt(runs[j]))
+	})
+	return runs, nil
 }

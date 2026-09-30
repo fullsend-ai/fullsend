@@ -78,7 +78,9 @@ find .fullsend -type f | sort
 ```
 
 Only `agents/lint-docs.md` needs your attention — it is the agent's prompt and
-it ships with marked sections to fill in. Everything else is complete.
+it ships with marked sections to fill in, plus a Runner updates section that
+already teaches the agent to act on a mid-run amendment from the runner.
+Everything else is complete.
 
 ### What gets written
 

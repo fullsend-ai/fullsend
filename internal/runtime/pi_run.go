@@ -1168,7 +1168,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	// Build the fallback chain. For alias requests with FallbackModels, the
 	// chain is primary + fallbacks; for pinned ids or no fallbacks, it is a
 	// single entry.
-	chain, skipped := piFallbackChain(effectiveModel, params.FallbackModels, params.ModelAliases)
+	chain, skipped := piRunChain(params, m)
 	if len(skipped) > 0 {
 		printer.StepWarn(fmt.Sprintf("fallback models %s have no pi mapping or resolve to a different pi provider than %s and are ignored", sanitizeOutput(strings.Join(skipped, ",")), sanitizeOutput(piBareModelID(chain[0]))))
 	}
