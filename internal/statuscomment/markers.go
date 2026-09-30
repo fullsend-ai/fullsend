@@ -2,6 +2,7 @@ package statuscomment
 
 import (
 	"regexp"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 )
@@ -69,4 +70,9 @@ func NeutralizeMarkersADF(s string) string {
 		// drop it. The remaining pairs are literal backslashes.
 		return slashes[:len(slashes)-len(slashes)%2] + `\&lt;` + rest
 	})
+}
+
+// IsStatusComment reports whether body contains a fullsend agent status comment marker.
+func IsStatusComment(body string) bool {
+	return strings.Contains(body, statusMarkerOpener)
 }

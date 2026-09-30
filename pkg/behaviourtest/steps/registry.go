@@ -19,6 +19,7 @@ func Register(sc *godog.ScenarioContext) {
 	registerJiraPollSteps(sc)
 	registerBranchSteps(sc)
 	registerReactionSteps(sc)
+	registerStatusCommentSteps(sc)
 	registerActorSteps(sc)
 	registerForgeStateSteps(sc)
 	registerOwnersSteps(sc)
