@@ -716,6 +716,67 @@ func TestRunAgent_PreScriptSkip_RelaysSkippedTrue(t *testing.T) {
 	assert.Equal(t, "role=test\nskipped=true\nreason=open PR exists\n", string(data))
 }
 
+// newDisabledAgentDir builds a fullsend dir whose config explicitly disables
+// the "code" agent. The pre-script touches a marker so tests can prove the
+// run ended before the harness was loaded or any script ran.
+func newDisabledAgentDir(t *testing.T) (dir, marker string) {
+	t.Helper()
+	marker = filepath.Join(t.TempDir(), "pre-script-ran")
+	dir = newSkipHarnessDir(t, "touch "+marker+"\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - name: code\n    enabled: false\n"), 0o644))
+	return dir, marker
+}
+
+// A disabled agent ends the run successfully before sandbox creation and
+// relays skipped=true plus the reason, so action.yml's skip-reason output
+// is populated.
+func TestRunAgent_DisabledAgent_SkipsAndRelaysSkippedTrueWithReason(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	out := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_OUTPUT", out)
+	dir, marker := newDisabledAgentDir(t)
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	require.NoError(t, runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "",
+		rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{}))
+
+	data, err := os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Equal(t, "skipped=true\ndisabled=true\nreason=agent \"code\" is disabled in config\n", string(data))
+	assert.NoFileExists(t, marker)
+}
+
+// Outside GitHub Actions there is no relay target; the skip must still
+// succeed.
+func TestRunAgent_DisabledAgent_LocalRunWithoutRelayTargetSucceeds(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("GITHUB_OUTPUT", "")
+	dir, marker := newDisabledAgentDir(t)
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	require.NoError(t, runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "",
+		rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{}))
+	assert.NoFileExists(t, marker)
+}
+
+// A relay target that cannot be written must fail the run rather than
+// exiting 0 with a skip decision the workflow never sees.
+func TestRunAgent_DisabledAgent_RelayFailureIsHardError(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("GITHUB_ACTIONS", "true")
+	// A directory can be opened but not written to.
+	t.Setenv("GITHUB_OUTPUT", t.TempDir())
+	dir, _ := newDisabledAgentDir(t)
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "relaying disabled-agent skip")
+}
+
 // A relay target that cannot be written must fail the run rather than
 // exiting 0 with a decision the workflow gate never sees.
 func TestRunAgent_PreScriptRelayFailureIsHardError(t *testing.T) {

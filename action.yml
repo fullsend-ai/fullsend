@@ -543,6 +543,7 @@ runs:
         JOB_STATUS: ${{ job.status }}
         HARNESS_ROLE: ${{ steps.run.outputs.role }}
         WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
+        WAS_DISABLED: ${{ steps.run.outputs.disabled }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
       run: |
@@ -551,6 +552,11 @@ runs:
         # the deferred PostCompletion call never runs and the status comment
         # remains in "Started" state. This step runs unconditionally (if:
         # always()) to detect and finalize orphaned comments. See #2149.
+
+        if [[ "${WAS_DISABLED}" == "true" ]]; then
+          echo "Fullsend reported that '${AGENT}' is disabled on the configuration, skipping reconcile-status"
+          exit 0
+        fi
 
         # Resolve the correct commit SHA. Priority order:
         # 1. Explicit pr-head-sha input (per-repo workflow_call callers)

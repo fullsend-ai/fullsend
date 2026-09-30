@@ -530,8 +530,12 @@ agents:
     enabled: false
 ```
 
-This prevents the agent from dispatching and from resolving via
-`fullsend run`. The role can stay in `roles` — only the agent
+This prevents the agent from executing: `fullsend run` skips the run and
+exits successfully, and under GitHub Actions it reports `skipped=true` (with
+the reason) as step outputs. The dispatch workflow no longer checks whether
+an agent is enabled, so its earlier setup steps (such as minting a token)
+still run before the skip, and a failure in any of them still fails the
+workflow. The role can stay in `defaults.roles` — only the agent
 is suppressed. Omitting `enabled` (or setting it to `true`) keeps the
 agent active (backward compatible).
 
