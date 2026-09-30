@@ -223,7 +223,7 @@ func TestBootstrap_AgentNameMatch(t *testing.T) {
 
 func TestBuildRunCommand_Basic(t *testing.T) {
 	cmd := testRunCommand("hello-world", "", "/sandbox/workspace/repo", nil, "")
-	assert.Contains(t, cmd, "cd /sandbox/workspace/repo")
+	assert.Contains(t, cmd, "cd '/sandbox/workspace/repo'")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 	assert.NotContains(t, cmd, "--model")
 	assert.NotContains(t, cmd, "--plugin-dir")

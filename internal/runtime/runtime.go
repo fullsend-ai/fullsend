@@ -26,6 +26,17 @@ type RunMetrics struct {
 	// whose cost is dominated by children is legible in metrics.json;
 	// runtimes without sub-agents leave it nil and the totals stand alone.
 	PerModelUsage map[string]ModelUsage `json:"per_model_usage,omitempty"`
+	// SessionID is the runtime's own id for the session Run produced
+	// (Claude Code session_id, Codex thread_id, pi session id). Empty when
+	// the runtime did not report one. Set by each runtime's Run; nothing
+	// reads it yet, so it does not reach metrics.json, which is built from
+	// a separate struct — the tag below is inert until something marshals
+	// this one. The code that records a session arrives with the change
+	// that needs one.
+	SessionID string `json:"session_id,omitempty"`
+	// Steers records every mid-run update delivered through Steerer. No
+	// caller sets Steerable yet, so this is empty on every run today.
+	Steers []SteerResult `json:"steers,omitempty"`
 }
 
 // ModelUsage is one model's token and cost contribution to a run. Requests
@@ -104,6 +115,11 @@ type RunParams struct {
 	// underlying CLI. An empty or nil map means no overrides; the
 	// runtime's compiled-in alias table is used as-is.
 	ModelAliases map[string]string
+	// Steerable asks a Steerer runtime to keep the session open so the
+	// runner can deliver SteerMessages while Run executes; Run then returns
+	// only after Settle and the agent's current turn. Runtimes that do not
+	// implement Steerer ignore it. False keeps today's single-turn Run.
+	Steerable bool
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.
