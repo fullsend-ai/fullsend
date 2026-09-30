@@ -1,4 +1,4 @@
-//go:build e2e || behaviour
+//go:build e2e || behaviour || playback
 
 package e2etest
 

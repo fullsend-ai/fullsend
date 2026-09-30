@@ -57,6 +57,25 @@ func TestValidatePerRepoPostInstall_OK(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidatePerRepoPostInstallWithRuntime_Playback(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy-playback")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml":  []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":            cfg,
+		org + "/" + repo + "/" + scaffold.VendoredMarkerPath(): []byte("marker"),
+		org + "/" + repo + "/.fullsend/bin/fullsend":           []byte("binary"),
+	}
+
+	err = ValidatePerRepoPostInstallWithRuntime(context.Background(), client, org, repo, "dummy-playback")
+	require.NoError(t, err)
+}
+
 func TestValidatePerRepoPostInstall_MissingShim(t *testing.T) {
 	speedUpValidateRetries(t)
 	client := forge.NewFakeClient()

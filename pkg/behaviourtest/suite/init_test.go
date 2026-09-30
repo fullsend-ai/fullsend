@@ -83,6 +83,9 @@ func (p *panickingSCM) CreateForkChangeProposal(context.Context, string, string,
 func (p *panickingSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
 	return nil, nil
 }
+func (p *panickingSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+	return nil, nil
+}
 
 // fakeDriver is a minimal install.Driver for unit testing suite hooks.
 type fakeDriver struct {
@@ -229,7 +232,7 @@ func TestBeforeScenario_ClonesAndResetsWorld(t *testing.T) {
 		IssueNumber: 42, // scenario field — should be zeroed by reset
 	}
 
-	ctx, err := beforeScenario(context.Background(), nil, template)
+	ctx, err := beforeScenario(context.Background(), "test-scenario", nil, template)
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -245,7 +248,7 @@ func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
 	driver := newFakeDriver(3)
 	template := &world.World{Org: "test-org", Driver: driver}
 
-	ctx, err := beforeScenario(context.Background(), nil, template)
+	ctx, err := beforeScenario(context.Background(), "test-scenario", nil, template)
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -259,7 +262,7 @@ func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
 func TestBeforeScenario_NilDriver(t *testing.T) {
 	template := &world.World{Org: "test-org"}
 
-	ctx, err := beforeScenario(context.Background(), nil, template)
+	ctx, err := beforeScenario(context.Background(), "test-scenario", nil, template)
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)

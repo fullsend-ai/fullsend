@@ -62,7 +62,7 @@ func (c RunnerConfig) Validate() error {
 	if c.SCM != "github" && c.SCM != "gitlab" {
 		return fmt.Errorf("unsupported BEHAVIOUR_SCM %q", c.SCM)
 	}
-	if c.CI != "githubactions" {
+	if c.CI != "githubactions" && c.CI != "gitlabci" {
 		return fmt.Errorf("unsupported BEHAVIOUR_CI %q", c.CI)
 	}
 	if c.Environment != "dev" && c.Environment != "stage" {

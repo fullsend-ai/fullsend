@@ -1,0 +1,24 @@
+{
+  "action": "sufficient",
+  "reasoning": "Feature request is well-described with clear use case and acceptance criteria.",
+  "clarity_scores": {
+    "symptom": 0.9,
+    "cause": 0.85,
+    "reproduction": 0.9,
+    "impact": 0.8,
+    "overall": 0.87
+  },
+  "triage_summary": {
+    "title": "Add dark mode support",
+    "severity": "medium",
+    "category": "feature",
+    "problem": "Users want a dark mode option for reduced eye strain",
+    "root_cause_hypothesis": "No dark theme variant exists",
+    "reproduction_steps": ["Open settings", "Look for theme option", "None available"],
+    "environment": "All platforms",
+    "impact": "User experience improvement",
+    "recommended_fix": "Add theme toggle with dark mode CSS",
+    "proposed_test_case": "test_dark_mode_toggle"
+  },
+  "comment": "## Triage Summary\n\nThis feature request is well-described and ready for planning."
+}

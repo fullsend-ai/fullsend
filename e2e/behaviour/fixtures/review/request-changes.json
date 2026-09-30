@@ -1,0 +1,15 @@
+{
+  "action": "request-changes",
+  "body": "Found issues that need to be addressed before merging.",
+  "findings": [
+    {
+      "severity": "medium",
+      "category": "correctness",
+      "file": "main.go",
+      "line": 42,
+      "description": "Nil pointer dereference when input is empty.",
+      "remediation": "Add a nil check before accessing the field.",
+      "actionable": true
+    }
+  ]
+}

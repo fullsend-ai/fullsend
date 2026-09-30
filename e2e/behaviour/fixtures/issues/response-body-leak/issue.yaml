@@ -1,0 +1,34 @@
+title: "API client times out after running for several hours"
+body: |
+  ## Summary
+
+  Our user sync service, which calls the external user API every 30 seconds,
+  starts failing with connection timeouts after running for 6-8 hours in
+  production. Restarting the service fixes it immediately, but it degrades
+  again after the same window.
+
+  ## Steps to reproduce
+
+  1. Run the sync service against an API where ~20% of user IDs return 404
+  2. Monitor open file descriptors with `lsof -p <pid> | grep TCP | wc -l`
+  3. After a few hours, observe that the TCP connection count grows linearly
+     and never decreases
+
+  ## Expected behavior
+
+  The HTTP connection pool should recycle connections. Open FD count should
+  stay roughly constant regardless of how long the service runs.
+
+  ## Actual behavior
+
+  Open TCP connections grow by approximately 200/hour (matching our 404 rate).
+  After ~8 hours the process hits the OS file descriptor limit and all
+  subsequent HTTP requests fail with `dial tcp: lookup api.example.com: too
+  many open files`.
+
+  ## Environment
+
+  - Go 1.22
+  - net/http default transport (MaxIdleConns=100, MaxIdleConnsPerHost=2)
+  - Linux (production), macOS (development — harder to reproduce due to
+    higher default FD limits)

@@ -555,11 +555,11 @@ func TestIsConcurrencySuperseded(t *testing.T) {
 	}
 }
 
-func TestHarnessJobSuffix(t *testing.T) {
+func TestHarnessJobName(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "Harness run (pr-ping)", harnessJobSuffix("pr-ping"))
-	assert.Equal(t, "Harness run (triage)", harnessJobSuffix("triage"))
+	assert.Equal(t, "fullsend pr-ping agent", harnessJobName("pr-ping"))
+	assert.Equal(t, "fullsend triage agent", harnessJobName("triage"))
 }
 
 func TestExtractArtifactZip_RejectsCorruptZip(t *testing.T) {

@@ -81,6 +81,14 @@ type ensurer interface {
 // implementation polls GetWorkflow; tests inject a no-op.
 type SettleFunc func(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error
 
+// InstallHooks allows a specialized suite to perform work around install.
+// BeforeInstall runs after repo creation but before fullsend.yaml is written;
+// AfterInstall runs after setup and validation complete.
+type InstallHooks struct {
+	BeforeInstall func(ctx context.Context, client forge.Client, org, repo string) (any, error)
+	AfterInstall  func(ctx context.Context, client forge.Client, org, repo string, state any) error
+}
+
 type repoEnsurer struct {
 	e2eCfg    e2etest.EnvConfig
 	client    forge.Client
@@ -90,6 +98,7 @@ type repoEnsurer struct {
 	runCLI    CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
 	settle    SettleFunc    // injectable; defaults to awaitWorkflowReady
 	setupOpts common.GitHubSetupOpts
+	hooks     InstallHooks
 	// actorGrants are verified once per org (membership + all-repository roles).
 	actorGrants   []actorGrant
 	outsiderLogin string
@@ -132,10 +141,15 @@ func newRepoEnsurerWithOpts(
 	token, binary string,
 	opts common.GitHubSetupOpts,
 	logf func(string, ...any),
+	hooks ...InstallHooks,
 ) (ensurer, error) {
 	outsiderLogin, err := outsiderLoginFromEnv(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("resolving outsider actor: %w", err)
+	}
+	var installHooks InstallHooks
+	if len(hooks) > 0 {
+		installHooks = hooks[0]
 	}
 	return &repoEnsurer{
 		e2eCfg:        e2eCfg,
@@ -146,6 +160,7 @@ func newRepoEnsurerWithOpts(
 		runCLI:        e2etest.TryRunCLI,
 		settle:        awaitWorkflowReady,
 		setupOpts:     opts,
+		hooks:         installHooks,
 		actorGrants:   actorGrantsFromEnv(context.Background(), logf),
 		outsiderLogin: outsiderLogin,
 		ensured:       make(map[string]struct{}),
@@ -242,11 +257,13 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error 
 	// prior version), so fullsend is never pre-installed. Run the full
 	// install flow and settle for Actions readiness.
 	e.logf("[ensure] %s needs install (fresh repo)", target)
-
-	// Select the appropriate post-install validator based on install mode.
-	validate := ValidatePerRepoPostInstall
-	if !e.setupOpts.Vendor {
-		validate = ValidatePerRepoPostInstallNonVendored
+	var hookState any
+	if e.hooks.BeforeInstall != nil {
+		var err error
+		hookState, err = e.hooks.BeforeInstall(ctx, e.client, org, repoName)
+		if err != nil {
+			return fmt.Errorf("pre-install hook for %s: %w", target, err)
+		}
 	}
 
 	// Step 4: run github setup to install fullsend and push the
@@ -254,8 +271,23 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error 
 	if err := e.installFullsend(ctx, org, repoName, target); err != nil {
 		return err
 	}
-	if err := validate(ctx, e.client, org, repoName); err != nil {
-		return fmt.Errorf("post-install validation for %s: %w", target, err)
+	expectedRuntime := e.setupOpts.Runtime
+	if expectedRuntime == "" {
+		expectedRuntime = "dummy"
+	}
+	var validateErr error
+	if e.setupOpts.Vendor {
+		validateErr = ValidatePerRepoPostInstallWithRuntime(ctx, e.client, org, repoName, expectedRuntime)
+	} else {
+		validateErr = ValidatePerRepoPostInstallNonVendoredWithRuntime(ctx, e.client, org, repoName, expectedRuntime)
+	}
+	if validateErr != nil {
+		return fmt.Errorf("post-install validation for %s: %w", target, validateErr)
+	}
+	if e.hooks.AfterInstall != nil {
+		if err := e.hooks.AfterInstall(ctx, e.client, org, repoName, hookState); err != nil {
+			return fmt.Errorf("post-install hook for %s: %w", target, err)
+		}
 	}
 
 	// Step 5: wait for Actions to recognise the workflow file.

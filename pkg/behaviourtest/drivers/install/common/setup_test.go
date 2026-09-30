@@ -140,6 +140,22 @@ func TestRunGitHubSetupWithOpts_ConfigPresetOmitsRuntime(t *testing.T) {
 	assert.NotContains(t, joined, "--runtime")
 }
 
+func TestRunGitHubSetupWithOpts_Runtime(t *testing.T) {
+	var capturedArgs []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+
+	err := RunGitHubSetupWithOpts(
+		"/bin/fullsend", "tok", "org/repo", "https://mint.test", "",
+		GitHubSetupOpts{Vendor: true, Runtime: "dummy-playback"}, runner, t.Logf,
+	)
+	require.NoError(t, err)
+	assert.Contains(t, capturedArgs, "--runtime")
+	assert.Contains(t, capturedArgs, "dummy-playback")
+}
+
 func TestRunGitHubSetupWithOpts_ConfigPresetWithFullsendRef(t *testing.T) {
 	var capturedArgs []string
 	runner := func(_, _ string, args ...string) (string, error) {

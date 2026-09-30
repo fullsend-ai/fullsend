@@ -176,13 +176,13 @@ Jobs triggered by `pull_request_target` that check out and execute PR-head code 
 
 1. **Event type** — `pull_request_target` runs with base-branch secrets and permissions, unlike `pull_request` which sandboxes fork PRs.
 2. **Checkout of PR head** — `ref: github.event.pull_request.head.sha` or `allow-unsafe-pr-checkout: true` brings untrusted code onto the runner.
-3. **Code execution** — a `run:` step (e.g., `make e2e-test`, `make behaviour-test`) executes that untrusted code.
+3. **Code execution** — a `run:` step (e.g., `make behaviour-test`) executes that untrusted code.
 4. **Env access** — secrets wired into the step's `env:` block are readable by any code the step runs.
 5. **Credential type** — the blast radius of exfiltration depends on what was exposed.
 
 When all five components are present, any code the PR author controls can read and exfiltrate every secret in that step's environment.
 
-**ADR-0009 and the shim distinction:** ADR-0009 documents why `pull_request_target` is safe for the shim workflow — the shim never checks out PR code, so components 2–3 are absent. This safety reasoning does **not** transfer to jobs that check out and execute PR-head code (e.g., the e2e and behaviour jobs in `e2e.yml`).
+**ADR-0009 and the shim distinction:** ADR-0009 documents why `pull_request_target` is safe for the shim workflow — the shim never checks out PR code, so components 2–3 are absent. This safety reasoning does **not** transfer to jobs that check out and execute PR-head code (e.g., the behaviour and playback jobs in `e2e.yml`).
 
 ### Credential blast radius
 
@@ -197,7 +197,7 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 
 ### Gate job mitigation
 
-The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the e2e and behaviour jobs check out PR-head code:
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code:
 
 - **Trusted authors** — org members and repo collaborators are auto-authorized.
 - **External contributors** — require a maintainer with write access to apply the `ok-to-test` label after reviewing the PR diff; the gate checks the labeler's permission. The gate removes stale labels when new commits land.

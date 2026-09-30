@@ -18,7 +18,7 @@ import (
 
 const (
 	pollInterval = 15 * time.Second
-	dispatchWait = 12 * time.Minute
+	dispatchWait = 20 * time.Minute
 
 	// Dispatch detection uses exponential backoff: the poll interval
 	// starts at dispatchPollInit, doubles each iteration up to
@@ -84,6 +84,9 @@ func New(client forge.Client, token string) ci.Driver {
 	return &Driver{Client: client, Token: token, afterFunc: time.After, nowFunc: time.Now}
 }
 
+// ForgeClient returns the underlying forge client.
+func (d *Driver) ForgeClient() forge.Client { return d.Client }
+
 // now returns the current time from nowFunc, falling back to time.Now
 // so that a zero-value Driver still works.
 func (d *Driver) now() time.Time {
@@ -130,7 +133,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		}
 		if candidate := selectWorkflowRun(runs, after, event); candidate != nil {
 			if candidate.Status == "completed" && candidate.Conclusion != "success" {
-				return nil, fmt.Errorf("workflow %s run %d concluded with %q during dispatch", workflowFile, candidate.ID, candidate.Conclusion)
+				return candidate, fmt.Errorf("workflow %s run %d concluded with %q during dispatch", workflowFile, candidate.ID, candidate.Conclusion)
 			}
 			triageRun = candidate
 			break
@@ -158,6 +161,13 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 			if run.Conclusion == "success" {
 				return run, nil
 			}
+			if run.Conclusion == "cancelled" || run.Conclusion == "skipped" {
+				if replacement := selectWorkflowRun(latestRuns(ctx, d, owner, repo, workflowFile), after, event); replacement != nil && replacement.ID > triageRun.ID {
+					triageRun = replacement
+					continue
+				}
+				continue
+			}
 			if replacement := selectSuccessfulWorkflowRun(latestRuns(ctx, d, owner, repo, workflowFile), after, event); replacement != nil && replacement.ID > triageRun.ID {
 				triageRun = replacement
 				continue
@@ -165,7 +175,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 			return run, fmt.Errorf("workflow %s run %d concluded with %q", workflowFile, run.ID, run.Conclusion)
 		}
 	}
-	return nil, fmt.Errorf("workflow %s run %d did not complete within deadline", workflowFile, triageRun.ID)
+	return triageRun, fmt.Errorf("workflow %s run %d did not complete within deadline", workflowFile, triageRun.ID)
 }
 
 func latestRuns(ctx context.Context, d *Driver, owner, repo, workflowFile string) []forge.WorkflowRun {
@@ -184,7 +194,12 @@ func selectWorkflowRun(runs []forge.WorkflowRun, triggerTime time.Time, event st
 		if !workflowRunMatches(run, triggerTime, event) {
 			continue
 		}
-		if best == nil || run.ID > best.ID {
+		if run.Conclusion == "cancelled" || run.Conclusion == "skipped" {
+			continue
+		}
+		// GitHub reports both issues.opened and issues.labeled as event
+		// "issues". For the issue-open drain, retain the first run.
+		if best == nil || (event == "issues:opened" && run.ID < best.ID) || (event != "issues:opened" && run.ID > best.ID) {
 			r := run
 			best = &r
 		}
@@ -214,7 +229,11 @@ func workflowRunMatches(run forge.WorkflowRun, triggerTime time.Time, event stri
 	if parseErr != nil || runTime.Before(triggerTime) {
 		return false
 	}
-	if event != "" && run.Event != event {
+	if event == "issues:opened" {
+		if run.Event != "issues" {
+			return false
+		}
+	} else if event != "" && run.Event != event {
 		return false
 	}
 	return true

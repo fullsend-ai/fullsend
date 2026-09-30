@@ -18,6 +18,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 )
 
 // cfmintConfig holds parameters for the CF mint driver. This is an
@@ -74,7 +75,7 @@ func NewRepoPoolCFMintPreviews(
 		return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
 	}
 
-	return buildCFMintDriver(org, md, client, token, binary, gcpProjectID, poolSize, logf)
+	return buildCFMintDriverWithOpts(org, md, client, token, binary, gcpProjectID, poolSize, playbackSetupOpts(), logf)
 }
 
 // Compile-time check: NewRepoPoolCFMintPreviews satisfies Factory.
@@ -91,6 +92,18 @@ func buildCFMintDriver(
 	poolSize int,
 	logf func(string, ...any),
 ) (Driver, error) {
+	return buildCFMintDriverWithOpts(org, md, client, token, binary, gcpProjectID, poolSize, common.DefaultGitHubSetupOpts(), logf)
+}
+
+func buildCFMintDriverWithOpts(
+	org string,
+	md mintDriver,
+	client forge.Client,
+	token, binary, gcpProjectID string,
+	poolSize int,
+	setupOpts common.GitHubSetupOpts,
+	logf func(string, ...any),
+) (Driver, error) {
 	ctx := context.Background()
 	mintURL, err := md.Install(ctx, org)
 	if err != nil {
@@ -102,7 +115,8 @@ func buildCFMintDriver(
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens, err := newRepoEnsurer(e2eCfg, client, token, binary, logf)
+	ens, err := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf,
+		playbackInstallHooks(setupOpts, org, client, logf))
 	if err != nil {
 		return nil, fmt.Errorf("cfmint factory: %w", err)
 	}

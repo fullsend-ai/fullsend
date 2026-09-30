@@ -91,7 +91,7 @@ func createIssue(w *world.World, title, body string) error {
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before creating issues")
 	}
 	trigger := time.Now()
-	issue, err := w.SCM.CreateIssue(context.Background(), w.RepoOwner, w.RepoName, title, body)
+	issue, err := scenarioIssueSCM(w).CreateIssue(context.Background(), w.RepoOwner, w.RepoName, title, body)
 	if err != nil {
 		return err
 	}
@@ -103,6 +103,13 @@ func createIssue(w *world.World, title, body string) error {
 		return err
 	}
 	return nil
+}
+
+func scenarioIssueSCM(w *world.World) scm.Driver {
+	if w.IssueSCM != nil {
+		return w.IssueSCM
+	}
+	return w.SCM
 }
 
 // issueOpenDrainSkewBuffer is subtracted from the trigger timestamp on
@@ -120,8 +127,10 @@ func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	repo := w.RepoName
 	file := install.PerRepoTriageWorkflow
 
-	_, err := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, trigger, issueOpenEvent)
+	run, err := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, trigger, issueOpenEvent)
 	if err == nil {
+		w.WorkflowRun = run
+		w.TriageTriggerEvent = issueOpenEvent
 		return nil
 	}
 
@@ -130,7 +139,9 @@ func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	// before our trigger timestamp and the first poll window misses it.
 	worldLogf(w, "issue-open drain: retrying with skew buffer: %v", err)
 	buffered := trigger.Add(-issueOpenDrainSkewBuffer)
-	if _, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent); retryErr == nil {
+	if retryRun, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent); retryErr == nil {
+		w.WorkflowRun = retryRun
+		w.TriageTriggerEvent = issueOpenEvent
 		return nil
 	}
 

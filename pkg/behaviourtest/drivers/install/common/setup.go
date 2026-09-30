@@ -28,6 +28,11 @@ type GitHubSetupOpts struct {
 	// rather than pinned in the overlay.
 	ConfigPreset string
 
+	// Runtime overrides the runtime passed to github setup. When empty,
+	// github setup uses the normal dummy runtime. Playback suites set this
+	// to dummy-playback while retaining the standard repo-pool lifecycle.
+	Runtime string
+
 	// ResolveWIFProvider, when set, returns the inference WIF provider
 	// for target in project. Callers use it to cache or serialise the
 	// lookup. When nil, ResolveInferenceWIFProvider is used.
@@ -71,12 +76,16 @@ func RunGitHubSetupWithOpts(
 		"--skip-app-setup",
 		"--mint-url", mintURL,
 	}
-	// Omit --runtime dummy when a preset is supplied so the preset's
+	// Omit --runtime when a preset is supplied so the preset's
 	// runtime is inherited rather than pinned in the overlay.
 	if preset := strings.TrimSpace(opts.ConfigPreset); preset != "" {
 		args = append(args, "--config", preset)
 	} else {
-		args = append(args, "--runtime", "dummy")
+		runtime := opts.Runtime
+		if runtime == "" {
+			runtime = "dummy"
+		}
+		args = append(args, "--runtime", runtime)
 	}
 	if opts.Vendor {
 		args = append(args, "--vendor")

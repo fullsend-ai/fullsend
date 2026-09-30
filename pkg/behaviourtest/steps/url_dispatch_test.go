@@ -1148,3 +1148,6 @@ func (f *fakeURLSCM) CreateForkChangeProposal(context.Context, string, string, s
 func (f *fakeURLSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
 	return nil, nil
 }
+func (f *fakeURLSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+	return nil, nil
+}

@@ -1,0 +1,13 @@
+{
+  "summary": "## Retrospective\n\nThe issue was resolved through a standard triage-code-review-fix cycle. The nil pointer bug was caught during review and fixed promptly.",
+  "proposals": [
+    {
+      "target_repo": "owner/repo",
+      "title": "Add nil-safety linter rule",
+      "what_happened": "A nil pointer dereference reached the PR stage without being caught by static analysis.",
+      "what_could_go_better": "This class of bug should be caught earlier in the development cycle.",
+      "proposed_change": "Enable the nilaway linter in the CI pipeline to catch nil pointer issues at build time.",
+      "validation_criteria": "The linter runs in CI and would have flagged the original bug in main.go:42."
+    }
+  ]
+}

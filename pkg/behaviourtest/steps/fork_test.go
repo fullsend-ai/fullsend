@@ -674,3 +674,6 @@ func (f *fakeForkSCM) GetBranchRef(context.Context, string, string, string) (str
 func (f *fakeForkSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
 	return nil, nil
 }
+func (f *fakeForkSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+	return nil, nil
+}

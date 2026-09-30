@@ -897,6 +897,17 @@ func (c *LiveClient) ListPipelineSchedules(ctx context.Context, owner, repo stri
 	return result, nil
 }
 
+// PlayPipelineSchedule triggers an immediate run of a pipeline schedule.
+func (c *LiveClient) PlayPipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error {
+	path := fmt.Sprintf("/projects/%s/pipeline_schedules/%d/play", projectPath(owner, repo), scheduleID)
+	resp, err := c.post(ctx, path, nil)
+	if err != nil {
+		return fmt.Errorf("play pipeline schedule %d: %w", scheduleID, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Resource groups
 // ---------------------------------------------------------------------------

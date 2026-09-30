@@ -1,6 +1,6 @@
 # E2E Testing
 
-Guide for running and debugging fullsend admin e2e tests locally and in CI.
+Guide for running and debugging fullsend behaviour tests locally and in CI.
 
 Related ADRs: [0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md) (org pool),
 [0060](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md) (cross-org mint),
@@ -18,15 +18,15 @@ Before running e2e locally or in CI:
 1. **Pool orgs** (`halfsend-01` … `halfsend-12`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
 2. **Mint** deployed with `e2e` role enrolled and `ALLOWED_ORGS` including `fullsend-ai`
 3. **CI only:** pool orgs with `FULLSEND_FOREIGN_E2E_REPOS` authorizing `fullsend-ai/fullsend`
-4. **Local only:** `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN`) with admin access on pool orgs
+4. **Local only:** `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN`) with access to the test repositories
 
 ## Local runs
 
-1. Authenticate as an admin on the pool orgs (`gh auth login --web`, or export `GH_TOKEN`).
+1. Authenticate to GitHub (`gh auth login --web`, or export `GH_TOKEN`).
 2. Run tests (uses `gh auth token`, `GH_TOKEN`, or `GITHUB_TOKEN`):
 
 ```bash
-make e2e-test
+make behaviour-test
 ```
 
 Optional environment variables:
@@ -43,7 +43,7 @@ Behaviour tests use the same pool orgs (for `ENVIRONMENT=dev`) but install via `
 Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
 `halfsend-12` for DEV, or `halfsend` for STAGE) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
 
-Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests live in `internal/e2etest/`. Admin-specific test logic remains in `e2e/admin/`.
+Shared pool, CLI, and cleanup helpers used by the behaviour tests live in `internal/e2etest/`.
 
 ## CI runs
 
@@ -70,7 +70,7 @@ Mint URL uses the hosted public endpoint by default (same as `fullsend admin --m
 
 ### Behaviour job GitHub Environments
 
-The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (authorized pull requests and the merge queue) and `stage` (push to `main`). It skips `workflow_dispatch` and other triggers. The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
+The playback workflow in `e2e.yml` binds to GitHub Environments `dev` (authorized pull requests and the merge queue) and `stage` (push to `main`). The behaviour and playback jobs set `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
 
 After the environments exist, restrict `stage` to `main`:
 
@@ -280,8 +280,8 @@ gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
    workflows call the same suites via `workflow_call` (fork / external path)
 3. **Gate** — authorize the PR author or a fresh `ok-to-test` label (base
    checkout only; never checks out PR head)
-4. **E2E** — checkout PR head SHA, authenticate to GCP via WIF, mint cross-org
-   tokens per pool org, `make e2e-test`
+4. **Behaviour / playback** — checkout PR head SHA, authenticate to GCP via WIF,
+   mint cross-org tokens per pool repository, and run the tagged behaviour suite.
 
 Pushes to `main`, merge queue, and `workflow_dispatch` skip the gate and run e2e
 directly.

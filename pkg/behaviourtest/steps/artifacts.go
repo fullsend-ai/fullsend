@@ -11,7 +11,10 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-const issueOpenEvent = "issues"
+// GitHub's workflow-run API exposes both issues.opened and issues.labeled as
+// event "issues". Keep a distinct selector value so the CI driver can retain
+// the first run caused by issue creation before the follow-up label run.
+const issueOpenEvent = "issues:opened"
 const issueCommentEvent = "issue_comment"
 
 func triageWorkflowEvent(w *world.World) string {
@@ -31,6 +34,7 @@ func ensureTriageWorkflowComplete(w *world.World) error {
 	ctx := context.Background()
 	run, err := w.CI.WaitForWorkflow(ctx, w.Org, w.RepoName, install.PerRepoTriageWorkflow, w.ScenarioStart, triageWorkflowEvent(w))
 	if err != nil {
+		saveWorkflowRunLogs(ctx, w, "triage", run)
 		return err
 	}
 	w.WorkflowRun = run
