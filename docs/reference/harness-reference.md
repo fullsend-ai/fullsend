@@ -6,6 +6,7 @@ Complete reference for all fields available in a fullsend harness YAML file. For
 # ── Required ──────────────────────────────────────────────────
 agent: agents/my-agent.md           # Path to agent definition
 role: triage                        # A role the mint serves (built-in on the hosted mint); not the agent's name. Format: lowercase letter first, then a-z, 0-9, _, -; no double hyphens
+policy: policies/base.yaml          # Sandbox policy; OpenShell 0.1 will not start without one
 
 # ── Identity & metadata ──────────────────────────────────────
 slug: my-org-my-role                # Install-time App discovery (convention: <org>-<role>); not read by the mint
@@ -18,7 +19,6 @@ base: harness/common-base.yaml      # Inherit from another harness (local or URL
 
 # ── Sandbox ───────────────────────────────────────────────────
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: policies/base.yaml          # Sandbox policy (filesystem, landlock, process)
 model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
 readonly_repo: false                # Mount repo as read-only in sandbox
@@ -151,6 +151,8 @@ Most fields are self-explanatory from the inline comments above. This section ex
 **`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
 
 **`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
+
+**`policy`** — Path or pinned URL of the OpenShell sandbox policy. Required at `fullsend run`: OpenShell 0.1 will not activate a sandbox with no policy, and fullsend ships none (#7266). A child that omits `policy:` still passes if it inherits one from `base:`. A local file that unmarshals to no fields (comments only) is rejected with the path named. Commit a copy of the fleet policy from [fullsend-ai/agents](https://github.com/fullsend-ai/agents), or set `policy:` to its URL with a `#sha256=` hash under `allowed_remote_resources`; `fullsend agent new` writes both the file and the field for a new agent.
 
 **`timeout_minutes`** — Wall-clock budget for one agent iteration, default 30. The runner ends the iteration and sweeps the processes the agent left running in the sandbox (best effort) when it is spent, and a killed iteration ends the run with `agent timed out after <elapsed> without completing (timeout: <budget>)` unless its output validates anyway. Before every iteration the runner writes the budget as `FULLSEND_TIMEOUT_MINUTES`, the kill time as `FULLSEND_ITERATION_DEADLINE` (Unix seconds), and the current agent span as `TRACEPARENT` into the agent's environment — see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline). Those names are reserved: an `env.sandbox` entry with any of them is dropped.
 

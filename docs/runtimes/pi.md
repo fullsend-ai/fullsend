@@ -48,8 +48,9 @@ actually called.
 > `providers: [openai]` on the harness; the sandbox can then reach `api.openai.com` for the
 > Responses API and nothing else, and never sees the credential
 > ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). A custom harness must carry a
-> `policy:` (the fleet's `policies/base.yaml`); without one the image's default policy leaves an
-> uninspected route to `api.openai.com` and the run stops before the agent starts. **Exercised so
+> `policy:` (the fleet's `policies/base.yaml`); without one OpenShell 0.1 will not start the sandbox
+> (`fullsend run` fails at harness validation). The fleet base policy also avoids an uninspected
+> route to `api.openai.com`, which the gateway refuses to carry the credential over. **Exercised so
 > far:** the local static-key path end to end on 2026-08-27 (OpenShell 0.0.115, pi 0.84.3,
 > `gpt-5.6-luna`: placeholder in the sandbox, pi reading it from the runner-seeded `auth.json`, tool
 > calls through the hook adapter, run-scoped provider deleted at the end, expired in place under

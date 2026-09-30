@@ -8769,8 +8769,10 @@ plugins:
 	// Simulate what run.go does: ResolveRelativeTo then ValidateFilesExist.
 	// Without the fix, ResolveRelativeTo would resolve "plugins/gopls-lsp"
 	// against fullsendDir (where it does not exist) and ValidateFilesExist
-	// would fail.
+	// would fail. Policy is assigned after load so this test stays about
+	// plugin resolution, not the sandbox-policy requirement.
 	require.NoError(t, h.ResolveRelativeTo(fullsendDir))
+	h.Policy = writeTestPolicy(t, fullsendDir)
 	require.NoError(t, h.ValidateFilesExist(),
 		"plugin path should have been resolved to a cache path, not left as a relative path")
 }
@@ -9855,7 +9857,7 @@ func TestFetchBasePlugin_PiFormat_FreshFetch(t *testing.T) {
 	assert.FileExists(t, filepath.Join(localDir, "lib", "x.js"))
 
 	// The fetched tree passes the same loadability rule as a local dir.
-	h := &Harness{Agent: filepath.Join(localDir, "index.js"), Plugins: []PluginSpec{{Path: localDir}}}
+	h := &Harness{Agent: filepath.Join(localDir, "index.js"), Policy: writeTestPolicy(t, t.TempDir()), Plugins: []PluginSpec{{Path: localDir}}}
 	require.NoError(t, h.ValidateFilesExist())
 
 	// Second call is a full cache hit.
@@ -10031,5 +10033,6 @@ plugins:
 	// Same flow as run.go: the cache path must survive ResolveRelativeTo and
 	// pass ValidateFilesExist, rather than being re-rooted under fullsendDir.
 	require.NoError(t, h.ResolveRelativeTo(fullsendDir))
+	h.Policy = writeTestPolicy(t, fullsendDir)
 	require.NoError(t, h.ValidateFilesExist())
 }

@@ -161,6 +161,7 @@ the mint issues the agent's token by `role`, which must be one it serves, and ne
 agent: agents/probe-timeout.md
 role: review            # unchanged
 slug: probe-timeout
+policy: policies/base.yaml
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
