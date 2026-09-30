@@ -11,8 +11,10 @@ workstation.
 comment fires the repository's fullsend shim like any other event, and the run
 already in flight on that item absorbs it instead of being cancelled and
 restarted ([ADR 0113](../ADRs/0113-steer-the-running-agent-on-work-item-updates.md)).
-Until the run records what it absorbed, the follow-up run it absorbed still runs
-and redoes the work.
+After a successful run, the runner posts a receipt for the follow-up runs it
+absorbed, and each of those runs finds it at start and skips instead of redoing
+the work ([ADR 0120](../ADRs/0120-receipt-the-absorbed-update-under-the-job-token.md)).
+A run that finds no receipt it can trust does the work anyway.
 
 There is no steer-specific command. The runner accepts a follow-up run on
 provenance, never on which words the comment opened with, so the run in flight

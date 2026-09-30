@@ -1822,12 +1822,18 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 	}
 	defer root.Close()
 
-	stdout, _, _, err := Exec(sandboxName,
+	stdout, stderr, exitCode, err := Exec(sandboxName,
 		fmt.Sprintf("find %s -type f 2>/dev/null || true", remoteDir),
 		10*time.Second,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing output files: %w", err)
+	}
+	// The listing ends in `|| true`, so a non-zero exit came from openshell
+	// itself — a sandbox that is not ready, say — not from find. Reporting it
+	// as no output would let a run that published nothing claim a receipt.
+	if exitCode != 0 {
+		return nil, fmt.Errorf("listing output files: openshell exited %d: %s", exitCode, strings.TrimSpace(stderr))
 	}
 
 	trimmed := strings.TrimSpace(stdout)
@@ -1837,11 +1843,13 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 	lines := strings.Split(trimmed, "\n")
 
 	var extracted []string
+	named := 0
 	for _, remotePath := range lines {
 		remotePath = strings.TrimSpace(remotePath)
 		if remotePath == "" {
 			continue
 		}
+		named++
 		relPath := strings.TrimPrefix(remotePath, remoteDir)
 		relPath = strings.TrimPrefix(relPath, "/")
 
@@ -1871,5 +1879,11 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 		extracted = append(extracted, localPath)
 	}
 
+	// Each copy is its own openshell call, so the sandbox can stop answering
+	// after the listing. Output that was listed but never copied is not an
+	// empty output directory.
+	if named > 0 && len(extracted) == 0 {
+		return nil, fmt.Errorf("copying output files: %d listed, none copied", named)
+	}
 	return extracted, nil
 }
