@@ -530,8 +530,9 @@ agents:
     enabled: false
 ```
 
-This prevents the agent from dispatching and from resolving via
-`fullsend run`. The role can stay in `defaults.roles` — only the agent
+This prevents the agent from executing via `fullsend run`, which fails.
+For agents offered by Fullsend the workflow fails, so CI becomes failed.
+The role can stay in `defaults.roles` — only the agent
 is suppressed. Omitting `enabled` (or setting it to `true`) keeps the
 agent active (backward compatible).
 

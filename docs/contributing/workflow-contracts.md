@@ -1,16 +1,98 @@
 # Workflow Contracts
 
-**Dispatch sync:** The scaffold `dispatch.yml` (at `internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`) and the repo's `reusable-dispatch.yml` (at `.github/workflows/reusable-dispatch.yml`) share identical routing logic for different installation modes (per-org vs per-repo). When changing the jq payload construction, stage routing, or input/secret threading in one, apply the same change to the other. The GitLab scaffold no longer uses a native `merge_request_event` dispatch path (see [#7322](https://github.com/fullsend-ai/fullsend/issues/7322)); the leftover `fullsend-dispatch.yml` stub was dropped in [#7707](https://github.com/fullsend-ai/fullsend/issues/7707) and the version marker now lives in `fullsend-pipeline.yml`. All GitLab events — including MR open, merge, and closed-unmerged — are discovered by the cron poller (`fullsend-poll.yml`) and dispatched as API-triggered pipelines on the protected default branch. Protected CI/CD variables are unavailable on unprotected MR refs, which is why native MR pipelines cannot run agent stages. When built-in harness triggers land (#2896-2901), poller routing can be replaced by `fullsend dispatch --input-driver json`.
+**Dispatch:** The scaffold `dispatch.yml` (at
+`internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`) and the repo's
+`reusable-dispatch.yml` (at `.github/workflows/reusable-dispatch.yml`)
+historically shared routing logic across installation modes. They no longer need
+to be kept in sync: the scaffold `dispatch.yml` belongs to per-org mode, which
+is deprecated per [ADR 44](../ADRs/0044-deprecate-per-org-installation-mode.md)
+and no longer developed pending removal. New dispatch features and updates apply
+exclusively to `reusable-dispatch.yml` (per-repo mode).
 
-**Secret threading:** GHA reusable workflows do not inherit secrets — they must be explicitly forwarded by every caller. (Repository and organization-level `vars` are automatically visible inside called reusable workflows and do not need forwarding.) When any reusable workflow (`.github/workflows/reusable-*.yml`) adds a new `secrets:` or `inputs:` (`workflow_call`) entry, trace both installation-mode chains and ensure every hop forwards the new entry:
+- The GitLab scaffold no longer uses a native `merge_request_event` dispatch
+  path (see [#7322](https://github.com/fullsend-ai/fullsend/issues/7322)); the
+  leftover `fullsend-dispatch.yml` stub was dropped in
+  [#7707](https://github.com/fullsend-ai/fullsend/issues/7707) and the version
+  marker now lives in `fullsend-pipeline.yml`.
+- All GitLab events — including MR open, merge, and closed-unmerged — are
+  discovered by the cron poller (`fullsend-poll.yml`) and dispatched as
+  API-triggered pipelines on the protected default branch. Protected CI/CD
+  variables are unavailable on unprotected MR refs, which is why native MR
+  pipelines cannot run agent stages. When built-in harness triggers land
+  (#2896-2901), poller routing can be replaced by `fullsend dispatch
+  --input-driver json`.
 
-- **Per-org chain** (deprecated per [ADR 44](../ADRs/0044-deprecate-per-org-installation-mode.md)): scaffold thin callers (`internal/scaffold/fullsend-repo/.github/workflows/<agent>.yml`) → reusable workflow (`.github/workflows/reusable-<agent>.yml`). Note: `dispatch.yml` also participates in this chain for routing and event-derived inputs (forwarded via `gh workflow run -f ...`), though not for secrets — thin callers pull secrets from their own repo/org context. This entire chain is scheduled for removal per ADR 44.
-- **Per-repo chain:** shim template → `reusable-dispatch.yml` (stage logic for triage/code/review/fix/retro/prioritize is inlined directly as jobs per [ADR 62](../ADRs/0062-dispatch-version-skew.md) — there is no separate `reusable-<agent>.yml` hop for per-repo mode; thread new secrets/inputs into the relevant inline job). Exception: `prioritize.yml` is installed per-repo as a thin caller that receives `workflow_dispatch` from the org-level scheduler and calls `reusable-prioritize.yml` directly, bypassing the dispatch shim. Standalone `reusable-<stage>.yml` files still exist but now serve only the per-org chain (and the prioritize thin caller exception) until it is removed per ADR 44.
+**Secret threading:** GHA reusable workflows do not inherit secrets — they must
+be explicitly forwarded by every caller. (Repository and organization-level
+`vars` are automatically visible inside called reusable workflows and do not
+need forwarding.) When any reusable workflow
+(`.github/workflows/reusable-*.yml`) adds a new `secrets:` or `inputs:`
+(`workflow_call`) entry, trace both installation-mode chains and ensure every
+hop forwards the new entry:
 
-**Silent failures and required-flag consistency:** Omitting a secret that is `required: true` at every hop in the chain fails loudly at workflow-call validation time and self-enforces. However, a secret whose `required` flag is `false` at any upstream hop can still arrive as an empty string at a downstream `required: true` consumer — GitHub Actions' required-secret validation only checks key presence, not that the resolved value is non-empty. For example, `FULLSEND_GCP_WIF_PROVIDER` is `required: false` in `reusable-dispatch.yml` but `required: true` in every downstream `reusable-<stage>.yml`, so an installer that never sets it satisfies the key-presence check while the actual value is empty. Treat a missing forwarding hop the same as a missing sync — it is a correctness bug, not a cosmetic issue. Required-flag consistency across the *whole* chain matters, not just the flag at the final consumer.
+- **Per-org chain** (deprecated per [ADR
+  44](../ADRs/0044-deprecate-per-org-installation-mode.md)): scaffold thin
+  callers (`internal/scaffold/fullsend-repo/.github/workflows/<agent>.yml`) →
+  reusable workflow (`.github/workflows/reusable-<agent>.yml`). Note:
+  `dispatch.yml` also participates in this chain for routing and event-derived
+  inputs (forwarded via `gh workflow run -f ...`), though not for secrets — thin
+  callers pull secrets from their own repo/org context. This entire chain is
+  scheduled for removal per ADR 44.
+- **Per-repo chain:** shim template → `reusable-dispatch.yml` (stage logic for
+  triage/code/review/fix/retro/prioritize is inlined directly as jobs per [ADR
+  62](../ADRs/0062-dispatch-version-skew.md) — there is no separate
+  `reusable-<agent>.yml` hop for per-repo mode; thread new secrets/inputs into
+  the relevant inline job). Exception: `prioritize.yml` is installed per-repo as
+  a thin caller that receives `workflow_dispatch` from the org-level scheduler
+  and calls `reusable-prioritize.yml` directly, bypassing the dispatch shim.
+  Standalone `reusable-<stage>.yml` files still exist but now serve only the
+  per-org chain (and the prioritize thin caller exception) until it is removed
+  per ADR 44.
 
-**OWNERS-file authorization:** `has_repo_permission` in both `reusable-dispatch.yml` and the scaffold `dispatch.yml` supports an opt-in OWNERS-file path gated by `owners_file` in the `authorization` providers list in `.fullsend/config.yaml`. When enabled, the function checks the repo-root `OWNERS` (and `OWNERS_ALIASES` if present) before falling back to the collaborator API. Approvers get write-equivalent access; reviewers get triage-equivalent. Changes to `_owners_has_user` or the OWNERS authorization block must be applied to both workflow files — `TestDispatchPerStageAuthorization` checks `has_repo_permission` parity including OWNERS role-mapping invariants. The Go harness-dispatch path (`internal/harnessdispatch/core.go`) has equivalent OWNERS resolution via `internal/owners`; changes to the OWNERS schema or role mapping must be kept in sync across both implementations.
+**Silent failures and required-flag consistency:** Omitting a secret that is
+`required: true` at every hop in the chain fails loudly at workflow-call
+validation time and self-enforces. However, a secret whose `required` flag is
+`false` at any upstream hop can still arrive as an empty string at a downstream
+`required: true` consumer — GitHub Actions' required-secret validation only
+checks key presence, not that the resolved value is non-empty. For example,
+`FULLSEND_GCP_WIF_PROVIDER` is `required: false` in `reusable-dispatch.yml` but
+`required: true` in every downstream `reusable-<stage>.yml`, so an installer
+that never sets it satisfies the key-presence check while the actual value is
+empty. Treat a missing forwarding hop the same as a missing sync — it is a
+correctness bug, not a cosmetic issue. Required-flag consistency across the
+*whole* chain matters, not just the flag at the final consumer.
 
-**Security — consuming threaded inputs:** When a newly-threaded entry carries user- or event-controlled data, consume it via `env:` in the final `run:` step — never interpolate `${{ ... }}` directly into a shell block (see the Security note atop `reusable-dispatch.yml`). This prevents the GHA script-injection class of bugs the project defends against elsewhere.
+**OWNERS-file authorization:** `has_repo_permission` in
+`reusable-dispatch.yml` (and the legacy scaffold `dispatch.yml`) supports an
+opt-in OWNERS-file path gated by `owners_file` in the `authorization` providers
+list in `.fullsend/config.yaml`. When enabled, the function checks the repo-root
+`OWNERS` (and `OWNERS_ALIASES` if present) before falling back to the
+collaborator API. Approvers get write-equivalent access; reviewers get
+triage-equivalent. Changes to `_owners_has_user` or the OWNERS authorization
+block must be applied to `reusable-dispatch.yml` only; the scaffold
+`dispatch.yml` belongs to the deprecated per-org installation mode and its
+development is frozen. `TestDispatchPerStageAuthorization` checks
+`has_repo_permission`, including OWNERS role-mapping invariants. The Go
+harness-dispatch path (`internal/harnessdispatch/core.go`) has equivalent
+OWNERS resolution via `internal/owners`; changes to the OWNERS schema or role
+mapping must be kept in sync across both implementations.
 
-**When reviewing PRs:** If a diff adds or renames a `secrets:` or `inputs:` entry in a reusable workflow, check that all callers in both chains have been updated. Flag a missing forwarding hop as a medium-severity or higher finding. New secrets/inputs must be forwarded only to the hop(s)/stage(s) that need them — do not use `secrets: inherit` as a substitute for explicit forwarding (`OTEL_EXPORTER_OTLP_TRACES_HEADERS`, for example, is explicitly forwarded to every inline stage job in `reusable-dispatch.yml` because each stage runs an agent that emits traces). `workflow_call_alignment_test.go` already automates much of this verification — see `TestWorkflowCallInputAlignment` (validates required inputs/secrets are threaded through both chains) and `TestOTELHeadersSecretThreading` (bespoke test for optional secrets). For new optional secrets/inputs, extend those tests or add a similar one rather than relying solely on manual tracing.
+**Security — consuming threaded inputs:** When a newly-threaded entry carries
+user- or event-controlled data, consume it via `env:` in the final `run:` step —
+never interpolate `${{ ... }}` directly into a shell block (see the Security
+note atop `reusable-dispatch.yml`). This prevents the GHA script-injection class
+of bugs the project defends against elsewhere.
+
+**When reviewing PRs:** If a diff adds or renames a `secrets:` or `inputs:`
+entry in a reusable workflow, check that all callers in both chains have been
+updated. Flag a missing forwarding hop as a medium-severity or higher finding.
+New secrets/inputs must be forwarded only to the hop(s)/stage(s) that need them
+— do not use `secrets: inherit` as a substitute for explicit forwarding
+(`OTEL_EXPORTER_OTLP_TRACES_HEADERS`, for example, is explicitly forwarded to
+every inline stage job in `reusable-dispatch.yml` because each stage runs an
+agent that emits traces). `workflow_call_alignment_test.go` already automates
+much of this verification — see `TestWorkflowCallInputAlignment` (validates
+required inputs/secrets are threaded through both chains) and
+`TestOTELHeadersSecretThreading` (bespoke test for optional secrets). For new
+optional secrets/inputs, extend those tests or add a similar one rather than
+relying solely on manual tracing.
