@@ -79,6 +79,18 @@ func (h *Harness) Lint() []Diagnostic {
 		})
 	}
 
+	// Absorbed updates skip the pre-script, and with steering on by default
+	// that holds for every harness that says nothing. A harness whose
+	// pre-script gates each event has to decide explicitly (ADR 0121).
+	if h.PreScript != "" && (h.Steer == nil || h.Steer.Enabled == nil) {
+		diags = append(diags, Diagnostic{
+			Severity: SeverityWarning,
+			Field:    "steer.enabled",
+			Message: "pre_script is set but steer.enabled is not: steering is on by default and absorbed updates " +
+				"do not pass through the pre-script (ADR 0113, ADR 0121); set steer.enabled explicitly",
+		})
+	}
+
 	if strings.TrimSpace(h.Trigger) != "" {
 		if err := ValidateTriggerExpression(h.Trigger); err != nil {
 			diags = append(diags, Diagnostic{
