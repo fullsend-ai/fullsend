@@ -176,13 +176,13 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 func TestWorkflowsLayer_Install_CombinedVendorCommit(t *testing.T) {
 	client := forge.NewFakeClient()
 	ensureFakeConfigRepo(client)
-	collectFn := func(_ context.Context, _ forge.Client, _ *ui.Printer, owner, repo string) ([]forge.TreeFile, int, error) {
+	collectFn := func(_ context.Context, _ forge.Client, _ *ui.Printer, owner, repo string) ([]forge.TreeFile, int, func(), error) {
 		assert.Equal(t, "test-org", owner)
 		assert.Equal(t, forge.ConfigRepoName, repo)
 		return []forge.TreeFile{
 			{Path: "bin/fullsend", Content: []byte("bin"), Mode: "100755"},
 			{Path: ".defaults/action.yml", Content: []byte("marker"), Mode: "100644"},
-		}, 1, nil
+		}, 1, func() {}, nil
 	}
 	layer := NewWorkflowsLayer("test-org", client, ui.New(&bytes.Buffer{}), "admin-user", "test-version", true).WithDirect(true)
 	layer = layer.WithVendorCollect(collectFn)
@@ -198,6 +198,22 @@ func TestWorkflowsLayer_Install_CombinedVendorCommit(t *testing.T) {
 	assert.Contains(t, paths, ".github/workflows/triage.yml")
 	assert.Contains(t, paths, "bin/fullsend")
 	assert.Contains(t, paths, ".defaults/action.yml")
+}
+
+func TestWorkflowsLayer_Install_VendorCollectError(t *testing.T) {
+	client := forge.NewFakeClient()
+	ensureFakeConfigRepo(client)
+	cleaned := false
+	collectFn := func(_ context.Context, _ forge.Client, _ *ui.Printer, owner, repo string) ([]forge.TreeFile, int, func(), error) {
+		return nil, 0, func() { cleaned = true }, fmt.Errorf("collect failed")
+	}
+	layer := NewWorkflowsLayer("test-org", client, ui.New(&bytes.Buffer{}), "admin-user", "test-version", true).WithDirect(true)
+	layer = layer.WithVendorCollect(collectFn)
+
+	err := layer.Install(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "collecting vendored assets")
+	assert.True(t, cleaned)
 }
 
 func TestWorkflowsLayer_Install_VendoredUsesLocalReusablePaths(t *testing.T) {

@@ -1108,7 +1108,10 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		if buildErr != nil {
 			return fmt.Errorf("building scaffold files for vendor: %w", buildErr)
 		}
-		vendorFiles, _, vendorErr := appendVendorTreeFiles(ctx, client, printer, owner, repo, scaffoldFiles, vendor, fullsendBinary, fullsendSource)
+		vendorFiles, _, vendorCleanup, vendorErr := appendVendorTreeFiles(ctx, client, printer, owner, repo, scaffoldFiles, vendor, fullsendBinary, fullsendSource)
+		if vendorCleanup != nil {
+			defer vendorCleanup()
+		}
 		if vendorErr != nil {
 			return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 		}

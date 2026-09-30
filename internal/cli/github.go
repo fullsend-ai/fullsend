@@ -495,7 +495,11 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 
 	if cfg.vendor {
 		var vendorErr error
-		files, _, vendorErr = appendVendorTreeFiles(ctx, client, printer, owner, repo, files, cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource)
+		var vendorCleanup func()
+		files, _, vendorCleanup, vendorErr = appendVendorTreeFiles(ctx, client, printer, owner, repo, files, cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource)
+		if vendorCleanup != nil {
+			defer vendorCleanup()
+		}
 		if vendorErr != nil {
 			return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 		}

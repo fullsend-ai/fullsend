@@ -60,12 +60,24 @@ func TestVendorDryRunMessage(t *testing.T) {
 		strings.Contains(msg, "Would fail: dev CLI"))
 }
 
+func TestNopCleanup(t *testing.T) {
+	nopCleanup()
+}
+
 func TestAppendVendorTreeFiles_Disabled(t *testing.T) {
 	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
-	out, count, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(nil), "org", "my-repo", files, false, "", "")
+	out, count, cleanup, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(nil), "org", "my-repo", files, false, "", "")
+	defer cleanup()
 	require.NoError(t, err)
 	assert.Equal(t, files, out)
 	assert.Equal(t, 0, count)
+}
+
+func TestAppendVendorTreeFiles_InvalidBinary(t *testing.T) {
+	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
+	_, _, cleanup, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo", files, true, "/nonexistent/fullsend", "")
+	defer cleanup()
+	require.Error(t, err)
 }
 
 func TestAppendVendorTreeFiles_Enabled(t *testing.T) {
@@ -77,7 +89,8 @@ func TestAppendVendorTreeFiles_Enabled(t *testing.T) {
 
 	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
 	var buf strings.Builder
-	out, count, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(&buf), "org", "my-repo", files, true, exe, "")
+	out, count, cleanup, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(&buf), "org", "my-repo", files, true, exe, "")
+	defer cleanup()
 	require.NoError(t, err)
 	assert.Greater(t, len(out), len(files))
 	assert.Greater(t, count, 0)
@@ -93,7 +106,8 @@ func TestMakeVendorCollectFunc(t *testing.T) {
 	var buf strings.Builder
 	fn := makeVendorCollectFunc(exe, "")
 	require.NotNil(t, fn)
-	files, count, err := fn(context.Background(), forge.NewFakeClient(), ui.New(&buf), "org", "my-repo")
+	files, count, cleanup, err := fn(context.Background(), forge.NewFakeClient(), ui.New(&buf), "org", "my-repo")
+	defer cleanup()
 	require.NoError(t, err)
 	assert.NotEmpty(t, files)
 	assert.Greater(t, count, 0)
@@ -101,7 +115,8 @@ func TestMakeVendorCollectFunc(t *testing.T) {
 
 func TestMakeVendorCollectFunc_InvalidBinary(t *testing.T) {
 	fn := makeVendorCollectFunc("/nonexistent/fullsend", "")
-	_, _, err := fn(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo")
+	_, _, cleanup, err := fn(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo")
+	defer cleanup()
 	require.Error(t, err)
 }
 
@@ -121,6 +136,9 @@ func TestAcquireAndVendor_ExplicitPath(t *testing.T) {
 
 	key := "org/my-repo/" + layers.VendoredBinaryPathPerRepo
 	require.Contains(t, client.FileContents, key)
+	want, readErr := os.ReadFile(exe)
+	require.NoError(t, readErr)
+	assert.Equal(t, want, client.FileContents[key], "committed bytes must match the source binary")
 	require.Len(t, client.CommittedFiles, 1)
 	commit := client.CommittedFiles[0]
 	assert.Contains(t, commit.Message, "\n\n")
@@ -128,6 +146,10 @@ func TestAcquireAndVendor_ExplicitPath(t *testing.T) {
 	var paths []string
 	for _, f := range commit.Files {
 		paths = append(paths, f.Path)
+		if f.Path == layers.VendoredBinaryPathPerRepo {
+			assert.Empty(t, f.Content, "binary must be referenced by LocalPath, not buffered")
+			assert.NotEmpty(t, f.LocalPath)
+		}
 	}
 	assert.Contains(t, paths, layers.VendoredBinaryPathPerRepo)
 }
@@ -200,6 +222,19 @@ func TestPrepareVendorFiles_ExplicitBinary(t *testing.T) {
 	t.Cleanup(cleanup)
 	assert.Greater(t, bundle.assetCount, 0)
 	assert.NotEmpty(t, bundle.files)
+
+	var binFile *forge.TreeFile
+	for i := range bundle.files {
+		if bundle.files[i].Path == layers.VendoredBinaryPathPerRepo {
+			binFile = &bundle.files[i]
+			break
+		}
+	}
+	require.NotNil(t, binFile, "vendored binary tree entry")
+	require.NotEmpty(t, binFile.LocalPath)
+	_, statErr := os.Stat(binFile.LocalPath)
+	require.NoError(t, statErr)
+	assert.Empty(t, binFile.Content, "binary must not be buffered in TreeFile.Content")
 }
 
 func TestPrepareVendorFiles_InvalidExplicitBinary(t *testing.T) {

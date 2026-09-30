@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -3129,6 +3131,18 @@ func TestBlobSHA(t *testing.T) {
 	assert.Equal(t, "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391", got)
 }
 
+func TestBlobSHAFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hello")
+	require.NoError(t, os.WriteFile(path, []byte("hello"), 0o644))
+	got, err := blobSHAFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, blobSHA([]byte("hello")), got)
+
+	_, err = blobSHAFile(filepath.Join(dir, "missing"))
+	require.Error(t, err)
+}
+
 func TestCommitFiles_AllNew(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3253,6 +3267,190 @@ func TestCommitFiles_BinaryUsesBlobAPI(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, committed)
+}
+
+func TestCommitFiles_LocalPathUsesBlobAPI(t *testing.T) {
+	binaryContent := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff, 0xfe, 0x00}
+	blobSHAValue := blobSHA(binaryContent)
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, binaryContent, 0o755))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/blobs":
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "base64", body["encoding"])
+			decoded, err := base64.StdEncoding.DecodeString(body["content"])
+			require.NoError(t, err)
+			assert.Equal(t, binaryContent, decoded)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": blobSHAValue})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			entries := body["tree"].([]any)
+			require.Len(t, entries, 1)
+			entry := entries[0].(map[string]any)
+			assert.Equal(t, blobSHAValue, entry["sha"])
+			assert.NotContains(t, entry, "content")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "vendor binary", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: binPath, Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+}
+
+func TestCommitFiles_LocalPathUnchanged(t *testing.T) {
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0x00}
+	existingSHA := blobSHA(content)
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, content, 0o755))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree": []map[string]string{
+					{"path": "bin/fullsend", "mode": "100755", "sha": existingSHA},
+				},
+				"truncated": false,
+			})
+		default:
+			t.Errorf("unexpected request: %s %s (should not create blob/tree/commit)", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "no-op", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: binPath, Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.False(t, committed)
+}
+
+func TestCommitFiles_LocalPathMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: filepath.Join(t.TempDir(), "missing"), Mode: "100755"},
+	})
+	require.Error(t, err)
+}
+
+func TestCommitFiles_LocalPathBlobError(t *testing.T) {
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff}
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, content, 0o755))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/blobs":
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"message": "blob failed"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "vendor binary", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: binPath, Mode: "100755"},
+	})
+	require.Error(t, err)
+}
+
+func TestCommitFiles_LocalPathBlobDecodeError(t *testing.T) {
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff}
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, content, 0o755))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/blobs":
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte("not-json"))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "vendor binary", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: binPath, Mode: "100755"},
+	})
+	require.Error(t, err)
 }
 
 func TestCommitFiles_AllUnchanged(t *testing.T) {
