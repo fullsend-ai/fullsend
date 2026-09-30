@@ -1,0 +1,38 @@
+title: "Feature request: add CSV export to /items endpoint"
+body: |
+  ## Feature Request
+
+  It would be great if the `/items` endpoint supported an optional `format=csv`
+  query parameter that returns the items as a CSV download instead of JSON.
+
+  ## Use case
+
+  Our operations team needs to pull item reports into spreadsheets for monthly
+  reviews. Right now they copy-paste from the JSON response, which is tedious
+  and error-prone. A CSV export would let them import directly.
+
+  ## Proposed behavior
+
+  ```
+  GET /items?format=csv
+  ```
+
+  Should return:
+  ```
+  Content-Type: text/csv
+  Content-Disposition: attachment; filename="items.csv"
+
+  id,name
+  1,item-1
+  2,item-2
+  ...
+  ```
+
+  When `format` is omitted or set to `json`, behavior stays the same as today.
+
+  ## Alternatives considered
+
+  - A separate `/items/export` endpoint — but adding a query param feels
+    more consistent with the existing API.
+  - Client-side conversion — but the ops team uses basic tooling and would
+    prefer a server-side solution.

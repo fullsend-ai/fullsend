@@ -1,0 +1,35 @@
+title: "Server crashes with 'concurrent map writes' under load"
+body: |
+  ## Bug Report
+
+  The cache server crashes intermittently when handling concurrent requests.
+  The panic message is `fatal error: concurrent map read and map write`.
+
+  ### Steps to Reproduce
+
+  1. Start the server: `go run main.go`
+  2. Send concurrent requests using `hey` or similar:
+     ```
+     hey -n 1000 -c 50 "http://localhost:8080/set?key=test&value=hello"
+     ```
+  3. Server panics within a few seconds.
+
+  ### Expected Behavior
+
+  The server should handle concurrent requests without crashing.
+
+  ### Actual Behavior
+
+  ```
+  fatal error: concurrent map read and map write
+
+  goroutine 42 [running]:
+  runtime.throw({0x...})
+      /usr/local/go/src/runtime/panic.go:1077 +0x48
+  ...
+  ```
+
+  ### Environment
+
+  - Go 1.22
+  - Linux x86_64

@@ -1,0 +1,59 @@
+{
+  "action": "request-changes",
+  "pr_number": 2,
+  "repo": "fullsend-ai-test/playback-9d6db5a4",
+  "head_sha": "5429609dce9a122a2721107edb51551c8d73cc6f",
+  "body": "<!-- **Head SHA:** 5429609dce9a122a2721107edb51551c8d73cc6f -->\n\n## Review\n\n### Findings\n\n#### Medium\n\n- **[race condition]** `main.go:35` — TOCTOU race in getHandler: the entry is read under RLock (line 30-31), then the lock is released (line 32). The expiry check and conditional delete (lines 34-38) happen without holding any lock. Between the RUnlock and the Lock for delete, another goroutine can call setHandler and write a fresh entry for the same key. The delete on line 37 then destroys the newly-written entry, causing silent data loss.\n  Remediation: Re-check the entry under the write lock before deleting:\n  ```go\n  cacheMu.Lock()\n  if current, exists := cache[key]; exists && current.ExpiresAt.Equal(entry.ExpiresAt) {\n      delete(cache, key)\n  }\n  cacheMu.Unlock()\n  ```\n\n#### Low\n\n- **[test isolation]** `main_test.go:21` — Tests mutate the package-level `cache` map without resetting it between test functions. TestSetAndGetHandler writes key \"foo\" and TestConcurrentAccess writes 1000 entries, all of which persist across subsequent tests. If tests run in a different order (e.g., via `-shuffle`) or new tests are added that depend on an empty cache, they may see stale entries and produce false passes or failures.\n  Remediation: Add a test helper that resets the cache before each test.",
+  "findings": [
+    {
+      "severity": "medium",
+      "category": "race condition",
+      "file": "main.go",
+      "line": 35,
+      "description": "TOCTOU race in getHandler: the entry is read under RLock (line 30-31), then the lock is released (line 32). The expiry check and conditional delete (lines 34-38) happen without holding any lock. Between the RUnlock and the Lock for delete, another goroutine can call setHandler and write a fresh entry for the same key. The delete on line 37 then destroys the newly-written entry, causing silent data loss.",
+      "remediation": "Re-check the entry under the write lock before deleting. For example:\n\ncacheMu.Lock()\nif current, exists := cache[key]; exists && current.ExpiresAt.Equal(entry.ExpiresAt) {\n    delete(cache, key)\n}\ncacheMu.Unlock()\n\nAlternatively, hold a single Lock (not RLock) for the entire read-check-delete path when an entry might be expired.",
+      "actionable": true
+    },
+    {
+      "severity": "low",
+      "category": "test isolation",
+      "file": "main_test.go",
+      "line": 21,
+      "description": "Tests mutate the package-level cache map without resetting it between test functions. TestSetAndGetHandler writes key 'foo' and TestConcurrentAccess writes 1000 entries, all of which persist across subsequent tests. If tests run in a different order (e.g., via -shuffle) or new tests are added that depend on an empty cache, they may see stale entries and produce false passes or failures.",
+      "remediation": "Add a test helper that resets the cache before each test.",
+      "actionable": true
+    }
+  ],
+  "risk_assessment": {
+    "score": 1,
+    "level": "low",
+    "tier1_signals": [
+      {"dimension": "change_size_composite", "value": "3 (max of files:1, lines:2, blast:3)"},
+      {"dimension": "protected_path_count", "value": "0"},
+      {"dimension": "security_sensitive_count", "value": "0"},
+      {"dimension": "ci_workflow_changed", "value": "false"},
+      {"dimension": "dependency_files_changed", "value": "go.mod"},
+      {"dimension": "test_file_ratio", "value": "0.33"},
+      {"dimension": "author_is_bot", "value": "true"},
+      {"dimension": "author_is_first_time", "value": "false"}
+    ],
+    "tier2_signals": [
+      {"dimension": "churn_hotspot", "value": "0.33 commits/file (30d avg)"},
+      {"dimension": "multi_author_contention", "value": "0.33 authors/file (90d avg)"},
+      {"dimension": "recent_regression_history", "value": "0.33 fixes/file (90d avg)"},
+      {"dimension": "code_age_stability", "value": "0 days since last commit (avg)"},
+      {"dimension": "change_coupling", "value": "0 coupled files missing"},
+      {"dimension": "revert_frequency", "value": "0 reverts"},
+      {"dimension": "commit_message_sentiment", "value": "0 workaround commits"}
+    ],
+    "tier3_signals": [
+      {"dimension": "complexity_vs_scope_mismatch", "value": "scope matches size"},
+      {"dimension": "issue_label_context", "value": "no risk labels"},
+      {"dimension": "acceptance_criteria_coverage", "value": "all criteria met"},
+      {"dimension": "discussion_history", "value": "0 unresolved threads"},
+      {"dimension": "issue_age_staleness", "value": "recent and active"},
+      {"dimension": "rollback_safety", "value": "modifies existing behavior, no feature flag"}
+    ],
+    "rationale": "Small, focused concurrency bug fix with comprehensive test coverage and clear issue scope match, minimal git history risk signals."
+  }
+}

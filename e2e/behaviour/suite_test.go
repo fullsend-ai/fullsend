@@ -1,4 +1,4 @@
-//go:build behaviour
+//go:build behaviour && !playback
 
 package behaviour_test
 

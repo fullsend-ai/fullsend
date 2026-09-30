@@ -1,0 +1,12 @@
+{
+  "action": "insufficient",
+  "reasoning": "Issue lacks reproduction steps and environment details.",
+  "clarity_scores": {
+    "symptom": 0.4,
+    "cause": 0.2,
+    "reproduction": 0.1,
+    "impact": 0.3,
+    "overall": 0.25
+  },
+  "comment": "## Triage Summary\n\nThis issue needs more information before it can be triaged.\n\nPlease provide:\n- Steps to reproduce\n- Expected vs actual behavior\n- Environment details"
+}

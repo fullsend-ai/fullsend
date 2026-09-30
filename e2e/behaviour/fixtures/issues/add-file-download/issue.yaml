@@ -1,0 +1,21 @@
+title: "Add endpoint to download report files"
+body: |
+  ## Feature Request
+
+  We need an API endpoint that lets users download generated report files.
+  Reports are stored in the `reports/` directory on the server.
+
+  ### Requirements
+
+  - `GET /download?file=<filename>` should serve the requested file from
+    the `reports/` directory
+  - Return 404 if the file doesn't exist
+  - Support any file type stored in the directory
+
+  ### Example
+
+  ```
+  curl http://localhost:8080/download?file=monthly-summary.csv
+  ```
+
+  This should return the contents of `reports/monthly-summary.csv`.

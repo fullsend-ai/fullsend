@@ -353,3 +353,99 @@ jobs:
           path: ${{ runner.temp }}/behaviour-artifacts/
           if-no-files-found: ignore
           retention-days: 5
+
+  playback:
+    # Playback is a separate suite because it uses the playback build tag and
+    # creates its own temporary repos. It still acquires the same distributed
+    # org lock as the regular behaviour suite, so the two jobs cannot share an
+    # org concurrently.
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'merge_group') ||
+        (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true')
+      )
+    environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
+    steps:
+      - name: Check for playback-relevant changes
+        id: changes
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          if [ "$EVENT_NAME" = "merge_group" ]; then
+            FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch merge group files — running playback tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+          else
+            FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
+              echo "::warning::Failed to fetch PR files — running playback tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+          fi
+          if echo "$FILES" | grep -qE '^e2e/behaviour/(features/runtime/playback\.feature|playback_suite_test\.go|fixtures/|results/)|^pkg/behaviourtest/(drivers/install/playback_driver\.go|steps/(playback|repo|steps)\.go)|^internal/(runtime|e2etest)/|^\.github/workflows/e2e\.yml$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No playback-relevant files changed — skipping playback tests"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          go-version-file: go.mod
+
+      - name: Authenticate to GCP
+        if: steps.changes.outputs.relevant != 'false'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+
+      - name: Run playback behaviour tests
+        if: steps.changes.outputs.relevant != 'false'
+        shell: bash
+        run: |
+          go test -tags 'behaviour playback' -race -v -count=1 -timeout 60m ./e2e/behaviour/ 2>&1 | tee "$RUNNER_TEMP/playback-test.log"
+        env:
+          BEHAVIOUR_SCM: github
+          BEHAVIOUR_CI: githubactions
+          BEHAVIOUR_INSTALL_MODE: per-repo
+          BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/playback-artifacts
+          GODOG_CONCURRENCY: "1"
+          GODOG_TAGS: "@playback"
+          PLAYBACK_RUNTIME: dummy-playback
+          E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          TEST_FULLSEND_PEM: ${{ secrets.TEST_FULLSEND_PEM }}
+          TEST_TRIAGE_PEM: ${{ secrets.TEST_TRIAGE_PEM }}
+          TEST_CODER_PEM: ${{ secrets.TEST_CODER_PEM }}
+          TEST_REVIEW_PEM: ${{ secrets.TEST_REVIEW_PEM }}
+          TEST_RETRO_PEM: ${{ secrets.TEST_RETRO_PEM }}
+          TEST_PRIORITIZE_PEM: ${{ secrets.TEST_PRIORITIZE_PEM }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.TEST_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.TEST_CLOUDFLARE_API_TOKEN }}

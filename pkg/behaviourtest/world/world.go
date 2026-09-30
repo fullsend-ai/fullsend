@@ -132,6 +132,16 @@ type World struct {
 	// CleanupScenario removes both.
 	OwnersAuthActivated bool
 
+	ScenarioName      string
+	PlaybackEntries   []runtime.PlaybackEntry
+	PlaybackCommitted bool
+
+	// DispatchedRuns maps agent name → pipeline/run ID, populated by
+	// the "is triggered" steps from dispatch logs. Used by the
+	// "completes successfully" step to watch a specific pipeline
+	// instead of scanning all recent runs.
+	DispatchedRuns map[string]int
+
 	// Jira mock state — set by the "Given a mock Jira server" step.
 	JiraMockServer *httptest.Server
 	JiraMockState  *jiramock.State
@@ -154,6 +164,12 @@ type World struct {
 func (w *World) Clone() *World {
 	clone := *w
 	return &clone
+}
+
+// IsPlaybackMode returns true when the world is configured for playback testing.
+func (w *World) IsPlaybackMode() bool {
+	_, ok := w.Driver.(*install.PlaybackDriver)
+	return ok
 }
 
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"

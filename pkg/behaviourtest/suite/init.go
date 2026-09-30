@@ -21,7 +21,7 @@ import (
 // enrolled test repository"), and the After hook deallocates on cleanup.
 func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
-		return beforeScenario(ctx, tagNames(scenario.Tags), template)
+		return beforeScenario(ctx, scenario.Name, tagNames(scenario.Tags), template)
 	})
 	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
 		return afterScenario(ctx, template.Driver, err)
@@ -32,12 +32,13 @@ func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 // beforeScenario clones the template World, resets scenario fields.
 // Repo allocation is handled by the step (via Driver.AllocateRepo),
 // not by the Before hook.
-func beforeScenario(ctx context.Context, tags []string, template *world.World) (context.Context, error) {
+func beforeScenario(ctx context.Context, name string, tags []string, template *world.World) (context.Context, error) {
 	if err := SkipErrorForTagNames(tags, template); err != nil {
 		return ctx, err
 	}
 	w := template.Clone()
 	resetScenarioWorld(w)
+	w.ScenarioName = name
 
 	ctx = world.WithWorld(ctx, w)
 	return ctx, nil
@@ -76,7 +77,9 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 			}
 		}()
 	}
-	steps.CleanupScenario(w)
+	if !w.IsPlaybackMode() {
+		steps.CleanupScenario(w)
+	}
 	return ctx, retErr
 }
 
@@ -113,6 +116,9 @@ func resetScenarioWorld(w *world.World) {
 	w.JiraMockServer = nil
 	w.JiraMockState = nil
 	w.JiraConfigDir = ""
+	w.PlaybackEntries = nil
+	w.PlaybackCommitted = false
+	w.DispatchedRuns = nil
 }
 
 func tagNames(tags []*messages.PickleTag) []string {

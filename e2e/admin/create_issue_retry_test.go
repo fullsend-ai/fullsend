@@ -4,6 +4,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -14,6 +15,33 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
+
+func createIssueWithRetry(
+	ctx context.Context,
+	create func() (*forge.Issue, error),
+	after func(time.Duration) <-chan time.Time,
+	logf func(string, ...any),
+) (*forge.Issue, error) {
+	for attempt := range 3 {
+		issue, err := create()
+		if err == nil {
+			return issue, nil
+		}
+		var apiErr *gh.APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized || attempt == 2 {
+			return nil, err
+		}
+
+		delay := time.Duration(attempt+1) * 10 * time.Second
+		logf("Create issue attempt %d failed with status %d, retrying in %s...", attempt+1, apiErr.StatusCode, delay)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-after(delay):
+		}
+	}
+	panic("unreachable")
+}
 
 func TestCreateIssueWithRetry_RetriesUnauthorizedThenSucceeds(t *testing.T) {
 	t.Parallel()

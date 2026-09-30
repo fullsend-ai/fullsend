@@ -71,6 +71,9 @@ type Driver interface {
 	// Analogous to CommitFileToBranch but targets the fork.
 	CommitFileToFork(ctx context.Context, forkOwner, forkRepo, branch, path, message string, content []byte) error
 
+	// ListPullRequestReviews returns reviews submitted on a change proposal.
+	ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error)
+
 	// CreateForkChangeProposal opens a cross-fork pull request from
 	// forkOwner/forkRepo:head into baseOwner/baseRepo's base branch.
 	// The forkRepo parameter is required to disambiguate same-owner forks

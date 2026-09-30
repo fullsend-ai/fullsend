@@ -19,11 +19,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-const (
-	playlistRelPath     = "results/playlist.yaml"
-	playbackCommentFile = "playback-comment-url"
-	resultFileName      = "result.json"
-)
+const playlistRelPath = "results/playlist.yaml"
+const playbackCommentFile = "playback-comment-url"
+const resultFileName = "result.json"
 
 // Playlist is the YAML committed to .fullsend/results/playlist.yaml.
 // Results are 1-indexed: current=1 serves results[0].
@@ -35,31 +33,20 @@ type Playlist struct {
 // PlaybackEntry is a single entry in a playback playlist, used by the Gherkin
 // step definitions to build the playlist before committing it.
 type PlaybackEntry struct {
-	// Result is the subdirectory name under .fullsend/results/ that contains
-	// this entry's result.json and optional companion files.
 	Result string
 }
-
-// gitCommitFunc is the function signature for committing playlist advances.
-type gitCommitFunc func(playlistPath string, playlist *Playlist) error
-
-// forgeAPIFunc executes a forge CLI API call and returns stdout.
-// The default implementation shells out to the CLI binary (gh or glab).
-type forgeAPIFunc func(ctx context.Context, cli string, args ...string) ([]byte, error)
 
 // DummyPlaybackRuntime replays canned agent results from an ordered playlist.
 // Each invocation serves the result at the current index, writes result.json to
 // output/agent-result.json, copies any companion files into the workspace, and
 // advances the index via a git commit+push.
 //
-// ExecFn, UploadFn, GitCommitFn, and ForgeAPIFn are optional test overrides;
-// production uses sandbox.Exec, sandbox.Upload, a real git commit+push, and
-// exec.CommandContext for forge API calls.
+// ExecFn, UploadFn, and GitCommitFn are optional test overrides; production
+// uses sandbox.Exec, sandbox.Upload, and a real git commit+push.
 type DummyPlaybackRuntime struct {
 	ExecFn      sandboxExecFunc
 	UploadFn    sandboxUploadFunc
-	GitCommitFn gitCommitFunc
-	ForgeAPIFn  forgeAPIFunc
+	GitCommitFn func(playlistPath string, playlist *Playlist) error
 }
 
 func (r DummyPlaybackRuntime) execFn() sandboxExecFunc {
@@ -76,27 +63,10 @@ func (r DummyPlaybackRuntime) uploadFn() sandboxUploadFunc {
 	return sandbox.Upload
 }
 
-func (r DummyPlaybackRuntime) forgeAPIFn() forgeAPIFunc {
-	if r.ForgeAPIFn != nil {
-		return r.ForgeAPIFn
-	}
-	return defaultForgeAPI
-}
-
-// defaultForgeAPI shells out to the forge CLI binary.
-func defaultForgeAPI(ctx context.Context, cli string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, cli, args...)
-	return cmd.Output()
-}
-
-func (DummyPlaybackRuntime) Name() string { return "dummy-playback" }
-
-func (DummyPlaybackRuntime) System() string { return "fullsend.dummy-playback" }
-
-func (DummyPlaybackRuntime) ConfigDir() string { return sandbox.SandboxWorkspace + "/.dummy-playback" }
-
+func (DummyPlaybackRuntime) Name() string         { return "dummy-playback" }
+func (DummyPlaybackRuntime) System() string       { return "fullsend.dummy-playback" }
+func (DummyPlaybackRuntime) ConfigDir() string    { return sandbox.SandboxWorkspace + "/.dummy-playback" }
 func (DummyPlaybackRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
-
 func (DummyPlaybackRuntime) EnvExports() []string { return nil }
 
 func (r DummyPlaybackRuntime) Bootstrap(input BootstrapInput) error {
@@ -127,11 +97,9 @@ func (r DummyPlaybackRuntime) Run(ctx context.Context, params RunParams, printer
 	}
 
 	var commentRef playbackCommentRef
-	if current, ref, ok := readPlaybackComment(ctx, params.FullsendDir, r.forgeAPIFn()); ok {
+	if current, ref, ok := readPlaybackComment(params.FullsendDir); ok {
 		playlist.Current = current
 		commentRef = ref
-	} else if _, statErr := os.Stat(filepath.Join(params.FullsendDir, playbackCommentFile)); statErr == nil {
-		printer.StepWarn("dummy-playback: playback-comment-url file exists but could not read tracking comment; using local playlist position")
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -140,9 +108,6 @@ func (r DummyPlaybackRuntime) Run(ctx context.Context, params RunParams, printer
 
 	idx := playlist.Current - 1
 	if idx < 0 || idx >= len(playlist.Results) {
-		if commentRef.path != "" {
-			return 1, fmt.Errorf("tracking comment returned invalid position: current=%d, results=%d", playlist.Current, len(playlist.Results))
-		}
 		return 1, fmt.Errorf("playlist exhausted: current=%d, results=%d", playlist.Current, len(playlist.Results))
 	}
 
@@ -157,13 +122,6 @@ func (r DummyPlaybackRuntime) Run(ctx context.Context, params RunParams, printer
 		return 1, fmt.Errorf("entry name %q escapes results directory", entryName)
 	}
 	resultPath := filepath.Join(entryDir, resultFileName)
-	// Guard against symlinks in the result file, matching the companion-file
-	// symlink rejection in copyCompanionFiles.
-	if fi, lstatErr := os.Lstat(resultPath); lstatErr != nil {
-		return 1, fmt.Errorf("reading result %s: %w", entryName, lstatErr)
-	} else if fi.Mode()&fs.ModeSymlink != 0 {
-		return 1, fmt.Errorf("symlinks are not allowed in playlist entries: %s", resultPath)
-	}
 	content, err := os.ReadFile(resultPath)
 	if err != nil {
 		return 1, fmt.Errorf("reading result %s: %w", entryName, err)
@@ -199,7 +157,7 @@ func (r DummyPlaybackRuntime) Run(ctx context.Context, params RunParams, printer
 		printer.StepWarn(fmt.Sprintf("dummy-playback: failed to advance playlist: %v", err))
 	}
 	if commentRef.path != "" {
-		if err := updatePlaybackComment(ctx, commentRef, playlist.Current, r.forgeAPIFn()); err != nil {
+		if err := updatePlaybackComment(commentRef, playlist.Current); err != nil {
 			printer.StepWarn(fmt.Sprintf("dummy-playback: failed to update tracking comment: %v", err))
 		}
 	}
@@ -215,11 +173,6 @@ func (r DummyPlaybackRuntime) Run(ctx context.Context, params RunParams, printer
 // are skipped here — forge resolution happens at commit time in the Gherkin
 // step, so the entry directory the runtime sees already has the correct files.
 func (r DummyPlaybackRuntime) copyCompanionFiles(sandboxName, repoDir, entryDir string, printer *ui.Printer) (bool, error) {
-	if info, err := os.Lstat(entryDir); err != nil {
-		return false, fmt.Errorf("stat entry dir: %w", err)
-	} else if info.Mode()&fs.ModeSymlink != 0 {
-		return false, fmt.Errorf("symlinks are not allowed as entry directories: %s", entryDir)
-	}
 	hasRepoFiles := false
 	err := filepath.WalkDir(entryDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -228,10 +181,7 @@ func (r DummyPlaybackRuntime) copyCompanionFiles(sandboxName, repoDir, entryDir 
 		if d.IsDir() {
 			return nil
 		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("symlinks are not allowed in playlist entries: %s", path)
-		}
-		if path == filepath.Join(entryDir, resultFileName) {
+		if d.Name() == resultFileName {
 			return nil
 		}
 
@@ -318,10 +268,8 @@ func (r DummyPlaybackRuntime) ClearIterationArtifacts(sandboxName string) error 
 }
 
 func (DummyPlaybackRuntime) ExtractTranscripts(_ string, _ string, _ string) error { return nil }
-
-func (DummyPlaybackRuntime) ExtractDebugLog(_ string, _ string, _ string) error { return nil }
-
-func (DummyPlaybackRuntime) ParseTranscriptErrors(_ string) []TranscriptError { return nil }
+func (DummyPlaybackRuntime) ExtractDebugLog(_ string, _ string, _ string) error    { return nil }
+func (DummyPlaybackRuntime) ParseTranscriptErrors(_ string) []TranscriptError      { return nil }
 
 func (DummyPlaybackRuntime) ParseTranscriptFile(_ string) (TranscriptError, bool) {
 	return TranscriptError{}, false
@@ -391,30 +339,19 @@ type playbackCommentRef struct {
 }
 
 func parsePlaybackCommentRef(data string) (playbackCommentRef, bool) {
-	data = strings.TrimRight(data, "\n\r ")
 	cli, path, found := strings.Cut(data, "\n")
 	cli = strings.TrimSpace(cli)
 	if cli == "" {
 		return playbackCommentRef{}, false
 	}
 	if !found {
-		// Legacy single-line format: the entire value is the API path.
-		// Validate it starts with "/" to prevent argument injection
-		// (e.g. "--hostname=attacker.com" interpreted as a flag by gh).
-		if !strings.HasPrefix(cli, "/") {
-			return playbackCommentRef{}, false
-		}
 		return playbackCommentRef{cli: "gh", path: cli, method: "PATCH"}, true
 	}
 	if cli != "gh" && cli != "glab" {
 		return playbackCommentRef{}, false
 	}
 	path = strings.TrimSpace(path)
-	if path == "" || strings.ContainsAny(path, "\n\r") {
-		return playbackCommentRef{}, false
-	}
-	// Validate path starts with "/" to prevent argument injection.
-	if !strings.HasPrefix(path, "/") {
+	if path == "" {
 		return playbackCommentRef{}, false
 	}
 	method := "PATCH"
@@ -424,7 +361,7 @@ func parsePlaybackCommentRef(data string) (playbackCommentRef, bool) {
 	return playbackCommentRef{cli: cli, path: path, method: method}, true
 }
 
-func readPlaybackComment(ctx context.Context, fullsendDir string, apiFn forgeAPIFunc) (int, playbackCommentRef, bool) {
+func readPlaybackComment(fullsendDir string) (int, playbackCommentRef, bool) {
 	data, err := os.ReadFile(filepath.Join(fullsendDir, playbackCommentFile))
 	if err != nil {
 		return 0, playbackCommentRef{}, false
@@ -433,34 +370,25 @@ func readPlaybackComment(ctx context.Context, fullsendDir string, apiFn forgeAPI
 	if !ok {
 		return 0, playbackCommentRef{}, false
 	}
-	apiCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	out, err := apiFn(apiCtx, ref.cli, "api", ref.path, "--jq", ".body")
+	cmd := exec.Command(ref.cli, "api", ref.path, "--jq", ".body")
+	out, err := cmd.Output()
 	if err != nil {
 		return 0, playbackCommentRef{}, false
 	}
 	body := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(body, "playback-current: ") {
-		return 0, playbackCommentRef{}, false
-	}
 	val, err := strconv.Atoi(strings.TrimPrefix(body, "playback-current: "))
 	if err != nil {
-		return 0, playbackCommentRef{}, false
-	}
-	if val < 1 {
 		return 0, playbackCommentRef{}, false
 	}
 	return val, ref, true
 }
 
-func updatePlaybackComment(ctx context.Context, ref playbackCommentRef, newValue int, apiFn forgeAPIFunc) error {
-	apiCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+func updatePlaybackComment(ref playbackCommentRef, newValue int) error {
 	body := fmt.Sprintf("playback-current: %d", newValue)
-	_, err := apiFn(apiCtx, ref.cli, "api", "--method", ref.method, ref.path,
+	cmd := exec.Command(ref.cli, "api", "--method", ref.method, ref.path,
 		"-f", fmt.Sprintf("body=%s", body))
-	if err != nil {
-		return fmt.Errorf("updating playback comment: %w", err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("updating playback comment: %w\n%s", err, string(out))
 	}
 	return nil
 }

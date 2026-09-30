@@ -18,7 +18,7 @@ import (
 
 const (
 	pollInterval = 15 * time.Second
-	dispatchWait = 12 * time.Minute
+	dispatchWait = 20 * time.Minute
 
 	// Dispatch detection uses exponential backoff: the poll interval
 	// starts at dispatchPollInit, doubles each iteration up to
@@ -83,6 +83,9 @@ type Driver struct {
 func New(client forge.Client, token string) ci.Driver {
 	return &Driver{Client: client, Token: token, afterFunc: time.After, nowFunc: time.Now}
 }
+
+// ForgeClient returns the underlying forge client.
+func (d *Driver) ForgeClient() forge.Client { return d.Client }
 
 // now returns the current time from nowFunc, falling back to time.Now
 // so that a zero-value Driver still works.
@@ -158,6 +161,13 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 			if run.Conclusion == "success" {
 				return run, nil
 			}
+			if run.Conclusion == "cancelled" || run.Conclusion == "skipped" {
+				if replacement := selectWorkflowRun(latestRuns(ctx, d, owner, repo, workflowFile), after, event); replacement != nil && replacement.ID > triageRun.ID {
+					triageRun = replacement
+					continue
+				}
+				continue
+			}
 			if replacement := selectSuccessfulWorkflowRun(latestRuns(ctx, d, owner, repo, workflowFile), after, event); replacement != nil && replacement.ID > triageRun.ID {
 				triageRun = replacement
 				continue
@@ -182,6 +192,9 @@ func selectWorkflowRun(runs []forge.WorkflowRun, triggerTime time.Time, event st
 	var best *forge.WorkflowRun
 	for _, run := range runs {
 		if !workflowRunMatches(run, triggerTime, event) {
+			continue
+		}
+		if run.Conclusion == "cancelled" || run.Conclusion == "skipped" {
 			continue
 		}
 		if best == nil || run.ID > best.ID {

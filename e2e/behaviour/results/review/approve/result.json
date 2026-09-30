@@ -1,0 +1,40 @@
+{
+  "action": "approve",
+  "pr_number": 2,
+  "repo": "fullsend-ai-test/playback-9d6db5a4",
+  "head_sha": "5fcdfb95cc5d61819a8e1f5bf60db024cf88b5f0",
+  "body": "<!-- **Head SHA:** 5fcdfb95cc5d61819a8e1f5bf60db024cf88b5f0 -->\n\n## Review\n\n### Findings\n\n#### Low\n\n- **[comment-style]** `main.go:37` — Multi-line explanatory comment breaks the established pattern of uncommented, self-documenting code in this file. The rest of main.go contains zero inline comments. However, this concurrency pattern (double-checked locking under mutex upgrade) arguably warrants the exception — the comment helps prevent future maintainers from accidentally simplifying away the safety check.",
+  "risk_assessment": {
+    "score": 1,
+    "level": "low",
+    "tier1_signals": [
+      {"dimension": "FILES_CHANGED", "value": "3"},
+      {"dimension": "LINES_CHANGED", "value": "143"},
+      {"dimension": "BLAST_RADIUS", "value": "medium"},
+      {"dimension": "PROTECTED_PATH_COUNT", "value": "0"},
+      {"dimension": "SECURITY_SENSITIVE_COUNT", "value": "0"},
+      {"dimension": "CI_WORKFLOW_CHANGED", "value": "false"},
+      {"dimension": "DEPENDENCY_FILES_CHANGED", "value": "go.mod"},
+      {"dimension": "TEST_FILE_RATIO", "value": "0.33"},
+      {"dimension": "AUTHOR_IS_BOT", "value": "true"},
+      {"dimension": "AUTHOR_IS_FIRST_TIME", "value": "false"}
+    ],
+    "tier2_signals": [
+      {"dimension": "churn_hotspot_30d", "value": "1.0"},
+      {"dimension": "multi_author_contention_90d", "value": "1.0"},
+      {"dimension": "recent_regression_history_90d", "value": "0.33"},
+      {"dimension": "code_age_stability_days", "value": "0.0"},
+      {"dimension": "change_coupling", "value": "0"},
+      {"dimension": "revert_frequency", "value": "0"},
+      {"dimension": "commit_message_sentiment", "value": "0"}
+    ],
+    "tier3_signals": [
+      {"dimension": "complexity_vs_scope_mismatch", "value": "1"},
+      {"dimension": "issue_label_context", "value": "1"},
+      {"dimension": "acceptance_criteria_coverage", "value": "1"},
+      {"dimension": "discussion_history", "value": "1"},
+      {"dimension": "rollback_safety", "value": "3"}
+    ],
+    "rationale": "Small, focused concurrency bug fix with comprehensive test coverage, clear issue scope match, minimal git history risk signals, and bot authorship."
+  }
+}

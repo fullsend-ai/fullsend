@@ -1,0 +1,22 @@
+{
+  "pr_number": 2,
+  "trigger_source": "bot",
+  "iteration": 1,
+  "actions": [
+    {
+      "type": "fix",
+      "finding": "TOCTOU race in getHandler: entry read under RLock, expiry check and delete happen unlocked",
+      "path": "main.go",
+      "description": "Added re-check under write lock before deleting expired entry. The delete now verifies the entry's ExpiresAt still matches the originally-read value, preventing silent data loss when setHandler writes a fresh entry between RUnlock and Lock."
+    },
+    {
+      "type": "fix",
+      "finding": "Test isolation: tests mutate package-level cache without resetting between test functions",
+      "path": "main_test.go",
+      "description": "Added resetCache helper that acquires cacheMu and replaces the cache map. Called at the start of every test function to ensure test independence under -shuffle or when new tests are added."
+    }
+  ],
+  "summary": "Addressed both review findings: fixed TOCTOU race in getHandler by re-checking entry under write lock before delete, and added resetCache test helper for test isolation. All tests pass with -race.",
+  "tests_passed": true,
+  "files_changed": ["main.go", "main_test.go"]
+}

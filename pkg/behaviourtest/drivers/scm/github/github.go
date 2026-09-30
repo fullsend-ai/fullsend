@@ -166,6 +166,12 @@ func (d *Driver) CreateForkChangeProposal(ctx context.Context, baseOwner, baseRe
 	return d.Client.CreateChangeProposal(ctx, baseOwner, baseRepo, title, body, headRef, base)
 }
 
+func (d *Driver) ForgeName() string { return "github" }
+
+func (d *Driver) ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error) {
+	return d.Client.ListPullRequestReviews(ctx, owner, repo, number)
+}
+
 // ParseRepo splits "owner/repo" into owner and repo name.
 func ParseRepo(fullName string) (owner, repo string, err error) {
 	return scm.ParseRepo(fullName)
