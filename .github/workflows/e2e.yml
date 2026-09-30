@@ -47,7 +47,15 @@ on:
     # labeled / ok-to-test is handled by e2e-ok-to-test.yml via workflow_call.
     types: [opened, synchronize, reopened]
   merge_group:
+  # Temporary pre-merge validation: run the playback job manually from a
+  # trusted branch, then remove this input and dispatch condition before merge.
   workflow_dispatch:
+    inputs:
+      run_playback:
+        description: Run the playback behaviour suite
+        required: true
+        type: boolean
+        default: false
   workflow_call:
 
 concurrency:
@@ -361,11 +369,12 @@ jobs:
     # org concurrently.
     needs: gate
     if: >-
-      !cancelled() &&
+      always() &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'merge_group') ||
-        (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true')
+        (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_playback == true)
       )
     environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
     runs-on: ubuntu-24.04
