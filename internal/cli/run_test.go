@@ -176,11 +176,6 @@ func neutralizeAgentsRepoFallback(t *testing.T) {
 	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
 }
 
-// useFakeOpenshell prepends testdata/ to PATH so the stub openshell binary
-// is found instead of a real installation, causing tests to fail fast at
-// sandbox.CheckGateway instead of actually running agents. Also
-// neutralizes ambient GitHub credentials to prevent the agents-repo
-// fallback from bypassing local fixtures (#5569).
 // writePolicyFixture commits a one-field OpenShell policy so ValidateFilesExist
 // accepts a harness that names policy: policies/base.yaml.
 func writePolicyFixture(t *testing.T, dir string) {
@@ -190,6 +185,11 @@ func writePolicyFixture(t *testing.T, dir string) {
 	require.NoError(t, os.WriteFile(path, []byte("version: 1\n"), 0o644))
 }
 
+// useFakeOpenshell prepends testdata/ to PATH so the stub openshell binary
+// is found instead of a real installation, causing tests to fail fast at
+// sandbox.CheckGateway instead of actually running agents. Also
+// neutralizes ambient GitHub credentials to prevent the agents-repo
+// fallback from bypassing local fixtures (#5569).
 func useFakeOpenshell(t *testing.T) {
 	t.Helper()
 	neutralizeAgentsRepoFallback(t)
