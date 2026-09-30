@@ -75,14 +75,20 @@ inputs:
 outputs:
   skipped:
     description: >-
-      "true" when the harness pre-script requested a skip via the
-      pre-script output protocol, so the agent did not run.
+      "true" when the agent did not run, either because the harness
+      pre-script requested a skip via the pre-script output protocol
+      or because the agent is explicitly disabled in configuration.
       "false" when the run proceeded. Empty when the CLI predates the
       protocol, or when the run failed before the skip decision — check
       the step outcome before reading empty as a version signal.
     value: ${{ steps.run.outputs.skipped }}
+  disabled:
+    description: >-
+      "true" when the agent was skipped because it is explicitly disabled
+      in configuration (.fullsend/config.yaml).
+    value: ${{ steps.run.outputs.disabled }}
   skip-reason:
-    description: Human-readable reason accompanying a skip, if the pre-script gave one.
+    description: Human-readable reason accompanying a skip, if the pre-script or configuration gave one.
     value: ${{ steps.run.outputs.reason }}
 
 runs:
@@ -573,7 +579,7 @@ runs:
     - name: Finalize orphaned status comment
       # Runs last (after all other always() steps) so job.status reflects
       # the job's true final outcome, not just the fullsend run outcome.
-      if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != '' && inputs.mint-url != ''
+      if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != '' && inputs.mint-url != '' && steps.run.outputs.disabled != 'true'
       shell: bash
       env:
         MINT_URL: ${{ inputs.mint-url }}
@@ -585,6 +591,7 @@ runs:
         JOB_STATUS: ${{ job.status }}
         HARNESS_ROLE: ${{ steps.run.outputs.role }}
         WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
+        WAS_DISABLED: ${{ steps.run.outputs.disabled }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
       run: |
@@ -593,6 +600,13 @@ runs:
         # the deferred PostCompletion call never runs and the status comment
         # remains in "Started" state. This step runs unconditionally (if:
         # always()) to detect and finalize orphaned comments. See #2149.
+
+        # Disabled agents never post status comments; skip reconciliation to
+        # avoid synthesizing a spurious status comment under on_failure mode.
+        if [[ "${WAS_DISABLED}" == "true" ]]; then
+          echo "Fullsend reported that '${AGENT}' is disabled in config, skipping reconcile-status"
+          exit 0
+        fi
 
         # Resolve the correct commit SHA. Priority order:
         # 1. Explicit pr-head-sha input (per-repo workflow_call callers)

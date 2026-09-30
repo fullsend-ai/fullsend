@@ -338,6 +338,13 @@ variables is deployed.
 | `clearing stale iteration deadline (iteration N): ...` | The write failed and the previous iteration's file could not be removed either. The run stops rather than let the agent read a stale deadline. | Same as above. |
 | `FULLSEND_ITERATION_DEADLINE` unset inside the agent | The agent's shell was started without sourcing `/sandbox/workspace/.env`. | Runtimes that fullsend ships always load it; a custom command must do the same. |
 
+## Early termination and skips
+
+`fullsend run` terminates early and exits 0 before sandbox creation in these cases:
+
+- **Pre-script skip:** When the harness `pre_script` writes `skipped=true` to `$FULLSEND_PRESCRIPT_OUTPUT`, `fullsend run` logs the skip, emits `skipped=true` (and `reason=<reason>` if provided) to `$GITHUB_OUTPUT` under GitHub Actions, and exits 0.
+- **Disabled agent:** When an agent is explicitly disabled in configuration (`agents[].enabled: false` in `.fullsend/config.yaml`), `fullsend run` prints `Run skipped: agent "<name>" is disabled in config`, relays `skipped=true`, `disabled=true`, and `reason=agent "<name>" is disabled in config` to `$GITHUB_OUTPUT` under GitHub Actions, and exits 0 without creating a sandbox.
+
 ## How a run ends
 
 After the last iteration, `fullsend run` returns an error, and so exits non-zero, in these cases.

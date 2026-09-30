@@ -70,8 +70,9 @@ const EnvVar = "FULLSEND_PRESCRIPT_OUTPUT"
 const ExitCodeNeutral = 78
 
 const (
-	skippedKey = "skipped"
-	reasonKey  = "reason"
+	skippedKey  = "skipped"
+	reasonKey   = "reason"
+	disabledKey = "disabled"
 
 	// maxOutputSize caps the output file read, mirroring internal/envfile.
 	maxOutputSize = 1 << 20 // 1 MB
@@ -87,10 +88,12 @@ var validKeyRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
 // a value that merely contains "<<".
 var heredocRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*<<`)
 
-// reservedKeys are the keys the protocol itself interprets. A key that
-// differs from one of these only by case is rejected rather than stored as
-// an unrelated output — see the package doc on silent-proceed failures.
-var reservedKeys = []string{skippedKey, reasonKey}
+// reservedKeys contains keys interpreted by the protocol ("skipped", "reason")
+// as well as keys reserved for CLI use ("disabled"). A key that differs from
+// one of these only by case is rejected rather than stored as an unrelated
+// output (see the package doc on silent-proceed failures); "disabled" is
+// additionally rejected unconditionally because pre-scripts must not emit it.
+var reservedKeys = []string{skippedKey, reasonKey, disabledKey}
 
 // Result is the parsed pre-script output.
 type Result struct {
@@ -102,6 +105,19 @@ type Result struct {
 	// Outputs holds every key=value pair the script wrote, including
 	// skipped and reason, with later assignments overriding earlier ones.
 	Outputs map[string]string
+}
+
+// DisabledResult constructs a Result for an agent explicitly disabled in
+// configuration, populating Skipped, Reason, and the relayed Outputs.
+func DisabledResult(reason string) Result {
+	return Result{
+		Skipped: true,
+		Reason:  reason,
+		Outputs: map[string]string{
+			disabledKey: "true",
+			"reason":    reason,
+		},
+	}
 }
 
 // Prepare creates the file the pre-script writes its outputs to, inside
@@ -185,6 +201,9 @@ func ParseFile(path string) (Result, error) {
 			return res, fmt.Errorf("pre-script output line %d: value for %q contains a control character (%#U) "+
 				"at offset %d — values must be plain single-line text", lineNum, key, rune(value[i]), i)
 		}
+		if key == disabledKey {
+			return res, fmt.Errorf("pre-script output line %d: key %q is reserved for CLI use and must not be emitted by pre-scripts", lineNum, key)
+		}
 		res.Outputs[key] = value
 	}
 	if err := scanner.Err(); err != nil {
@@ -257,6 +276,9 @@ func validateOutputs(outputs map[string]string) error {
 // skipped key is always written (normalized to "true"/"false") so
 // consumers can gate on its value, and an absent key means the CLI
 // predates this protocol rather than "not skipped".
+//
+// Any additional keys in res.Outputs are relayed alongside skipped, such as
+// "reason" and "disabled" ("true" when an agent is disabled in config).
 func Relay(res Result) (relayed bool, err error) {
 	target := os.Getenv("GITHUB_OUTPUT")
 	// Gate on GITHUB_ACTIONS as well as the file path, matching

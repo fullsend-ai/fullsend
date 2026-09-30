@@ -28,17 +28,15 @@ func repoFullsendDir(t *testing.T) string {
 }
 
 // TestRepoOverlay_RetroTemporarilyDisabled pins this repository's
-// operational overlay: retro is suppressed via agents[].enabled, not by
-// dropping the role. reusable-dispatch.yml's agent-check skips a stage
-// when the last matching agents[] entry has enabled: false, and that
-// gate is shared by automatic PR-close retro and manual /fs-retro.
+// operational overlay: retro is suppressed via agents[].enabled, applying
+// to both automatic PR-close retro and manual /fs-retro.
 func TestRepoOverlay_RetroTemporarilyDisabled(t *testing.T) {
 	cfg, err := LoadConfigWriter(repoFullsendDir(t), LoadOpts{MissingOK: false})
 	require.NoError(t, err)
 	require.NoError(t, cfg.Validate())
 
 	assert.True(t, IsAgentExplicitlyDisabled(cfg.AgentEntries(), "retro"),
-		"retro must be skipped by dispatch agent-check (automatic and /fs-retro)")
+		"retro must be disabled in config so fullsend run skips it (automatic and /fs-retro)")
 	for _, name := range []string{"triage", "code", "fix", "review", "prioritize"} {
 		assert.False(t, IsAgentExplicitlyDisabled(cfg.AgentEntries(), name),
 			"%s must remain dispatchable", name)

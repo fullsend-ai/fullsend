@@ -638,6 +638,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	fallbackForgeClient := gh.New(composeGitToken)
 	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
 	if err != nil {
+		var disabledErr *agentDisabledError
+		if errors.As(err, &disabledErr) {
+			skipReason := disabledErr.SkipReason()
+			result := prescript.DisabledResult(skipReason)
+
+			if _, relayErr := prescript.Relay(result); relayErr != nil {
+				printer.StepFail("Failed to relay skip decision")
+				return fmt.Errorf("relaying disabled-agent skip: %w", relayErr)
+			}
+
+			printer.StepDone("Run skipped: " + skipReason)
+			return nil
+		}
+
 		return err
 	}
 
@@ -7044,6 +7058,21 @@ func validateRepoNames(repos []string) error {
 	return nil
 }
 
+// agentDisabledError reports that an agent is disabled in config.
+// runAgent turns it into a successful skip rather than a failure.
+type agentDisabledError struct {
+	agentName string
+}
+
+func (e *agentDisabledError) Error() string {
+	return e.SkipReason()
+}
+
+// SkipReason returns the canonical human-readable skip reason.
+func (e *agentDisabledError) SkipReason() string {
+	return fmt.Sprintf("agent %q is disabled in config", e.agentName)
+}
+
 // resolveAgentSource resolves the harness path for an agent, checking
 // config-registered agents first, then falling back to the agents repo
 // (fullsend-ai/agents).
@@ -7062,8 +7091,7 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 	}
 
 	if config.IsAgentExplicitlyDisabled(orgCfg.AgentEntries(), agentName) {
-		printer.StepFail(fmt.Sprintf("Agent %s is disabled in config", agentName))
-		return "", nil, fmt.Errorf("agent %q is explicitly disabled in config", agentName)
+		return "", nil, &agentDisabledError{agentName: agentName}
 	}
 
 	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agentName)

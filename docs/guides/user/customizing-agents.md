@@ -706,9 +706,15 @@ agents:
     enabled: false
 ```
 
-This prevents the agent from dispatching and from resolving via
-`fullsend run`. The role can stay in `roles` — only the agent
-is suppressed. Omitting `enabled` (or setting it to `true`) keeps the
+This prevents the agent from executing: `fullsend run` skips the run and
+exits successfully, and under GitHub Actions it reports `skipped=true` (with
+the reason) as step outputs. The dispatch workflow no longer checks whether
+an agent is enabled, so its earlier setup steps (such as minting a token)
+still run before the skip, and a failure in any of them still fails the
+workflow. The role can stay in `roles` — only the agent
+is suppressed. To prevent workflow dispatch and early setup steps entirely
+for an agent, remove its role from `roles` in `.fullsend/config.yaml` rather
+than setting `enabled: false`. Omitting `enabled` (or setting it to `true`) keeps the
 agent active (backward compatible).
 
 When multiple entries share a name, the last writer wins. This allows a

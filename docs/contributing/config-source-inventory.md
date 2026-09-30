@@ -99,7 +99,6 @@ The Go accessor layers these. The bash steps in `.github/workflows/reusable-disp
 | Setting | Controls | Set from | Wins today | Read by | Decision | Base file? |
 |---|---|---|---|---|---|---|
 | `roles` | Which agent roles are enabled | Overlay, base, compiled default role list | Go accessor: replace-if-set, so an explicit empty `roles: []` denies every role. Bash "Check role is enabled": `yq '.roles[]'` on `config.yaml` only, piped through `\|\| echo ""`. An omitted key, a missing file, an explicit `roles: []`, or any `yq` error all leave `$ROLES` empty, and the script only skips the stage when `$ROLES` is non-empty — so all four cases fail open and let the stage run, the opposite of the Go accessor's deny-all | Go accessor and `reusable-dispatch.yml` | Layer the direct read, and make the bash script fail closed on an explicit empty list, not just add the base file | Yes, for the shared role set. An overlay list replaces it. |
-| `agents` | Registered agents and per-agent `runtime`, `model`, `effort`, `subagents` | Overlay, base, compiled none | Go accessor: keyed merge by agent name. Bash validates the shape of `config.yaml` only | Go run path and `reusable-dispatch.yml` | Layer the direct read for enablement and role checks. Per-agent runtime, model, and effort still lose to flags and environment variables; those rows are below | Yes, for the shared agent baseline. |
 
 ## File fields that lose to a variable or a flag
 
