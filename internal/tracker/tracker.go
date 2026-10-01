@@ -97,8 +97,20 @@ type Client interface {
 type StatusCommentClient interface {
 	CreateStatusComment(ctx context.Context, project string, number int, body Body, marker string, terminal bool) (*Comment, error)
 	UpdateStatusComment(ctx context.Context, project string, number int, commentID string, body Body, marker string, terminal bool) error
+	// FindStatusComment locates the status comment for marker. When more
+	// than one comment matches, a terminal comment is preferred so leftover
+	// start comments are not treated as orphans.
 	FindStatusComment(ctx context.Context, project string, number int, marker string) (comment *Comment, terminal bool, err error)
 	IsStatusComment(ctx context.Context, project string, number int, commentID string) (bool, error)
+	// DeleteNonTerminalStatusComments deletes every comment matching marker
+	// that is not in a terminal state. Callers use this once FindStatusComment
+	// reports a terminal hit for marker, to remove leftover non-terminal
+	// siblings (e.g. a start comment left behind when a completion comment
+	// was posted separately) so the timeline does not show both an
+	// in-progress and a terminal state for the same run. Implementations
+	// must treat a not-found error on any individual delete as success,
+	// since a previous cleanup pass may have already removed the comment.
+	DeleteNonTerminalStatusComments(ctx context.Context, project string, number int, marker string) error
 }
 
 // Reactor is an optional capability for adding and removing emoji

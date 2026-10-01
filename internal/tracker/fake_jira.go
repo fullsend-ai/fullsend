@@ -39,6 +39,13 @@ type FakeJiraClient struct {
 	// UpdateError, when non-nil, is returned by UpdateComment to
 	// simulate update failures.
 	UpdateError error
+
+	// DeleteError, when non-nil, is returned by DeleteComment instead of
+	// the normal found/not-found lookup, to simulate a delete failing
+	// (e.g. a non-not-found API error, or a not-found race against a
+	// concurrent cleanup pass) regardless of whether the comment is
+	// still present in Comments.
+	DeleteError error
 }
 
 func (f *FakeJiraClient) GetIssue(_ context.Context, issueIDOrKey string) (*jira.Issue, error) {
@@ -147,6 +154,9 @@ func (f *FakeJiraClient) SetCommentProperty(_ context.Context, issueIDOrKey, com
 }
 
 func (f *FakeJiraClient) DeleteComment(_ context.Context, issueIDOrKey, commentID string) error {
+	if f.DeleteError != nil {
+		return f.DeleteError
+	}
 	comments := f.Comments[issueIDOrKey]
 	for i, c := range comments {
 		if c.ID == commentID {

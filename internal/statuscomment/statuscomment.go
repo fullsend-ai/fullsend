@@ -717,6 +717,15 @@ func statusEmoji(status string) string {
 // If found in a non-terminal state, it updates the comment to "Interrupted"
 // and records it as terminal.
 //
+// PostCompletionWithDetail may legitimately leave the start comment
+// non-terminal and post a separate completion comment (when other activity
+// pushed past the start, but the agent posted no output of its own). Both
+// the HTML-marker scan (GitHub, GitLab) and the StatusCommentClient lookup
+// (Jira) therefore inspect every matching comment: if any sibling already
+// carries the terminal tag, leftover start comments are deleted rather
+// than rewritten as Terminated. That avoids contradictory Terminated +
+// Success (or Failure) states for the same run. See #4058.
+//
 // completionMode is the configured comment.completion value ("enabled",
 // "on_failure", or "disabled"). It changes what an absent marker means:
 //
@@ -769,17 +778,54 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 		if err != nil {
 			return fmt.Errorf("finding status comment: %w", err)
 		}
+		if terminal {
+			// A completion comment already exists for this run. Delete any
+			// leftover non-terminal comments so the timeline does not show
+			// both Started and a terminal outcome, mirroring the
+			// HTML-marker branch below. See #4058.
+			if delErr := statusClient.DeleteNonTerminalStatusComments(ctx, project, number, marker); delErr != nil {
+				return fmt.Errorf("deleting leftover status comments: %w", delErr)
+			}
+			return nil
+		}
 	} else {
 		comments, listErr := client.ListComments(ctx, project, number)
 		if listErr != nil {
 			return fmt.Errorf("listing comments: %w", listErr)
 		}
+		var leftover []tracker.Comment
 		for i := range comments {
-			if strings.Contains(string(comments[i].Body), marker) {
-				matched = &comments[i]
-				terminal = strings.Contains(string(comments[i].Body), terminalTag)
-				break
+			if !strings.Contains(string(comments[i].Body), marker) {
+				continue
 			}
+			if strings.Contains(string(comments[i].Body), terminalTag) {
+				terminal = true
+				continue
+			}
+			leftover = append(leftover, comments[i])
+		}
+		if terminal {
+			// A completion comment already exists for this run. Delete any
+			// leftover start comments so the timeline does not show both
+			// Started and a terminal outcome, and so we never rewrite the
+			// start comment as Terminated. See #4058.
+			for _, c := range leftover {
+				if delErr := client.DeleteComment(ctx, project, number, c.ID); delErr != nil {
+					// A prior cleanup pass (e.g. a retried or concurrent
+					// reconcile-status run) may have already deleted this
+					// comment; treat that as success, mirroring
+					// JiraClient.DeleteNonTerminalStatusComments.
+					if tracker.IsNotFound(delErr) {
+						continue
+					}
+					return fmt.Errorf("deleting leftover start comment %s: %w", c.ID, delErr)
+				}
+			}
+			return nil
+		}
+		if len(leftover) > 0 {
+			orphan := leftover[0]
+			matched = &orphan
 		}
 	}
 
