@@ -403,11 +403,17 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 // sticky.Post: find an existing comment bearing the marker, collapse
 // old content into history, and create or update in-place.
 //
-// Unlike sticky.Post, this function does not perform bot-user
-// verification for marker spoofing protection (tracker.Client has no
-// GetAuthenticatedUser method). This is acceptable because the new
-// command is used by agents in trusted CI environments, not by
-// untrusted external callers.
+// Unlike sticky.Post, this function does not by default perform
+// bot-user verification for marker spoofing protection. This is
+// acceptable because the command is used by agents in trusted CI
+// environments, not by untrusted external callers.
+//
+// OnlyIfExists is the exception: it runs on every clean result, and the
+// comment it edits must be the poster's own earlier findings, not one
+// anyone could plant with the same marker. It therefore matches only
+// comments whose author is exactly the login this client posts as. When
+// that login cannot be resolved it posts nothing rather than fall back to
+// marker-only matching: an unverified comment is never edited.
 func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project string, number int, body string, cfg sticky.Config, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
@@ -416,12 +422,22 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 		return "", fmt.Errorf("marker is empty")
 	}
 
+	botUser := ""
+	if cfg.OnlyIfExists {
+		self, err := resolveTrackerSelf(ctx, tc)
+		if err != nil {
+			printer.StepWarn(fmt.Sprintf("Cannot verify who posted earlier comments (%v); nothing to post (--only-if-exists)", err))
+			return "", nil
+		}
+		botUser = self
+	}
+
 	comments, err := tc.ListComments(ctx, project, number)
 	if err != nil {
 		return "", fmt.Errorf("listing comments: %w", err)
 	}
 
-	existing := findMarkedTrackerComment(comments, cfg.Marker)
+	existing := findMarkedTrackerComment(comments, cfg.Marker, botUser)
 	markedBody := cfg.Marker + "\n" + body
 
 	if existing != nil {
@@ -528,11 +544,39 @@ func resolveKeepHistory(flag *bool, fullsendDir string, testConfigReader config.
 	return true, nil
 }
 
+// authenticatedUserResolver is implemented by tracker clients that can
+// report who they are authenticated as (tracker.ForgeClient).
+type authenticatedUserResolver interface {
+	AuthenticatedUser(ctx context.Context) (string, error)
+}
+
+// resolveTrackerSelf returns the exact login tc posts as. For GitHub this
+// goes through forge.Client.GetAuthenticatedUser, which also resolves an
+// App installation token (GraphQL viewer) where GET /user is refused.
+func resolveTrackerSelf(ctx context.Context, tc tracker.Client) (string, error) {
+	ar, ok := tc.(authenticatedUserResolver)
+	if !ok {
+		return "", fmt.Errorf("this tracker cannot report the authenticated user")
+	}
+	self, err := ar.AuthenticatedUser(ctx)
+	if err != nil {
+		return "", err
+	}
+	if self == "" {
+		return "", fmt.Errorf("the authenticated user is empty")
+	}
+	return self, nil
+}
+
 // findMarkedTrackerComment returns the first tracker comment whose body
-// contains the given marker string, or nil if none is found. This is
-// the tracker.Comment equivalent of sticky.FindMarkedComment.
-func findMarkedTrackerComment(comments []tracker.Comment, marker string) *tracker.Comment {
+// contains the given marker string, or nil if none is found. When botUser
+// is non-empty, only comments authored by botUser match. This is the
+// tracker.Comment equivalent of sticky.FindMarkedComment.
+func findMarkedTrackerComment(comments []tracker.Comment, marker, botUser string) *tracker.Comment {
 	for i := range comments {
+		if botUser != "" && comments[i].Author != botUser {
+			continue
+		}
 		if strings.Contains(string(comments[i].Body), marker) {
 			return &comments[i]
 		}

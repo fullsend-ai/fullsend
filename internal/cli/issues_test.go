@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -80,7 +81,7 @@ func TestFindMarkedTrackerComment(t *testing.T) {
 		{ID: "3", Body: "another comment"},
 	}
 
-	found := findMarkedTrackerComment(comments, marker)
+	found := findMarkedTrackerComment(comments, marker, "")
 	require.NotNil(t, found)
 	assert.Equal(t, "2", found.ID)
 }
@@ -90,12 +91,12 @@ func TestFindMarkedTrackerComment_NotFound(t *testing.T) {
 		{ID: "1", Body: "no marker here"},
 	}
 
-	found := findMarkedTrackerComment(comments, "<!-- missing -->")
+	found := findMarkedTrackerComment(comments, "<!-- missing -->", "")
 	assert.Nil(t, found)
 }
 
 func TestFindMarkedTrackerComment_Empty(t *testing.T) {
-	found := findMarkedTrackerComment(nil, "<!-- marker -->")
+	found := findMarkedTrackerComment(nil, "<!-- marker -->", "")
 	assert.Nil(t, found)
 }
 
@@ -1088,4 +1089,71 @@ func TestRunIssuesPostComment_Jira_OnlyIfExists(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, comments, 1)
 	assert.Contains(t, string(comments[0].Body), "all clear")
+}
+
+// runOnlyIfExistsAfterCommentBy seeds one marker comment as author, then runs an
+// --only-if-exists all-clear as the bot "fullsend-ai-review[bot]".
+func runOnlyIfExistsAfterCommentBy(t *testing.T, author string, botErr error) []tracker.Comment {
+	t.Helper()
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
+	const marker = "<!-- test:agent -->"
+
+	fc.AuthenticatedUser = author
+	_, err := tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\nplanted findings"))
+	require.NoError(t, err)
+
+	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
+	if botErr != nil {
+		fc.Errors = map[string]error{"GetAuthenticatedUser": botErr}
+	}
+	cfg := &issuesPostCommentConfig{
+		trackerName:  trackerGitHub,
+		project:      "acme/widgets",
+		number:       42,
+		marker:       marker,
+		onlyIfExists: true,
+		testClient:   tc,
+		testPrinter:  ui.New(io.Discard),
+		testBody:     "all clear",
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
+	require.NoError(t, err)
+	return comments
+}
+
+func TestRunIssuesPostComment_OnlyIfExists_IgnoresMarkerFromAnotherUser(t *testing.T) {
+	comments := runOnlyIfExistsAfterCommentBy(t, "mallory", nil)
+	require.Len(t, comments, 1, "only-if-exists must neither edit a planted comment nor create one")
+	assert.Contains(t, string(comments[0].Body), "planted findings")
+	assert.NotContains(t, string(comments[0].Body), "all clear")
+}
+
+func TestRunIssuesPostComment_OnlyIfExists_IgnoresLookalikeBotLogin(t *testing.T) {
+	// Login shape is not identity: a different App whose login merely shares
+	// the "[bot]" suffix, or a prefix, must not match.
+	for _, author := range []string{"evil-review[bot]", "fullsend-ai-review", "x-fullsend-ai-review[bot]"} {
+		t.Run(author, func(t *testing.T) {
+			comments := runOnlyIfExistsAfterCommentBy(t, author, nil)
+			require.Len(t, comments, 1)
+			assert.NotContains(t, string(comments[0].Body), "all clear")
+		})
+	}
+}
+
+func TestRunIssuesPostComment_OnlyIfExists_EditsOwnComment(t *testing.T) {
+	comments := runOnlyIfExistsAfterCommentBy(t, "fullsend-ai-review[bot]", nil)
+	require.Len(t, comments, 1)
+	assert.Contains(t, string(comments[0].Body), "all clear")
+}
+
+func TestRunIssuesPostComment_OnlyIfExists_UnresolvableSelfPostsNothing(t *testing.T) {
+	// Even the bot's own comment is left alone when the poster's login cannot
+	// be resolved: an unverified comment is never edited.
+	comments := runOnlyIfExistsAfterCommentBy(t, "fullsend-ai-review[bot]", errors.New("401 Bad credentials"))
+	require.Len(t, comments, 1)
+	assert.NotContains(t, string(comments[0].Body), "all clear")
 }
