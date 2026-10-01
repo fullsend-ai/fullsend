@@ -1065,7 +1065,9 @@ flowchart TB
 - **Skills** come from `$CODEX_HOME/skills`, which `Bootstrap` populates. Codex also discovers a
   repo's `.agents/skills`, and (verified live at 0.157.0) its `.codex/skills` even with the project
   untrusted; both are covered by the host-side and in-sandbox context scans, which match `SKILL.md`
-  anywhere in the repo.
+  anywhere in the repo. The agent reads those files through the shell, and Codex 0.157.0 truncates
+  a single exec at 10,000 tokens (head and tail), so `codexNoSubagentNote` tells it to `wc -l`
+  then `sed -n` a long `SKILL.md` in at most 200-line ranges, one per tool call (#7831).
 - **AGENTS.md** — codex skips a project's own `AGENTS.md` while the project is untrusted
   (`codex-rs/core/src/agents_md.rs`), but always loads `$CODEX_HOME/AGENTS.md` as user
   instructions. The runner copies the repo's root `AGENTS.md` (or the injected org-level one) there
@@ -1378,6 +1380,7 @@ Two artefacts of the run are worth knowing about:
 | `auth.command` semantics (trimmed stdout, non-zero exit fails, no env fallback) | the whole credential path | `codex-rs/login/src/auth/external_bearer.rs` |
 | `supports_websockets` default for custom providers | a true default would take traffic off `POST /v1/responses` and break the egress profile | `codex-rs/model-provider-info/src/lib.rs` |
 | `[skills.bundled]` and skill discovery | the bundled skills are disabled by the runner-owned config; a renamed key would silently bring `skill-installer` and friends back into the agent's roster | `codex-rs/config/src/skills_config.rs` |
+| Exec output truncation (`DEFAULT_MAX_OUTPUT_TOKENS`, head+tail) | the runtime note's 200-line window is sized to stay under this cap; on bump, confirm 200 lines of a dense `SKILL.md` still fits under the new cap and that a truncated exec still emits a warning the split rule can detect | `codex-rs/core/src/unified_exec/mod.rs`, `codex-rs/core/src/tools/context.rs`, `codex-rs/utils/string/src/truncate.rs` |
 | The `plugins` feature and what it gates | `[features] plugins = false` is what stops the startup fetch of `github.com/openai/plugins.git`; a renamed key, or a sync no longer gated on it, would bring the fetch back | `codex-rs/features/src/lib.rs`, `codex-rs/core-plugins/src/manager.rs` (`maybe_start_plugin_startup_tasks_for_config`) |
 | The native binary's path inside the platform package (`vendor/<triple>/bin/codex` at 0.157.0) | the `fullsend-openai` profile names it as `**/codex`; the node ancestor still admits a renamed file, but the pin in `runtimeEgressBinaries` should follow the rename | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
 | Whether a custom provider still issues `GET /v1/models` at startup | the `fullsend-openai` egress profile denies it; if the request ever became fatal or retried, it would delay or fail every first turn | `codex-rs/models-manager/` |
