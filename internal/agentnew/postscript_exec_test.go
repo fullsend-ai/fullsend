@@ -132,36 +132,40 @@ func TestGeneratedPostScriptRunsFromTheRunDirectory(t *testing.T) {
 }
 
 // TestGeneratedPostScriptFlattensAnInvalidStatusBeforeLogging feeds a status
-// that carries a newline and a workflow-command prefix. The rejection message
-// must stay on one line and must not reproduce the injected line, because
-// the script's stderr lands in the runner log where `::` at line start is
-// interpreted as a command.
+// that carries a line break (LF, CR alone, or CRLF) and a workflow-command
+// prefix. The rejection message must stay on one line and must not reproduce
+// the injected line, because the script's stderr lands in the runner log
+// where `::` at line start is interpreted as a command.
 func TestGeneratedPostScriptFlattensAnInvalidStatusBeforeLogging(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq not installed; the generated post-script needs it")
 	}
 	script := renderPostScriptTo(t, t.TempDir())
-	runDir := writeRunDir(t, map[string]any{
-		"iteration-1": map[string]any{
-			"status":  "bogus\n::error::injected",
-			"summary": "s",
-			"comment": "c",
-		},
-	})
-	_, stderr, err := runPostScript(t, script, runDir)
-	if err == nil {
-		t.Fatal("expected the script to reject an invalid status")
-	}
-	if !strings.Contains(stderr, "status must be ok, findings or error") {
-		t.Fatalf("expected the status rejection, got stderr:\n%s", stderr)
-	}
-	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
-		if strings.HasPrefix(line, "::") {
-			t.Fatalf("model-supplied status reached the log as its own line: %q", line)
-		}
-	}
-	if strings.Count(strings.TrimSpace(stderr), "\n") != 0 {
-		t.Fatalf("rejection must be a single log line, got:\n%s", stderr)
+	for name, brk := range map[string]string{"LF": "\n", "CR": "\r", "CRLF": "\r\n"} {
+		t.Run(name, func(t *testing.T) {
+			runDir := writeRunDir(t, map[string]any{
+				"iteration-1": map[string]any{
+					"status":  "bogus" + brk + "::error::injected",
+					"summary": "s",
+					"comment": "c",
+				},
+			})
+			_, stderr, err := runPostScript(t, script, runDir)
+			if err == nil {
+				t.Fatal("expected the script to reject an invalid status")
+			}
+			if !strings.Contains(stderr, "status must be ok, findings or error") {
+				t.Fatalf("expected the status rejection, got stderr:\n%s", stderr)
+			}
+			for _, line := range strings.FieldsFunc(stderr, func(r rune) bool { return r == '\n' || r == '\r' }) {
+				if strings.HasPrefix(line, "::") {
+					t.Fatalf("model-supplied status reached the log as its own line: %q", line)
+				}
+			}
+			if strings.ContainsRune(stderr, '\r') || strings.Count(strings.TrimSpace(stderr), "\n") != 0 {
+				t.Fatalf("rejection must be a single log line, got: %q", stderr)
+			}
+		})
 	}
 }
 
@@ -201,12 +205,11 @@ func TestGeneratedPostScriptDoesNotExpandEscapesUnderXpgEcho(t *testing.T) {
 	}
 }
 
-// TestGeneratedPostScriptOkPostsNothingWithoutAnEarlierComment pins the ok
-// path under dry run: the script exits 0 and says nothing was posted. The
-// live path additionally looks for an earlier marker comment and replaces it
-// with the all-clear; that needs the forge, so it is exercised by the
-// example's script test in fullsend-ai/agents, not here.
-func TestGeneratedPostScriptOkPostsNothingWithoutAnEarlierComment(t *testing.T) {
+// TestGeneratedPostScriptOkDryRunPostsNothing pins the ok path under dry
+// run: the script exits 0 and says nothing was posted, without looking for
+// an earlier comment. The live path is covered by the stubbed-fullsend tests
+// below; the author check it relies on is tested in internal/cli.
+func TestGeneratedPostScriptOkDryRunPostsNothing(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq not installed; the generated post-script needs it")
 	}
