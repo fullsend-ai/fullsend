@@ -90,6 +90,61 @@ func TestGeneratedValidationScriptNeverEchoesTheInstance(t *testing.T) {
 	}
 }
 
+// TestGeneratedValidationScriptNeverEchoesInstanceControlledPathKeys pins the
+// fix for the first finding in #7950: ValidationError.path can contain a key
+// taken straight from the instance, not just schema-declared property names,
+// whenever the failing (sub)schema uses additionalProperties or
+// patternProperties instead of a fixed property list. Joining and printing
+// that path unescaped would let a crafted key such as
+// "\n::warning::forged\n" reach the validation loop's step log exactly like
+// the instance value itself. Only property names that are literally
+// declared somewhere in the schema document may appear in the printed path;
+// anything else must be masked.
+func TestGeneratedValidationScriptNeverEchoesInstanceControlledPathKeys(t *testing.T) {
+	pythonJSONSchemaAvailable(t)
+	dir := t.TempDir()
+	script, schema := renderValidationScriptAndSchema(t, dir)
+
+	// The script is generic (works against whatever schema is configured),
+	// so replace the generated schema with one that uses additionalProperties
+	// to accept arbitrary keys, matching the scenario from the finding.
+	maliciousSchema := `{
+		"type": "object",
+		"additionalProperties": {"type": "integer"}
+	}`
+	if err := os.WriteFile(schema, []byte(maliciousSchema), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outputDir := filepath.Join(dir, "output")
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	maliciousInstance := "{\"\\n::warning::forged\\n\": \"bad\"}"
+	if err := os.WriteFile(filepath.Join(outputDir, "agent-result.json"), []byte(maliciousInstance), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "FULLSEND_OUTPUT_SCHEMA="+schema)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected validation to fail for a non-integer additional property, got exit 0; output:\n%s", out)
+	}
+	for _, leak := range []string{"::warning::", "forged"} {
+		if strings.Contains(string(out), leak) {
+			t.Fatalf("instance-controlled path key leaked into validator output (%q found); output:\n%s", leak, out)
+		}
+	}
+	if !strings.Contains(string(out), `"type"`) {
+		t.Fatalf("expected the failed keyword in the output, got:\n%s", out)
+	}
+	if !strings.Contains(string(out), "<dynamic-key>") {
+		t.Fatalf("expected the masked path placeholder in the output, got:\n%s", out)
+	}
+}
+
 // TestGeneratedValidationScriptStillReportsUsefulContextOnFailure checks the
 // fix did not turn every failure into an opaque message: the field path,
 // the failing keyword, and (for enum/const) the trusted allowed-values list
