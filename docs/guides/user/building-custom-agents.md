@@ -446,11 +446,12 @@ case "${STATUS}" in
     echo "Agent needs more information"
     ;;
   *)
-    # STATUS is model output: flatten CR/LF and cap it before logging, and
-    # use printf, which never expands backslash escapes, so a crafted value
-    # cannot start a new log line (a "::" workflow command).
-    shown="${STATUS//[$'\r\n']/ }"
-    printf '%s\n' "ERROR: Unknown or missing status '${shown:0:40}'"
+    # STATUS is model output: never echo any part of it, raw or otherwise.
+    # Flattening CR/LF and capping the length only defeats line-splitting —
+    # it does not defeat GitHub Actions' legacy "##[...]" logging-command
+    # syntax, which the log viewer recognizes anywhere in a line, not just
+    # at its start. The only safe fix is to never print the value at all.
+    echo "ERROR: unknown or missing status"
     exit 1
     ;;
 esac

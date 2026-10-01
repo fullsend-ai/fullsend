@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // writeRunDir lays out a run directory the way internal/cli/run.go does:
@@ -328,5 +329,64 @@ func TestGeneratedPostScriptOkRejectsANonGitHubIssueURL(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "ISSUE_URL is not a GitHub issue or pull request URL") {
 		t.Fatalf("expected the ISSUE_URL rejection, got:\n%s", stderr)
+	}
+}
+
+// TestGeneratedPostScriptCountsCodePointsUnderInheritedCLocale pins that the
+// script's `export LC_ALL=C.UTF-8` overrides an inherited C/POSIX locale
+// rather than deferring to it. `${LC_ALL:-C.UTF-8}` (the previous form) only
+// fills in a value when LC_ALL is unset, so a runner that already exports
+// LC_ALL=C would make `${#summary}` count UTF-8 bytes instead of Unicode
+// code points. 101 "é" characters are 101 code points but 202 bytes, so
+// byte-counting would wrongly reject them as exceeding the schema's
+// 200-code-point cap on summary.
+func TestGeneratedPostScriptCountsCodePointsUnderInheritedCLocale(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	summary := strings.Repeat("é", 101)
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{"status": "findings", "summary": summary, "comment": "c"},
+	})
+	// LC_ALL=C simulates a runner environment that already set a non-UTF-8
+	// locale before invoking this script; it is appended after os.Environ()
+	// so it overrides any inherited value (bash keeps the last duplicate
+	// assignment when building its variable table from envp).
+	stdout, stderr, err := runPostScript(t, script, runDir, "LC_ALL=C")
+	if err != nil {
+		t.Fatalf("a 101-code-point summary must pass the 200-code-point cap even under an inherited C locale, got %v; stderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stdout, summary) {
+		t.Fatalf("expected the summary in the preview output, got:\n%s", stdout)
+	}
+}
+
+// TestGeneratedPostScriptTruncatesMultibyteCommentsOnACodePointBoundary pins
+// that comment truncation, like the summary length check, counts code
+// points rather than bytes: cutting a multibyte comment at a byte offset
+// under an inherited C locale can slice a character in half and produce
+// invalid UTF-8 in the posted comment.
+func TestGeneratedPostScriptTruncatesMultibyteCommentsOnACodePointBoundary(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	// One code point over the 16384-character cap, entirely multibyte so a
+	// byte-counting truncation would both miscompute the cut point and risk
+	// slicing a character.
+	comment := strings.Repeat("é", 16385)
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{"status": "findings", "summary": "s", "comment": comment},
+	})
+	stdout, _, err := runPostScript(t, script, runDir, "LC_ALL=C")
+	if err != nil {
+		t.Fatalf("truncation must not fail the run, got %v", err)
+	}
+	if !strings.Contains(stdout, "_(truncated)_") {
+		t.Fatalf("expected the truncation marker, got:\n%s", stdout)
+	}
+	if !utf8.ValidString(stdout) {
+		t.Fatalf("truncated comment is not valid UTF-8 — a character was sliced in half")
 	}
 }

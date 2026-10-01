@@ -3,27 +3,43 @@ package agentnew
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 )
 
-// TestGeneratedPostScriptFlattensAnInvalidStatusBeforeLogging feeds a status
-// that carries a line break (LF, CR alone, or CRLF) and a workflow-command
-// prefix. The rejection message must stay on one line and must not reproduce
-// the injected line, because the script's stderr lands in the runner log
-// where `::` at line start is interpreted as a command.
-func TestGeneratedPostScriptFlattensAnInvalidStatusBeforeLogging(t *testing.T) {
+// stopCommandsTokenRe matches the stop-commands opening line the dry-run
+// preview emits: "::stop-commands::<32 hex chars>".
+var stopCommandsTokenRe = regexp.MustCompile(`^::stop-commands::([0-9a-f]{32})$`)
+
+// TestGeneratedPostScriptNeverEchoesAnInvalidStatus feeds a variety of
+// malicious status values — a line break paired with a `::`-style workflow
+// command, and the legacy `##[...]` Actions logging-command form — and
+// checks that none of them, or any other part of the raw value, ever reaches
+// the rejection message. Capping and flattening (an earlier version of this
+// script's approach) only defeats line-splitting: GitHub's Actions log
+// viewer recognizes `##[...]` anywhere in a line, not only at its start, so
+// a fixed prefix in front of the value does not neutralize it. The only
+// reliable fix is to never print the value at all.
+func TestGeneratedPostScriptNeverEchoesAnInvalidStatus(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq not installed; the generated post-script needs it")
 	}
 	script := renderPostScriptTo(t, t.TempDir())
-	for name, brk := range map[string]string{"LF": "\n", "CR": "\r", "CRLF": "\r\n"} {
+	cases := map[string]string{
+		"LF":                  "bogus\n::error::injected",
+		"CR":                  "bogus\r::error::injected",
+		"CRLF":                "bogus\r\n::error::injected",
+		"legacy-warning":      "##[warning]forged",
+		"legacy-add-mask":     "##[add-mask]s3cr3t",
+		"long":                strings.Repeat("x", 200),
+		"legacy-mid-sentence": "status is totally fine ##[error]nope, trust me",
+	}
+	for name, status := range cases {
 		t.Run(name, func(t *testing.T) {
 			runDir := writeRunDir(t, map[string]any{
 				"iteration-1": map[string]any{
-					"status":  "bogus" + brk + "::error::injected",
+					"status":  status,
 					"summary": "s",
 					"comment": "c",
 				},
@@ -32,16 +48,14 @@ func TestGeneratedPostScriptFlattensAnInvalidStatusBeforeLogging(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected the script to reject an invalid status")
 			}
-			if !strings.Contains(stderr, "status must be ok, findings or error") {
-				t.Fatalf("expected the status rejection, got stderr:\n%s", stderr)
+			const wantMsg = "post-lint-docs: status must be ok, findings or error"
+			if strings.TrimSpace(stderr) != wantMsg {
+				t.Fatalf("expected the fixed rejection message %q and nothing else, got stderr:\n%s", wantMsg, stderr)
 			}
 			for _, line := range strings.FieldsFunc(stderr, func(r rune) bool { return r == '\n' || r == '\r' }) {
 				if strings.HasPrefix(line, "::") {
 					t.Fatalf("model-supplied status reached the log as its own line: %q", line)
 				}
-			}
-			if strings.ContainsRune(stderr, '\r') || strings.Count(strings.TrimSpace(stderr), "\n") != 0 {
-				t.Fatalf("rejection must be a single log line, got: %q", stderr)
 			}
 		})
 	}
@@ -49,7 +63,9 @@ func TestGeneratedPostScriptFlattensAnInvalidStatusBeforeLogging(t *testing.T) {
 
 // TestGeneratedPostScriptDoesNotExpandEscapesUnderXpgEcho runs the script
 // with bash's xpg_echo option on, where `echo` interprets backslash escapes.
-// A status carrying a literal backslash-n must still be logged on one line.
+// Because the invalid-status message never includes the value, a status
+// carrying a literal backslash-n must still produce the single fixed
+// rejection line regardless of xpg_echo.
 func TestGeneratedPostScriptDoesNotExpandEscapesUnderXpgEcho(t *testing.T) {
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq not installed; the generated post-script needs it")
@@ -76,33 +92,10 @@ func TestGeneratedPostScriptDoesNotExpandEscapesUnderXpgEcho(t *testing.T) {
 	}
 	out := strings.TrimSpace(stderr.String())
 	if strings.Count(out, "\n") != 0 {
-		t.Fatalf("backslash escapes were expanded into a new log line:\n%s", out)
+		t.Fatalf("unexpected extra log line under xpg_echo:\n%s", out)
 	}
-	if !strings.Contains(out, `bogus\n::error::injected`) {
-		t.Fatalf("expected the literal value on the single line, got: %q", out)
-	}
-}
-
-// TestGeneratedPostScriptCapsALongInvalidStatus pins the 40-character cap on
-// the logged value, so a long model-supplied status cannot flood the log.
-func TestGeneratedPostScriptCapsALongInvalidStatus(t *testing.T) {
-	if _, err := exec.LookPath("jq"); err != nil {
-		t.Skip("jq not installed; the generated post-script needs it")
-	}
-	script := renderPostScriptTo(t, t.TempDir())
-	runDir := writeRunDir(t, map[string]any{
-		"iteration-1": map[string]any{
-			"status":  strings.Repeat("x", 200),
-			"summary": "s",
-			"comment": "c",
-		},
-	})
-	_, stderr, err := runPostScript(t, script, runDir)
-	if err == nil {
-		t.Fatal("expected the script to reject an invalid status")
-	}
-	if !strings.Contains(stderr, "(got '"+strings.Repeat("x", 40)+"')") {
-		t.Fatalf("expected the status capped at 40 characters, got: %q", stderr)
+	if strings.Contains(out, `bogus`) {
+		t.Fatalf("the invalid status value must never appear in the log, got: %q", out)
 	}
 }
 
@@ -123,7 +116,7 @@ func TestGeneratedPostScriptDryRunPreviewCannotIssueWorkflowCommands(t *testing.
 			"comment": "intro\n::error::injected\r::add-mask::x\n   ::warning::indented",
 		},
 	})
-	token := regexp.MustCompile(`^::stop-commands::([0-9a-f]{32})$`)
+	token := stopCommandsTokenRe
 	var tokens []string
 	for i := 0; i < 2; i++ {
 		stdout, stderr, err := runPostScript(t, script, runDir)
@@ -160,7 +153,7 @@ func TestGeneratedPostScriptDryRunFailsClosedWithoutAToken(t *testing.T) {
 		t.Skip("jq not installed; the generated post-script needs it")
 	}
 	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "od"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+	if err := os.WriteFile(binDir+"/od", []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	script := renderPostScriptTo(t, t.TempDir())

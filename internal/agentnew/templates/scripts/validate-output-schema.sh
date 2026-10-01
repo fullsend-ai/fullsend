@@ -50,17 +50,57 @@ if ! python3 -c "
 import json, sys
 from jsonschema import validate, ValidationError
 
+def _trusted_property_names(node, found):
+    # Collect every key declared under a 'properties' mapping anywhere in
+    # the schema document. These are schema-authored literals, never
+    # instance-controlled, so they are always safe to print.
+    if isinstance(node, dict):
+        props = node.get('properties')
+        if isinstance(props, dict):
+            found.update(k for k in props if isinstance(k, str))
+        for v in node.values():
+            _trusted_property_names(v, found)
+    elif isinstance(node, list):
+        for item in node:
+            _trusted_property_names(item, found)
+
 with open(sys.argv[1]) as f:
     instance = json.load(f)
 with open(sys.argv[2]) as f:
     schema = json.load(f)
+
+trusted_keys = set()
+_trusted_property_names(schema, trusted_keys)
+
 try:
     validate(instance=instance, schema=schema)
     print('PASS: output validated against schema')
 except ValidationError as e:
-    print(f'FAIL: schema validation error: {e.message}')
-    if e.path:
-        print(f'  at: {\".\".join(str(p) for p in e.path)}')
+    # e.message is built from the offending instance (e.g. an enum error
+    # quotes the invalid value verbatim), and the instance is untrusted
+    # agent/model output. Printing it would let a value like
+    # '##[warning]forged' reach this step's log through the validation
+    # loop. Report only trusted schema metadata, never the instance.
+    #
+    # e.path can itself carry instance-controlled strings: when a schema
+    # uses additionalProperties/patternProperties instead of (or in
+    # addition to) a fixed property list, the offending instance's own key
+    # becomes a path component even though the schema never declared it.
+    # Only print path components that are literal property names found
+    # somewhere in the schema document (trusted_keys); array indices are
+    # plain integers and always safe; anything else is masked.
+    def _safe_component(p):
+        if isinstance(p, bool):
+            return str(p)
+        if isinstance(p, int):
+            return str(p)
+        if isinstance(p, str) and p in trusted_keys:
+            return p
+        return '<dynamic-key>'
+    path = '.'.join(_safe_component(p) for p in e.path) if e.path else '(root)'
+    print(f'FAIL: schema validation failed: \"{path}\" failed its \"{e.validator}\" check')
+    if e.validator in ('enum', 'const'):
+        print(f'  allowed values: {e.validator_value!r}')
     if 'properties' in e.schema:
         allowed = ', '.join(sorted(e.schema['properties'].keys()))
         print(f'  allowed properties: {allowed}')

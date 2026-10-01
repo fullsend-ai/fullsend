@@ -180,8 +180,11 @@ set -euo pipefail
 # ${#var} and ${var:0:n} count characters in a UTF-8 locale and BYTES under
 # C/POSIX. The result schema's maxLength counts Unicode code points, so
 # without this a valid multibyte summary is rejected as too long and
-# truncation can slice mid-character.
-export LC_ALL="${LC_ALL:-C.UTF-8}"
+# truncation can slice mid-character. Force this unconditionally: the
+# runner may already export LC_ALL=C (or another non-UTF-8 locale), and
+# `${LC_ALL:-C.UTF-8}` only fills in a value when LC_ALL is unset, so an
+# inherited C/POSIX locale would otherwise pass straight through.
+export LC_ALL=C.UTF-8
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
 : "${GH_TOKEN:?GH_TOKEN must be set}"
@@ -234,13 +237,14 @@ comment=$(jq -r 'if (.comment | type) == "string" then .comment else empty end' 
 case "${status}" in
   ok|findings|error) ;;
   *)
-    # status is model output: never echo it raw. A value carrying CR/LF would
-    # split the runner's log line (a workflow-command injection vector), so
-    # flatten it and cap it before it reaches stderr.
-    shown="${status//[$'\r\n']/ }"
-    # printf '%s' never interprets backslash escapes; echo does under xpg_echo,
-    # so a literal "\n" in the value could still forge a log line through echo.
-    printf '%s\n' "post-lint-docs: status must be ok, findings or error (got '${shown:0:40}')" >&2
+    # status is model output: never echo any part of it, raw or otherwise.
+    # Flattening CR/LF and capping the length (as an earlier version of this
+    # script did) only defeats line-splitting — it does not defeat GitHub
+    # Actions' legacy "##[...]" logging-command syntax, which the log viewer
+    # recognizes anywhere in a line, not just at its start. A status such as
+    # "##[warning]forged" or "##[add-mask]..." would still reach the log.
+    # The only safe fix is to never print the value at all.
+    printf '%s\n' "post-lint-docs: status must be ok, findings or error" >&2
     exit 1
     ;;
 esac
