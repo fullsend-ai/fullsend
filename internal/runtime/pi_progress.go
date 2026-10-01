@@ -298,7 +298,27 @@ func piIsErrorStop(reason string) bool {
 //     maps to exit 1 in text mode) — ParseTranscriptFile must detect errors
 //     from the stream, not the exit code.
 func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err error) {
+	return parsePiStreamWith(r, onEvent, false)
+}
+
+// parsePiStreamWith is parsePiStream with the result cadence selectable.
+//
+// In --mode json pi runs exactly one prompt per process, so the parser
+// holds the settled result and emits a single ResultEvent at EOF. A
+// steered rpc run is the opposite: it runs N prompts in one process and
+// the stream ends only when the runner kills the feeder, so holding the
+// result until EOF would emit nothing at all until the run was already
+// over — and the settle rule, which closes the feeder on a turn ending,
+// would never fire. perPrompt therefore emits the settled result at each
+// agent_settled (pi's end-of-prompt marker, one per prompt) and lets EOF
+// emit only what is still outstanding, so the feeder-kill EOF does not
+// produce a duplicate.
+func parsePiStreamWith(r io.Reader, onEvent func(AgentEvent), perPrompt bool) (sessionID string, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
+	// emittedPerPrompt records that at least one result already went out,
+	// so a clean EOF with nothing outstanding is a finished run rather than
+	// the truncated stream the fallback below would report.
+	emittedPerPrompt := false
 
 	var (
 		numTurns        int
@@ -331,9 +351,17 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 		settledResult *ResultEvent
 		priorFailed   bool
 		priorErrMsg   string
-		compacting    bool
-		sawAgentEnd   bool
-		emittedInit   bool
+		// promptEmitted and turnsAtPromptStart scope the error state to one
+		// prompt in perPrompt mode. Each result there is that prompt's own
+		// verdict, so the next prompt starts clean: an error an earlier
+		// prompt settled with neither sticks to a later one nor lends it its
+		// message, and "no assistant message" is counted from the prompt's
+		// start rather than the stream's.
+		promptEmitted      bool
+		turnsAtPromptStart int
+		compacting         bool
+		sawAgentEnd        bool
+		emittedInit        bool
 		// Argument context per in-flight tool call, keyed by toolCallId; an
 		// entry exists for every start seen, even when the context is "".
 		toolContext = map[string]string{}
@@ -424,6 +452,14 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 	// stream ended with a read error rather than EOF: the process may still
 	// have been running, so an unsettled result is not evidence of completion.
 	finish := func(lost bool) {
+		if perPrompt && !lost && emittedPerPrompt && promptEmitted && pendingResult == nil && settledResult == nil {
+			// The current prompt already reported. A clean EOF here is the
+			// feeder being killed after the last turn settled, which is
+			// how a steered run is supposed to end. A prompt that started
+			// and never settled falls through to the incomplete result
+			// below, as does `lost`: neither is evidence of completion.
+			return
+		}
 		if compacting || (lost && pendingResult != nil) {
 			// Died mid-compaction (pi may have been about to retry) or the
 			// stream was lost before agent_settled.
@@ -561,6 +597,15 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			})
 
 		case "agent_start":
+			if perPrompt && promptEmitted {
+				// The next steered prompt: the previous one already
+				// reported its verdict, so none of its error state carries.
+				sawError, lastErrorMsg, lastStopReason = false, "", ""
+				checkpointErrMsg, checkpointStop = "", ""
+				priorFailed, priorErrMsg = false, ""
+				turnsAtPromptStart = numTurns
+				promptEmitted = false
+			}
 			// A run starting while a result is pending means AgentSession
 			// continued the prompt after a willRetry=false agent_end
 			// (compaction or a queued follow-up): that result was not final.
@@ -616,12 +661,12 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 					sawError = true
 				}
 			}
-			// numTurns == 0 means no assistant message_end preceded
-			// agent_end. Treated as an error on the assumption pi never
+			// numTurns == turnsAtPromptStart (0 outside perPrompt) means no
+			// assistant message_end preceded agent_end. Treated as an error on the assumption pi never
 			// emits agent_end without one; verified only against the
 			// hand-authored fixtures, re-check once regen.sh has a live
 			// capture.
-			isErr := sawError || piIsErrorStop(lastStopReason) || numTurns == 0 || priorFailed
+			isErr := sawError || piIsErrorStop(lastStopReason) || numTurns == turnsAtPromptStart || priorFailed
 			errMsg := lastErrorMsg
 			if errMsg == "" {
 				errMsg = priorErrMsg
@@ -640,6 +685,41 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 				}
 				settledResult = pendingResult
 				pendingResult = nil
+			}
+			if perPrompt && settledResult != nil {
+				// pi's counters (numTurns, totalInput and friends)
+				// accumulate across the whole stream and are never reset,
+				// so each per-prompt result already carries run-wide
+				// totals. That is why PiRuntime.Run assigns them rather
+				// than folding: pi is the third distinct rule, after
+				// Claude (sum tokens, take the cumulative cost) and codex
+				// (sum per process).
+				onEvent(*settledResult)
+				emittedPerPrompt = true
+				promptEmitted = true
+				settledResult = nil
+			}
+
+		case "response":
+			// rpc's ack for a command. For a prompt it is the only proof
+			// that pi took the message off the mailbox, which is what the
+			// steer settle rule counts. A failed command is not a
+			// delivery, so it is deliberately not acked.
+			var resp struct {
+				ID      string `json:"id"`
+				Command string `json:"command"`
+				Success bool   `json:"success"`
+			}
+			if err := json.Unmarshal(line, &resp); err != nil {
+				continue
+			}
+			if resp.Command == "prompt" {
+				// rpc puts no timestamp on the ack, so the parse time is
+				// the delivery time. A refusal is reported too: it is not a
+				// delivery, but the line is already off the mailbox and
+				// will never be echoed, so the runner has to retire it or
+				// it waits for an echo that cannot come.
+				onEvent(UserReplayEvent{At: steerEchoTime(""), ID: resp.ID, Rejected: !resp.Success})
 			}
 
 		case "turn_start", "turn_end", "tool_execution_update",
