@@ -115,20 +115,18 @@ for how the `tracker` field resolves through the config overlay chain.
 
 ## Trust model
 
-Marker-based comment lookup does not verify the comment author. In a
-trusted CI environment (the intended deployment) this is safe because
-only the bot writes marker-bearing comments.
-
 For GitHub and GitLab, where markers are hidden HTML comments in the
-body, an untrusted user who can post issue comments containing your
-marker string could cause the bot to edit their comment instead of
-creating its own. For Jira, markers are stored as comment entity
-properties, which require comment-edit permissions to set — body-text
-injection alone cannot spoof a marker.
+body, an existing comment is edited only when it carries the marker
+**and** its author is exactly the identity the command posts as. A
+comment anyone else wrote with the same marker is ignored, never edited.
+If that identity cannot be resolved, no existing comment is edited: the
+command posts a new comment and logs a warning naming the reason, or
+posts nothing with `--only-if-exists`.
 
-Do not use this command in environments where untrusted users can write
-arbitrary issue comments bearing your marker (GitHub/GitLab) or have
-comment-edit permissions (Jira).
+For Jira, markers are stored as comment entity properties, which require
+comment-edit permissions to set — body-text injection alone cannot spoof
+a marker. Do not use this command where untrusted users have
+comment-edit permissions on your Jira project.
 
 ## Environment variables
 

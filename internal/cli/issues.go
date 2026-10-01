@@ -212,14 +212,12 @@ For --tracker jira, the marker is stored as an invisible comment
 entity property rather than embedded in the visible comment body,
 so marker character restrictions do not apply.
 
-Trust model: marker-based comment lookup does not verify the comment
-author. In a trusted CI environment (the intended deployment) this
-is safe because only the bot writes marker-bearing comments. If
-untrusted users can post issue comments containing the marker
-string, they could cause the bot to edit their comment instead of
-creating its own. Do not use this command in environments where
-untrusted users can write arbitrary issue comments bearing your
-marker.
+Trust model (GitHub, GitLab): an existing comment is edited only when
+it carries the marker and its author is exactly the identity this
+command posts as. A comment anyone else wrote with the same marker is
+ignored, never edited. If that identity cannot be resolved, no existing
+comment is edited: a new comment is posted instead, or nothing with
+--only-if-exists.
 
 --tracker is required unless a default is supplied via config: set
 "tracker: github|gitlab|jira" in config.yaml and pass --fullsend-dir
@@ -403,17 +401,12 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 // sticky.Post: find an existing comment bearing the marker, collapse
 // old content into history, and create or update in-place.
 //
-// Unlike sticky.Post, this function does not by default perform
-// bot-user verification for marker spoofing protection. This is
-// acceptable because the command is used by agents in trusted CI
-// environments, not by untrusted external callers.
-//
-// OnlyIfExists is the exception: it runs on every clean result, and the
-// comment it edits must be the poster's own earlier findings, not one
-// anyone could plant with the same marker. It therefore matches only
-// comments whose author is exactly the login this client posts as. When
-// that login cannot be resolved it posts nothing rather than fall back to
-// marker-only matching: an unverified comment is never edited.
+// It never edits a comment it cannot verify as its own: an existing
+// comment matches only when it carries the marker and its author is
+// exactly the login this client posts as, so a comment anyone could plant
+// with the same marker is ignored. When that login cannot be resolved, no
+// existing comment is edited: a new comment is created instead, or, with
+// OnlyIfExists, nothing is posted.
 func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project string, number int, body string, cfg sticky.Config, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
@@ -422,14 +415,16 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 		return "", fmt.Errorf("marker is empty")
 	}
 
-	botUser := ""
-	if cfg.OnlyIfExists {
-		self, err := resolveTrackerSelf(ctx, tc)
-		if err != nil {
-			printer.StepWarn(fmt.Sprintf("Cannot verify who posted earlier comments (%v); nothing to post (--only-if-exists)", err))
+	// An empty self matches nothing in findMarkedTrackerComment, so an
+	// unresolved identity can only lead to a new comment, never an edit.
+	self, selfErr := resolveTrackerSelf(ctx, tc)
+	if selfErr != nil {
+		if cfg.OnlyIfExists {
+			printer.StepWarn(fmt.Sprintf("Cannot verify who posted earlier comments (%v); nothing to post (--only-if-exists)", selfErr))
 			return "", nil
 		}
-		botUser = self
+		printer.StepWarn(fmt.Sprintf("Cannot verify who posted earlier comments (%v); posting a new comment instead of editing one", selfErr))
+		self = ""
 	}
 
 	comments, err := tc.ListComments(ctx, project, number)
@@ -437,7 +432,7 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 		return "", fmt.Errorf("listing comments: %w", err)
 	}
 
-	existing := findMarkedTrackerComment(comments, cfg.Marker, botUser)
+	existing := findMarkedTrackerComment(comments, cfg.Marker, self)
 	markedBody := cfg.Marker + "\n" + body
 
 	if existing != nil {
@@ -569,12 +564,15 @@ func resolveTrackerSelf(ctx context.Context, tc tracker.Client) (string, error) 
 }
 
 // findMarkedTrackerComment returns the first tracker comment whose body
-// contains the given marker string, or nil if none is found. When botUser
-// is non-empty, only comments authored by botUser match. This is the
-// tracker.Comment equivalent of sticky.FindMarkedComment.
-func findMarkedTrackerComment(comments []tracker.Comment, marker, botUser string) *tracker.Comment {
+// contains the given marker string and whose author is exactly self, or nil
+// if none is found. An empty self matches nothing: a comment whose author
+// cannot be verified is never returned for editing.
+func findMarkedTrackerComment(comments []tracker.Comment, marker, self string) *tracker.Comment {
+	if self == "" {
+		return nil
+	}
 	for i := range comments {
-		if botUser != "" && comments[i].Author != botUser {
+		if comments[i].Author != self {
 			continue
 		}
 		if strings.Contains(string(comments[i].Body), marker) {
