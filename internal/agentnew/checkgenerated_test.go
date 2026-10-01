@@ -44,10 +44,9 @@ func TestCheckGeneratedAcceptsAFreshTree(t *testing.T) {
 	}
 }
 
-// TestCheckGeneratedCatchesMissingResources is the reason the fourth step
-// exists. ValidateFilesExist skips providers and profiles on purpose, so
-// without validateResourceFilesExist a missing one is invisible until run
-// time. Each file is deleted individually and the error must name it.
+// TestCheckGeneratedCatchesMissingResources: a generated tree with a
+// provider or profile file deleted must fail CheckGenerated, naming the
+// missing file. ValidateFilesExist stats these paths (#7567).
 func TestCheckGeneratedCatchesMissingResources(t *testing.T) {
 	role, err := LookupRole("retro") // the role with the most resources
 	if err != nil {

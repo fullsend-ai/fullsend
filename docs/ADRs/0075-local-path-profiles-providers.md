@@ -125,7 +125,17 @@ The second `ResolveHarness` pass processes whatever remains, and
 
 `ValidateFilesExist` deliberately skips profile and provider paths because
 `ResolveHarness` reads them via `os.ReadFile` before that function runs,
-surfacing missing-file errors at that point. The symlink-aware `isContainedPath`
+surfacing missing-file errors at that point.
+
+> **Note (#7567):** `ValidateFilesExist` now also stats local profile and provider
+> paths so a hand-written harness fails as loudly as `agent new`, with an
+> actionable hint that names the missing file. On the `fullsend run` path,
+> `ResolveHarness` reads these paths first and strips them before
+> `ValidateFilesExist` runs, so its own `os.ReadFile` errors carry the same
+> hint (`harness.MissingProfileHint` / `MissingProviderHint`) rather than
+> `ValidateFilesExist`'s.
+
+The symlink-aware `isContainedPath`
 check gates all local reads, ensuring paths resolve within the workspace root
 even through symlinks.
 

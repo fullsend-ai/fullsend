@@ -830,10 +830,12 @@ func (h *Harness) ValidatePluginDirs() error {
 }
 
 // ValidateFilesExist checks that all file paths referenced by the harness
-// exist on disk. Callers must invoke ResolveRelativeTo first (to make
-// paths absolute), then resolve.ResolveHarness (to replace any URL
-// references with local cache paths). The IsURL guard inside is
-// defense-in-depth in case the ordering is violated.
+// exist on disk, including local provider and openshell.profiles paths
+// (#7567). Callers must invoke ResolveRelativeTo first (to make paths
+// absolute), then resolve.ResolveHarness (to replace any URL references
+// with local cache paths). The IsURL guard inside is defense-in-depth in
+// case the ordering is violated. Bare provider names are skipped — they
+// are not files.
 func (h *Harness) ValidateFilesExist() error {
 	check := func(label, path string) error {
 		if path == "" || IsURL(path) {
@@ -892,9 +894,6 @@ func (h *Harness) ValidateFilesExist() error {
 			return err
 		}
 	}
-	// Profile and provider paths are not checked here — ResolveHarness
-	// reads them via os.ReadFile before this function runs, surfacing
-	// missing-file errors at that point.
 	if h.ValidationLoop != nil {
 		if err := check("validation_loop.script", h.ValidationLoop.Script); err != nil {
 			return err
@@ -903,6 +902,72 @@ func (h *Harness) ValidateFilesExist() error {
 			if err := check("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
 				return err
 			}
+		}
+	}
+	// Local provider/profile paths are checked here so a hand-written
+	// harness (never passed through agent new) fails as loudly as a
+	// generated one (#7567). ResolveHarness still reads them on the run
+	// path; this catch is for callers without a resolve step, and for a
+	// clearer hint than "reading profile ...: no such file". Bare names
+	// and URLs are skipped: bare names resolve from providers/ or the
+	// embedded fallback, and URLs are fetched by ResolveHarness.
+	return h.validateResourceFilesExist()
+}
+
+// MissingProviderHint wraps err (typically a missing-file error from
+// stat'ing or reading a local provider path) with the actionable hint used
+// wherever a missing provider path is reported. ValidateFilesExist and
+// resolve.ResolveHarness both read local provider paths — the latter runs
+// first on the `fullsend run` path when local providers are present and
+// strips them from h.Providers before ValidateFilesExist ever sees them
+// (#7567) — so both callers wrap through this one place to keep the hint
+// text in sync.
+func MissingProviderHint(err error) error {
+	// A bare name is not offered as an alternative here: only the OpenAI
+	// provider is filled in from the embedded scaffold fallback
+	// (appendEmbeddedProviderDefs in cli/run.go); other bare names still
+	// degrade to a warning and a sandbox that cannot reach the provider,
+	// which is the silent failure #7567 exists to make loud.
+	return fmt.Errorf("%w (commit the provider file at that path)", err)
+}
+
+// MissingProfileHint wraps err (typically a missing-file error from
+// stat'ing or reading a local openshell.profiles path) with the actionable
+// hint used wherever a missing profile path is reported. See
+// MissingProviderHint for why both ValidateFilesExist and
+// resolve.ResolveHarness route through a shared helper.
+func MissingProfileHint(err error) error {
+	// A missing path is the same class of committed-file error as policy:
+	// (#6834, #7567). Re-running agent new is no fix: it refuses on an
+	// existing agent's files before writing the profile.
+	return fmt.Errorf("%w (commit the profile file at that path next to the harness, or set openshell.profiles to its URL with a #sha256= hash under allowed_remote_resources; `fullsend agent new` only writes one when generating a new agent)", err)
+}
+
+// validateResourceFilesExist stats the provider and profile files the
+// harness names by path. Callers must have already run ResolveRelativeTo
+// so those paths are absolute; relative entries are skipped as a guard
+// against that ordering being violated.
+func (h *Harness) validateResourceFilesExist() error {
+	check := func(field, p string) error {
+		if p == "" || IsURL(p) || !IsProviderPath(p) {
+			return nil
+		}
+		if !filepath.IsAbs(p) {
+			return nil
+		}
+		if _, err := os.Stat(p); err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		return nil
+	}
+	for i, p := range h.Providers {
+		if err := check(fmt.Sprintf("providers[%d]", i), p); err != nil {
+			return MissingProviderHint(err)
+		}
+	}
+	for i, p := range h.OpenShellProfiles() {
+		if err := check(fmt.Sprintf("openshell.profiles[%d]", i), p); err != nil {
+			return MissingProfileHint(err)
 		}
 	}
 	return nil
