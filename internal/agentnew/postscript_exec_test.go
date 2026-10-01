@@ -129,4 +129,64 @@ func TestGeneratedPostScriptRunsFromTheRunDirectory(t *testing.T) {
 			t.Errorf("unexpected error text: %q", stderr)
 		}
 	})
+
+	// #6621: status=error is the agent's signal that it could not do the
+	// job. The post-script still prints the comment (so the work item
+	// records the failure) then exits non-zero so CI is red, not green.
+	t.Run("status=error posts then exits non-zero", func(t *testing.T) {
+		runDir := writeRunDir(t, map[string]any{
+			"iteration-1": map[string]any{
+				"status":  "error",
+				"summary": "could not reach the forge",
+				"comment": "DNS lookup failed for the forge host",
+			},
+		})
+		stdout, stderr, err := runPostScript(t, script, runDir)
+		if err == nil {
+			t.Fatal("expected a non-zero exit when status=error")
+		}
+		if !strings.Contains(stdout, "could not reach the forge") {
+			t.Errorf("error comment missing from output: %q", stdout)
+		}
+		if !strings.Contains(stderr, "status=error, exiting non-zero") {
+			t.Errorf("expected status=error notice, got stderr: %q", stderr)
+		}
+	})
+
+	t.Run("status=findings still exits zero", func(t *testing.T) {
+		runDir := writeRunDir(t, map[string]any{
+			"iteration-1": map[string]any{
+				"status":  "findings",
+				"summary": "two broken links",
+				"comment": "- a.md",
+			},
+		})
+		stdout, stderr, err := runPostScript(t, script, runDir)
+		if err != nil {
+			t.Fatalf("findings should still succeed: %v\nstderr: %s", err, stderr)
+		}
+		if !strings.Contains(stdout, "two broken links") {
+			t.Errorf("summary missing from output: %q", stdout)
+		}
+	})
+
+	t.Run("status=ok still exits zero without posting", func(t *testing.T) {
+		runDir := writeRunDir(t, map[string]any{
+			"iteration-1": map[string]any{
+				"status":  "ok",
+				"summary": "nothing to report",
+				"comment": "n/a",
+			},
+		})
+		stdout, stderr, err := runPostScript(t, script, runDir)
+		if err != nil {
+			t.Fatalf("ok should still succeed: %v\nstderr: %s", err, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("ok should not post a comment, got stdout: %q", stdout)
+		}
+		if !strings.Contains(stderr, "status=ok, nothing to post") {
+			t.Errorf("expected status=ok notice, got stderr: %q", stderr)
+		}
+	})
 }

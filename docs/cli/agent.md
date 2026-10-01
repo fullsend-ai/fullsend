@@ -78,7 +78,14 @@ find .fullsend -type f | sort
 ```
 
 Only `agents/lint-docs.md` needs your attention — it is the agent's prompt and
-it ships with marked sections to fill in. Everything else is complete.
+it ships with marked sections to fill in. Everything else is complete. The
+generated result schema and post-script share a three-value `status` contract:
+`ok` (nothing to post, job stays green), `findings` (post the comment, job stays
+green), and `error` (post the comment, then exit 1 so the CI job is red). Use
+`error` when the agent could not do the job — unreachable forge, missing
+credentials, blocked network — rather than inventing a successful-looking
+result. Existing generated agents keep the previous `error`-as-success behavior
+until they are regenerated with `--force`.
 
 ### What gets written
 
