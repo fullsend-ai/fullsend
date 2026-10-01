@@ -201,7 +201,8 @@ func newIssuesPostCommentCmd() *cobra.Command {
 		Short: "Post or update a sticky comment on an issue",
 		Long: `Posts a comment with a sticky marker on an issue. On first
 run, creates a new comment. On re-runs, finds the existing comment
-by its marker and edits in-place, collapsing old content into
+by its marker and its own author and edits in-place, collapsing old
+content into
 <details> blocks. This prevents comment flooding on re-runs.
 
 Works across GitHub, GitLab, and Jira via --tracker.

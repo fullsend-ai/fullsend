@@ -1312,3 +1312,33 @@ func TestRunIssuesPostComment_UnresolvableSelfWarnsWithTheReason(t *testing.T) {
 		})
 	}
 }
+
+func TestRunIssuesPostComment_UnresolvableSelfLeavesAuthorlessCommentAlone(t *testing.T) {
+	// GitHub can return a comment with no user; an unresolved self (also
+	// empty) must not "match" it and edit it.
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	tc := tracker.NewForgeClient(fc)
+	const marker = "<!-- test:agent -->"
+	_, err := tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\nauthorless"))
+	require.NoError(t, err)
+
+	fc.Errors = map[string]error{"GetAuthenticatedUser": errors.New("401 Bad credentials")}
+	cfg := &issuesPostCommentConfig{
+		trackerName: trackerGitHub,
+		project:     "acme/widgets",
+		number:      42,
+		marker:      marker,
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "2 broken links",
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 2)
+	require.Empty(t, comments[0].Author, "precondition: the seeded comment has no author")
+	assert.NotContains(t, string(comments[0].Body), "2 broken links")
+	assert.Contains(t, string(comments[1].Body), "2 broken links")
+}

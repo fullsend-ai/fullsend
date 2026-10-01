@@ -54,7 +54,8 @@ fullsend issues get \
 ## `fullsend issues post-comment`
 
 Posts a comment with a sticky marker on an issue. On re-runs, finds
-the existing comment by its marker and edits in-place. By default,
+the existing comment by its marker and its own author (see
+[Trust model](#trust-model)) and edits in-place. By default,
 old content is collapsed into `<details>` blocks to preserve history;
 set `keep_history: false` in config.yaml (or pass `--keep-history=false`)
 to replace the body with no history.

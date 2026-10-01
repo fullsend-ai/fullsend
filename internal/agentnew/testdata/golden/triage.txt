@@ -314,8 +314,8 @@ if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
 fi
 
 # fullsend issues post-comment is the repo's sticky-comment primitive: it
-# finds this agent's previous comment by marker and edits it in place, so
-# re-runs do not flood the work item.
+# finds this agent's previous comment by marker and its own author and edits
+# it in place, so re-runs do not flood the work item.
 printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
   | fullsend issues post-comment \
       --tracker github \
