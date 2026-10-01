@@ -113,7 +113,7 @@ Not every team will need all of these. Many teams find that a good AGENTS.md and
 **What you enable:**
 
 - **Code agent** — automatically picks up issues labeled `ready-to-code` (applied by triage for bugs, docs, and performance issues) and implements fixes, opening PRs. For features and other issue types, someone explicitly invokes `/fs-code` on the issue. This means enabling the code agent doesn't mean agents code on everything — it's scoped to bugs, docs, and performance issues by default, with human control over the rest.
-- **Fix agent on bot-authored PRs** — the fix agent auto-triggers on bot-authored PRs when the review agent requests changes. Since the code agent now produces bot-authored PRs, the review-fix loop runs automatically on agent work. For human-authored PRs, auto-fix requires the `fullsend-fix` label — or you can continue using `/fs-fix` on demand.
+- **Fix agent on bot-authored PRs** — the fix agent auto-triggers on bot-authored PRs when the review agent requests changes. Since the code agent now produces bot-authored PRs, the review-fix loop runs automatically on agent work. For human-authored PRs, auto-fix requires the `fullsend-fix` label — or you can continue using `/fs-fix` on demand. On GitHub, bot-triggered fix is also deferred when the current HEAD is a human-authored commit pushed in the last 30 minutes, so an in-progress human edit is not raced by an automatic fix run.
 
 **Preparation that pays off here:**
 
