@@ -416,10 +416,10 @@ endpoint to exchange with — so the same checkout works in CI and locally. See
 
 The fleet's agents already declare a sandbox policy. If you run a **custom harness**, give it one
 too — `policy: policies/base.yaml`, the fleet's base policy from the agents repository (it sets
-only filesystem and process rules; network access comes from the providers). OpenShell 0.1 will
-not start a sandbox without `policy:`; `fullsend run` fails at harness validation rather than
-creating an empty sandbox. The fleet base policy also avoids an uninspected tunnel to
-`api.openai.com`, which the gateway refuses to carry the credential over.
+only filesystem and process rules; network access comes from the providers). `policy:` is
+required; `fullsend run` fails at harness validation rather than creating an empty sandbox. The
+fleet base policy also avoids an uninspected tunnel to `api.openai.com`, which the gateway refuses
+to carry the credential over.
 
 ## How it stays safe
 
@@ -456,7 +456,7 @@ creating an empty sandbox. The fleet base policy also avoids an uninspected tunn
 | `the service-account mapping does not narrow permissions` (warning) | The mapping has no permission restriction, so the token holds whatever the service account holds. Add `api.model.request` on the mapping. |
 | `OPENAI_API_KEY in the sandbox is not a gateway placeholder` | A real key reached the sandbox environment by some other route (an env file copied into the sandbox, for example). Remove it; the provider is the only supported way in. |
 | `pi config dir has models.json or an auth.json that is not the runner-seeded openai placeholder` | Something wrote into pi's config directory between iterations. Re-run with `--keep-sandbox` and inspect it. |
-| `validating files: policy field is required` | The composed harness has no `policy:`. OpenShell 0.1 will not start without one | Add `policy: policies/base.yaml` to the harness (see [Run it locally](#run-it-locally)), or inherit it from a `base:` harness |
+| `validating files: policy field is required` | The composed harness has no `policy:`. Add `policy: policies/base.yaml` to the harness (see [Run it locally](#run-it-locally)), or inherit it from a `base:` harness |
 | `sandbox policy rule codex allows api.openai.com:443 without L7 inspection` | The named policy (or a provider-composed rule) leaves an uninspected route to `api.openai.com` | Use the fleet `policies/base.yaml` (no network rules of its own; the openai provider supplies the inspected route) |
 | `500 credential_unavailable` from `api.openai.com` | The placeholder pi sent no longer resolves: the credential expired, or the provider was replaced. With `--keep-sandbox` this is expected after the run ends. Otherwise check the refresh lines in the run log. |
 | `401` or `500` from `api.openai.com` partway through a run | The refresh could not get a new token in time (the run log shows the attempts) and the credential expired as designed. Check the exchange errors above and re-run. |

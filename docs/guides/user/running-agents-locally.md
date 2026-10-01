@@ -184,11 +184,11 @@ works in CI and on your machine.
 The agent's harness must declare the provider (`providers: [openai]`; both the definition and the
 `fullsend-openai` profile are built into fullsend, nothing needs to be on disk; the fleet's agents
 declare it) and a sandbox policy
-(`policy: policies/base.yaml` — the fleet's agents already have it). A custom harness needs `policy:`
-because OpenShell 0.1 will not start a sandbox without one (`fullsend run` fails at harness
-validation, before it creates the sandbox). The fleet base policy is also the one that does not
-leave an uninspected route to `api.openai.com`, which the gateway refuses to carry the credential
-over. The sandbox only ever sees a placeholder; the provider holding
+(`policy: policies/base.yaml` — the fleet's agents already have it). A custom harness needs
+`policy:`: `fullsend run` fails at harness validation, before it creates the sandbox, if one is
+missing. The fleet base policy is also the one that does not leave an uninspected route to
+`api.openai.com`, which the gateway refuses to carry the credential over. The sandbox only ever
+sees a placeholder; the provider holding
 your key belongs to this run, expires an hour after the run at the latest and is deleted when the run
 ends.
 
