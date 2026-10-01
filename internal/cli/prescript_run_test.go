@@ -1117,8 +1117,9 @@ func newSkipHarnessDir(t *testing.T, preScriptBody string) string {
 		[]byte("You are a coding agent."), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
 		[]byte("agents:\n  - harness/code.yaml\n"), 0o644))
+	writePolicyFixture(t, dir)
 
-	harnessYAML := "agent: agents/code.md\nrole: test\n"
+	harnessYAML := "agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\n"
 	if preScriptBody != "" {
 		harnessYAML += "pre_script: " + writePreScript(t, preScriptBody) + "\n"
 	}

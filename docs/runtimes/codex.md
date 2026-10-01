@@ -136,8 +136,9 @@ What a local codex run needs, beyond the guide:
   when the harness lists the provider, so on those releases add it on a
   [child harness](../guides/user/customizing-agents.md#configuration-with-base-composition) (a
   child's providers are appended to its base's). Runs that do not call OpenAI skip the provider. A
-  custom harness also needs the policy, because the sandbox image's default policy leaves an
-  uninspected route to `api.openai.com`, which the gateway refuses to carry the credential over.
+  custom harness also needs the policy: it is required, and the fleet base policy is the one that
+  does not leave an uninspected route to `api.openai.com`, which the gateway refuses to carry the
+  credential over.
 - **Debugging** — `--debug='*'` (the `=` is required); sandbox-side failures land in
   `codex-debug.log` inside the run directory, next to the transcripts, not in the runner's output.
 

@@ -101,7 +101,9 @@ func TestGenerateForceRewritesOwnedFilesOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sentinel := []byte("# hand-edited\n")
+	// Keep a field so CheckGenerated accepts the existing shared policy;
+	// OpenShell 0.1 rejects a comment-only document (#7849).
+	sentinel := []byte("# hand-edited\nversion: 1\n")
 	policy := filepath.Join(dir, "policies", "base.yaml")
 	if err := os.WriteFile(policy, sentinel, 0o644); err != nil {
 		t.Fatal(err)

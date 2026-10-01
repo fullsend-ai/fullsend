@@ -407,7 +407,7 @@ func recordingProvidersStub(t *testing.T) string {
 		"  'sandbox create') : > " + shellQuoteForTest(logPath+".sandbox") + "; exit 0 ;;\n" +
 		"  'sandbox delete') rm -f " + shellQuoteForTest(logPath+".sandbox") + "; exit 0 ;;\n" +
 		"  'sandbox ready') exit 0 ;;\n" +
-		"  'sandbox get') echo 'Status: Ready'; exit 0 ;;\n" +
+		"  'sandbox get') printf 'Status: Ready\nPolicy source: sandbox\nPolicy:\n  version: 1\n'; exit 0 ;;\n" +
 		"  'policy get') printf 'Version: 1\\nStatus: Effective\\n---\\nversion: 1\\nnetwork_policies:\\n  _provider_openai:\\n    endpoints:\\n    - host: api.openai.com\\n      port: 443\\n      protocol: rest\\n'; exit 0 ;;\n" +
 		// The first in-sandbox command fails so the run stops right after
 		// sandbox creation and the deferred cleanup runs.
@@ -448,6 +448,7 @@ func writeOpenAIFullsendDirWithAgentModel(t *testing.T, pathForm bool, runtimeNa
 	for _, d := range []string{"harness", "agents", "providers", "profiles"} {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
 	}
+	writePolicyFixture(t, dir)
 	agentDef := "You are a coding agent."
 	if agentModel != "" {
 		agentDef = "---\nname: code\nmodel: " + agentModel + "\n---\n" + agentDef
@@ -457,9 +458,9 @@ func writeOpenAIFullsendDirWithAgentModel(t *testing.T, pathForm bool, runtimeNa
 	if model != "" {
 		modelLine = "model: " + model + "\n"
 	}
-	harnessYAML := "agent: agents/code.md\nrole: test\n" + modelLine + "providers:\n  - openai\n"
+	harnessYAML := "agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\n" + modelLine + "providers:\n  - openai\n"
 	if pathForm {
-		harnessYAML = "agent: agents/code.md\nrole: test\n" + modelLine + "profiles:\n  - profiles/fullsend-openai.yaml\nproviders:\n  - providers/openai.yaml\n"
+		harnessYAML = "agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\n" + modelLine + "profiles:\n  - profiles/fullsend-openai.yaml\nproviders:\n  - providers/openai.yaml\n"
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(harnessYAML), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "openai.yaml"),
