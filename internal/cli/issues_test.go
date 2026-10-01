@@ -78,6 +78,7 @@ func TestFindMarkedTrackerComment(t *testing.T) {
 	marker := "<!-- test:marker -->"
 	comments := []tracker.Comment{
 		{ID: "1", Body: "irrelevant comment", Author: "bot"},
+		{ID: "0", Body: tracker.Body(marker + "\nauthorless")},
 		{ID: "2", Body: tracker.Body(marker + "\nplanted"), Author: "mallory"},
 		{ID: "3", Body: tracker.Body(marker + "\nsome content"), Author: "bot"},
 		{ID: "4", Body: "another comment", Author: "bot"},
@@ -1278,4 +1279,19 @@ func TestRunIssuesPostComment_OnlyIfExists_SkipsPlantedCommentBeforeOwn(t *testi
 	require.Len(t, comments, 2)
 	assert.NotContains(t, string(comments[0].Body), "all clear")
 	assert.Contains(t, string(comments[1].Body), "all clear")
+}
+
+func TestResolveTrackerSelf_StopsRetryingWhenCancelled(t *testing.T) {
+	saved := selfLookupBackoff
+	selfLookupBackoff = []time.Duration{time.Hour, time.Hour}
+	t.Cleanup(func() { selfLookupBackoff = saved })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tc := &flakySelfClient{ForgeClient: tracker.NewForgeClient(forge.NewFakeClient()), failures: 1000}
+
+	_, err := resolveTrackerSelf(ctx, tc)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, tc.calls, "a cancelled context must not wait out the backoff")
 }
