@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -216,9 +217,9 @@ so marker character restrictions do not apply.
 Trust model (GitHub, GitLab): an existing comment is edited only when
 it carries the marker and its author is exactly the identity this
 command posts as. A comment anyone else wrote with the same marker is
-ignored, never edited. If that identity cannot be resolved, no existing
-comment is edited: a new comment is posted instead, or nothing with
---only-if-exists.
+ignored, never edited. If that identity cannot be resolved after a
+short retry, the command fails without posting or editing anything;
+rerun it.
 
 --tracker is required unless a default is supplied via config: set
 "tracker: github|gitlab|jira" in config.yaml and pass --fullsend-dir
@@ -405,9 +406,9 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 // It never edits a comment it cannot verify as its own: an existing
 // comment matches only when it carries the marker and its author is
 // exactly the login this client posts as, so a comment anyone could plant
-// with the same marker is ignored. When that login cannot be resolved, no
-// existing comment is edited: a new comment is created instead, or, with
-// OnlyIfExists, nothing is posted.
+// with the same marker is ignored. When that login cannot be resolved
+// (after a short retry) it returns an error and posts nothing, with or
+// without OnlyIfExists.
 func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project string, number int, body string, cfg sticky.Config, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
@@ -416,16 +417,12 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 		return "", fmt.Errorf("marker is empty")
 	}
 
-	// An empty self matches nothing in findMarkedTrackerComment, so an
-	// unresolved identity can only lead to a new comment, never an edit.
-	self, selfErr := resolveTrackerSelf(ctx, tc)
-	if selfErr != nil {
-		if cfg.OnlyIfExists {
-			printer.StepWarn(fmt.Sprintf("Cannot verify who posted earlier comments (%v); nothing to post (--only-if-exists)", selfErr))
-			return "", nil
-		}
-		printer.StepWarn(fmt.Sprintf("Cannot verify who posted earlier comments (%v); posting a new comment instead of editing one", selfErr))
-		self = ""
+	// Without a verified identity nothing is posted at all: editing would
+	// trust an unverified comment, and creating a new one would orphan the
+	// earlier comment, whose stale content later runs would never update.
+	self, err := resolveTrackerSelf(ctx, tc)
+	if err != nil {
+		return "", fmt.Errorf("cannot verify which identity this command posts as, so no comment was posted or edited (rerun to retry): %w", err)
 	}
 
 	comments, err := tc.ListComments(ctx, project, number)
@@ -546,22 +543,39 @@ type authenticatedUserResolver interface {
 	AuthenticatedUser(ctx context.Context) (string, error)
 }
 
-// resolveTrackerSelf returns the exact login tc posts as. For GitHub this
-// goes through forge.Client.GetAuthenticatedUser, which also resolves an
-// App installation token (GraphQL viewer) where GET /user is refused.
+// selfLookupBackoff is the wait before each retry of the identity lookup;
+// its length is the number of retries. Tests shorten it.
+var selfLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second}
+
+// resolveTrackerSelf returns the exact login tc posts as, retrying a failed
+// lookup per selfLookupBackoff so a transient error does not fail the run.
+// For GitHub this goes through forge.Client.GetAuthenticatedUser, which
+// also resolves an App installation token (GraphQL viewer) where GET /user
+// is refused.
 func resolveTrackerSelf(ctx context.Context, tc tracker.Client) (string, error) {
 	ar, ok := tc.(authenticatedUserResolver)
 	if !ok {
 		return "", fmt.Errorf("this tracker cannot report the authenticated user")
 	}
-	self, err := ar.AuthenticatedUser(ctx)
-	if err != nil {
-		return "", err
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		self, err := ar.AuthenticatedUser(ctx)
+		if err == nil && self == "" {
+			err = fmt.Errorf("the authenticated user is empty")
+		}
+		if err == nil {
+			return self, nil
+		}
+		lastErr = err
+		if attempt >= len(selfLookupBackoff) {
+			return "", fmt.Errorf("after %d attempts: %w", attempt+1, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("%w (last lookup error: %v)", ctx.Err(), lastErr)
+		case <-time.After(selfLookupBackoff[attempt]):
+		}
 	}
-	if self == "" {
-		return "", fmt.Errorf("the authenticated user is empty")
-	}
-	return self, nil
 }
 
 // findMarkedTrackerComment returns the first tracker comment whose body

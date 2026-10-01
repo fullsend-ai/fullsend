@@ -279,8 +279,10 @@ NUMBER="${BASH_REMATCH[3]}"
 # --only-if-exists makes fullsend replace that comment with the all-clear,
 # and post nothing when there is no earlier comment. It matches only a
 # comment carrying this marker whose author is exactly the login fullsend
-# posts as; when that login cannot be resolved it posts nothing, so a
-# comment anyone else planted with the marker is never edited.
+# posts as, so a comment anyone else planted with the marker is never
+# edited. When that login cannot be resolved it exits non-zero without
+# posting; under `set -e` this script, and so the run, then fails
+# visibly — rerun it.
 if [[ "${status}" == "ok" ]]; then
   if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
     echo "post-lint-docs: status=ok, nothing to post (dry run: did not check for an earlier findings comment to replace)" >&2

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -173,6 +174,7 @@ func TestPostTrackerStickyComment_EmptyMarker(t *testing.T) {
 
 func TestPostTrackerStickyComment_DryRun_Create(t *testing.T) {
 	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
 	tc := tracker.NewForgeClient(fc)
 	printer := ui.New(io.Discard)
 	cfg := sticky.Config{Marker: "<!-- test -->", DryRun: true, KeepHistory: true}
@@ -430,6 +432,7 @@ func TestRunIssuesPostComment_EmptyMarker(t *testing.T) {
 
 func TestRunIssuesPostComment_DryRun(t *testing.T) {
 	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
 	tc := tracker.NewForgeClient(fc)
 
 	cfg := &issuesPostCommentConfig{
@@ -1095,98 +1098,151 @@ func TestRunIssuesPostComment_Jira_OnlyIfExists(t *testing.T) {
 	assert.Contains(t, string(comments[0].Body), "all clear")
 }
 
-// runOnlyIfExistsAfterCommentBy seeds one marker comment as author, then runs an
-// --only-if-exists all-clear as the bot "fullsend-ai-review[bot]".
-func runOnlyIfExistsAfterCommentBy(t *testing.T, author string, botErr error) []tracker.Comment {
+// fastSelfLookup shortens the identity-lookup retry backoff for a test.
+func fastSelfLookup(t *testing.T) {
 	t.Helper()
+	saved := selfLookupBackoff
+	selfLookupBackoff = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { selfLookupBackoff = saved })
+}
+
+// flakySelfClient fails the identity lookup failures times, then defers to
+// the wrapped ForgeClient.
+type flakySelfClient struct {
+	*tracker.ForgeClient
+	failures int
+	calls    int
+}
+
+func (c *flakySelfClient) AuthenticatedUser(ctx context.Context) (string, error) {
+	c.calls++
+	if c.calls <= c.failures {
+		return "", errors.New("502 Bad Gateway")
+	}
+	return c.ForgeClient.AuthenticatedUser(ctx)
+}
+
+const testBot = "fullsend-ai-review[bot]"
+
+// postAfterCommentBy seeds one marker comment written by author, then runs
+// post-comment as testBot through tc (a *flakySelfClient wrapping fc, so the
+// identity lookup can be made to fail). It returns the run's error and the
+// comments afterwards.
+func postAfterCommentBy(t *testing.T, author string, onlyIfExists bool, failures int) (error, []tracker.Comment, *flakySelfClient) {
+	t.Helper()
+	fastSelfLookup(t)
 	ctx := context.Background()
 	fc := forge.NewFakeClient()
-	tc := tracker.NewForgeClient(fc)
+	tc := &flakySelfClient{ForgeClient: tracker.NewForgeClient(fc), failures: failures}
 	const marker = "<!-- test:agent -->"
 
 	fc.AuthenticatedUser = author
-	_, err := tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\nplanted findings"))
+	_, err := tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\nearlier findings"))
 	require.NoError(t, err)
 
-	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
-	if botErr != nil {
-		fc.Errors = map[string]error{"GetAuthenticatedUser": botErr}
-	}
+	fc.AuthenticatedUser = testBot
 	cfg := &issuesPostCommentConfig{
 		trackerName:  trackerGitHub,
 		project:      "acme/widgets",
 		number:       42,
 		marker:       marker,
-		onlyIfExists: true,
+		onlyIfExists: onlyIfExists,
 		testClient:   tc,
 		testPrinter:  ui.New(io.Discard),
-		testBody:     "all clear",
+		testBody:     "new result",
 	}
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
+	runErr := runIssuesPostComment(ctx, cfg)
 
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
-	return comments
+	return runErr, comments, tc
 }
 
-func TestRunIssuesPostComment_OnlyIfExists_IgnoresMarkerFromAnotherUser(t *testing.T) {
-	comments := runOnlyIfExistsAfterCommentBy(t, "mallory", nil)
-	require.Len(t, comments, 1, "only-if-exists must neither edit a planted comment nor create one")
-	assert.Contains(t, string(comments[0].Body), "planted findings")
-	assert.NotContains(t, string(comments[0].Body), "all clear")
-}
-
-func TestRunIssuesPostComment_OnlyIfExists_IgnoresLookalikeBotLogin(t *testing.T) {
-	// Login shape is not identity: a different App whose login merely shares
-	// the "[bot]" suffix, or a prefix, must not match.
-	for _, author := range []string{"evil-review[bot]", "fullsend-ai-review", "x-fullsend-ai-review[bot]"} {
-		t.Run(author, func(t *testing.T) {
-			comments := runOnlyIfExistsAfterCommentBy(t, author, nil)
+func TestRunIssuesPostComment_EditsOwnComment(t *testing.T) {
+	for _, onlyIfExists := range []bool{false, true} {
+		t.Run(fmt.Sprintf("only-if-exists=%v", onlyIfExists), func(t *testing.T) {
+			err, comments, _ := postAfterCommentBy(t, testBot, onlyIfExists, 0)
+			require.NoError(t, err)
 			require.Len(t, comments, 1)
-			assert.NotContains(t, string(comments[0].Body), "all clear")
+			assert.Contains(t, string(comments[0].Body), "new result")
 		})
 	}
 }
 
-func TestRunIssuesPostComment_OnlyIfExists_EditsOwnComment(t *testing.T) {
-	comments := runOnlyIfExistsAfterCommentBy(t, "fullsend-ai-review[bot]", nil)
-	require.Len(t, comments, 1)
-	assert.Contains(t, string(comments[0].Body), "all clear")
+func TestRunIssuesPostComment_IgnoresPlantedMarker(t *testing.T) {
+	// Login shape is not identity: another user, a different App whose login
+	// merely shares the "[bot]" suffix, the same name without it, or a prefix
+	// must not match.
+	for _, author := range []string{"mallory", "evil-review[bot]", "fullsend-ai-review", "x-fullsend-ai-review[bot]"} {
+		t.Run(author, func(t *testing.T) {
+			// Normal path: the planted comment is left alone, a new one posted.
+			err, comments, _ := postAfterCommentBy(t, author, false, 0)
+			require.NoError(t, err)
+			require.Len(t, comments, 2)
+			assert.NotContains(t, string(comments[0].Body), "new result")
+			assert.Contains(t, string(comments[1].Body), "new result")
+
+			// --only-if-exists: neither edited nor created.
+			err, comments, _ = postAfterCommentBy(t, author, true, 0)
+			require.NoError(t, err)
+			require.Len(t, comments, 1)
+			assert.NotContains(t, string(comments[0].Body), "new result")
+		})
+	}
 }
 
-func TestRunIssuesPostComment_OnlyIfExists_UnresolvableSelfPostsNothing(t *testing.T) {
-	// Even the bot's own comment is left alone when the poster's login cannot
-	// be resolved: an unverified comment is never edited.
-	comments := runOnlyIfExistsAfterCommentBy(t, "fullsend-ai-review[bot]", errors.New("401 Bad credentials"))
-	require.Len(t, comments, 1)
-	assert.NotContains(t, string(comments[0].Body), "all clear")
+func TestRunIssuesPostComment_TransientSelfFailureRetriesThenEdits(t *testing.T) {
+	err, comments, tc := postAfterCommentBy(t, testBot, false, len(selfLookupBackoff))
+	require.NoError(t, err)
+	assert.Equal(t, len(selfLookupBackoff)+1, tc.calls, "every retry is used before success")
+	require.Len(t, comments, 1, "a transient failure must not create a second comment")
+	assert.Contains(t, string(comments[0].Body), "new result")
 }
 
-func TestRunIssuesPostComment_OnlyIfExists_EmptySelfPostsNothing(t *testing.T) {
-	// An empty login with no error must not degrade to marker-only matching.
+func TestRunIssuesPostComment_PersistentSelfFailureErrorsAndPostsNothing(t *testing.T) {
+	for _, onlyIfExists := range []bool{false, true} {
+		t.Run(fmt.Sprintf("only-if-exists=%v", onlyIfExists), func(t *testing.T) {
+			err, comments, tc := postAfterCommentBy(t, testBot, onlyIfExists, 1000)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "cannot verify which identity")
+			assert.Contains(t, err.Error(), "rerun")
+			assert.Contains(t, err.Error(), "502 Bad Gateway", "the error must name the cause")
+			assert.Equal(t, len(selfLookupBackoff)+1, tc.calls)
+			require.Len(t, comments, 1, "no comment may be created")
+			assert.NotContains(t, string(comments[0].Body), "new result", "no comment may be edited")
+		})
+	}
+}
+
+func TestRunIssuesPostComment_EmptySelfErrors(t *testing.T) {
+	// An empty login with no error is unresolved too, never marker-only.
+	fastSelfLookup(t)
 	ctx := context.Background()
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)
 	const marker = "<!-- test:agent -->"
-	_, err := tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\nplanted findings"))
+	_, err := tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\nauthorless"))
 	require.NoError(t, err)
 
-	cfg := &issuesPostCommentConfig{
-		trackerName:  trackerGitHub,
-		project:      "acme/widgets",
-		number:       42,
-		marker:       marker,
-		onlyIfExists: true,
-		testClient:   tc,
-		testPrinter:  ui.New(io.Discard),
-		testBody:     "all clear",
+	for _, onlyIfExists := range []bool{false, true} {
+		cfg := &issuesPostCommentConfig{
+			trackerName:  trackerGitHub,
+			project:      "acme/widgets",
+			number:       42,
+			marker:       marker,
+			onlyIfExists: onlyIfExists,
+			testClient:   tc,
+			testPrinter:  ui.New(io.Discard),
+			testBody:     "new result",
+		}
+		err := runIssuesPostComment(ctx, cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "authenticated user is empty")
 	}
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
 	require.Len(t, comments, 1)
-	assert.NotContains(t, string(comments[0].Body), "all clear")
+	assert.NotContains(t, string(comments[0].Body), "new result")
 }
 
 func TestRunIssuesPostComment_OnlyIfExists_SkipsPlantedCommentBeforeOwn(t *testing.T) {
@@ -1201,7 +1257,7 @@ func TestRunIssuesPostComment_OnlyIfExists_SkipsPlantedCommentBeforeOwn(t *testi
 	fc.AuthenticatedUser = "mallory"
 	_, err := tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\nplanted"))
 	require.NoError(t, err)
-	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
+	fc.AuthenticatedUser = testBot
 	_, err = tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\n2 broken links"))
 	require.NoError(t, err)
 
@@ -1220,125 +1276,6 @@ func TestRunIssuesPostComment_OnlyIfExists_SkipsPlantedCommentBeforeOwn(t *testi
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
 	require.Len(t, comments, 2)
-	assert.Contains(t, string(comments[0].Body), "planted")
 	assert.NotContains(t, string(comments[0].Body), "all clear")
 	assert.Contains(t, string(comments[1].Body), "all clear")
-}
-
-// runPostCommentAfterCommentBy seeds one marker comment as author, then runs
-// a normal (create-or-update) post as "fullsend-ai-review[bot]".
-func runPostCommentAfterCommentBy(t *testing.T, author string, botErr error) []tracker.Comment {
-	t.Helper()
-	ctx := context.Background()
-	fc := forge.NewFakeClient()
-	tc := tracker.NewForgeClient(fc)
-	const marker = "<!-- test:agent -->"
-
-	fc.AuthenticatedUser = author
-	_, err := tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\nearlier"))
-	require.NoError(t, err)
-
-	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
-	if botErr != nil {
-		fc.Errors = map[string]error{"GetAuthenticatedUser": botErr}
-	}
-	cfg := &issuesPostCommentConfig{
-		trackerName: trackerGitHub,
-		project:     "acme/widgets",
-		number:      42,
-		marker:      marker,
-		testClient:  tc,
-		testPrinter: ui.New(io.Discard),
-		testBody:    "2 broken links",
-	}
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-
-	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
-	require.NoError(t, err)
-	return comments
-}
-
-func TestRunIssuesPostComment_UpdatesOwnComment(t *testing.T) {
-	comments := runPostCommentAfterCommentBy(t, "fullsend-ai-review[bot]", nil)
-	require.Len(t, comments, 1)
-	assert.Contains(t, string(comments[0].Body), "2 broken links")
-}
-
-func TestRunIssuesPostComment_PlantedMarkerGetsANewComment(t *testing.T) {
-	for _, author := range []string{"mallory", "evil-review[bot]", "x-fullsend-ai-review[bot]"} {
-		t.Run(author, func(t *testing.T) {
-			comments := runPostCommentAfterCommentBy(t, author, nil)
-			require.Len(t, comments, 2, "a planted marker comment must be left alone and a new one posted")
-			assert.NotContains(t, string(comments[0].Body), "2 broken links")
-			assert.Contains(t, string(comments[1].Body), "2 broken links")
-		})
-	}
-}
-
-func TestRunIssuesPostComment_UnresolvableSelfPostsNewComment(t *testing.T) {
-	// Even the poster's own earlier comment is not edited when the identity
-	// cannot be verified: a new comment is created instead.
-	comments := runPostCommentAfterCommentBy(t, "fullsend-ai-review[bot]", errors.New("401 Bad credentials"))
-	require.Len(t, comments, 2)
-	assert.NotContains(t, string(comments[0].Body), "2 broken links")
-	assert.Contains(t, string(comments[1].Body), "2 broken links")
-}
-
-func TestRunIssuesPostComment_UnresolvableSelfWarnsWithTheReason(t *testing.T) {
-	for _, onlyIfExists := range []bool{false, true} {
-		t.Run(fmt.Sprintf("only-if-exists=%v", onlyIfExists), func(t *testing.T) {
-			ctx := context.Background()
-			fc := forge.NewFakeClient()
-			fc.Errors = map[string]error{"GetAuthenticatedUser": errors.New("401 Bad credentials")}
-			var out bytes.Buffer
-			cfg := &issuesPostCommentConfig{
-				trackerName:  trackerGitHub,
-				project:      "acme/widgets",
-				number:       42,
-				marker:       "<!-- test:agent -->",
-				onlyIfExists: onlyIfExists,
-				testClient:   tracker.NewForgeClient(fc),
-				testPrinter:  ui.New(&out),
-				testBody:     "body",
-			}
-			require.NoError(t, runIssuesPostComment(ctx, cfg))
-			assert.Contains(t, out.String(), "401 Bad credentials", "the warning must name why the identity is unverified")
-			if onlyIfExists {
-				assert.Contains(t, out.String(), "(401 Bad credentials); nothing to post (--only-if-exists)")
-				assert.NotContains(t, out.String(), "posting a new comment")
-			} else {
-				assert.Contains(t, out.String(), "(401 Bad credentials); posting a new comment instead of editing one")
-			}
-		})
-	}
-}
-
-func TestRunIssuesPostComment_UnresolvableSelfLeavesAuthorlessCommentAlone(t *testing.T) {
-	// GitHub can return a comment with no user; an unresolved self (also
-	// empty) must not "match" it and edit it.
-	ctx := context.Background()
-	fc := forge.NewFakeClient()
-	tc := tracker.NewForgeClient(fc)
-	const marker = "<!-- test:agent -->"
-	_, err := tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\nauthorless"))
-	require.NoError(t, err)
-
-	fc.Errors = map[string]error{"GetAuthenticatedUser": errors.New("401 Bad credentials")}
-	cfg := &issuesPostCommentConfig{
-		trackerName: trackerGitHub,
-		project:     "acme/widgets",
-		number:      42,
-		marker:      marker,
-		testClient:  tc,
-		testPrinter: ui.New(io.Discard),
-		testBody:    "2 broken links",
-	}
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-
-	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
-	require.NoError(t, err)
-	require.Len(t, comments, 2)
-	require.Empty(t, comments[0].Author, "precondition: the seeded comment has no author")
-	assert.NotContains(t, string(comments[0].Body), "2 broken links")
-	assert.Contains(t, string(comments[1].Body), "2 broken links")
 }
