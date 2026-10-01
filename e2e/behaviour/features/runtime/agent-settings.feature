@@ -43,6 +43,7 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
       """
       agent: agents/pi-override.md
       role: triage
+      policy: policies/pi-override.yaml
       slug: fullsend-ai-pi-override
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest

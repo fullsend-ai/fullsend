@@ -21,6 +21,7 @@ Feature: pi runtime runs an agent unattended
       """
       agent: agents/pi-smoke.md
       role: triage
+      policy: policies/pi-smoke.yaml
       slug: fullsend-ai-pi-smoke
       model: haiku
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest

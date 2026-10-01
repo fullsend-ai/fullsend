@@ -435,6 +435,8 @@ allowed_remote_resources:
 | `unknown role "..."` from `agent new` | The hosted mint serves five roles — see the table in [`agent new`](../../cli/agent.md#roles); for a custom role see [Custom Agent Identity](custom-agent-identity.md) |
 | Agent never fires, no error anywhere | The harness has no `trigger:`. A trigger-less agent registers and validates but is silently skipped by dispatch — `fullsend agent new` always writes one |
 | "role field is required" | Add `role:` to harness |
+| `validating files: policy field is required` | Add `policy:` to the harness (commit a copy of the fleet policy from [fullsend-ai/agents](https://github.com/fullsend-ai/agents), or set it to a URL with a `#sha256=` hash under `allowed_remote_resources`), or inherit one from a `base:` harness |
+| `validating files: policy: ... declares no fields` | The policy file is empty or comment-only — OpenShell can't activate it. Copy a working policy from [fullsend-ai/agents](https://github.com/fullsend-ai/agents) so it declares real fields |
 | `403` / "role not allowed" from the mint | Your `role:` is not one the mint serves. On the hosted mint use a built-in role (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); for a custom role, point `FULLSEND_MINT_URL` at your own mint — see [Custom Agent Identity](custom-agent-identity.md) |
 | Agent can't find input files | Pre-script output paths must match `host_files` entries |
 | Provider blocks requests | Check that the required provider profile is listed in `providers:` and exists in the `providers/` directory |

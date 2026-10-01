@@ -9,6 +9,7 @@ Feature: URL-sourced harness dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/url-ping.yaml
       slug: fullsend-ai-url-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
@@ -31,6 +32,7 @@ Feature: URL-sourced harness dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/local-ping.yaml
       slug: fullsend-ai-local-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
@@ -64,6 +66,7 @@ Feature: URL-sourced harness dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/good-local.yaml
       slug: fullsend-ai-good-local
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest

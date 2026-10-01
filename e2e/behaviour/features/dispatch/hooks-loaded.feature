@@ -15,6 +15,7 @@ Feature: Sandbox security hooks are loaded via --settings
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/hooks-smoke.yaml
       slug: fullsend-ai-hooks-smoke
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest

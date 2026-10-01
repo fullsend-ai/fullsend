@@ -8,6 +8,7 @@ Feature: Harness CEL dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/issue-ping.yaml
       slug: fullsend-ai-issue-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
@@ -37,6 +38,7 @@ Feature: Harness CEL dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/pr-ping.yaml
       slug: fullsend-ai-pr-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
@@ -73,6 +75,7 @@ Feature: Harness CEL dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/enabled-ping.yaml
       slug: fullsend-ai-enabled-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
@@ -108,6 +111,7 @@ Feature: Harness CEL dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/review-ping.yaml
       slug: fullsend-ai-review-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest

@@ -13,6 +13,7 @@ Feature: Emoji reaction status notifications
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/reaction-ping.yaml
       slug: fullsend-ai-reaction-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest

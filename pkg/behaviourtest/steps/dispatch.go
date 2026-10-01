@@ -253,7 +253,10 @@ func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessNam
 
 	if h.Policy != "" && !strings.HasPrefix(h.Policy, "/") && !strings.HasPrefix(h.Policy, "https://") {
 		policyPath := filepath.Join(".fullsend", h.Policy)
-		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\n", harnessName)
+		// A comment-only document declares no fields, which
+		// validatePolicyDeclaresFields (internal/harness) now rejects
+		// (#7849): include a real field so ValidateFilesExist passes.
+		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\nversion: 1\n", harnessName)
 		if err := w.SCM.CommitFile(ctx, owner, repo, policyPath,
 			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
 			[]byte(minimalPolicy)); err != nil {

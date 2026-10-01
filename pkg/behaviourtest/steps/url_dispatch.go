@@ -398,7 +398,10 @@ func commitRelativeResources(ctx context.Context, w *world.World, owner, repo, h
 
 	// Commit relative policy file if specified.
 	if h.Policy != "" && !strings.HasPrefix(h.Policy, "/") && !strings.HasPrefix(h.Policy, "https://") {
-		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\n", harnessName)
+		// A comment-only document declares no fields, which
+		// validatePolicyDeclaresFields (internal/harness) now rejects
+		// (#7849): include a real field so ValidateFilesExist passes.
+		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\nversion: 1\n", harnessName)
 		if err := w.SCM.CommitFile(ctx, owner, repo, h.Policy,
 			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
 			[]byte(minimalPolicy)); err != nil {

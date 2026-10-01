@@ -10,6 +10,7 @@ Feature: Base-composed harness dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/local-base.yaml
       slug: fullsend-ai-local-base
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
@@ -28,6 +29,7 @@ Feature: Base-composed harness dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/remote-base.yaml
       slug: fullsend-ai-remote-base
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
@@ -65,6 +67,7 @@ Feature: Base-composed harness dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/trigger-base.yaml
       slug: fullsend-ai-trigger-base
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest

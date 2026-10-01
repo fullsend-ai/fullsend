@@ -9,6 +9,7 @@ Feature: Fork PR dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/fork-pr-ping.yaml
       slug: fullsend-ai-fork-pr-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
@@ -90,6 +91,7 @@ Feature: Fork PR dispatch
       """
       agent: agents/triage.md
       role: triage
+      policy: policies/fork-pr-sync.yaml
       slug: fullsend-ai-fork-pr-sync
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
