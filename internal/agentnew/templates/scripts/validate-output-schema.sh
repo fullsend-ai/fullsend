@@ -58,9 +58,16 @@ try:
     validate(instance=instance, schema=schema)
     print('PASS: output validated against schema')
 except ValidationError as e:
-    print(f'FAIL: schema validation error: {e.message}')
-    if e.path:
-        print(f'  at: {\".\".join(str(p) for p in e.path)}')
+    # e.message is built from the offending instance (e.g. an enum error
+    # quotes the invalid value verbatim), and the instance is untrusted
+    # agent/model output. Printing it would let a value like
+    # '##[warning]forged' reach this step's log through the validation
+    # loop. Report only trusted schema metadata: the field path (schema
+    # property names) and the keyword that failed, never the instance.
+    path = '.'.join(str(p) for p in e.path) if e.path else '(root)'
+    print(f'FAIL: schema validation failed: \"{path}\" failed its \"{e.validator}\" check')
+    if e.validator in ('enum', 'const'):
+        print(f'  allowed values: {e.validator_value!r}')
     if 'properties' in e.schema:
         allowed = ', '.join(sorted(e.schema['properties'].keys()))
         print(f'  allowed properties: {allowed}')
