@@ -123,6 +123,33 @@ func TestRunAgent_VertexMissingGCPCredentialsFailsBeforePreScript(t *testing.T) 
 	assert.NoFileExists(t, marker)
 }
 
+// An OpenAI parent that declares the vertex-ai provider (enabling a
+// Vertex-capable sub-agent dispatch, e.g. `Agent` with model: "sonnet") must
+// reject the optional GCP mount before the pre-script runs, the same as a
+// Vertex parent would. Before the fix this fell through to
+// validateRequiredGCPHostFile, which skips optional mounts, so the missing
+// credential surfaced only mid-run from the sub-agent's sandbox (#7980).
+func TestRunAgent_OpenAIParentVertexProviderMissingGCPCredentialsFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("providers:\n  - vertex-ai\n" +
+		"host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
 func TestRunAgent_OpenAISkipsVertexCredentialSetup(t *testing.T) {
 	usePreScriptStub(t)
 	t.Setenv("FULLSEND_RUNTIME", "codex")
@@ -585,6 +612,23 @@ func TestRunInferenceProvider(t *testing.T) {
 	assert.Equal(t, runProviderNone, runInferenceProvider("dummy-playback", false))
 	assert.Equal(t, runProviderVertex, runInferenceProvider("opencode", false))
 	assert.Equal(t, runProviderVertex, runInferenceProvider("claude", false))
+}
+
+func TestIsVertexProviderRef(t *testing.T) {
+	assert.True(t, isVertexProviderRef("vertex-ai"))
+	assert.True(t, isVertexProviderRef("providers/vertex-ai.yaml"))
+	assert.True(t, isVertexProviderRef("providers/vertex-ai.yml"))
+	assert.True(t, isVertexProviderRef("https://github.com/org/repo/tree/main/providers/vertex-ai.yaml#sha256="+strings.Repeat("a", 64)))
+	assert.False(t, isVertexProviderRef("github"))
+	assert.False(t, isVertexProviderRef("providers/github.yaml"))
+	assert.False(t, isVertexProviderRef("providers/not-vertex-ai.yaml"))
+}
+
+func TestHarnessMayReachVertex(t *testing.T) {
+	assert.False(t, harnessMayReachVertex(&harness.Harness{}))
+	assert.False(t, harnessMayReachVertex(&harness.Harness{Providers: []string{"github"}}))
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Providers: []string{"github", "vertex-ai"}}))
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Providers: []string{"providers/vertex-ai.yaml"}}))
 }
 
 func TestValidateVertexGCPCredentials(t *testing.T) {

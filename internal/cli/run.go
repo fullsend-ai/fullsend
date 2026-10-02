@@ -1043,7 +1043,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		defer cleanup()
 	}
-	if provider == runProviderVertex {
+	if provider == runProviderVertex || harnessMayReachVertex(h) {
 		if err := validateVertexGCPCredentials(h); err != nil {
 			printer.StepFail("Inference credential validation failed")
 			return err
@@ -4293,6 +4293,36 @@ func (creds *gcpCredentialFile) check() error {
 		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file has no credential_source.file")
 	}
 	return nil
+}
+
+// harnessMayReachVertex reports whether a harness whose parent provider is
+// not Vertex can still dispatch inference to Vertex through a sub-agent
+// (e.g. an `Agent` tool call with model: "sonnet"): a hand-written harness
+// enables that by declaring the vertex-ai network provider so the sandbox
+// can reach Vertex AI (see docs/guides/user/bring-your-own-agent.md). Such a
+// run needs the same pre-sandbox credential check as a Vertex parent,
+// because the optional GOOGLE_APPLICATION_CREDENTIALS host-file mount it
+// shares with a Vertex parent is otherwise only checked by
+// validateRequiredGCPHostFile, which skips optional mounts (issue #7980).
+func harnessMayReachVertex(h *harness.Harness) bool {
+	for _, p := range h.Providers {
+		if isVertexProviderRef(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isVertexProviderRef reports whether a harness-declared providers[] entry
+// (a bare name, a local providers/ path, or an integrity-hashed URL) refers
+// to the vertex-ai provider.
+func isVertexProviderRef(p string) bool {
+	if harness.IsURL(p) {
+		p, _, _ = harness.ParseIntegrityHash(p)
+	}
+	base := filepath.Base(p)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	return base == "vertex-ai"
 }
 
 // validateRequiredGCPHostFile fails a non-Vertex run before its pre-script
