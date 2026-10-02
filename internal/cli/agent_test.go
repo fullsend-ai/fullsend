@@ -1978,6 +1978,161 @@ func TestRunAgentSet_InvalidSubagentModelRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "config validation failed")
 }
 
+// --- runAgentSet Vertex/OpenAI harness-move tests (#7984) ---
+
+const vertexShapedHarnessYAML = `agent: agents/lint-docs.md
+role: coder
+providers:
+  - providers/vertex-ai.yaml
+  - providers/github-ro.yaml
+host_files:
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+    optional: true
+model: opus
+env:
+  sandbox:
+    CLAUDE_CODE_USE_VERTEX: "1"
+    ANTHROPIC_VERTEX_PROJECT_ID: ${ANTHROPIC_VERTEX_PROJECT_ID}
+`
+
+const openAIShapedHarnessYAML = `agent: agents/codex-agent.md
+role: coder
+providers:
+  - providers/openai.yaml
+model: openai/gpt-5.6-luna
+`
+
+func TestUsesVertex(t *testing.T) {
+	cases := []struct {
+		runtime, model string
+		want           bool
+	}{
+		{"", "", true},
+		{"claude", "opus", true},
+		{"pi", "", true},
+		{"pi", "openai/gpt-5.6-luna", false},
+		{"pi", "OpenAI/gpt-5.6-luna", false},
+		{"pi", "vertex/claude-sonnet-4-6", true},
+		{"codex", "openai/gpt-5.6-luna", false},
+		{"codex", "", false},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, usesVertex(c.runtime, c.model), "runtime=%q model=%q", c.runtime, c.model)
+	}
+}
+
+func TestRunAgentSet_RefusesVertexToOpenAIMove(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/lint-docs.yaml
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "lint-docs.yaml"), []byte(vertexShapedHarnessYAML), 0o644))
+
+	err := runAgentSet(dir, "lint-docs", agentSetFlags{runtime: "codex", runtimeSet: true}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not use Vertex")
+	assert.Contains(t, err.Error(), "providers: providers/vertex-ai.yaml")
+	assert.Contains(t, err.Error(), "env.sandbox: CLAUDE_CODE_USE_VERTEX")
+	assert.Contains(t, err.Error(), "host_files: /tmp/.gcp-credentials.json")
+
+	// Refused before anything was written: the agent still has no runtime
+	// override in config.yaml.
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	lint, found := config.AgentSettingsFor(cfg.AgentEntries(), "lint-docs")
+	require.True(t, found)
+	assert.Empty(t, lint.Runtime)
+}
+
+func TestRunAgentSet_RefusesOpenAIToVertexMove(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/codex-agent.yaml
+    runtime: codex
+    model: openai/gpt-5.6-luna
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "codex-agent.yaml"), []byte(openAIShapedHarnessYAML), 0o644))
+
+	// Moving back to the default (claude/Vertex) runtime without reshaping
+	// the harness is the inverse move and must be caught the same way.
+	err := runAgentSet(dir, "codex-agent", agentSetFlags{runtime: "", runtimeSet: true}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "needs Vertex")
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	agent, found := config.AgentSettingsFor(cfg.AgentEntries(), "codex-agent")
+	require.True(t, found)
+	assert.Equal(t, "codex", agent.Runtime, "refused: the old runtime is untouched")
+}
+
+func TestRunAgentSet_NoOpVertexMoveSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/lint-docs.yaml
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "lint-docs.yaml"), []byte(vertexShapedHarnessYAML), 0o644))
+
+	// No --runtime flag, and the new model is still a Vertex (non-"openai/")
+	// one: this never crosses the Vertex/OpenAI boundary, so the harness is
+	// not even consulted.
+	require.NoError(t, runAgentSet(dir, "lint-docs", agentSetFlags{model: "sonnet", modelSet: true}, ui.New(os.Stdout)))
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	lint, found := config.AgentSettingsFor(cfg.AgentEntries(), "lint-docs")
+	require.True(t, found)
+	assert.Equal(t, "sonnet", lint.Model)
+}
+
+func TestRunAgentSet_AllowsMoveWhenHarnessAlreadyMatches(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/custom.yaml
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "custom.yaml"), []byte(openAIShapedHarnessYAML), 0o644))
+
+	// The harness was already hand-shaped for OpenAI, so moving config.yaml
+	// to codex finds nothing stale.
+	require.NoError(t, runAgentSet(dir, "custom", agentSetFlags{
+		runtime: "codex", runtimeSet: true, model: "openai/gpt-5.6-luna", modelSet: true,
+	}, ui.New(os.Stdout)))
+}
+
+func TestRunAgentSet_SkipsVertexCheckForBuiltinWithNoHarness(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, "")
+
+	// "code" is a built-in with no local harness file to inspect — the
+	// fleet resolves its harness over the network at run time — so the move
+	// check must not block it.
+	require.NoError(t, runAgentSet(dir, "code", agentSetFlags{
+		runtime: "codex", runtimeSet: true, model: "openai/gpt-5.6-luna", modelSet: true,
+	}, ui.New(os.Stdout)))
+}
+
+func TestRunAgentSet_SkipsVertexCheckForURLSource(t *testing.T) {
+	dir := t.TempDir()
+	hash := fetch.ComputeSHA256([]byte(vertexShapedHarnessYAML))
+	writePerRepoConfig(t, dir, `agents:
+  - name: lint
+    source: "https://raw.githubusercontent.com/org/agents/`+testCommitSHA+`/harness/lint.yaml#sha256=`+hash+`"
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/org/agents/"
+`)
+
+	// A URL-sourced agent's harness would need a network fetch to inspect;
+	// the move check must skip it rather than refuse blindly.
+	require.NoError(t, runAgentSet(dir, "lint", agentSetFlags{
+		runtime: "codex", runtimeSet: true, model: "openai/gpt-5.6-luna", modelSet: true,
+	}, ui.New(os.Stdout)))
+}
+
 func TestRunAgentSetCmd_SubagentFlags(t *testing.T) {
 	dir := t.TempDir()
 	writePerRepoConfig(t, dir, "")

@@ -233,6 +233,15 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 		effort = f.effort
 	}
 
+	// A runtime/model change that crosses the Vertex/OpenAI boundary leaves
+	// a stale harness behind: config.yaml would dispatch the new runtime
+	// against a harness still (or not yet) shaped for Vertex credentials
+	// (#7984). Checked before anything is written so a refusal leaves both
+	// files untouched.
+	if err := checkVertexHarnessMove(absDir, agentName, current.Runtime, current.Model, runtimeName, model, current.Source); err != nil {
+		return err
+	}
+
 	// Seed from the overlay's own entry: writing the merged map back
 	// would freeze the parent layer's entries into this config.
 	localSubagents, _ := config.AgentSettingsFor(localAgentEntries(cfg), agentName)
@@ -328,6 +337,129 @@ func formatSubagents(subagents map[string]*string) string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// usesVertex reports whether the given runtime/model combination dispatches
+// through Vertex (GCP) credentials rather than an OpenAI key: codex always
+// calls OpenAI; pi calls OpenAI only when given an explicit "openai/"
+// -prefixed model; any other runtime (including the default, claude) calls
+// Vertex. Mirrors the shape rules `fullsend agent new` applies when it
+// generates a harness for a runtime/model pair.
+func usesVertex(runtimeName, model string) bool {
+	switch runtimeName {
+	case "codex":
+		return false
+	case "pi":
+		return !hasOpenAIModelPrefix(model)
+	default:
+		return true
+	}
+}
+
+// hasOpenAIModelPrefix reports whether model carries an explicit "openai/"
+// provider prefix. Matching is case-insensitive, mirroring how pi resolves
+// provider prefixes.
+func hasOpenAIModelPrefix(model string) bool {
+	prefix, _, ok := strings.Cut(model, "/")
+	return ok && strings.EqualFold(prefix, "openai")
+}
+
+// vertexEnvKeys are the env.sandbox variables a generated harness carries for
+// Vertex access (see agentnew.buildHarness).
+var vertexEnvKeys = []string{
+	"CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID",
+	"CLOUD_ML_REGION", "GOOGLE_APPLICATION_CREDENTIALS",
+}
+
+// vertexHarnessSignals returns a human-readable name for each Vertex-shaped
+// field present in h: the provider list, GCP credential host_files mounts,
+// and Vertex sandbox env vars. An empty result means h carries no Vertex
+// configuration at all.
+func vertexHarnessSignals(h *harness.Harness) []string {
+	var found []string
+	for _, p := range h.Providers {
+		if strings.Contains(p, "vertex") {
+			found = append(found, "providers: "+p)
+		}
+	}
+	for _, hf := range h.HostFiles {
+		if strings.Contains(hf.Src, "GOOGLE_APPLICATION_CREDENTIALS") || strings.Contains(hf.Src, "GCP_OIDC_TOKEN_FILE") {
+			found = append(found, "host_files: "+hf.Dest)
+		}
+	}
+	if h.Env != nil {
+		for _, k := range vertexEnvKeys {
+			if _, ok := h.Env.Sandbox[k]; ok {
+				found = append(found, "env.sandbox: "+k)
+			}
+		}
+	}
+	return found
+}
+
+// displayRuntimeModel renders a runtime/model pair for an error message,
+// substituting the implied default runtime name so "" is never printed.
+func displayRuntimeModel(runtimeName, model string) string {
+	r := runtimeName
+	if r == "" {
+		r = "claude"
+	}
+	if model == "" {
+		return r
+	}
+	return r + " model=" + model
+}
+
+// checkVertexHarnessMove refuses an `agent set` that moves agentName across
+// the Vertex/OpenAI boundary while its on-disk harness still carries the old
+// shape. `fullsend agent new` shapes a generated harness for the runtime and
+// model it is given; `agent set` only ever wrote runtime/model/effort to
+// config.yaml and left the harness file untouched, so a runtime (or model)
+// change that crosses the boundary silently produced a harness the new
+// runtime cannot run (#7984).
+//
+// Only agents with a local (non-URL) harness source can be checked: a
+// built-in agent with no source dispatches a harness this process has no
+// local copy of (it may be fetched from the agents fleet repo over the
+// network at run time, long after this command exits), and a URL source
+// would need a forge client this command does not take. Both are skipped —
+// not refused — because there is no way to tell whether the harness they
+// resolve to already matches the new runtime.
+func checkVertexHarnessMove(absDir, agentName, oldRuntime, oldModel, newRuntime, newModel, source string) error {
+	oldVertex := usesVertex(oldRuntime, oldModel)
+	newVertex := usesVertex(newRuntime, newModel)
+	if oldVertex == newVertex {
+		// No boundary crossed: either this call does not touch runtime or
+		// model, or the new combination needs the same credentials as the
+		// old one. Nothing to check.
+		return nil
+	}
+	if source == "" || urlutil.IsURL(source) {
+		return nil
+	}
+	harnessPath, err := containedLocalPath(absDir, source)
+	if err != nil {
+		return nil
+	}
+	h, err := harness.LoadRaw(harnessPath)
+	if err != nil {
+		return nil
+	}
+
+	signals := vertexHarnessSignals(h)
+	if (len(signals) > 0) == newVertex {
+		// The harness already matches what the new runtime/model needs —
+		// nothing stale to report.
+		return nil
+	}
+	if newVertex {
+		return fmt.Errorf("agent %q: runtime %s needs Vertex (GCP) credentials, but %s has none configured "+
+			"(no providers/vertex-ai.yaml, GCP host_files, or Vertex env vars); add them, or keep a runtime/model that does not need Vertex",
+			agentName, displayRuntimeModel(newRuntime, newModel), source)
+	}
+	return fmt.Errorf("agent %q: runtime %s does not use Vertex, but %s still has:\n  %s\n"+
+		"edit the harness to remove them, or keep a runtime/model that still needs Vertex",
+		agentName, displayRuntimeModel(newRuntime, newModel), source, strings.Join(signals, "\n  "))
 }
 
 // localAgentEntries returns the entries the overlay itself declares (the

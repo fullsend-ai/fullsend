@@ -462,6 +462,15 @@ agent registered in `config.base.yaml`, on a name-only overlay entry that merges
 flags given change; pass an empty value (`--model ""`) to clear a setting. The result is validated
 before it is written.
 
+When `--runtime` or `--model` would move a custom (local-path) agent across the Vertex/OpenAI
+boundary — e.g. switching to `codex`, or to `pi` with an `openai/`-prefixed model, away from the
+default Vertex-backed setup, or back again — the command refuses and names the harness fields that
+are now stale (`providers:`, `host_files:`, Vertex `env.sandbox` keys) or missing, rather than
+writing a runtime the harness cannot run. Edit the harness file to match the new runtime, then
+re-run `agent set`. This check only runs for agents with a local harness file; built-in agents with
+no `source:` entry and URL-sourced agents are not checked, since this command cannot read their
+harness.
+
 ```bash
 fullsend agent set code --fullsend-dir .fullsend --runtime claude --model sonnet --effort high
 fullsend agent set triage --fullsend-dir .fullsend --model xai-vertex/xai/grok-4.6
