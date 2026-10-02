@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -309,7 +310,7 @@ func (m *celMatcher) Match(_ context.Context, event *normevent.Event) ([]jirapol
 			Role:          ref.Role,
 			SourceRepo:    ref.SourceRepo,
 			EventType:     ref.EventType,
-			EventPayload:  ref.EventPayload,
+			EventPayload:  json.RawMessage(ref.EventPayload),
 			TriggerSource: ref.TriggerSource,
 			StatusRepo:    ref.StatusRepo,
 			StatusNumber:  ref.StatusNumber,
