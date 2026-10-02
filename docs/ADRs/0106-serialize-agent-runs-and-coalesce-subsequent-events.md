@@ -114,6 +114,16 @@ MUST derive compatible harness-and-entity identities, but a synchronous
 `workflow_call` caller and callee MUST retain distinct group-name prefixes so
 the child does not wait on the parent that is waiting for it.
 
+> **Update (2026-09):** Active-run preservation is implemented on GitHub
+> Actions by [#7007](https://github.com/fullsend-ai/fullsend/pull/7007): every
+> stage job in `reusable-dispatch.yml` carries `cancel-in-progress: false`, and
+> the runner exports `FULLSEND_RUN_HEAD_SHA` and `FULLSEND_RUN_STARTED_AT` so a
+> run can tell whether the subject moved under it
+> ([`fullsend run` § Run baseline](../cli/run.md#run-baseline)). Keying the
+> serialization scope on the canonical subject identity is still pending:
+> `harness-run` keys on the item number
+> ([#7475](https://github.com/fullsend-ai/fullsend/issues/7475)).
+
 On GitLab CI/CD, a subject-scoped `resource_group` serializes agent jobs.
 `workflow:auto_cancel:on_new_commit: none` and a non-interruptible agent job
 preserve active work, while the resource group's `newest_first` process mode

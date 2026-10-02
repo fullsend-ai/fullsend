@@ -140,8 +140,8 @@ watermark-based deduplication at 5–60 minute intervals
 reconciliation backstop.
 [ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)
 additionally adopts preserve-and-coalesce scheduling at the execution-platform
-layer: after implementation, an active run finishes while later matching
-events collapse into one pending follow-up run.
+layer. On GitHub Actions an active run now finishes while later matching events
+collapse into one pending follow-up run.
 See [architecture.md](architecture.md) (building block 1).
 
 ### Default Agent
