@@ -1051,7 +1051,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Inference credential validation failed")
 		return err
 	}
-	if provider == runProviderVertex || harnessMayReachVertex(h, result) {
+	// runProviderNone (dummy, dummy-playback) performs no inference at
+	// all, so a harness that merely declares Vertex reachability for a
+	// sub-agent must not trip the optional-mount check here: the dummy
+	// runtime never dispatches that sub-agent (#7980 review).
+	if provider != runProviderNone && (provider == runProviderVertex || harnessMayReachVertex(h, result)) {
 		if err := validateVertexGCPCredentials(h); err != nil {
 			printer.StepFail("Inference credential validation failed")
 			return err

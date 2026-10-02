@@ -735,6 +735,41 @@ func TestRunAgent_DummyRuntimeNeedsNoGCPInputs(t *testing.T) {
 	}
 }
 
+// Dummy runtimes (dummy, dummy-playback) perform no inference at all, so a
+// harness that declares the vertex-ai provider for a sub-agent dispatch
+// must not trip the optional-mount preflight check: harnessMayReachVertex
+// alone would otherwise force validateVertexGCPCredentials to run even
+// though provider == runProviderNone never dispatches that sub-agent.
+// Before the fix, the reachability branch ran for any provider, so this
+// combination failed before the pre-script even though no inference
+// happens (#7980 review).
+func TestRunAgent_DummyRuntimeVertexHarnessOptionalGCPMountNeedsNoCredentials(t *testing.T) {
+	for _, runtimeName := range []string{"dummy", "dummy-playback"} {
+		t.Run(runtimeName, func(t *testing.T) {
+			usePreScriptStub(t)
+			t.Setenv("FULLSEND_RUNTIME", runtimeName)
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+			marker := filepath.Join(t.TempDir(), "pre-script-ran")
+			dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+			harnessPath := filepath.Join(dir, "harness", "code.yaml")
+			f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+			require.NoError(t, err)
+			_, err = f.WriteString("providers:\n  - vertex-ai\n" +
+				"host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+				statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+			if err != nil {
+				assert.NotContains(t, err.Error(), "GOOGLE_APPLICATION_CREDENTIALS")
+			}
+			assert.FileExists(t, marker)
+		})
+	}
+}
+
 func TestRunInferenceProvider(t *testing.T) {
 	assert.Equal(t, runProviderOpenAI, runInferenceProvider("codex", true))
 	assert.Equal(t, runProviderNone, runInferenceProvider("dummy", false))

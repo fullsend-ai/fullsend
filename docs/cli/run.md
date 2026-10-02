@@ -81,7 +81,9 @@ check a non-Vertex run otherwise gets. A harness signals this Vertex reachabilit
 `CLOUD_ML_REGION` under `env.sandbox`, or by mounting a `gcp-vertex.env` host file — see
 [Bring your own agent](../guides/user/bring-your-own-agent.md). When this applies, a missing or
 cleared `GOOGLE_APPLICATION_CREDENTIALS` fails validation before the pre-script runs, on GitHub
-Actions, local, and GitLab runs alike, regardless of the parent's own provider.
+Actions, local, and GitLab runs alike, regardless of the parent's own provider — except for the
+`dummy` and `dummy-playback` runtimes, which perform no inference and so never dispatch such a
+sub-agent.
 
 ```bash
 # try a repo's triage on pi with Gemini Flash, without touching its config
