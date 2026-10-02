@@ -17,6 +17,8 @@ type JiraClient interface {
 	// A limit <= 0 returns all matching issues (bounded by the
 	// implementation's own pagination cap).
 	SearchIssues(ctx context.Context, jql string, limit int) ([]jira.Issue, error)
+	// SearchIssuesPage executes a single-page JQL search with cursor pagination.
+	SearchIssuesPage(ctx context.Context, jql string, maxResults int, nextPageToken string) (*jira.SearchResult, error)
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
 	// GetStatus resolves a status name to its statusCategory, used to
 	// classify status transitions (closed/reopened) without relying on
@@ -34,6 +36,8 @@ type JiraClient interface {
 	// GetUserGroups returns the groups a specific user belongs to, for
 	// per-actor role resolution that avoids the group/member pagination cap.
 	GetUserGroups(ctx context.Context, accountID string) ([]jira.UserGroupInfo, error)
+	// ListRemoteLinks returns the remote issue links (web links) attached to an issue.
+	ListRemoteLinks(ctx context.Context, issueIDOrKey string) ([]jira.RemoteLink, error)
 }
 
 // Compile-time interface check.
@@ -44,6 +48,7 @@ type Options struct {
 	TargetRepo              string        // GitHub repo slug where agents run (e.g., "acme/platform")
 	JiraBaseURL             string        // Jira instance base URL
 	JiraProject             string        // Jira project key for default JQL
+	JiraComponent           string        // Jira component name for candidate scoping
 	JQL                     string        // Custom JQL override
 	OutputPath              string        // Path to write dispatch records JSON
 	M                       int           // Max candidate issues per cycle (default: 50)

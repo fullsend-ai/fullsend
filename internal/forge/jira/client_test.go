@@ -1150,3 +1150,70 @@ func TestGetUserGroups_Empty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, groups)
 }
+
+func TestListRemoteLinks(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-123/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, []RemoteLink{
+			{
+				ID:   10001,
+				Self: "https://example.atlassian.net/rest/api/3/issue/PROJ-123/remotelink/10001",
+				Object: RemoteLinkObject{
+					URL:     "https://github.com/my-org/my-service",
+					Title:   "GitHub repository",
+					Summary: "Source code repository",
+				},
+			},
+			{
+				ID:   10002,
+				Self: "https://example.atlassian.net/rest/api/3/issue/PROJ-123/remotelink/10002",
+				Object: RemoteLinkObject{
+					URL:   "https://docs.google.com/document/d/xyz",
+					Title: "Architecture Design Doc",
+				},
+			},
+		})
+	})
+
+	links, err := client.ListRemoteLinks(ctx, "PROJ-123")
+	require.NoError(t, err)
+	require.Len(t, links, 2)
+	assert.Equal(t, 10001, links[0].ID)
+	assert.Equal(t, "https://github.com/my-org/my-service", links[0].Object.URL)
+	assert.Equal(t, "GitHub repository", links[0].Object.Title)
+	assert.Equal(t, "https://docs.google.com/document/d/xyz", links[1].Object.URL)
+}
+
+func TestListRemoteLinks_Empty(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-123/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []RemoteLink{})
+	})
+
+	links, err := client.ListRemoteLinks(ctx, "PROJ-123")
+	require.NoError(t, err)
+	assert.Empty(t, links)
+}
+
+func TestListRemoteLinks_Error(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-123/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusInternalServerError, map[string]any{
+			"errorMessages": []string{"Internal error"},
+		})
+	})
+
+	_, err := client.ListRemoteLinks(ctx, "PROJ-123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list remote links")
+}

@@ -28,6 +28,7 @@ Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai
 | `fullsend lock [agent-name]` | Pin remote dependencies to `lock.yaml` |
 | `fullsend scan` | Run security scanners on agent input/output |
 | `fullsend eval-measure` | Score wild-run traces into `eval-measurements.jsonl`. See [Eval measurements](../guides/infrastructure/eval-measurements.md). |
+| `fullsend poll` | Poll external issue trackers (e.g., Jira) for changes and dispatch agent workflows. See [Jira integration](../guides/user/jira-integration.md). |
 
 ## Global flags
 

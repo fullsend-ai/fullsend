@@ -23,7 +23,7 @@ func clearPollEnv(t *testing.T) {
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken,
 		forge.SecretGitLabCoderToken,
 		"JIRA_BASE_URL", "GITHUB_REPOSITORY",
-		"JIRA_TOKEN", "JIRA_USER_EMAIL",
+		"JIRA_TOKEN", "JIRA_USER_EMAIL", "JIRA_COMPONENT",
 	} {
 		t.Setenv(v, "")
 	}
@@ -106,6 +106,7 @@ func TestValidateJiraPollArgs(t *testing.T) {
 		envVars        map[string]string
 		jiraURL        string
 		jiraProject    string
+		jiraComponent  string
 		jqlOverride    string
 		targetRepo     string
 		outputPath     string
@@ -197,6 +198,8 @@ func TestValidateJiraPollArgs(t *testing.T) {
 			// Clear env vars that the function checks as fallbacks.
 			t.Setenv("JIRA_BASE_URL", "")
 			t.Setenv("GITHUB_REPOSITORY", "")
+			t.Setenv("CI_PROJECT_PATH", "")
+			t.Setenv("JIRA_COMPONENT", "")
 
 			for k, v := range tc.envVars {
 				t.Setenv(k, v)
@@ -206,7 +209,7 @@ func TestValidateJiraPollArgs(t *testing.T) {
 			if outputPath == "" && tc.wantOK {
 				outputPath = "dispatches.json"
 			}
-			args, err := validateJiraPollArgs(tc.jiraURL, tc.jiraProject, tc.jqlOverride, tc.targetRepo, outputPath, fullsendDir)
+			args, err := validateJiraPollArgs(tc.jiraURL, tc.jiraProject, tc.jiraComponent, tc.jqlOverride, tc.targetRepo, outputPath, fullsendDir)
 
 			if tc.wantOK {
 				if err != nil {
@@ -348,5 +351,39 @@ func TestBuildJiraClient_WithTokenAndEmail(t *testing.T) {
 	}
 	if c == nil {
 		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestValidateJiraPollArgs_ComponentFlagAndEnv(t *testing.T) {
+	clearPollEnv(t)
+	// From flag
+	args, err := validateJiraPollArgs("https://acme.atlassian.net", "PROJ", "Payments", "", "acme/widget", "/tmp/out.json", "/tmp/dir")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if args.jiraComponent != "Payments" {
+		t.Errorf("got component %q, want %q", args.jiraComponent, "Payments")
+	}
+
+	// From env
+	t.Setenv("JIRA_COMPONENT", "Backend")
+	argsEnv, err := validateJiraPollArgs("https://acme.atlassian.net", "PROJ", "", "", "acme/widget", "/tmp/out.json", "/tmp/dir")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if argsEnv.jiraComponent != "Backend" {
+		t.Errorf("got component %q, want %q", argsEnv.jiraComponent, "Backend")
+	}
+}
+
+func TestValidateJiraPollArgs_CIProjectPathFallback(t *testing.T) {
+	clearPollEnv(t)
+	t.Setenv("CI_PROJECT_PATH", "group/subgroup/my-service")
+	args, err := validateJiraPollArgs("https://acme.atlassian.net", "PROJ", "", "", "", "/tmp/out.json", "/tmp/dir")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if args.targetRepo != "group/subgroup/my-service" {
+		t.Errorf("got targetRepo %q, want %q", args.targetRepo, "group/subgroup/my-service")
 	}
 }

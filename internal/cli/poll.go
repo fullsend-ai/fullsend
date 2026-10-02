@@ -23,17 +23,18 @@ import (
 
 func newPollCmd() *cobra.Command {
 	var (
-		forgeFlag   string
-		inputDriver string
-		projectPath string
-		gitlabURL   string
-		outputPath  string
-		fullsendDir string
-		jiraURL     string
-		jiraProject string
-		jqlOverride string
-		targetRepo  string
-		modeFlag    string
+		forgeFlag     string
+		inputDriver   string
+		projectPath   string
+		gitlabURL     string
+		outputPath    string
+		fullsendDir   string
+		jiraURL       string
+		jiraProject   string
+		jiraComponent string
+		jqlOverride   string
+		targetRepo    string
+		modeFlag      string
 	)
 
 	cmd := &cobra.Command{
@@ -41,7 +42,7 @@ func newPollCmd() *cobra.Command {
 		Short: "Poll forge or external tracker APIs for new events and dispatch agent stages",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if inputDriver == "jira-poll" {
-				return runJiraPoll(cmd, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
+				return runJiraPoll(cmd, jiraURL, jiraProject, jiraComponent, jqlOverride, targetRepo, outputPath, fullsendDir)
 			}
 
 			if forgeFlag != "gitlab" {
@@ -118,6 +119,7 @@ func newPollCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance base URL (default: $JIRA_BASE_URL)")
 	cmd.Flags().StringVar(&jiraProject, "jira-project", "", "Jira project key for JQL scoping")
+	cmd.Flags().StringVar(&jiraComponent, "jira-component", "", "Jira component name for candidate scoping (default: $JIRA_COMPONENT)")
 	cmd.Flags().StringVar(&jqlOverride, "jql", "", "Custom JQL override")
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub repo slug where agents run (default: $GITHUB_REPOSITORY)")
 	cmd.Flags().StringVar(&modeFlag, "mode", "", "Poll mode: 'slash' (slash commands only) or 'events' (labels, merges, non-slash notes)")
@@ -127,8 +129,8 @@ func newPollCmd() *cobra.Command {
 	return cmd
 }
 
-func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
-	args, err := validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
+func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jiraComponent, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
+	args, err := validateJiraPollArgs(jiraURL, jiraProject, jiraComponent, jqlOverride, targetRepo, outputPath, fullsendDir)
 	if err != nil {
 		return err
 	}
@@ -144,11 +146,12 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 	}
 
 	opts := jirapoll.Options{
-		TargetRepo:  args.targetRepo,
-		JiraBaseURL: args.jiraURL,
-		JiraProject: args.jiraProject,
-		JQL:         args.jqlOverride,
-		OutputPath:  args.outputPath,
+		TargetRepo:    args.targetRepo,
+		JiraBaseURL:   args.jiraURL,
+		JiraProject:   args.jiraProject,
+		JiraComponent: args.jiraComponent,
+		JQL:           args.jqlOverride,
+		OutputPath:    args.outputPath,
 	}
 
 	poller := jirapoll.New(jiraClient, matcher, opts)
@@ -157,12 +160,13 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 
 // jiraPollArgs holds resolved arguments for runJiraPoll after env-var fallbacks.
 type jiraPollArgs struct {
-	jiraURL     string
-	jiraProject string
-	jqlOverride string
-	targetRepo  string
-	outputPath  string
-	fullsendDir string
+	jiraURL       string
+	jiraProject   string
+	jiraComponent string
+	jqlOverride   string
+	targetRepo    string
+	outputPath    string
+	fullsendDir   string
 }
 
 // validTargetRepo matches "owner/repo" slugs (subgroup segments allowed,
@@ -174,7 +178,7 @@ var validTargetRepo = regexp.MustCompile(`^[^/\s]+(/[^/\s]+)+$`)
 // validateJiraPollArgs resolves env-var fallbacks and validates required
 // arguments for the jira-poll input driver. It returns the resolved args
 // or a validation error.
-func validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) (jiraPollArgs, error) {
+func validateJiraPollArgs(jiraURL, jiraProject, jiraComponent, jqlOverride, targetRepo, outputPath, fullsendDir string) (jiraPollArgs, error) {
 	if jiraURL == "" {
 		jiraURL = os.Getenv("JIRA_BASE_URL")
 	}
@@ -186,7 +190,10 @@ func validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputP
 		targetRepo = os.Getenv("GITHUB_REPOSITORY")
 	}
 	if targetRepo == "" {
-		return jiraPollArgs{}, fmt.Errorf("--target-repo or GITHUB_REPOSITORY is required")
+		targetRepo = os.Getenv("CI_PROJECT_PATH")
+	}
+	if targetRepo == "" {
+		return jiraPollArgs{}, fmt.Errorf("--target-repo, GITHUB_REPOSITORY, or CI_PROJECT_PATH is required")
 	}
 	if !validTargetRepo.MatchString(targetRepo) {
 		return jiraPollArgs{}, fmt.Errorf("--target-repo %q must be an owner/repo slug", targetRepo)
@@ -196,17 +203,22 @@ func validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputP
 		return jiraPollArgs{}, fmt.Errorf("--jira-project or --jql is required")
 	}
 
+	if jiraComponent == "" {
+		jiraComponent = os.Getenv("JIRA_COMPONENT")
+	}
+
 	if outputPath == "" {
 		return jiraPollArgs{}, fmt.Errorf("--output is required: without it, a full poll cycle runs and checkpoints advance in Jira, but every dispatch is silently discarded")
 	}
 
 	return jiraPollArgs{
-		jiraURL:     jiraURL,
-		jiraProject: jiraProject,
-		jqlOverride: jqlOverride,
-		targetRepo:  targetRepo,
-		outputPath:  outputPath,
-		fullsendDir: fullsendDir,
+		jiraURL:       jiraURL,
+		jiraProject:   jiraProject,
+		jiraComponent: jiraComponent,
+		jqlOverride:   jqlOverride,
+		targetRepo:    targetRepo,
+		outputPath:    outputPath,
+		fullsendDir:   fullsendDir,
 	}, nil
 }
 
