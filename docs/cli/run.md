@@ -72,6 +72,17 @@ same rule and need no GCP inputs. On GitHub Actions, a run whose parent does not
 `GOOGLE_APPLICATION_CREDENTIALS` file that fails these checks, so the pre-script, the sandbox and
 the post-script do not get it.
 
+This credential preparation and clearing is separate from a pre-sandbox validation that runs
+whatever the parent's own provider is: a non-Vertex (for example OpenAI) parent that can still
+dispatch a Vertex sub-agent (e.g. an `Agent` tool call with `model: "sonnet"`) gets the same
+`GOOGLE_APPLICATION_CREDENTIALS` check as a Vertex parent, instead of only the required-mount
+check a non-Vertex run otherwise gets. A harness signals this Vertex reachability by declaring the
+`vertex-ai` provider (by name, local path, or URL), by setting `ANTHROPIC_VERTEX_PROJECT_ID` or
+`CLOUD_ML_REGION` under `env.sandbox`, or by mounting a `gcp-vertex.env` host file — see
+[Bring your own agent](../guides/user/bring-your-own-agent.md). When this applies, a missing or
+cleared `GOOGLE_APPLICATION_CREDENTIALS` fails validation before the pre-script runs, on GitHub
+Actions, local, and GitLab runs alike, regardless of the parent's own provider.
+
 ```bash
 # try a repo's triage on pi with Gemini Flash, without touching its config
 fullsend run triage --fullsend-dir . --target-repo ../repo \
