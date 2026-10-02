@@ -611,7 +611,56 @@ func TestProgressParserCapturesModelFromSystemEvent(t *testing.T) {
 	}
 }
 
+func TestApplyClaudeMetricsTokensEventSetsTurns(t *testing.T) {
+	metrics := &RunMetrics{}
+	applyClaudeMetrics(metrics, TokensEvent{
+		InputTokens:  4000,
+		OutputTokens: 800,
+		CacheRead:    500,
+		CacheWrite:   200,
+		NumTurns:     3,
+	})
+	if metrics.NumTurns != 3 {
+		t.Errorf("NumTurns = %d, want 3", metrics.NumTurns)
+	}
+	if metrics.InputTokens != 4000 || metrics.OutputTokens != 800 {
+		t.Errorf("token snapshot = in %d out %d, want 4000/800", metrics.InputTokens, metrics.OutputTokens)
+	}
+	if metrics.TotalCostUSD != 0 {
+		t.Errorf("TotalCostUSD = %f, want 0 (TokensEvent carries no cost)", metrics.TotalCostUSD)
+	}
+
+	applyClaudeMetrics(metrics, TokensEvent{InputTokens: 5000, NumTurns: 0})
+	if metrics.NumTurns != 3 {
+		t.Errorf("NumTurns = %d, want 3 (zero-turn TokensEvent must not clobber)", metrics.NumTurns)
+	}
+	if metrics.InputTokens != 5000 {
+		t.Errorf("InputTokens = %d, want 5000", metrics.InputTokens)
+	}
+
+	applyClaudeMetrics(metrics, ResultEvent{
+		NumTurns:     8,
+		TotalCostUSD: 0.42,
+		InputTokens:  12000,
+		OutputTokens: 3400,
+	})
+	if metrics.NumTurns != 8 {
+		t.Errorf("NumTurns = %d, want 8 from ResultEvent", metrics.NumTurns)
+	}
+	if metrics.TotalCostUSD != 0.42 {
+		t.Errorf("TotalCostUSD = %f, want 0.42 from ResultEvent", metrics.TotalCostUSD)
+	}
+	if metrics.InputTokens != 12000 {
+		t.Errorf("InputTokens = %d, want 12000 from ResultEvent", metrics.InputTokens)
+	}
+
+	// A nil *RunMetrics must not panic, matching applyCodexMetrics.
+	applyClaudeMetrics(nil, ResultEvent{})
+}
+
 func TestProgressParserNoResultEvent(t *testing.T) {
+	// An assistant line with no message_start is not an API turn; incremental
+	// NumTurns is counted from message_start only (#6806).
 	lines := []string{
 		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a.go"}}]}`,
 	}
@@ -626,7 +675,7 @@ func TestProgressParserNoResultEvent(t *testing.T) {
 	}
 
 	if metrics.NumTurns != 0 {
-		t.Errorf("expected 0 turns when no result event, got %d", metrics.NumTurns)
+		t.Errorf("expected 0 turns when no message_start or result event, got %d", metrics.NumTurns)
 	}
 	if metrics.TotalCostUSD != 0 {
 		t.Errorf("expected 0 cost when no result event, got %f", metrics.TotalCostUSD)
@@ -1263,6 +1312,9 @@ func TestParseClaudeStreamTokensEvent(t *testing.T) {
 	if tokens[0].CacheRead != 500 || tokens[0].CacheWrite != 200 {
 		t.Errorf("unexpected cache counts: %+v", tokens[0])
 	}
+	if tokens[0].NumTurns != 1 {
+		t.Errorf("expected 1 turn on TokensEvent, got %d", tokens[0].NumTurns)
+	}
 }
 
 func TestParseClaudeStreamTokensEventWithReasoningTokens(t *testing.T) {
@@ -1456,6 +1508,12 @@ func TestProgressParserCancelledRunCapturesTokens(t *testing.T) {
 	if metrics.CacheCreationInputTokens != 200 {
 		t.Errorf("expected 200 cache creation tokens, got %d", metrics.CacheCreationInputTokens)
 	}
+	if metrics.NumTurns != 1 {
+		t.Errorf("expected 1 turn from message_start on cancelled run, got %d", metrics.NumTurns)
+	}
+	if metrics.TotalCostUSD != 0 {
+		t.Errorf("expected 0 cost on cancelled run, got %f", metrics.TotalCostUSD)
+	}
 }
 
 // TestProgressParserResultOverwritesIncrementalTokens verifies that when a
@@ -1530,6 +1588,9 @@ func TestParseClaudeStreamCumulativeTokensAcrossMessages(t *testing.T) {
 	}
 	if lastTokens.CacheWrite != 300 {
 		t.Errorf("expected cumulative cache write 300, got %d", lastTokens.CacheWrite)
+	}
+	if lastTokens.NumTurns != 2 {
+		t.Errorf("expected 2 turns from two message_start events, got %d", lastTokens.NumTurns)
 	}
 }
 
@@ -1615,6 +1676,12 @@ func TestParseClaudeStreamBrokenPipeCapturesTokens(t *testing.T) {
 	if metrics.Model != "claude-opus-4-6" {
 		t.Errorf("Model = %q, want claude-opus-4-6", metrics.Model)
 	}
+	if metrics.NumTurns != 1 {
+		t.Errorf("NumTurns = %d, want 1 (message_start counted on incomplete stream)", metrics.NumTurns)
+	}
+	if metrics.TotalCostUSD != 0 {
+		t.Errorf("TotalCostUSD = %f, want 0 (cost is only on ResultEvent)", metrics.TotalCostUSD)
+	}
 }
 
 // TestParseClaudeStreamFinalTokensEventOnCancel verifies that a deferred
@@ -1646,6 +1713,9 @@ func TestParseClaudeStreamFinalTokensEventOnCancel(t *testing.T) {
 	}
 	if tokens[0].OutputTokens != 500 {
 		t.Errorf("expected 500 output tokens, got %d", tokens[0].OutputTokens)
+	}
+	if tokens[0].NumTurns != 1 {
+		t.Errorf("expected 1 turn on deferred TokensEvent, got %d", tokens[0].NumTurns)
 	}
 }
 
@@ -1755,5 +1825,77 @@ func TestParseClaudeStream_ServerToolUseCarriesNoID(t *testing.T) {
 	}
 	if uses[1].Name != "Read" || uses[1].ID != "toolu_01" {
 		t.Errorf("client tool_use must keep its id, got %+v", uses[1])
+	}
+}
+
+// TestProgressParserIncompleteStreamCapturesTurns is the #6806 regression:
+// a stream that did real work (multiple API turns) but never emitted a
+// result line must still report non-zero num_turns. Dollar cost stays
+// zero because Claude Code only reports it on the terminal result event
+// and fullsend does not estimate cost from token counts.
+func TestProgressParserIncompleteStreamCapturesTurns(t *testing.T) {
+	lines := []string{
+		`{"type":"system","subtype":"init","model":"claude-opus-4-6"}`,
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":3000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":800}}}`,
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":600,"cache_creation_input_tokens":100}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":900}}}`,
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":5000,"cache_read_input_tokens":700,"cache_creation_input_tokens":50}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1100}}}`,
+		// Process died before the result line.
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	if metrics.NumTurns != 3 {
+		t.Errorf("NumTurns = %d, want 3 (one per message_start)", metrics.NumTurns)
+	}
+	if metrics.TotalCostUSD != 0 {
+		t.Errorf("TotalCostUSD = %f, want 0 (no ResultEvent, no cost fallback)", metrics.TotalCostUSD)
+	}
+	if metrics.InputTokens != 12000 {
+		t.Errorf("InputTokens = %d, want 12000", metrics.InputTokens)
+	}
+	if metrics.OutputTokens != 2800 {
+		t.Errorf("OutputTokens = %d, want 2800", metrics.OutputTokens)
+	}
+	if metrics.Model != "claude-opus-4-6" {
+		t.Errorf("Model = %q, want claude-opus-4-6", metrics.Model)
+	}
+}
+
+// TestParseClaudeStreamMessageStartWithoutDeltaStillCountsTurn covers the
+// kill-during-generation case: message_start arrived, message_delta did
+// not, so the mid-stream TokensEvent throttle never fired. The EOF
+// snapshot must still carry NumTurns.
+func TestParseClaudeStreamMessageStartWithoutDeltaStillCountsTurn(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":1500}}}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var last TokensEvent
+	var found bool
+	for _, e := range events {
+		if te, ok := e.(TokensEvent); ok {
+			last = te
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected a deferred TokensEvent at EOF")
+	}
+	if last.NumTurns != 1 {
+		t.Errorf("NumTurns = %d, want 1", last.NumTurns)
+	}
+	if last.InputTokens != 1500 {
+		t.Errorf("InputTokens = %d, want 1500", last.InputTokens)
 	}
 }

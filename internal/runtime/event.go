@@ -78,12 +78,17 @@ type ToolResultEvent struct {
 func (ToolResultEvent) agentEvent() {}
 
 // TokensEvent carries incremental token usage counters.
+// NumTurns is the running turn count from the stream (Claude Code
+// counts message_start events). It is 0 when the emitter does not
+// track turns incrementally; ResultEvent remains authoritative when
+// the stream completes normally.
 type TokensEvent struct {
 	InputTokens     int
 	OutputTokens    int
 	ReasoningTokens int
 	CacheRead       int
 	CacheWrite      int
+	NumTurns        int
 }
 
 func (TokensEvent) agentEvent() {}
