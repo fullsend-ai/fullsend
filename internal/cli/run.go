@@ -2858,19 +2858,17 @@ type fetchServiceEnv struct {
 	token string // bearer token
 }
 
-const deprecatedImplicitFetchWarning = "Harness declares allowed_remote_resources without allow_runtime_fetch: true; " +
-	"the runtime fetch service will start for backward compatibility, but this behavior is " +
-	"deprecated — add allow_runtime_fetch: true to the harness to silence this warning"
-
 // shouldStartFetchService decides whether the runtime fetch HTTP service
 // should be started, and returns a deprecation warning if the harness relies
-// on the legacy implicit opt-in via allowed_remote_resources.
+// on the legacy implicit opt-in via allowed_remote_resources. The warning
+// text is shared with Harness.Lint(), which surfaces the same diagnostic
+// without starting an agent (see `fullsend lint`).
 func shouldStartFetchService(h *harness.Harness) (start bool, deprecationWarning string) {
 	if h.HasURLDirResources() || h.AllowRuntimeFetch {
 		return true, ""
 	}
 	if len(h.AllowedRemoteResources) > 0 {
-		return true, deprecatedImplicitFetchWarning
+		return true, harness.ImplicitRuntimeFetchWarning
 	}
 	return false, ""
 }

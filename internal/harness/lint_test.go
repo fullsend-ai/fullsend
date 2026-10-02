@@ -123,6 +123,98 @@ func TestLint_NoForgeNoDeprecationWarning(t *testing.T) {
 	}
 }
 
+func TestLint_ImplicitRuntimeFetchWarning(t *testing.T) {
+	h := &Harness{
+		Agent:                  "agents/test.md",
+		Role:                   "test",
+		AllowedRemoteResources: []string{"https://github.com/org/"},
+	}
+	diags := h.Lint()
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.Equal(t, "allowed_remote_resources", diags[0].Field)
+	assert.Contains(t, diags[0].Message, "deprecated")
+	assert.Contains(t, diags[0].Message, "allow_runtime_fetch: true")
+}
+
+func TestLint_NoImplicitRuntimeFetchWarningWhenFlagSet(t *testing.T) {
+	h := &Harness{
+		Agent:                  "agents/test.md",
+		Role:                   "test",
+		AllowRuntimeFetch:      true,
+		AllowedRemoteResources: []string{"https://github.com/org/"},
+	}
+	diags := h.Lint()
+	assert.Empty(t, diags)
+}
+
+func TestLint_NoImplicitRuntimeFetchWarningWithURLSkills(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Skills: []SkillEntry{
+			{Source: "https://github.com/org/skills/tree/abc/rust#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+		},
+	}
+	diags := h.Lint()
+	for _, d := range diags {
+		assert.NotEqual(t, "allowed_remote_resources", d.Field, "HasURLDirResources should suppress the implicit-fetch warning")
+	}
+}
+
+func TestLint_NoImplicitRuntimeFetchWarningWithoutAllowedRemoteResources(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", Role: "test"}
+	assert.Empty(t, h.Lint())
+}
+
+func TestLint_DeprecatedIssueURLInEnvRunner(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env:   &EnvConfig{Runner: map[string]string{"ISSUE_URL": "${GITHUB_ISSUE_URL}"}},
+	}
+	diags := h.Lint()
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.Equal(t, "env.runner.ISSUE_URL", diags[0].Field)
+	assert.Contains(t, diags[0].Message, "GITHUB_ISSUE_URL")
+	assert.Contains(t, diags[0].Message, "TRIGGER_ENTITY_URL")
+}
+
+func TestLint_DeprecatedIssueURLInEnvSandbox(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env:   &EnvConfig{Sandbox: map[string]string{"ISSUE_URL": "${GITHUB_ISSUE_URL}"}},
+	}
+	diags := h.Lint()
+	require.Len(t, diags, 1)
+	assert.Equal(t, "env.sandbox.ISSUE_URL", diags[0].Field)
+}
+
+func TestLint_DeprecatedIssueURLInHostFiles(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		HostFiles: []HostFile{
+			{Src: "${GITHUB_ISSUE_URL}", Dest: "/sandbox/workspace/.issue-url"},
+		},
+	}
+	diags := h.Lint()
+	require.Len(t, diags, 1)
+	assert.Equal(t, "host_files[0].src", diags[0].Field)
+	assert.Contains(t, diags[0].Message, "GITHUB_ISSUE_URL")
+}
+
+func TestLint_NoDeprecatedIssueURLWarningWithoutReference(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env:   &EnvConfig{Runner: map[string]string{"ISSUE_URL": "${TRIGGER_ENTITY_URL}"}},
+	}
+	assert.Empty(t, h.Lint())
+}
+
 func TestDiagnostic_String(t *testing.T) {
 	t.Run("warning", func(t *testing.T) {
 		d := Diagnostic{Severity: SeverityWarning, Field: "role", Message: "msg"}
