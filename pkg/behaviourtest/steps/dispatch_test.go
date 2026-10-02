@@ -497,3 +497,18 @@ func TestCommitLocalHarnessResources_CommitsScaffoldProfilesAndProviders(t *test
 		"agent: https://example.com/a.md\nrole: triage\nopenshell:\n  profiles:\n    - https://example.com/p.yaml#sha256=abc\n"))
 	assert.Empty(t, scm2.files)
 }
+
+func TestCommitLocalHarnessResources_BareProviderNameCommitsNothing(t *testing.T) {
+	// A bare built-in provider name resolves from the fullsend binary
+	// (#7268): no providers/ or profiles/ copy is committed for it.
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	err := commitLocalHarnessResources(context.Background(), w, "pi-smoke",
+		"agent: agents/pi-smoke.md\nrole: triage\nproviders:\n  - vertex-ai\n")
+	require.NoError(t, err)
+	assert.Contains(t, scm.files, "org/repo/.fullsend/agents/pi-smoke.md")
+	for path := range scm.files {
+		assert.NotContains(t, path, "providers/")
+		assert.NotContains(t, path, "profiles/")
+	}
+}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/agentnew"
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -269,12 +270,18 @@ func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessNam
 	// for these directories, and a local harness resolves them relative to
 	// .fullsend/, so a scenario that needs a real model must reference them
 	// and they must exist. Entries the scaffold does not carry are an error.
+	// A bare provider name (e.g. vertex-ai) is not a file: the runner
+	// resolves a built-in one, and its profile, from the fullsend binary
+	// (#7268), so nothing is committed for it.
 	for _, group := range []struct {
 		field string
 		paths []string
 	}{{"profiles", h.OpenShell.Profiles}, {"providers", h.Providers}} {
 		for _, rel := range group.paths {
 			if rel == "" || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "https://") {
+				continue
+			}
+			if group.field == "providers" && !harness.IsProviderPath(rel) {
 				continue
 			}
 			data, err := scaffold.FullsendRepoFile(rel)
