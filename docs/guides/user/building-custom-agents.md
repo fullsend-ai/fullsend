@@ -158,12 +158,13 @@ openshell:
     - profiles/fullsend-github.yaml
 
 host_files:
-  # GCP credentials for Vertex AI (required for model access)
-  - src: env/gcp-vertex.env
-    dest: /sandbox/workspace/.env.d/gcp-vertex.env
-    expand: true
+  # GCP credentials for Vertex AI (required for model access).
+  # `fullsend run` prepares these two paths itself in GitHub Actions
+  # (see `setupActionsVertexCredentials` in `internal/cli/run.go`) —
+  # the harness only needs to mount what it produces.
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
+    optional: true
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
@@ -194,6 +195,13 @@ env:
     ISSUE_KEY: "${ISSUE_KEY}"
     GH_TOKEN: "${GH_TOKEN}"  # auto-minted in CI when --mint-url is provided
     FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/my-agent-result.schema.json
+  sandbox:
+    # Nothing in fullsend sets these automatically, so the harness must
+    # deliver them. `fullsend agent new` generates this same block.
+    CLAUDE_CODE_USE_VERTEX: "1"
+    ANTHROPIC_VERTEX_PROJECT_ID: "${ANTHROPIC_VERTEX_PROJECT_ID}"
+    CLOUD_ML_REGION: "${CLOUD_ML_REGION}"
+    GOOGLE_APPLICATION_CREDENTIALS: "/tmp/.gcp-credentials.json"
 
 timeout_minutes: 20
 
@@ -588,13 +596,11 @@ reusable workflow that invokes the agent.
 
 2. **Prepare workspace (upstream defaults)** — the fullsend CLI expects files in `.fullsend/harness/`, `.fullsend/agents/`, etc. The preparation step copies upstream default scripts into the workspace.
 
-3. **Authenticate to GCP via WIF** — provides short-lived credentials for Vertex AI. Uses Workload Identity Federation (no service account keys).
+3. **`FULLSEND_GCP_WIF_PROVIDER` and `FULLSEND_GCP_PROJECT_ID`** — `fullsend run` performs the Workload Identity Federation exchange itself when both are set in the `Run my-agent` step's `env` block (`setupActionsVertexCredentials` in `internal/cli/run.go`). It fetches a short-lived GCP credential, rewrites it to a file-based source the sandbox can read, and mounts it at the `GOOGLE_APPLICATION_CREDENTIALS`/`GCP_OIDC_TOKEN_FILE` paths declared in Step 2's `host_files` — no separate WIF-auth or credential-prep step is needed in the workflow.
 
-4. **Prepare sandbox credentials** — the WIF auth creates a credential config that references GitHub's OIDC endpoint, which isn't reachable from inside the sandbox. This script pre-fetches the OIDC token and rewrites the config to use a file-based source.
+4. **`ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION`** — must be in the workflow `env` block. These are the Vertex model-access variables the harness's `env.sandbox` block (Step 2) carries into the sandbox; nothing else sets them.
 
-5. **`ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION`** — must be in the workflow `env` block so the `gcp-vertex.env` file (copied into the sandbox with `expand: true`) resolves correctly.
-
-6. **All `env.runner` variables** must appear in the workflow `env` block. If your harness references `MY_VAR: "${MY_VAR}"`, the workflow must set `MY_VAR`.
+5. **All `env.runner` variables** must appear in the workflow `env` block. If your harness references `MY_VAR: "${MY_VAR}"`, the workflow must set `MY_VAR`.
 
 ### Bringing your own identity
 
@@ -688,7 +694,7 @@ jobs:
 
 | Symptom | Likely cause |
 |---------|-------------|
-| Agent crashes immediately (0s runtime) | Sandbox can't authenticate to Vertex AI. Verify `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, and that `prepare-sandbox-credentials.sh` ran after the WIF auth step. |
+| Agent crashes immediately (0s runtime) with `Vertex credential setup failed` or `Inference credential validation failed` | `fullsend run` validates Vertex credentials before the sandbox starts and fails fast. Verify `FULLSEND_GCP_WIF_PROVIDER` and `FULLSEND_GCP_PROJECT_ID` are both set (both or neither — one alone errors with "Vertex inference requires both ... only one is set"), or that `GOOGLE_APPLICATION_CREDENTIALS` points to a non-empty credential file. Also verify `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` are set in the workflow `env` block (Step 7, item 4). |
 | "Harness file not found" | The fullsend CLI looks for `.fullsend/harness/my-agent.yaml`. Verify the file exists and the agent is registered in `config.yaml`. |
 | Agent can't find input files | Ensure pre-script output paths match `host_files` entries in the harness. |
 | Network policy blocks requests | Check `openshell-sandbox.log` in artifacts for `DENIED` entries. Add the endpoint to the policy. |
