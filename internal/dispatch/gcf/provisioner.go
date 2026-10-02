@@ -162,6 +162,38 @@ type Provisioner struct {
 	cfg        Config
 	gcpAPI     GCFClient
 	httpClient *http.Client // for health checks; nil uses http.DefaultClient
+
+	// pollDelay returns a channel that fires after the given duration, used
+	// by waitForRevisionReady for inter-poll delays. nil → time.After.
+	// Tests inject a zero-delay function to avoid real sleeps.
+	pollDelay func(time.Duration) <-chan time.Time
+
+	// revisionReadyTimeout bounds how long waitForRevisionReady polls before
+	// giving up. Zero → defaultRevisionReadyTimeout. Tests shrink this to
+	// exercise the timeout path without a real 2-minute wait.
+	revisionReadyTimeout time.Duration
+}
+
+// defaultRevisionReadyTimeout is the production value of
+// Provisioner.revisionReadyTimeout.
+const defaultRevisionReadyTimeout = 2 * time.Minute
+
+// getRevisionReadyTimeout returns the configured revision-ready timeout,
+// defaulting to defaultRevisionReadyTimeout when unset.
+func (p *Provisioner) getRevisionReadyTimeout() time.Duration {
+	if p.revisionReadyTimeout > 0 {
+		return p.revisionReadyTimeout
+	}
+	return defaultRevisionReadyTimeout
+}
+
+// getPollDelay returns the configured poll delay function, defaulting to
+// time.After when none is set.
+func (p *Provisioner) getPollDelay() func(time.Duration) <-chan time.Time {
+	if p.pollDelay != nil {
+		return p.pollDelay
+	}
+	return time.After
 }
 
 // NewProvisioner creates a new Provisioner with defaults applied.
@@ -863,6 +895,12 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 				if err := p.gcpAPI.SetCloudRunInvoker(ctx, p.cfg.ProjectID, p.cfg.Region, functionName); err != nil {
 					return nil, fmt.Errorf("setting function invoker policy: %w", err)
 				}
+				// A matching source hash can still leave traffic pinned to an
+				// older revision from a previous deploy. Re-pin before reuse.
+				// existing is non-nil here, so this is never a first deploy.
+				if err := p.ensureTrafficOnLatestRevision(ctx, false); err != nil {
+					return nil, err
+				}
 				p.cfg.MintURL = existing.URI
 				return p.provisionWithExistingMint(ctx)
 			}
@@ -919,6 +957,12 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	// Step 6b: Code deployment — only when source hash changes.
 	sourceZip := earlySourceZip
 	sourceHash := sha256Hex(sourceZip)
+
+	// Captured before the branch below reassigns existing via GetFunction,
+	// so ensureTrafficOnLatestRevision can tell a genuine first deploy
+	// (no prior revision to reconcile registration data against) apart
+	// from an update deploy.
+	isFirstDeploy := existing == nil
 
 	if existing == nil && p.cfg.DeployMode != DeploySkip {
 		// First deploy: CreateFunction with full env vars including org registration.
@@ -1055,6 +1099,13 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 
 	if err := p.gcpAPI.SetCloudRunInvoker(ctx, p.cfg.ProjectID, p.cfg.Region, functionName); err != nil {
 		return nil, fmt.Errorf("setting function invoker policy: %w", err)
+	}
+
+	// Cloud Functions source deploys create a new revision but leave traffic
+	// on a previously pinned revision. Pin before the health check so /health
+	// observes the revision that will actually serve public traffic.
+	if err := p.ensureTrafficOnLatestRevision(ctx, isFirstDeploy); err != nil {
+		return nil, err
 	}
 
 	if err := p.waitForReady(ctx, mintURL); err != nil {
@@ -1910,6 +1961,381 @@ func (p *Provisioner) GetServiceRevisionInfo(ctx context.Context) (*ServiceRevis
 	return p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 }
 
+// ensureTrafficOnLatestRevision pins Cloud Run traffic to the latest created
+// revision when the serving revision has diverged from it. After a Cloud
+// Functions source deploy, traffic stays on a previously pinned revision
+// unless it is explicitly re-pinned. If the pin fails, the error includes
+// the gcloud command to recover manually.
+//
+// The pin target is derived the same way TemplateMatchesTraffic is
+// (LatestCreatedRevisionShort, falling back to TemplateRevision, then to
+// LatestReadyRevisionShort): a just-finished deploy can create a new
+// revision before Cloud Run reports it as latestReadyRevision. Before
+// pinning to a target that isn't already confirmed Ready, this waits (see
+// waitForRevisionReady) rather than either skipping the pin or pinning an
+// unready revision.
+//
+// isFirstDeploy must be true only when this is the initial creation of the
+// service (called right after CreateFunction, with no prior revision to
+// reconcile against) and false otherwise, including on an update deploy or
+// a hash-skip re-pin. It is used solely to decide whether an unreported
+// traffic-serving revision is safe to pin over (see below).
+//
+// Before moving traffic, it reconciles registration data (ALLOWED_ORGS,
+// ROLE_APP_IDS, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS) against the
+// currently serving revision, which is treated as the source of truth: those
+// env vars can be updated by direct Cloud Run patches (EnsureOrgInMint,
+// AddRoleToMint, RegisterPerRepoWIF, RemoveOrgFromMint, RemoveRoleFromMint,
+// RemoveRepoFromMint, AddWorkflowHostRepo, RemoveWorkflowHostRepo) that never
+// write back to the Cloud Functions template used to build the latest-ready
+// revision. Pinning to that revision without reconciling first could either
+// drop registration data the traffic-serving revision has and the template
+// doesn't, or silently restore an org/role/repo that was revoked from
+// traffic but still lingers in a stale template. If the traffic-serving
+// env can't be read reliably, the pin is refused rather than proceeding on
+// unverified data.
+func (p *Provisioner) ensureTrafficOnLatestRevision(ctx context.Context, isFirstDeploy bool) error {
+	info, err := p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return fmt.Errorf("checking Cloud Run traffic after deploy: %w; recover with: %s",
+			err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, ""))
+	}
+	if info == nil || info.TemplateMatchesTraffic {
+		return nil
+	}
+
+	// Prefer the latest *created* revision (mirrors TemplateMatchesTraffic
+	// above): it reflects a just-finished deploy immediately, whereas
+	// LatestReadyRevisionShort can lag until that revision becomes Ready.
+	// Falling back to LatestReadyRevisionShort keeps this safe when the API
+	// didn't report a created/template revision at all.
+	target := info.LatestCreatedRevisionShort
+	if target == "" {
+		target = shortRevisionName(info.TemplateRevision)
+	}
+	if target == "" {
+		target = info.LatestReadyRevisionShort
+	}
+
+	if info.TrafficRevisionShort == "" {
+		if target == "" {
+			return fmt.Errorf("Cloud Run traffic revision not yet reported and the latest revision is unknown; recover with: %s",
+				trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, ""))
+		}
+		// Observed traffic not reported yet (initial create still
+		// reconciling, or the API returned no trafficStatuses). On an
+		// existing service, GetServiceRevisionInfo leaves this empty in the
+		// same situation it also sets TrafficEnvVarsUnreliable for — an
+		// unresolvable traffic-serving revision — so treat it identically
+		// to that flag and refuse to pin without a verified read of what is
+		// currently serving: pinning blind could restore an org, role, or
+		// per-repo WIF entry that the unreported revision had already
+		// dropped. On a first deploy there is no prior revision to
+		// reconcile against, so pinning straight to the known latest-ready
+		// revision is safe.
+		if !isFirstDeploy {
+			return fmt.Errorf("Cloud Run traffic revision not yet reported on an existing service; refusing to pin to %s without verifying currently-served registration data; re-run mint deploy or mint status once the revision read succeeds -- manually running a traffic-shift command bypasses this safety check and can restore registration data that was intentionally revoked",
+				target)
+		}
+		log.Printf("Cloud Run traffic revision not yet reported (first deploy); pinning 100%% to latest ready %s", target)
+		if !revisionIsReady(info, target) {
+			if err := p.waitForRevisionReady(ctx, target); err != nil {
+				return fmt.Errorf("waiting for revision %s to become ready before pinning traffic: %w; recover with: %s",
+					target, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+			}
+		}
+		if err := p.gcpAPI.PinServiceTraffic(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, target); err != nil {
+			return fmt.Errorf("pinning Cloud Run traffic to %s: %w; recover with: %s",
+				target, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+		}
+		return nil
+	}
+
+	if target == "" {
+		return fmt.Errorf("traffic is pinned to %s but the latest revision is unknown; recover with: %s",
+			info.TrafficRevisionShort, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, ""))
+	}
+	if target == info.TrafficRevisionShort {
+		return nil
+	}
+
+	reconciled, err := reconcileTargetEnvVars(info.TrafficEnvVars, info.TemplateEnvVars, info.TrafficEnvVarsUnreliable, p.cfg.AgentAppIDs)
+	if err != nil {
+		return fmt.Errorf("reconciling registration data before pinning traffic to %s (currently serving %s): %w; re-run mint deploy or mint status once the revision read succeeds -- manually running a traffic-shift command bypasses this safety check and can restore registration data that was intentionally revoked",
+			target, info.TrafficRevisionShort, err)
+	}
+	if reconciled != nil {
+		log.Printf("Cloud Run traffic is on %s, not latest ready %s; latest ready is missing registration data present on %s, reconciling before pinning",
+			info.TrafficRevisionShort, target, info.TrafficRevisionShort)
+		rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, reconciled)
+		if err != nil {
+			// UpdateServiceEnvVars can fail after already creating a new
+			// revision with the reconciled env (template PATCH succeeded,
+			// traffic PATCH failed). When that happens, rev is the newly
+			// created revision — the one that actually carries the
+			// reconciled registration data — not the stale target. Recover
+			// against rev so the operator doesn't re-pin the unreconciled
+			// revision this function exists to avoid.
+			recoveryTarget := target
+			if rev != "" {
+				recoveryTarget = shortRevisionName(rev)
+			}
+			return fmt.Errorf("reconciling registration data and pinning traffic away from %s: %w; recover with: %s",
+				info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, recoveryTarget))
+		}
+		return nil
+	}
+
+	log.Printf("Cloud Run traffic is on %s, not latest ready %s; pinning 100%% to %s",
+		info.TrafficRevisionShort, target, target)
+	if !revisionIsReady(info, target) {
+		if err := p.waitForRevisionReady(ctx, target); err != nil {
+			return fmt.Errorf("waiting for revision %s to become ready before pinning traffic away from %s: %w; recover with: %s",
+				target, info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+		}
+	}
+	if err := p.gcpAPI.PinServiceTraffic(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, target); err != nil {
+		return fmt.Errorf("pinning Cloud Run traffic to %s (currently serving %s): %w; recover with: %s",
+			target, info.TrafficRevisionShort, err, trafficShiftCommand(p.cfg.ProjectID, p.cfg.Region, target))
+	}
+	return nil
+}
+
+// revisionIsReady reports whether targetShort is confirmed Ready according
+// to info: either because it is already the latest-ready revision, or
+// because it appears in RecentRevisions marked Active. A nil info or empty
+// targetShort is never ready.
+func revisionIsReady(info *ServiceRevisionInfo, targetShort string) bool {
+	if info == nil || targetShort == "" {
+		return false
+	}
+	if info.LatestReadyRevisionShort == targetShort {
+		return true
+	}
+	for _, rev := range info.RecentRevisions {
+		if rev.Name == targetShort && rev.Active {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForRevisionReady polls GetServiceRevisionInfo until targetShort is
+// confirmed Ready (see revisionIsReady) or a 2-minute timeout elapses. This
+// guards against pinning traffic to a revision a deploy just created but
+// that Cloud Run has not finished bringing up yet — TemplateMatchesTraffic
+// (and the target derived from LatestCreatedRevisionShort/TemplateRevision)
+// can report a genuinely newer revision before it is safe to route traffic
+// to.
+func (p *Provisioner) waitForRevisionReady(ctx context.Context, targetShort string) error {
+	timeout := p.getRevisionReadyTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	delay := p.getPollDelay()
+	for {
+		info, err := p.gcpAPI.GetServiceRevisionInfo(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+		if err != nil {
+			return fmt.Errorf("checking readiness of revision %s: %w", targetShort, err)
+		}
+		if revisionIsReady(info, targetShort) {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("revision %s did not become ready within %s", targetShort, timeout)
+		case <-delay(3 * time.Second):
+		}
+	}
+}
+
+// accumulativeEnvKeys lists CSV-formatted allow-list env vars that are
+// updated in place on the Cloud Run traffic-serving revision via direct
+// patches (EnsureOrgInMint, RemoveOrgFromMint, RegisterPerRepoWIF,
+// RemoveRepoFromMint, AddWorkflowHostRepo, RemoveWorkflowHostRepo). Those
+// patches update the Cloud Run service directly and never write back to the
+// Cloud Functions template that produces the "latest ready" revision after a
+// code deploy, so the template can be missing data the traffic-serving
+// revision already has — or can still carry entries the traffic-serving
+// revision no longer has, after a removal.
+//
+// The traffic-serving revision is the source of truth for these keys:
+// reconcileTargetEnvVars copies them onto the target env verbatim (including
+// removals), rather than only unioning the template's value forward. Unioning
+// can silently restore a revoked org, role, or per-repo WIF entry that a
+// Remove* call cleared from traffic but that survives in a stale template.
+var accumulativeEnvKeys = []string{"ALLOWED_ORGS", "PER_REPO_WIF_REPOS", "WORKFLOW_HOST_REPOS"}
+
+// reconcileTargetEnvVars compares the accumulative registration keys between
+// the currently traffic-serving env vars (the source of truth) and the
+// target (template) env vars that a traffic pin would move to. It returns a
+// full env var map with those keys copied from traffic, or nil if the target
+// already matches traffic for all of them.
+//
+// trafficEnvUnreliable must be true when trafficEnv was not read directly
+// from the traffic-serving revision (see ServiceRevisionInfo.
+// TrafficEnvVarsUnreliable) — in that case trafficEnv is a copy of the
+// target's own template data, so comparing it against the target always
+// looks reconciled even though nothing was actually verified. Reconciling
+// blind on that data would pin the unreconciled revision and reintroduce the
+// exact registration drop this function exists to prevent, so it errors
+// instead.
+//
+// A nil or empty trafficEnv is treated the same way, even when
+// trafficEnvUnreliable is false: mint's init() fatals on missing required
+// env vars, so a revision that is actually serving traffic always has a
+// non-empty env. GetServiceRevisionInfo marks a genuinely unread traffic env
+// as unreliable rather than returning it as an empty-but-verified map, so an
+// empty trafficEnv reaching here signals an unverified read this function
+// should refuse to reconcile against, not "traffic legitimately has nothing
+// accumulative to contribute."
+//
+// currentAgentAppIDs is this run's p.cfg.AgentAppIDs. Unlike ALLOWED_ORGS,
+// PER_REPO_WIF_REPOS, and WORKFLOW_HOST_REPOS — which are only ever changed
+// by direct Cloud Run patches (EnsureOrgInMint, RegisterPerRepoWIF, etc.) —
+// ROLE_APP_IDS can also be updated by this same deploy's own config (see the
+// needsCodeDeploy branch in Provision, which merges p.cfg.AgentAppIDs into
+// the template's ROLE_APP_IDS before this function runs). Copying traffic's
+// ROLE_APP_IDS verbatim would drop a role this deploy just configured but
+// that hasn't reached the still-serving traffic revision yet, so
+// currentAgentAppIDs is re-applied on top of traffic's map as the
+// reconciliation base: a role removed via RemoveRoleFromMint (absent from
+// both traffic and currentAgentAppIDs) still drops out, but a role newly
+// added via config survives.
+//
+// Comparisons are set-based (not string-equality) so that formatting or
+// ordering differences that carry no data-loss risk never trigger an
+// unnecessary reconciliation revision.
+func reconcileTargetEnvVars(trafficEnv, targetEnv map[string]string, trafficEnvUnreliable bool, currentAgentAppIDs map[string]string) (map[string]string, error) {
+	if trafficEnvUnreliable {
+		return nil, fmt.Errorf("traffic-serving revision's env vars could not be read reliably; refusing to reconcile registration data without a verified read")
+	}
+	if len(trafficEnv) == 0 {
+		return nil, fmt.Errorf("traffic-serving revision's env vars are empty; refusing to reconcile registration data against an unverified empty read")
+	}
+
+	changed := false
+	merged := make(map[string]string, len(targetEnv)+len(accumulativeEnvKeys)+1)
+	for k, v := range targetEnv {
+		merged[k] = v
+	}
+
+	for _, key := range accumulativeEnvKeys {
+		trafficVal := trafficEnv[key]
+		if !csvSetEqual(merged[key], trafficVal) {
+			merged[key] = unionCSV(trafficVal, "")
+			changed = true
+		}
+	}
+
+	trafficRoleIDsJSON := trafficEnv["ROLE_APP_IDS"]
+	var trafficRoleIDs map[string]string
+	if trafficRoleIDsJSON != "" {
+		if err := json.Unmarshal([]byte(trafficRoleIDsJSON), &trafficRoleIDs); err != nil {
+			return nil, fmt.Errorf("parsing traffic-serving ROLE_APP_IDS: %w", err)
+		}
+	}
+	// Reconciliation base is traffic's role map (source of truth for roles
+	// revoked via RemoveRoleFromMint), with this run's own AgentAppIDs
+	// re-applied on top so a role this same deploy just configured survives
+	// even though it hasn't reached the traffic-serving revision yet.
+	reconciledRoleIDs := make(map[string]string, len(trafficRoleIDs)+len(currentAgentAppIDs))
+	for role, appID := range trafficRoleIDs {
+		reconciledRoleIDs[role] = appID
+	}
+	for role, appID := range currentAgentAppIDs {
+		reconciledRoleIDs[role] = appID
+	}
+	var currentRoleIDs map[string]string
+	if cur := merged["ROLE_APP_IDS"]; cur != "" {
+		if err := json.Unmarshal([]byte(cur), &currentRoleIDs); err != nil {
+			return nil, fmt.Errorf("parsing target ROLE_APP_IDS: %w", err)
+		}
+	}
+	if !stringMapEqual(currentRoleIDs, reconciledRoleIDs) {
+		mergedRoleIDsJSON, err := marshalRoleAppIDs(reconciledRoleIDs)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling ROLE_APP_IDS: %w", err)
+		}
+		merged["ROLE_APP_IDS"] = mergedRoleIDsJSON
+		merged["ALLOWED_ROLES"] = deriveAllowedRoles(mergedRoleIDsJSON)
+		changed = true
+	}
+
+	if !changed {
+		return nil, nil
+	}
+	return merged, nil
+}
+
+// csvSetEqual reports whether two comma-separated lists contain the same set
+// of entries, ignoring formatting, ordering, and duplicates.
+func csvSetEqual(a, b string) bool {
+	return csvContainsAll(a, b) && csvContainsAll(b, a)
+}
+
+// csvContainsAll reports whether every entry in needle (a comma-separated
+// list) is already present in haystack (also comma-separated).
+func csvContainsAll(haystack, needle string) bool {
+	have := make(map[string]bool)
+	for _, entry := range strings.Split(haystack, ",") {
+		if entry = strings.TrimSpace(entry); entry != "" {
+			have[entry] = true
+		}
+	}
+	for _, entry := range strings.Split(needle, ",") {
+		if entry = strings.TrimSpace(entry); entry != "" && !have[entry] {
+			return false
+		}
+	}
+	return true
+}
+
+// stringMapEqual reports whether two string maps have identical key/value
+// pairs. A nil map and an empty map compare equal.
+func stringMapEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
+}
+
+// unionCSV merges two comma-separated lists, deduplicating, trimming
+// whitespace, and sorting for a deterministic result.
+func unionCSV(a, b string) string {
+	seen := make(map[string]bool)
+	var merged []string
+	for _, list := range []string{a, b} {
+		for _, entry := range strings.Split(list, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry != "" && !seen[entry] {
+				seen[entry] = true
+				merged = append(merged, entry)
+			}
+		}
+	}
+	sort.Strings(merged)
+	return strings.Join(merged, ",")
+}
+
+// trafficShiftCommand returns the gcloud invocation that moves 100% of
+// Cloud Run traffic onto the given revision, or --to-latest when the
+// revision name is unknown.
+func trafficShiftCommand(projectID, region, revision string) string {
+	if revision == "" {
+		return fmt.Sprintf("gcloud run services update-traffic %s --project=%s --region=%s --to-latest",
+			functionName, projectID, region)
+	}
+	return fmt.Sprintf("gcloud run services update-traffic %s --project=%s --region=%s --to-revisions %s=100",
+		functionName, projectID, region, revision)
+}
+
 // GetServiceTrafficEnvVars reads env vars from the traffic-serving Cloud Run
 // revision. This is a convenience wrapper around the GCFClient method.
 func (p *Provisioner) GetServiceTrafficEnvVars(ctx context.Context) (map[string]string, error) {
@@ -2246,10 +2672,13 @@ func sha256Hex(data []byte) string {
 }
 
 // needsCodeDeploy determines whether the Cloud Function code needs (re)deployment.
-// Only checks the source hash — org-level env vars (ALLOWED_ORGS, ROLE_APP_IDS)
-// are handled separately by EnsureOrgInMint. Infrastructure env vars set during
-// initial deploy (FULLSEND_SOURCE_HASH, GCP_PROJECT_ID) are NOT reconciled on
-// subsequent runs; a code redeploy is required to update them.
+// Only checks the source hash against the Cloud Functions template env vars —
+// org-level env vars (ALLOWED_ORGS, ROLE_APP_IDS) are handled separately by
+// EnsureOrgInMint. A matching hash does not mean the new revision is serving:
+// Cloud Run traffic can remain pinned to an older revision after a source
+// deploy. ensureTrafficOnLatestRevision handles that separately. Infrastructure
+// env vars set during initial deploy (FULLSEND_SOURCE_HASH, GCP_PROJECT_ID) are
+// NOT reconciled on subsequent runs; a code redeploy is required to update them.
 func (p *Provisioner) needsCodeDeploy(existing *FunctionInfo, sourceHash string) bool {
 	if p.cfg.DeployMode == DeploySkip {
 		return false

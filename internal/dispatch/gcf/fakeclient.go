@@ -6,6 +6,9 @@ import (
 	"fmt"
 )
 
+// Compile-time check that fakeGCFClient implements GCFClient.
+var _ GCFClient = (*fakeGCFClient)(nil)
+
 // fakeGCFClient records calls and returns preset responses.
 type fakeGCFClient struct {
 	calls []string
@@ -55,6 +58,15 @@ type fakeGCFClient struct {
 
 	// Track revision info for GetServiceRevisionInfo.
 	revisionInfo *ServiceRevisionInfo
+
+	// revisionInfoSequence, when non-empty, is consumed FIFO by successive
+	// GetServiceRevisionInfo calls (one entry per call) to simulate a
+	// revision transitioning across polls (e.g. not-ready then ready).
+	// Once exhausted, GetServiceRevisionInfo falls back to revisionInfo.
+	revisionInfoSequence []*ServiceRevisionInfo
+
+	// lastPinnedRevision is the short revision name passed to PinServiceTraffic.
+	lastPinnedRevision string
 
 	// Captured project IAM binding arguments.
 	projectIAMBindings []projectIAMBinding
@@ -238,6 +250,11 @@ func (f *fakeGCFClient) UpdateServiceEnvVars(_ context.Context, _, _, _ string, 
 	f.lastUpdateServiceEnvVars = envVars
 	return f.updateServiceRevision, f.errs["UpdateServiceEnvVars"]
 }
+func (f *fakeGCFClient) PinServiceTraffic(_ context.Context, _, _, _, revision string) error {
+	f.calls = append(f.calls, "PinServiceTraffic")
+	f.lastPinnedRevision = revision
+	return f.errs["PinServiceTraffic"]
+}
 func (f *fakeGCFClient) GetServiceTrafficEnvVars(_ context.Context, _, _, _ string) (map[string]string, error) {
 	f.calls = append(f.calls, "GetServiceTrafficEnvVars")
 	if err := f.errs["GetServiceTrafficEnvVars"]; err != nil {
@@ -262,6 +279,11 @@ func (f *fakeGCFClient) GetServiceRevisionInfo(_ context.Context, _, _, _ string
 	f.calls = append(f.calls, "GetServiceRevisionInfo")
 	if err := f.errs["GetServiceRevisionInfo"]; err != nil {
 		return nil, err
+	}
+	if len(f.revisionInfoSequence) > 0 {
+		next := f.revisionInfoSequence[0]
+		f.revisionInfoSequence = f.revisionInfoSequence[1:]
+		return next, nil
 	}
 	if f.revisionInfo != nil {
 		return f.revisionInfo, nil
