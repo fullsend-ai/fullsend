@@ -52,16 +52,14 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
         && event.transition.kind == "label_changed"
         && event.transition.label.name == "ready-for-pi-override"
       # Vertex reaches the sandbox the way the fleet harnesses wire it:
-      # egress is granted by the vertex-ai provider (ADR-0065; the per-repo
-      # scaffold ships these provider/profile files), credentials arrive as
-      # host files, and the project/region env is inlined here because the
-      # scaffold ships no gcp-vertex.env. ${VAR} expands from the runner
-      # environment set by setup-gcp.
-      openshell:
-        profiles:
-          - profiles/fullsend-vertex-ai.yaml
+      # egress is granted by the vertex-ai provider (ADR-0065; the bare name
+      # resolves to the definition and fullsend-vertex-ai profile built into
+      # fullsend, #7268), credentials arrive as host files, and the
+      # project/region env is inlined here because the scaffold ships no
+      # gcp-vertex.env. ${VAR} expands from the runner environment set by
+      # setup-gcp.
       providers:
-        - providers/vertex-ai.yaml
+        - vertex-ai
       host_files:
         - src: ${GOOGLE_APPLICATION_CREDENTIALS}
           dest: /tmp/.gcp-credentials.json

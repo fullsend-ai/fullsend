@@ -186,3 +186,9 @@ Fully backwards-compatible with ADR 0070:
 > keeps that copy live and gets a warning with the migration; a later release
 > makes it an error. `fullsend-openai` stays an error, as before. Paths and
 > URLs remain full overrides under their own, non-reserved names and ids.
+> A profile's shape is tied to the OpenShell version (the credential
+> declaration in #7883), and fullsend is what pins OpenShell, so the
+> definitions ship with that pin and a fix reaches every repository with the
+> next release. Making fullsend-ai/agents canonical with a drift check, or
+> pinning URLs to it, was considered and rejected: both keep several copies
+> and only detect drift.
