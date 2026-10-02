@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
-       mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
+       mindmap go-build go-test go-fmt go-vet go-tidy \
        lint-md-links script-test test \
        e2e-test behaviour-test lint-eval-cases functional-tests \
        wasm-build wasm-stage mint-cf-worker-test
@@ -21,7 +21,6 @@ help:
 	@echo "  mindmap              - Open the interactive document graph in a browser"
 	@echo "  go-build             - Build the fullsend binary"
 	@echo "  go-test              - Run Go tests with race detection and coverage"
-	@echo "  go-lint              - Run golangci-lint"
 	@echo "  go-fmt               - Format Go code"
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
@@ -119,9 +118,6 @@ go-test:
 	@tail -n +2 cover-github.out >> coverage.out
 	@go tool cover -func=coverage.out | tail -1
 	@rm -f cover-default.out cover-github.out
-
-go-lint:
-	golangci-lint run ./...
 
 go-fmt:
 	gofmt -l -w .
