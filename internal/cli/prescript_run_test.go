@@ -205,6 +205,56 @@ func TestRunAgent_OpenAIParentVertexEnvMissingGCPCredentialsFailsBeforePreScript
 	assert.NoFileExists(t, marker)
 }
 
+// A hand-written OpenAI-parent harness can also wire a google-vertex
+// sub-agent directly into env.sandbox (GOOGLE_CLOUD_PROJECT /
+// GOOGLE_CLOUD_LOCATION, see docs/runtimes/pi.md) instead of
+// ANTHROPIC_VERTEX_PROJECT_ID/CLOUD_ML_REGION or the vertex-ai provider
+// (#7980 review).
+func TestRunAgent_OpenAIParentGoogleVertexEnvMissingGCPCredentialsFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("env:\n  sandbox:\n    GOOGLE_CLOUD_PROJECT: test-project\n    GOOGLE_CLOUD_LOCATION: us-east5\n" +
+		"host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
+// A hand-written OpenAI-parent harness can also wire an xai-vertex
+// sub-agent directly into env.sandbox (XAI_VERTEX_PROJECT_ID with
+// GOOGLE_CLOUD_LOCATION for region, see docs/runtimes/pi.md) (#7980 review).
+func TestRunAgent_OpenAIParentXAIVertexEnvMissingGCPCredentialsFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("env:\n  sandbox:\n    XAI_VERTEX_PROJECT_ID: test-project\n    GOOGLE_CLOUD_LOCATION: us-east5\n" +
+		"host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
 // A required (non-optional) GOOGLE_APPLICATION_CREDENTIALS mount with an
 // empty variable must fail before the pre-script even for a Vertex-reaching
 // harness: validateVertexGCPCredentials only checks optional mounts, so
@@ -722,6 +772,13 @@ func TestHarnessMayReachVertex(t *testing.T) {
 	assert.True(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"ANTHROPIC_VERTEX_PROJECT_ID": "${ANTHROPIC_VERTEX_PROJECT_ID}"}}}, resolve.ResolveResult{}))
 	assert.True(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"CLOUD_ML_REGION": "${CLOUD_ML_REGION}"}}}, resolve.ResolveResult{}))
 	assert.False(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"SOME_OTHER_VAR": "x"}}}, resolve.ResolveResult{}))
+
+	// The google-vertex and xai-vertex pi provider families (docs/runtimes/pi.md)
+	// wire Vertex settings through their own env.sandbox keys instead of
+	// ANTHROPIC_VERTEX_PROJECT_ID/CLOUD_ML_REGION (#7980 review).
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"GOOGLE_CLOUD_PROJECT": "${GOOGLE_CLOUD_PROJECT}"}}}, resolve.ResolveResult{}))
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"GOOGLE_CLOUD_LOCATION": "${GOOGLE_CLOUD_LOCATION}"}}}, resolve.ResolveResult{}))
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"XAI_VERTEX_PROJECT_ID": "${XAI_VERTEX_PROJECT_ID}"}}}, resolve.ResolveResult{}))
 
 	// Or mount a gcp-vertex.env host file (see
 	// docs/guides/user/bring-your-own-agent.md) instead of declaring the

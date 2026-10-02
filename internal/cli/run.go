@@ -4347,8 +4347,19 @@ func harnessMayReachVertex(h *harness.Harness, result resolve.ResolveResult) boo
 // hand-written harness wires Vertex settings directly rather than through
 // the vertex-ai provider (see docs/guides/user/bring-your-own-agent.md and
 // docs/guides/user/running-agents-locally.md). Their presence signals that
-// a sub-agent may reach Vertex even though the parent does not.
-var vertexSandboxEnvKeys = []string{"ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION"}
+// a sub-agent may reach Vertex even though the parent does not. This covers
+// all three pi Vertex provider families (docs/runtimes/pi.md): anthropic-vertex
+// (ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION), google-vertex
+// (GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION), and xai-vertex
+// (XAI_VERTEX_PROJECT_ID, falling back to GOOGLE_CLOUD_PROJECT or
+// ANTHROPIC_VERTEX_PROJECT_ID, with GOOGLE_CLOUD_LOCATION for region) (#7980 review).
+var vertexSandboxEnvKeys = []string{
+	"ANTHROPIC_VERTEX_PROJECT_ID",
+	"CLOUD_ML_REGION",
+	"GOOGLE_CLOUD_PROJECT",
+	"GOOGLE_CLOUD_LOCATION",
+	"XAI_VERTEX_PROJECT_ID",
+}
 
 // isVertexProviderRef reports whether a harness-declared providers[] entry
 // (a bare name, a local providers/ path, or an integrity-hashed URL) refers
