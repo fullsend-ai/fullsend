@@ -14,12 +14,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -206,8 +209,17 @@ func inGitDir(path, root string) bool {
 // the import if the winner already wrote the cache.
 //
 // When content has changed (hash mismatch or no cache), the existing profile
-// is deleted and reimported. If the reimport fails because a parallel process
-// already imported it, the error is treated as success.
+// is deleted and reimported. The delete is best-effort: it fails while any
+// provider still references the profile ("profile '<id>' is in use by
+// providers: ..."), which then makes the reimport fail with "already
+// exists". That combination does not necessarily mean nothing needs to
+// change — the gateway may still hold the *old* content, left behind
+// because the delete never ran. Before trusting "already exists" as
+// success, the gateway's current content is exported and compared against
+// profilePath: a match means a parallel process already applied this exact
+// content (safe to continue), a mismatch means the stale, in-use profile was
+// never replaced (returned as an error instead of a silently cached false
+// success). See #7973.
 func ImportProfile(ctx context.Context, id, profilePath string) error {
 	currentHash, err := hashProfileFile(profilePath)
 	if err != nil {
@@ -262,7 +274,14 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 	if err != nil {
 		outStr := strings.ToLower(string(out))
 		if strings.Contains(outStr, "already exists") {
-			// A parallel process imported the profile — safe to continue.
+			matches, matchErr := gatewayProfileMatches(ctx, id, profilePath)
+			if matchErr != nil {
+				return fmt.Errorf("profile import %q reported \"already exists\", and the gateway's current content could not be verified: %w", filepath.Base(profilePath), matchErr)
+			}
+			if !matches {
+				return fmt.Errorf("profile import %q failed: openshell reported the profile %q already exists, but its content on the gateway does not match %s; the preceding delete was likely blocked because a provider still references the profile — remove that provider (or delete the profile manually) and retry", filepath.Base(profilePath), id, filepath.Base(profilePath))
+			}
+			// A parallel process already applied this exact content — safe to continue.
 			os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
 			return nil
 		}
@@ -270,6 +289,63 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 	}
 	os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
 	return nil
+}
+
+// gatewayProfileMatches reports whether the gateway's current content for
+// profile id matches the local file at profilePath. It is called only after
+// a reimport reports "already exists", to tell a genuinely-unchanged profile
+// (the local hash cache was stale or missing, but the gateway already has
+// this exact content — safe to treat the reimport as success) from a
+// genuinely-stale one left behind by a delete that failed because a
+// provider still references it (see #7973). The local hash cache cannot
+// make this distinction on its own: it only reflects what *this* process
+// last sent, not what the gateway currently holds.
+//
+// Comparison is field-subset: every key the local YAML declares must be
+// present with an equal value in the exported YAML. Export may include
+// gateway-assigned metadata (e.g. resource_version) that the local file
+// never carries, so extra fields on the gateway side do not cause a false
+// mismatch.
+func gatewayProfileMatches(ctx context.Context, id, profilePath string) (bool, error) {
+	local, err := os.ReadFile(profilePath)
+	if err != nil {
+		return false, fmt.Errorf("reading local profile %q: %w", filepath.Base(profilePath), err)
+	}
+
+	exportCtx, cancel := context.WithTimeout(ctx, providerTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(exportCtx, "openshell", "provider", "profile", "export", id)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	exported, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("exporting provider profile %q: %w (stderr: %s)", id, err, strings.TrimSpace(stderr.String()))
+	}
+
+	return profileContentSubsetEqual(local, exported)
+}
+
+// profileContentSubsetEqual reports whether every field declared in local
+// (a profile YAML document) is present with an equal value in exported (the
+// gateway's export of that same profile id). Unparseable input on either
+// side is reported as an error rather than treated as a mismatch, so a
+// malformed export cannot be mistaken for a confirmed content difference.
+func profileContentSubsetEqual(local, exported []byte) (bool, error) {
+	var localDoc map[string]any
+	if err := yaml.Unmarshal(local, &localDoc); err != nil {
+		return false, fmt.Errorf("parsing local profile: %w", err)
+	}
+	var exportedDoc map[string]any
+	if err := yaml.Unmarshal(exported, &exportedDoc); err != nil {
+		return false, fmt.Errorf("parsing exported profile: %w", err)
+	}
+	for k, v := range localDoc {
+		ev, ok := exportedDoc[k]
+		if !ok || !reflect.DeepEqual(v, ev) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // ProfileExists reports whether the gateway lists a provider profile with

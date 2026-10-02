@@ -1571,14 +1571,97 @@ exit 0
 		"ImportProfile must pass --file flag to openshell provider profile import")
 }
 
+// alreadyExistsThenExportStub builds an openshell stub that fails `provider
+// profile import` with "already exists" and answers `provider profile
+// export <id>` with exportYAML on stdout. Delete is a silent no-op (exit 0),
+// matching the "a parallel process already deleted/reimported" shape as well
+// as the "delete was blocked, gateway still has old content" shape — the
+// test supplies exportYAML to pick which one it is verifying.
+func alreadyExistsThenExportStub(t *testing.T, dir, exportYAML string) string {
+	t.Helper()
+	script := `#!/bin/sh
+case "$3" in
+  import)
+    echo "profile already exists" >&2
+    exit 1
+    ;;
+  export)
+    printf '%s\n' ` + shellQuote(exportYAML) + `
+    exit 0
+    ;;
+esac
+exit 0
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	return fakePath
+}
+
 func TestImportProfile_AlreadyExists(t *testing.T) {
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "my-profile.yaml")
 	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile"), 0o644))
 
+	// The gateway's exported content matches the local file exactly — a
+	// parallel process already applied this content, so "already exists"
+	// is a genuine no-op and must not be treated as an error.
+	alreadyExistsThenExportStub(t, dir, "id: my-profile")
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	assert.NoError(t, err, "already-exists with matching gateway content should not be an error")
+}
+
+// TestImportProfile_AlreadyExists_StaleContent covers the #7973 regression:
+// the best-effort delete failed because a provider still references the
+// profile, so the reimport's "already exists" reflects the OLD content, not
+// a harmless parallel reimport. ImportProfile must fail loudly instead of
+// caching a false success.
+func TestImportProfile_AlreadyExists_StaleContent(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile\ncredentials:\n  api_token: GH_TOKEN\n"), 0o644))
+
+	// The gateway's exported content disagrees with the local file (the old
+	// shape is still live because delete was blocked).
+	alreadyExistsThenExportStub(t, dir, "id: my-profile\ncredentials: {}\n")
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	require.Error(t, err, "already-exists with mismatched gateway content must fail loudly")
+	assert.Contains(t, err.Error(), "does not match")
+
+	_, readErr := os.ReadFile(cachePath)
+	assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+}
+
+// TestImportProfile_AlreadyExists_ExportFails covers the case where the
+// gateway's content cannot be verified at all (e.g. the export subcommand
+// itself errors). ImportProfile must not fall back to trusting "already
+// exists" as success in that case.
+func TestImportProfile_AlreadyExists_ExportFails(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile"), 0o644))
+
 	script := `#!/bin/sh
-echo "profile already exists" >&2
-exit 1
+case "$3" in
+  import)
+    echo "profile already exists" >&2
+    exit 1
+    ;;
+  export)
+    echo "gateway unreachable" >&2
+    exit 1
+    ;;
+esac
+exit 0
 `
 	fakePath := filepath.Join(dir, "openshell")
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
@@ -1588,7 +1671,8 @@ exit 1
 	t.Cleanup(func() { os.Remove(cachePath) })
 
 	err := ImportProfile(context.Background(), "my-profile", profilePath)
-	assert.NoError(t, err, "idempotent import should not return an error")
+	require.Error(t, err, "an unverifiable already-exists must not be treated as success")
+	assert.Contains(t, err.Error(), "could not be verified")
 }
 
 func TestImportProfile_OtherError(t *testing.T) {
@@ -1676,19 +1760,16 @@ func TestImportProfile_WritesCacheOnAlreadyExists(t *testing.T) {
 	profilePath := filepath.Join(dir, "test.yaml")
 	require.NoError(t, os.WriteFile(profilePath, []byte("id: exists\nname: test"), 0o644))
 
-	script := `#!/bin/sh
-echo "profile already exists" >&2
-exit 1
-`
-	fakePath := filepath.Join(dir, "openshell")
-	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	// Gateway's exported content matches the local file — genuine
+	// parallel-winner case.
+	alreadyExistsThenExportStub(t, dir, "id: exists\nname: test")
 	t.Setenv("PATH", dir)
 
 	cachePath := profileFileCachePath("exists")
 	t.Cleanup(func() { os.Remove(cachePath) })
 
 	err := ImportProfile(context.Background(), "exists", profilePath)
-	require.NoError(t, err, "already-exists should not be an error")
+	require.NoError(t, err, "already-exists with matching gateway content should not be an error")
 
 	// Cache should be written even on already-exists (parallel import).
 	cached, readErr := os.ReadFile(cachePath)
