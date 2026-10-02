@@ -130,6 +130,15 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		return nil, nil, err
 	}
 
+	// Capture whether forge was present before ResolveForge nils it out, so
+	// Lint() can emit the deprecation warning even when a forge platform is
+	// resolved (always true in CI). Must happen here, before either
+	// ResolveForge call below (no-base or post-merge): mergeBaseIntoChild
+	// never assigns into child.Forge (base.Forge is required nil by that
+	// point, see its panic guard), so child.Forge here is the same value
+	// both call sites will resolve — mirrors LoadWithOpts's capture.
+	child.hadForgeBeforeResolve = child.Forge != nil
+
 	if child.Base == "" {
 		// No base — resolve URL-sourced resources if the harness was
 		// fetched from a URL (ADR-0045). Config-registered agents fetched

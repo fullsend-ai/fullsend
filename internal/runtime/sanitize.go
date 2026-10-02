@@ -23,6 +23,17 @@ func sanitizeStreamText(s string) string {
 	return sanitize(s, true)
 }
 
+// SanitizeForDisplay strips ANSI escape sequences, control characters, and
+// GHA workflow command markers from untrusted text before it reaches a log
+// sink the text did not originate from. It is the exported form of
+// sanitizeOutput for callers outside this package — e.g. internal/cli's
+// harness lint diagnostics, which embed agent names, diagnostic
+// fields/messages, and error text that can originate from an untrusted
+// harness file (fullsend lint runs as a CI gate over PR branches).
+func SanitizeForDisplay(s string) string {
+	return sanitizeOutput(s)
+}
+
 func sanitize(s string, preserveNewlines bool) string {
 	s = ansiEscRe.ReplaceAllString(s, "")
 	// A single non-overlapping ReplaceAll pass reconstitutes "::" at the

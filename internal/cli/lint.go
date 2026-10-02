@@ -12,6 +12,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -91,7 +92,7 @@ func runLint(ctx context.Context, fullsendDir, forgeFlag string, strict, offline
 	if cfgUsable && orgCfg != nil {
 		registered, regErr := harness.RegisteredAgents(orgCfg)
 		if regErr != nil {
-			printer.StepWarn("Could not discover config-registered agents: " + regErr.Error())
+			printer.StepWarn("Could not discover config-registered agents: " + agentruntime.SanitizeForDisplay(regErr.Error()))
 		} else {
 			localSet := make(map[string]bool, len(agentNames))
 			for _, n := range agentNames {
@@ -152,19 +153,19 @@ func lintConfig(absFullsendDir string, result *lintResult, printer *ui.Printer) 
 			printer.StepInfo("config.yaml: not found (optional for per-repo installs)")
 			return nil, true
 		}
-		printer.StepFail("config.yaml: " + statErr.Error())
+		printer.StepFail("config.yaml: " + agentruntime.SanitizeForDisplay(statErr.Error()))
 		result.errors++
 		return nil, false
 	}
 
 	cfg, err := config.LoadConfigWriter(absFullsendDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
-		printer.StepFail("config.yaml: " + err.Error())
+		printer.StepFail("config.yaml: " + agentruntime.SanitizeForDisplay(err.Error()))
 		result.errors++
 		return nil, false
 	}
 	if err := cfg.Validate(); err != nil {
-		printer.StepFail("config.yaml: " + err.Error())
+		printer.StepFail("config.yaml: " + agentruntime.SanitizeForDisplay(err.Error()))
 		result.errors++
 		return cfg, false
 	}
@@ -195,14 +196,14 @@ func lintOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 	harnessPath, _, err := resolveHarnessForLock(ctx, absFullsendDir, agentName, orgCfg, rFlags, policy, printer)
 	if err != nil {
-		printer.StepFail(fmt.Sprintf("%s: %s", agentName, err.Error()))
+		printer.StepFail(lintDiagLine(agentName, err.Error()))
 		result.errors++
 		return
 	}
 
 	forgePlatforms, err := lockForgePlatforms(harnessPath, forgeFlag)
 	if err != nil {
-		printer.StepFail(fmt.Sprintf("%s: %s", agentName, err.Error()))
+		printer.StepFail(lintDiagLine(agentName, err.Error()))
 		result.errors++
 		return
 	}
@@ -226,7 +227,7 @@ func lintOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			Config:        harness.BuildConfigMap(orgCfg),
 		})
 		if loadErr != nil {
-			printer.StepFail(fmt.Sprintf("%s: %s", label, loadErr.Error()))
+			printer.StepFail(lintDiagLine(label, loadErr.Error()))
 			result.errors++
 			hadError = true
 			continue
@@ -234,7 +235,7 @@ func lintOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 		if h.HasURLReferences() {
 			if err := h.ValidateAllowedRemoteResources(orgAllowlist); err != nil {
-				printer.StepFail(fmt.Sprintf("%s: %s", label, err.Error()))
+				printer.StepFail(lintDiagLine(label, err.Error()))
 				result.errors++
 				hadError = true
 				continue
@@ -243,11 +244,11 @@ func lintOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 		diags, checkErr := harness.CheckGenerated(h, absFullsendDir)
 		if checkErr != nil {
-			printer.StepFail(fmt.Sprintf("%s: %s", label, checkErr.Error()))
+			printer.StepFail(lintDiagLine(label, checkErr.Error()))
 			result.errors++
 			hadError = true
 		} else if err := h.ValidatePluginDirs(); err != nil {
-			printer.StepFail(fmt.Sprintf("%s: %s", label, err.Error()))
+			printer.StepFail(lintDiagLine(label, err.Error()))
 			result.errors++
 			hadError = true
 		}
@@ -268,7 +269,7 @@ func lintOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	}
 
 	if !hadError {
-		printer.StepDone(label(agentName, forgePlatforms))
+		printer.StepDone(agentruntime.SanitizeForDisplay(label(agentName, forgePlatforms)))
 	}
 }
 
@@ -279,4 +280,15 @@ func label(agentName string, forgePlatforms []string) string {
 		return fmt.Sprintf("%s: OK (%d forge variants)", agentName, len(forgePlatforms))
 	}
 	return agentName + ": OK"
+}
+
+// lintDiagLine formats a "<context>: <message>" line for printer.StepFail,
+// sanitizing both parts. context (an agent name or forge-variant label) and
+// message (an error string) can carry content lifted verbatim from an
+// untrusted harness file — fullsend lint runs as a CI gate over PR branches
+// — so neither is safe to print unsanitized: a crafted value containing
+// control characters and GitHub Actions workflow-command syntax could
+// inject a spurious log line.
+func lintDiagLine(context, message string) string {
+	return agentruntime.SanitizeForDisplay(fmt.Sprintf("%s: %s", context, message))
 }

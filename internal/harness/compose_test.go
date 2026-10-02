@@ -53,6 +53,60 @@ model: opus
 	assert.Empty(t, h.Base)
 }
 
+// TestLoadWithBase_NoBase_PreservesHadForgeBeforeResolve is a regression test:
+// LoadWithBase must capture hadForgeBeforeResolve before ResolveForge nils
+// out the Forge map, the same way LoadWithOpts does, so Lint() can still emit
+// the "forge" deprecation warning (ADR 0088) after a forge platform resolves.
+func TestLoadWithBase_NoBase_PreservesHadForgeBeforeResolve(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github: {}
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	assert.Nil(t, h.Forge, "ResolveForge should have consumed the forge map")
+	diags := h.Lint()
+	var found bool
+	for _, d := range diags {
+		if d.Field == "forge" {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a forge deprecation diagnostic, got %+v", diags)
+}
+
+// TestLoadWithBase_WithBase_ChildForgePreservesHadForgeBeforeResolve is the
+// same regression as above, but through the base-composition path (child has
+// a base:), which resolves forge in a second call site after merge.
+func TestLoadWithBase_WithBase_ChildForgePreservesHadForgeBeforeResolve(t *testing.T) {
+	dir := t.TempDir()
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+`)
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  github: {}
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	assert.Nil(t, h.Forge, "ResolveForge should have consumed the forge map")
+	diags := h.Lint()
+	var found bool
+	for _, d := range diags {
+		if d.Field == "forge" {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a forge deprecation diagnostic, got %+v", diags)
+}
+
 func TestLoadWithBase_LocalBase_ScalarOverride(t *testing.T) {
 	dir := t.TempDir()
 

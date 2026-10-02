@@ -5772,18 +5772,24 @@ func extractNormalizedEventFromPayload(payload []byte) map[string]any {
 // Warnings use StepWarn, errors use StepFail. This ensures future SeverityError
 // diagnostics are visually distinct from warnings.
 func emitDiagnostic(printer *ui.Printer, diag harness.Diagnostic) {
+	msg := agentruntime.SanitizeForDisplay(diag.String())
 	switch diag.Severity {
 	case harness.SeverityError:
-		printer.StepFail(diag.String())
+		printer.StepFail(msg)
 	default:
-		printer.StepWarn(diag.String())
+		printer.StepWarn(msg)
 	}
 }
 
 // emitDiagnosticWithContext prints a diagnostic with additional context (e.g., agent name).
-// Used by lock --all where multiple harnesses are processed and context helps identify which.
+// Used by lock --all and fullsend lint, where multiple harnesses are processed
+// and context helps identify which. context and the diagnostic's Field/Message
+// can originate from an untrusted harness file (e.g. a map key or path lifted
+// verbatim into a diagnostic), so both are sanitized before reaching stdout —
+// otherwise embedded control characters and GHA workflow-command syntax could
+// inject a spurious log line into a CI run.
 func emitDiagnosticWithContext(printer *ui.Printer, context string, diag harness.Diagnostic) {
-	msg := fmt.Sprintf("%s: %s", context, diag.String())
+	msg := agentruntime.SanitizeForDisplay(fmt.Sprintf("%s: %s", context, diag.String()))
 	switch diag.Severity {
 	case harness.SeverityError:
 		printer.StepFail(msg)

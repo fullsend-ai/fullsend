@@ -204,6 +204,61 @@ func TestRunLint_URLSkillNotCoveredByOrgAllowlist(t *testing.T) {
 	assert.Contains(t, buf.String(), "not covered by the org allowlist")
 }
 
+func TestRunLint_ForgeOnlyHarnessFailsStrict(t *testing.T) {
+	// Regression test: LoadWithBase must preserve hadForgeBeforeResolve (the
+	// signal Harness.Lint() uses for the "forge" deprecation warning) so a
+	// harness that only uses the deprecated `forge:` field cannot pass
+	// `lint --strict` silently.
+	dir := t.TempDir()
+	writeValidLocalHarness(t, dir, "code", "forge:\n  github: {}\n")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := runLint(context.Background(), dir, "", true, false, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deprecation warning")
+	assert.Contains(t, buf.String(), "forge is deprecated")
+}
+
+func TestRunLint_SanitizesInjectedEnvKeyInDiagnostic(t *testing.T) {
+	// Adversarial test: fullsend lint runs as a CI gate over PR branches, so
+	// an env.runner map key is attacker-controlled. A key carrying a decoded
+	// newline followed by GitHub Actions workflow-command syntax must not
+	// reach stdout intact, or it could inject a spurious log line.
+	dir := t.TempDir()
+	writeValidLocalHarness(t, dir, "code", "env:\n  runner:\n    \"FOO\\n::error::pwned\": \"GITHUB_ISSUE_URL\"\n")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := runLint(context.Background(), dir, "", false, false, printer)
+	require.NoError(t, err)
+	out := buf.String()
+	assert.NotContains(t, out, "\n::")
+	assert.NotContains(t, out, "::error::")
+	assert.Contains(t, out, "FOO")
+}
+
+func TestRunLint_SanitizesInjectedHostFileSrcInDiagnostic(t *testing.T) {
+	// Adversarial test: the env.sandbox/host_files overlap diagnostic embeds
+	// host_files[].src and .dest verbatim (internal/harness/lint.go), and
+	// both are attacker-controlled harness content. A src path carrying
+	// embedded workflow-command syntax must be neutralized before reaching
+	// stdout.
+	dir := t.TempDir()
+	writeValidLocalHarness(t, dir, "code",
+		"env:\n  sandbox:\n    FOO: bar\n"+
+			"host_files:\n  - src: \"GITHUB_ISSUE_URL\\n::error::pwned\"\n    dest: \".env.d/secrets\"\n    expand: true\n    optional: true\n")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := runLint(context.Background(), dir, "", false, false, printer)
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "env.sandbox coexists")
+	assert.NotContains(t, out, "\n::")
+	assert.NotContains(t, out, "::error::")
+}
+
 func TestRunLint_ConfigValidateFailure(t *testing.T) {
 	dir := t.TempDir()
 	// Org-mode config (has a `dispatch` key) with an unsupported version —
