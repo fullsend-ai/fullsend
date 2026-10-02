@@ -156,6 +156,13 @@ agent's actual metrics (from `metrics.json`, written by `fullsend run`) against
 these thresholds. A case that passes all quality judges but exceeds a behavioral
 threshold is a failure.
 
+The eval-case `max_cost_usd` here is a **post-run judge threshold**: it grades a
+finished run and never interrupts one. It is a different field from the harness
+[`max_cost_usd`](../reference/harness-reference.md#field-details), a mid-run hard
+stop that keeps a capped run from starting another iteration. Same name, separate
+schemas, no interaction — a case can exceed its eval threshold on a run no harness
+cap ever touched, and vice versa.
+
 ### Why these two metrics
 
 - **`max_turns`** — the most intuitive measure of agent efficiency. A turn is

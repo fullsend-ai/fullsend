@@ -242,6 +242,7 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 | `fullsend.tool_calls` | `run` (aggregated), `agent` | Number of tool invocations |
 | `fullsend.num_turns` | `run` | Total conversation turns across all iterations |
 | `fullsend.iterations` | `run` | Number of agent iterations (validation loop included) |
+| `fullsend.over_budget` | `run` | Whether the harness's `max_cost_usd` cap suppressed a retry that was otherwise due (`true`), so a budget-halted run is visible in traces without reading `metrics.json`; `false` on every other run, including one that crossed the cap while ending anyway. Same semantics as the `over_budget` marker in the [harness budget contract](../../normative/harness-budget/v1/README.md#the-over_budget-marker) |
 | `fullsend.security_trace_id` | `run` | Security scanner trace correlation ID |
 | `fullsend.harness.url` | `run` | Source URL the harness was fetched from; omitted for local-path harnesses |
 | `fullsend.harness.path` | `run` | Local path of the resolved harness file; omitted when empty |

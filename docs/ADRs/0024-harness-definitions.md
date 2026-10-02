@@ -423,6 +423,8 @@ runner_env:
 # Hard timeout enforced by the runner. The sandbox is killed after this.
 timeout_minutes: 30
 
+# A hard cost cap (max_cost_usd) was added later — see ADR 0097.
+
 # Security scanning configuration. Controls layered prompt injection defenses
 # enforced by default. Host-side scanners run before sandbox creation; sandbox-
 # side pre/post-tool hooks are installed into the Claude configuration during

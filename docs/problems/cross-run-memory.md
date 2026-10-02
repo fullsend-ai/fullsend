@@ -96,7 +96,7 @@ The key distinction: **transient failures** (network timeout, flaky test, rate l
 
 Without an explicit retry budget, agents can retry the same task across multiple runs without any cumulative limit, even though each individual run is bounded by its own per-run constraints. A retry budget is distinct from per-run limits:
 
-- **Per-run limit:** max turns and max cost for a single attempt (already enforced via `max_turns` and `max_cost_usd` in the functional test framework, PR #1682)
+- **Per-run limit:** max turns and max cost for a single attempt — two mechanisms of that name exist: the eval-case `max_turns`/`max_cost_usd` thresholds in the functional test framework (PR #1682), which grade an attempt once it has finished, and the harness-level `max_cost_usd` cap ([ADR 0097](../ADRs/0097-harness-max-cost-usd-budget-cap.md)), which stops a capped run from starting another iteration
 - **Retry budget:** max total attempts across runs for the same task, and max total cost across all attempts
 
 A task might allow 3 retries with a total budget of $10. Each individual run stays within its per-run limits, but the system tracks cumulative spend and attempt count.
