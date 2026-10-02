@@ -279,7 +279,7 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 				return fmt.Errorf("profile import %q reported \"already exists\", and the gateway's current content could not be verified: %w", filepath.Base(profilePath), matchErr)
 			}
 			if !matches {
-				return fmt.Errorf("profile import %q failed: openshell reported the profile %q already exists, but its content on the gateway does not match %s; the preceding delete was likely blocked because a provider still references the profile — remove that provider (or delete the profile manually) and retry", filepath.Base(profilePath), id, filepath.Base(profilePath))
+				return fmt.Errorf("profile import %q failed: openshell reported the profile %q already exists, but its content on the gateway does not match %q; the preceding delete was likely blocked because a provider still references the profile — remove that provider (or delete the profile manually) and retry", filepath.Base(profilePath), id, filepath.Base(profilePath))
 			}
 			// A parallel process already applied this exact content — safe to continue.
 			os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
@@ -291,6 +291,17 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 	return nil
 }
 
+// gatewayProfileMetadataKeys lists top-level profile fields that the
+// gateway's `provider profile export` adds but that a user-authored profile
+// file never declares (e.g. a concurrency-control version stamp). These are
+// the only keys profileContentEqual treats as gateway-only: any other
+// exported field that the local file does not also declare counts as a
+// mismatch, because that is exactly the shape of a removed field left
+// stale on the gateway (see #7973 and profileContentEqual).
+var gatewayProfileMetadataKeys = map[string]bool{
+	"resource_version": true,
+}
+
 // gatewayProfileMatches reports whether the gateway's current content for
 // profile id matches the local file at profilePath. It is called only after
 // a reimport reports "already exists", to tell a genuinely-unchanged profile
@@ -300,12 +311,6 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 // provider still references it (see #7973). The local hash cache cannot
 // make this distinction on its own: it only reflects what *this* process
 // last sent, not what the gateway currently holds.
-//
-// Comparison is field-subset: every key the local YAML declares must be
-// present with an equal value in the exported YAML. Export may include
-// gateway-assigned metadata (e.g. resource_version) that the local file
-// never carries, so extra fields on the gateway side do not cause a false
-// mismatch.
 func gatewayProfileMatches(ctx context.Context, id, profilePath string) (bool, error) {
 	local, err := os.ReadFile(profilePath)
 	if err != nil {
@@ -322,15 +327,29 @@ func gatewayProfileMatches(ctx context.Context, id, profilePath string) (bool, e
 		return false, fmt.Errorf("exporting provider profile %q: %w (stderr: %s)", id, err, strings.TrimSpace(stderr.String()))
 	}
 
-	return profileContentSubsetEqual(local, exported)
+	return profileContentEqual(local, exported)
 }
 
-// profileContentSubsetEqual reports whether every field declared in local
-// (a profile YAML document) is present with an equal value in exported (the
-// gateway's export of that same profile id). Unparseable input on either
-// side is reported as an error rather than treated as a mismatch, so a
-// malformed export cannot be mistaken for a confirmed content difference.
-func profileContentSubsetEqual(local, exported []byte) (bool, error) {
+// profileContentEqual reports whether local (a profile YAML document) and
+// exported (the gateway's export of that same profile id) declare the same
+// fields with the same values, modulo gatewayProfileMetadataKeys.
+//
+// The comparison is bidirectional and deliberately so: a one-directional
+// "every local field matches" check would pass whenever the local file
+// simply *removes* a top-level field — e.g. a profile edit that drops
+// `credentials` or a security-relevant `endpoints` entry — because an
+// absent local key is never checked against the gateway's side at all. If
+// the preceding delete was blocked (a provider still references the
+// profile) and the field was never actually removed from the gateway, that
+// one-directional check would silently confirm a "match" while the gateway
+// keeps serving the old, wider content (see #7973). Requiring every
+// exported field (other than known gateway-only metadata) to also appear
+// locally closes that gap.
+//
+// Unparseable input on either side is reported as an error rather than
+// treated as a mismatch, so a malformed export cannot be mistaken for a
+// confirmed content difference.
+func profileContentEqual(local, exported []byte) (bool, error) {
 	var localDoc map[string]any
 	if err := yaml.Unmarshal(local, &localDoc); err != nil {
 		return false, fmt.Errorf("parsing local profile: %w", err)
@@ -339,12 +358,23 @@ func profileContentSubsetEqual(local, exported []byte) (bool, error) {
 	if err := yaml.Unmarshal(exported, &exportedDoc); err != nil {
 		return false, fmt.Errorf("parsing exported profile: %w", err)
 	}
+
 	for k, v := range localDoc {
 		ev, ok := exportedDoc[k]
 		if !ok || !reflect.DeepEqual(v, ev) {
 			return false, nil
 		}
 	}
+
+	for k := range exportedDoc {
+		if gatewayProfileMetadataKeys[k] {
+			continue
+		}
+		if _, ok := localDoc[k]; !ok {
+			return false, nil
+		}
+	}
+
 	return true, nil
 }
 

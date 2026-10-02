@@ -1615,6 +1615,26 @@ func TestImportProfile_AlreadyExists(t *testing.T) {
 	assert.NoError(t, err, "already-exists with matching gateway content should not be an error")
 }
 
+// TestImportProfile_AlreadyExists_GatewayMetadataIgnored verifies that a
+// gateway-only metadata field (resource_version) present on the exported
+// side but never declared locally does not register as a mismatch — the
+// bidirectional check added for #7973 only requires *non-metadata* exported
+// fields to also be declared locally.
+func TestImportProfile_AlreadyExists_GatewayMetadataIgnored(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile\n"), 0o644))
+
+	alreadyExistsThenExportStub(t, dir, "id: my-profile\nresource_version: 7\n")
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	assert.NoError(t, err, "a gateway-only metadata field must not be treated as a content mismatch")
+}
+
 // TestImportProfile_AlreadyExists_StaleContent covers the #7973 regression:
 // the best-effort delete failed because a provider still references the
 // profile, so the reimport's "already exists" reflects the OLD content, not
@@ -1635,6 +1655,62 @@ func TestImportProfile_AlreadyExists_StaleContent(t *testing.T) {
 
 	err := ImportProfile(context.Background(), "my-profile", profilePath)
 	require.Error(t, err, "already-exists with mismatched gateway content must fail loudly")
+	assert.Contains(t, err.Error(), "does not match")
+
+	_, readErr := os.ReadFile(cachePath)
+	assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+}
+
+// TestImportProfile_AlreadyExists_RemovedCredentials covers the
+// removal-direction shape of the #7973 regression: the local profile
+// dropped `credentials` entirely (e.g. switched to a credential-less
+// shape), but the delete was blocked and the gateway still serves the old
+// profile with `credentials` populated. A field-subset check (every local
+// key present in the export) would never notice the removed key at all,
+// since it never looks at fields the local file doesn't declare. The
+// comparison must also check the reverse direction and fail loudly.
+func TestImportProfile_AlreadyExists_RemovedCredentials(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile\n"), 0o644))
+
+	// Gateway still has the old, wider content with credentials — the
+	// local file's removal was never applied because delete was blocked.
+	alreadyExistsThenExportStub(t, dir, "id: my-profile\ncredentials:\n  api_token: GH_TOKEN\n")
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	require.Error(t, err, "a removed-field mismatch (gateway still has credentials) must fail loudly")
+	assert.Contains(t, err.Error(), "does not match")
+
+	_, readErr := os.ReadFile(cachePath)
+	assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+}
+
+// TestImportProfile_AlreadyExists_RemovedEndpoints covers the fail-open
+// security consequence of the same gap: the local profile dropped a
+// security-relevant `endpoints` grant, but the stale gateway profile still
+// has it configured because the blocked delete never replaced it. Treating
+// this as a match would cache a false success while the old network grant
+// stays active on the gateway.
+func TestImportProfile_AlreadyExists_RemovedEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile\n"), 0o644))
+
+	// Gateway still exposes the old endpoints grant that the local file no
+	// longer declares.
+	alreadyExistsThenExportStub(t, dir, "id: my-profile\nendpoints:\n  - host: internal.example.com\n    port: 443\n")
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	require.Error(t, err, "a removed security-relevant field still present on the gateway must fail loudly")
 	assert.Contains(t, err.Error(), "does not match")
 
 	_, readErr := os.ReadFile(cachePath)
