@@ -68,7 +68,7 @@ than being regenerated.
 | `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps. For per-repo setup it is persisted as the `FULLSEND_APP_SET` repository variable; reruns that omit `--app-set` preserve an existing custom value rather than overwriting it with the default. `repos install` accepts the same option and the `app_set` manifest field. |
 | `--agents` | `fullsend,triage,coder,review,retro,prioritize` | Agent roles to provision |
 | `--direct` | `false` | Push scaffold directly instead of creating a PR |
-| `--runtime` | `claude` | Agent runtime backend (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`; `dummy` and `dummy-playback` are for behaviour test orgs only — see [runtimes.md](../runtimes.md)) |
+| `--runtime` | `claude` | Agent runtime backend (`claude`, `pi`, `codex`, `opencode`, `dummy` or `dummy-playback`; `dummy` and `dummy-playback` are for behaviour tests only — see [runtimes.md](../runtimes.md)) |
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override (conflicts with `--vendor`; per-repo only) |
 | `--config` | | Local file path or HTTPS URL to a vendor preset (committed as `.fullsend/config.base.yaml`; per-repo only). Persistent setup flags override matching preset values in `.fullsend/config.yaml`. Fleet installs declare the same source in `repos.yaml` (`defaults.config_base` / per-repo `config_base`) |
 | `--config-hash` | | SHA-256 hex digest to validate the preset content (requires `--config`). Same semantics as `repos.yaml` `config_base.sha256` |
