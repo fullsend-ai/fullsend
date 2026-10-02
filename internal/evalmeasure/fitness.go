@@ -106,6 +106,7 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 		{"usage", usageOK(run, agents)},
 		{"cost_tools_turns", costOK},
 		{"exit", hasExit(run)},
+		{"forge_interaction", forgeInteractionOK(run, agents)},
 	}
 
 	passed := 0
@@ -252,6 +253,23 @@ func costToolsTurnsDetail(run Span, agents []Span) (bool, []string) {
 		}
 	}
 	return len(missing) == 0, missing
+}
+
+// forgeInteractionOK checks that the agent performed at least one tool call.
+// An agent that cannot reach the forge API (DNS blocked, expired credentials,
+// network misconfiguration) typically completes with zero tool calls yet
+// produces a structurally valid trace. This check catches that failure mode
+// by requiring fullsend.tool_calls > 0 on the run span or any agent span.
+func forgeInteractionOK(run Span, agents []Span) bool {
+	if tc, ok := run.AttrInt("fullsend.tool_calls"); ok && tc > 0 {
+		return true
+	}
+	for _, a := range agents {
+		if tc, ok := a.AttrInt("fullsend.tool_calls"); ok && tc > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func hasExit(run Span) bool {
