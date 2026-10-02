@@ -37,6 +37,12 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+func init() {
+	// Keep agentsRefRetryBaseDelay-driven backoff out of test runtime; see
+	// mintclient_test.go's analogous override of retryBaseDelay.
+	agentsRefRetryBaseDelay = 0
+}
+
 func TestRunCommand_RequiresAgentName(t *testing.T) {
 	cmd := newRunCmd()
 	cmd.SetArgs([]string{})
@@ -1520,6 +1526,197 @@ func TestTryAgentsRepoFallback_SuccessPath_ReleaseBuild(t *testing.T) {
 	assert.NotEmpty(t, path)
 	assert.Len(t, deps, 1)
 	assert.Contains(t, deps[0].URL, fakeSHA)
+}
+
+// scriptedRefClient wraps forge.FakeClient to script per-ref-path GetRef
+// failures. forge.FakeClient.Errors holds one error per method name shared
+// across every ref, which can't express "the tag ref fails but the main
+// ref succeeds" — exactly the scenario fetchPinnedAgentsRepoFile's
+// retry-then-fallback-to-main path needs to exercise (#6951).
+type scriptedRefClient struct {
+	*forge.FakeClient
+	failuresLeft map[string]int
+	calls        map[string]int
+}
+
+func newScriptedRefClient() *scriptedRefClient {
+	return &scriptedRefClient{
+		FakeClient:   forge.NewFakeClient(),
+		failuresLeft: map[string]int{},
+		calls:        map[string]int{},
+	}
+}
+
+func (c *scriptedRefClient) GetRef(ctx context.Context, owner, repo, refPath string) (string, error) {
+	c.calls[refPath]++
+	if n := c.failuresLeft[refPath]; n > 0 {
+		c.failuresLeft[refPath] = n - 1
+		return "", fmt.Errorf("simulated transient GetRef failure for %s", refPath)
+	}
+	return c.FakeClient.GetRef(ctx, owner, repo, refPath)
+}
+
+func TestFetchPinnedAgentsRepoFile_RetriesTagThenSucceeds(t *testing.T) {
+	origVersion, origSHA := version, commitSHA
+	version, commitSHA = "0.85.0", "abc123def456"
+	t.Cleanup(func() { version, commitSHA = origVersion, origSHA })
+
+	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/"+fakeSHA+"/harness/triage.yaml" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	client := newScriptedRefClient()
+	client.Refs["fullsend-ai/agents/tags/v0.85.0"] = fakeSHA
+	client.failuresLeft["tags/v0.85.0"] = agentsRefRetryAttempts - 1 // fails every attempt but the last
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	path, dep, ok := fetchPinnedAgentsRepoFile(context.Background(), "harness/triage.yaml", client, opts, printer, "agent triage")
+	require.True(t, ok, "expected retry to eventually succeed")
+	assert.NotEmpty(t, path)
+	assert.Contains(t, dep.URL, fakeSHA)
+	assert.Equal(t, agentsRefRetryAttempts, client.calls["tags/v0.85.0"])
+	assert.Zero(t, client.calls["heads/main"], "should not fall back to main when the tag eventually resolves")
+}
+
+func TestFetchPinnedAgentsRepoFile_FallsBackToMainWhenTagExhausted(t *testing.T) {
+	origVersion, origSHA := version, commitSHA
+	version, commitSHA = "0.85.0", "abc123def456"
+	t.Cleanup(func() { version, commitSHA = origVersion, origSHA })
+
+	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
+	mainSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/"+mainSHA+"/harness/triage.yaml" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	client := newScriptedRefClient()
+	client.Refs["fullsend-ai/agents/heads/main"] = mainSHA
+	client.failuresLeft["tags/v0.85.0"] = 1000 // the tag never resolves — not yet created upstream
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	path, dep, ok := fetchPinnedAgentsRepoFile(context.Background(), "harness/triage.yaml", client, opts, printer, "agent triage")
+	require.True(t, ok, "expected fallback to main to succeed")
+	assert.NotEmpty(t, path)
+	assert.Contains(t, dep.URL, mainSHA)
+	assert.Equal(t, agentsRefRetryAttempts, client.calls["tags/v0.85.0"])
+	assert.Equal(t, 1, client.calls["heads/main"], "main resolves on the first attempt since it isn't scripted to fail")
+	assert.Contains(t, buf.String(), "v0.85.0", "warning should name the tag that failed to resolve")
+	assert.Contains(t, buf.String(), "falling back to main")
+}
+
+func TestFetchPinnedAgentsRepoFile_TagAndMainBothFail(t *testing.T) {
+	origVersion, origSHA := version, commitSHA
+	version, commitSHA = "0.85.0", "abc123def456"
+	t.Cleanup(func() { version, commitSHA = origVersion, origSHA })
+
+	client := newScriptedRefClient()
+	client.failuresLeft["tags/v0.85.0"] = 1000
+	client.failuresLeft["heads/main"] = 1000
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		OrgAllowlist:  []string{"https://example.com/"},
+	}
+
+	_, _, ok := fetchPinnedAgentsRepoFile(context.Background(), "harness/triage.yaml", client, opts, printer, "agent triage")
+	assert.False(t, ok, "expected graceful failure when both the tag and main fail to resolve")
+	assert.Equal(t, agentsRefRetryAttempts, client.calls["tags/v0.85.0"])
+	assert.Equal(t, agentsRefRetryAttempts, client.calls["heads/main"])
+}
+
+func TestFetchPinnedAgentsRepoFile_DevBuildUnaffected(t *testing.T) {
+	origVersion, origSHA := version, commitSHA
+	version, commitSHA = "dev", "dev"
+	t.Cleanup(func() { version, commitSHA = origVersion, origSHA })
+
+	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/"+fakeSHA+"/harness/triage.yaml" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	client := newScriptedRefClient()
+	client.Refs["fullsend-ai/agents/heads/main"] = fakeSHA
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	path, dep, ok := fetchPinnedAgentsRepoFile(context.Background(), "harness/triage.yaml", client, opts, printer, "agent triage")
+	require.True(t, ok, "dev builds should resolve via main as before")
+	assert.NotEmpty(t, path)
+	assert.Contains(t, dep.URL, fakeSHA)
+	assert.Equal(t, 1, client.calls["heads/main"], "should succeed on first attempt; no fallback logic triggered")
 }
 
 func TestTryAgentsRepoMeasurementManifest_Success(t *testing.T) {

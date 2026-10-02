@@ -133,6 +133,48 @@ var remintForPostScriptTimeout = mintclient.MaxMintDuration
 // from the agents repository. It is a var (not const) to allow test overrides.
 var defaultAgentsRepoURLPrefix = "https://raw.githubusercontent.com/fullsend-ai/agents/"
 
+// agentsMainGitRef is the git ref path used to resolve fullsend-ai/agents
+// against its main branch, both as resolveAgentsRef's dev-build ref and as
+// the fallback target when a release tag can't be resolved (see
+// agentsRefRetryAttempts).
+const agentsMainGitRef = "heads/main"
+
+// agentsRefRetryAttempts bounds how many times fetchPinnedAgentsRepoFile
+// calls GetRef for a single ref before giving up on it. This closes the
+// race window where a fullsend CLI release is published before its
+// corresponding fullsend-ai/agents@vX.Y.Z tag is created: the tag usually
+// appears within seconds, so a short bounded retry resolves it without
+// requiring the CLI to block indefinitely (#6951).
+const agentsRefRetryAttempts = 3
+
+// agentsRefRetryBaseDelay is the base delay between GetRef retries;
+// actual delay grows exponentially (base, 2*base, 4*base, ...). It is a
+// var (not const) so tests can shrink it to avoid slow retry loops.
+var agentsRefRetryBaseDelay = 500 * time.Millisecond
+
+// getRefWithRetry calls forgeClient.GetRef with bounded retries and
+// exponential backoff, to ride out transient failures such as the
+// not-yet-created-tag race described in #6951.
+func getRefWithRetry(ctx context.Context, forgeClient forge.Client, owner, repo, gitRef string) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt < agentsRefRetryAttempts; attempt++ {
+		sha, err := forgeClient.GetRef(ctx, owner, repo, gitRef)
+		if err == nil {
+			return sha, nil
+		}
+		lastErr = err
+		if attempt < agentsRefRetryAttempts-1 {
+			delay := agentsRefRetryBaseDelay * time.Duration(uint(1)<<uint(attempt))
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+	return "", lastErr
+}
+
 // defaultAgentsRepoKnownAgents lists first-party agents available in the
 // fullsend-ai/agents repository. Only these agents are eligible for the
 // runtime fallback — custom agents are never tried against the agents repo.
@@ -6257,7 +6299,7 @@ func resolveAgentsRef() (displayRef, gitRef string) {
 	if tag != "" {
 		return tag, "tags/" + tag
 	}
-	return "main", "heads/main"
+	return "main", agentsMainGitRef
 }
 
 // tryAgentsRepoFallback attempts to resolve an agent from the default agents
@@ -6310,7 +6352,17 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	allowlist := composeOpts.OrgAllowlist
 
 	displayRef, gitRef := resolveAgentsRef()
-	resolvedSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, gitRef)
+	resolvedSHA, err := getRefWithRetry(ctx, forgeClient, defaultAgentsRepoOwner, defaultAgentsRepoName, gitRef)
+	if err != nil && gitRef != agentsMainGitRef {
+		// The pinned release tag isn't resolving even after retries — most
+		// likely the fullsend-ai/agents@<tag> hasn't been created yet (see
+		// #6951). Fall back to main rather than failing the whole agent
+		// resolution outright.
+		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s after %d attempts: %v; falling back to main", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, agentsRefRetryAttempts, err))
+		if sha, mainErr := getRefWithRetry(ctx, forgeClient, defaultAgentsRepoOwner, defaultAgentsRepoName, agentsMainGitRef); mainErr == nil {
+			resolvedSHA, err, displayRef = sha, nil, "main"
+		}
+	}
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, err))
 		return "", none, false
