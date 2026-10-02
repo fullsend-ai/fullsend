@@ -97,9 +97,15 @@ jobs:
       id-token: write
       pull-requests: write
       checks: read
-    uses: fullsend-ai/agents/.github/workflows/functional-tests.yml@291d391532ad223218e5594e9c3d9ecf41909d33 # main (schema v2 OpenShell gateway config + Podman socket, agents#1513)
+    uses: fullsend-ai/agents/.github/workflows/functional-tests.yml@59c1a807e17731956c1bd297e193ca2aca0c8ccb # main (tier input, agents#1576)
     with:
       fullsend_ref: ${{ github.ref_name }}
+      # Each agent's release:true case only; quality, max_turns and max_cost
+      # judges are reported, not gating (agents#1573). The full suite runs on
+      # agents PRs and nightly. Explicit so the tier does not depend on
+      # run-functional.sh's cross-repo default; what the tier runs is still
+      # defined by agents main, not this pin.
+      tier: release
     secrets:
       E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
       E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
@@ -178,7 +184,7 @@ jobs:
     # Second half of the tag-move guard. validate-agents clones fullsend by
     # tag name — the called workflow only accepts `main` or a `v*` ref and
     # uses `git clone --branch`, so it cannot be pinned to a SHA from this
-    # side. A tag moved during the ~45 minutes of functional tests would
+    # side. A tag moved during the ~15 minutes of functional tests would
     # otherwise leave the gate validating one commit while GoReleaser
     # publishes another. resolve-agents checks the tag before validation
     # starts; this checks it again after, so publication requires the tag

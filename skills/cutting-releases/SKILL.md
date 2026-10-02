@@ -117,7 +117,7 @@ gh run list --workflow=release.yml --branch vX.Y.Z-rc.N --limit=1
 
 Expect about 15 minutes before anything is published: the gate runs
 agents' release tier, one functional-test case per agent (the full
-suite takes about 45; see Notes).
+suite takes about 45 minutes and runs on agents PRs and nightly).
 When it passes, GoReleaser publishes the `vX.Y.Z-rc.N` binaries as a
 prerelease. `v0` does not move, but `tag-agents` tags
 `fullsend-ai/agents` at `vX.Y.Z-rc.N`. The images come from the
@@ -283,9 +283,9 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
   points at the commit that triggered the run, checks the gate secrets
   are configured, and records agents' `main` SHA), then `validate-agents`,
   which runs agents' functional tests (via a cross-repo reusable workflow
-  call) against the release tag. A cross-repo call runs agents' release
-  tier: one case per agent, blocking on case exits and deterministic
-  checks only. Only if those pass does `recheck-tag` re-verify that the
+  call) against the release tag. It passes `tier: release`: one case per
+  agent, blocking on case exits and deterministic checks only. The cases
+  and judges come from agents `main` at run time, not from the pin. Only if those pass does `recheck-tag` re-verify that the
   tag still points at the triggering commit, and `release` run
   GoReleaser. A failure at any of these steps means no binaries or
   GitHub Release are published and `v0` does not move; a Slack
