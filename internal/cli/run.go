@@ -153,8 +153,16 @@ const agentsRefRetryAttempts = 3
 var agentsRefRetryBaseDelay = 500 * time.Millisecond
 
 // getRefWithRetry calls forgeClient.GetRef with bounded retries and
-// exponential backoff, to ride out transient failures such as the
-// not-yet-created-tag race described in #6951.
+// exponential backoff, to ride out the not-yet-created-ref race described
+// in #6951: a GetRef for a release tag that doesn't exist yet fails with
+// forge.ErrNotFound.
+//
+// Retries are restricted to that not-found case. Any other error —
+// rate limits, 5xx, timeouts — has already exhausted the forge client's
+// own retry budget (see LiveClient.do's maxRetries) before GetRef returns
+// it, so retrying here again would multiply that budget instead of
+// helping, potentially turning a bounded failure into many minutes of
+// additional HTTP calls.
 func getRefWithRetry(ctx context.Context, forgeClient forge.Client, owner, repo, gitRef string) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt < agentsRefRetryAttempts; attempt++ {
@@ -163,6 +171,9 @@ func getRefWithRetry(ctx context.Context, forgeClient forge.Client, owner, repo,
 			return sha, nil
 		}
 		lastErr = err
+		if !forge.IsNotFound(err) {
+			return "", err
+		}
 		if attempt < agentsRefRetryAttempts-1 {
 			delay := agentsRefRetryBaseDelay * time.Duration(uint(1)<<uint(attempt))
 			select {
@@ -6361,6 +6372,12 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s after %d attempts: %v; falling back to main", defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef, agentsRefRetryAttempts, err))
 		if sha, mainErr := getRefWithRetry(ctx, forgeClient, defaultAgentsRepoOwner, defaultAgentsRepoName, agentsMainGitRef); mainErr == nil {
 			resolvedSHA, err, displayRef = sha, nil, "main"
+		} else {
+			// Preserve both failures: err (reported above) explains why
+			// the fallback was attempted, but mainErr is what actually
+			// caused resolution to fail overall and must not be
+			// silently dropped from the warning below.
+			err = fmt.Errorf("%w; main fallback also failed: %w", err, mainErr)
 		}
 	}
 	if err != nil {
