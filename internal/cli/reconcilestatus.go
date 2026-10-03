@@ -47,6 +47,7 @@ func newReconcileStatusCmd() *cobra.Command {
 		fullsendDir string
 		jobStatus   string
 		wasSkipped  bool
+		reviewRun   bool
 	)
 
 	cmd := &cobra.Command{
@@ -64,6 +65,7 @@ finalized, this is a no-op.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var tc tracker.Client
 			var project string
+			var forgePlatform string
 
 			// Event-source routing (ADR 0093): read the normalized
 			// event from the same sources as fullsend run—the on-disk
@@ -108,7 +110,8 @@ finalized, this is a no-op.`,
 				}
 				owner, repoName := parts[0], parts[1]
 
-				forgePlatform, err := detectForgePlatform(forgeFlag, nil)
+				var err error
+				forgePlatform, err = detectForgePlatform(forgeFlag, nil)
 				if err != nil {
 					return err
 				}
@@ -161,8 +164,8 @@ finalized, this is a no-op.`,
 			}
 
 			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
-
-			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription)
+			reviewRun = reviewRun && forgePlatform == "github"
+			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription, reviewRun)
 		},
 	}
 
@@ -178,6 +181,7 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode and read normalized event for tracker routing)")
 	cmd.Flags().StringVar(&jobStatus, "job-status", "", "job outcome from the CI runner (e.g. success, failure, cancelled)")
 	cmd.Flags().BoolVar(&wasSkipped, "was-skipped", false, "whether the pre-script decided to skip the run (forces synthesis under on_failure even when --job-status is success)")
+	cmd.Flags().BoolVar(&reviewRun, "review-run", false, "whether this is the built-in GitHub review agent (enables GitHub-specific cancellation guidance)")
 	_ = cmd.MarkFlagRequired("run-id")
 
 	return cmd

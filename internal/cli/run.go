@@ -1279,6 +1279,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if notifyErr != nil {
 			printer.StepWarn("Status notifications disabled: " + notifyErr.Error())
 		} else {
+			notifier.SetReviewRun(builtInGitHubReview(agentName, forgePlatform, sOpts.trackerSource))
 			description := titleCase(strings.ReplaceAll(agentName, "-", " "))
 			if err := notifier.PostStart(ctx, description); err != nil {
 				printer.StepWarn("Failed to post start status: " + err.Error())
@@ -2968,19 +2969,18 @@ func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, 
 // Keys that don't match are skipped to prevent shell injection.
 var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// oidcDenyKeys lists OIDC credential env vars that must not leak into
+// oidcDenyKeys lists credential env vars that must not leak into
 // user-controlled or sandbox-visible contexts. The parent harness process
-// retains these for mintAgentToken and OIDC token refresh; stripping them
-// from child scripts, expanders, and sandbox injection prevents user code
-// and LLM sessions from minting additional tokens. See #5832, ADR 0073.
+// retains OIDC credentials for mintAgentToken and token refresh; stripping
+// them and GITHUB_TOKEN from child scripts, expanders, and sandbox injection
+// prevents user code and LLM sessions from minting additional tokens. See
+// #5832, ADR 0073.
 //
-// MAINTENANCE: when new OIDC-related credential env vars are introduced
-// (e.g. by mint infrastructure changes), add them here. By convention the
-// vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
-// expansion site in this file consults harnessExpansionDenied, which
-// includes this map, so a single addition propagates to all deny checks.
-// Keys that provider credentials must still expand belong in
-// providerOnlyKeys, not here (#6649).
+// MAINTENANCE: when a credential env var must not reach a harness-controlled
+// context, add it here. OIDC vars conventionally use ACTIONS_ID_TOKEN_ or
+// FULLSEND_GCP_OIDC_ prefixes. Every expansion site consults
+// harnessExpansionDenied, which includes this map. Keys that provider
+// credentials must still expand belong in providerOnlyKeys, not here (#6649).
 var oidcDenyKeys = map[string]bool{
 	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
 	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
@@ -3002,6 +3002,9 @@ var oidcDenyKeys = map[string]bool{
 	// harness cannot copy the real key under another name, and keeps it out
 	// of pre/post scripts.
 	"OPENAI_API_KEY": true,
+	// The workflow token may have status-write permission but must never be
+	// available through harness-controlled expansion or child scripts.
+	"GITHUB_TOKEN": true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting
@@ -3747,8 +3750,11 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 func stripOIDCEnv(env []string) []string {
 	result := make([]string, 0, len(env))
 	for _, e := range env {
-		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
-			continue
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key := e[:i]
+			if harnessExpansionDenied(key) {
+				continue
+			}
 		}
 		result = append(result, e)
 	}
@@ -4593,7 +4599,7 @@ func stripControlChars(s string) string {
 //
 // OIDC credential vars and provider-only keys are stripped so user-authored
 // pre/post scripts and validation/preflight commands cannot mint their own
-// tokens or read the preserved workflow token. The parent harness process
+// tokens, read the preserved workflow token, or use GITHUB_TOKEN. The parent harness process
 // retains them for mintAgentToken and provider credential expansion.
 // See #5832, #6649.
 //
@@ -4617,9 +4623,14 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 		if strings.HasPrefix(e, "TRACEPARENT=") {
 			continue
 		}
-		// Strip OIDC credential vars and provider-only keys (#5832, #6649).
-		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
-			continue
+		if i := strings.IndexByte(e, '='); i > 0 {
+			key := e[:i]
+			// Strip OIDC credential vars, provider-only keys, and the GitHub
+			// workflow token from user-authored child scripts. A minted GH_TOKEN
+			// remains available to the agent through its role-scoped runner environment.
+			if harnessExpansionDenied(key) {
+				continue
+			}
 		}
 		env = append(env, e)
 	}
@@ -5568,6 +5579,15 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 		return setupStatusNotifierGitLab(notifyCfg, owner, repo, sOpts, printer)
 	}
 	return setupStatusNotifierGitHub(notifyCfg, owner, repo, role, sOpts, printer)
+}
+
+// builtInGitHubReview identifies the one review run that can be retried with
+// GitHub's /fs-review command. Roles are intentionally excluded: custom
+// agents may declare role: review but that command would run the built-in
+// agent, not the custom one. Jira-routed comments cannot invoke that command,
+// even when the code-hosting forge is GitHub.
+func builtInGitHubReview(agentName, forgePlatform, trackerSource string) bool {
+	return agentName == "review" && forgePlatform == "github" && trackerSource != "jira"
 }
 
 // setupStatusNotifierGitHub creates a status notifier for GitHub. It mints
