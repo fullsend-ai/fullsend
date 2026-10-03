@@ -2,6 +2,7 @@ package suite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -43,6 +44,7 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 	}
 	w := template.Clone()
 	resetScenarioWorld(w)
+	w.ScenarioName = name
 
 	if pd, ok := w.Driver.(*install.PlaybackDriver); ok {
 		pd.SetRepoHint(name)
@@ -56,12 +58,16 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 // allocated. Deallocation errors are surfaced as test failures rather than
 // panicking the godog runner.
 //
-// Order: CleanupScenario (issues/PRs/forks/hosting repos) runs first,
-// then the deferred DeallocateRepo deletes the leased base and returns
-// the name to the pool. In-scenario debug collection (workflow logs via
-// saveWorkflowRunLogs, agent artifacts via ensureArtifacts) has already
-// finished by the time the After hook runs, so CI still has those files
-// under BEHAVIOUR_ARTIFACT_DIR after the leased repo is gone.
+// Order: for a failed scenario, CollectFailureLogs first saves the logs
+// of the repository's workflow runs that in-scenario collection did not
+// already save (a wait that timed out, a failure before any run was
+// resolved) plus a failure summary; then CleanupScenario
+// (issues/PRs/forks/hosting repos) runs, and the deferred DeallocateRepo
+// deletes the leased base and returns the name to the pool. All debug
+// collection (workflow logs via saveWorkflowRunLogs and
+// CollectFailureLogs, agent artifacts via ensureArtifacts) has finished
+// before the repo is deleted, so CI still has those files under
+// BEHAVIOUR_ARTIFACT_DIR after the leased repo is gone.
 //
 // driver.DeallocateRepo is deferred so the lease is returned even if
 // steps.CleanupScenario panics. Named return values allow the deferred
@@ -85,12 +91,18 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 			}
 		}()
 	}
+	if scenarioErr != nil && !errors.Is(scenarioErr, godog.ErrSkip) {
+		steps.CollectFailureLogs(ctx, w, scenarioErr)
+	}
 	steps.CleanupScenario(w)
 	return ctx, retErr
 }
 
 func resetScenarioWorld(w *world.World) {
 	w.ScenarioStart = time.Now()
+	w.ScenarioBegin = w.ScenarioStart
+	w.ScenarioName = ""
+	w.SavedLogRunIDs = nil
 	w.DummyOps = nil
 	w.IssueNumber = 0
 	w.IssueTitle = ""

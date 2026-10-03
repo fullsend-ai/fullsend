@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 )
 
 // instantAfter returns a timer function that fires immediately, allowing
@@ -3708,4 +3709,25 @@ func TestWaitForHarnessAgent_ArtifactFirstFailureReturnsRun(t *testing.T) {
 	assert.Contains(t, err.Error(), `harness run for "pi-smoke" concluded with "failure"`)
 	require.NotNil(t, run, "the failed run is returned with the error so its logs can be saved")
 	assert.Equal(t, 88, run.ID)
+}
+
+func TestListRecentRuns_ImplementsRunLister(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.RecentWorkflowRuns = map[string][]forge.WorkflowRun{
+		"org/repo": {{ID: 3}, {ID: 2}, {ID: 1}},
+	}
+	lister, ok := New(client, "tok").(ci.RunLister)
+	require.True(t, ok, "driver must implement ci.RunLister for failure log collection")
+
+	runs, err := lister.ListRecentRuns(context.Background(), "org", "repo", 2)
+	require.NoError(t, err)
+	require.Len(t, runs, 2)
+	assert.Equal(t, 3, runs[0].ID)
+	assert.Equal(t, 2, runs[1].ID)
+
+	client.Errors["ListRecentWorkflowRuns"] = fmt.Errorf("boom")
+	_, err = lister.ListRecentRuns(context.Background(), "org", "repo", 2)
+	require.ErrorContains(t, err, "boom")
 }
