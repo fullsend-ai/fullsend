@@ -870,7 +870,9 @@ func (p *Poller) revalidateRemovals(ctx context.Context, state persistedPollStat
 // would be suppressed by that presence. A dropped addition is simply not
 // recorded: the next poll rediscovers the label and deduplicates by dispatch
 // key. A failed lookup is handled the same way and returned for the caller to
-// report.
+// report; since the superseded-versus-current question is then unresolved, any
+// presence a concurrent writer recorded for the label is removed as well
+// (deltas.stalePresence), so the rediscovery is not suppressed by it.
 //
 // When the addition is dropped because a newer addition is currently present
 // and has no dispatch evidence (a replacement occurrence this writer never
@@ -911,6 +913,18 @@ func (p *Poller) revalidateAdditions(ctx context.Context, state persistedPollSta
 			}
 			if err != nil && !forge.IsNotFound(err) {
 				errs = append(errs, fmt.Errorf("revalidate label addition for issue %d label %q: %w", iid, label, err))
+				// The occurrence could not be resolved, so a presence a
+				// concurrent writer recorded for it may belong to a
+				// superseded occurrence, and the merge would keep it. Holding
+				// the watermark alone cannot recover then: the rediscovery
+				// would see the label as already recorded. Remove the
+				// unresolved presence conservatively; the dispatch keys
+				// persisted here deduplicate the rediscovered occurrence if
+				// it was in fact current and dispatched.
+				if stale == nil {
+					stale = make(LabelState)
+				}
+				stale[iid] = append(stale[iid], label)
 			}
 			if err == nil {
 				// Not current without a lookup error: either the issue lost
