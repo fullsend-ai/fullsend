@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	messages "github.com/cucumber/messages/go/v21"
+	messages "github.com/cucumber/messages/go/v34"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
