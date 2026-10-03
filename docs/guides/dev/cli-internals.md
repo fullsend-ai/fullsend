@@ -126,6 +126,11 @@ fullsend
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
 │   └── --max-resources <int>                #   Max total remote resources
+├── lint                                     # Validate config/harnesses; never runs an agent or mutates the forge
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
+│   ├── --forge <platform>                   #   Resolve only this forge variant; omit for all
+│   ├── --strict                             #   Also fail (exit 1) on deprecation warnings
+│   └── --offline                            #   Reject network fetches
 ├── run                                      # Execute an agent in a sandbox
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory
 │   ├── --target-repo <path>                 #   Path to the target repository

@@ -26,6 +26,7 @@ Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai
 |---------|-------------|
 | [`fullsend run`](run.md) | Execute an agent locally in a sandbox. See [running agents locally](../guides/user/running-agents-locally.md). |
 | `fullsend lock [agent-name]` | Pin remote dependencies to `lock.yaml` |
+| `fullsend lint` | Validate `config.yaml` and every harness for structural errors and deprecations, without running an agent or mutating the forge. Safe as a CI gate (`--strict` also fails on deprecation warnings). |
 | `fullsend scan` | Run security scanners on agent input/output |
 | `fullsend eval-measure` | Score wild-run traces into `eval-measurements.jsonl`. See [Eval measurements](../guides/infrastructure/eval-measurements.md). |
 
