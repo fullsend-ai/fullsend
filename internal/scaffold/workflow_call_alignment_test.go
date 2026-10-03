@@ -1471,7 +1471,7 @@ func TestRoutingLabelPrefixDrift(t *testing.T) {
 }
 
 // TestRoleCheckCaseBranches validates the role-check step's case mapping and
-// backward-compat logic in both dispatch workflows (#2298).
+// backward-compat logic in per-org dispatch workflow.
 func TestRoleCheckCaseBranches(t *testing.T) {
 	type workflowCase struct {
 		name    string
@@ -1479,10 +1479,6 @@ func TestRoleCheckCaseBranches(t *testing.T) {
 	}
 
 	cases := []workflowCase{
-		{
-			"reusable-dispatch.yml",
-			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
-		},
 		{
 			"scaffold/dispatch.yml",
 			loadScaffoldFile(".github/workflows/dispatch.yml"),
