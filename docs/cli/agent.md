@@ -8,6 +8,12 @@ Manage agents in fullsend config. Generate a new agent, add, list, set (runtime,
 
 `agent add` and `agent update` fetch remote content and resolve GitHub URLs. Authentication is via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`.
 
+Every subcommand uses `.fullsend` in the current directory, so run them from
+the repository root. Pass `--fullsend-dir <path>` to use another directory.
+When `--fullsend-dir` is omitted and `.fullsend` does not exist, the command
+stops with `no .fullsend directory in the current directory; run from the
+repository root or pass --fullsend-dir <path>`.
+
 ## Commands
 
 | Command | Description |
@@ -26,7 +32,7 @@ an agent needs is written for you; the only one you have to edit is the
 instructions the agent follows.
 
 ```bash
-fullsend agent new lint-docs --fullsend-dir .fullsend \
+fullsend agent new lint-docs \
   --role triage --description "Check docs changes for broken links"
 ```
 
@@ -42,7 +48,7 @@ fullsend agent new lint-docs --fullsend-dir .fullsend \
 Next:
   1. Fill in the marked sections of agents/lint-docs.md — that file is the agent's prompt.
   2. Test locally, printing the result instead of commenting:
-       POST_LINT_DOCS_DRY_RUN=1 fullsend run lint-docs --fullsend-dir .fullsend \
+       POST_LINT_DOCS_DRY_RUN=1 fullsend run lint-docs \
          --target-repo . --env-file .env.local
      .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,
      GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, and
@@ -123,7 +129,7 @@ for the four-step migration to the bare built-in names above.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
+| `--fullsend-dir` | `.fullsend` | Path to the `.fullsend` configuration directory |
 | `-f`, `--file` | | Read the agent definition from a spec YAML file |
 | `--role` | `triage` | Mint role the agent runs as (see the table below) |
 | `--description` | `Custom <name> agent.` | One-line description; written to both the harness and the agent definition |
@@ -222,7 +228,7 @@ timeout_minutes: 20
 ```
 
 ```bash
-fullsend agent new -f link-check.agent.yaml --fullsend-dir .fullsend
+fullsend agent new -f link-check.agent.yaml
 ```
 
 ```
@@ -245,7 +251,7 @@ later — after you have edited the harness by hand, for example — load it wit
 the same loader dispatch uses:
 
 ```bash
-fullsend lock lint-docs --fullsend-dir .fullsend --offline
+fullsend lock lint-docs --offline
 ```
 
 ```
@@ -261,7 +267,7 @@ shows **registrations** and does not open harness files, so it is not a
 validity check:
 
 ```bash
-fullsend agent list --fullsend-dir .fullsend
+fullsend agent list
 ```
 
 ```
@@ -272,7 +278,7 @@ lint-docs  harness/lint-docs.yaml
 Per-agent overrides compose on top of the generated harness:
 
 ```bash
-fullsend agent set lint-docs --fullsend-dir .fullsend --model sonnet
+fullsend agent set lint-docs --model sonnet
 ```
 
 ```
@@ -283,7 +289,7 @@ To see what would be generated without writing anything, use `--dry-run`. It
 prints the file list and every rendered body:
 
 ```bash
-fullsend agent new report --fullsend-dir .fullsend --dry-run
+fullsend agent new report --dry-run
 ```
 
 ```
@@ -300,7 +306,7 @@ fullsend agent new report --fullsend-dir .fullsend --dry-run
 And to undo a generated registration:
 
 ```bash
-fullsend agent remove link-check --fullsend-dir .fullsend
+fullsend agent remove link-check
 ```
 
 ```
@@ -330,6 +336,7 @@ and model resolve independently (flag, then config, then default); see
 | `trigger does not compile: ERROR: <input>:1:5: Syntax error: ...` | A `--trigger` expression is not valid CEL, or does not return a boolean | Compare against the `--on` presets above |
 | `unknown --on preset "..."` followed by the preset list | `--on` is not one of the four presets | Use a listed preset, or pass raw CEL with `--trigger` |
 | `a trigger is required: pass --on with a preset, or --trigger` | `--trigger ""` was passed explicitly | Give a real trigger. A trigger-less agent is silently never dispatched |
+| `no .fullsend directory in the current directory; run from the repository root or pass --fullsend-dir <path>` | `--fullsend-dir` was omitted and the current directory has no `.fullsend` | Run from the repository root or pass `--fullsend-dir`. If the repo has no `.fullsend` yet, scaffold it first |
 | `fullsend dir ... does not exist; run ` + "`fullsend github setup`" + ` first` | `--fullsend-dir` points at nothing | Scaffold the repo first |
 | `runtime codex takes OpenAI model ids only, and ...: use --model openai/gpt-5.6-luna ...` | `--runtime codex`, or a repo whose `config.yaml` sets `runtime: codex`, with no `--model` or with a model that is not an OpenAI id, such as `opus` | Use `--model openai/<id>` on the same command. Nothing is written when this fires |
 
@@ -343,15 +350,15 @@ stale provider profiles, schema validation, triggers that never fire), see
 Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. When a URL references a branch or tag (rather than a commit SHA), the original ref is stored in the config entry's `ref` field so that subsequent `agent update` calls re-resolve against the same branch. The URL prefix is added to `allowed_remote_resources` if not already present.
 
 ```bash
-fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml --fullsend-dir .fullsend
-fullsend agent add harness/custom-review.yaml --name my-review --fullsend-dir .fullsend
+fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml
+fullsend agent add harness/custom-review.yaml --name my-review
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
+| `--fullsend-dir` | `.fullsend` | Path to the `.fullsend` configuration directory |
 | `--name` | derived from filename | Explicit agent name |
 
 GitHub blob URLs are resolved to pinned `raw.githubusercontent.com` URLs. Non-GitHub URLs must already contain a commit SHA in the path. Local paths must be relative, must not contain path traversal (`..`), and the file must exist. If an agent with the same name already exists, the command fails.
@@ -361,14 +368,14 @@ GitHub blob URLs are resolved to pinned `raw.githubusercontent.com` URLs. Non-Gi
 List all agents registered in config, showing each agent's name and source.
 
 ```bash
-fullsend agent list --fullsend-dir .fullsend
+fullsend agent list
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
+| `--fullsend-dir` | `.fullsend` | Path to the `.fullsend` configuration directory |
 
 Read-only. Displays a table with `NAME` and `SOURCE` columns. For URL agents, the `#sha256=...` integrity hash suffix is stripped from the displayed source for readability. Disabled agents (`enabled: false`) are included in the listing.
 
@@ -384,16 +391,16 @@ my-lint  harness/my-lint.yaml
 Update a URL-based agent, or a local-path agent's `base:` URL, to a new commit SHA and recompute the `#sha256=...` integrity hash. If no SHA is provided, the branch ref stored at adoption time is re-resolved; if no ref was stored, the default branch HEAD is used. `agent add` never stores a ref for local-path sources, so an `agent update` on a local-path agent's `base:` URL without an explicit SHA always resolves the base repo's default branch — pass an explicit SHA if the `base:` URL was originally pinned to a different branch.
 
 ```bash
-fullsend agent update triage --fullsend-dir .fullsend
-fullsend agent update triage a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 --fullsend-dir .fullsend
-fullsend agent update code --fullsend-dir .fullsend
+fullsend agent update triage
+fullsend agent update triage a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+fullsend agent update code
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
+| `--fullsend-dir` | `.fullsend` | Path to the `.fullsend` configuration directory |
 
 URL agents are re-pinned in `config.yaml`. Local-path agents whose harness YAML has a `base:` URL are re-pinned in that YAML file; `config.yaml` is left unchanged. Local-path agents without a `base:` URL have nothing to pin. Non-GitHub URLs require an explicit SHA argument. The integrity hash is recomputed by fetching the content at the new SHA.
 
@@ -407,16 +414,16 @@ flags given change; pass an empty value (`--model ""`) to clear a setting. The r
 before it is written.
 
 ```bash
-fullsend agent set code --fullsend-dir .fullsend --runtime claude --model sonnet --effort high
-fullsend agent set triage --fullsend-dir .fullsend --model xai-vertex/xai/grok-4.6
-fullsend agent set review --fullsend-dir .fullsend --subagent correctness=opus --subagent default=haiku
+fullsend agent set code --runtime claude --model sonnet --effort high
+fullsend agent set triage --model xai-vertex/xai/grok-4.6
+fullsend agent set review --subagent correctness=opus --subagent default=haiku
 ```
 
 ### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--fullsend-dir` | Path to the `.fullsend` configuration directory (required) |
+| `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`) |
 | `--runtime` | Agent runtime for this agent (`claude`, `pi` or `codex`) |
 | `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi and codex (codex takes OpenAI ids only) |
 | `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
@@ -431,14 +438,14 @@ how `subagents` map to persona dispatch.
 Remove an agent from config. If the removed agent was the last one using a given `allowed_remote_resources` prefix, that prefix is also cleaned up.
 
 ```bash
-fullsend agent remove triage --fullsend-dir .fullsend
+fullsend agent remove triage
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
+| `--fullsend-dir` | `.fullsend` | Path to the `.fullsend` configuration directory |
 
 ## See also
 

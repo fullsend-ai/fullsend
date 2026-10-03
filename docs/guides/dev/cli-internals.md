@@ -99,7 +99,7 @@ fullsend
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-├── agent                                    # Generate and manage agents in config
+├── agent                                    # Generate and manage agents in config (--fullsend-dir default: .fullsend)
 │   ├── new          <name>                   # Generate a complete custom agent and register it
 │   │   ├── --role <name>                    #   Mint role: triage|review|coder|retro|prioritize
 │   │   ├── --on <preset>                    #   Trigger preset (command:/label:/issue-opened/pr-opened)
@@ -121,14 +121,14 @@ fullsend
 │   └── remove       <name>                   # Unregister agent from config
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
-│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --forge <platform>                   #   Lock only this forge variant; omit for all
 │   ├── --update                             #   Force re-resolve even if current
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
 │   └── --max-resources <int>                #   Max total remote resources
 ├── run                                      # Execute an agent in a sandbox
-│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)

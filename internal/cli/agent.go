@@ -56,8 +56,8 @@ with an integrity hash. The URL prefix is added to allowed_remote_resources
 if not already present.
 
 Examples:
-  fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml --fullsend-dir .fullsend
-  fullsend agent add harness/custom-review.yaml --name my-review --fullsend-dir .fullsend`,
+  fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml
+  fullsend agent add harness/custom-review.yaml --name my-review`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := ui.New(os.Stdout)
@@ -72,9 +72,8 @@ Examples:
 			return runAgentAdd(cmd.Context(), args[0], name, fullsendDir, forgeClient, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
+	addFullsendDirFlag(cmd, &fullsendDir)
 	cmd.Flags().StringVar(&name, "name", "", "explicit agent name (default: derived from filename)")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
 
@@ -90,8 +89,7 @@ func newAgentListCmd() *cobra.Command {
 			return runAgentList(fullsendDir, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
+	addFullsendDirFlag(cmd, &fullsendDir)
 	return cmd
 }
 
@@ -129,8 +127,7 @@ Local-path agents without a base: URL have nothing to pin.`,
 			return runAgentUpdate(cmd.Context(), args[0], sha, fullsendDir, forgeClient, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
+	addFullsendDirFlag(cmd, &fullsendDir)
 	return cmd
 }
 
@@ -146,8 +143,7 @@ func newAgentRemoveCmd() *cobra.Command {
 			return runAgentRemove(fullsendDir, args[0], printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
+	addFullsendDirFlag(cmd, &fullsendDir)
 	return cmd
 }
 
@@ -182,12 +178,11 @@ The --subagent flag maps a persona name to a model (repeatable):
 			}, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
+	addFullsendDirFlag(cmd, &fullsendDir)
 	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude, pi or codex); \"\" clears it")
 	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi and codex — codex takes OpenAI ids only); \"\" clears it")
 	cmd.Flags().StringVar(&effort, "effort", "", "effort level for this agent (low, medium, high, xhigh, max); \"\" clears it")
 	cmd.Flags().StringArrayVar(&subagentFlags, "subagent", nil, "persona=model mapping for sub-agents (repeatable; persona= clears)")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
 

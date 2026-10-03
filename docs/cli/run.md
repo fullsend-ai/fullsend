@@ -16,7 +16,7 @@ fullsend run <agent-name> [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--fullsend-dir` | Path to the `.fullsend` configuration directory |
+| `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`; when omitted and `.fullsend` does not exist in the current directory, the command stops and names the flag) |
 | `--runtime` | Override the agent runtime from `config.yaml` for this run (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`); also `FULLSEND_RUNTIME` |
 | `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi and codex — codex takes OpenAI ids only); also `FULLSEND_MODEL` |
 | `--effort` | Override the harness effort level for this run (`low`…`max`); also `FULLSEND_EFFORT` |
