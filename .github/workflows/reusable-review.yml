@@ -156,6 +156,18 @@ jobs:
           FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
         run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fetch-prior-review.sh"
 
+      - name: Pre-fetch human-resolved review threads
+        id: resolved-threads
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          PR_NUM: >-
+            ${{ fromJSON(inputs.event_payload).pull_request.number
+             || fromJSON(inputs.event_payload).issue.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+        run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fetch-resolved-threads.sh"
+
       - name: Setup GCP and prepare credentials
         uses: ./.defaults/.github/actions/setup-gcp
         with:
@@ -184,6 +196,7 @@ jobs:
           PRIOR_REVIEW_SHA: ${{ steps.prior-review.outputs.prior_sha }}
           PRIOR_REVIEW_FILE: ${{ steps.prior-review.outputs.prior_review_file }}
           PRIOR_REVIEW_PROVENANCE: ${{ steps.prior-review.outputs.prior_review_provenance }}
+          HUMAN_RESOLVED_FILE: ${{ steps.resolved-threads.outputs.human_resolved_file }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
