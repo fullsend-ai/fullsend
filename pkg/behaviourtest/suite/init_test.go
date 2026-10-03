@@ -3,6 +3,8 @@ package suite
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -102,6 +104,10 @@ type fakeDriver struct {
 	deallocated int
 	outstanding map[string]struct{}
 	names       chan string
+
+	// onDeallocate, when set, runs at the start of DeallocateRepo so
+	// tests can observe state at the moment the lease ends.
+	onDeallocate func()
 }
 
 func newFakeDriver(capacity int) *fakeDriver {
@@ -129,6 +135,9 @@ func (f *fakeDriver) AllocateRepo(ctx context.Context) (string, error) {
 }
 
 func (f *fakeDriver) DeallocateRepo(_ context.Context, name string) error {
+	if f.onDeallocate != nil {
+		f.onDeallocate()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.outstanding[name]; !ok {
@@ -266,6 +275,8 @@ func TestBeforeScenario_ClonesAndResetsWorld(t *testing.T) {
 	assert.Equal(t, "test-repo", w.RepoName)
 	assert.Equal(t, 0, w.IssueNumber, "scenario fields should be zeroed")
 	assert.False(t, w.ScenarioStart.IsZero(), "ScenarioStart should be set")
+	assert.Equal(t, w.ScenarioStart, w.ScenarioBegin, "ScenarioBegin should be set")
+	assert.Equal(t, "a scenario", w.ScenarioName)
 }
 
 func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
@@ -437,4 +448,47 @@ func TestAfterScenario_AllocateBlocksUntilDeallocate(t *testing.T) {
 	name2, err := driver.AllocateRepo(context.Background())
 	require.NoError(t, err)
 	assert.NotEmpty(t, name2)
+}
+
+// TestAfterScenario_FailedScenarioWritesFailureSummaryBeforeDeallocating
+// checks that a failed scenario leaves a failure summary under
+// BEHAVIOUR_ARTIFACT_DIR, written before the leased repo — and with it
+// the run logs — is deallocated, even when no step resolved a run.
+func TestAfterScenario_FailedScenarioWritesFailureSummaryBeforeDeallocating(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(1)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+
+	summaryAtDealloc := 0
+	driver.onDeallocate = func() {
+		matches, _ := filepath.Glob(filepath.Join(artifactDir, "debug-scenario-*", "failure-summary.txt"))
+		summaryAtDealloc = len(matches)
+	}
+
+	w := &world.World{LeasedRepoName: name, ScenarioName: "times out"}
+	ctx := world.WithWorld(context.Background(), w)
+
+	origErr := fmt.Errorf("harness agent did not complete")
+	_, err = afterScenario(ctx, driver, origErr)
+	assert.Equal(t, origErr, err)
+	assert.Equal(t, 1, summaryAtDealloc, "the failure summary must exist before the repo is deallocated")
+}
+
+func TestAfterScenario_NoFailureSummaryForPassingOrSkippedScenario(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	for _, scenarioErr := range []error{nil, godog.ErrSkip} {
+		w := &world.World{ScenarioName: "fine"}
+		ctx := world.WithWorld(context.Background(), w)
+		_, err := afterScenario(ctx, nil, scenarioErr)
+		assert.Equal(t, scenarioErr, err)
+	}
+
+	entries, err := os.ReadDir(artifactDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "only failed scenarios write a failure summary")
 }
