@@ -376,6 +376,56 @@ func TestPoll_FailedAdditionRevalidationHoldsWatermarkAndRecovers(t *testing.T) 
 	}
 }
 
+// TestPoll_HeldWatermarkAlsoHoldsDispatchedKeyPrune: a catch-up poll dispatches
+// an old addition (issue 5) and a recent unrelated one (issue 6), but
+// revalidating issue 5's addition before persistence fails, so the watermark
+// is held. The held watermark must hold the dispatched-key prune cutoff too:
+// issue 5's key is older than the retention window behind the advanced
+// watermark, and pruning it would let the recovery poll, which rediscovers
+// issue 5 from the held watermark, dispatch the same occurrence again.
+func TestPoll_HeldWatermarkAlsoHoldsDispatchedKeyPrune(t *testing.T) {
+	mc := newMockClient()
+	mc.issuesHonorSince = true
+	pollInDiscoveryWithTrigger(mc, []string{"ready-to-code"}, nil)
+	old := recent.Add(-(dispatchedKeyRetention + time.Hour))
+	mc.issues[0].UpdatedAt = old
+	mc.issue[5].UpdatedAt = old
+	mc.labelEvents[5] = []ResourceLabelEvent{labelEvent(1, "add", "ready-to-code", alice, old)}
+	startWatermark := old.Add(-time.Hour).Format(time.RFC3339)
+	mc.setPollState(persistedPollState{LastPollAtFull: startWatermark})
+	failed := false
+	mc.onBranchRef = func() {
+		if failed || len(mc.pipelineCalls) == 0 {
+			return
+		}
+		failed = true
+		mc.issueErr[5] = fmt.Errorf("issue lookup unavailable")
+	}
+
+	if err := eventsPoller(mc).Run(context.Background()); err == nil {
+		t.Fatal("poll Run: want the failed addition revalidation reported")
+	}
+	if !failed {
+		t.Fatal("lookup failure never injected before persist")
+	}
+	state, _ := mc.getPollState()
+	if state.LastPollAtFull != startWatermark {
+		t.Fatalf("watermark = %s, want it held at %s", state.LastPollAtFull, startWatermark)
+	}
+	if _, ok := state.DispatchedKeysFull["code:issue_label-5-ready-to-code-e1"]; !ok {
+		t.Fatalf("dispatch evidence for the old addition was pruned: %v", state.DispatchedKeysFull)
+	}
+
+	delete(mc.issueErr, 5)
+	dispatched := len(mc.pipelineCalls)
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("recovery poll Run: %v", err)
+	}
+	if len(mc.pipelineCalls) != dispatched {
+		t.Fatalf("pipeline calls = %d, want %d: the recovery poll must not redispatch", len(mc.pipelineCalls), dispatched)
+	}
+}
+
 // TestPoll_DiscoveredAdditionRemovedBeforePersistNotRestored: the poll
 // discovers an addition (its baseline lacks the label), then the label is
 // removed on the forge — and the removal recorded — before the poll persists.

@@ -322,7 +322,7 @@ func (m *mockClient) getBranchState(branch string) (persistedPollState, bool) {
 			if err := json.Unmarshal(data, &s); err != nil {
 				return persistedPollState{}, true
 			}
-			return decodePendingLabels(s), true
+			return decodePendingLabels(decodeReplayKeys(s)), true
 		}
 	}
 	// Fall back to a seeded-but-not-yet-force-committed document (see

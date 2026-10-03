@@ -335,25 +335,3 @@ func alreadyDispatched(dispatched map[string]int64, stage string, event Routable
 	}
 	return false
 }
-
-// unionLabelState adds each IID's labels in adds to existing without
-// removing anything, so a label handoff never drops labels a concurrent
-// poll cycle recorded for the same issue.
-func unionLabelState(existing, adds LabelState) LabelState {
-	merged := make(LabelState, len(existing)+len(adds))
-	for iid, labels := range existing {
-		merged[iid] = labels
-	}
-	for iid, labels := range adds {
-		have := toSet(merged[iid])
-		out := append([]string(nil), merged[iid]...)
-		for _, l := range labels {
-			if !have[l] {
-				have[l] = true
-				out = append(out, l)
-			}
-		}
-		merged[iid] = out
-	}
-	return merged
-}

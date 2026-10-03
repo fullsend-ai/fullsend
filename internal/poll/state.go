@@ -202,7 +202,6 @@ func encodePendingLabels(state persistedPollState) (persistedPollState, error) {
 // only happens on a writer bug, and the occurrence's own failure count and
 // the poller's discovery still bound the damage.
 func decodePendingLabels(state persistedPollState) persistedPollState {
-	state = decodeReplayKeys(state)
 	if !hasPendingKeys(state.FailedKeysFull) {
 		return state
 	}
@@ -414,7 +413,7 @@ func (p *Poller) loadPollStateAtRef(ctx context.Context, owner, repo, ref string
 		}
 		return persistedPollState{}, fmt.Errorf("%w on %s; discarded branch", errPollStateTampered, branch)
 	}
-	return p.modeDocument(decodePendingLabels(state)), nil
+	return p.modeDocument(decodePendingLabels(decodeReplayKeys(state))), nil
 }
 
 func (p *Poller) discardPollState(ctx context.Context, owner, repo, branch string) error {
@@ -703,8 +702,12 @@ func (p *Poller) persistWithCAS(ctx context.Context, owner, repo string, deltas 
 			// Nothing else stores that unresolved removal, so the watermark
 			// must not advance past the issue: the next poll has to rediscover
 			// it and derive the removal again. Dispatch keys and the other
-			// deltas are still persisted.
+			// deltas are still persisted. Retention is relative to the
+			// watermark rediscovery will start from, so the prune cutoff
+			// that followed the proposed watermark is reset too: it must
+			// not drop dispatch evidence the retained watermark needs.
 			attemptDeltas.watermark = nil
+			attemptDeltas.pruneCut = time.Time{}
 		}
 		// Revalidate the label additions this writer discovered the same way:
 		// its raw label delta must not restore presence for an occurrence that
@@ -716,8 +719,10 @@ func (p *Poller) persistWithCAS(ctx context.Context, owner, repo string, deltas 
 			// label presence and no pending handoff. Hold the watermark so the
 			// next poll rediscovers the issue and restores the presence; the
 			// dispatch keys persisted here deduplicate the rediscovered
-			// occurrence.
+			// occurrence. Reset the prune cutoff with it so that evidence is
+			// not pruned against the proposed (advanced) watermark.
 			attemptDeltas.watermark = nil
+			attemptDeltas.pruneCut = time.Time{}
 		}
 		state = p.applyPersistDeltas(state, attemptDeltas)
 		err = p.commitPollState(ctx, owner, repo, state, expectedSHA)
@@ -838,7 +843,9 @@ func (p *Poller) revalidateRemovals(ctx context.Context, state persistedPollStat
 		// dispatch evidence and is recorded nowhere. Hold the watermark so the
 		// next poll rediscovers the issue and dispatches the addition even if
 		// another event advanced the watermark past the issue's updated_at.
+		// The prune cutoff followed the proposed watermark, so reset it too.
 		out.watermark = nil
+		out.pruneCut = time.Time{}
 	}
 	return out, errs
 }
@@ -924,6 +931,7 @@ func (p *Poller) revalidateAdditions(ctx context.Context, state persistedPollSta
 	}
 	if holdWatermark {
 		out.watermark = nil
+		out.pruneCut = time.Time{}
 	}
 	return out, errs
 }
@@ -1142,6 +1150,28 @@ func mergeLabelStateAgainst(existing, base, incoming LabelState) LabelState {
 			continue
 		}
 		merged[iid] = result
+	}
+	return merged
+}
+
+// unionLabelState adds each IID's labels in adds to existing without
+// removing anything, so a label handoff never drops labels a concurrent
+// poll cycle recorded for the same issue.
+func unionLabelState(existing, adds LabelState) LabelState {
+	merged := make(LabelState, len(existing)+len(adds))
+	for iid, labels := range existing {
+		merged[iid] = labels
+	}
+	for iid, labels := range adds {
+		have := toSet(merged[iid])
+		out := append([]string(nil), merged[iid]...)
+		for _, l := range labels {
+			if !have[l] {
+				have[l] = true
+				out = append(out, l)
+			}
+		}
+		merged[iid] = out
 	}
 	return merged
 }
