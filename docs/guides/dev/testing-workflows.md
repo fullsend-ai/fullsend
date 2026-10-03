@@ -10,12 +10,20 @@ There are independent version reference inputs that control different parts of t
 |-------|----------|-----------|
 | `@<ref>` on `uses:` | Which reusable workflow YAML runs | The `uses:` line in the caller workflow |
 | `fullsend_version` | Which fullsend CLI binary is installed | Passed as a `with:` input |
+| `version` on `fullsend-ai/fullsend` | Which CLI the composite action installs | Action `with.version`; defaults to `latest`. Independent of the action `uses:` ref. |
 
 When no release exists for `fullsend_version`, `action.yml` falls back to cloning
 and building from source at that ref (see the `install-method=source` path).
 
 If `uses:` and `fullsend_version` diverge, the workflows/agents and
 CLI diverge, potentially causing mismatch in behavior and failures.
+
+The same split exists on the composite action: SHA-pinning
+`uses: fullsend-ai/fullsend@<sha>` does **not** pin the CLI. The `version`
+input defaults to `latest` independently of `github.action_ref`. When
+`agent: __install_only__` is used without an explicit `version`, the
+action warns in the workflow log and still installs latest. Set `version`
+to the same tag or SHA as the `uses:` ref so the CLI matches the action.
 
 ## Vendored installs (recommended for PR testing)
 
