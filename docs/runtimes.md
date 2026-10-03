@@ -126,8 +126,8 @@ agents:
 
 Or from the CLI, which validates the entry before writing it:
 
-1. `fullsend agent set code --fullsend-dir .fullsend --runtime claude --model sonnet --effort high`
-2. `fullsend agent list --fullsend-dir .fullsend` shows the settings next to each agent —
+1. `fullsend agent set code --runtime claude --model sonnet --effort high`
+2. `fullsend agent list` shows the settings next to each agent —
    `code  (built-in)  [runtime=claude model=sonnet effort=high]`, or the `source:` path for a custom
    agent.
 3. The next `fullsend run code` names the entry as the source —

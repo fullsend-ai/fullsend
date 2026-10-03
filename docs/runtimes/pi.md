@@ -412,7 +412,7 @@ Flash handles document checks, Opus is kept for detail work, and Sonnet is enoug
 to orchestrate:
 
 ```bash
-fullsend agent set review --fullsend-dir .fullsend --model sonnet \
+fullsend agent set review --model sonnet \
   --subagent challenger=xai/grok-4.6 \
   --subagent docs-currency=google-vertex/gemini-3.8-flash \
   --subagent style-conventions=google-vertex/gemini-3.8-flash
@@ -473,7 +473,7 @@ whose children name no persona and so carry no model of their own; there it is t
 way to move them off the parent's model:
 
 ```bash
-fullsend agent set retro --fullsend-dir .fullsend --subagent default=sonnet
+fullsend agent set retro --subagent default=sonnet
 ```
 
 ```console
@@ -518,7 +518,7 @@ providers:
 Then route the persona:
 
 ```bash
-fullsend agent set review --fullsend-dir .fullsend --runtime pi --model opus \
+fullsend agent set review --runtime pi --model opus \
   --subagent challenger=openai/gpt-5.6-luna
 ```
 

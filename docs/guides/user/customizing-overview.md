@@ -106,7 +106,7 @@ When you need a completely new agent — with its own trigger, scripts, and
 output schema — start with the generator:
 
 ```bash
-fullsend agent new my-agent --fullsend-dir .fullsend --role triage
+fullsend agent new my-agent --role triage
 ```
 
 It writes the files below, registers the agent in `config.yaml`, and checks

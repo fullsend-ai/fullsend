@@ -491,7 +491,7 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
+	addFullsendDirFlag(cmd, &fullsendDir)
 	cmd.Flags().StringVar(&outputBase, "output-dir", "", "base directory for run output (default: /tmp/fullsend)")
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "path to the target repository")
 	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to copy into the sandbox (default: current executable)")
@@ -513,7 +513,6 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi and codex — codex takes OpenAI ids only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
@@ -770,7 +769,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				harnessHash := fetch.ComputeSHA256(harnessData)
 
 				if entry.IsStale(harnessHash) {
-					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s --fullsend-dir %s' to update.", agentName, fullsendDir))
+					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s%s' to update.", agentName, fullsendDirArg(fullsendDir)))
 				} else {
 					printer.StepStart("Using pinned dependencies from lock file")
 					lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
