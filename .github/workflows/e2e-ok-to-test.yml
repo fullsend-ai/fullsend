@@ -17,7 +17,7 @@ jobs:
   run:
     if: github.event.label.name == 'ok-to-test'
     # Caller permissions are a ceiling for the reusable workflow — must grant
-    # the union of job perms in e2e.yml (gate / e2e / behaviour / playback).
+    # the union of job perms in e2e.yml (gate / behaviour / playback).
     permissions:
       contents: read
       pull-requests: write
