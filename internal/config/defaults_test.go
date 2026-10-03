@@ -854,3 +854,480 @@ roles:
 		assert.Nil(t, prc.KeepHistory)
 	})
 }
+
+// --- Tri-state YAML shapes (absent / null / empty / value) ---
+//
+// Every inherit-from-parent field must cover these four YAML shapes
+// against the Go-side resolved accessor. Tests parse YAML so they
+// exercise gopkg.in/yaml.v3's null-vs-absent collapse, which struct
+// literals cannot. See
+// docs/reference/config-reference.md#tri-state-config-field-semantics.
+
+// triStateParentYAML is a base layer with distinctive values so inherit
+// is distinguishable from code defaults.
+const triStateParentYAML = `version: "1"
+kill_switch: true
+keep_history: false
+roles:
+  - triage
+  - coder
+agents:
+  - name: triage
+    source: harness/triage.yaml
+    enabled: false
+allowed_remote_resources:
+  - https://parent.example.com/
+create_issues:
+  allow_targets:
+    orgs:
+      - parent-org
+status_notifications:
+  comment:
+    start: disabled
+`
+
+func loadTriState(t *testing.T, overlay string) PerRepoConfigReader {
+	t.Helper()
+	cfg, err := ParsePerRepoConfigWriterLayered([]byte(overlay), []byte(triStateParentYAML))
+	require.NoError(t, err)
+	return cfg
+}
+
+func TestPerRepoConfig_TriStateYAMLShapes(t *testing.T) {
+	parentRoles := []string{"triage", "coder"}
+
+	tests := []struct {
+		name    string
+		overlay string
+		check   func(t *testing.T, cfg PerRepoConfigReader)
+	}{
+		// roles: replace-if-set. YAML null collapses to nil (inherit).
+		{
+			name:    "roles/absent inherits parent",
+			overlay: "version: \"1\"\n",
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.Equal(t, parentRoles, cfg.ConfigRoles())
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.Roles)
+			},
+		},
+		{
+			name: "roles/null scalar inherits parent",
+			overlay: `version: "1"
+roles:
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.Equal(t, parentRoles, cfg.ConfigRoles())
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.Roles, "yaml.v3 decodes roles: (null) to nil, same as omitted")
+			},
+		},
+		{
+			name: "roles/null keyword inherits parent",
+			overlay: `version: "1"
+roles: null
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.Equal(t, parentRoles, cfg.ConfigRoles())
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.Roles)
+			},
+		},
+		{
+			name: "roles/empty list is explicit no roles",
+			overlay: `version: "1"
+roles: []
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				require.NotNil(t, cfg.ConfigRoles())
+				assert.Empty(t, cfg.ConfigRoles())
+			},
+		},
+		{
+			name: "roles/value replaces parent",
+			overlay: `version: "1"
+roles:
+  - triage
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.Equal(t, []string{"triage"}, cfg.ConfigRoles())
+			},
+		},
+
+		// allowed_remote_resources: union with deny-all on empty.
+		{
+			name:    "allowed_remote_resources/absent inherits parent",
+			overlay: "version: \"1\"\n",
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.Contains(t, cfg.AllowedResources(), "https://parent.example.com/")
+				assert.NotEmpty(t, cfg.AllowedResources())
+			},
+		},
+		{
+			name: "allowed_remote_resources/null scalar inherits parent",
+			overlay: `version: "1"
+allowed_remote_resources:
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.Contains(t, cfg.AllowedResources(), "https://parent.example.com/")
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.AllowedRemoteResources)
+			},
+		},
+		{
+			name: "allowed_remote_resources/empty list is deny-all",
+			overlay: `version: "1"
+allowed_remote_resources: []
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				require.NotNil(t, cfg.AllowedResources())
+				assert.Empty(t, cfg.AllowedResources())
+			},
+		},
+		{
+			name: "allowed_remote_resources/value unions with parent",
+			overlay: `version: "1"
+allowed_remote_resources:
+  - https://overlay.example.com/
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.Contains(t, cfg.AllowedResources(), "https://overlay.example.com/")
+				assert.Contains(t, cfg.AllowedResources(), "https://parent.example.com/")
+			},
+		},
+
+		// kill_switch: *bool. Parent is true so inherit ≠ code default.
+		{
+			name:    "kill_switch/absent inherits parent true",
+			overlay: "version: \"1\"\n",
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.True(t, cfg.IsKillSwitchActive())
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.KillSwitch)
+			},
+		},
+		{
+			name: "kill_switch/null scalar inherits parent true",
+			overlay: `version: "1"
+kill_switch:
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.True(t, cfg.IsKillSwitchActive())
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.KillSwitch, "yaml.v3 decodes kill_switch: (null) to nil")
+			},
+		},
+		{
+			name: "kill_switch/false is explicit local false",
+			overlay: `version: "1"
+kill_switch: false
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.False(t, cfg.IsKillSwitchActive())
+				prc := cfg.(*perRepoConfig)
+				require.NotNil(t, prc.KillSwitch)
+				assert.False(t, *prc.KillSwitch)
+			},
+		},
+		{
+			name: "kill_switch/true is explicit local true",
+			overlay: `version: "1"
+kill_switch: true
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.True(t, cfg.IsKillSwitchActive())
+				prc := cfg.(*perRepoConfig)
+				require.NotNil(t, prc.KillSwitch)
+				assert.True(t, *prc.KillSwitch)
+			},
+		},
+
+		// keep_history: *bool. Parent is false so inherit ≠ code default.
+		{
+			name:    "keep_history/absent inherits parent false",
+			overlay: "version: \"1\"\n",
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.False(t, cfg.ConfigKeepHistory())
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.KeepHistory)
+			},
+		},
+		{
+			name: "keep_history/null scalar inherits parent false",
+			overlay: `version: "1"
+keep_history:
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.False(t, cfg.ConfigKeepHistory())
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.KeepHistory)
+			},
+		},
+		{
+			name: "keep_history/false is explicit local false",
+			overlay: `version: "1"
+keep_history: false
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.False(t, cfg.ConfigKeepHistory())
+				prc := cfg.(*perRepoConfig)
+				require.NotNil(t, prc.KeepHistory)
+				assert.False(t, *prc.KeepHistory)
+			},
+		},
+		{
+			name: "keep_history/true is explicit local true",
+			overlay: `version: "1"
+keep_history: true
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				assert.True(t, cfg.ConfigKeepHistory())
+				prc := cfg.(*perRepoConfig)
+				require.NotNil(t, prc.KeepHistory)
+				assert.True(t, *prc.KeepHistory)
+			},
+		},
+
+		// agents: keyed merge. Empty overlay list is NOT deny-all.
+		{
+			name:    "agents/absent inherits parent",
+			overlay: "version: \"1\"\n",
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				agents := cfg.AgentEntries()
+				require.Len(t, agents, 1)
+				assert.Equal(t, "triage", agents[0].DerivedName())
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.Agents)
+			},
+		},
+		{
+			name: "agents/null scalar inherits parent",
+			overlay: `version: "1"
+agents:
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				agents := cfg.AgentEntries()
+				require.Len(t, agents, 1)
+				assert.Equal(t, "triage", agents[0].DerivedName())
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.Agents)
+			},
+		},
+		{
+			name: "agents/empty list keeps parent agents",
+			overlay: `version: "1"
+agents: []
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				agents := cfg.AgentEntries()
+				require.Len(t, agents, 1)
+				assert.Equal(t, "triage", agents[0].DerivedName())
+				prc := cfg.(*perRepoConfig)
+				require.NotNil(t, prc.Agents)
+				assert.Empty(t, prc.Agents)
+			},
+		},
+		{
+			name: "agents/value keyed-merges onto parent",
+			overlay: `version: "1"
+agents:
+  - name: triage
+    runtime: dummy
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				agents := cfg.AgentEntries()
+				require.Len(t, agents, 1)
+				assert.Equal(t, "triage", agents[0].DerivedName())
+				assert.Equal(t, "harness/triage.yaml", agents[0].Source)
+				assert.Equal(t, "dummy", agents[0].Runtime)
+			},
+		},
+
+		// agents[].enabled: *bool on a keyed-merge entry. The parent
+		// triage agent is enabled: false, so these cases actually
+		// exercise the keyed-merge guard in interfaces.go
+		// (`if oi.entry.Enabled != nil { merged.Enabled = oi.entry.Enabled }`):
+		// if that guard were removed and the overlay's nil Enabled
+		// always overwrote the parent's, these would silently flip to
+		// enabled and still pass under the old (unparented) assertions.
+		{
+			name: "agents.enabled/absent inherits parent disabled",
+			overlay: `version: "1"
+agents:
+  - name: triage
+    runtime: dummy
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				agents := cfg.AgentEntries()
+				require.Len(t, agents, 1)
+				assert.False(t, agents[0].IsEnabled())
+				require.NotNil(t, agents[0].Enabled, "keyed merge must preserve the parent's Enabled pointer")
+				assert.False(t, *agents[0].Enabled)
+			},
+		},
+		{
+			name: "agents.enabled/null scalar inherits parent disabled",
+			overlay: `version: "1"
+agents:
+  - name: triage
+    enabled: null
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				agents := cfg.AgentEntries()
+				require.Len(t, agents, 1)
+				assert.False(t, agents[0].IsEnabled())
+				require.NotNil(t, agents[0].Enabled, "yaml.v3 decodes enabled: null to nil, so keyed merge must keep the parent's non-nil Enabled")
+				assert.False(t, *agents[0].Enabled)
+			},
+		},
+		{
+			name: "agents.enabled/false is explicit disable",
+			overlay: `version: "1"
+agents:
+  - name: triage
+    enabled: false
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				agents := cfg.AgentEntries()
+				require.Len(t, agents, 1)
+				assert.False(t, agents[0].IsEnabled())
+				require.NotNil(t, agents[0].Enabled)
+				assert.False(t, *agents[0].Enabled)
+			},
+		},
+		{
+			name: "agents.enabled/true is explicit enable",
+			overlay: `version: "1"
+agents:
+  - name: triage
+    enabled: true
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				agents := cfg.AgentEntries()
+				require.Len(t, agents, 1)
+				assert.True(t, agents[0].IsEnabled())
+				require.NotNil(t, agents[0].Enabled)
+				assert.True(t, *agents[0].Enabled)
+			},
+		},
+
+		// create_issues: *CreateIssuesConfig. nil falls through to parent,
+		// same shape as kill_switch/keep_history. The parent sets a
+		// distinctive allow_targets.orgs so inherit is distinguishable
+		// from both the code default (nil) and a zero-value replacement.
+		{
+			name:    "create_issues/absent inherits parent",
+			overlay: "version: \"1\"\n",
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				ci := cfg.IssueCreationConfig()
+				require.NotNil(t, ci)
+				assert.Equal(t, []string{"parent-org"}, ci.AllowTargets.Orgs)
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.CreateIssues)
+			},
+		},
+		{
+			name: "create_issues/null scalar inherits parent",
+			overlay: `version: "1"
+create_issues:
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				ci := cfg.IssueCreationConfig()
+				require.NotNil(t, ci)
+				assert.Equal(t, []string{"parent-org"}, ci.AllowTargets.Orgs)
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.CreateIssues, "yaml.v3 decodes create_issues: (null) to nil, same as omitted")
+			},
+		},
+		{
+			name: "create_issues/empty map replaces parent with no targets",
+			overlay: `version: "1"
+create_issues: {}
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				ci := cfg.IssueCreationConfig()
+				require.NotNil(t, ci)
+				assert.Empty(t, ci.AllowTargets.Orgs)
+				assert.Empty(t, ci.AllowTargets.Repos)
+				prc := cfg.(*perRepoConfig)
+				require.NotNil(t, prc.CreateIssues, "create_issues: {} decodes to a non-nil pointer, distinct from omitted/null")
+			},
+		},
+		{
+			name: "create_issues/value replaces parent",
+			overlay: `version: "1"
+create_issues:
+  allow_targets:
+    orgs:
+      - overlay-org
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				ci := cfg.IssueCreationConfig()
+				require.NotNil(t, ci)
+				assert.Equal(t, []string{"overlay-org"}, ci.AllowTargets.Orgs)
+			},
+		},
+
+		// status_notifications: *StatusNotificationConfig. Same nil-falls-
+		// through shape as create_issues. Parent sets a distinctive
+		// comment.start so inherit is distinguishable from a zero-value
+		// replacement (empty string).
+		{
+			name:    "status_notifications/absent inherits parent",
+			overlay: "version: \"1\"\n",
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				sn := cfg.StatusNotifications()
+				require.NotNil(t, sn)
+				assert.Equal(t, "disabled", sn.Comment.Start)
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.Notifications)
+			},
+		},
+		{
+			name: "status_notifications/null scalar inherits parent",
+			overlay: `version: "1"
+status_notifications:
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				sn := cfg.StatusNotifications()
+				require.NotNil(t, sn)
+				assert.Equal(t, "disabled", sn.Comment.Start)
+				prc := cfg.(*perRepoConfig)
+				assert.Nil(t, prc.Notifications, "yaml.v3 decodes status_notifications: (null) to nil, same as omitted")
+			},
+		},
+		{
+			name: "status_notifications/empty map replaces parent with zero-value config",
+			overlay: `version: "1"
+status_notifications: {}
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				sn := cfg.StatusNotifications()
+				require.NotNil(t, sn)
+				assert.Empty(t, sn.Comment.Start)
+				prc := cfg.(*perRepoConfig)
+				require.NotNil(t, prc.Notifications, "status_notifications: {} decodes to a non-nil pointer, distinct from omitted/null")
+			},
+		},
+		{
+			name: "status_notifications/value replaces parent",
+			overlay: `version: "1"
+status_notifications:
+  comment:
+    start: enabled
+`,
+			check: func(t *testing.T, cfg PerRepoConfigReader) {
+				sn := cfg.StatusNotifications()
+				require.NotNil(t, sn)
+				assert.Equal(t, "enabled", sn.Comment.Start)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := loadTriState(t, tt.overlay)
+			tt.check(t, cfg)
+		})
+	}
+}
