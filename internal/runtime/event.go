@@ -49,10 +49,17 @@ func (TextEvent) agentEvent() {}
 // Name is the raw tool name from the runtime stream.
 // Summary is a one-line context string from extractSafeContext; it is
 // empty for tools not recognized by that function.
+// Arguments is the call's input as the stream carried it: JSON text,
+// unredacted, for the Level 3 content collector only — the renderer does
+// not print it. It is not checked here: input assembled from stream_event
+// deltas stops growing at maxToolInputSize and can be incomplete JSON.
+// Empty when the wire carried no input, and from the pi and codex
+// parsers (#7414) and the OpenCode parser.
 type ToolUseEvent struct {
-	ID      string
-	Name    string
-	Summary string
+	ID        string
+	Name      string
+	Summary   string
+	Arguments string
 }
 
 func (ToolUseEvent) agentEvent() {}

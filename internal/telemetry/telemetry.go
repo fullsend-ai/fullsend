@@ -215,12 +215,13 @@ func operatorAttrValueLimit() (int, bool) {
 // warnContentCaptureAttrLimit warns on stderr when the Level 3 content
 // gate is on but an operator's finite attribute value-length limit is
 // configured. The operator limit wins over the gate's cap lift
-// (spanLimits), so the SDK will cut any gen_ai.output.messages value over
-// the limit mid-JSON — in both sinks, with no fullsend.content.truncated
-// marker (that marker reflects only collector-side cuts) — silently
-// breaking the documented consumer contract. Telemetry never fails a run
-// (ADR 0050), so the collision is surfaced, not fatal. An explicit -1
-// (unlimited) cannot cut and is not a conflict.
+// (spanLimits), so the SDK will cut any gen_ai.input.messages or
+// gen_ai.output.messages value over the limit mid-JSON — in both sinks,
+// with no fullsend.content.truncated marker (that marker reflects only
+// collector-side cuts) — silently breaking the documented consumer
+// contract. Telemetry never fails a run (ADR 0050), so the collision is
+// surfaced, not fatal. An explicit -1 (unlimited) cannot cut and is not a
+// conflict.
 func warnContentCaptureAttrLimit() {
 	if !ContentCaptureEnabled() {
 		return
@@ -228,7 +229,7 @@ func warnContentCaptureAttrLimit() {
 	if limit, ok := operatorAttrValueLimit(); ok && limit >= 0 {
 		fmt.Fprintf(os.Stderr,
 			"fullsend: content capture is enabled but the operator attribute value length limit (%d) is set; "+
-				"gen_ai.output.messages values over the limit will be cut mid-JSON (unparseable, and "+
+				"gen_ai.input.messages and gen_ai.output.messages values over the limit will be cut mid-JSON (unparseable, and "+
 				"fullsend.content.truncated will not flag the cut) — raise the limit or unset it to keep content parseable\n",
 			limit)
 	}

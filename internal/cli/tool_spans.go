@@ -74,7 +74,8 @@ const maxToolSpanNameBytes = 128
 // reports it without an id (stream_event lines) or not at all (assistant
 // lines, the live path). The
 // name and the call id go through the same output pipeline as span content
-// (Unicode normalization, then secret redaction): the name is bounded, the id
+// (Unicode normalization, then secret redaction; not the collector's runner
+// env literal pass): the name is bounded, the id
 // is dropped on any finding (safeID) — both land on a Level 1 span in the
 // telemetry file the output scan exempts on the strength of that treatment.
 // Delivery is synchronous on one goroutine, so no lock.

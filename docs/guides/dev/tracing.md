@@ -169,8 +169,8 @@ an id — pi and codex emit none — produce no span, so the child count can be
 below `fullsend.tool_calls`, which counts every reported call, id or not; a
 `server_tool_use` block on an `assistant` line produces no event at all (its
 result never arrives as a `tool_result`), so it appears in neither count. The name passes through `security.OutputPipeline()`
-— Unicode normalization, then secret redaction, the same pipeline as span
-content — and is bounded to 256 bytes before it becomes the attribute; the
+— Unicode normalization, then secret redaction, the pipeline span content
+gets, without the collector's runner env literal pass — and is bounded to 256 bytes before it becomes the attribute; the
 span name keeps at most 128 bytes of it. The call id is scanned through the
 same pipeline and dropped from the span on any finding — never substituted,
 since a masked id could collide with another call's — while the raw bounded
@@ -204,22 +204,28 @@ renderer path.
 The collector (`internal/cli/content_collector.go`) coalesces contiguous
 text/reasoning deltas, maps tool use to `tool_call` parts and tool
 results to `tool_call_response` parts (only the Claude parser emits
-`ToolResultEvent` and call ids today — pi and codex emit neither,
+`ToolResultEvent`, call ids and `ToolUseEvent.Arguments` today — pi and
+codex emit none of them,
 [#7414](https://github.com/fullsend-ai/fullsend/issues/7414); the schema's
 required result field is `response`), redacts every
-part through `security.OutputPipeline()` at assembly (redaction runs
+part — `security.OutputPipeline()`, with `replaceEnvSecrets` for the values
+of sensitive runner env keys on both sides of it — at assembly (redaction runs
 before the size budget — truncating first could split a secret past
 recognition), enforces a 256 KiB ordered-suffix budget (the ending survives — the
 final answer is what consumers judge) plus an 8 KiB per-tool-result
 bound (tail-kept, redacted before the cut, the part marked
-`fullsend.truncated`), with exact dropped-byte
-accounting across content, tool names, summaries, responses, and part
-ids, then holds the marshaled string to `maxEncodedContentBytes`
+`fullsend.truncated`) and an 8 KiB per-call arguments bound (over it the
+arguments are dropped whole and the part marked, since a cut object is not
+JSON), with exact dropped-byte
+accounting across content, tool names, summaries, responses, part
+ids, and dropped arguments (counted as re-encoded JSON, or as redacted
+text when they were not a JSON value; on a key collision the member the
+later key (in sorted order) replaced is not counted), then holds the marshaled string to `maxEncodedContentBytes`
 (255,000 — just under the one size the pilot backend is proven to accept)
 by trimming the oldest content again, measured on the encoding itself and
 still charged in raw bytes (a separate, earlier boundary — the parser's 1 MiB
 stream-line cap — skips oversized lines; an oversized `tool_result` line
-still yields an empty part marked `fullsend.truncated`). None of the three
+still yields an empty part marked `fullsend.truncated`). None of the four
 content bounds is a measured backend limit; the constants' comments and
 [Size limits](../infrastructure/distributed-tracing.md#content-capture-level-3)
 name what blocks raising them. The collector emits
@@ -229,11 +235,63 @@ content and its marker attributes on the span before either
 `finalizeAgentSpan` path can end it, so failed iterations keep their
 content.
 
+Arguments that parse as JSON are not redacted as one serialized text. The
+redactor's patterns are written for plain text, and over JSON they miss an
+assignment that opens a string or follows an escaped newline, a value
+behind escaped quotes, and JSON nested in a string; Unicode folding can
+also turn a fullwidth quotation mark into one that closes the string.
+`toolArguments` decodes the value, redacts each string and object key on
+its own (a number as its digits; one that redacts becomes the redacted
+string), and encodes the result again. Each string member is also scanned
+once more, already redacted, beside its key, and masked whole when the
+member-name pattern (`json_field`) matches — a pattern keyed on a member
+name has no other way to see the pair; that scan's other findings are
+discarded, since both strings were already scanned. It runs the pattern
+stage alone: the normalizer is not idempotent over escape sequences, and a
+second pass over the pair could strip the value or the key's keyword. It reaches string
+members only — a number that redacted is one by then: a
+secret-named member holding an array, an object or any other number is
+redacted leaf by leaf, as it would be in text. Arguments that are not
+one JSON value cannot be walked that way: they are scanned as text — with
+the misses above — so their findings count, then dropped and charged. So
+are arguments in which two keys of one object redact to the same string,
+where keeping either member would misreport the call. A call the stream
+reports without a name carries no arguments. This happens once, when the
+event is handled; eviction and `Result` do not rescan it. A name that
+redacts to nothing at `Result` takes the arguments with it: they are
+charged to the dropped bytes, and the part — kept only when it has a
+summary — is marked.
+
+The input message does not come from the stream. When `runAgent` composes
+a retry prompt (`buildFeedbackPrompt`, under `feedback_mode: append`),
+`attachInput` redacts it with the collector's pipeline — `redactFeedback`
+ran before the feedback was sanitized and framed, and sanitizing can join
+a token that scan saw split, so the recorded copy is pattern-scanned
+again; the prompt the agent is sent is not changed, and the mask the first
+scan leaves for a connection-string password of ten or more bytes matches
+its own pattern and counts a finding —
+and sets `gen_ai.input.messages` on the span
+before the runtime starts, so each finalize path carries it. Its findings
+join the iteration's, and its encoded size is charged against
+`maxEncodedContentBytes`: the two content attributes of one span together
+stay within the proven size.
+
 **Consumer contract** (for eval scorers and other readers of
 `run-telemetry.jsonl`): parse the `gen_ai.output.messages` attribute as
 JSON; check `fullsend.content.truncated` / `fullsend.content.dropped_bytes`
 before treating content as complete; masked secrets appear as the
-redactor's mask tokens and are counted in `fullsend.content.redactions`.
+redactor's mask tokens, or as `[REDACTED:<key>]` for a runner env value,
+and are counted in `fullsend.content.redactions`.
+A `tool_call` part's `arguments`, when present, is a JSON value (an object
+for the tools seen so far); a `tool_call` part marked `fullsend.truncated`
+had arguments that were dropped whole — on that part type the marker
+never means a partial value, as it does on a tool result. `gen_ai.input.messages` is absent unless
+the iteration is a retry that carried validation feedback — absence is
+the normal case, not a gap. Masks `redactFeedback` left in the feedback
+(`abcd...`, `***`, `[REDACTED:<ENV_KEY>]`) are in `gen_ai.input.messages`
+too, but that function discards its findings, so they are not counted in
+`fullsend.content.redactions`; the connection-string mask described above
+is the known exception.
 The attribute names and shapes above are the consumption contract — see the
 [Tracing reference](../infrastructure/distributed-tracing.md#content-capture-level-3).
 

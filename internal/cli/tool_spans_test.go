@@ -82,6 +82,22 @@ func TestToolSpanTracker_PairEmitsExecuteToolChild(t *testing.T) {
 	assert.Empty(t, tr.open, "an answered call must not stay open (Finish would re-end it, and the map would grow per call)")
 }
 
+// Arguments are content and ride the gated message record; tool spans are
+// emitted with the gate off, so nothing of a call's arguments may reach one.
+func TestToolSpanTracker_ArgumentsStayOffTheSpan(t *testing.T) {
+	tr, rec, _ := toolSpanFixture(t)
+
+	tr.Handle(agentruntime.ToolUseEvent{ID: "toolu_01", Name: "Bash", Arguments: `{"command":"cat argument-text"}`})
+	tr.Handle(agentruntime.ToolResultEvent{ID: "toolu_01", Result: "ok"})
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 1)
+	assert.Len(t, spans[0].Attributes, 3, "operation name, tool name and call id")
+	for _, kv := range spans[0].Attributes {
+		assert.NotContains(t, kv.Value.Emit(), "argument-text", string(kv.Key))
+	}
+}
+
 func TestToolSpanTracker_ErrorResultSetsErrorTypeAndStatus(t *testing.T) {
 	tr, rec, _ := toolSpanFixture(t)
 
