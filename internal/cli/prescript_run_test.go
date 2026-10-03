@@ -17,6 +17,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertexauth"
+	"github.com/fullsend-ai/fullsend/internal/resolve"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -113,6 +114,161 @@ func TestRunAgent_VertexMissingGCPCredentialsFailsBeforePreScript(t *testing.T) 
 	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
 	require.NoError(t, err)
 	_, err = f.WriteString("host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
+// An OpenAI parent that declares the vertex-ai provider (enabling a
+// Vertex-capable sub-agent dispatch, e.g. `Agent` with model: "sonnet") must
+// reject the optional GCP mount before the pre-script runs, the same as a
+// Vertex parent would. Before the fix this fell through to
+// validateRequiredGCPHostFile, which skips optional mounts, so the missing
+// credential surfaced only mid-run from the sub-agent's sandbox (#7980).
+func TestRunAgent_OpenAIParentVertexProviderMissingGCPCredentialsFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("providers:\n  - vertex-ai\n" +
+		"host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
+// A local-path providers[] entry resolving to vertex-ai must still be
+// detected: resolve.ResolveHarness strips path/URL provider entries out of
+// h.Providers and moves the parsed definition into result.Providers, so
+// harnessMayReachVertex must consult result too, not just the
+// still-declared bare names in h.Providers (#7980 review).
+func TestRunAgent_OpenAIParentLocalPathVertexProviderMissingGCPCredentialsFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "providers"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "vertex-ai.yaml"),
+		[]byte("name: vertex-ai\ntype: fullsend-vertex-ai\n"), 0o644))
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("providers:\n  - providers/vertex-ai.yaml\n" +
+		"host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
+// A hand-written OpenAI-parent harness can wire Vertex settings directly
+// into env.sandbox (ANTHROPIC_VERTEX_PROJECT_ID / CLOUD_ML_REGION) instead
+// of declaring the vertex-ai provider. Issue #7980 explicitly covers
+// detection through the Vertex environment, not just the provider name.
+func TestRunAgent_OpenAIParentVertexEnvMissingGCPCredentialsFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("env:\n  sandbox:\n    ANTHROPIC_VERTEX_PROJECT_ID: test-project\n" +
+		"host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
+// A hand-written OpenAI-parent harness can also wire a google-vertex
+// sub-agent directly into env.sandbox (GOOGLE_CLOUD_PROJECT /
+// GOOGLE_CLOUD_LOCATION, see docs/runtimes/pi.md) instead of
+// ANTHROPIC_VERTEX_PROJECT_ID/CLOUD_ML_REGION or the vertex-ai provider
+// (#7980 review).
+func TestRunAgent_OpenAIParentGoogleVertexEnvMissingGCPCredentialsFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("env:\n  sandbox:\n    GOOGLE_CLOUD_PROJECT: test-project\n    GOOGLE_CLOUD_LOCATION: us-east5\n" +
+		"host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
+// A hand-written OpenAI-parent harness can also wire an xai-vertex
+// sub-agent directly into env.sandbox (XAI_VERTEX_PROJECT_ID with
+// GOOGLE_CLOUD_LOCATION for region, see docs/runtimes/pi.md) (#7980 review).
+func TestRunAgent_OpenAIParentXAIVertexEnvMissingGCPCredentialsFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("env:\n  sandbox:\n    XAI_VERTEX_PROJECT_ID: test-project\n    GOOGLE_CLOUD_LOCATION: us-east5\n" +
+		"host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
+// A required (non-optional) GOOGLE_APPLICATION_CREDENTIALS mount with an
+// empty variable must fail before the pre-script even for a Vertex-reaching
+// harness: validateVertexGCPCredentials only checks optional mounts, so
+// relying on it alone (as the provider == runProviderVertex branch did)
+// would let a required mount through silently (#7980 review).
+func TestRunAgent_VertexRequiredGCPMountEmptyVariableFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n")
 	require.NoError(t, err)
 	require.NoError(t, f.Close())
 
@@ -579,12 +735,91 @@ func TestRunAgent_DummyRuntimeNeedsNoGCPInputs(t *testing.T) {
 	}
 }
 
+// Dummy runtimes (dummy, dummy-playback) perform no inference at all, so a
+// harness that declares the vertex-ai provider for a sub-agent dispatch
+// must not trip the optional-mount preflight check: harnessMayReachVertex
+// alone would otherwise force validateVertexGCPCredentials to run even
+// though provider == runProviderNone never dispatches that sub-agent.
+// Before the fix, the reachability branch ran for any provider, so this
+// combination failed before the pre-script even though no inference
+// happens (#7980 review).
+func TestRunAgent_DummyRuntimeVertexHarnessOptionalGCPMountNeedsNoCredentials(t *testing.T) {
+	for _, runtimeName := range []string{"dummy", "dummy-playback"} {
+		t.Run(runtimeName, func(t *testing.T) {
+			usePreScriptStub(t)
+			t.Setenv("FULLSEND_RUNTIME", runtimeName)
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+			marker := filepath.Join(t.TempDir(), "pre-script-ran")
+			dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+			harnessPath := filepath.Join(dir, "harness", "code.yaml")
+			f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+			require.NoError(t, err)
+			_, err = f.WriteString("providers:\n  - vertex-ai\n" +
+				"host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n")
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+				statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+			if err != nil {
+				assert.NotContains(t, err.Error(), "GOOGLE_APPLICATION_CREDENTIALS")
+			}
+			assert.FileExists(t, marker)
+		})
+	}
+}
+
 func TestRunInferenceProvider(t *testing.T) {
 	assert.Equal(t, runProviderOpenAI, runInferenceProvider("codex", true))
 	assert.Equal(t, runProviderNone, runInferenceProvider("dummy", false))
 	assert.Equal(t, runProviderNone, runInferenceProvider("dummy-playback", false))
 	assert.Equal(t, runProviderVertex, runInferenceProvider("opencode", false))
 	assert.Equal(t, runProviderVertex, runInferenceProvider("claude", false))
+}
+
+func TestIsVertexProviderRef(t *testing.T) {
+	assert.True(t, isVertexProviderRef("vertex-ai"))
+	assert.True(t, isVertexProviderRef("providers/vertex-ai.yaml"))
+	assert.True(t, isVertexProviderRef("providers/vertex-ai.yml"))
+	assert.True(t, isVertexProviderRef("https://github.com/org/repo/tree/main/providers/vertex-ai.yaml#sha256="+strings.Repeat("a", 64)))
+	assert.False(t, isVertexProviderRef("github"))
+	assert.False(t, isVertexProviderRef("providers/github.yaml"))
+	assert.False(t, isVertexProviderRef("providers/not-vertex-ai.yaml"))
+}
+
+func TestHarnessMayReachVertex(t *testing.T) {
+	assert.False(t, harnessMayReachVertex(&harness.Harness{}, resolve.ResolveResult{}))
+	assert.False(t, harnessMayReachVertex(&harness.Harness{Providers: []string{"github"}}, resolve.ResolveResult{}))
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Providers: []string{"github", "vertex-ai"}}, resolve.ResolveResult{}))
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Providers: []string{"providers/vertex-ai.yaml"}}, resolve.ResolveResult{}))
+
+	// A local-path or URL providers[] entry is stripped from h.Providers by
+	// resolve.ResolveHarness and moved into result.Providers (#7980 review);
+	// harnessMayReachVertex must still detect it there.
+	resolvedVertex := resolve.ResolveResult{Providers: []resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "vertex-ai", Type: "fullsend-vertex-ai"}}}}
+	assert.True(t, harnessMayReachVertex(&harness.Harness{}, resolvedVertex))
+	resolvedOther := resolve.ResolveResult{Providers: []resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "github", Type: "fullsend-github"}}}}
+	assert.False(t, harnessMayReachVertex(&harness.Harness{}, resolvedOther))
+
+	// A hand-written harness can wire Vertex settings directly into
+	// env.sandbox instead of the vertex-ai provider.
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"ANTHROPIC_VERTEX_PROJECT_ID": "${ANTHROPIC_VERTEX_PROJECT_ID}"}}}, resolve.ResolveResult{}))
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"CLOUD_ML_REGION": "${CLOUD_ML_REGION}"}}}, resolve.ResolveResult{}))
+	assert.False(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"SOME_OTHER_VAR": "x"}}}, resolve.ResolveResult{}))
+
+	// The google-vertex and xai-vertex pi provider families (docs/runtimes/pi.md)
+	// wire Vertex settings through their own env.sandbox keys instead of
+	// ANTHROPIC_VERTEX_PROJECT_ID/CLOUD_ML_REGION (#7980 review).
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"GOOGLE_CLOUD_PROJECT": "${GOOGLE_CLOUD_PROJECT}"}}}, resolve.ResolveResult{}))
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"GOOGLE_CLOUD_LOCATION": "${GOOGLE_CLOUD_LOCATION}"}}}, resolve.ResolveResult{}))
+	assert.True(t, harnessMayReachVertex(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{"XAI_VERTEX_PROJECT_ID": "${XAI_VERTEX_PROJECT_ID}"}}}, resolve.ResolveResult{}))
+
+	// Or mount a gcp-vertex.env host file (see
+	// docs/guides/user/bring-your-own-agent.md) instead of declaring the
+	// provider or env.sandbox directly.
+	assert.True(t, harnessMayReachVertex(&harness.Harness{HostFiles: []harness.HostFile{{Src: "common/env/gcp-vertex.env", Dest: "/sandbox/workspace/.env.d/gcp-vertex.env", Expand: true}}}, resolve.ResolveResult{}))
+	assert.False(t, harnessMayReachVertex(&harness.Harness{HostFiles: []harness.HostFile{{Src: "common/env/other.env", Dest: "/sandbox/workspace/.env.d/other.env", Expand: true}}}, resolve.ResolveResult{}))
 }
 
 func TestValidateVertexGCPCredentials(t *testing.T) {

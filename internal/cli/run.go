@@ -1062,14 +1062,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		defer cleanup()
 	}
-	if provider == runProviderVertex {
+	// Required host-file mounts are checked regardless of provider: a
+	// required ${GOOGLE_APPLICATION_CREDENTIALS} mount with an empty
+	// variable must fail here for a Vertex-reaching harness too, not just
+	// a non-Vertex one (#7980 review).
+	if err := validateRequiredGCPHostFile(h); err != nil {
+		printer.StepFail("Inference credential validation failed")
+		return err
+	}
+	// runProviderNone (dummy, dummy-playback) performs no inference at
+	// all, so a harness that merely declares Vertex reachability for a
+	// sub-agent must not trip the optional-mount check here: the dummy
+	// runtime never dispatches that sub-agent (#7980 review).
+	if provider != runProviderNone && (provider == runProviderVertex || harnessMayReachVertex(h, result)) {
 		if err := validateVertexGCPCredentials(h); err != nil {
 			printer.StepFail("Inference credential validation failed")
 			return err
 		}
-	} else if err := validateRequiredGCPHostFile(h); err != nil {
-		printer.StepFail("Inference credential validation failed")
-		return err
 	}
 
 	// Expand env vars in runner_env values. FULLSEND_DIR is injected so
@@ -4360,6 +4369,79 @@ func (creds *gcpCredentialFile) check() error {
 		return fmt.Errorf("the GOOGLE_APPLICATION_CREDENTIALS file has no credential_source.file")
 	}
 	return nil
+}
+
+// harnessMayReachVertex reports whether a harness whose parent provider is
+// not Vertex can still dispatch inference to Vertex through a sub-agent
+// (e.g. an `Agent` tool call with model: "sonnet"): a hand-written harness
+// enables that by declaring the vertex-ai network provider, or by wiring
+// Vertex settings directly into the sandbox environment, so the sandbox can
+// reach Vertex AI (see docs/guides/user/bring-your-own-agent.md). Such a
+// run needs the same pre-sandbox credential check as a Vertex parent,
+// because the optional GOOGLE_APPLICATION_CREDENTIALS host-file mount it
+// shares with a Vertex parent is otherwise only checked by
+// validateRequiredGCPHostFile, which skips optional mounts (issue #7980).
+//
+// result must be the resolve.ResolveResult produced for h: once
+// resolve.ResolveHarness parses a local-path or URL providers[] entry, it
+// strips that entry from h.Providers (resolve.go), leaving only bare names
+// there and moving the parsed definition into result.Providers. Checking
+// h.Providers alone would therefore miss a vertex-ai provider declared by
+// path or URL.
+func harnessMayReachVertex(h *harness.Harness, result resolve.ResolveResult) bool {
+	for _, p := range h.Providers {
+		if isVertexProviderRef(p) {
+			return true
+		}
+	}
+	for _, rp := range result.Providers {
+		if rp.Def.Name == "vertex-ai" {
+			return true
+		}
+	}
+	if h.Env != nil {
+		for _, key := range vertexSandboxEnvKeys {
+			if _, ok := h.Env.Sandbox[key]; ok {
+				return true
+			}
+		}
+	}
+	for _, hf := range h.HostFiles {
+		if filepath.Base(hf.Dest) == "gcp-vertex.env" {
+			return true
+		}
+	}
+	return false
+}
+
+// vertexSandboxEnvKeys are env.sandbox keys that only make sense when a
+// hand-written harness wires Vertex settings directly rather than through
+// the vertex-ai provider (see docs/guides/user/bring-your-own-agent.md and
+// docs/guides/user/running-agents-locally.md). Their presence signals that
+// a sub-agent may reach Vertex even though the parent does not. This covers
+// all three pi Vertex provider families (docs/runtimes/pi.md): anthropic-vertex
+// (ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION), google-vertex
+// (GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION), and xai-vertex
+// (XAI_VERTEX_PROJECT_ID, falling back to GOOGLE_CLOUD_PROJECT or
+// ANTHROPIC_VERTEX_PROJECT_ID, with GOOGLE_CLOUD_LOCATION for region) (#7980 review).
+var vertexSandboxEnvKeys = []string{
+	"ANTHROPIC_VERTEX_PROJECT_ID",
+	"CLOUD_ML_REGION",
+	"GOOGLE_CLOUD_PROJECT",
+	"GOOGLE_CLOUD_LOCATION",
+	"XAI_VERTEX_PROJECT_ID",
+}
+
+// isVertexProviderRef reports whether a harness-declared providers[] entry
+// (a bare name, a local providers/ path, or an integrity-hashed URL) refers
+// to the vertex-ai provider.
+func isVertexProviderRef(p string) bool {
+	if harness.IsURL(p) {
+		p, _, _ = harness.ParseIntegrityHash(p)
+	}
+	base := filepath.Base(p)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	return base == "vertex-ai"
 }
 
 // validateRequiredGCPHostFile fails a non-Vertex run before its pre-script
