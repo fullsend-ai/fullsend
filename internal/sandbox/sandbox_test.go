@@ -2136,6 +2136,10 @@ func TestIsTransientProviderErr(t *testing.T) {
 	assert.True(t, isTransientProviderErr(errors.New(notFound)))
 	notFoundWrapped := "Error:   × provider profile 'fullsend-vertex-ai' not\n  │ found; import a matching profile"
 	assert.True(t, isTransientProviderErr(errors.New(notFoundWrapped)), "must match across the CLI's line wrap")
+	// OpenShell 0.1.2 wording, as seen in functional-tests with parallel
+	// triage eval cases (including the CLI's line wrap after "profile").
+	notFound012 := "provider create \"vertex-ai\" failed: exit status 1 (output: Error:   × code: 'Client specified an invalid argument', message: \"provider profile\n  │ 'fullsend-vertex-ai' was not found in the requested scope; import a\n  │ matching profile before creating this provider\""
+	assert.True(t, isTransientProviderErr(errors.New(notFound012)), "must match OpenShell 0.1.2's wording")
 	assert.False(t, isTransientProviderErr(errors.New("provider 'github-ro' not found")), "a missing provider is not a missing profile")
 }
 

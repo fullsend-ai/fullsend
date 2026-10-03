@@ -1049,3 +1049,33 @@ func TestAnnotateGitLabRoleLifecyclePipelineRefWithoutTokenList(t *testing.T) {
 	}
 	assert.True(t, found, "pipeline-ref drift should still be reported without token inventory")
 }
+
+func TestAnnotateGitLabRoleLifecycleSkipsConfigRejectedRepos(t *testing.T) {
+	ctx := context.Background()
+	var calledPaths []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		calledPaths = append(calledPaths, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	// A GitLab repo rejected for a missing inference.auth selection was
+	// never evaluated, so annotation must not inspect its project or
+	// append drift.
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{{
+			Owner: "group", Repo: "project", Forge: repos.ForgeGitLab,
+			Error:          "no inference authentication selected for group/project",
+			ConfigRejected: true,
+		}},
+		Summary: repos.StatusSummary{Total: 1, Errored: 1, NotInstalled: 1},
+	}
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.Empty(t, calledPaths, "rejected repo must not be inspected, got requests: %v", calledPaths)
+	assert.Empty(t, result.Repos[0].Drifts)
+	assert.Equal(t, 0, result.Summary.Drifted)
+}

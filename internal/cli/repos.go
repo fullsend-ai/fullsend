@@ -475,6 +475,7 @@ type reposInstallConfig struct {
 	appSet                 string
 	allowedRemoteResources []string
 	runtime                string
+	inferenceAuth          string
 
 	// Vendor flags
 	vendor         bool
@@ -513,6 +514,12 @@ processed. Glob patterns (e.g. "acme/*") are matched against manifest
 entries. When no repos are specified, all manifest repos are converged.
 Credentials are required only for the forges of the selected repos.
 
+Every selected repo must resolve an inference authentication method
+(inference.auth: vertex-wif or openai-api-key) from its manifest entry, its
+forge section, or defaults; there is no implicit default. --inference-auth
+records the selection as inference.auth on each selected manifest entry
+(new and existing), never on defaults or forge sections.
+
 GCP infrastructure (WIF, mint) must be provisioned separately via
 'inference provision' and 'mint enroll' before running this command.`,
 		Args: cobra.ArbitraryArgs,
@@ -544,6 +551,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.appSet, "app-set", "", "GitHub App set prefix (apps named {app-set}-{role}) persisted as FULLSEND_APP_SET for selected repos; GitHub-only")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
+	cmd.Flags().StringVar(&opts.inferenceAuth, "inference-auth", "", "inference authentication method (vertex-wif or openai-api-key) persisted as inference.auth on each selected manifest entry, overriding forge-section and defaults values for those repos")
 	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
@@ -568,6 +576,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 	if opts.forge != "" && !repos.IsValidForge(opts.forge) {
 		return fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s, %s)", opts.forge, repos.ForgeGitHub, repos.ForgeGitLab)
+	}
+	if err := repos.ValidateInferenceAuth("--inference-auth", opts.inferenceAuth); err != nil {
+		return err
 	}
 	if opts.fullsendRef != "" && !repos.IsValidRef(opts.fullsendRef) {
 		return fmt.Errorf("--fullsend-ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", opts.fullsendRef)
@@ -678,6 +689,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// Phase 0: add repos not yet in the manifest.
 	var newlyAdded []string
 	var notInManifest []string
+	var globCovered []string
 	if len(opts.repoFilter) > 0 {
 		for _, r := range opts.repoFilter {
 			if strings.ContainsAny(r, "*?[") {
@@ -688,7 +700,106 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				continue
 			}
 			if _, found := manifest.ResolveConfig(parts[0], parts[1]); !found {
+				// A repo covered by a manifest glob is already tracked: keep
+				// the glob (and its inference.auth and other overrides)
+				// rather than creating an explicit entry that would drop
+				// them. Per-entry override flags and --inference-auth carve
+				// out an explicit copy of the glob below.
+				if _, globbed := manifest.ResolveConfigWithGlobs(parts[0], parts[1]); globbed {
+					globCovered = append(globCovered, r)
+					continue
+				}
 				notInManifest = append(notInManifest, r)
+			}
+		}
+		hasEntryOverrides := opts.fullsendRef != "" || opts.mintURL != "" ||
+			len(opts.allowedRemoteResources) > 0 || opts.runtime != "" || opts.vendorChanged ||
+			opts.appSet != ""
+		// A textual glob match does not guarantee that convergence discovers
+		// the repository: ListOrgRepos omits forks and archived repos, so a
+		// glob-covered target can be absent from the expansion and would then
+		// fail as an unmatched filter. Give such repos an explicit copy of
+		// their matching glob entry so they stay eligible for convergence.
+		carveTargets := globCovered
+		if len(globCovered) > 0 && !hasEntryOverrides {
+			carveTargets = nil
+			expanded, expandErr := manifest.ExpandGlobsFor(ctx, clients, globCovered)
+			if expandErr != nil {
+				// Convergence repeats the expansion and reports the error.
+				printer.StepWarn(fmt.Sprintf("Could not expand manifest globs to verify glob-covered repos: %v", expandErr))
+			} else {
+				discovered := make(map[string]bool, len(expanded))
+				for _, rr := range expanded {
+					discovered[strings.ToLower(rr.Owner+"/"+rr.Repo)] = true
+				}
+				for _, r := range globCovered {
+					if !discovered[strings.ToLower(r)] {
+						carveTargets = append(carveTargets, r)
+					}
+				}
+			}
+		}
+		if len(carveTargets) > 0 {
+			if opts.runtime != "" {
+				if err := validateRuntimeName(opts.runtime); err != nil {
+					return fmt.Errorf("--runtime: %w", err)
+				}
+			}
+			if len(opts.allowedRemoteResources) > 0 {
+				if err := repos.ValidateAllowedRemoteResourcesFormat("--allowed-remote-resources", opts.allowedRemoteResources); err != nil {
+					return err
+				}
+			}
+			// Copy the matching glob into an explicit entry for each selected
+			// repo and record the requested overrides on it, so the repo keeps
+			// the glob's other settings and its siblings are unchanged. A value
+			// is written when it differs from the inherited platform/default
+			// value or when the copied glob entry already overrides it.
+			carved, carveErr := repos.CarveOutGlobCovered(ctx, repos.ManifestEditConfig{
+				Manifest:     manifest,
+				ManifestPath: opts.manifest,
+				DryRun:       opts.dryRun,
+			}, carveTargets, clients, func(forgeName string, platform *repos.PlatformConfig, entry *repos.RepoEntry) error {
+				// Reject a target that would have no effective inference
+				// authentication selection before anything is persisted:
+				// the flag, or the copied glob entry's own, forge-section,
+				// or defaults value. --app-set also carves here, so the
+				// check runs before UpdateAppSet can persist its entry.
+				if forgeName != repos.ForgeGitHub && opts.appSet != "" {
+					return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
+				}
+				if opts.inferenceAuth == "" {
+					owner, repo, _ := strings.Cut(entry.Name, "/")
+					if err := manifest.ResolveConfigForEntry(owner, repo, forgeName, *entry).RequireInferenceAuth(); err != nil {
+						return err
+					}
+				}
+				if opts.fullsendRef != "" && (entry.FullsendRef != "" || opts.fullsendRef != platform.FullsendRef) {
+					entry.FullsendRef = opts.fullsendRef
+				}
+				if forgeName == repos.ForgeGitHub && opts.mintURL != "" && (entry.MintURL != "" || opts.mintURL != platform.MintURL) {
+					entry.MintURL = opts.mintURL
+				}
+				if len(opts.allowedRemoteResources) > 0 {
+					entry.AllowedRemoteResources = opts.allowedRemoteResources
+				}
+				if opts.runtime != "" && (entry.Runtime != "" || opts.runtime != manifest.Defaults.Runtime) {
+					entry.Runtime = opts.runtime
+				}
+				if opts.vendorChanged {
+					defaultVendor := manifest.Defaults.Vendor != nil && *manifest.Defaults.Vendor
+					if entry.Vendor != nil || opts.vendor != defaultVendor {
+						v := opts.vendor
+						entry.Vendor = &v
+					}
+				}
+				return nil
+			})
+			if carveErr != nil {
+				return fmt.Errorf("applying per-repo overrides to glob-covered repos: %w", carveErr)
+			}
+			if len(carved) > 0 && !opts.dryRun {
+				printer.StepDone(fmt.Sprintf("Created explicit manifest entry for %s from matching glob", strings.Join(carved, ", ")))
 			}
 		}
 		if len(notInManifest) > 0 {
@@ -748,9 +859,27 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 			}
 
+			// New entries must resolve an inference authentication method
+			// before anything is written: either the flag (persisted on the
+			// entry) or an inherited forge-section/defaults value.
+			if opts.inferenceAuth == "" {
+				inherited := manifest.Defaults.Inference.Auth
+				if p := manifest.PlatformFor(forgeName); p != nil && p.Inference.Auth != "" {
+					inherited = p.Inference.Auth
+				}
+				if inherited == "" {
+					return fmt.Errorf("no inference authentication selected for %s: pass --inference-auth (%s) or set inference.auth in the %s section or under defaults in the manifest",
+						strings.Join(notInManifest, ", "), strings.Join(repos.ValidInferenceAuths(), " or "), forgeName)
+				}
+			}
+
 			entries := make([]repos.RepoEntry, len(notInManifest))
 			for i, r := range notInManifest {
 				entry := repos.RepoEntry{Name: r}
+				// An explicit --inference-auth is always kept at repo scope
+				// so later status/converge runs resolve the same selection
+				// even if forge-section or defaults values change.
+				entry.Inference.Auth = opts.inferenceAuth
 				platform := manifest.PlatformFor(forgeName)
 				if opts.fullsendRef != "" && (platform == nil || opts.fullsendRef != platform.FullsendRef) {
 					entry.FullsendRef = opts.fullsendRef
@@ -851,6 +980,24 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 		if len(updated) > 0 && !opts.dryRun {
 			printer.StepDone(fmt.Sprintf("Updated app-set override for %d manifest entr%s", len(updated), map[bool]string{true: "y", false: "ies"}[len(updated) == 1]))
+		}
+	}
+
+	// Apply --inference-auth to every selected manifest entry (both forges),
+	// including entries tracked before this invocation, so the explicit
+	// selection persists at repo scope. Entries added above already carry
+	// it; defaults and forge sections are never changed.
+	if opts.inferenceAuth != "" {
+		updated, updateErr := repos.UpdateInferenceAuth(ctx, repos.ManifestEditConfig{
+			Manifest:     manifest,
+			ManifestPath: opts.manifest,
+			DryRun:       opts.dryRun,
+		}, opts.repoFilter, opts.inferenceAuth, clients)
+		if updateErr != nil {
+			return fmt.Errorf("updating inference.auth: %w", updateErr)
+		}
+		if len(updated) > 0 && !opts.dryRun {
+			printer.StepDone(fmt.Sprintf("Set inference.auth=%s on %d manifest entr%s", opts.inferenceAuth, len(updated), map[bool]string{true: "y", false: "ies"}[len(updated) == 1]))
 		}
 	}
 

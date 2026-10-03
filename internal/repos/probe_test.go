@@ -503,7 +503,8 @@ func TestProbeComponents_InstallAndStatusAgree(t *testing.T) {
 	// Status path: should also detect missing thin caller.
 	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",

@@ -160,7 +160,7 @@ func TestExpectedGitLabScaffoldForRecordedReleaseDefault(t *testing.T) {
 
 func TestStatusWithoutGitHubUsesRecordedReleaseDefault(t *testing.T) {
 	fc := newFakeClientWithRepo()
-	m := &Manifest{Version: 1, GitLab: &PlatformConfig{FullsendRef: "v1.0.0", Repos: []RepoEntry{{Name: "acme/widgets"}}}}
+	m := &Manifest{Version: 1, Defaults: testInferenceDefaults(), GitLab: &PlatformConfig{FullsendRef: "v1.0.0", Repos: []RepoEntry{{Name: "acme/widgets"}}}}
 	factory := &perForgeClientFactory{clients: map[string]forge.Client{ForgeGitLab: fc}}
 	// Render the wrapper the way a real release-default install commits
 	// it: carrying a "# fullsend-ref: <sha> (<tag>)" version marker that

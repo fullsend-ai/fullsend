@@ -142,6 +142,7 @@ Run the command:
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
+  --inference-auth vertex-wif \
   --inference-project "<gcp-project>"
 ```
 
@@ -149,7 +150,15 @@ Where `<group/project>` is the GitLab project path (nested groups are
 supported, for example `group/subgroup/project`), and `<gcp-project>` is
 the GCP project from [Getting Inference](getting-inference.md).
 
-For an installation without Vertex credentials, omit `--inference-project`.
+`--inference-auth` selects the inference authentication method
+(`vertex-wif` or `openai-api-key`) and is persisted as `inference.auth` on
+the project's manifest entry. There is no default: when the manifest does
+not already provide a selection, `repos install` fails before changing the
+project. See
+[Repository management § Inference authentication](repo-management.md#inference-authentication).
+
+For an installation without Vertex credentials, pass
+`--inference-auth openai-api-key` and omit `--inference-project`.
 No GCP inference secrets are written; a later Vertex agent run requires them.
 Configure each enabled agent's runtime and model for OpenAI before it runs.
 GitLab OpenAI runs use an API key, not GitHub Actions WIF; see

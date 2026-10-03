@@ -24,6 +24,8 @@ const githubManagedManifestYAML = `version: 1
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
+  inference:
+    auth: vertex-wif
   repos:
     - name: acme/api
       config:
@@ -34,6 +36,8 @@ const githubUnmanagedManifestYAML = `version: 1
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
+  inference:
+    auth: vertex-wif
   repos:
     - name: acme/api
 `
@@ -42,6 +46,8 @@ const githubMixedManifestYAML = `version: 1
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
+  inference:
+    auth: vertex-wif
   repos:
     - name: acme/managed
       config:
@@ -53,6 +59,8 @@ const gitlabManagedManifestYAML = `version: 1
 gitlab:
   url: https://gitlab.example.com
   fullsend_ref: v1.0.0
+  inference:
+    auth: openai-api-key
   repos:
     - name: group/project
       config:

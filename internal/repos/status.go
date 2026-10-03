@@ -124,6 +124,12 @@ type RepoStatus struct {
 	Drifts          []Drift `json:"drifts,omitempty"`
 	Error           string  `json:"error,omitempty"`
 
+	// ConfigRejected marks a repo whose manifest configuration was rejected
+	// before any forge state was inspected (for example a missing
+	// inference.auth selection). Callers that enrich status with further
+	// forge lookups must skip these rows. Not serialized.
+	ConfigRejected bool `json:"-"`
+
 	// GitLab role-credential status. Names only; never token values.
 	GitLabRolesReady      bool     `json:"gitlab_roles_ready,omitempty"`
 	GitLabRolesPartial    bool     `json:"gitlab_roles_partial,omitempty"`
@@ -218,6 +224,19 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 			defer func() { <-sem }()
 
 			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+			// Status checks the same desired state as install, so a repo
+			// without an inference.auth selection cannot be evaluated.
+			if authErr := cfg.RequireInferenceAuth(); authErr != nil {
+				results[idx] = RepoStatus{
+					Owner: rr.Owner,
+					Repo:  rr.Repo,
+					Forge: cfg.Forge,
+					Error: authErr.Error(),
+
+					ConfigRejected: true,
+				}
+				return
+			}
 			fc, fcErr := clients.ConfigFor(cfg.Forge)
 			if fcErr != nil {
 				results[idx] = RepoStatus{

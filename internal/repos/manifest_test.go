@@ -589,6 +589,45 @@ gitlab:
 	assert.Equal(t, ForgeGitLab, resolved[0].Forge)
 }
 
+func TestExpandGlobsFor_ExplicitEntryWinsCaseInsensitively(t *testing.T) {
+	// A carved explicit entry keeps the spelling of the concrete filter
+	// ("acme/API"), while the forge returns "api". The explicit entry must
+	// suppress the glob-expanded row so the repository resolves exactly once
+	// with the persisted override.
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/*
+    - name: acme/API
+      fullsend_ref: pinned
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "api", FullName: "acme/api"},
+		{Name: "web", FullName: "acme/web"},
+	}
+
+	resolved, err := m.ExpandGlobsFor(context.Background(), newTestClientFactory(fc), nil)
+	require.NoError(t, err)
+	require.Len(t, resolved, 2)
+
+	var apiRows int
+	for _, rr := range resolved {
+		if strings.EqualFold(rr.Repo, "api") {
+			apiRows++
+			assert.Equal(t, "pinned", rr.Entry.FullsendRef)
+		} else {
+			assert.Empty(t, rr.Entry.FullsendRef)
+		}
+	}
+	assert.Equal(t, 1, apiRows)
+}
+
 func TestExpandGlobsFor_EmptyFilterExpandsEveryPlatform(t *testing.T) {
 	input := `
 version: 1

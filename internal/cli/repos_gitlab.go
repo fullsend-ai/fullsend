@@ -205,6 +205,11 @@ func annotateGitLabRoleLifecycle(ctx context.Context, clients repos.ForgeClientF
 		if st.Forge != "" && st.Forge != repos.ForgeGitLab {
 			continue
 		}
+		// Rows rejected for configuration (e.g. missing inference.auth) were
+		// never evaluated; do not inspect their project or append drift.
+		if st.ConfigRejected {
+			continue
+		}
 		toks, listErr := adapter.ListProjectAccessTokens(ctx, st.Owner, st.Repo)
 		if listErr != nil {
 			toks = nil

@@ -904,7 +904,7 @@ func TestStatus_GitLab_OverlayDrift(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Config: mustManagedConfig(t, "kill_switch: true\n")},
+		Defaults: DefaultsConfig{Inference: InferenceSettings{Auth: InferenceAuthVertexWIF}, Config: mustManagedConfig(t, "kill_switch: true\n")},
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -998,7 +998,8 @@ func TestConverge_ManagedConfigOnlyOneRepoManaged(t *testing.T) {
 	}
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1.0.0",

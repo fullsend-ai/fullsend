@@ -240,7 +240,11 @@ type convergeDiscovery struct {
 	// resolved for the same effective app set as appSet (GitHub only).
 	// Empty when unavailable (best-effort) or for GitLab.
 	reviewClientID string
-	err            error
+	// configErr is a manifest configuration error for this repository
+	// (e.g. no inference.auth selection). It is detected before any forge
+	// call and reported verbatim, without discovery wrapping.
+	configErr error
+	err       error
 }
 
 // hasComponent returns true if the named component is present in the probe results.
@@ -466,6 +470,13 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			defer func() { <-sem }()
 
 			resolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+			// A missing inference.auth selection is a configuration error
+			// for this repository only; report it before any forge call so
+			// nothing is probed or written for it.
+			if authErr := resolved.RequireInferenceAuth(); authErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: authErr}
+				return
+			}
 			repoFullName := rr.Owner + "/" + rr.Repo
 			progress(repoFullName, "discover", "Checking installation status")
 
@@ -548,6 +559,14 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	warnedRemote := make(map[string]bool)
 
 	for i, d := range discoveries {
+		if d.configErr != nil {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: d.configErr,
+			}
+			continue
+		}
 		if d.err != nil {
 			result.Results[i] = ConvergeResult{
 				Owner: d.repo.Owner,

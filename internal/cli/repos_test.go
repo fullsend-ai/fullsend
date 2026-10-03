@@ -332,6 +332,9 @@ func TestReposCmd_GitLabTokenFlag(t *testing.T) {
 func TestRunReposStatus_EmptyManifest(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghp-test-token")
 	manifestYAML := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   repos: []
@@ -346,6 +349,9 @@ github:
 func TestRunReposStatus_GitLabRequiresToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "")
 	manifestYAML := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   repos: []
 `
@@ -361,6 +367,9 @@ gitlab:
 func TestRunReposStatus_GitLabWithToken(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "glpat-test-token")
 	manifestYAML := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   repos: []
 `
@@ -816,6 +825,9 @@ func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
 }
 
 const testManifestYAML = `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -896,6 +908,9 @@ func TestRunReposInstall_InvalidManifestPath(t *testing.T) {
 
 func TestRunReposInstall_FailedReposReturnError(t *testing.T) {
 	yaml := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -961,6 +976,9 @@ func TestRunReposInstall_AppSetRejectedForGitLab(t *testing.T) {
 // silently dropped with a warning in this case.
 func TestRunReposInstall_AppSetRejectedForInferredGitLabTarget(t *testing.T) {
 	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   url: https://gitlab.example.com
   repos:
@@ -982,6 +1000,9 @@ gitlab:
 
 func TestRunReposInstall_AppSetRejectedForTrackedGitLabTarget(t *testing.T) {
 	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   url: https://gitlab.example.com
   repos:
@@ -1086,6 +1107,9 @@ func TestRunReposInstall_ExistingEntryAppSetOverride(t *testing.T) {
 // review app rather than the built-in default.
 func TestRunReposInstall_ManifestAppSetResolvesReviewApp(t *testing.T) {
 	yaml := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -1296,6 +1320,9 @@ func TestReposInstallCmd_PositionalArgs(t *testing.T) {
 
 func TestRunReposInstall_WithFilter(t *testing.T) {
 	yaml := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -1525,11 +1552,12 @@ func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
 	fc := newInstallFakeClient("acme/repo")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		repoFilter:  []string{"acme/repo"},
-		forge:       repos.ForgeGitHub,
-		testClient:  fc,
+		manifest:      manifestPath,
+		concurrency:   4,
+		repoFilter:    []string{"acme/repo"},
+		forge:         repos.ForgeGitHub,
+		inferenceAuth: repos.InferenceAuthVertexWIF,
+		testClient:    fc,
 	})
 	require.NoError(t, err)
 
@@ -1539,6 +1567,29 @@ func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	assert.Len(t, m.GitHub.Repos, 1)
 	assert.Equal(t, "acme/repo", m.GitHub.Repos[0].Name)
+	assert.Equal(t, repos.InferenceAuthVertexWIF, m.GitHub.Repos[0].Inference.Auth, "--inference-auth must persist on the new entry")
+	assert.Empty(t, m.Defaults.Inference.Auth, "--inference-auth must not change defaults")
+	assert.Empty(t, m.GitHub.Inference.Auth, "--inference-auth must not change the forge section")
+}
+
+func TestRunReposInstall_BootstrapRequiresInferenceAuth(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	fc := newInstallFakeClient("acme/repo")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"acme/repo"},
+		forge:       repos.ForgeGitHub,
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no inference authentication selected for acme/repo")
+	assert.Contains(t, err.Error(), "--inference-auth")
+	_, statErr := os.Stat(manifestPath)
+	assert.True(t, os.IsNotExist(statErr), "manifest must not be written when inference auth is missing")
+	assert.Empty(t, fc.FileContents, "no forge mutations when inference auth is missing")
 }
 
 func TestRunReposInstall_BootstrapRequiresForge(t *testing.T) {
@@ -1562,12 +1613,13 @@ func TestRunReposInstall_BootstrapDryRun(t *testing.T) {
 	fc := newInstallFakeClient("acme/repo")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		repoFilter:  []string{"acme/repo"},
-		forge:       repos.ForgeGitHub,
-		dryRun:      true,
-		testClient:  fc,
+		manifest:      manifestPath,
+		concurrency:   4,
+		repoFilter:    []string{"acme/repo"},
+		forge:         repos.ForgeGitHub,
+		inferenceAuth: repos.InferenceAuthVertexWIF,
+		dryRun:        true,
+		testClient:    fc,
 	})
 	require.NoError(t, err)
 
@@ -1588,6 +1640,9 @@ func TestRunReposInstall_NoManifestNoRepos(t *testing.T) {
 }
 
 const twoRepoManifestYAML = `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -1640,6 +1695,9 @@ func TestRunReposInstall_InvalidForge(t *testing.T) {
 
 func TestRunReposInstall_RequiresForgeForNewRepos(t *testing.T) {
 	noDefaultForgeManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -1852,6 +1910,9 @@ func TestRunReposInstall_AllReposAlreadyCurrent(t *testing.T) {
 
 func TestRunReposInstall_ManifestValidationFailure(t *testing.T) {
 	badManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   repos:
@@ -1930,6 +1991,9 @@ func TestRunReposInstall_SingleWordFilterSkipped(t *testing.T) {
 
 func TestRunReposInstall_NonGitHubForgeWarnings(t *testing.T) {
 	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -2158,6 +2222,9 @@ func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
 // --- forge-aware CLI integration tests ---
 
 var emptyReposManifestYAML = `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   repos: []
@@ -2167,6 +2234,9 @@ func TestReposInstallCmd_GitLabNoToken(t *testing.T) {
 	// With zero repos, a GitLab-default manifest does not require a token.
 	t.Setenv("GITLAB_TOKEN", "")
 	gitlabEmptyManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   repos: []
 `
@@ -2181,6 +2251,9 @@ func TestReposUninstallCmd_GitLabNoToken(t *testing.T) {
 	// The token error now surfaces per-repo instead of at scope checking.
 	t.Setenv("GITLAB_TOKEN", "")
 	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   url: https://gitlab.example.com
   repos:
@@ -2196,6 +2269,9 @@ gitlab:
 
 func TestRunReposUninstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
 	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   url: https://gitlab.example.com
   repos:
@@ -2255,6 +2331,9 @@ func (r *recordingUninstallTokens) RevokeProjectAccessToken(_ context.Context, _
 
 func TestRunReposUninstall_GitLabIdentityCleanup(t *testing.T) {
 	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   url: https://gitlab.example.com
   repos:
@@ -2309,6 +2388,9 @@ gitlab:
 
 func TestRunReposInstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
 	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   url: https://gitlab.example.com
   fullsend_ref: v1.0.0
@@ -2431,6 +2513,9 @@ func captureStdout(t *testing.T, f func()) string {
 // a single complete initialization MR instead of opening a bump MR.
 func TestRunReposInstall_GitLabRerunBeforeInitMergeReusesInitMR(t *testing.T) {
 	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   url: https://gitlab.example.com
   fullsend_ref: v0.43.0
@@ -2543,6 +2628,8 @@ func TestRunReposInstall_VendorFalsePersistsWhenDefaultTrue(t *testing.T) {
 	vendorManifest := `version: 1
 defaults:
   vendor: true
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -2623,12 +2710,13 @@ func TestRunReposInstall_GitLabURLBootstrap(t *testing.T) {
 	// The converge phase will fail (fake client doesn't support full
 	// GitLab setup), but the manifest should be written with the URL.
 	_ = runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		repoFilter:  []string{"group/project"},
-		forge:       repos.ForgeGitLab,
-		gitlabURL:   "https://gitlab.example.com",
-		testClient:  fc,
+		manifest:      manifestPath,
+		concurrency:   4,
+		repoFilter:    []string{"group/project"},
+		forge:         repos.ForgeGitLab,
+		gitlabURL:     "https://gitlab.example.com",
+		inferenceAuth: repos.InferenceAuthOpenAIAPIKey,
+		testClient:    fc,
 	})
 
 	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
@@ -2637,10 +2725,14 @@ func TestRunReposInstall_GitLabURLBootstrap(t *testing.T) {
 	assert.Equal(t, "https://gitlab.example.com", m.GitLab.URL)
 	assert.Len(t, m.GitLab.Repos, 1)
 	assert.Equal(t, "group/project", m.GitLab.Repos[0].Name)
+	assert.Equal(t, repos.InferenceAuthOpenAIAPIKey, m.GitLab.Repos[0].Inference.Auth)
 }
 
 func TestRunReposInstall_GitLabURLOverridesExisting(t *testing.T) {
 	existingManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   url: https://old.gitlab.example.com
   repos:
@@ -2665,6 +2757,9 @@ gitlab:
 
 func TestRunReposInstall_GitLabURLDryRun(t *testing.T) {
 	existingManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 gitlab:
   url: https://old.gitlab.example.com
   repos:
@@ -2697,13 +2792,14 @@ func TestRunReposInstall_GitLabURLBootstrapDryRun(t *testing.T) {
 	// Bootstrap dry-run: new manifest + --forge gitlab + --gitlab-url + --dry-run.
 	// The function should return without error and NOT write the manifest to disk.
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		dryRun:      true,
-		repoFilter:  []string{"group/project"},
-		forge:       repos.ForgeGitLab,
-		gitlabURL:   "https://gitlab.example.com",
-		testClient:  fc,
+		manifest:      manifestPath,
+		concurrency:   4,
+		dryRun:        true,
+		repoFilter:    []string{"group/project"},
+		forge:         repos.ForgeGitLab,
+		gitlabURL:     "https://gitlab.example.com",
+		inferenceAuth: repos.InferenceAuthOpenAIAPIKey,
+		testClient:    fc,
 	})
 	require.NoError(t, err)
 
@@ -2722,11 +2818,12 @@ func TestRunReposInstall_GitLabURLImpliesForge(t *testing.T) {
 		// When --gitlab-url is provided without --forge on a fresh
 		// manifest, the forge should be inferred as gitlab.
 		_ = runReposInstall(context.Background(), &reposInstallConfig{
-			manifest:    manifestPath,
-			concurrency: 4,
-			repoFilter:  []string{"group/project"},
-			gitlabURL:   "https://gitlab.example.com",
-			testClient:  fc,
+			manifest:      manifestPath,
+			concurrency:   4,
+			repoFilter:    []string{"group/project"},
+			gitlabURL:     "https://gitlab.example.com",
+			inferenceAuth: repos.InferenceAuthVertexWIF,
+			testClient:    fc,
 		})
 
 		m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
@@ -2742,6 +2839,9 @@ func TestRunReposInstall_GitLabURLImpliesForge(t *testing.T) {
 		// is passed without --forge, the new repo must land in the GitLab
 		// section, not GitHub.
 		existingManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   repos:
     - name: acme/web
@@ -2820,6 +2920,9 @@ func TestRunReposInstall_GitLabURLValidation(t *testing.T) {
 }
 
 const mixedForgeManifestYAML = `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -2981,6 +3084,9 @@ func TestRunReposInstall_GitLabPinRejectsMissingUpstreamClient(t *testing.T) {
 // (which lists org repos via the GitHub API), since that would require
 // GH_TOKEN even though no GitHub repo is targeted.
 const globForgeManifestYAML = `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
