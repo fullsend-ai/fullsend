@@ -71,7 +71,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 ## Adding a CI driver
 
 1. Implement `ci.Driver` — `WaitForWorkflow`, `FindCompletedWorkflowRun`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`, `DownloadNamedArtifactFromRun`, `DownloadNamedArtifactAfter`, `WaitForHarnessAgent`, `WaitForHarnessAgentRound`, `WaitForFailedHarnessAgent`, `AssertNoHarnessAgentArtifact`, `CountHarnessDispatches`.
-2. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from `e2e/admin/admin_test.go`.
+2. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from the GitHub Actions driver in `pkg/behaviourtest/drivers/ci/githubactions/`.
 3. Register in `behaviourtest.RunSuite` for the matching `BEHAVIOUR_CI` value.
 
 ## Adding an install driver
@@ -123,7 +123,7 @@ Steps use `w.Org` and `w.RepoName` (the allocated repo name) plus per-repo const
 
 ## Testing drivers
 
-Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios against live backends mirror admin e2e credentials (`GITHUB_TOKEN`, halfsend org pool).
+Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios against live backends use the behaviour suite's credentials (`GITHUB_TOKEN`, halfsend org pool).
 
 ## Future backends checklist
 

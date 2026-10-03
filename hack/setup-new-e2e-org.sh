@@ -468,9 +468,9 @@ echo
 echo "    Next steps:"
 if [[ "${mint_ok}" != "true" ]]; then
   echo "    1. Enroll ${ORG} in the mint: run /mint-enroll in Claude Code"
-  echo "    2. Uncomment \"${ORG}\" in e2e/admin/testutil.go orgPool"
-  echo "    3. Run: make e2e-test"
+  echo "    2. Uncomment \"${ORG}\" in internal/e2etest/testutil.go orgPool"
+  echo "    3. Run: make behaviour-test"
 else
-  echo "    1. Uncomment \"${ORG}\" in e2e/admin/testutil.go orgPool"
-  echo "    2. Run: make e2e-test"
+  echo "    1. Uncomment \"${ORG}\" in internal/e2etest/testutil.go orgPool"
+  echo "    2. Run: make behaviour-test"
 fi
