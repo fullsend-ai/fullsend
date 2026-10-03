@@ -422,11 +422,24 @@ configuration — guardrails, autonomy levels, and escalation rules governed by
 the repo's CODEOWNERS and review process
 ([ADR 0033](ADRs/0033-per-repo-installation-mode.md)).
 
+**Decided:**
+
+- Autonomous merge is a separate `auto-merge` stage, opt-in per repository and
+  disabled by default. The agent recommends whether a pull request is ready but
+  never receives merge credentials. Trusted Fullsend runtime code checks the
+  latest GitHub state and performs the final action through the repository's
+  required direct-merge or merge-queue path. Administrator bypass is not allowed
+  ([ADR 0110](ADRs/0110-dedicated-auto-merge-authority-boundary.md)).
+- The dedicated stage is the sole Fullsend-owned autonomous-merge path; the
+  legacy Code-agent `CODE_AUTO_MERGE*` path will be retired rather than kept as
+  a compatibility fallback
+  ([agents#1219](https://github.com/fullsend-ai/agents/pull/1219)).
+
 **Open questions:**
 
 - How is policy versioned, and how do we ensure agents run under the correct policy version?
 - Who can change policy, and what approval process governs policy changes? (See [governance.md](problems/governance.md).)
-- How does policy interact with the autonomy spectrum — is the auto-merge vs. escalate decision a policy setting? (See [autonomy-spectrum.md](problems/autonomy-spectrum.md).)
+- ~~How does policy interact with the autonomy spectrum — is the auto-merge vs. escalate decision a policy setting?~~ The dedicated stage is opt-in and policy-controlled per [ADR 0110](ADRs/0110-dedicated-auto-merge-authority-boundary.md); cohort definitions and graduation evidence remain open in [autonomy-spectrum.md](problems/autonomy-spectrum.md).
 
 ## Intent Source
 
@@ -582,6 +595,19 @@ Aggregates review verdicts and applies labels:
 - split/conflicting (including conflicting security severities) → `requires-manual-review`
 - each **review run start** (including push-triggered re-review) clears **`ready-for-merge`** together with **`ready-for-review`** so merge approval is never stale after new commits
 ADR 0002: [Building block 12](ADRs/0002-initial-fullsend-design.md#12-coordinator-merge-algorithm).
+
+**Decided:**
+
+- Autonomous merging uses a dedicated, opt-in Auto-Merge stage rather than a
+  second Code-agent merge path ([ADR 0110](ADRs/0110-dedicated-auto-merge-authority-boundary.md)).
+  The stage consumes trusted semantic-provider evidence and repository-defined
+  unattended-merge scope; SCM remains authoritative for mechanical gates,
+  merge-queue policy, and the final merge. A trusted runtime may request the
+  native direct or queue path, but may not use a merge token to bypass a
+  repository rule; blocked pull requests wait or escalate. The dedicated stage
+  is the target architecture and is not yet operational everywhere; the legacy
+  `CODE_AUTO_MERGE*` path remains during migration and is planned for
+  retirement.
 
 ### 13. Observability
 
