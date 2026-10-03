@@ -23,6 +23,11 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
   decision is recorded in
   [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 
+> **ADR 0107 target contract — not yet implemented:** The bot-specific actor
+> fields and lookup semantics described below are normative design, but current
+> adapters and Go event types have not yet been migrated to emit or enforce
+> them. Existing compatibility behavior remains authoritative until migration.
+
 ## Scope (v1)
 
 v1 adapters and examples target **GitHub** webhooks, **GitLab** cron-poll
@@ -103,10 +108,15 @@ not emit events with a missing or synthetic entity.
 treats schedule and manual dispatch as **trusted operator actions**, not
 end-user webhook events.
 Adapters set `actor.id` to the configured service identity (e.g. the GitHub App
-bot or workflow `GITHUB_ACTOR`), `actor.kind` to `bot`, and `actor.role` to the
-effective permission of that identity on the target repo (typically `write` for
-installed apps). `fullsend dispatch` applies the same permission check as
-webhook paths; it does not default schedule/manual actors to `role: none`.
+bot or workflow `GITHUB_ACTOR`) and classify it as `actor.kind: bot` using the
+provider's authoritative actor metadata. Under [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md),
+the provider may resolve `actor.bot_role`; `actor.role` remains `none` for v1
+compatibility. Authorization comes from the recognized bot identity rather than
+the forge permission role.
+`fullsend dispatch` applies the same identity lookup as webhook paths.
+If that lookup returns no recognized role or fails/unverifiable, authorization
+is denied. These lookup and denial rules are ADR 0107 target behavior and are
+not yet enforced by the production runtime.
 
 ### Transition sub-objects
 
@@ -150,7 +160,7 @@ This moves instruction extraction from downstream workflow steps (e.g.
 
 ### Actor role mapping (GitHub)
 
-`actor.role` uses permission levels aligned with
+For human actors, `actor.role` uses permission levels aligned with
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
 and the GitHub collaborator permission API:
 
@@ -165,10 +175,20 @@ and the GitHub collaborator permission API:
 | `external` | — | Actor outside the repository (fork PR author, drive-by commenter) |
 
 Adapters populate `role` from the GitHub collaborator permission API for human
-actors. For **GitHub App bots**, use the installation's effective permission on
-the repository (typically `write`), not `none` — the collaborator API often
-returns 404 for `[bot]` accounts even when the app has write access via
-installation token.
+actors. For **GitHub App bots**, adapters MUST use the provider's authoritative
+bot classification and the provider-backed optional `bot_role` lookup. The
+compatibility value `role: none` is retained for bots; a bot's forge
+installation permission is not copied into `actor.role`.
+
+`actor.role_verified` is an optional additive field. For humans, it is true
+only when `actor.role` is a trusted forge permission. For bots, it is true
+when the bot-role lookup completed, whether it found a role or not. A
+recognized bot has `role_verified: true` and a provider-resolved `bot_role`; an
+unknown bot has `role_verified: true` and an absent/null `bot_role`; failed
+resolution has `role_verified: false` and no `bot_role`.
+
+This is the ADR 0107 target representation; it is not yet emitted by the
+production adapters or available as a runtime CEL field.
 
 ### Fork security (`state.change_proposal.is_fork`)
 
