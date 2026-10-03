@@ -30,7 +30,14 @@ type RoutableEvent struct {
 	// addition (label events only; 0 when unknown). Both the webhook builder
 	// and poll discovery take it from the same resource label events API, so
 	// it is the stable occurrence identity a remove-then-re-add cannot share.
-	LabelEventID    int
+	LabelEventID int
+	// OccurredAt is when the selected label addition happened, from its
+	// resource label event (poll discovery only; zero when unknown).
+	// UpdatedAt stays the issue snapshot time that drives the watermark and
+	// the legacy label keys; OccurredAt only extends dispatch-key retention
+	// (see dispatchedAtUnix) so a fresh addition seen through an older
+	// snapshot is not pruned as old.
+	OccurredAt      time.Time
 	NoteBody        string
 	NoteID          int
 	NoteAuthorID    int
@@ -70,6 +77,19 @@ func (e RoutableEvent) Key() string {
 		return fmt.Sprintf("%s-%d-%s-%d", e.Type, e.IID, e.Action, e.UpdatedAt.Unix())
 	}
 	return fmt.Sprintf("%s-%d-%d", e.Type, e.IID, e.UpdatedAt.Unix())
+}
+
+// dispatchedAtUnix is the timestamp stored with the event's dispatched key,
+// which pruneDispatchedKeys measures retention against. It is the later of
+// the snapshot time and the label addition's own occurrence time, so a fresh
+// addition discovered through an older issue snapshot keeps its key for the
+// full retention window.
+func (e RoutableEvent) dispatchedAtUnix() int64 {
+	t := e.UpdatedAt
+	if e.OccurredAt.After(t) {
+		t = e.OccurredAt
+	}
+	return t.Unix()
 }
 
 // LegacyLabelKey returns the Unix-second label key earlier versions

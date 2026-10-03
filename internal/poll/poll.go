@@ -221,7 +221,7 @@ func (p *Poller) Run(ctx context.Context) error {
 				// success). Record this occurrence's own key so a webhook
 				// replay of it finds the evidence and creates no further
 				// pipeline.
-				newDispatchedKeys[dispatchKey] = event.UpdatedAt.Unix()
+				newDispatchedKeys[dispatchKey] = event.dispatchedAtUnix()
 				continue
 			}
 			allSkipped = false
@@ -234,7 +234,7 @@ func (p *Poller) Run(ctx context.Context) error {
 			}
 			dispatched++
 			anyDispatched = true
-			newDispatchedKeys[dispatchKey] = event.UpdatedAt.Unix()
+			newDispatchedKeys[dispatchKey] = event.dispatchedAtUnix()
 			dispatchedEntities[entityKey] = true
 			observe(event)
 		}

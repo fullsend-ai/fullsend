@@ -159,6 +159,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				}
 				if add, ok := addEvents[label]; ok {
 					ev.LabelEventID = add.ID
+					ev.OccurredAt = add.CreatedAt
 					// Bind the actor of this exact occurrence; normalization
 					// must not re-resolve it from a later snapshot.
 					if add.User.ID != 0 && add.User.Username != "" {

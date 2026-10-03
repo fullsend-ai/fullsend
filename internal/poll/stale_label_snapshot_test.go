@@ -460,3 +460,88 @@ func TestPoll_DiscoveredAdditionRemovedBeforePersistNotRestored(t *testing.T) {
 		t.Fatalf("dispatch evidence missing: %v", state.DispatchedKeysFull)
 	}
 }
+
+// TestPoll_SupersededAdditionDropsConcurrentStalePresence: the poll
+// discovers e1 from an empty baseline, a webhook records e1's presence, and
+// the label is then removed and re-added as an undispatched e3 before the
+// poll persists. The poll drops its own addition, but the merge would keep
+// the webhook's e1 presence and make the next poll treat e3 as already seen.
+// The stale presence must be removed so e3 is rediscovered and dispatched
+// even though no webhook arrives for it.
+func TestPoll_SupersededAdditionDropsConcurrentStalePresence(t *testing.T) {
+	mc := newMockClient()
+	mc.issuesHonorSince = true
+	pollInDiscoveryWithTrigger(mc, []string{"ready-to-code"}, nil)
+	mc.issues[0].UpdatedAt = recent.Add(-10 * time.Minute)
+	mc.labelEvents[5] = []ResourceLabelEvent{
+		labelEvent(1, "add", "ready-to-code", alice, recent.Add(-20*time.Minute)),
+	}
+	startWatermark := recent.Add(-time.Hour).Format(time.RFC3339)
+	replaced := false
+	mc.onBranchRef = func() {
+		if replaced || len(mc.pipelineCalls) == 0 {
+			return
+		}
+		replaced = true
+		// The webhook driver's concurrent write: e1's label presence.
+		state, _ := mc.getPollState()
+		state.LabelState = LabelState{5: {"ready-to-code"}}
+		mc.setPollState(state)
+		mc.labelEvents[5] = append(mc.labelEvents[5],
+			labelEvent(2, "remove", "ready-to-code", alice, recent.Add(-10*time.Minute)),
+			labelEvent(3, "add", "ready-to-code", alice, recent))
+	}
+
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("poll Run: %v", err)
+	}
+	if !replaced {
+		t.Fatal("replacement addition never injected before persist")
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 0 {
+		t.Fatalf("LabelState[5] = %v, want the superseded occurrence's presence removed", got)
+	}
+	if state.LastPollAtFull != startWatermark {
+		t.Fatalf("watermark = %s, want it held at %s", state.LastPollAtFull, startWatermark)
+	}
+
+	mc.onBranchRef = nil
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("recovery poll Run: %v", err)
+	}
+	state, _ = mc.getPollState()
+	if _, ok := state.DispatchedKeysFull["code:issue_label-5-ready-to-code-e3"]; !ok {
+		t.Fatalf("replacement addition never dispatched on the recovery poll: %v", state.DispatchedKeysFull)
+	}
+}
+
+// TestPoll_FreshAdditionOnOldSnapshotKeepsDispatchKeyTimestamp: the issue
+// snapshot is older than the retention window but its label was added just
+// now. The dispatch key must carry the addition's own time, or an unrelated
+// recent event advancing the watermark would prune it at once and a later
+// webhook for the same occurrence would dispatch again.
+func TestPoll_FreshAdditionOnOldSnapshotKeepsDispatchKeyTimestamp(t *testing.T) {
+	mc := newMockClient()
+	mc.issuesHonorSince = true
+	pollInDiscoveryWithTrigger(mc, []string{"ready-to-code"}, nil)
+	old := recent.Add(-(dispatchedKeyRetention + time.Hour))
+	mc.issues[0].UpdatedAt = old
+	mc.labelEvents[5] = []ResourceLabelEvent{labelEvent(1, "add", "ready-to-code", alice, recent)}
+	mc.setPollState(persistedPollState{LastPollAtFull: old.Add(-time.Hour).Format(time.RFC3339)})
+
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("poll Run: %v", err)
+	}
+	if len(mc.pipelineCalls) == 0 {
+		t.Fatal("fresh addition was not dispatched")
+	}
+	state, _ := mc.getPollState()
+	got, ok := state.DispatchedKeysFull["code:issue_label-5-ready-to-code-e1"]
+	if !ok {
+		t.Fatalf("dispatch key missing: %v", state.DispatchedKeysFull)
+	}
+	if got != recent.Unix() {
+		t.Fatalf("dispatch key timestamp = %d, want the addition's time %d (snapshot time %d)", got, recent.Unix(), old.Unix())
+	}
+}

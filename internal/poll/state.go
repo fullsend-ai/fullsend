@@ -457,6 +457,13 @@ type persistDeltas struct {
 	// labels) — the webhook driver's label handoff; see unionLabelState.
 	// persistWithCAS derives it from reconcile on every attempt.
 	addedLabels LabelState
+	// stalePresence lists label presences to remove from the reloaded
+	// LabelState after the merge: a label recorded for an occurrence that a
+	// newer, undispatched occurrence has replaced (see revalidateAdditions).
+	// Left in place, that presence would make the next poll treat the
+	// replacement as already seen. persistWithCAS derives it on every
+	// attempt; it is never set by callers.
+	stalePresence LabelState
 	// pendingAdd hands failed label occurrences to the poller and
 	// pendingClear removes exactly the occurrences that were dispatched;
 	// see mergePendingLabels. Neither touches any other occurrence.
@@ -589,6 +596,9 @@ func (p *Poller) applyPersistDeltas(state persistedPollState, deltas persistDelt
 	}
 	if deltas.addedLabels != nil {
 		state.LabelState = unionLabelState(state.LabelState, deltas.addedLabels)
+	}
+	if deltas.stalePresence != nil {
+		state.LabelState = removeLabelPresence(state.LabelState, deltas.stalePresence)
 	}
 	if !p.slashCommandsOnly && (len(deltas.pendingAdd) > 0 || len(deltas.pendingClear) > 0) {
 		state.PendingLabels = mergePendingLabels(state.PendingLabels, deltas.pendingAdd, deltas.pendingClear)
@@ -866,7 +876,10 @@ func (p *Poller) revalidateRemovals(ctx context.Context, state persistedPollStat
 // and has no dispatch evidence (a replacement occurrence this writer never
 // saw), that replacement is recorded nowhere, so the watermark is held for the
 // next poll to rediscover and dispatch it even if an unrelated event would
-// otherwise advance the watermark past the issue's updated_at. Returns a copy
+// otherwise advance the watermark past the issue's updated_at, and any label
+// presence a concurrent writer recorded for the superseded occurrence is
+// removed (deltas.stalePresence) so the replacement is not mistaken for an
+// already-seen label. Returns a copy
 // of deltas; deltas itself is not modified.
 func (p *Poller) revalidateAdditions(ctx context.Context, state persistedPollState, deltas persistDeltas) (persistDeltas, []error) {
 	if deltas.labels == nil || deltas.labelsBase == nil {
@@ -879,7 +892,7 @@ func (p *Poller) revalidateAdditions(ctx context.Context, state persistedPollSta
 		}
 		discovered[event.IID][event.ChangedLabel] = event
 	}
-	var labels LabelState
+	var labels, stale LabelState
 	var errs []error
 	holdWatermark := false
 	for iid, incoming := range deltas.labels {
@@ -908,6 +921,16 @@ func (p *Poller) revalidateAdditions(ctx context.Context, state persistedPollSta
 				_, undispatched, lookupErr := p.removalSupersededByDispatchedAdd(ctx, state, deltas, iid, label)
 				if undispatched || lookupErr != nil {
 					holdWatermark = true
+					// A concurrent writer may already have recorded presence
+					// for the superseded occurrence, and the merge keeps it:
+					// the next poll would then see the replacement's label as
+					// already seen. Remove it so the replacement is
+					// rediscovered (dispatch keys deduplicate if it was
+					// dispatched meanwhile).
+					if stale == nil {
+						stale = make(LabelState)
+					}
+					stale[iid] = append(stale[iid], label)
 				}
 			}
 			if labels == nil {
@@ -928,6 +951,9 @@ func (p *Poller) revalidateAdditions(ctx context.Context, state persistedPollSta
 	out := deltas
 	if labels != nil {
 		out.labels = labels
+	}
+	if stale != nil {
+		out.stalePresence = stale
 	}
 	if holdWatermark {
 		out.watermark = nil
@@ -1172,6 +1198,30 @@ func unionLabelState(existing, adds LabelState) LabelState {
 			}
 		}
 		merged[iid] = out
+	}
+	return merged
+}
+
+// removeLabelPresence deletes each IID's listed labels from existing,
+// dropping an entry left with no labels. Nothing else is touched.
+func removeLabelPresence(existing, remove LabelState) LabelState {
+	merged := make(LabelState, len(existing))
+	for iid, labels := range existing {
+		merged[iid] = labels
+	}
+	for iid, labels := range remove {
+		drop := toSet(labels)
+		var kept []string
+		for _, l := range merged[iid] {
+			if !drop[l] {
+				kept = append(kept, l)
+			}
+		}
+		if len(kept) == 0 {
+			delete(merged, iid)
+			continue
+		}
+		merged[iid] = kept
 	}
 	return merged
 }
