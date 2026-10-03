@@ -190,14 +190,15 @@ func (n *Notifier) refreshClient(ctx context.Context) error {
 }
 
 func commentEnabled(val string) bool {
-	return val == "" || val == "enabled"
+	return val == "enabled"
 }
 
-// reactionEnabled reports whether a reaction setting is turned on. Unlike
-// commentEnabled, the empty value means disabled: reactions are an opt-in
-// addition rather than a default-on behavior.
+// reactionEnabled reports whether a reaction setting is turned on. The
+// empty value means enabled: reactions are the default status signal,
+// replacing comments that generated noisy timeline entries and
+// notifications (AISDLC-118).
 func reactionEnabled(val string) bool {
-	return val == "enabled"
+	return val == "" || val == "enabled"
 }
 
 // isFailureStatus reports whether status represents a non-success outcome,
@@ -217,7 +218,7 @@ func shouldPostCompletion(val, status string) bool {
 
 // shouldPostReactionCompletion reports whether a completion reaction
 // should be posted given the configured value and the agent outcome
-// status. Mirrors shouldPostCompletion, but defaults to disabled.
+// status. Mirrors shouldPostCompletion; defaults to enabled.
 func shouldPostReactionCompletion(val, status string) bool {
 	if val == "on_failure" {
 		return isFailureStatus(status)
@@ -723,14 +724,16 @@ func statusEmoji(status string) string {
 //   - "on_failure": no start comment marker is ever created, so an absent
 //     marker doesn't by itself indicate a problem. It may mean the process
 //     was hard-killed before PostCompletion could run. See PR #5736.
-//   - "" or "enabled" (the default): a status comment should exist for
-//     every run that reached the harness, win or lose. An absent marker
-//     here means the process crashed before it could post anything at
-//     all (e.g. during environment validation) — a blind spot where
+//   - "enabled": a status comment should exist for every run that
+//     reached the harness, win or lose. An absent marker here means
+//     the process crashed before it could post anything at all
+//     (e.g. during environment validation) — a blind spot where
 //     maintainers can't tell "no review was triggered" from "review was
 //     attempted and failed silently." See #3635.
-//   - "disabled": an explicit opt-out of all status comments. An absent
-//     marker is never synthesized in this mode, regardless of outcome.
+//   - "" or "disabled" (the default): status comments are disabled.
+//     No comment marker is ever created, so a missing marker is the
+//     normal state — not evidence of a crash. Crash synthesis does
+//     not fire in this mode. Emoji reactions are the default signal.
 //
 // jobStatus is the GitHub Actions job status (e.g., "success", "failure",
 // "cancelled"). Synthesis is skipped when jobStatus is "success" or
@@ -818,10 +821,14 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 			synthReason = ReasonSkipCommentFailed
 		}
 	case commentEnabled(completionMode) && jobFailed:
-		// Default/"enabled" completion mode: a marker should always exist
-		// for a run that reached the harness. Its absence alongside a
-		// failed or cancelled job means the process crashed before it
-		// could post anything at all. See #3635.
+		// Crash synthesis fires only when comments are explicitly enabled.
+		// In the default emoji-only mode (empty completionMode), no
+		// comment marker is ever created, so a missing marker is the
+		// normal state — not evidence of a crash. Synthesizing here
+		// would produce a misleading "Terminated" comment for every
+		// normal agent failure that posted a reaction and exited.
+		// Only "enabled" (an explicit opt-in to comments) treats a
+		// missing marker as a crash. See #3635.
 		shouldSynthesize = true
 	}
 

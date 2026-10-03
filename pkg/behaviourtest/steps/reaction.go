@@ -56,9 +56,12 @@ func givenReactionsEnabled(w *world.World) error {
 	return nil
 }
 
-// DisableReactionNotifications removes the status_notifications from
-// the enrolled repo's config.yaml. Exported so CleanupScenario can
-// call it during scenario teardown.
+// DisableReactionNotifications explicitly disables all status
+// notifications in the enrolled repo's config.yaml. Exported so
+// CleanupScenario can call it during scenario teardown.
+//
+// Sets explicit "disabled" values rather than removing the block,
+// because the empty default enables reactions.
 func DisableReactionNotifications(w *world.World) error {
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
@@ -69,7 +72,12 @@ func DisableReactionNotifications(w *world.World) error {
 	if err != nil {
 		return fmt.Errorf("parsing config: %w", err)
 	}
-	cfg.SetStatusNotifications(nil)
+	cfg.SetStatusNotifications(&config.StatusNotificationConfig{
+		Reaction: config.ReactionNotificationConfig{
+			Start:      "disabled",
+			Completion: "disabled",
+		},
+	})
 	merged, err := cfg.Marshal()
 	if err != nil {
 		return err

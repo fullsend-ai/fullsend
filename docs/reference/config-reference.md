@@ -69,11 +69,11 @@ authorization:                       # Extra sources of slash-command permission
 # ── Status notifications ─────────────────────────────────────
 status_notifications:
   comment:
-    start: enabled                   # Post a comment when an agent starts: enabled (default), disabled
-    completion: enabled              # Post a comment when an agent completes: enabled (default), on_failure, disabled
+    start: disabled                  # Post a comment when an agent starts: enabled, disabled (default)
+    completion: disabled             # Post a comment when an agent completes: enabled, on_failure, disabled (default)
   reaction:
-    start: disabled                  # Add an emoji reaction on start: enabled, disabled (default)
-    completion: disabled             # Add an emoji reaction on completion: enabled, on_failure, disabled (default)
+    start: enabled                   # Add an emoji reaction on start: enabled (default), disabled
+    completion: enabled              # Add an emoji reaction on completion: enabled (default), on_failure, disabled
 
 # ── Mint ─────────────────────────────────────────────────────
 mint_url: https://mint.fullsend.sh   # Token mint URL for credential issuance
@@ -245,13 +245,14 @@ for a setup walkthrough.
 Controls the comments and reactions fullsend posts on issues and PRs when
 agents start and complete.
 
-- **`comment.start`** — `enabled` (default) or `disabled`.
-- **`comment.completion`** — `enabled` (default), `on_failure` (comment only
-  on failure), or `disabled`.
-- **`reaction.start`** — `enabled` or `disabled` (default). Reactions are
-  an opt-in alternative that does not generate a GitHub notification.
-- **`reaction.completion`** — `enabled`, `on_failure`, or `disabled`
-  (default).
+- **`comment.start`** — `enabled` or `disabled` (default).
+- **`comment.completion`** — `enabled`, `on_failure` (comment only
+  on failure), or `disabled` (default).
+- **`reaction.start`** — `enabled` (default) or `disabled`. Reactions
+  are the default status signal — they convey agent lifecycle without
+  generating a GitHub notification.
+- **`reaction.completion`** — `enabled` (default), `on_failure`, or
+  `disabled`.
 
 ### `mint_url`
 

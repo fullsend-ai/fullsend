@@ -245,19 +245,18 @@ type StatusNotificationConfig struct {
 }
 
 // CommentNotificationConfig controls start/completion comments.
-// Valid start values: "enabled" (default), "disabled".
-// Valid completion values: "enabled" (default), "on_failure", "disabled".
+// Valid start values: "enabled", "disabled" (default).
+// Valid completion values: "enabled", "on_failure", "disabled" (default).
 type CommentNotificationConfig struct {
 	Start      string `yaml:"start,omitempty"`
 	Completion string `yaml:"completion,omitempty"`
 }
 
-// ReactionNotificationConfig controls start/completion emoji reactions,
-// an alternative to comments that doesn't generate a GitHub notification.
-// Unlike comments, both fields default to "disabled" — reactions are an
-// opt-in addition rather than a default-on behavior.
-// Valid start values: "enabled", "disabled" (default).
-// Valid completion values: "enabled", "on_failure", "disabled" (default).
+// ReactionNotificationConfig controls start/completion emoji reactions.
+// Reactions are the default status signal — they convey agent lifecycle
+// without generating GitHub notifications or timeline noise (AISDLC-118).
+// Valid start values: "enabled" (default), "disabled".
+// Valid completion values: "enabled" (default), "on_failure", "disabled".
 type ReactionNotificationConfig struct {
 	Start      string `yaml:"start,omitempty"`
 	Completion string `yaml:"completion,omitempty"`

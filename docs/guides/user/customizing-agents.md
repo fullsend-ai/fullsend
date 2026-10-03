@@ -464,49 +464,40 @@ a custom role, see [Custom Agent Identity](custom-agent-identity.md).
 
 ## Status notifications
 
-Agent workflows post status comments on issues and PRs when they start and complete. Control this with `status_notifications` in `.fullsend/config.yaml`:
+Agent workflows signal status on issues and PRs when they start and complete. By default, agents use **emoji reactions** — a lightweight signal that does not generate GitHub notifications or clutter the PR timeline.
+
+To switch to status comments instead (the previous default), set `status_notifications` in `.fullsend/config.yaml`:
 
 ```yaml
 status_notifications:
   comment:
     start: enabled
     completion: enabled
+  reaction:
+    start: disabled
+    completion: disabled
 ```
 
-When `status_notifications` is omitted entirely, both start and completion comments default to enabled.
-
-### Completion modes
-
-| Value | Behavior |
-|-------|----------|
-| `enabled` | Always post a completion comment (default) |
-| `on_failure` | Post when the agent fails, is cancelled, or is skipped by a pre-script; the start comment is automatically suppressed to avoid notification noise |
-| `disabled` | Never post a completion comment; silently remove the start comment |
-
-`on_failure` is useful when you want to reduce notification noise — successful runs leave no trace, but failures still surface. When `completion` is set to `on_failure`, the start comment is automatically suppressed regardless of the `start` setting, because posting and then deleting a start comment would still trigger a GitHub notification pointing to a deleted comment.
-
-In `enabled` mode (the default), a hard crash or cancellation that happens before the agent could post anything at all is also surfaced after the fact: a post-job cleanup step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
+When `status_notifications` is omitted entirely, comments default to disabled and reactions default to enabled.
 
 ### Reactions
 
-As an alternative (or supplement) to comments, agents can signal status with emoji reactions. Reactions don't generate a GitHub notification, so they're a lower-noise way to show that an agent is working on something and how it turned out.
+Reactions are the default status signal. When `start` is enabled (the default), a 👀 reaction is added when the agent begins.
 
 ```yaml
 status_notifications:
   reaction:
-    start: enabled       # "enabled" | "disabled" (default)
-    completion: enabled  # "enabled" | "on_failure" | "disabled" (default)
+    start: enabled       # "enabled" (default) | "disabled"
+    completion: enabled  # "enabled" (default) | "on_failure" | "disabled"
 ```
-
-Unlike comments, reactions default to `disabled` — they're an opt-in addition, not a default-on behavior. When `start` is enabled, a 👀 reaction is added when the agent begins.
 
 At completion, the start reaction (if any) is removed, and — depending on `completion` — replaced with an outcome reaction:
 
 | Value | Behavior |
 |-------|----------|
-| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped |
+| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped (default) |
 | `on_failure` | Add a 😕 reaction only on failure/cancelled/skipped; leave no reaction on success |
-| `disabled` | Never add a completion reaction (default) |
+| `disabled` | Never add a completion reaction |
 
 👎 is deliberately avoided for failures — it overloads GitHub's native up/down-vote convention, so a routine agent failure could be misread as the bot disliking the issue.
 
@@ -516,8 +507,36 @@ Because reactions carry no notification cost, `on_failure` here simply means "le
 
 **Known limitations:**
 
-- Reactions are currently GitHub-only. Enabling `reaction.*` on a GitLab-backed repo is silently a no-op today ([#5998](https://github.com/fullsend-ai/fullsend/issues/5998)).
+- Reactions are currently GitHub-only. Enabling `reaction.*` on a GitLab-backed repo is silently a no-op today ([#5998](https://github.com/fullsend-ai/fullsend/issues/5998)). With the new defaults, GitLab orgs receive no status signal unless they opt comments back on.
 - If a run is hard-killed before it can post its completion reaction, the start reaction (👀) can be left behind indefinitely — unlike status comments, there's no out-of-process reconciler for orphaned reactions yet.
+
+### Comments
+
+As an alternative (or supplement) to reactions, agents can post status comments. Comments generate GitHub notifications, so they are disabled by default to reduce noise.
+
+```yaml
+status_notifications:
+  comment:
+    start: enabled       # "enabled" | "disabled" (default)
+    completion: enabled  # "enabled" | "on_failure" | "disabled" (default)
+```
+
+### Comment completion modes
+
+| Value | Behavior |
+|-------|----------|
+| `enabled` | Always post a completion comment |
+| `on_failure` | Post when the agent fails, is cancelled, or is skipped by a pre-script; the start comment is automatically suppressed to avoid notification noise |
+| `disabled` | Never post a completion comment; silently remove the start comment (default) |
+
+`on_failure` is useful when you want failures to surface as comments while successful runs leave no trace. When `completion` is set to `on_failure`, the start comment is automatically suppressed regardless of the `start` setting, because posting and then deleting a start comment would still trigger a GitHub notification pointing to a deleted comment.
+
+When comments are enabled, a hard crash or cancellation that happens
+before the agent could post anything at all is surfaced after the fact:
+a post-job cleanup step synthesizes an "Interrupted" comment so the run
+doesn't silently vanish. In the default emoji-only mode, no comment
+marker is expected, so crash synthesis does not fire — the emoji
+reaction (👀 left behind, or 😕 on normal failure) is the signal.
 
 ## Disabling agents
 
