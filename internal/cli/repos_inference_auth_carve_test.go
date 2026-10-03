@@ -65,7 +65,7 @@ func TestRunReposInstall_GlobCarveWithFlagSatisfiesSelectionCheck(t *testing.T) 
 	manifestPath := writeTestManifest(t, globNoInferenceAuthManifestYAML)
 	fc := newInstallFakeClient("acme/api")
 
-	opts := githubManagedInstallOpts(manifestPath, fc)
+	opts := useOpenAIInputs(githubManagedInstallOpts(manifestPath, fc))
 	opts.repoFilter = []string{"acme/api"}
 	opts.forge = repos.ForgeGitHub
 	opts.runtime = "pi"

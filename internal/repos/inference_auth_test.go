@@ -515,7 +515,9 @@ func TestConverge_MissingInferenceAuthIsPerRepoError(t *testing.T) {
 	m.GitHub.Repos[0].Inference.Auth = InferenceAuthOpenAIAPIKey
 	sc := &recordingScaffoldCommit{}
 
-	result, err := Converge(context.Background(), convergeCfgWithDefaults(m), newTestClientFactory(fc), sc.fn(), noopProgress)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
+	cfg.OpenAIAPIKey = testOpenAIAPIKey
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	require.NoError(t, err)
 
 	failed := result.Failed()

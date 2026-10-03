@@ -76,6 +76,22 @@ INFERENCECRED
   export GCP_OIDC_TOKEN_FILE="${OIDC_TOKEN_FILE}"
 fi
 
+# OpenAI static key (inference.auth openai-api-key) — `fullsend repos
+# install` writes FULLSEND_OPENAI_API_KEY as a masked CI/CD variable.
+# Map it to OPENAI_API_KEY, the name the fullsend CLI reads on the host.
+# There is deliberately no fallback to an unprefixed OPENAI_API_KEY
+# CI/CD variable (it may be shared with unrelated jobs): when
+# FULLSEND_OPENAI_API_KEY is unset, any inherited OPENAI_API_KEY is
+# cleared so it cannot satisfy the credential check. The prefixed name is
+# unset after mapping so the real key is exported under only one name,
+# which the runner treats as runner-only (oidcDenyKeys).
+if [ -n "${FULLSEND_OPENAI_API_KEY:-}" ]; then
+  export OPENAI_API_KEY="${FULLSEND_OPENAI_API_KEY}"
+else
+  unset OPENAI_API_KEY
+fi
+unset FULLSEND_OPENAI_API_KEY
+
 # Bootstrap identity for the pre-verification calls below (resource
 # group PUT, pipeline-metadata GET, bot-identity /user call): select
 # the poller credential, not the STAGE-derived role. STAGE is an

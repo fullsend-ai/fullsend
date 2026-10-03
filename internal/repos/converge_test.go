@@ -97,25 +97,38 @@ func TestConverge_AllFresh(t *testing.T) {
 	}
 }
 
-func TestConverge_FreshInstallWithoutGCP(t *testing.T) {
-	fc := newFakeClientForBatch("acme/api")
-	cfg := convergeCfgWithDefaults(newConvergeManifest("acme/api"))
+// withoutInferenceInputs drops every credential input so convergence
+// reuses the repo's existing inference secrets (the steady-state re-run).
+func withoutInferenceInputs(cfg ConvergeConfig) ConvergeConfig {
 	cfg.InferenceProject = ""
 	cfg.InferenceProjectNumber = ""
 	cfg.InferenceRegion = ""
+	cfg.WIFProvider = ""
+	cfg.OpenAIAPIKey = ""
+	return cfg
+}
+
+func TestConverge_FreshInstallWithoutGCPFailsBeforeWrites(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(newConvergeManifest("acme/api")))
 	sc := &fakeScaffoldCommit{}
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
 		t.Fatalf("Converge() error: %v", err)
 	}
-	if len(result.Installed()) != 1 || len(result.Failed()) != 0 {
-		t.Fatalf("want one installed repo and no failures, got installed=%d failed=%v", len(result.Installed()), result.Failed())
+	failed := result.Failed()
+	if len(failed) != 1 {
+		t.Fatalf("want one failed repo, got %d", len(failed))
 	}
-	for _, secret := range fc.CreatedSecrets {
-		if strings.HasPrefix(secret.Name, "FULLSEND_GCP_") {
-			t.Errorf("unexpected GCP secret %s", secret.Name)
+	msg := failed[0].Error.Error()
+	for _, want := range []string{"acme/api", InferenceAuthVertexWIF, forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, "--inference-project", "--inference-region"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not mention %q", msg, want)
 		}
+	}
+	if len(fc.CreatedSecrets) != 0 || sc.called {
+		t.Errorf("expected no writes, got secrets=%d committed=%v", len(fc.CreatedSecrets), sc.called)
 	}
 }
 
@@ -130,7 +143,7 @@ func TestConverge_AlreadyInstalledNoChange(t *testing.T) {
 
 	m := newConvergeManifest(repoNames...)
 	sc := &fakeScaffoldCommit{}
-	cfg := convergeCfgWithDefaults(m)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -195,13 +208,16 @@ func TestConverge_MixedFreshAndInstalled(t *testing.T) {
 	repoNames := []string{"acme/api", "acme/web"}
 	fc := newFakeClientForBatch(repoNames...)
 	markFullyInstalled(fc, "acme", "web")
+	// acme/api's Vertex secrets were provisioned ahead of the install.
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
 
 	// Populate scaffold content from the real template.
 	populateScaffoldContent(t, fc, "acme", "web", "v1.0.0", "https://mint.example.com")
 
 	m := newConvergeManifest(repoNames...)
 	sc := &fakeScaffoldCommit{}
-	cfg := convergeCfgWithDefaults(m)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -820,7 +836,7 @@ func TestConverge_NoRefConfigured(t *testing.T) {
 	m.GitHub.FullsendRef = ""
 
 	sc := &fakeScaffoldCommit{}
-	cfg := convergeCfgWithDefaults(m)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -843,7 +859,7 @@ func TestConverge_DryRunNoRefChange(t *testing.T) {
 
 	m := newConvergeManifest(repoNames...)
 	sc := &fakeScaffoldCommit{}
-	cfg := convergeCfgWithDefaults(m)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
 	cfg.DryRun = true
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -938,7 +954,8 @@ func TestConverge_PartialSecretState(t *testing.T) {
 	}
 
 	// One secret exists but the workflow is not on the default branch,
-	// so this is still a fresh install. Install writes the missing secret.
+	// so this is still a fresh install. The supplied values replace both
+	// Vertex secrets.
 	installed := result.Installed()
 	if len(installed) != 1 {
 		t.Fatalf("expected 1 installed (partial secret, workflow missing), got installed=%d converged=%d",
@@ -952,15 +969,16 @@ func TestConverge_PartialSecretState(t *testing.T) {
 	if !fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] {
 		t.Error("expected Install to write missing FULLSEND_GCP_WIF_PROVIDER secret")
 	}
-	// The already-present secret must be left untouched: overwriting it
-	// (e.g. because ReuseSecrets is all-or-nothing) could silently
-	// retarget an already-written GCP secret binding to a different
-	// --inference-project or resolved WIF provider on a partial-state
-	// re-run.
+	// Supplied values replace the managed credentials, including the
+	// already-present secret, so the pair is consistent.
+	rewritten := false
 	for _, rec := range fc.CreatedSecrets {
-		if rec.Owner == "acme" && rec.Repo == "api" && rec.Name == "FULLSEND_GCP_PROJECT_ID" {
-			t.Error("expected already-present FULLSEND_GCP_PROJECT_ID secret to be left untouched, but Install rewrote it")
+		if rec.Owner == "acme" && rec.Repo == "api" && rec.Name == "FULLSEND_GCP_PROJECT_ID" && rec.Value == "test-inference" {
+			rewritten = true
 		}
+	}
+	if !rewritten {
+		t.Error("expected supplied --inference-project to replace FULLSEND_GCP_PROJECT_ID")
 	}
 }
 
@@ -1227,7 +1245,7 @@ func TestConverge_SameRefNoCommit(t *testing.T) {
 		committed = true
 		return nil
 	}
-	cfg := convergeCfgWithDefaults(m)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
 	if err != nil {
@@ -2100,21 +2118,19 @@ func gitlabConvergeCfg(repo string) ConvergeConfig {
 				Repos:       []RepoEntry{{Name: repo}},
 			},
 		},
-		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
-		Direct:                 true,
-		InferenceProject:       "test-inference",
-		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
+		MaxConcurrency: 4,
+		Roles:          []string{"triage"},
+		Direct:         true,
+		OpenAIAPIKey:   testOpenAIAPIKey,
 	}
 }
+
+// testOpenAIAPIKey is a fake --openai-api-key value used by tests.
+const testOpenAIAPIKey = "test-openai-key-value"
 
 func TestConverge_GitLabFreshInstallWithoutGCP(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	cfg := gitlabConvergeCfg("acme/api")
-	cfg.InferenceProject = ""
-	cfg.InferenceProjectNumber = ""
-	cfg.InferenceRegion = ""
 	sc := &fakeScaffoldCommit{}
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -2234,8 +2250,7 @@ func populateGitLabInstalled(fc *forge.FakeClient, owner, repo string) {
 		content, _ := scaffold.GitLabPerRepoFile(path)
 		fc.FileContents[full+"/"+path] = content
 	}
-	fc.Secrets[full+"/"+forge.SecretGCPProjectID] = true
-	fc.Secrets[full+"/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets[full+"/"+forge.SecretOpenAIAPIKey] = true
 	fc.Secrets[full+"/"+forge.SecretForgeToken] = true
 	fc.PipelineSchedules[full] = []forge.PipelineSchedule{
 		{ID: 1, Description: "fullsend slash poll", Active: true},
@@ -4471,17 +4486,15 @@ workflow:
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
+			Inference:   InferenceSettings{Auth: InferenceAuthVertexWIF},
 			Repos:       []RepoEntry{{Name: "acme/api"}},
 		},
 	}
 	cfg := ConvergeConfig{
-		Manifest:               m,
-		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
-		Direct:                 true,
-		InferenceProject:       "test-inference",
-		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
+		Manifest:       m,
+		MaxConcurrency: 4,
+		Roles:          []string{"triage"},
+		Direct:         true,
 	}
 
 	sc := &spyScaffoldCommit{}
@@ -5166,7 +5179,7 @@ func TestConverge_BranchRefIdempotent(t *testing.T) {
 		committed = true
 		return nil
 	}
-	cfg := convergeCfgWithDefaults(m)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
 	cfg.Force = true
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
@@ -5725,6 +5738,42 @@ func TestConverge_WIFProviderRequiresInferenceProject(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--inference-project is required when --inference-wif-provider is set") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestConverge_InvalidWIFProviderRejectedBeforeWrites(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dryRun=%v", dryRun), func(t *testing.T) {
+			repoNames := []string{"acme/api"}
+			fc := newFakeClientForBatch(repoNames...)
+			// An existing credential must survive the rejected call.
+			fc.Secrets["acme/api/"+forge.SecretOpenAIAPIKey] = true
+			m := newConvergeManifest(repoNames...)
+
+			sc := &fakeScaffoldCommit{}
+			cfg := ConvergeConfig{
+				Manifest:         m,
+				MaxConcurrency:   4,
+				Roles:            []string{"triage"},
+				Direct:           true,
+				DryRun:           dryRun,
+				InferenceProject: "test-inference",
+				InferenceRegion:  "us-central1",
+				WIFProvider:      "not-a-wif-provider",
+			}
+
+			_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+			if err == nil {
+				t.Fatal("expected error for malformed WIF provider")
+			}
+			if !strings.Contains(err.Error(), "not a valid WIF provider") {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if len(fc.CreatedSecrets) != 0 || len(fc.DeletedSecrets) != 0 {
+				t.Errorf("expected no secret writes or deletions, got created=%v deleted=%v",
+					fc.CreatedSecrets, fc.DeletedSecrets)
+			}
+		})
 	}
 }
 
@@ -6398,7 +6447,7 @@ func TestConverge_PresetIdempotentWhenUnchanged(t *testing.T) {
 		}
 		return nil
 	}
-	cfg := convergeCfgWithDefaults(m)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
 	if err != nil {
@@ -6540,7 +6589,7 @@ func TestConverge_NoPresetPreservesExistingBase(t *testing.T) {
 		committed = true
 		return nil
 	}
-	cfg := convergeCfgWithDefaults(m)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
 	if err != nil {

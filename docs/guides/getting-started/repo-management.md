@@ -207,8 +207,11 @@ gitlab:
 ```
 
 Only the selection is stored. Credentials and GCP values are still
-supplied separately (`--inference-project`, the OpenAI API key secret),
-and `none` is not a valid value.
+supplied separately on the command line (`--inference-project` for
+`vertex-wif`, `--openai-api-key` for `openai-api-key`), and `none` is not
+a valid value. `repos install` provisions only the credentials of each
+repo's selected method; see
+[Inference credentials](../../cli/repos.md#inference-credentials).
 
 `fullsend repos install <repo> --inference-auth <value>` persists the
 selection as `inference.auth` on each selected manifest entry, for repos

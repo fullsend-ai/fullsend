@@ -346,7 +346,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 **Target repo secrets:**
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
-- `FULLSEND_OPENAI_API_KEY` — opt-in static OpenAI API key when OpenAI WIF is unavailable (not set by `github setup`)
+- `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for repos whose `inference.auth` is `openai-api-key` (written by `repos install --openai-api-key`; not set by `github setup`)
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
@@ -423,7 +423,7 @@ access instead of Maintainer. See ADR 0067.
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
-- `OPENAI_API_KEY` — optional static OpenAI API key when OpenAI WIF is unavailable (masked CI/CD variable; already on the runner path, no extra forwarding)
+- `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for projects whose `inference.auth` is `openai-api-key` (masked CI/CD variable written by `repos install --openai-api-key`; the job maps it to `OPENAI_API_KEY`, and an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used)
 
 ### Secrets Layer Behavior
 

@@ -1166,19 +1166,43 @@ func TestUninstall_GitLab_SucceedsWithoutDispatchFile(t *testing.T) {
 	}
 }
 
-func TestUninstallSecretsForForge_GitLab_DoesNotDeleteOpenAIKey(t *testing.T) {
-	// Unlike GitHub's FULLSEND_OPENAI_API_KEY — a dedicated,
-	// FULLSEND_-namespaced secret fullsend can safely delete regardless of
-	// how it was set — GitLab's unprefixed OPENAI_API_KEY CI/CD variable is
-	// never forwarded by fullsend and shares no such namespace (it "already
-	// works" as a plain variable the project owner manages). Deleting it on
-	// uninstall would risk destroying a credential unrelated jobs in the
-	// same project depend on. Assert the exact list, not just this one
-	// key's absence, so an unrelated future addition can't silently widen
-	// what GitLab uninstall deletes.
+func TestUninstallSecretsForForge_GitLab_DeletesPrefixedOpenAIKeyOnly(t *testing.T) {
+	// FULLSEND_OPENAI_API_KEY is a dedicated, FULLSEND_-namespaced variable
+	// that GitLab install provisions, so uninstall must remove it. GitLab's
+	// unprefixed OPENAI_API_KEY CI/CD variable shares no such namespace and
+	// may be used by unrelated jobs, so uninstall must never delete it.
+	// Assert the exact list so an unrelated future addition can't silently
+	// widen what GitLab uninstall deletes.
 	got := UninstallSecretsForForge(ForgeGitLab)
-	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider}
+	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey}
 	if !slices.Equal(got, want) {
 		t.Errorf("UninstallSecretsForForge(GitLab) = %v, want %v", got, want)
+	}
+	if slices.Contains(got, "OPENAI_API_KEY") {
+		t.Error("GitLab uninstall must not delete the unprefixed OPENAI_API_KEY")
+	}
+}
+
+func TestUninstall_GitLabDeletesPrefixedOpenAIKeyPreservesUnprefixed(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	client.Secrets["acme/api/OPENAI_API_KEY"] = true
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if len(results) != 1 || !results[0].Success {
+		t.Fatalf("Uninstall() results = %+v, want one success", results)
+	}
+	if client.Secrets["acme/api/"+forge.SecretOpenAIAPIKey] {
+		t.Errorf("%s still present after uninstall", forge.SecretOpenAIAPIKey)
+	}
+	if !client.Secrets["acme/api/OPENAI_API_KEY"] {
+		t.Error("unprefixed OPENAI_API_KEY was deleted by uninstall")
 	}
 }

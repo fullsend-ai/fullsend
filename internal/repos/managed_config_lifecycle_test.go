@@ -502,7 +502,7 @@ func TestConverge_ManagedConfigExactMatchIsIdempotent(t *testing.T) {
 		}
 		return nil
 	}
-	cfg := convergeCfgWithDefaults(m)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
 	if err != nil {

@@ -95,18 +95,16 @@ const (
 	// masked, protected CI/CD variable. Never logged.
 	SecretWebhookSecret = "FULLSEND_WEBHOOK_SECRET"
 
-	// Opt-in OpenAI static-key secret (ADR 0092), GitHub only: never part
-	// of requiredSecrets/requiredSecretsForForge — a repository with no
-	// OpenAI WIF and no static key configured is not unhealthy. Uninstall
-	// deletes it if present so a torn-down repo doesn't keep a long-lived
-	// key around. It's a dedicated, FULLSEND_-namespaced secret (via
-	// `fullsend github set` or pasted directly into GitHub settings)
-	// fullsend can safely delete regardless of who created it — unlike
+	// OpenAI static-key secret (ADR 0092). `fullsend repos install`
+	// writes it on GitHub and GitLab for repositories whose inference.auth
+	// is openai-api-key, and probe/converge require it for those repos
+	// only — it is never part of requiredSecrets/requiredSecretsForForge.
+	// GitHub uninstall deletes it if present so a torn-down repo doesn't
+	// keep a long-lived key around. GitLab CI maps it to OPENAI_API_KEY
+	// for the job. GitLab uninstall deletes this prefixed key too;
 	// GitLab's unprefixed, potentially-shared OPENAI_API_KEY CI/CD
-	// variable, which fullsend never forwards and does not delete on
-	// uninstall — see gitlabUninstallSecrets
-	// in internal/repos/uninstall.go for why that one is deliberately not
-	// deleted.
+	// variable is no longer read by the job and is never deleted — see
+	// gitlabUninstallSecrets in internal/repos/uninstall.go.
 	SecretOpenAIAPIKey = "FULLSEND_OPENAI_API_KEY"
 
 	// Legacy uninstall-only variables — GitLab.
@@ -300,6 +298,26 @@ var ErrNotSupported = errors.New("operation not supported by this forge")
 // IsNotSupported reports whether err indicates an unsupported operation.
 func IsNotSupported(err error) bool {
 	return errors.Is(err, ErrNotSupported)
+}
+
+// SecretProtection describes the exposure controls on an existing repo
+// secret. Forges that always encrypt and mask secrets report both true.
+type SecretProtection struct {
+	// Exists reports whether the secret is present.
+	Exists bool
+	// Masked reports that the forge redacts the value in job logs.
+	Masked bool
+	// Protected reports that the value is only exposed to jobs on
+	// protected branches and tags.
+	Protected bool
+	// FileType reports that the secret is a file-type variable, whose
+	// value jobs receive as a temporary file path rather than the value.
+	// Forges without variable types always report false.
+	FileType bool
+	// EnvironmentScoped reports that the secret is limited to specific
+	// environments, so jobs that declare no environment do not receive
+	// it. Forges without environment scopes always report false.
+	EnvironmentScoped bool
 }
 
 // Repository represents a repository on a git forge.
@@ -773,8 +791,16 @@ type Client interface {
 	IsInstallationToken(ctx context.Context) (bool, error)
 
 	// Secrets and variables
+	//
+	// On GitLab, RepoSecretExists, GetRepoSecretProtection, and
+	// DeleteRepoSecret address only the wildcard-scoped (environment_scope
+	// "*") variable; an environment-specific variable with the same key is
+	// ignored and left untouched.
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
+	// GetRepoSecretProtection reports whether a repo secret exists and the
+	// masking/protection controls applied to it. It never returns the value.
+	GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (SecretProtection, error)
 	DeleteRepoSecret(ctx context.Context, owner, repo, name string) error
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
 	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)

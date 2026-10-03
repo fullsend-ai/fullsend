@@ -88,8 +88,9 @@ func (c *LiveClient) IsInstallationToken(_ context.Context) (bool, error) {
 
 // CreateRepoSecret creates or updates a protected, masked CI/CD variable
 // (secret). If the value doesn't meet GitLab's masking requirements (min
-// 8 chars, single line, restricted charset), the variable is stored unmasked.
-// If the variable already exists, it is updated in place.
+// 8 chars, single line, restricted charset), the variable is stored unmasked,
+// except for secrets in maskingRequired, which fail instead of being stored
+// unmasked. If the variable already exists, it is updated in place.
 func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
 	basePath := fmt.Sprintf("/projects/%s/variables", projectPath(owner, repo))
 	body := map[string]any{
@@ -111,6 +112,9 @@ func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, va
 	}
 
 	if isMaskingError(apiErr) {
+		if maskingRequired(name) {
+			return fmt.Errorf("create repo secret %s: GitLab refused to mask it and it must not be stored unmasked: %w", name, err)
+		}
 		body["masked"] = false
 		resp, err = c.post(ctx, basePath, body)
 		if err == nil {
@@ -130,11 +134,17 @@ func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, va
 }
 
 func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
-	updatePath := fmt.Sprintf("/projects/%s/variables/%s", projectPath(owner, repo), url.PathEscape(name))
+	// The update targets the wildcard-scoped variable, so an
+	// environment-specific variable with the same key is left alone.
+	updatePath := wildcardSecretPath(owner, repo, name)
+	// variable_type is set explicitly so replacing a file-type variable
+	// converts it to an env var, as jobs read the credential from the
+	// environment.
 	body := map[string]any{
-		"value":     value,
-		"protected": true,
-		"masked":    true,
+		"value":         value,
+		"protected":     true,
+		"masked":        true,
+		"variable_type": "env_var",
 	}
 	resp, err := c.put(ctx, updatePath, body)
 	if err == nil {
@@ -144,6 +154,9 @@ func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, va
 
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && isMaskingError(apiErr) {
+		if maskingRequired(name) {
+			return fmt.Errorf("update repo secret %s: GitLab refused to mask it and it must not be stored unmasked: %w", name, err)
+		}
 		body["masked"] = false
 		resp, err = c.put(ctx, updatePath, body)
 		if err != nil {
@@ -153,6 +166,13 @@ func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, va
 		return nil
 	}
 	return fmt.Errorf("update repo secret %s: %w", name, err)
+}
+
+// maskingRequired reports whether a secret holds a bearer credential that
+// must never be stored unmasked, so a server-side masking rejection is an
+// error rather than a reason to retry with masked=false.
+func maskingRequired(name string) bool {
+	return name == forge.SecretOpenAIAPIKey
 }
 
 func isMaskingError(err *APIError) bool {
@@ -168,9 +188,20 @@ func isAlreadyExistsError(err *APIError) bool {
 		strings.Contains(strings.ToLower(err.Message), "has already been taken")
 }
 
-// RepoSecretExists checks whether a CI/CD variable (secret) exists.
+// wildcardSecretPath returns the API path of the wildcard-scoped variable
+// with the given key. GitLab rejects a bare key lookup or deletion as
+// ambiguous when the same key also exists for specific environments, so
+// Fullsend-managed secrets, which are always created with the wildcard
+// scope, are addressed with an explicit scope filter.
+func wildcardSecretPath(owner, repo, name string) string {
+	query := url.Values{"filter[environment_scope]": {"*"}}
+	return fmt.Sprintf("/projects/%s/variables/%s?%s", projectPath(owner, repo), url.PathEscape(name), query.Encode())
+}
+
+// RepoSecretExists checks whether a wildcard-scoped CI/CD variable (secret)
+// exists. An environment-specific variable with the same key is ignored.
 func (c *LiveClient) RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error) {
-	path := fmt.Sprintf("/projects/%s/variables/%s", projectPath(owner, repo), url.PathEscape(name))
+	path := wildcardSecretPath(owner, repo, name)
 	resp, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return false, fmt.Errorf("check secret %s: %w", name, err)
@@ -187,10 +218,50 @@ func (c *LiveClient) RepoSecretExists(ctx context.Context, owner, repo, name str
 	return false, checkStatus(resp, http.StatusOK)
 }
 
-// DeleteRepoSecret deletes a CI/CD variable (secret). It is idempotent:
-// a 404 (variable already gone) is not treated as an error.
+// GetRepoSecretProtection reports whether a CI/CD variable exists and
+// whether it is masked and protected. The variable value is decoded into
+// nothing and never returned. The lookup is limited to the wildcard
+// environment scope, the only one that reaches jobs declaring no
+// environment; a variable that exists only for specific environments is
+// reported as missing.
+func (c *LiveClient) GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (forge.SecretProtection, error) {
+	path := wildcardSecretPath(owner, repo, name)
+	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return forge.SecretProtection{}, fmt.Errorf("check secret %s: %w", name, err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
+		return forge.SecretProtection{}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return forge.SecretProtection{}, checkStatus(resp, http.StatusOK)
+	}
+	var v struct {
+		Masked       bool   `json:"masked"`
+		Protected    bool   `json:"protected"`
+		VariableType string `json:"variable_type"`
+		// Absent on very old GitLab versions, which only had the
+		// wildcard scope.
+		EnvironmentScope string `json:"environment_scope"`
+	}
+	if err := decodeJSON(resp, &v); err != nil {
+		return forge.SecretProtection{}, fmt.Errorf("decode secret %s: %w", name, err)
+	}
+	return forge.SecretProtection{
+		Exists:            true,
+		Masked:            v.Masked,
+		Protected:         v.Protected,
+		FileType:          v.VariableType == "file",
+		EnvironmentScoped: v.EnvironmentScope != "" && v.EnvironmentScope != "*",
+	}, nil
+}
+
+// DeleteRepoSecret deletes a wildcard-scoped CI/CD variable (secret),
+// leaving any environment-specific variable with the same key alone. It is
+// idempotent: a 404 (variable already gone) is not treated as an error.
 func (c *LiveClient) DeleteRepoSecret(ctx context.Context, owner, repo, name string) error {
-	path := fmt.Sprintf("/projects/%s/variables/%s", projectPath(owner, repo), url.PathEscape(name))
+	path := wildcardSecretPath(owner, repo, name)
 	resp, err := c.do(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return fmt.Errorf("delete repo secret %s: %w", name, err)

@@ -458,6 +458,11 @@ type reposInstallConfig struct {
 	inferenceProjectNumber string // auto-derived from --inference-project; not a CLI flag
 	inferenceRegion        string
 
+	// openAIAPIKey is written as FULLSEND_OPENAI_API_KEY to selected
+	// repos whose inference.auth is openai-api-key. Command-line only:
+	// never persisted to the manifest and never logged.
+	openAIAPIKey string
+
 	// GitLab-specific
 	gitlabURL          string
 	gitlabRoleRegistry string
@@ -520,6 +525,17 @@ forge section, or defaults; there is no implicit default. --inference-auth
 records the selection as inference.auth on each selected manifest entry
 (new and existing), never on defaults or forge sections.
 
+Each repo's inference.auth selects the inference credentials provisioned on
+it: vertex-wif writes FULLSEND_GCP_PROJECT_ID, FULLSEND_GCP_WIF_PROVIDER and
+FULLSEND_GCP_REGION (from --inference-project, --inference-region and the
+derived or --inference-wif-provider WIF provider); openai-api-key writes
+FULLSEND_OPENAI_API_KEY (from --openai-api-key, GitHub and GitLab). Existing
+secrets are reused when no values are supplied; supplied values replace
+them. A repo missing its credentials with no values supplied fails before
+any write. After switching methods, the other method's Fullsend-managed
+secrets are removed once the new ones are written. --openai-api-key is a
+command-line input only; it is never written to repos.yaml.
+
 GCP infrastructure (WIF, mint) must be provisioned separately via
 'inference provision' and 'mint enroll' before running this command.`,
 		Args: cobra.ArbitraryArgs,
@@ -546,6 +562,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.inferenceProject, "inference-project", "", "GCP project ID for inference")
 	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}); uses this provider for all repos instead of deriving per-repo providers")
 	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "GCP region for inference (default: global)")
+	cmd.Flags().StringVar(&opts.openAIAPIKey, "openai-api-key", "", "OpenAI API key written as FULLSEND_OPENAI_API_KEY to selected repos whose inference.auth is openai-api-key; command-line only, never written to repos.yaml and never logged")
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringVar(&opts.appSet, "app-set", "", "GitHub App set prefix (apps named {app-set}-{role}) persisted as FULLSEND_APP_SET for selected repos; GitHub-only")
@@ -623,24 +640,19 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		opts.inferenceRegion = "global"
 	}
 
-	// When --inference-wif-provider is not set, derive the project number
-	// from --inference-project via the GCP Resource Manager API so that
-	// per-repo WIF provider paths can be constructed in converge.go.
-	// Skip when the project number is already populated (internal use).
+	// When --inference-wif-provider is not set, converge derives the
+	// project number from --inference-project via the GCP Resource
+	// Manager API so that per-repo WIF provider paths can be constructed.
+	// The lookup is lazy: it runs only when a selected vertex-wif repo
+	// needs a derived provider, so OpenAI-only runs never call GCP.
+	var resolveProjectNumber func(ctx context.Context, projectID string) (string, error)
 	if opts.inferenceProject != "" && opts.inferenceWIFProvider == "" && opts.inferenceProjectNumber == "" {
-		var projectNumber string
-		var lookupErr error
-		if opts.testProjectNumberFn != nil {
-			projectNumber, lookupErr = opts.testProjectNumberFn(ctx, opts.inferenceProject)
-		} else {
-			gcpClient := gcf.NewLiveGCFClient(opts.inferenceProject)
-			projectNumber, lookupErr = gcpClient.GetProjectNumber(ctx, opts.inferenceProject)
+		resolveProjectNumber = opts.testProjectNumberFn
+		if resolveProjectNumber == nil {
+			resolveProjectNumber = func(ctx context.Context, projectID string) (string, error) {
+				return gcf.NewLiveGCFClient(projectID).GetProjectNumber(ctx, projectID)
+			}
 		}
-		if lookupErr != nil {
-			return fmt.Errorf("deriving project number from %q: %w (use --inference-wif-provider to specify the full WIF provider path)", opts.inferenceProject, lookupErr)
-		}
-		opts.inferenceProjectNumber = projectNumber
-		printer.StepDone(fmt.Sprintf("Derived project number %s from project %s", projectNumber, opts.inferenceProject))
 	}
 
 	printer.StepStart("Loading manifest")
@@ -932,24 +944,21 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 			newlyAdded = addResult.Added
 
+			// A dry run does not persist the new entries, but the read-only
+			// convergence preview must still validate and plan them (inference
+			// credential validation, secret writes) exactly as the real run
+			// would. Add them to the in-memory manifest only; nothing is
+			// written to disk in a dry run.
 			if opts.dryRun && len(newlyAdded) > 0 {
-				var filtered []string
-				added := make(map[string]bool)
+				added := make(map[string]bool, len(newlyAdded))
 				for _, a := range newlyAdded {
 					added[strings.ToLower(a)] = true
 				}
-				for _, r := range opts.repoFilter {
-					if !added[strings.ToLower(r)] {
-						filtered = append(filtered, r)
+				platform := manifest.EnsurePlatform(forgeName)
+				for _, e := range entries {
+					if added[strings.ToLower(e.Name)] {
+						platform.Repos = append(platform.Repos, e)
 					}
-				}
-				opts.repoFilter = filtered
-				if len(filtered) == 0 {
-					announceGitLabURLDryRun(printer, opts.gitlabURL)
-					printer.Blank()
-					printer.StepDone(fmt.Sprintf("Install complete: %d to add, 0 converged, 0 already current, 0 failed",
-						len(newlyAdded)))
-					return nil
 				}
 			}
 		}
@@ -1115,6 +1124,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		InferenceProjectNumber:  opts.inferenceProjectNumber,
 		InferenceRegion:         opts.inferenceRegion,
 		WIFProvider:             opts.inferenceWIFProvider,
+		ResolveProjectNumber:    resolveProjectNumber,
+		OpenAIAPIKey:            opts.openAIAPIKey,
 		ReviewAppClientID:       reviewAppClientID,
 		ReviewAppClientIDAppSet: reviewAppSet,
 		VendorOverride:          vendorOverride,

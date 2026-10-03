@@ -53,7 +53,7 @@ func TestRunReposInstall_InferenceAuthPersistsOnExistingEntry(t *testing.T) {
 	manifestPath := writeTestManifest(t, noInferenceAuthManifestYAML)
 	fc := newInstallFakeClient("acme/api", "acme/web")
 
-	opts := githubManagedInstallOpts(manifestPath, fc)
+	opts := useOpenAIInputs(githubManagedInstallOpts(manifestPath, fc))
 	opts.repoFilter = []string{"acme/api"}
 	opts.inferenceAuth = repos.InferenceAuthOpenAIAPIKey
 	require.NoError(t, runReposInstall(context.Background(), opts))
@@ -227,7 +227,7 @@ func TestRunReposInstall_GlobOnlySelectionIsKept(t *testing.T) {
 	manifestPath := writeTestManifest(t, manifest)
 	fc := newInstallFakeClient("acme/api")
 
-	opts := githubManagedInstallOpts(manifestPath, fc)
+	opts := useOpenAIInputs(githubManagedInstallOpts(manifestPath, fc))
 	opts.repoFilter = []string{"acme/api"}
 	opts.forge = repos.ForgeGitHub
 	require.NoError(t, runReposInstall(context.Background(), opts))
@@ -241,7 +241,7 @@ func TestRunReposInstall_GlobSelectionWinsOverConflictingDefaults(t *testing.T) 
 	manifestPath := writeTestManifest(t, globInferenceAuthManifestYAML)
 	fc := newInstallFakeClient("acme/api")
 
-	opts := githubManagedInstallOpts(manifestPath, fc)
+	opts := useOpenAIInputs(githubManagedInstallOpts(manifestPath, fc))
 	opts.repoFilter = []string{"acme/api"}
 	opts.forge = repos.ForgeGitHub
 	require.NoError(t, runReposInstall(context.Background(), opts))
@@ -317,6 +317,9 @@ func TestRunReposInstall_AppSetOnGlobCoveredRepoCopiesGlobEntry(t *testing.T) {
 			opts.forge = repos.ForgeGitHub
 			opts.appSet = "custom-set"
 			wantAuth := repos.InferenceAuthOpenAIAPIKey
+			if !withAuth {
+				useOpenAIInputs(opts)
+			}
 			if withAuth {
 				opts.inferenceAuth = repos.InferenceAuthVertexWIF
 				wantAuth = repos.InferenceAuthVertexWIF
@@ -359,6 +362,9 @@ func TestRunReposInstall_OverridesOnGlobCoveredRepoCopyGlobEntry(t *testing.T) {
 			opts.mintURL = "https://mint-override.example.com"
 			opts.allowedRemoteResources = []string{"https://github.com/acme/"}
 			wantAuth := repos.InferenceAuthOpenAIAPIKey
+			if !withAuth {
+				useOpenAIInputs(opts)
+			}
 			if withAuth {
 				opts.inferenceAuth = repos.InferenceAuthVertexWIF
 				wantAuth = repos.InferenceAuthVertexWIF
@@ -401,7 +407,7 @@ func TestRunReposInstall_GlobCoveredRepoMissingFromExpansionGetsExplicitEntry(t 
 		}
 	}
 
-	opts := githubManagedInstallOpts(manifestPath, fc)
+	opts := useOpenAIInputs(githubManagedInstallOpts(manifestPath, fc))
 	opts.repoFilter = []string{"acme/my-fork"}
 	opts.forge = repos.ForgeGitHub
 	require.NoError(t, runReposInstall(context.Background(), opts))

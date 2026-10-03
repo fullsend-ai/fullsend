@@ -49,20 +49,18 @@ var gitlabUninstallVars = []string{
 	forge.SecretGitLabCoderToken,
 }
 
-// gitlabUninstallSecrets intentionally does NOT include the OpenAI static
-// key. Unlike FULLSEND_OPENAI_API_KEY on GitHub — a dedicated,
-// FULLSEND_-namespaced secret fullsend can safely delete regardless of
-// whether it was set via `fullsend github set` or pasted directly into
-// GitHub settings — GitLab's OPENAI_API_KEY CI/CD variable is never
-// forwarded by fullsend and shares no such namespace (per
-// docs/guides/infrastructure/openai-workload-identity.md's GitLab CI
-// note: it "already works" as a plain CI/CD variable, set by whoever
-// manages the project). Deleting an unprefixed, potentially-shared
-// variable on uninstall risks destroying a credential unrelated jobs in
-// the same project depend on.
+// gitlabUninstallSecrets intentionally does NOT include GitLab's
+// unprefixed OPENAI_API_KEY CI/CD variable. Unlike FULLSEND_OPENAI_API_KEY
+// — a dedicated, FULLSEND_-namespaced variable — the unprefixed one
+// shares no such namespace and may have been set by whoever manages the
+// project for other jobs. The Fullsend CI job no longer reads it (it maps
+// FULLSEND_OPENAI_API_KEY instead), and deleting an unprefixed,
+// potentially-shared variable on uninstall risks destroying a credential
+// unrelated jobs in the same project depend on.
 var gitlabUninstallSecrets = []string{
 	forge.SecretGCPProjectID,
 	forge.SecretGCPWIFProvider,
+	forge.SecretOpenAIAPIKey,
 }
 
 // gitlabScaffoldPaths is the full set of files uninstall removes. It is

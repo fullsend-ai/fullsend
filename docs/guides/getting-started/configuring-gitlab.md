@@ -158,8 +158,12 @@ project. See
 [Repository management § Inference authentication](repo-management.md#inference-authentication).
 
 For an installation without Vertex credentials, pass
-`--inference-auth openai-api-key` and omit `--inference-project`.
-No GCP inference secrets are written; a later Vertex agent run requires them.
+`--inference-auth openai-api-key --openai-api-key <key>` and omit
+`--inference-project`. The key is written as the masked
+`FULLSEND_OPENAI_API_KEY` CI/CD variable, and no GCP inference secrets are
+written or looked up. An unprefixed `OPENAI_API_KEY` CI/CD variable is no
+longer used; see the
+[upgrade steps](../../cli/repos.md#gitlab-fullsend_openai_api_key-replaces-openai_api_key-breaking).
 Configure each enabled agent's runtime and model for OpenAI before it runs.
 GitLab OpenAI runs use an API key, not GitHub Actions WIF; see
 [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).

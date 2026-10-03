@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -41,6 +43,18 @@ type InstallConfig struct {
 
 	InferenceProject string
 	InferenceRegion  string
+
+	// InferenceAuth is the repository's effective inference.auth
+	// (InferenceAuthVertexWIF or InferenceAuthOpenAIAPIKey). It selects
+	// which inference credentials Install writes. Empty keeps the legacy
+	// behavior: the Vertex secrets are written when InferenceProject is set.
+	InferenceAuth string
+
+	// OpenAIAPIKey is the static OpenAI API key written as
+	// FULLSEND_OPENAI_API_KEY when InferenceAuth is
+	// InferenceAuthOpenAIAPIKey. It comes from the command line only;
+	// it is never persisted to the manifest and never logged.
+	OpenAIAPIKey string
 
 	// UpstreamRef is the git ref (SHA) used to pin scaffold workflow refs.
 	// Empty for dev builds (falls back to config.DefaultUpstreamRef).
@@ -113,22 +127,11 @@ type InstallConfig struct {
 	// branch; false creates a PR.
 	Direct bool
 
-	// ReuseSecrets indicates that GCP secrets (FULLSEND_GCP_PROJECT_ID and
-	// FULLSEND_GCP_WIF_PROVIDER) already exist on the repo and should not
-	// be overwritten. When true, InferenceProject and WIFProvider may be
-	// empty and secret writes are skipped.
+	// ReuseSecrets indicates that the inference secrets for InferenceAuth
+	// (see inferenceSecretsForAuth) already exist on the repo and should
+	// not be overwritten. When true, InferenceProject, WIFProvider and
+	// OpenAIAPIKey may be empty and secret writes are skipped.
 	ReuseSecrets bool
-
-	// ExistingSecrets lists the repo secret names (e.g.
-	// FULLSEND_GCP_PROJECT_ID) already confirmed present on the repo
-	// before this install runs. Install skips writing any secret named
-	// here individually, so an already-present secret is left untouched
-	// even when ReuseSecrets is false because only some of the required
-	// secrets exist yet (a partial-secret, workflow-missing re-install —
-	// see convergeRepo). ReuseSecrets remains the all-or-nothing signal
-	// used for the WIF-provider validation and progress messaging when
-	// every required secret already exists.
-	ExistingSecrets []string
 
 	// PrebuiltScaffoldFiles, when non-nil, replaces the embedded scaffold
 	// template collection. Used when fullsend_ref pins to a version that
@@ -181,6 +184,38 @@ type InstallResult struct {
 	// in which case a live read would see the prior (or absent) wrapper
 	// and misclassify a pending typed installation as legacy.
 	GitLabTypedDispatch bool
+
+	// ScaffoldFiles are the files delivered to the repository. Delivery can
+	// open an unmerged pull/merge request instead of landing on the default
+	// branch, so callers must not treat them as live (see
+	// scaffoldFilesOnDefaultBranch).
+	ScaffoldFiles []forge.TreeFile
+}
+
+// redactSecretValues replaces every occurrence of each non-empty secret
+// value in msg so forge error text that reflects a submitted credential or
+// inference identifier cannot reach command output.
+//
+// Values are replaced in one pass over the original message, longest first,
+// so a value that is a substring of another (a project ID inside a WIF
+// provider path) cannot break the longer value's match and leave a partial
+// identifier behind.
+func redactSecretValues(msg string, secrets map[string]string) string {
+	var values []string
+	for _, name := range maputil.SortedKeys(secrets) {
+		if secret := secrets[name]; secret != "" {
+			values = append(values, secret)
+		}
+	}
+	if len(values) == 0 {
+		return msg
+	}
+	sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	pairs := make([]string, 0, 2*len(values))
+	for _, v := range values {
+		pairs = append(pairs, v, "[redacted]")
+	}
+	return strings.NewReplacer(pairs...).Replace(msg)
 }
 
 // ScaffoldCommitFunc delivers scaffold files to a repository and returns
@@ -260,8 +295,8 @@ func Install(ctx context.Context, cfg InstallConfig,
 		return result, fmt.Errorf("invalid GCP region %q", cfg.InferenceRegion)
 	}
 
-	// Validate WIF provider when inference secrets will be written.
-	if !cfg.ReuseSecrets && cfg.InferenceProject != "" {
+	// Validate WIF provider when Vertex inference secrets will be written.
+	if !cfg.ReuseSecrets && cfg.InferenceAuth != InferenceAuthOpenAIAPIKey && cfg.InferenceProject != "" {
 		if wifProvider == "" {
 			return result, fmt.Errorf("WIF provider required for repository secret configuration; set WIFProvider or enable WIF provisioning")
 		}
@@ -372,28 +407,19 @@ func Install(ctx context.Context, cfg InstallConfig,
 		}
 	}
 
-	// Step 6: Write repository secrets. Skipped entirely when reusing all
-	// existing secrets; otherwise each secret already present (per
-	// ExistingSecrets) is left untouched and only the missing ones are
-	// written, so a partial secret state does not get an already-written
-	// secret silently retargeted (e.g. by a re-run with a different
-	// --inference-project or resolved WIF provider).
+	// Step 6: Write repository secrets. Skipped entirely when reusing the
+	// existing secrets; otherwise the supplied values replace every
+	// inference secret of the selected method. Secret values are never
+	// logged.
 	repoSecrets := installSecretsForForge(cfg, wifProvider)
 	if cfg.ReuseSecrets {
 		progress(repoFullName, "secrets", "Reusing existing repository secrets")
 	} else if len(repoSecrets) > 0 {
-		existing := make(map[string]bool, len(cfg.ExistingSecrets))
-		for _, name := range cfg.ExistingSecrets {
-			existing[name] = true
-		}
 		progress(repoFullName, "secrets", "Configuring repository secrets")
 		written := 0
 		for _, name := range maputil.SortedKeys(repoSecrets) {
-			if existing[name] {
-				continue
-			}
 			if err := client.CreateRepoSecret(ctx, cfg.Owner, cfg.Repo, name, repoSecrets[name]); err != nil {
-				return result, fmt.Errorf("setting repo secret %s: %w", name, err)
+				return result, fmt.Errorf("setting repo secret %s: %s", name, redactSecretValues(err.Error(), repoSecrets))
 			}
 			written++
 		}
@@ -410,6 +436,7 @@ func Install(ctx context.Context, cfg InstallConfig,
 		return result, fmt.Errorf("committing scaffold: %w", commitErr)
 	}
 	progress(repoFullName, "scaffold", "Scaffold files committed")
+	result.ScaffoldFiles = files
 
 	// Step 7b: Now that scaffold delivery has succeeded, perform the
 	// typed-dispatch activation validated (but not applied) in step 4b:
@@ -723,10 +750,18 @@ func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, 
 	return vars, nil
 }
 
-// installSecretsForForge returns the inference secrets to write.
-// Returns nil when InferenceProject is not set; repositories without
-// Vertex inference credentials do not write GCP secrets.
+// installSecretsForForge returns the inference secrets to write for the
+// repository's inference.auth. For openai-api-key it returns
+// FULLSEND_OPENAI_API_KEY when a key was supplied; otherwise it returns
+// the Vertex pair when InferenceProject is set. Returns nil when no
+// input was supplied for the selected method.
 func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]string {
+	if cfg.InferenceAuth == InferenceAuthOpenAIAPIKey {
+		if cfg.OpenAIAPIKey == "" {
+			return nil
+		}
+		return map[string]string{forge.SecretOpenAIAPIKey: cfg.OpenAIAPIKey}
+	}
 	if cfg.InferenceProject == "" {
 		return nil
 	}
@@ -869,6 +904,43 @@ func requiredVarsForForge(forgeName string) []string {
 // readiness is checked by the GitLab role registry/status path.
 func requiredSecretsForForge(forgeName string) []string {
 	return requiredSecrets
+}
+
+// inferenceSecretsForAuth returns the Fullsend-managed repository secrets
+// that carry the inference credentials for auth. openai-api-key uses
+// FULLSEND_OPENAI_API_KEY on both forges; vertex-wif (and the legacy
+// empty selection) uses the GCP project ID and WIF provider pair.
+func inferenceSecretsForAuth(auth string) []string {
+	if auth == InferenceAuthOpenAIAPIKey {
+		return []string{forge.SecretOpenAIAPIKey}
+	}
+	return requiredSecrets
+}
+
+// obsoleteInferenceSecrets returns the Fullsend-managed inference secrets
+// that belong to the method auth did not select. Convergence removes them
+// only after the selected method's credentials are established. GitLab's
+// unprefixed OPENAI_API_KEY is never included: it may be shared with
+// other jobs and Fullsend does not manage it.
+func obsoleteInferenceSecrets(auth string) []string {
+	switch auth {
+	case InferenceAuthOpenAIAPIKey:
+		return requiredSecrets
+	case InferenceAuthVertexWIF:
+		return []string{forge.SecretOpenAIAPIKey}
+	default:
+		return nil
+	}
+}
+
+// inferenceRegionForAuth returns region when auth uses Vertex and ""
+// otherwise, so OpenAI-only repositories never get FULLSEND_GCP_REGION
+// written or value-checked.
+func inferenceRegionForAuth(auth, region string) string {
+	if auth == InferenceAuthOpenAIAPIKey {
+		return ""
+	}
+	return region
 }
 
 // checkInstallComponents verifies that all per-repo installation

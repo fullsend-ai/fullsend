@@ -2616,6 +2616,17 @@ func (c *LiveClient) RepoSecretExists(ctx context.Context, owner, repo, name str
 	return false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status checking secret"}
 }
 
+// GetRepoSecretProtection reports whether a repository Actions secret
+// exists. GitHub encrypts secrets and masks them in logs, and they have no
+// branch-protection scoping, so an existing secret reports both controls.
+func (c *LiveClient) GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (forge.SecretProtection, error) {
+	exists, err := c.RepoSecretExists(ctx, owner, repo, name)
+	if err != nil || !exists {
+		return forge.SecretProtection{}, err
+	}
+	return forge.SecretProtection{Exists: true, Masked: true, Protected: true}, nil
+}
+
 // CreateOrUpdateRepoVariable creates or updates a repository Actions variable.
 func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error {
 	payload := map[string]string{

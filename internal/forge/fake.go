@@ -19,6 +19,7 @@ func NewFakeClient() *FakeClient {
 		FileContents:             make(map[string][]byte),
 		WorkflowRuns:             make(map[string]*WorkflowRun),
 		Secrets:                  make(map[string]bool),
+		SecretProtections:        make(map[string]SecretProtection),
 		VariablesExist:           make(map[string]bool),
 		VariableValues:           make(map[string]string),
 		Errors:                   make(map[string]error),
@@ -199,6 +200,7 @@ type FakeClient struct {
 	OrgPlan                   string                          // plan name returned by GetOrgPlan (default: "free")
 	Installations             []Installation
 	Secrets                   map[string]bool             // key: "owner/repo/name"
+	SecretProtections         map[string]SecretProtection // key: "owner/repo/name"; overrides the default fully-protected report for existing secrets
 	PullRequests              map[string][]ChangeProposal // key: "owner/repo"
 	TokenScopes               []string                    // scopes returned by GetTokenScopes
 	InstallationToken         bool                        // IsInstallationToken return value
@@ -1280,6 +1282,24 @@ func (f *FakeClient) RepoSecretExists(_ context.Context, owner, repo, name strin
 		return false, nil
 	}
 	return f.Secrets[owner+"/"+repo+"/"+name], nil
+}
+
+func (f *FakeClient) GetRepoSecretProtection(_ context.Context, owner, repo, name string) (SecretProtection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetRepoSecretProtection"); e != nil {
+		return SecretProtection{}, e
+	}
+
+	key := owner + "/" + repo + "/" + name
+	if p, ok := f.SecretProtections[key]; ok {
+		return p, nil
+	}
+	if !f.Secrets[key] {
+		return SecretProtection{}, nil
+	}
+	return SecretProtection{Exists: true, Masked: true, Protected: true}, nil
 }
 
 func (f *FakeClient) CreateOrUpdateRepoVariable(_ context.Context, owner, repo, name, value string) error {

@@ -2517,6 +2517,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"FULLSEND_OPENAI_SERVICE_ACCOUNT_ID",
 		// The static key of a local run must not be expandable under any name.
 		"OPENAI_API_KEY",
+		// The GitLab CI/CD variable carrying the real key must stay runner-only.
+		"FULLSEND_OPENAI_API_KEY",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)

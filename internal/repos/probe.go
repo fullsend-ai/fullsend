@@ -32,8 +32,9 @@ type ComponentStatus struct {
 	// when the component is not present or its value is opaque.
 	Actual string
 
-	// Match is true when the component meets its requirement. Both GCP
-	// secrets absent is also a match because Vertex is optional at install.
+	// Match is true when the component meets its requirement. When no
+	// inference.auth is selected, both GCP secrets absent is also a match
+	// because Vertex is optional (see ProbeComponentsForAuth).
 	Match bool
 }
 
@@ -71,6 +72,15 @@ func DriftFieldName(componentName string) string {
 // expectedVarValues maps variable names to their expected values for
 // value-level drift detection. Pass nil for presence-only checking.
 func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
+	return ProbeComponentsForAuth(ctx, client, owner, repo, forgeName, "", fc, expectedVarValues)
+}
+
+// ProbeComponentsForAuth is ProbeComponents for a repository whose
+// effective inference.auth is known. The secrets probed are the ones
+// that carry the selected method's credentials (inferenceSecretsForAuth),
+// and each must be present to match. An empty auth keeps the legacy
+// behavior: the GCP pair is probed and both absent counts as a match.
+func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, repo, forgeName, auth string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
 	var results []ComponentStatus
 
 	// Workflow presence is the current carrier (WorkflowPaths). GitLab
@@ -239,7 +249,32 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 	}
 
 	// Required secrets (existence check only — values cannot be read back).
-	for _, secretName := range requiredSecretsForForge(forgeName) {
+	probedSecrets := requiredSecretsForForge(forgeName)
+	if auth != "" {
+		probedSecrets = inferenceSecretsForAuth(auth)
+	}
+	for _, secretName := range probedSecrets {
+		if auth == InferenceAuthOpenAIAPIKey && secretName == forge.SecretOpenAIAPIKey {
+			// Existence alone is not readiness: jobs only get a masked,
+			// protected, wildcard-scoped environment variable. Present
+			// keeps meaning "exists"; Match reports usability.
+			prot, err := client.GetRepoSecretProtection(ctx, owner, repo, secretName)
+			if err != nil {
+				return nil, fmt.Errorf("checking secret %s: %w", secretName, err)
+			}
+			cs := ComponentStatus{
+				Name:    "secret:" + secretName,
+				Present: prot.Exists,
+				Match:   prot.Exists,
+			}
+			if defect := openAIKeyDefect(prot); defect != "" {
+				cs.Expected = "masked, protected environment variable"
+				cs.Actual = defect
+				cs.Match = false
+			}
+			results = append(results, cs)
+			continue
+		}
 		exists, err := client.RepoSecretExists(ctx, owner, repo, secretName)
 		if err != nil {
 			return nil, fmt.Errorf("checking secret %s: %w", secretName, err)
@@ -250,7 +285,11 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 			Match:   exists,
 		})
 	}
-	// Installation does not select an agent's inference route. Keep both
+	if auth != "" {
+		// The selected method's credentials are required.
+		return results, nil
+	}
+	// Without a selected inference.auth, Vertex is optional. Keep both
 	// GCP components visible so a partial pair remains
 	// detectable and convergence can repair it when values are supplied.
 	var projectIndex, wifIndex = -1, -1

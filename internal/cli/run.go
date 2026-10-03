@@ -3002,6 +3002,10 @@ var oidcDenyKeys = map[string]bool{
 	// harness cannot copy the real key under another name, and keeps it out
 	// of pre/post scripts.
 	"OPENAI_API_KEY": true,
+	// The GitLab CI/CD variable `fullsend repos install` provisions. The job
+	// script maps it to OPENAI_API_KEY and unsets it; if it is ever still
+	// present it holds the real key and must stay runner-only too.
+	"FULLSEND_OPENAI_API_KEY": true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting

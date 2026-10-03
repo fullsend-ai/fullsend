@@ -824,6 +824,63 @@ func TestRunAgentJobScript_UsesPinnedIdentityForStatusRepo(t *testing.T) {
 // invoking `fullsend run`, so that resolution never falls through to one
 // of those instead.
 func TestRunAgentJobScript_UsesPinnedGitLabURLForFullsendRun(t *testing.T) {
+	got, srvURL := runAgentJobScriptForFullsendRun(t, []string{
+		// Deliberately distinct from the pin-validated API root so a
+		// passing assertion below proves the `fullsend run` child
+		// environment's FULLSEND_GITLAB_URL comes from
+		// FULLSEND_PINNED_GITLAB_URL, not these overridable variables.
+		"CI_SERVER_URL=https://unpinned.example",
+		"GITLAB_API_URL=https://also-unpinned.example",
+		"FULLSEND_GITLAB_URL=https://also-unpinned.example",
+	})
+	assert.Contains(t, got, "FULLSEND_GITLAB_URL: "+srvURL)
+	assert.NotContains(t, got, "unpinned.example")
+}
+
+// TestRunAgentJobScript_MapsOnlyPrefixedOpenAIKey verifies the GitLab job
+// maps FULLSEND_OPENAI_API_KEY to the OPENAI_API_KEY name `fullsend run`
+// reads, and never falls back to an unprefixed OPENAI_API_KEY CI/CD
+// variable (#8011).
+func TestRunAgentJobScript_MapsOnlyPrefixedOpenAIKey(t *testing.T) {
+	tests := []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{
+			name: "prefixed variable is mapped",
+			env:  []string{"FULLSEND_OPENAI_API_KEY=prefixed-test-key"},
+			want: "OPENAI_API_KEY=prefixed-test-key",
+		},
+		{
+			name: "prefixed variable wins over legacy variable",
+			env:  []string{"FULLSEND_OPENAI_API_KEY=prefixed-test-key", "OPENAI_API_KEY=legacy-test-key"},
+			want: "OPENAI_API_KEY=prefixed-test-key",
+		},
+		{
+			name: "legacy variable alone is not used",
+			env:  []string{"OPENAI_API_KEY=legacy-test-key"},
+			want: "OPENAI_API_KEY=<unset>",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _ := runAgentJobScriptForFullsendRun(t, tt.env)
+			assert.Contains(t, got, tt.want)
+			assert.NotContains(t, got, "legacy-test-key")
+			// The prefixed name must not reach the `fullsend run` environment.
+			assert.Contains(t, got, "FULLSEND_OPENAI_API_KEY=<unset>")
+		})
+	}
+}
+
+// runAgentJobScriptForFullsendRun runs run-agent-job.sh for the triage
+// stage against a fake GitLab API, with a stub `fullsend` binary that
+// prints the FULLSEND_GITLAB_URL and OPENAI_API_KEY it receives. extraEnv
+// is appended to the job environment. It returns the combined output and
+// the fake API's URL.
+func runAgentJobScriptForFullsendRun(t *testing.T, extraEnv []string) (string, string) {
+	t.Helper()
 	root := t.TempDir()
 	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
 	writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
@@ -866,6 +923,8 @@ func TestRunAgentJobScript_UsesPinnedGitLabURLForFullsendRun(t *testing.T) {
 		`#!/bin/sh
 if [ "$1" = "run" ]; then
   echo "FULLSEND_GITLAB_URL: $FULLSEND_GITLAB_URL"
+  echo "OPENAI_API_KEY=${OPENAI_API_KEY-<unset>}"
+  echo "FULLSEND_OPENAI_API_KEY=${FULLSEND_OPENAI_API_KEY-<unset>}"
 fi
 `), 0o755))
 
@@ -876,7 +935,7 @@ fi
 
 	cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"")
 	cmd.Dir = root
-	cmd.Env = append([]string{
+	env := []string{
 		"SCRIPT=" + script,
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),
@@ -893,19 +952,12 @@ fi
 		"CI_PIPELINE_URL=https://gitlab.example/pinned/project/-/pipelines/999",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=pinned/project",
-		// Deliberately distinct from the pin-validated API root so a
-		// passing assertion below proves the `fullsend run` child
-		// environment's FULLSEND_GITLAB_URL comes from
-		// FULLSEND_PINNED_GITLAB_URL, not these overridable variables.
-		"CI_SERVER_URL=https://unpinned.example",
-		"GITLAB_API_URL=https://also-unpinned.example",
-		"FULLSEND_GITLAB_URL=https://also-unpinned.example",
-	}, pinTLSEnv(t, srv)...)
+	}
+	env = append(env, extraEnv...)
+	cmd.Env = append(env, pinTLSEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)
-	got := string(out)
-	assert.Contains(t, got, "FULLSEND_GITLAB_URL: "+srv.URL)
-	assert.NotContains(t, got, "unpinned.example")
+	return string(out), srv.URL
 }
 
 // TestRunAgentJobScript_UsesPinnedRefForTrustedConfigAndTargetBranch is a

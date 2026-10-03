@@ -299,8 +299,11 @@ What this trades away: a long-lived key stored as a GitHub secret, no per-reposi
 not change: the key never enters the sandbox, only the endpoint-bound placeholder does; egress stays
 `POST /v1/responses` on `api.openai.com`; the value is masked and reserved through `oidcDenyKeys`.
 
-**GitLab CI.** A masked `OPENAI_API_KEY` CI/CD variable already works on the same runner path — GitLab
-injects CI variables into the job environment, so no extra forwarding is required.
+**GitLab CI.** Store the key as a masked `FULLSEND_OPENAI_API_KEY` CI/CD variable. You can do this
+with `fullsend repos install <group/project> --openai-api-key <value>` for projects whose
+`inference.auth` is `openai-api-key`. The Fullsend job maps it to `OPENAI_API_KEY` on the runner.
+An unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used, with no fallback. See the
+[upgrade steps](../../cli/repos.md#gitlab-fullsend_openai_api_key-replaces-openai_api_key-breaking).
 
 ## 4. Tell fullsend the three identifiers
 

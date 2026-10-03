@@ -1528,15 +1528,18 @@ func TestRunReposInstall_AddsNewReposToManifest(t *testing.T) {
 
 func TestRunReposInstall_AddsNewRepos_DryRun(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
-	fc := newInstallFakeClient("acme/api")
+	fc := newInstallFakeClient("acme/api", "acme/web")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		repoFilter:  []string{"acme/web"},
-		forge:       repos.ForgeGitHub,
-		dryRun:      true,
-		testClient:  fc,
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/web"},
+		forge:                  repos.ForgeGitHub,
+		dryRun:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
 	})
 	require.NoError(t, err)
 
@@ -1546,18 +1549,44 @@ func TestRunReposInstall_AddsNewRepos_DryRun(t *testing.T) {
 	assert.Equal(t, 1, len(m.GitHub.Repos), "dry-run should not modify manifest")
 }
 
+// A greenfield dry run must apply the same inference credential validation
+// as the real run: a new repo without the selected method's credentials
+// fails instead of reporting success (#8011).
+func TestRunReposInstall_AddsNewRepos_DryRunValidatesCredentials(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"acme/web"},
+		forge:       repos.ForgeGitHub,
+		dryRun:      true,
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "1 repos failed")
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	assert.Equal(t, 1, len(m.GitHub.Repos), "dry-run should not modify manifest")
+}
+
 func TestRunReposInstall_BootstrapsManifest(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "repos.yaml")
 	fc := newInstallFakeClient("acme/repo")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:      manifestPath,
-		concurrency:   4,
-		repoFilter:    []string{"acme/repo"},
-		forge:         repos.ForgeGitHub,
-		inferenceAuth: repos.InferenceAuthVertexWIF,
-		testClient:    fc,
+		manifest:               manifestPath,
+		concurrency:            4,
+		repoFilter:             []string{"acme/repo"},
+		forge:                  repos.ForgeGitHub,
+		inferenceAuth:          repos.InferenceAuthVertexWIF,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
 	})
 	require.NoError(t, err)
 
@@ -1620,6 +1649,10 @@ func TestRunReposInstall_BootstrapDryRun(t *testing.T) {
 		inferenceAuth: repos.InferenceAuthVertexWIF,
 		dryRun:        true,
 		testClient:    fc,
+
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
 	})
 	require.NoError(t, err)
 
@@ -1789,15 +1822,52 @@ func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
 	err := runReposInstall(context.Background(), opts)
 	require.NoError(t, err)
 
-	// Verify derived values. runReposInstall sets these on opts before
-	// constructing ConvergeConfig (which copies them verbatim), so
-	// asserting here confirms the derivation logic. The require.NoError
-	// above also provides indirect coverage: Converge's all-or-nothing
-	// validation would fail if the values were missing or empty.
-	assert.Equal(t, "987654321", opts.inferenceProjectNumber,
-		"project number should be auto-derived from testProjectNumberFn")
+	// The project number is derived lazily during convergence and used
+	// for the per-repo WIF provider written to the repo.
+	var wif string
+	for _, rec := range fc.CreatedSecrets {
+		if rec.Repo == "api" && rec.Name == forge.SecretGCPWIFProvider {
+			wif = rec.Value
+		}
+	}
+	assert.Contains(t, wif, "projects/987654321/",
+		"WIF provider should use the project number from testProjectNumberFn")
 	assert.Equal(t, "global", opts.inferenceRegion,
 		"inference region should default to global")
+}
+
+func TestRunReposInstall_OpenAIOnlySkipsProjectNumberLookup(t *testing.T) {
+	manifestPath := writeTestManifest(t, `version: 1
+github:
+  inference:
+    auth: openai-api-key
+  repos:
+    - name: acme/api
+`)
+	fc := newInstallFakeClient("acme/api")
+
+	lookupCalled := false
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:     manifestPath,
+		concurrency:  4,
+		roles:        []string{"triage"},
+		direct:       true,
+		openAIAPIKey: "test-openai-key",
+		testClient:   fc,
+		testProjectNumberFn: func(_ context.Context, _ string) (string, error) {
+			lookupCalled = true
+			return "999", nil
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, lookupCalled, "OpenAI-only repos must not trigger GCP lookups")
+	assert.True(t, fc.Secrets["acme/api/"+forge.SecretOpenAIAPIKey])
+	assert.False(t, fc.Secrets["acme/api/"+forge.SecretGCPProjectID])
+	assert.False(t, fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider])
+
+	data, readErr := os.ReadFile(manifestPath)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(data), "test-openai-key", "--openai-api-key must never be written to repos.yaml")
 }
 
 func TestRunReposInstall_WIFProviderSkipsProjectNumberLookup(t *testing.T) {
@@ -2799,6 +2869,7 @@ func TestRunReposInstall_GitLabURLBootstrapDryRun(t *testing.T) {
 		forge:         repos.ForgeGitLab,
 		gitlabURL:     "https://gitlab.example.com",
 		inferenceAuth: repos.InferenceAuthOpenAIAPIKey,
+		openAIAPIKey:  "sk-test-dry-run-key",
 		testClient:    fc,
 	})
 	require.NoError(t, err)

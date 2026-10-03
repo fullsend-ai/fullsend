@@ -1599,6 +1599,51 @@ func TestDeleteRepoSecret(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestRepoSecretCleanup_DuplicateKeysAcrossScopes covers switching away
+// from a credential whose key exists both with the wildcard scope and for a
+// specific environment. GitLab answers an unscoped request with a conflict
+// because the key is ambiguous, so the existence check and the deletion must
+// both name the wildcard scope and leave the environment-specific variable.
+func TestRepoSecretCleanup_DuplicateKeysAcrossScopes(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	wildcardPresent := true
+	var deleted bool
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/DUP", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("filter[environment_scope]") != "*" {
+			writeJSON(t, w, http.StatusConflict, map[string]string{"message": "409 Conflict: There are multiple variables with provided parameters. Please use 'filter[environment_scope]'"})
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			if !wildcardPresent {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			writeJSON(t, w, http.StatusOK, map[string]string{"key": "DUP", "environment_scope": "*"})
+		case http.MethodDelete:
+			deleted = true
+			wildcardPresent = false
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	})
+
+	exists, err := client.RepoSecretExists(ctx, "myorg", "myrepo", "DUP")
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	require.NoError(t, client.DeleteRepoSecret(ctx, "myorg", "myrepo", "DUP"))
+	assert.True(t, deleted, "the scoped deletion must reach the handler")
+
+	// Only the environment-specific variable remains, which is ignored.
+	exists, err = client.RepoSecretExists(ctx, "myorg", "myrepo", "DUP")
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
 func TestDeleteRepoSecret_AlreadyGone(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -4119,6 +4164,8 @@ func TestCreateRepoSecret_Upsert(t *testing.T) {
 		readJSONBody(t, r, &body)
 		assert.Equal(t, "newvalue", body["value"])
 		assert.Equal(t, true, body["protected"])
+		// Replacing a file-type variable must convert it to an env var.
+		assert.Equal(t, "env_var", body["variable_type"])
 		updated = true
 		writeJSON(t, w, http.StatusOK, map[string]any{"key": "MY_SECRET"})
 	})
@@ -4142,6 +4189,55 @@ func TestCreateRepoSecret_MaskedFallbackNotOnNonMaskError(t *testing.T) {
 	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", "BAD_KEY!", "value")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "key is invalid")
+}
+
+func TestCreateRepoSecret_MaskingRequiredNoUnmaskedFallback(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["masked"], "must never send masked:false")
+		writeJSON(t, w, http.StatusBadRequest, map[string]string{
+			"message": "This variable can not be masked",
+		})
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretOpenAIAPIKey, "sk-valid-looking-key")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be stored unmasked")
+	assert.Equal(t, 1, callCount, "must not retry with masked:false")
+}
+
+func TestUpdateRepoSecret_MaskingRequiredNoUnmaskedFallback(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]string{
+			"message": forge.SecretOpenAIAPIKey + " has already been taken",
+		})
+	})
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/"+forge.SecretOpenAIAPIKey, func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["masked"], "must never send masked:false")
+		writeJSON(t, w, http.StatusBadRequest, map[string]string{
+			"message": "This variable can not be masked",
+		})
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretOpenAIAPIKey, "sk-valid-looking-key")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be stored unmasked")
+	assert.Equal(t, 1, callCount, "must not retry with masked:false")
 }
 
 func TestCreatePipelineSchedule_CleansUpOnVariableFailure(t *testing.T) {
@@ -4480,4 +4576,59 @@ func TestCreateCrossRepoChangeProposal_NotSupported(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, cp)
 	assert.ErrorIs(t, err, forge.ErrNotSupported)
+}
+
+func TestGetRepoSecretProtection(t *testing.T) {
+	ctx := context.Background()
+	const path = "/api/v4/projects/myorg%2Fmyrepo/variables/K"
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+		want forge.SecretProtection
+	}{
+		{"masked and protected", map[string]any{"key": "K", "value": "v", "masked": true, "protected": true}, forge.SecretProtection{Exists: true, Masked: true, Protected: true}},
+		{"unmasked", map[string]any{"key": "K", "masked": false, "protected": true}, forge.SecretProtection{Exists: true, Protected: true}},
+		{"unprotected", map[string]any{"key": "K", "masked": true, "protected": false}, forge.SecretProtection{Exists: true, Masked: true}},
+		{"env var", map[string]any{"key": "K", "masked": true, "protected": true, "variable_type": "env_var"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true}},
+		{"file type", map[string]any{"key": "K", "masked": true, "protected": true, "variable_type": "file"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true, FileType: true}},
+		{"wildcard scope", map[string]any{"key": "K", "masked": true, "protected": true, "environment_scope": "*"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true}},
+		{"environment scope", map[string]any{"key": "K", "masked": true, "protected": true, "environment_scope": "production"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true, EnvironmentScoped: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			called := false
+			mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"), "the lookup must be limited to the wildcard scope")
+				writeJSON(t, w, http.StatusOK, tc.body)
+			})
+			got, err := client.GetRepoSecretProtection(ctx, "myorg", "myrepo", "K")
+			require.NoError(t, err)
+			assert.True(t, called, "the registered handler must serve the request")
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	t.Run("missing", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusNotFound)
+		})
+		got, err := client.GetRepoSecretProtection(ctx, "myorg", "myrepo", "K")
+		require.NoError(t, err)
+		assert.True(t, called, "the handler must report the 404, not ServeMux's default")
+		assert.False(t, got.Exists)
+	})
+
+	t.Run("unexpected status", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		_, err := client.GetRepoSecretProtection(ctx, "myorg", "myrepo", "K")
+		require.Error(t, err)
+	})
 }

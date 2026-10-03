@@ -219,8 +219,11 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 	// On GitLab, secrets are stored as masked CI/CD variables, so
 	// ListRepoVariables returns them. Exclude required secrets from
 	// orphan detection — they are not orphans.
-	for _, s := range requiredSecretsForForge(cfg.Forge) {
-		managedNames[s] = true
+	// Inference secrets of every auth method are managed.
+	for _, auth := range ValidInferenceAuths() {
+		for _, s := range inferenceSecretsForAuth(auth) {
+			managedNames[s] = true
+		}
 	}
 	// FULLSEND_DISPATCH_SECRET is auto-provisioned by install/converge
 	// to sign poll state. It is managed, not an orphan, but is

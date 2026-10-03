@@ -187,6 +187,33 @@ fullsend repos install acme/api --inference-auth openai-api-key
 
 You can also edit `repos.yaml` by hand and add `inference: {auth: ...}` at the level you want.
 
+### Inference credentials
+
+Each repo's effective `inference.auth` decides which credentials `repos install` provisions and converges for it:
+
+| `inference.auth` | Secrets / CI/CD variables | Inputs |
+|------------------|---------------------------|--------|
+| `vertex-wif` | `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER` (secrets) and `FULLSEND_GCP_REGION` (variable) | `--inference-project`, `--inference-region`, plus `--inference-wif-provider` when the project number cannot be derived |
+| `openai-api-key` | `FULLSEND_OPENAI_API_KEY` (GitHub secret or masked GitLab CI/CD variable) | `--openai-api-key` |
+
+- **Per repo, before any write.** Every selected repo is validated against its own method before anything is written. A repo whose method's secrets are missing, with no inputs supplied for that method, fails with an error that names the repo and the parameters to supply. Inputs for one method are accepted when any selected repo uses it; repos with another method ignore them, so a mixed fleet can be installed in one run.
+- **Reuse and replacement.** When no inputs are supplied for a method, existing secrets are reused unchanged, and re-running is a no-op (including while an initialization PR/MR is open). Supplied inputs replace the existing values. On GitLab, an existing `FULLSEND_OPENAI_API_KEY` is reused only when it is a masked, protected environment variable (not a file-type variable) with the wildcard `*` environment scope; otherwise the repo fails without echoing the value, so repair the variable or supply `--openai-api-key` to replace it.
+- **No GCP lookups for OpenAI-only repos.** OpenAI-only repos get no GCP secrets or region variable. The GCP project number is looked up at most once, and only when a `vertex-wif` repo needs a derived WIF provider. The per-repo WIF provider derivation is unchanged.
+- **Changing `inference.auth`.** Install writes the new credentials first and only after every convergence step for the repo succeeded deletes the Fullsend-managed secrets of the other method (`FULLSEND_GCP_PROJECT_ID`/`FULLSEND_GCP_WIF_PROVIDER` or `FULLSEND_OPENAI_API_KEY`). If any write fails, the old credentials are kept. The cleanup is attempted on every run once the selected method is established, so a deletion that failed earlier is retried by the next run. GitLab's unprefixed `OPENAI_API_KEY` variable is never deleted.
+- **`--openai-api-key` value.** Surrounding whitespace is trimmed. On GitLab the key must be storable as a masked CI/CD variable (at least 8 characters from `A-Z a-z 0-9 _ + = / @ : . ~ -`, no whitespace); otherwise the repo fails instead of the key being stored unmasked.
+- **Dry run.** `--dry-run` lists the secrets that would be written or deleted, by name only. Values are never printed.
+- **`--openai-api-key` is command-line only.** It is never written to `repos.yaml` and never logged.
+
+#### GitLab: `FULLSEND_OPENAI_API_KEY` replaces `OPENAI_API_KEY` (breaking)
+
+GitLab CI now reads the OpenAI key only from the `FULLSEND_OPENAI_API_KEY` CI/CD variable. The Fullsend job maps it to `OPENAI_API_KEY` for `fullsend run`. There is no fallback: an unprefixed `OPENAI_API_KEY` CI/CD variable on its own no longer works and does not satisfy the install check. Fullsend never deletes the unprefixed variable, because other jobs may use it. Running `fullsend run` locally still reads `OPENAI_API_KEY`.
+
+To upgrade an `openai-api-key` GitLab project that used `OPENAI_API_KEY`:
+
+1. Provision the prefixed variable. Either run `fullsend repos install group/project --openai-api-key "$KEY"`, or add a masked, protected `FULLSEND_OPENAI_API_KEY` CI/CD variable of type Variable (not File) in Settings → CI/CD → Variables.
+2. Re-run `fullsend repos install` so the project gets the updated `.gitlab/ci/scripts/run-agent-job.sh`.
+3. If no other job uses it, delete the old `OPENAI_API_KEY` variable yourself.
+
 ### Flags
 
 | Flag | Default | Description |
@@ -202,6 +229,7 @@ You can also edit `repos.yaml` by hand and add `inference: {auth: ...}` at the l
 | `--force` | `false` | Allow scaffold ref downgrades |
 | `--reactivate-schedules` | `false` | Reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted) |
 | `--inference-region` | | Per-repo GCP inference region override (default: global when `--inference-project` is set; install-time only, not stored in the manifest) |
+| `--openai-api-key` | | OpenAI API key written as `FULLSEND_OPENAI_API_KEY` to selected repos whose `inference.auth` is `openai-api-key` (GitHub and GitLab). Command-line only: never written to `repos.yaml` and never logged. See [Inference credentials](#inference-credentials). |
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override |
 | `--mint-url` | | Per-repo mint URL override |
 | `--app-set` | | GitHub App set prefix (apps named `{app-set}-{role}`), persisted as the `FULLSEND_APP_SET` repository variable for selected repos and recorded as a per-repo manifest override. GitHub-only; rejected when combined with a GitLab install. Must be lowercase alphanumeric with optional hyphens, max 23 characters. Pass `none` to reset an inherited manifest default back to the built-in `fullsend-ai`. |

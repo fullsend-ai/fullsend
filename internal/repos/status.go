@@ -300,7 +300,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
 		Forge:             cfg.Forge,
 		MintURL:           cfg.MintURL,
-		InferenceRegion:   dcfg.InferenceRegion,
+		InferenceRegion:   inferenceRegionForAuth(cfg.InferenceAuth, dcfg.InferenceRegion),
 		ReviewAppClientID: dcfg.ReviewAppClientID,
 		AppSet:            appSet,
 	}, cfg.MintURL)
@@ -308,7 +308,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)
 		return status
 	}
-	components, probeErr := ProbeComponents(ctx, client, owner, repo, cfg.Forge, fc, expectedVars)
+	components, probeErr := ProbeComponentsForAuth(ctx, client, owner, repo, cfg.Forge, cfg.InferenceAuth, fc, expectedVars)
 	if probeErr != nil {
 		status.Error = fmt.Sprintf("probing components for %s/%s: %v", owner, repo, probeErr)
 		return status

@@ -10,6 +10,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -82,6 +83,29 @@ func githubManagedInstallOpts(manifestPath string, fc *forge.FakeClient) *reposI
 		inferenceRegion:        "us-central1",
 		testClient:             fc,
 	}
+}
+
+// useOpenAIInputs swaps the helper's default Vertex inputs for an OpenAI
+// key; Converge rejects input groups that no selected repository consumes.
+//
+// Converge fails closed when it cannot fetch an explicit pin's scaffold to
+// verify the OpenAI credential contract, so the fake upstream also serves a
+// shim at the v1.0.0 and v2.0.0 pins these tests use that forwards the key.
+func useOpenAIInputs(opts *reposInstallConfig) *reposInstallConfig {
+	if fc, ok := opts.testClient.(*forge.FakeClient); ok {
+		shim, err := scaffold.PerRepoShimTemplate()
+		if err != nil {
+			panic(err)
+		}
+		for _, ref := range []string{"v1.0.0", "v2.0.0"} {
+			fc.FileContentsRef["fullsend-ai/fullsend/internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml@"+ref] = shim
+		}
+	}
+	opts.inferenceProject = ""
+	opts.inferenceProjectNumber = ""
+	opts.inferenceRegion = ""
+	opts.openAIAPIKey = "test-openai-key"
+	return opts
 }
 
 func statusJSON(t *testing.T, manifestPath string, fc *forge.FakeClient) (repos.StatusResult, error) {
@@ -329,8 +353,7 @@ func newGitLabInstalledFake(repo string) *forge.FakeClient {
 		DefaultBranch: "main",
 	}}
 	fc.Secrets[repo+"/"+forge.SecretForgeToken] = true
-	fc.Secrets[repo+"/"+forge.SecretGCPProjectID] = true
-	fc.Secrets[repo+"/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets[repo+"/"+forge.SecretOpenAIAPIKey] = true
 	fc.PipelineSchedules[repo] = []forge.PipelineSchedule{
 		{ID: 1, Description: "fullsend slash poll", Active: true},
 		{ID: 2, Description: "fullsend event poll", Active: true},
