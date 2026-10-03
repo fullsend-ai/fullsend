@@ -601,3 +601,65 @@ func TestPoll_FreshAdditionOnOldSnapshotKeepsDispatchKeyTimestamp(t *testing.T) 
 		t.Fatalf("dispatch key timestamp = %d, want the addition's time %d (snapshot time %d)", got, recent.Unix(), old.Unix())
 	}
 }
+
+// TestPoll_FailedDiscoveredAdditionDropsConcurrentStalePresence: the poll
+// starts with an empty LabelState baseline and discovers issue 5's
+// replacement addition e3, but its dispatch fails. A webhook meanwhile
+// committed presence for the superseded addition e1. Rolling the failed label
+// out of the poll's snapshot is a no-op against the empty baseline, so the
+// merge must still remove the webhook's presence; otherwise later polls see
+// the label as already recorded and never retry e3.
+func TestPoll_FailedDiscoveredAdditionDropsConcurrentStalePresence(t *testing.T) {
+	mc := newMockClient()
+	mc.issuesHonorSince = true
+	pollInDiscoveryWithTrigger(mc, []string{"ready-to-code"}, nil)
+	mc.labelEvents[5] = []ResourceLabelEvent{
+		labelEvent(1, "add", "ready-to-code", alice, recent.Add(-20*time.Minute)),
+		labelEvent(2, "remove", "ready-to-code", alice, recent.Add(-10*time.Minute)),
+		labelEvent(3, "add", "ready-to-code", alice, recent),
+	}
+	// Issue 5's e3 is dispatched first and fails; issue 6's addition then
+	// succeeds, which lets the cycle reach label persistence.
+	calls := 0
+	mc.onPipeline = func() {
+		calls++
+		if calls == 1 {
+			mc.pipelineErr = fmt.Errorf("API error: 500 internal server error")
+		} else {
+			mc.pipelineErr = nil
+		}
+	}
+	injected := false
+	mc.onBranchRef = func() {
+		if injected || len(mc.pipelineCalls) < 2 {
+			return
+		}
+		injected = true
+		// The webhook driver's concurrent write: e1's label presence.
+		state, _ := mc.getPollState()
+		state.LabelState = LabelState{5: {"ready-to-code"}}
+		mc.setPollState(state)
+	}
+
+	if err := eventsPoller(mc).Run(context.Background()); err == nil {
+		t.Fatal("poll Run: want the failed e3 dispatch reported")
+	}
+	if !injected {
+		t.Fatal("concurrent presence never injected before persist")
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 0 {
+		t.Fatalf("LabelState[5] = %v, want the stale e1 presence removed so e3 is retried", got)
+	}
+
+	mc.pipelineErr = nil
+	mc.onPipeline = nil
+	mc.onBranchRef = nil
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("recovery poll Run: %v", err)
+	}
+	state, _ = mc.getPollState()
+	if _, ok := state.DispatchedKeysFull["code:issue_label-5-ready-to-code-e3"]; !ok {
+		t.Fatalf("failed addition never dispatched on the recovery poll: %v", state.DispatchedKeysFull)
+	}
+}

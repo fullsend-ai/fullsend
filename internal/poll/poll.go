@@ -355,6 +355,13 @@ func (p *Poller) Run(ctx context.Context) error {
 		log.Printf("persisting %d new dispatched keys: %v", len(keys), keys)
 	}
 
+	// failedPresence lists the poll-discovered label occurrences that failed
+	// this cycle although this writer's baseline did not record the label.
+	// Rolling the label back out of the snapshot is then a no-op relative to
+	// that baseline, so the merge would keep a presence a concurrent writer
+	// recorded for an older occurrence and later polls would never retry the
+	// failed one. persistWithCAS removes that presence after the merge.
+	var failedPresence LabelState
 	if labelState != nil {
 		for iid, failedLabels := range failedLabelEvents {
 			if current, ok := labelState[iid]; ok {
@@ -365,6 +372,22 @@ func (p *Poller) Run(ctx context.Context) error {
 					}
 				}
 				labelState[iid] = kept
+			}
+		}
+		if p.labelBase != nil {
+			for _, event := range events {
+				if event.Type != "issue_label" || pendingOnly[event.Key()] {
+					continue
+				}
+				if !failedLabelEvents[event.IID][event.ChangedLabel] || toSet(p.labelBase[event.IID])[event.ChangedLabel] {
+					continue
+				}
+				if failedPresence == nil {
+					failedPresence = make(LabelState)
+				}
+				if !toSet(failedPresence[event.IID])[event.ChangedLabel] {
+					failedPresence[event.IID] = append(failedPresence[event.IID], event.ChangedLabel)
+				}
 			}
 		}
 	}
@@ -386,6 +409,7 @@ func (p *Poller) Run(ctx context.Context) error {
 		cycle.reconcile = reconcile
 	}
 	cycle.reconcileFailed = failedLabelEvents
+	cycle.failedPresence = failedPresence
 	for _, event := range events {
 		if event.Type == "issue_label" && !pendingOnly[event.Key()] {
 			cycle.discovered = append(cycle.discovered, event)

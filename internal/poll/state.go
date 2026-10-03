@@ -464,6 +464,12 @@ type persistDeltas struct {
 	// replacement as already seen. persistWithCAS derives it on every
 	// attempt; it is never set by callers.
 	stalePresence LabelState
+	// failedPresence lists label presences to remove from the reloaded
+	// LabelState after the merge: a poll-discovered occurrence that failed
+	// this cycle while this writer's baseline lacked the label, so a
+	// concurrent writer's presence for an older occurrence would otherwise
+	// hide the failed one from every later poll. Callers set it.
+	failedPresence LabelState
 	// pendingAdd hands failed label occurrences to the poller and
 	// pendingClear removes exactly the occurrences that were dispatched;
 	// see mergePendingLabels. Neither touches any other occurrence.
@@ -599,6 +605,9 @@ func (p *Poller) applyPersistDeltas(state persistedPollState, deltas persistDelt
 	}
 	if deltas.stalePresence != nil {
 		state.LabelState = removeLabelPresence(state.LabelState, deltas.stalePresence)
+	}
+	if deltas.failedPresence != nil {
+		state.LabelState = removeLabelPresence(state.LabelState, deltas.failedPresence)
 	}
 	if !p.slashCommandsOnly && (len(deltas.pendingAdd) > 0 || len(deltas.pendingClear) > 0) {
 		state.PendingLabels = mergePendingLabels(state.PendingLabels, deltas.pendingAdd, deltas.pendingClear)
