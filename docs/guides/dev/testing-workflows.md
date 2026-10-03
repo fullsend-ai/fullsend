@@ -36,7 +36,9 @@ go run ./cmd/fullsend admin install "$ORG" \
 After changing reusable workflows or agent content, re-run install (or
 `go run ./cmd/fullsend github setup`) with `--vendor` to refresh vendored files.
 `go run ./cmd/fullsend github sync-scaffold` updates thin caller templates and auto-detects
-vendored vs layered mode from `.defaults/action.yml` presence.
+vendored vs layered mode from `.defaults/action.yml` presence. It does not create
+`FULLSEND_MINT_URL`; if that variable is missing the command refuses and prints a
+`github setup --mint-url=... --skip-app-setup` remediation.
 
 Runtime skips the upstream sparse checkout when `.defaults/action.yml` is
 present (vendored install) and stages content from `.defaults/` instead.
