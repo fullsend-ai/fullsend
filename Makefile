@@ -201,6 +201,7 @@ script-test:
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
 	$(call run-timed,python3 skills/nextwork/scripts/nextwork_test.py)
+	$(call run-timed,python3 skills/adr-corner/scripts/adr_corner_test.py)
 	$(call run-timed,python3 skills/analyze-transcript/analyze_transcript_test.py)
 	$(call run-timed,python3 skills/user-forum-whats-new/scripts/gather_test.py)
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)

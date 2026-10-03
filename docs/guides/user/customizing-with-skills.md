@@ -60,6 +60,12 @@ Instructions the agent follows when this skill is invoked.
 Skills can reference companion scripts and data files in the same directory,
 giving agents the ability to dynamically gather information at runtime.
 
+This repository also includes workflow-oriented skills exposed as portable
+slash commands. For example, [`/nextwork`](../../../skills/nextwork/SKILL.md)
+builds a readiness queue, while
+[`/adr-corner`](../../../skills/adr-corner/SKILL.md) inventories open pull
+requests that change Architecture Decision Records.
+
 ## Adding skills to your repository
 
 Place skills in `.agents/skills/` in your target repository and symlink
