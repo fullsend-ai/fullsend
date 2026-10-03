@@ -66,17 +66,17 @@ func saveWorkflowRunLogs(ctx context.Context, w *world.World, label string, run 
 	}
 
 	if strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) == "" {
-		worldLogf(w, "save workflow run logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for %s run %d", label, run.ID)
+		logRedacted(w, "save workflow run logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for %s run %d", label, run.ID)
 		return
 	}
 
 	logPath, err := writeWorkflowRunLogs(ctx, w, label, run)
 	if err != nil {
-		worldLogf(w, "save workflow run logs: %v", err)
+		logRedacted(w, "save workflow run logs: %v", err)
 		return
 	}
 
-	worldLogf(w, "save workflow run logs: %s run %d logs saved to %s", label, run.ID, logPath)
+	logRedacted(w, "save workflow run logs: %s run %d logs saved to %s", label, run.ID, logPath)
 }
 
 // writeWorkflowRunLogs fetches a run's logs and writes them, redacted,
@@ -110,11 +110,62 @@ func writeWorkflowRunLogs(ctx context.Context, w *world.World, label string, run
 	if err := writeRedactedArtifact(logPath, logs); err != nil {
 		return "", err
 	}
-	if w.SavedLogRunIDs == nil {
-		w.SavedLogRunIDs = make(map[int]bool)
+	// Only a complete snapshot is deduplicated: a run that had not reached a
+	// terminal status, or whose log text embeds a per-job fetch failure, is
+	// fetched again by CollectFailureLogs so the After hook can replace the
+	// partial snapshot before the repository is deleted.
+	if runLogsComplete(*run, logs) {
+		if w.SavedLogRunIDs == nil {
+			w.SavedLogRunIDs = make(map[int]bool)
+		}
+		w.SavedLogRunIDs[run.ID] = true
 	}
-	w.SavedLogRunIDs[run.ID] = true
 	return logPath, nil
+}
+
+// partialLogMarkers are the in-band notes the forge clients embed in the
+// text returned by GetRunLogs, without returning an error, when a single
+// job's log (or the whole aggregate) could not be fetched in full.
+var partialLogMarkers = []string{
+	"[failed to fetch logs:",
+	"[logs unavailable:",
+	"[failed to read logs:",
+	"error fetching trace:",
+	"error reading trace:",
+	"aggregate trace limit",
+}
+
+// runLogsComplete reports whether logs, fetched for run, are a complete
+// snapshot: the run has reached a terminal status and no job's log was
+// replaced by a fetch-failure note.
+func runLogsComplete(run forge.WorkflowRun, logs string) bool {
+	if run.Status != "completed" {
+		return false
+	}
+	for _, marker := range partialLogMarkers {
+		if strings.Contains(logs, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+// redactText passes s through the secret redactor.
+func redactText(s string) string {
+	if res := security.NewSecretRedactor().Scan(s); res.Sanitized != "" {
+		return res.Sanitized
+	}
+	return s
+}
+
+// logRedacted formats a diagnostic message and redacts it before handing it
+// to the world logger: errors, scenario names and paths can carry
+// credentials, and the CI artifact redaction does not reach console output.
+func logRedacted(w *world.World, format string, args ...any) {
+	if w.Logf == nil {
+		return
+	}
+	w.Logf("%s", redactText(fmt.Sprintf(format, args...)))
 }
 
 // CollectFailureLogs is called by the suite's After hook for a failed
@@ -141,7 +192,7 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 	}
 	artifactDir := strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR"))
 	if artifactDir == "" {
-		worldLogf(w, "collect failure logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for failed scenario %q", w.ScenarioName)
+		logRedacted(w, "collect failure logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for failed scenario %q", w.ScenarioName)
 		return
 	}
 
@@ -162,10 +213,10 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 
 	summaryPath, err := writeFailureSummary(artifactDir, w.ScenarioName, b.String())
 	if err != nil {
-		worldLogf(w, "collect failure logs: %v", err)
+		logRedacted(w, "collect failure logs: %v", err)
 		return
 	}
-	worldLogf(w, "collect failure logs: failure summary for scenario %q saved to %s", w.ScenarioName, summaryPath)
+	logRedacted(w, "collect failure logs: failure summary for scenario %q saved to %s", w.ScenarioName, summaryPath)
 }
 
 // collectScenarioRunLogs saves the logs of the scenario's runs that are
@@ -173,7 +224,7 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 // why there are no runs to collect.
 func collectScenarioRunLogs(ctx context.Context, w *world.World) string {
 	if w.RepoName == "" {
-		return "  none: the scenario failed before a repository was configured, so there are no workflow runs to collect\n"
+		return "  none: the repository identity is unavailable (the scenario failed before one was recorded), so workflow runs could not be collected\n"
 	}
 	if w.CI == nil {
 		return "  none: no CI driver is configured, so workflow runs cannot be collected\n"
@@ -216,7 +267,7 @@ func collectScenarioRunLogs(ctx context.Context, w *world.World) string {
 		}
 		logPath, err := writeWorkflowRunLogs(ctx, w, runLabel(run), &run)
 		if err != nil {
-			worldLogf(w, "collect failure logs: %v", err)
+			logRedacted(w, "collect failure logs: %v", err)
 			fmt.Fprintf(&b, "  - %s: logs could not be collected: %v\n", describeRun(run), err)
 			continue
 		}
@@ -259,13 +310,13 @@ func runLabel(run forge.WorkflowRun) string {
 	return pathSlug(run.Name, 40, "workflow")
 }
 
-// pathSlug lowercases s and replaces every run of characters outside
+// pathSlug redacts secrets from s, lowercases it and replaces every run of characters outside
 // [a-z0-9] with a single '-', truncated to maxLen characters, so it is safe
 // to embed in a directory name. Returns fallback when nothing remains.
 func pathSlug(s string, maxLen int, fallback string) string {
 	var b strings.Builder
 	dash := false
-	for _, r := range strings.ToLower(s) {
+	for _, r := range strings.ToLower(redactText(s)) {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
 			dash = false
@@ -310,11 +361,7 @@ func writeFailureSummary(artifactDir, scenarioName, content string) (string, err
 // redactor with mode 0o600: everything under BEHAVIOUR_ARTIFACT_DIR
 // leaves the runner as a CI artifact.
 func writeRedactedArtifact(path, content string) error {
-	redacted := content
-	if res := security.NewSecretRedactor().Scan(content); res.Sanitized != "" {
-		redacted = res.Sanitized
-	}
-	if err := os.WriteFile(path, []byte(redacted), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(redactText(content)), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

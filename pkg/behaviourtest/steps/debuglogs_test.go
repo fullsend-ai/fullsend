@@ -57,7 +57,7 @@ func TestSaveWorkflowRunLogs_WritesLogs(t *testing.T) {
 		Logf:     func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
 	}
 
-	run := &forge.WorkflowRun{ID: 42}
+	run := &forge.WorkflowRun{ID: 42, Status: "completed"}
 	saveWorkflowRunLogs(context.Background(), w, "triage", run)
 
 	// Verify the log file was written.
@@ -455,7 +455,8 @@ func TestCollectFailureLogs_NoRepository(t *testing.T) {
 	summary := readFailureSummary(t, artifactDir)
 	assert.Contains(t, summary, "allocating repo: pool exhausted")
 	assert.Contains(t, summary, "Repository: (none)")
-	assert.Contains(t, summary, "before a repository was configured")
+	assert.Contains(t, summary, "repository identity is unavailable")
+	assert.NotContains(t, summary, "there are no workflow runs")
 }
 
 func TestCollectFailureLogs_NoCIDriver(t *testing.T) {
@@ -552,5 +553,144 @@ func TestPathSlug(t *testing.T) {
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, pathSlug(tt.in, 40, "fallback"), "pathSlug(%q)", tt.in)
+	}
+}
+
+// TestSaveWorkflowRunLogs_PartialSnapshotNotDeduplicated checks that a log
+// fetch that succeeds but is incomplete (run still in progress, or a job's
+// log replaced by a fetch-failure note) is not recorded as saved, so the
+// After hook collects the run again.
+func TestSaveWorkflowRunLogs_PartialSnapshotNotDeduplicated(t *testing.T) {
+	tests := []struct {
+		name string
+		run  forge.WorkflowRun
+		logs string
+	}{
+		{"run not terminal", forge.WorkflowRun{ID: 7, Status: "in_progress"}, "=== job ==="},
+		{"queued run", forge.WorkflowRun{ID: 7, Status: "queued"}, "=== job ==="},
+		{"job fetch failed", forge.WorkflowRun{ID: 7, Status: "completed"}, "=== job ===\n[failed to fetch logs: boom]\n"},
+		{"job unavailable", forge.WorkflowRun{ID: 7, Status: "completed"}, "[logs unavailable: HTTP 404]"},
+		{"job read failed", forge.WorkflowRun{ID: 7, Status: "completed"}, "[failed to read logs: EOF]"},
+		{"gitlab trace fetch failed", forge.WorkflowRun{ID: 7, Status: "completed"}, "=== Job 1 (x): error fetching trace: boom ==="},
+		{"gitlab trace read failed", forge.WorkflowRun{ID: 7, Status: "completed"}, "=== Job 1 (x): error reading trace: boom ==="},
+		{"gitlab aggregate limit", forge.WorkflowRun{ID: 7, Status: "completed"}, "=== aggregate trace limit (1 bytes) reached ==="},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			artifactDir := t.TempDir()
+			t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+			w := &world.World{Org: "org", RepoName: "repo", CI: &fakeDebugCI{logs: tt.logs}, Logf: func(string, ...any) {}}
+
+			run := tt.run
+			saveWorkflowRunLogs(context.Background(), w, "triage", &run)
+
+			_, err := os.Stat(filepath.Join(artifactDir, "debug-triage-run-7", "workflow-logs.txt"))
+			require.NoError(t, err, "the partial snapshot is still preserved")
+			assert.False(t, w.SavedLogRunIDs[7], "a partial snapshot must not be recorded as saved")
+		})
+	}
+}
+
+// TestCollectFailureLogs_RefetchesPartialSnapshot checks the After hook
+// replaces an early, partial snapshot with a complete one.
+func TestCollectFailureLogs_RefetchesPartialSnapshot(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	fake := &fakeListerCI{
+		runs: []forge.WorkflowRun{{ID: 9, Name: "Fullsend", Status: "completed", Conclusion: "failure"}},
+		logs: map[int]string{9: "=== complete logs ==="},
+	}
+	w := &world.World{
+		Org: "org", RepoName: "repo", CI: fake,
+		ScenarioName: "partial",
+		Logf:         func(string, ...any) {},
+	}
+
+	// Early fetch while the run is still in progress, with a stale run value.
+	early := forge.WorkflowRun{ID: 9, Name: "Fullsend", Status: "in_progress"}
+	fake.logs[9] = "=== partial logs ===\n[failed to fetch logs: boom]\n"
+	saveWorkflowRunLogs(context.Background(), w, "fullsend", &early)
+	require.False(t, w.SavedLogRunIDs[9])
+
+	fake.logs[9] = "=== complete logs ==="
+	CollectFailureLogs(context.Background(), w, fmt.Errorf("boom"))
+
+	data, err := os.ReadFile(filepath.Join(artifactDir, "debug-fullsend-run-9", "workflow-logs.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "=== complete logs ===", string(data), "the After hook must replace the partial snapshot")
+	assert.Equal(t, []int{9, 9}, fake.fetched)
+	assert.Contains(t, readFailureSummary(t, artifactDir), "logs saved to")
+}
+
+// TestLogRedacted checks diagnostic console messages are redacted after
+// formatting, and a nil logger is tolerated.
+func TestLogRedacted(t *testing.T) {
+	t.Parallel()
+	token := "ghp_" + strings.Repeat("C", 36)
+	var logged []string
+	w := &world.World{Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
+
+	logRedacted(w, "collect failure logs: %v for %q", fmt.Errorf("request failed with token %s", token), "scenario "+token)
+
+	require.Len(t, logged, 1)
+	assert.NotContains(t, logged[0], token)
+	assert.Contains(t, logged[0], "collect failure logs")
+
+	assert.NotPanics(t, func() { logRedacted(&world.World{}, "no logger %s", token) })
+}
+
+// TestCollectFailureLogs_RedactsConsoleLogs checks that errors, scenario
+// names and summary paths reach World.Logf redacted.
+func TestCollectFailureLogs_RedactsConsoleLogs(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	key := "sk-" + strings.Repeat("a", 24)
+	token := "ghp_" + strings.Repeat("D", 36)
+	fake := &fakeListerCI{
+		runs:    []forge.WorkflowRun{{ID: 12, Name: "Fullsend"}},
+		logsErr: map[int]error{12: fmt.Errorf("fetch failed with token %s", token)},
+	}
+	var logged []string
+	w := &world.World{
+		Org: "org", RepoName: "repo", CI: fake,
+		ScenarioName: "scenario " + key,
+		Logf:         func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+
+	CollectFailureLogs(context.Background(), w, fmt.Errorf("boom"))
+
+	require.NotEmpty(t, logged)
+	for _, line := range logged {
+		assert.NotContains(t, line, token)
+		assert.NotContains(t, line, key)
+	}
+}
+
+// TestCollectFailureLogs_RedactsDirectoryNames checks scenario and workflow
+// names are redacted before they become artifact directory names.
+func TestCollectFailureLogs_RedactsDirectoryNames(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	key := "sk-" + strings.Repeat("a", 24)
+	fake := &fakeListerCI{
+		runs: []forge.WorkflowRun{{ID: 13, Name: "run " + key}},
+		logs: map[int]string{13: "logs"},
+	}
+	w := &world.World{
+		Org: "org", RepoName: "repo", CI: fake,
+		ScenarioName: "scenario " + key,
+		Logf:         func(string, ...any) {},
+	}
+
+	CollectFailureLogs(context.Background(), w, fmt.Errorf("boom"))
+
+	entries, err := os.ReadDir(artifactDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	for _, e := range entries {
+		assert.NotContains(t, e.Name(), strings.Repeat("a", 24), "directory name must not carry the secret")
 	}
 }
