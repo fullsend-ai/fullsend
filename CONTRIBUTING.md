@@ -35,6 +35,17 @@ This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce s
 - **If your PR introduces a breaking change**, the PR title must carry the `!` suffix (e.g., `feat(harness)!: require role field`). GoReleaser builds release notes from PR titles — a missing `!` means users get no warning before upgrading. See [COMMITS.md](COMMITS.md#breaking-changes) for how to identify breaking changes and what to include in the commit body.
 - Keep PRs focused. One problem area or decision per PR is easier to review than a grab-bag.
 - If your change touches a problem doc, make sure the "Open questions" section still makes sense after your edit.
+- Run the local review squad before opening the PR when you can. See [Pre-submit review](#pre-submit-review).
+
+### Pre-submit review
+
+Fullsend runs a [review agent](docs/agents/review.md) on every pull request. That is the platform review path and still the gate after you open a PR.
+
+Separately, we **recommend running Guannan Sun's local [review squad](https://gitlab.cee.redhat.com/gsun/ai-agent-base/-/tree/main/skills/review-squad) before you open a PR.** The squad uses multiple models on the same change and has been catching issues the platform review agent currently misses (for example, [cross-file impact](https://github.com/fullsend-ai/fullsend/issues/1525)). Running it locally reduces review-iteration churn after submit.
+
+This sits **alongside**, not instead of, the Fullsend review agent. It is an **interim** recommendation until the platform review agent can host a comparable multi-model strategy ([#6322](https://github.com/fullsend-ai/fullsend/issues/6322)). The squad runs on your machine, so you pay for inference and must set it up locally (the source is on Red Hat internal GitLab and may require access). If you cannot run it, open the PR anyway — the platform review agent still reviews it.
+
+See [Pre-submit review](docs/contributing/pre-submit-review.md) for the full dual-tool write-up.
 
 ### Review etiquette
 
