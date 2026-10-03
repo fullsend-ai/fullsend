@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -476,6 +478,27 @@ func TestInjectFrontmatterSkills_FlowStyleFollowedByBlankLine(t *testing.T) {
 	assert.Contains(t, got, "model: opus")
 	assert.Contains(t, got, "Body")
 	assertValidFrontmatter(t, result)
+}
+
+func TestInjectFrontmatterSkills_DeclaredNameFromNestedDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	labels := filepath.Join(dir, "issue-labels", "github")
+	review := filepath.Join(dir, "pr-review", "github")
+	require.NoError(t, os.MkdirAll(labels, 0o755))
+	require.NoError(t, os.MkdirAll(review, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(labels, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(review, "SKILL.md"),
+		[]byte("---\nname: pr-review-github\n---\n"), 0o644))
+
+	src := "---\nname: review\n---\nBody\n"
+	result, err := injectFrontmatterSkills([]byte(src), []string{labels, review})
+	require.NoError(t, err)
+	got := string(result)
+	assert.Contains(t, got, "  - issue-labels\n")
+	assert.Contains(t, got, "  - pr-review-github\n")
+	assert.NotContains(t, got, "  - github\n")
 }
 
 func TestInjectFrontmatterSkills_InvalidSkillName(t *testing.T) {

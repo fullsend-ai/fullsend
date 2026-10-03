@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/fullsend-ai/fullsend/internal/skill"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -18,7 +19,7 @@ func warnRepoSkillCollisions(repoDir string, harnessSkillDirs []string, printer 
 			continue
 		}
 		if isReadableSkillMarker(skillDir) {
-			harnessSkills[filepath.Base(skillDir)] = struct{}{}
+			harnessSkills[skill.SandboxName(skillDir)] = struct{}{}
 		}
 	}
 

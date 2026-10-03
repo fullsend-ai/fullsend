@@ -246,17 +246,8 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("writing %s: %w", piSettingsFile, err)
 	}
 
-	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {
+	if err := uploadHarnessSkills(sandboxName, cfg+"/skills", input.SkillDirs()); err != nil {
 		return err
-	}
-	for _, skillPath := range input.SkillDirs() {
-		if skillPath == "" {
-			continue
-		}
-		if err := sandbox.Upload(sandboxName, skillPath, cfg+"/skills/"); err != nil {
-			return fmt.Errorf("copying skill %q: %w", skillPath, err)
-		}
-		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
 	// Extensions land under ConfigDir/extensions/<name>/ — a runner-owned

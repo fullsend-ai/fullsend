@@ -735,61 +735,6 @@ func TestClaudeRuntime_ExtractTranscripts_OpenshellNotInPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "finding transcripts")
 }
 
-func TestResolveSkillDisplayName(t *testing.T) {
-	tests := []struct {
-		name     string
-		dirName  string
-		skillMD  string // empty means no SKILL.md
-		expected string
-	}{
-		{
-			name:     "frontmatter name overrides directory name",
-			dirName:  "tree",
-			skillMD:  "---\nname: architecture\n---\n# Architecture skill",
-			expected: "architecture",
-		},
-		{
-			name:     "falls back to filepath.Base when no SKILL.md",
-			dirName:  "my-skill",
-			skillMD:  "",
-			expected: "my-skill",
-		},
-		{
-			name:     "falls back when frontmatter has no name field",
-			dirName:  "tree",
-			skillMD:  "---\ndescription: some skill\n---\n# Content",
-			expected: "tree",
-		},
-		{
-			name:     "falls back when SKILL.md has no frontmatter",
-			dirName:  "tree",
-			skillMD:  "# Just a heading\nNo frontmatter here.",
-			expected: "tree",
-		},
-		{
-			name:     "local skill with matching directory name",
-			dirName:  "public-research",
-			skillMD:  "---\nname: public-research\n---\n# Public Research",
-			expected: "public-research",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), tc.dirName)
-			require.NoError(t, os.MkdirAll(dir, 0o755))
-			if tc.skillMD != "" {
-				require.NoError(t, os.WriteFile(
-					filepath.Join(dir, "SKILL.md"),
-					[]byte(tc.skillMD), 0o644))
-			}
-
-			got := resolveSkillDisplayName(dir)
-			assert.Equal(t, tc.expected, got)
-		})
-	}
-}
-
 // fakeOpenshellBootstrap installs a fake "openshell" on PATH (ahead of the
 // real "tar", which is left reachable via the pre-existing PATH) that logs
 // every invocation's full argv to logPath and, on "sandbox upload <name>
@@ -907,6 +852,119 @@ func TestClaudeRuntime_Bootstrap_SkillRegularDir(t *testing.T) {
 	log, readErr := os.ReadFile(logPath)
 	require.NoError(t, readErr)
 	assert.Contains(t, string(log), sandbox.SandboxClaudeConfig+"/skills/my-skill")
+}
+
+// TestClaudeRuntime_Bootstrap_NestedForgeSkillsShareBasename is the #7830
+// runtime half: two skill dirs named "github" with distinct SKILL.md names
+// must both upload, each to skills/<declared-name>, not skills/github.
+func TestClaudeRuntime_Bootstrap_NestedForgeSkillsShareBasename(t *testing.T) {
+	root := t.TempDir()
+	labelsDir := filepath.Join(root, "issue-labels", "github")
+	reviewDir := filepath.Join(root, "pr-review", "github")
+	require.NoError(t, os.MkdirAll(labelsDir, 0o755))
+	require.NoError(t, os.MkdirAll(reviewDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(labelsDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# labels"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(reviewDir, "SKILL.md"),
+		[]byte("---\nname: pr-review-github\n---\n# review"), 0o644))
+
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "uploaded.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "review",
+		skillDirs:   []string{labelsDir, reviewDir},
+	})
+	require.NoError(t, err)
+
+	log, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	logStr := string(log)
+	assert.Contains(t, logStr, sandbox.SandboxClaudeConfig+"/skills/issue-labels")
+	assert.Contains(t, logStr, sandbox.SandboxClaudeConfig+"/skills/pr-review-github")
+	assert.NotContains(t, logStr, sandbox.SandboxClaudeConfig+"/skills/github")
+}
+
+func TestClaudeRuntime_Bootstrap_DuplicateDeclaredSkillName(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "one", "github")
+	b := filepath.Join(root, "two", "github")
+	require.NoError(t, os.MkdirAll(a, 0o755))
+	require.NoError(t, os.MkdirAll(b, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(a, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(b, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "uploaded.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "review",
+		skillDirs:   []string{a, b},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox name \"issue-labels\"")
+}
+
+func TestSkillDestNames_UsesDeclaredName(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "issue-labels", "github")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+
+	got := skillDestNames([]string{"", nested})
+	require.Len(t, got, 1)
+	assert.Equal(t, nameEntry{name: "issue-labels", path: nested}, got[0])
+}
+
+// TestClaudeRuntime_Bootstrap_DuplicateDeclaredSkillName_SameParent covers
+// the gap the #7830 fix left open: two skill directories that share both a
+// parent directory and a declared SKILL.md name (e.g. a "github" and a
+// "gitlab" forge variant nested under the same skill, both declaring the
+// same `name:`) synthesize into an identical joined path under the old
+// skillDestPaths rewrite and skip the collision check entirely, letting the
+// second upload silently overwrite the first. skillDestNames must catch this
+// by comparing the original directories, not a synthesized path.
+func TestClaudeRuntime_Bootstrap_DuplicateDeclaredSkillName_SameParent(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "issue-labels", "github")
+	b := filepath.Join(root, "issue-labels", "gitlab")
+	require.NoError(t, os.MkdirAll(a, 0o755))
+	require.NoError(t, os.MkdirAll(b, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(a, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(b, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "uploaded.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "review",
+		skillDirs:   []string{a, b},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox name \"issue-labels\"")
 }
 
 // TestClaudeRuntime_Bootstrap_PluginSymlink verifies that plugin uploads

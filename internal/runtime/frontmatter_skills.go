@@ -3,11 +3,11 @@ package runtime
 import (
 	"bytes"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/skill"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,20 +23,6 @@ type frontmatterSkills struct {
 // parsePiAgent and injectFrontmatterSkills.
 func isFrontmatterFence(line []byte) bool {
 	return strings.TrimRight(string(line), " \t\r\n") == "---"
-}
-
-// isValidSkillName reports whether name contains only characters safe for
-// use as a bare YAML scalar: alphanumeric, hyphens, underscores, dots.
-func isValidSkillName(name string) bool {
-	if name == "" || name == "." || name == ".." {
-		return false
-	}
-	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
-			return false
-		}
-	}
-	return true
 }
 
 // rewriteFrontmatterSkills updates the skills sequence in a parsed YAML
@@ -148,9 +134,10 @@ func rewriteFrontmatterSkills(frontBytes []byte, existing, added []string, eol s
 
 // injectFrontmatterSkills adds skill names derived from skillDirs into the
 // agent definition's YAML frontmatter `skills:` section. Existing entries
-// are preserved; new names are appended with deduplication by basename.
-// If the agent has no frontmatter, one is created. If skillDirs is empty,
-// the data is returned unchanged.
+// are preserved; new names are appended with deduplication by sandbox
+// name (declared SKILL.md name, else basename). If the agent has no
+// frontmatter, one is created. If skillDirs is empty, the data is returned
+// unchanged.
 //
 // This declares harness-listed skills in the agent frontmatter so Claude
 // Code can load them alongside any explicitly invoked skills (#6681).
@@ -161,16 +148,17 @@ func injectFrontmatterSkills(data []byte, skillDirs []string) ([]byte, error) {
 		return data, nil
 	}
 
-	// Collect basenames from skill directories — these are the names
-	// the runtime uses to identify skills in the sandbox.
+	// Collect sandbox names from skill directories — declared SKILL.md
+	// name when present, otherwise the directory basename. These are the
+	// names the runtime uses to identify skills in the sandbox (#7830).
 	seen := make(map[string]bool, len(skillDirs))
 	newNames := make([]string, 0, len(skillDirs))
 	for _, d := range skillDirs {
 		if d == "" {
 			continue
 		}
-		name := filepath.Base(d)
-		if !isValidSkillName(name) {
+		name := skill.SandboxName(d)
+		if !skill.ValidName(name) {
 			return nil, fmt.Errorf("invalid skill name %q from %q: must match [a-zA-Z0-9._-]+ and not be %q or %q", name, d, ".", "..")
 		}
 		if seen[name] {

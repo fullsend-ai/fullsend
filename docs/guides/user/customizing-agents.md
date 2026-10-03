@@ -45,7 +45,7 @@ Create a thin harness that inherits from the upstream code agent and adds your s
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
 
 skills:
-  - skills/my-custom-linting        # Merged with base skills (child overrides by basename)
+  - skills/my-custom-linting        # Merged with base skills (child overrides by skill identity)
 
 timeout_minutes: 45                 # Override timeout (scalar: child wins)
 ```
@@ -119,7 +119,7 @@ validation_loop:
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
-- **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
+- **Add skills** — your entries are merged with the base's by skill identity (declared `SKILL.md` name when on disk, otherwise directory basename); a matching child skill overrides the base entry. Nested forge skills that share a leaf directory name are kept alongside each other. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Override validation_loop fields** — child non-zero values win; omitted fields inherit from the base (for example, set only `schema` to swap the schema without copying `script`). **Replace security config** — child replaces the entire block.
 

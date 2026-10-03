@@ -1,6 +1,8 @@
 package skill
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -311,5 +313,136 @@ policy: policies/rust-sandbox.yaml#sha256=bbb222
 	}
 	if len(meta.Dependencies) != 1 {
 		t.Fatalf("dependencies length = %d, want 1", len(meta.Dependencies))
+	}
+}
+
+func TestValidName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"issue-labels", true},
+		{"pr-review-github", true},
+		{"skill_v1.0", true},
+		{"", false},
+		{".", false},
+		{"..", false},
+		{"foo/bar", false},
+		{"foo bar", false},
+		{"github", true},
+	}
+	for _, tt := range tests {
+		if got := ValidName(tt.name); got != tt.want {
+			t.Errorf("ValidName(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestSandboxName(t *testing.T) {
+	dir := t.TempDir()
+
+	nested := filepath.Join(dir, "issue-labels", "github")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "SKILL.md"), []byte("---\nname: issue-labels\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := SandboxName(nested); got != "issue-labels" {
+		t.Errorf("declared name: SandboxName() = %q, want %q", got, "issue-labels")
+	}
+
+	plain := filepath.Join(dir, "code-implementation")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := SandboxName(plain); got != "code-implementation" {
+		t.Errorf("missing SKILL.md: SandboxName() = %q, want %q", got, "code-implementation")
+	}
+
+	slashName := filepath.Join(dir, "bad-name")
+	if err := os.MkdirAll(slashName, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(slashName, "SKILL.md"), []byte("---\nname: foo/bar\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := SandboxName(slashName); got != "bad-name" {
+		t.Errorf("invalid declared name: SandboxName() = %q, want %q", got, "bad-name")
+	}
+
+	noName := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(noName, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noName, "SKILL.md"), []byte("---\ndescription: x\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := SandboxName(noName); got != "tree" {
+		t.Errorf("nameless frontmatter: SandboxName() = %q, want %q", got, "tree")
+	}
+
+	badYAML := filepath.Join(dir, "broken")
+	if err := os.MkdirAll(badYAML, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badYAML, "SKILL.md"), []byte("---\nname: [unterminated\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := SandboxName(badYAML); got != "broken" {
+		t.Errorf("malformed frontmatter: SandboxName() = %q, want %q", got, "broken")
+	}
+}
+
+// TestSandboxName_EmptyPath guards against SandboxName("") probing the
+// process's current working directory: filepath.Join("", "SKILL.md")
+// resolves to "SKILL.md", so an unguarded declaredName would read whatever
+// SKILL.md happens to exist in the CWD.
+func TestSandboxName_EmptyPath(t *testing.T) {
+	if got := SandboxName(""); got != "" {
+		t.Errorf("SandboxName(\"\") = %q, want empty string", got)
+	}
+}
+
+// TestSandboxName_NonAbsolutePathSkipsDeclaredName is a regression test for
+// a merge-time identity spoof: mergeSkills (internal/harness/compose.go)
+// calls SandboxName during base composition, which runs before
+// ResolveRelativeTo for local (non-URL) harnesses. At that point a relative
+// Source path resolves against the process's current working directory,
+// not the harness tree. A CWD-relative SKILL.md declaring a name that
+// matches a top-level/base skill must not be able to hijack that skill's
+// merge identity — SandboxName must fall back to filepath.Base for any
+// non-absolute path instead of reading SKILL.md at all.
+func TestSandboxName_NonAbsolutePathSkipsDeclaredName(t *testing.T) {
+	dir := t.TempDir()
+	rel := filepath.Join("issue-labels", "github")
+	abs := filepath.Join(dir, rel)
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(abs, "SKILL.md"), []byte("---\nname: spoofed-top-level-skill\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if chErr := os.Chdir(oldwd); chErr != nil {
+			t.Fatal(chErr)
+		}
+	}()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := SandboxName(rel); got != "github" {
+		t.Errorf("relative path: SandboxName() = %q, want %q (declared name must not be consulted for relative paths)", got, "github")
+	}
+
+	// The same directory, referenced absolutely, is safe to consult.
+	if got := SandboxName(abs); got != "spoofed-top-level-skill" {
+		t.Errorf("absolute path: SandboxName() = %q, want %q", got, "spoofed-top-level-skill")
 	}
 }

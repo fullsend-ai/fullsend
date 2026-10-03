@@ -1,9 +1,13 @@
-// Package skill parses SKILL.md frontmatter for transitive dependency resolution.
+// Package skill parses SKILL.md frontmatter for transitive dependency
+// resolution and the sandbox directory name a skill occupies.
 package skill
 
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -73,4 +77,60 @@ func findClosingDelimiter(rest []byte) ([]byte, bool) {
 		offset += nl + 1
 	}
 	return nil, false
+}
+
+// ValidName reports whether name is a single sandbox-safe path segment:
+// alphanumeric, hyphen, underscore, or dot, and not "." or "..".
+func ValidName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// SandboxName is the directory name a skill takes under <configDir>/skills/.
+// It prefers a valid SKILL.md frontmatter name so nested forge skills that
+// share a leaf directory (github, gitlab) upload to distinct destinations.
+// When the frontmatter is missing, unreadable, or not a valid name, it
+// falls back to filepath.Base.
+//
+// Declared names are only consulted for already-resolved absolute paths
+// (cache paths, or paths that went through ResolveRelativeTo). mergeSkills
+// calls SandboxName during base composition, which runs before
+// ResolveRelativeTo for local (non-URL) harnesses — at that point a
+// relative Source still resolves against the process's current working
+// directory, not the harness tree, so reading SKILL.md there would let a
+// CWD-relative path attacker-influence which skill identity mergeSkills
+// sees. Skipping the read for non-absolute paths keeps that case on the
+// pre-existing filepath.Base behavior.
+func SandboxName(skillPath string) string {
+	if skillPath == "" {
+		return ""
+	}
+	if !filepath.IsAbs(skillPath) {
+		return filepath.Base(skillPath)
+	}
+	base := filepath.Base(skillPath)
+	declared := declaredName(skillPath)
+	if ValidName(declared) {
+		return declared
+	}
+	return base
+}
+
+func declaredName(skillPath string) string {
+	data, err := os.ReadFile(filepath.Join(skillPath, "SKILL.md"))
+	if err != nil {
+		return ""
+	}
+	meta, err := ParseFrontmatter(data)
+	if err != nil || meta == nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.Name)
 }
