@@ -103,7 +103,7 @@ func ScoreFitnessNamed(tr Trace, evalName, version string) EvaluationResult {
 		{"work_item", workItemOK(run)},
 		{"operation", attrNonEmpty(run, AttrGenAIOperationName)},
 		{"model", modelOK(run, agents)},
-		{"usage", usageOK(run, agents)},
+		{"usage", usageOK(tr, run, agents)},
 		{"cost_tools_turns", costOK},
 		{"exit", hasExit(run)},
 	}
@@ -202,20 +202,36 @@ func modelOK(run Span, agents []Span) bool {
 	return hasModel && hasSystem
 }
 
-func usageOK(run Span, agents []Span) bool {
-	if _, ok := run.AttrInt(AttrGenAIUsageInputTokens); ok {
-		if _, ok := run.AttrInt(AttrGenAIUsageOutputTokens); ok {
+func usageOK(tr Trace, run Span, agents []Span) bool {
+	if spanHasGenAIUsage(run) {
+		return true
+	}
+	for _, a := range agents {
+		if spanHasGenAIUsage(a) {
 			return true
 		}
 	}
-	for _, a := range agents {
-		_, inOK := a.AttrInt(AttrGenAIUsageInputTokens)
-		_, outOK := a.AttrInt(AttrGenAIUsageOutputTokens)
-		if inOK && outOK {
+	// Mixed-model Pi iterations put gen_ai.usage.* on per-model usage
+	// children, not on the agent span, so MLflow cannot double-count
+	// the rollup with the components (#7550). Those children still
+	// satisfy the usage check.
+	for _, s := range tr.Spans {
+		if isUsageComponent(s) && spanHasGenAIUsage(s) {
 			return true
 		}
 	}
 	return false
+}
+
+func spanHasGenAIUsage(s Span) bool {
+	_, inOK := s.AttrInt(AttrGenAIUsageInputTokens)
+	_, outOK := s.AttrInt(AttrGenAIUsageOutputTokens)
+	return inOK && outOK
+}
+
+func isUsageComponent(s Span) bool {
+	v, ok := s.AttrBool("fullsend.usage.component")
+	return ok && v
 }
 
 func costToolsTurnsDetail(run Span, agents []Span) (bool, []string) {

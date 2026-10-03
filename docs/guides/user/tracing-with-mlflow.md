@@ -78,7 +78,13 @@ token counts and prices them against MLflow's internal model table. This
 excludes cache-creation and cache-read tokens, which dominate agent-run cost.
 
 The authoritative cost figure is the runtime-reported `fullsend.cost_usd`
-attribute on `agent` spans (also in `run-telemetry.jsonl`).
+attribute on `agent` spans (also in `run-telemetry.jsonl`). On mixed-model
+Pi traces, MLflow's native estimate should follow the `usage <model>`
+children (`fullsend.usage.component`): those carry `gen_ai.usage.*` and the
+per-provider identity. The parent `agent` span is a rollup
+(`fullsend.usage.rollup`) and omits `gen_ai.usage.*` so it is not added to
+the components; do not sum its `fullsend.cost_usd` with the children's.
+See [Per-model usage components](../infrastructure/distributed-tracing.md#per-model-usage-components).
 
 ## Level 3 content
 
