@@ -393,6 +393,12 @@ When modifying repo naming, leasing, or provisioning logic, verify that fork ste
 
 Reference: [`resolveForkName`](../../../pkg/behaviourtest/steps/fork.go) — maps logical fork names to actual repo names based on the leased base.
 
+### Fork name uniqueness lags deletion
+
+GitHub's repository-name uniqueness constraint can lag `DeleteRepo`. `GetRepo` may already 404 while creating a fork with the same name still returns `403 Name already exists on this account`. `CleanupScenario` deletes the fork without waiting for uniqueness — a 404 is not a sufficient signal. The `Given a fork` step retries `CreateFork` on that collision until GitHub releases the name.
+
+Reference: [`createFork`](../../../pkg/behaviourtest/steps/fork.go) — retries name-collision errors from `CreateFork`.
+
 ### Actions workflow readiness after repo creation
 
 After creating a repo and committing workflow files via `fullsend github setup`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.

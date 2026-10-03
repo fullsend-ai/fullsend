@@ -174,6 +174,11 @@ func CleanupScenario(w *world.World) {
 	// deleting the fork repo removes the branch implicitly, but we
 	// still attempt branch deletion first so partial failures leave
 	// less debris.
+	//
+	// DeleteRepo success (and a subsequent GetRepo 404) does not mean
+	// GitHub has released the name. Uniqueness can lag; givenFork
+	// retries CreateFork on 403 "Name already exists on this account"
+	// rather than polling here, because 404 is not a sufficient signal.
 	if w.ForkPRBranch != "" && w.ForkOwner != "" && w.ForkRepo != "" {
 		desc := fmt.Sprintf("delete fork branch %s", w.ForkPRBranch)
 		if err := cleanupRetry(w.Logf, desc, func() error {
