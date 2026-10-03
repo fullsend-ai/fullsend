@@ -81,7 +81,11 @@ case "\$*" in
       echo "not a collaborator" >&2
       exit 1
     fi
-    echo "{\"role_name\": \"\${role}\"}"
+    if [[ "\${role}" == \{* ]]; then
+      echo "\${role}"
+    else
+      echo "{\"role_name\": \"\${role}\"}"
+    fi
     ;;
   *"/issues/"*"/events"*)
     cat "${EVENTS_JSON}"
@@ -228,6 +232,10 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+set_role "custom-labeler" '{"permission":"write","role_name":"ODH Repo Maintainer","user":{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}}'
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"custom-labeler"}}]'
+run_case "ok-to-test custom-role labeler authorized" "true" "ok_to_test" "false"
+
 # Triage-role users can apply labels but must not authorize a run.
 set_role "triager" "triage"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}]'
@@ -350,6 +358,30 @@ run_case "private org member: collaborator API fallback authorizes write" "true"
 echo "maintain" >"${COLLAB_ROLE}"
 : >"${GH_LOG}"
 run_case "private org member: collaborator API fallback authorizes maintain" "true" "trusted_author" "false"
+
+cat >"${COLLAB_ROLE}" <<'EOF'
+{"permission":"write","role_name":"ODH Repo Maintainer","user":{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}}
+EOF
+: >"${GH_LOG}"
+run_case "custom maintain role author authorized" "true" "trusted_author" "false"
+
+cat >"${COLLAB_ROLE}" <<'EOF'
+{"role_name":"ODH Repo Maintainer","user":{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}}
+EOF
+: >"${GH_LOG}"
+run_case "custom maintain role author authorized by precise flags" "true" "trusted_author" "false"
+
+cat >"${COLLAB_ROLE}" <<'EOF'
+{"permission":"read","role_name":"Custom","user":{"permissions":{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}}}
+EOF
+write_pr "NONE" '[]'
+: >"${GH_LOG}"
+run_case "conflicting custom role author denied" "false" "unauthorized" "false"
+
+echo '{"permission":false,"role_name":"write"}' >"${COLLAB_ROLE}"
+write_pr "NONE" '[]'
+: >"${GH_LOG}"
+run_case "non-string legacy permission author denied" "false" "unauthorized" "false"
 
 # Collaborator API says read — should NOT authorize
 echo "read" >"${COLLAB_ROLE}"

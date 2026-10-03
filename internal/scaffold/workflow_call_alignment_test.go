@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,10 +11,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
+
+type permissionParityFixture struct {
+	Name      string          `json:"name"`
+	Payload   json.RawMessage `json:"payload"`
+	Want      string          `json:"want"`
+	WantError bool            `json:"want_error"`
+}
 
 // reusableWorkflow represents the workflow_call interface of a reusable workflow.
 type reusableWorkflow struct {
@@ -939,6 +948,266 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 				"OWNERS reviewer check must use lowercased lc_user, not original username")
 			assert.Regexp(t, `::notice::OWNERS file resolved user '\$\{username\}'`, s,
 				"OWNERS audit log must use original username casing, not lc_user")
+		})
+	}
+}
+
+func TestDispatchEffectivePermissionRuntime(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available")
+	}
+
+	type routeDoc struct {
+		Jobs struct {
+			Route struct {
+				Steps []struct {
+					Name string `yaml:"name"`
+					Run  string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"route"`
+			Dispatch struct {
+				Steps []struct {
+					Name string `yaml:"name"`
+					Run  string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"dispatch"`
+		} `yaml:"jobs"`
+	}
+
+	workflows := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	}
+
+	tests := []struct {
+		name       string
+		command    string
+		isPR       string
+		payload    string
+		wantStage  string
+		wantOutput string
+	}{
+		{
+			name:      "reported custom maintain role can review",
+			command:   "/fs-review",
+			isPR:      "true",
+			payload:   `{"permission":"write","role_name":"ODH Repo Maintainer","user":{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}}`,
+			wantStage: "review",
+		},
+		{
+			name:      "custom maintain role with precise signals only can review",
+			command:   "/fs-review",
+			isPR:      "true",
+			payload:   `{"role_name":"ODH Repo Maintainer","user":{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}}`,
+			wantStage: "review",
+		},
+		{
+			name:      "custom triage role can review",
+			command:   "/fs-review",
+			isPR:      "true",
+			payload:   `{"permission":"read","role_name":"Custom Triage","user":{"permissions":{"admin":false,"maintain":false,"push":false,"triage":true,"pull":true}}}`,
+			wantStage: "review",
+		},
+		{
+			name:      "custom triage role cannot code",
+			command:   "/fs-code",
+			isPR:      "false",
+			payload:   `{"permission":"read","role_name":"Custom Triage","user":{"permissions":{"admin":false,"maintain":false,"push":false,"triage":true,"pull":true}}}`,
+			wantStage: "",
+		},
+		{
+			name:      "legacy write fallback can code",
+			command:   "/fs-code",
+			isPR:      "false",
+			payload:   `{"permission":"write","role_name":"Custom Write"}`,
+			wantStage: "code",
+		},
+		{
+			name:      "legacy read fallback cannot review",
+			command:   "/fs-review",
+			isPR:      "true",
+			payload:   `{"permission":"read","role_name":"Custom Triage"}`,
+			wantStage: "",
+		},
+		{
+			name:       "conflicting signals fail closed",
+			command:    "/fs-review",
+			isPR:       "true",
+			payload:    `{"permission":"read","role_name":"Custom","user":{"permissions":{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}}}`,
+			wantStage:  "",
+			wantOutput: "Invalid permission response",
+		},
+		{
+			name:       "explicit null flags fail closed",
+			command:    "/fs-review",
+			isPR:       "true",
+			payload:    `{"permission":"write","role_name":"Custom","user":{"permissions":null}}`,
+			wantStage:  "",
+			wantOutput: "Invalid permission response",
+		},
+		{
+			name:       "malformed user fails closed",
+			command:    "/fs-review",
+			isPR:       "true",
+			payload:    `{"permission":"write","role_name":"Custom","user":null}`,
+			wantStage:  "",
+			wantOutput: "Invalid permission response",
+		},
+		{
+			name:       "non-string legacy permission fails closed",
+			command:    "/fs-review",
+			isPR:       "true",
+			payload:    `{"permission":false,"role_name":"write"}`,
+			wantStage:  "",
+			wantOutput: "Invalid permission response",
+		},
+	}
+
+	for _, workflow := range workflows {
+		t.Run(workflow.name, func(t *testing.T) {
+			var doc routeDoc
+			require.NoError(t, yaml.Unmarshal(workflow.content(t), &doc))
+			var script string
+			steps := append(doc.Jobs.Route.Steps, doc.Jobs.Dispatch.Steps...)
+			for _, step := range steps {
+				if step.Name == "Determine stage" {
+					script = step.Run
+					break
+				}
+			}
+			require.NotEmpty(t, script)
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					dir := t.TempDir()
+					outputPath := filepath.Join(dir, "github-output")
+					stub := "#!/usr/bin/env bash\n" +
+						"if [[ \"$1\" == \"api\" ]]; then echo \"$GH_STUB_PAYLOAD\"; exit 0; fi\n" +
+						"exit 0\n"
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755))
+					scriptPath := filepath.Join(dir, "route.sh")
+					require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o644))
+
+					cmd := exec.Command("bash", scriptPath)
+					cmd.Dir = dir
+					cmd.Env = append(os.Environ(),
+						"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+						"GH_STUB_PAYLOAD="+tt.payload,
+						"GITHUB_OUTPUT="+outputPath,
+						"GITHUB_REPOSITORY=o/r",
+						"EVENT_NAME=issue_comment",
+						"EVENT_ACTION=created",
+						"COMMENT_BODY="+tt.command,
+						"COMMENT_USER_TYPE=User",
+						"COMMENT_USER_LOGIN=alice",
+						"ISSUE_HAS_PR="+tt.isPR,
+						"ISSUE_IS_PR="+tt.isPR,
+						"ISSUE_LABELS=",
+						"PR_LABELS=",
+						"ISSUE_USER_LOGIN=alice",
+						"EVENT_SENDER_LOGIN=alice",
+						"REVIEW_STATE=",
+						"REVIEW_USER_LOGIN=",
+						"TRIGGERING_LABEL=",
+						"PR_HEAD_REPO=o/r",
+						"PR_BASE_REPO=o/r",
+						"PR_USER_LOGIN=alice",
+						"ORG_NAME=o",
+						"GH_TOKEN=stub",
+					)
+					out, err := cmd.CombinedOutput()
+					require.NoError(t, err, "%s", out)
+					output, readErr := os.ReadFile(outputPath)
+					require.NoError(t, readErr)
+					assert.Contains(t, string(output), "stage="+tt.wantStage+"\n")
+					if tt.wantOutput != "" {
+						assert.Contains(t, string(out), tt.wantOutput)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestGitHubPermissionResolverParity(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not available")
+	}
+
+	fixtureData := loadRepoFile("internal/forge/testdata/github_permission_cases.json")(t)
+	var fixtures []permissionParityFixture
+	require.NoError(t, json.Unmarshal(fixtureData, &fixtures))
+
+	resolverPattern := regexp.MustCompile(`(?s)_resolve_github_permission\(\) \{ jq -er '\n(.*?)\n\s*'; \}`)
+	jqResolvers := make(map[string]string)
+	for name, path := range map[string]string{
+		"reusable dispatch": ".github/workflows/reusable-dispatch.yml",
+		"scaffold dispatch": "internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml",
+	} {
+		workflow := string(loadRepoFile(path)(t))
+		match := resolverPattern.FindStringSubmatch(workflow)
+		require.Len(t, match, 2, "extract the jq resolver from %s", path)
+		jqResolvers[name] = match[1]
+	}
+
+	jsResolver, err := filepath.Abs(filepath.Join("..", "..", ".github", "scripts", "github-permission.cjs"))
+	require.NoError(t, err)
+	const nodeProgram = `
+const { resolveGitHubPermission } = require(process.argv[1]);
+try {
+  process.stdout.write(resolveGitHubPermission(JSON.parse(process.argv[2])));
+} catch (error) {
+  process.stderr.write(error.message);
+  process.exit(2);
+}`
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.Name, func(t *testing.T) {
+			var permission forge.GitHubCollaboratorPermission
+			decodeErr := json.Unmarshal(fixture.Payload, &permission)
+			var goRole string
+			goErr := decodeErr
+			if goErr == nil {
+				goRole, goErr = forge.ResolveGitHubCollaboratorPermission(permission)
+			}
+
+			nodeCmd := exec.Command("node", "-e", nodeProgram, jsResolver, string(fixture.Payload))
+			nodeOutput, nodeErr := nodeCmd.CombinedOutput()
+
+			jqOutputs := make(map[string][]byte, len(jqResolvers))
+			jqErrors := make(map[string]error, len(jqResolvers))
+			for name, resolver := range jqResolvers {
+				jqCmd := exec.Command("jq", "-er", resolver)
+				jqCmd.Stdin = strings.NewReader(string(fixture.Payload))
+				jqOutputs[name], jqErrors[name] = jqCmd.CombinedOutput()
+			}
+
+			if fixture.WantError {
+				require.Error(t, goErr, "Go resolver must reject fixture")
+				require.Error(t, nodeErr, "JS resolver must reject fixture; output: %s", nodeOutput)
+				for name, jqErr := range jqErrors {
+					require.Error(t, jqErr, "%s jq resolver must reject fixture; output: %s", name, jqOutputs[name])
+				}
+				return
+			}
+
+			require.NoError(t, goErr)
+			require.NoError(t, nodeErr, "%s", nodeOutput)
+			assert.Equal(t, fixture.Want, goRole)
+			assert.Equal(t, fixture.Want, strings.TrimSpace(string(nodeOutput)))
+			for name, jqErr := range jqErrors {
+				require.NoError(t, jqErr, "%s: %s", name, jqOutputs[name])
+				assert.Equal(t, fixture.Want, strings.TrimSpace(string(jqOutputs[name])), name)
+			}
 		})
 	}
 }

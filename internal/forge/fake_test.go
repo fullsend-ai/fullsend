@@ -2541,3 +2541,37 @@ func TestFakeClient_ForceCommitFileToBranch_ConcurrentLastWriteWins(t *testing.T
 	require.NoError(t, err)
 	assert.NotEmpty(t, sha)
 }
+
+func TestFakeClient_GetCollaboratorPermission(t *testing.T) {
+	ctx := context.Background()
+	detail := GitHubCollaboratorPermission{Permission: "write", RoleName: "Custom"}
+
+	t.Run("structured detail takes precedence", func(t *testing.T) {
+		fc := &FakeClient{
+			CollaboratorPermissionDetails: map[string]GitHubCollaboratorPermission{"o/r/alice": detail},
+			CollaboratorPermissions:       map[string]string{"o/r/alice": "read"},
+		}
+		got, err := fc.GetCollaboratorPermission(ctx, "o", "r", "alice")
+		require.NoError(t, err)
+		assert.Equal(t, detail, got)
+	})
+
+	t.Run("legacy fixture", func(t *testing.T) {
+		fc := &FakeClient{CollaboratorPermissions: map[string]string{"o/r/alice": "write"}}
+		got, err := fc.GetCollaboratorPermission(ctx, "o", "r", "alice")
+		require.NoError(t, err)
+		assert.Equal(t, "write", got.RoleName)
+	})
+
+	t.Run("configured error", func(t *testing.T) {
+		fc := &FakeClient{Errors: map[string]error{"GetCollaboratorPermission": errors.New("api down")}}
+		_, err := fc.GetCollaboratorPermission(ctx, "o", "r", "alice")
+		require.ErrorContains(t, err, "api down")
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		fc := &FakeClient{}
+		_, err := fc.GetCollaboratorPermission(ctx, "o", "r", "alice")
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+}

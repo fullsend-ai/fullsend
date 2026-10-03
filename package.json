@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev:worker": "wrangler dev --config cloudflare_site/wrangler.toml --port 8787 --ip 127.0.0.1",
-    "test": "vitest run --config vite.config.ts && vitest run --config cloudflare_site/worker/vitest.config.mts",
+    "test": "node --test .github/scripts/github-permission.test.cjs && vitest run --config vite.config.ts && vitest run --config cloudflare_site/worker/vitest.config.mts",
     "format": "prettier --write 'docs/.vitepress/**/*.{vue,ts,js,css}'",
     "format:check": "prettier --check 'docs/.vitepress/**/*.{vue,ts,js,css}'",
     "stylelint": "stylelint 'docs/.vitepress/**/*.{vue,css}'",

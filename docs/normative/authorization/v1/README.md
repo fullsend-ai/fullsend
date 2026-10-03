@@ -50,15 +50,29 @@ admin > maintain > write > triage > read > none > external
 
 On GitHub the mapping source is the collaborator permission API
 (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which
-returns the user's **effective** role including inherited org grants
-regardless of membership visibility. Fork authors and non-collaborators
-whose `role_name` is unrecognized by `MapGitHubPermission` are mapped to
-`none` (not `external`); the `external` role is currently produced only
-by the Jira adapter for actors without project membership. Both `none`
-and `external` are denied by the default thresholds, so the
-authorization outcome is identical. The `author_association` field is
-**not** used because it does not correctly reflect private org membership
-(see [Excluded fields](#excluded-fields)).
+returns the user's **effective** permission including inherited org grants
+regardless of membership visibility. Built-in `role_name` values map directly.
+For an organization-defined custom `role_name`, Fullsend does not infer any
+authority from the label. It resolves the base role from GitHub's effective
+permission signals instead:
+
+- A complete `user.permissions` object maps its strongest true capability:
+  `admin` → `admin`, `maintain` → `maintain`, `push` → `write`, `triage` →
+  `triage`, and `pull` → `read`.
+- The legacy top-level `permission` value maps `admin` → `admin`, `write` →
+  `write`, `read` → `read`, and `none` → `none`. GitHub collapses Maintain to
+  `write` and Triage to `read`, so this signal is a conservative floor when the
+  more precise capability object is absent.
+- When both effective signals are present they must be compatible with those
+  documented collapse groups. A precise Maintain or Write role is compatible
+  with legacy `write`; Triage or Read is compatible with legacy `read`.
+
+Fork authors and non-collaborators are mapped to `none` (not `external`); the
+`external` role is currently produced only by the Jira adapter for actors
+without project membership. Both `none` and `external` are denied by the
+default thresholds, so the authorization outcome is identical. The
+`author_association` field is **not** used because it does not correctly reflect
+private org membership (see [Excluded fields](#excluded-fields)).
 
 A GitHub repository that lists `owners_file` under `authorization` in
 `.fullsend/config.yaml` consults its repo-root Prow `OWNERS` file before the
@@ -120,9 +134,12 @@ describe behavior currently implemented by `fullsend dispatch` or
 
 | Condition | Outcome |
 |-----------|---------|
-| Collaborator API returns an unrecognized `role_name` | Mapped to `none`; denied |
+| Custom `role_name` with compatible effective permission fields | Resolved to the corresponding built-in base role |
+| Custom `role_name` without either a valid top-level `permission` or a complete `user.permissions` object | Denied |
+| `permission: read` without precise `user.permissions` | Conservatively mapped to `read`; does not satisfy the `triage` threshold |
+| `user.permissions` is present but incomplete, non-boolean, or internally contradictory | Denied |
+| `role_name`, `permission`, and `user.permissions` signals are incompatible after GitHub's documented Maintain/Write and Triage/Read collapsing | Denied |
 | Collaborator API returns an error or times out | Denied (function returns failure) |
-| Custom repository roles (GitHub) | Mapped to `none`; denied until custom roles are handled platform-wide |
 | `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | Username is empty | Denied |
 | `OWNERS` is missing or malformed, or `OWNERS_ALIASES` is present but malformed (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |

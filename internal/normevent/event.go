@@ -301,10 +301,9 @@ func IsWriteAuthorized(role ActorRole) bool {
 	}
 }
 
-// MapGitHubPermission maps GitHub collaborator API role_name to ActorRole.
-// Custom repository roles are not resolved here; they map to RoleNone, matching
-// the bash routing gate and keeping dispatch semantics restrictive until custom
-// roles are handled platform-wide.
+// MapGitHubPermission maps a resolved GitHub base role to ActorRole. Callers
+// must resolve custom collaborator roles from effective permission signals
+// before invoking this mapping.
 func MapGitHubPermission(roleName string) ActorRole {
 	switch strings.ToLower(strings.TrimSpace(roleName)) {
 	case "admin":

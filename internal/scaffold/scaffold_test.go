@@ -267,8 +267,9 @@ func TestShimStopFixAuthorization(t *testing.T) {
 // TestShimStopFixAuthorizationRuntime executes the stop-fix job's embedded
 // bash against a stubbed `gh` binary to verify the authorization logic at
 // runtime (not just by static string matching): the PR-author escape hatch,
-// approval for write+ collaborators, denial for read-only collaborators, and
-// fail-closed behavior when the permission API errors.
+// approval for write+ collaborators (including custom roles), denial for
+// read-only collaborators, and fail-closed behavior for invalid responses or
+// permission API errors.
 func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
@@ -295,17 +296,17 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 	}
 
 	// runScenario runs the script with a stub gh that logs its invocations and
-	// returns the given role (or fails when role == "FAIL"). It returns the
+	// returns the given payload (or fails when payload == "FAIL"). It returns the
 	// combined output and whether the label mutation (`gh pr edit`) ran.
-	runScenario := func(t *testing.T, script, commentUser, issueUser, role string) (string, bool) {
+	runScenario := func(t *testing.T, script, commentUser, issueUser, payload string) (string, bool) {
 		t.Helper()
 		dir := t.TempDir()
 		logPath := filepath.Join(dir, "gh.log")
 		stub := "#!/usr/bin/env bash\n" +
 			"echo \"$@\" >> \"$GH_STUB_LOG\"\n" +
 			"if [[ \"$1\" == \"api\" ]]; then\n" +
-			"  if [[ \"$GH_STUB_ROLE\" == \"FAIL\" ]]; then echo 'simulated api failure' >&2; exit 1; fi\n" +
-			"  echo \"$GH_STUB_ROLE\"; exit 0\n" +
+			"  if [[ \"$GH_STUB_PAYLOAD\" == \"FAIL\" ]]; then echo 'simulated api failure' >&2; exit 1; fi\n" +
+			"  echo \"$GH_STUB_PAYLOAD\"; exit 0\n" +
 			"fi\n" +
 			"exit 0\n"
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755))
@@ -316,7 +317,7 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 		cmd.Env = append(os.Environ(),
 			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
 			"GH_STUB_LOG="+logPath,
-			"GH_STUB_ROLE="+role,
+			"GH_STUB_PAYLOAD="+payload,
 			"COMMENT_USER_LOGIN="+commentUser,
 			"ISSUE_USER_LOGIN="+issueUser,
 			"REPO=octo/repo",
@@ -341,20 +342,60 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 			t.Run("pr author escape hatch", func(t *testing.T) {
 				// Author with only read access can still stop on their own PR,
 				// and the permission API is never consulted.
-				out, labeled := runScenario(t, script, "alice", "alice", "read")
+				out, labeled := runScenario(t, script, "alice", "alice", `{"role_name":"read"}`)
 				assert.True(t, labeled, "PR author must be able to stop the fix agent")
 				assert.NotContains(t, out, "api repos/", "author hatch must skip the permission API")
 			})
 
 			t.Run("write collaborator authorized", func(t *testing.T) {
-				_, labeled := runScenario(t, script, "bob", "alice", "write")
+				_, labeled := runScenario(t, script, "bob", "alice", `{"role_name":"write"}`)
 				assert.True(t, labeled, "write-access collaborator must be authorized")
 			})
 
+			t.Run("custom maintain role authorized", func(t *testing.T) {
+				payload := `{"permission":"write","role_name":"ODH Repo Maintainer","user":{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}}`
+				_, labeled := runScenario(t, script, "bob", "alice", payload)
+				assert.True(t, labeled, "custom role with effective maintain access must be authorized")
+			})
+
+			t.Run("custom maintain role with precise signals only authorized", func(t *testing.T) {
+				payload := `{"role_name":"ODH Repo Maintainer","user":{"permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}}}`
+				_, labeled := runScenario(t, script, "bob", "alice", payload)
+				assert.True(t, labeled, "complete capability flags must authorize without the legacy field")
+			})
+
 			t.Run("read collaborator denied", func(t *testing.T) {
-				out, labeled := runScenario(t, script, "bob", "alice", "read")
+				out, labeled := runScenario(t, script, "bob", "alice", `{"role_name":"read"}`)
 				assert.False(t, labeled, "read-only collaborator must be denied")
 				assert.Contains(t, out, "not authorized")
+			})
+
+			t.Run("conflicting custom role fails closed", func(t *testing.T) {
+				payload := `{"permission":"read","role_name":"Custom","user":{"permissions":{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}}}`
+				out, labeled := runScenario(t, script, "bob", "alice", payload)
+				assert.False(t, labeled, "conflicting effective permission signals must be denied")
+				assert.Contains(t, out, "Invalid permission response")
+			})
+
+			t.Run("explicit null permissions fail closed", func(t *testing.T) {
+				payload := `{"permission":"write","role_name":"Custom","user":{"permissions":null}}`
+				out, labeled := runScenario(t, script, "bob", "alice", payload)
+				assert.False(t, labeled, "explicit null permissions must be denied")
+				assert.Contains(t, out, "Invalid permission response")
+			})
+
+			t.Run("malformed user fails closed", func(t *testing.T) {
+				payload := `{"permission":"write","role_name":"Custom","user":null}`
+				out, labeled := runScenario(t, script, "bob", "alice", payload)
+				assert.False(t, labeled, "malformed user must be denied")
+				assert.Contains(t, out, "Invalid permission response")
+			})
+
+			t.Run("non-string legacy permission fails closed", func(t *testing.T) {
+				payload := `{"permission":false,"role_name":"write"}`
+				out, labeled := runScenario(t, script, "bob", "alice", payload)
+				assert.False(t, labeled, "non-string legacy permission must be denied")
+				assert.Contains(t, out, "Invalid permission response")
 			})
 
 			t.Run("api failure fails closed", func(t *testing.T) {
@@ -393,6 +434,24 @@ func TestManagedShimStopFixNotStale(t *testing.T) {
 	content, err := os.ReadFile(managedPath)
 	require.NoError(t, err)
 	s := string(content)
+	template, err := FullsendRepoFile("templates/shim-workflow-call.yaml")
+	require.NoError(t, err)
+	type stopFixDoc struct {
+		Jobs struct {
+			StopFix struct {
+				Steps []struct {
+					Run string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"stop-fix"`
+		} `yaml:"jobs"`
+	}
+	var managedDoc, templateDoc stopFixDoc
+	require.NoError(t, yaml.Unmarshal(content, &managedDoc))
+	require.NoError(t, yaml.Unmarshal(template, &templateDoc))
+	require.NotEmpty(t, managedDoc.Jobs.StopFix.Steps)
+	require.NotEmpty(t, templateDoc.Jobs.StopFix.Steps)
+	assert.Equal(t, templateDoc.Jobs.StopFix.Steps[0].Run, managedDoc.Jobs.StopFix.Steps[0].Run,
+		"managed stop-fix script must match shim-workflow-call template")
 
 	assert.NotContains(t, s, "CONTRIBUTOR",
 		"managed shim must not authorize based on the CONTRIBUTOR association")
@@ -465,7 +524,7 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "opened|synchronize|ready_for_review")
 	// /code must only run on issues, not PRs
 	assert.Contains(t, s, "ISSUE_HAS_PR")
-	// Authorization checks (collaborator permission API using .role_name)
+	// Authorization checks (collaborator permission API effective signals)
 	assert.Contains(t, s, "is_authorized")
 	assert.Contains(t, s, "has_repo_permission")
 	assert.Contains(t, s, "has_write_permission")

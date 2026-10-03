@@ -1,0 +1,67 @@
+[
+  {
+    "name": "built-in write",
+    "payload": {"role_name": "write"},
+    "want": "write"
+  },
+  {
+    "name": "custom maintain with both signals",
+    "payload": {"permission": "write", "role_name": "ODH Repo Maintainer", "user": {"permissions": {"admin": false, "maintain": true, "push": true, "triage": true, "pull": true}}},
+    "want": "maintain"
+  },
+  {
+    "name": "custom maintain with precise signals",
+    "payload": {"role_name": "ODH Repo Maintainer", "user": {"permissions": {"admin": false, "maintain": true, "push": true, "triage": true, "pull": true}}},
+    "want": "maintain"
+  },
+  {
+    "name": "custom write legacy fallback",
+    "payload": {"permission": "write", "role_name": "Custom Write"},
+    "want": "write"
+  },
+  {
+    "name": "custom read legacy fallback",
+    "payload": {"permission": "read", "role_name": "Custom Triage"},
+    "want": "read"
+  },
+  {
+    "name": "missing effective signals",
+    "payload": {"role_name": "Custom"},
+    "want_error": true
+  },
+  {
+    "name": "null precise signals",
+    "payload": {"permission": "write", "role_name": "Custom", "user": {"permissions": null}},
+    "want_error": true
+  },
+  {
+    "name": "malformed user",
+    "payload": {"permission": "write", "role_name": "Custom", "user": null},
+    "want_error": true
+  },
+  {
+    "name": "incomplete precise signals",
+    "payload": {"permission": "write", "role_name": "Custom", "user": {"permissions": {"admin": false}}},
+    "want_error": true
+  },
+  {
+    "name": "contradictory hierarchy",
+    "payload": {"permission": "write", "role_name": "Custom", "user": {"permissions": {"admin": false, "maintain": true, "push": false, "triage": true, "pull": true}}},
+    "want_error": true
+  },
+  {
+    "name": "conflicting effective signals",
+    "payload": {"permission": "read", "role_name": "Custom", "user": {"permissions": {"admin": false, "maintain": false, "push": true, "triage": true, "pull": true}}},
+    "want_error": true
+  },
+  {
+    "name": "built-in signals conflict",
+    "payload": {"permission": "write", "role_name": "admin"},
+    "want_error": true
+  },
+  {
+    "name": "non-string legacy permission",
+    "payload": {"permission": false, "role_name": "write"},
+    "want_error": true
+  }
+]

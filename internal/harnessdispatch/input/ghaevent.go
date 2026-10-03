@@ -87,7 +87,11 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 		if len(parts) == 2 {
 			if gh, ok := opts.Forge.(forge.GitHubExtensions); ok {
 				if perm, err := gh.GetCollaboratorPermission(ctx, parts[0], parts[1], actorID); err == nil {
-					role = normevent.MapGitHubPermission(perm)
+					if resolved, resolveErr := forge.ResolveGitHubCollaboratorPermission(perm); resolveErr == nil {
+						role = normevent.MapGitHubPermission(resolved)
+					} else {
+						log.Printf("harness dispatch: invalid collaborator permission for %s on %s: %v", actorID, opts.Repository, resolveErr)
+					}
 				} else {
 					log.Printf("harness dispatch: collaborator permission lookup failed for %s on %s: %v", actorID, opts.Repository, err)
 				}
@@ -297,7 +301,11 @@ func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, raw map[str
 		if len(parts) == 2 {
 			if gh, ok := opts.Forge.(forge.GitHubExtensions); ok {
 				if perm, err := gh.GetCollaboratorPermission(ctx, parts[0], parts[1], actorID); err == nil {
-					ev.Actor.Role = normevent.MapGitHubPermission(perm)
+					if resolved, resolveErr := forge.ResolveGitHubCollaboratorPermission(perm); resolveErr == nil {
+						ev.Actor.Role = normevent.MapGitHubPermission(resolved)
+					} else {
+						log.Printf("harness dispatch: invalid collaborator permission for %s on %s: %v", actorID, opts.Repository, resolveErr)
+					}
 				} else {
 					log.Printf("harness dispatch: collaborator permission lookup failed for %s on %s: %v", actorID, opts.Repository, err)
 				}

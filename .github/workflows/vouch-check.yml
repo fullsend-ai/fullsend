@@ -14,10 +14,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Check out trusted workflow helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # pull_request_target must load the trusted base helper, never PR-head code.
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Check if contributor is vouched
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
+            const { resolveGitHubPermission } = require(
+              `${process.env.GITHUB_WORKSPACE}/.github/scripts/github-permission.cjs`
+            );
             const author = context.payload.pull_request.user.login;
             const authorType = context.payload.pull_request.user.type;
 
@@ -36,7 +45,8 @@ jobs:
                 repo: context.repo.repo,
                 username: author,
               });
-              trusted = ['admin', 'maintain', 'write'].includes(data.role_name);
+              const role = resolveGitHubPermission(data);
+              trusted = ['admin', 'maintain', 'write'].includes(role);
             } catch (e) {
               if (e.status !== 404) {
                 console.log(`Permission check error (status=${e.status}): ${e.message}`);

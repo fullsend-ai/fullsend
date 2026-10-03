@@ -1192,10 +1192,10 @@ type GitHubExtensions interface {
 	// GetAppClientID returns the OAuth client ID for the named GitHub App.
 	GetAppClientID(ctx context.Context, slug string) (string, error)
 
-	// GetCollaboratorPermission returns the effective GitHub collaborator
-	// permission role_name for username on owner/repo.
+	// GetCollaboratorPermission returns GitHub's calculated collaborator
+	// permission response for username on owner/repo.
 	// Returns forge.ErrNotFound when the user has no explicit permission.
-	GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (role string, err error)
+	GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (GitHubCollaboratorPermission, error)
 
 	// AddCollaborator grants username a direct collaborator permission
 	// (pull, triage, push, maintain, admin) on owner/repo. It returns an

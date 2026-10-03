@@ -45,6 +45,67 @@ func TestLoadGHAEvent_IssuesLabeled(t *testing.T) {
 	assert.Equal(t, normevent.RoleWrite, ev.Actor.Role)
 }
 
+func TestLoadGHAEvent_CustomCollaboratorRole(t *testing.T) {
+	raw := map[string]any{
+		"action": "labeled",
+		"issue": map[string]any{
+			"number":   float64(42),
+			"html_url": "https://github.com/o/r/issues/42",
+			"user":     map[string]any{"login": "alice"},
+			"labels":   []any{map[string]any{"name": "ready-for-ping"}},
+		},
+		"label":  map[string]any{"name": "ready-for-ping"},
+		"sender": map[string]any{"login": "alice", "type": "User"},
+	}
+	path := writeEventFile(t, raw)
+	admin, maintain, push, triage, pull := false, true, true, true, true
+	client := forge.NewFakeClient()
+	client.CollaboratorPermissionDetails = map[string]forge.GitHubCollaboratorPermission{
+		"o/r/alice": {
+			Permission: "write",
+			RoleName:   "ODH Repo Maintainer",
+			User: forge.GitHubPermissionUser{Permissions: &forge.GitHubPermissionFlags{
+				Admin: &admin, Maintain: &maintain, Push: &push, Triage: &triage, Pull: &pull,
+			}},
+		},
+	}
+
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath: path, EventName: "issues", Repository: "o/r", Forge: client,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, normevent.RoleMaintain, ev.Actor.Role)
+}
+
+func TestLoadGHAEvent_ConflictingCollaboratorPermissionFailsClosed(t *testing.T) {
+	raw := map[string]any{
+		"action": "labeled",
+		"issue": map[string]any{
+			"number": float64(42), "html_url": "https://github.com/o/r/issues/42",
+			"user": map[string]any{"login": "alice"}, "labels": []any{},
+		},
+		"label":  map[string]any{"name": "ready-for-ping"},
+		"sender": map[string]any{"login": "alice", "type": "User"},
+	}
+	path := writeEventFile(t, raw)
+	admin, maintain, push, triage, pull := false, false, true, true, true
+	client := forge.NewFakeClient()
+	client.CollaboratorPermissionDetails = map[string]forge.GitHubCollaboratorPermission{
+		"o/r/alice": {
+			Permission: "read", RoleName: "Custom",
+			User: forge.GitHubPermissionUser{Permissions: &forge.GitHubPermissionFlags{
+				Admin: &admin, Maintain: &maintain, Push: &push, Triage: &triage, Pull: &pull,
+			}},
+		},
+	}
+
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath: path, EventName: "issues", Repository: "o/r", Forge: client,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, normevent.RoleNone, ev.Actor.Role)
+}
+
 func TestLoadGHAEvent_PROpened(t *testing.T) {
 	raw := map[string]any{
 		"action": "opened",

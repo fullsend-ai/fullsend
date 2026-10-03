@@ -70,6 +70,28 @@ is_trusted_bot() {
 # Fallback: check actor has write+ permission via the collaborator permission
 # API, which correctly resolves org membership regardless of visibility
 # (private vs public). Same approach as the dispatch workflow.
+resolve_github_permission() {
+  jq -er '
+    def norm: gsub("^\\s+|\\s+$"; "") | ascii_downcase;
+    def legacy($r): {"admin":"admin","maintain":"write","write":"write","triage":"read","read":"read","none":"none"}[$r];
+    def flags_role:
+      . as $p
+      | if (($p | type) != "object" or (["admin","maintain","push","triage","pull"] | any(.[]; . as $k | ($p | has($k) | not))) or ([$p.admin,$p.maintain,$p.push,$p.triage,$p.pull] | any(.[]; type != "boolean")))
+        then error("user.permissions is missing required boolean fields")
+        elif (($p.admin and (($p.maintain and $p.push and $p.triage and $p.pull) | not)) or ($p.maintain and (($p.push and $p.triage and $p.pull) | not)) or ($p.push and (($p.triage and $p.pull) | not)) or ($p.triage and ($p.pull | not)))
+        then error("user.permissions contains contradictory capability flags")
+        elif $p.admin then "admin" elif $p.maintain then "maintain" elif $p.push then "write" elif $p.triage then "triage" elif $p.pull then "read" else "none" end;
+    . as $r | (($r.role_name // "") | norm) as $role | (($r.permission // "") | norm) as $permission
+    | ($r | has("user")) as $user_present | (($r.user? | type) == "object") as $user_valid | ($user_valid and ($r.user | has("permissions"))) as $flags_present | (if $flags_present then $r.user.permissions else null end) as $flags
+    | if (($r | has("permission")) and $r.permission != null and (($r.permission | type) != "string")) then error("permission is malformed") elif ($user_present and ($user_valid | not)) then error("user is malformed") elif $role == "" then error("missing role_name")
+      elif $permission != "" and (["admin","write","read","none"] | index($permission) == null) then error("unknown legacy permission")
+      elif legacy($role) != null then if (($permission != "" and legacy($role) != $permission) or ($flags_present and ($flags | flags_role) != $role)) then error("built-in permission signals conflict") else $role end
+      elif $flags_present then ($flags | flags_role) as $f | if ($permission == "" or legacy($f) == $permission) then $f else error("effective permission signals conflict") end
+      elif $permission != "" then $permission
+      else error("custom role has no effective permission") end
+  '
+}
+
 has_write_permission() {
   local username="${1:-}"
   if [[ -z "${username}" ]]; then
@@ -77,7 +99,7 @@ has_write_permission() {
   fi
   local perm_json role
   perm_json=$(gh api "repos/${REPOSITORY}/collaborators/${username}/permission" 2>/dev/null) || return 1
-  role=$(jq -r '.role_name' <<<"${perm_json}") || return 1
+  role=$(resolve_github_permission <<<"${perm_json}" 2>/dev/null) || return 1
   is_write_role "${role}"
 }
 
@@ -180,7 +202,7 @@ if [[ "${reason}" == "ok_to_test" ]]; then
   # error (reason=error via the ERR trap), not a denial.
   labeler_role=""
   if [[ -n "${labeler_login}" ]]; then
-    labeler_role="$(gh api "repos/${REPOSITORY}/collaborators/${labeler_login}/permission" | jq -r '.role_name // ""')"
+    labeler_role="$(gh api "repos/${REPOSITORY}/collaborators/${labeler_login}/permission" | resolve_github_permission)"
   fi
 
   # Remove the label so a maintainer's re-apply fires a new labeled event.

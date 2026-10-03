@@ -149,6 +149,30 @@ func TestCommitScaffoldViaPR_MaintainAccessPushesDirect(t *testing.T) {
 	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
 }
 
+func TestCommitScaffoldViaPR_CustomMaintainAccessPushesDirect(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	admin, maintain, push, triage, pull := false, true, true, true, true
+	client.CollaboratorPermissionDetails = map[string]forge.GitHubCollaboratorPermission{
+		"acme/widget/contributor": {
+			Permission: "write", RoleName: "Repository Maintainer Plus",
+			User: forge.GitHubPermissionUser{Permissions: &forge.GitHubPermissionFlags{
+				Admin: &admin, Maintain: &maintain, Push: &push, Triage: &triage, Pull: &pull,
+			}},
+		},
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "has write access")
+	assert.Empty(t, client.CreatedForks)
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
 func TestCommitScaffoldViaPR_WriteAccessTakesPrecedenceOverFork(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"

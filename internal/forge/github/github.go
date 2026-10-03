@@ -4019,23 +4019,21 @@ func (c *LiveClient) GetAppClientID(ctx context.Context, slug string) (string, e
 	return app.ClientID, nil
 }
 
-func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (string, error) {
+func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (forge.GitHubCollaboratorPermission, error) {
 	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
 	resp, err := c.get(ctx, path)
 	if err != nil {
-		return "", fmt.Errorf("get collaborator permission for %s: %w", username, err)
+		return forge.GitHubCollaboratorPermission{}, fmt.Errorf("get collaborator permission for %s: %w", username, err)
 	}
-	var perm struct {
-		RoleName string `json:"role_name"`
-	}
+	var perm forge.GitHubCollaboratorPermission
 	if err := decodeJSON(resp, &perm); err != nil {
-		return "", fmt.Errorf("decode collaborator permission for %s: %w", username, err)
+		return forge.GitHubCollaboratorPermission{}, fmt.Errorf("decode collaborator permission for %s: %w", username, err)
 	}
 	if perm.RoleName == "" {
-		return "", fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
+		return forge.GitHubCollaboratorPermission{}, fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
 	}
-	return perm.RoleName, nil
+	return perm, nil
 }
 
 func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username, permission string) error {
