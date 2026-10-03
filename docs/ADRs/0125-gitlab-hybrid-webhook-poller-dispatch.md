@@ -318,6 +318,10 @@ entity state; the poller is the scheduled backstop.
 > (e.g. a monotonic generation/sequence number the loader rejects on
 > regression) or scheduled compaction/GC of the poll-state branches;
 > neither is implemented yet.
+>
+> **Update (#7773):** the occurrence-aware shared poller state the
+> `gitlab-webhook` driver needs is decided in
+> [ADR 0132](0132-occurrence-aware-shared-poller-state.md).
 
 ### CI scaffold changes
 

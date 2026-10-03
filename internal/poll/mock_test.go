@@ -59,6 +59,9 @@ type mockClient struct {
 
 	issues    []Issue
 	issuesErr error
+	// issuesHonorSince makes ListIssuesUpdatedSince return only issues
+	// updated after its since argument, like the real updated_after filter.
+	issuesHonorSince bool
 
 	mrs    []MergeRequest
 	mrsErr error
@@ -132,6 +135,17 @@ type mockClient struct {
 	pipelineErr      error
 	pipelineCalls    []pipelineCall
 	pipelineErrAfter int // fail after N successful calls (0 = always fail if pipelineErr set)
+	// onPipeline, when set, runs at the start of every pipeline creation
+	// (before the mock lock is taken) so a test can inject a concurrent
+	// writer's change between a validation/load and the later persist.
+	onPipeline func()
+	// onBranchRef, when set, runs at the start of every GetBranchRef (before
+	// the mock lock is taken), i.e. at the start of each persistWithCAS
+	// attempt, so a test can inject a change between an earlier check and the
+	// commit, or between CAS attempts.
+	onBranchRef func()
+	// labelEventCalls counts ListResourceLabelEvents invocations.
+	labelEventCalls int
 
 	// wrapperContent is dispatch()'s GetFileContentAtRef response for the GitLab
 	// pipeline wrapper, defaulting to typedWrapperFixture() so existing
@@ -190,8 +204,17 @@ func mockResolveRef(ref string) string {
 
 var _ GitLabClient = (*mockClient)(nil)
 
-func (m *mockClient) ListIssuesUpdatedSince(_ context.Context, _, _ string, _ time.Time) ([]Issue, error) {
-	return m.issues, m.issuesErr
+func (m *mockClient) ListIssuesUpdatedSince(_ context.Context, _, _ string, since time.Time) ([]Issue, error) {
+	if !m.issuesHonorSince {
+		return m.issues, m.issuesErr
+	}
+	var out []Issue
+	for _, iss := range m.issues {
+		if iss.UpdatedAt.After(since) {
+			out = append(out, iss)
+		}
+	}
+	return out, m.issuesErr
 }
 
 func (m *mockClient) ListMergeRequestsUpdatedSince(_ context.Context, _, _ string, _ time.Time) ([]MergeRequest, error) {
@@ -217,6 +240,7 @@ func (m *mockClient) ListMergeRequestNotes(_ context.Context, _, _ string, mrIID
 }
 
 func (m *mockClient) ListResourceLabelEvents(_ context.Context, _, _ string, issueIID int) ([]ResourceLabelEvent, error) {
+	m.labelEventCalls++
 	if err, ok := m.labelEventsErr[issueIID]; ok && err != nil {
 		return nil, err
 	}
@@ -252,6 +276,7 @@ func (m *mockClient) setBranchState(branch string, s persistedPollState) {
 			LabelState:         s.LabelState,
 			DispatchedKeysFull: s.DispatchedKeysFull,
 			FailedKeysFull:     s.FailedKeysFull,
+			PendingLabels:      s.PendingLabels,
 		}
 	}
 	m.mu.Lock()
@@ -297,7 +322,7 @@ func (m *mockClient) getBranchState(branch string) (persistedPollState, bool) {
 			if err := json.Unmarshal(data, &s); err != nil {
 				return persistedPollState{}, true
 			}
-			return s, true
+			return decodePendingLabels(s), true
 		}
 	}
 	// Fall back to a seeded-but-not-yet-force-committed document (see
@@ -354,11 +379,10 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 		if files, ok := m.files[branch]; !ok || files[path] == nil {
 			if s, ok := m.pendingSign[branch]; ok {
 				domain := hmacDomainFor(branch, owner+"/"+repo)
-				sig, err := computeStateHMAC(testDispatchSecret, domain, s)
+				s, err := signPollState(testDispatchSecret, domain, s)
 				if err != nil {
 					return nil, err
 				}
-				s.HMAC = sig
 				return json.Marshal(s)
 			}
 		}
@@ -377,6 +401,9 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 }
 
 func (m *mockClient) GetBranchRef(_ context.Context, _, _, branch string) (string, error) {
+	if m.onBranchRef != nil {
+		m.onBranchRef()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.branchRefErr != nil {
@@ -415,11 +442,10 @@ func (m *mockClient) CommitFileToBranch(_ context.Context, owner, repo, branch, 
 		s := *m.conflictOnce
 		m.conflictOnce = nil
 		domain := hmacDomainFor(branch, owner+"/"+repo)
-		sig, err := computeStateHMAC(testDispatchSecret, domain, s)
+		s, err := signPollState(testDispatchSecret, domain, s)
 		if err != nil {
 			return err
 		}
-		s.HMAC = sig
 		data, err := json.Marshal(s)
 		if err != nil {
 			return err
@@ -542,7 +568,7 @@ func (m *mockClient) GetMemberAccessLevel(_ context.Context, _, _ string, userID
 	}
 	level, ok := m.memberLevel[userID]
 	if !ok {
-		return 0, fmt.Errorf("member not found")
+		return 0, fmt.Errorf("member not found: %w", forge.ErrNotFound)
 	}
 	return level, nil
 }
@@ -556,6 +582,9 @@ func (m *mockClient) GetProjectPath(_ context.Context, projectID int) (string, e
 }
 
 func (m *mockClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error) {
+	if m.onPipeline != nil {
+		m.onPipeline()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	vars := make(map[string]string, len(variables))
@@ -585,6 +614,9 @@ func (m *mockClient) CreatePipeline(_ context.Context, owner, repo, ref string, 
 // pipelineCall.Variables unchanged while still exercising the real
 // input-encoding/chunking logic end to end.
 func (m *mockClient) CreatePipelineWithInputs(_ context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	if m.onPipeline != nil {
+		m.onPipeline()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

@@ -1,0 +1,412 @@
+package poll
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+)
+
+// TestDiscoverAllEvents_LabelEventsEndingInRemovalHoldLabel: the issue-list
+// snapshot still carries the label, but its latest label event is a removal,
+// so the snapshot predates the removal. The addition must be neither emitted
+// (a timestamp key could not be matched against a webhook's ID-keyed dispatch
+// of the preceding add) nor recorded, and the watermark must be held.
+func TestDiscoverAllEvents_LabelEventsEndingInRemovalHoldLabel(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.issues = []Issue{
+		{IID: 1, UpdatedAt: now, Labels: []string{"ready-to-code", "ready-for-review"}},
+	}
+	mc.notes[1] = []Note{}
+	mc.labelEvents[1] = []ResourceLabelEvent{
+		labelEvent(10, "add", "ready-to-code", alice, now.Add(-time.Hour)),
+		labelEvent(11, "remove", "ready-to-code", alice, now.Add(-time.Minute)),
+		labelEvent(12, "add", "ready-for-review", alice, now),
+	}
+
+	p := newEventsPoller(mc)
+	events, labelState, minSkipped, err := p.discoverAllEvents(context.Background(), "group", "project", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var labelEvs []RoutableEvent
+	for _, e := range events {
+		if e.Type == "issue_label" {
+			labelEvs = append(labelEvs, e)
+		}
+	}
+	if len(labelEvs) != 1 || labelEvs[0].ChangedLabel != "ready-for-review" || labelEvs[0].LabelEventID != 12 {
+		t.Fatalf("issue_label events = %+v, want only the consistent ready-for-review addition (event 12)", labelEvs)
+	}
+	if got := labelState[1]; len(got) != 1 || got[0] != "ready-for-review" {
+		t.Errorf("labelState[1] = %v, want [ready-for-review] so the held label is rediscovered", got)
+	}
+	if !minSkipped.Equal(now) {
+		t.Errorf("minSkippedAt = %v, want %v so the watermark is held back", minSkipped, now)
+	}
+}
+
+// TestPoll_StaleSnapshotRemovalDoesNotDuplicateWebhookDispatch: the poll's
+// issue snapshot predates a removal, and the preceding addition's webhook
+// dispatch key is already persisted. The poll must not dispatch the label
+// again under a timestamp key.
+func TestPoll_StaleSnapshotRemovalDoesNotDuplicateWebhookDispatch(t *testing.T) {
+	mc := newMockClient()
+	webhookLabelAddFixture(mc) // mc.issues snapshot still carries the label
+	mc.issue[5].Labels = nil   // forge: the label was since removed
+	mc.labelEvents[5] = []ResourceLabelEvent{
+		labelEvent(1, "add", "ready-to-code", alice, recent.Add(-time.Minute)),
+		labelEvent(2, "remove", "ready-to-code", alice, recent),
+	}
+	mc.setPollState(persistedPollState{
+		LastPollAtFull: recent.Add(-time.Hour).Format(time.RFC3339),
+		DispatchedKeysFull: map[string]int64{
+			"code:issue_label-5-ready-to-code-e1": recent.Unix(),
+		},
+	})
+
+	_ = eventsPoller(mc).Run(context.Background())
+	if len(mc.pipelineCalls) != 0 {
+		t.Fatalf("pipeline calls = %d, want 0: the stale snapshot's addition must not be dispatched", len(mc.pipelineCalls))
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 0 {
+		t.Errorf("LabelState[5] = %v, want the stale addition not recorded", got)
+	}
+}
+
+// staleRemovalFixture seeds issue 5 as: the poll's issue snapshot lacks
+// ready-to-code (stored state records it), while the forge now carries a
+// re-addition (event 3). Issue 6's dispatch triggers mc.onPipeline.
+func staleRemovalFixture(mc *mockClient) {
+	pollInDiscoveryWithTrigger(mc, nil, LabelState{5: {"ready-to-code"}})
+	mc.issue[5].Labels = []string{"ready-to-code"}
+	mc.labelEvents[5] = []ResourceLabelEvent{
+		labelEvent(1, "add", "ready-to-code", alice, recent.Add(-20*time.Minute)),
+		labelEvent(2, "remove", "ready-to-code", alice, recent.Add(-10*time.Minute)),
+		labelEvent(3, "add", "ready-to-code", alice, recent),
+	}
+}
+
+// TestPoll_StaleRemovalDoesNotEraseDispatchedReAdd: a webhook dispatches the
+// re-addition after the poll's snapshot; the poll's stale removal must not
+// erase the presence the webhook recorded.
+func TestPoll_StaleRemovalDoesNotEraseDispatchedReAdd(t *testing.T) {
+	mc := newMockClient()
+	staleRemovalFixture(mc)
+	mc.onPipeline = func() {
+		cur, _ := mc.getPollState()
+		cur.DispatchedKeysFull = map[string]int64{
+			"code:issue_label-5-ready-to-code-e3": recent.Unix(),
+		}
+		mc.setPollState(cur)
+		mc.onPipeline = nil
+	}
+
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("poll Run: %v", err)
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 1 || got[0] != "ready-to-code" {
+		t.Fatalf("LabelState[5] = %v, want the dispatched re-addition's presence preserved", got)
+	}
+}
+
+// TestPoll_StaleRemovalAppliedWhenReAddNotDispatched: with no dispatch
+// evidence for the re-addition, the removal still applies so the next poll
+// discovers and dispatches it.
+func TestPoll_StaleRemovalAppliedWhenReAddNotDispatched(t *testing.T) {
+	mc := newMockClient()
+	staleRemovalFixture(mc)
+
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("poll Run: %v", err)
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 0 {
+		t.Fatalf("LabelState[5] = %v, want the removal applied", got)
+	}
+}
+
+// TestPoll_StaleRemovalRevalidatedOnCASRetry: the first commit attempt loads
+// state without dispatch evidence for the re-addition, so it applies the stale
+// removal, then loses its CAS to a writer that dispatched the re-addition
+// (conflictOnce publishes that competing state). The retry must revalidate
+// the removal against the new state instead of reusing the first attempt's
+// answer.
+func TestPoll_StaleRemovalRevalidatedOnCASRetry(t *testing.T) {
+	mc := newMockClient()
+	staleRemovalFixture(mc)
+	mc.onPipeline = nil
+	mc.conflictOnce = &persistedPollState{
+		LastPollAtFull: recent.Add(-time.Hour).Format(time.RFC3339),
+		LabelState:     LabelState{5: {"ready-to-code"}},
+		DispatchedKeysFull: map[string]int64{
+			"code:issue_label-5-ready-to-code-e3": recent.Unix(),
+		},
+	}
+	attempts := 0
+	firstAttemptLabelEventCalls := -1
+	mc.onBranchRef = func() {
+		attempts++
+		if firstAttemptLabelEventCalls < 0 {
+			firstAttemptLabelEventCalls = mc.labelEventCalls
+		}
+	}
+
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("poll Run: %v", err)
+	}
+	if attempts < 2 {
+		t.Fatalf("persistence attempts = %d, want at least 2 (the first must lose its CAS)", attempts)
+	}
+	// Each attempt revalidates the removal against the forge: the first
+	// attempt's lookups plus the retry's give at least two label-event reads.
+	if got := mc.labelEventCalls - firstAttemptLabelEventCalls; got < 2 {
+		t.Fatalf("label-event lookups across persistence attempts = %d, want at least 2 (removal revalidated again on the retry)", got)
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 1 || got[0] != "ready-to-code" {
+		t.Fatalf("LabelState[5] = %v, want the dispatched re-addition's presence preserved", got)
+	}
+}
+
+// TestPoll_SupersededAdditionHoldsWatermarkAndRecovers: the poll discovers
+// addition e1 and dispatches it, but before persisting, the label is removed
+// and re-added as e3 (currently present, no dispatch evidence). Revalidation
+// drops the stale e1 presence; a newer unrelated event would advance the
+// watermark past the issue, so it must be held so that, with an
+// updated_after-honoring issue list, the next cycle rediscovers and dispatches
+// e3.
+func TestPoll_SupersededAdditionHoldsWatermarkAndRecovers(t *testing.T) {
+	mc := newMockClient()
+	mc.issuesHonorSince = true
+	pollInDiscoveryWithTrigger(mc, []string{"ready-to-code"}, nil)
+	// Issue 5 is older than the watermark an advancing cycle would store.
+	mc.issues[0].UpdatedAt = recent.Add(-10 * time.Minute)
+	mc.labelEvents[5] = []ResourceLabelEvent{
+		labelEvent(1, "add", "ready-to-code", alice, recent.Add(-20*time.Minute)),
+	}
+	startWatermark := recent.Add(-time.Hour).Format(time.RFC3339)
+	replaced := false
+	mc.onBranchRef = func() {
+		if replaced || len(mc.pipelineCalls) == 0 {
+			return
+		}
+		replaced = true
+		mc.labelEvents[5] = append(mc.labelEvents[5],
+			labelEvent(2, "remove", "ready-to-code", alice, recent.Add(-10*time.Minute)),
+			labelEvent(3, "add", "ready-to-code", alice, recent))
+	}
+
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("poll Run: %v", err)
+	}
+	if !replaced {
+		t.Fatal("replacement addition never injected before persist")
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 0 {
+		t.Fatalf("LabelState[5] = %v, want the superseded addition not recorded", got)
+	}
+	if state.LastPollAtFull != startWatermark {
+		t.Fatalf("watermark = %s, want it held at %s", state.LastPollAtFull, startWatermark)
+	}
+	if _, ok := state.DispatchedKeysFull["code:issue_label-5-ready-to-code-e1"]; !ok {
+		t.Fatalf("dispatch evidence for e1 missing: %v", state.DispatchedKeysFull)
+	}
+
+	mc.onBranchRef = nil
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("recovery poll Run: %v", err)
+	}
+	state, _ = mc.getPollState()
+	if _, ok := state.DispatchedKeysFull["code:issue_label-5-ready-to-code-e3"]; !ok {
+		t.Fatalf("replacement addition never dispatched on the recovery poll: %v", state.DispatchedKeysFull)
+	}
+}
+
+// TestPoll_StaleRemovalLookupFailureKeepsPresence: when the forge cannot be
+// consulted the presence is kept (not guessed away) and the failure reported.
+func TestPoll_StaleRemovalLookupFailureKeepsPresence(t *testing.T) {
+	mc := newMockClient()
+	staleRemovalFixture(mc)
+	mc.labelEventsErr[5] = fmt.Errorf("label events unavailable")
+
+	err := eventsPoller(mc).Run(context.Background())
+	if err == nil {
+		t.Fatal("poll Run: want the failed removal revalidation reported")
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 1 || got[0] != "ready-to-code" {
+		t.Fatalf("LabelState[5] = %v, want presence kept while revalidation fails", got)
+	}
+}
+
+// TestPoll_FailedRemovalRevalidationHoldsWatermarkAndRecovers: the removal's
+// revalidation fails (issue lookup error), so the label stays recorded. The
+// watermark must not advance past the issue; with an updated_after-honoring
+// issue list, the next cycle must rediscover it and apply the removal.
+func TestPoll_FailedRemovalRevalidationHoldsWatermarkAndRecovers(t *testing.T) {
+	mc := newMockClient()
+	mc.issuesHonorSince = true
+	pollInDiscoveryWithTrigger(mc, nil, LabelState{5: {"ready-to-code"}})
+	// Issue 5 is older than the watermark an advancing cycle would store.
+	mc.issues[0].UpdatedAt = recent.Add(-10 * time.Minute)
+	startWatermark := recent.Add(-time.Hour).Format(time.RFC3339)
+	mc.issueErr[5] = fmt.Errorf("issue lookup unavailable")
+
+	if err := eventsPoller(mc).Run(context.Background()); err == nil {
+		t.Fatal("poll Run: want the failed removal revalidation reported")
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 1 || got[0] != "ready-to-code" {
+		t.Fatalf("LabelState[5] = %v, want presence kept while revalidation fails", got)
+	}
+	if state.LastPollAtFull != startWatermark {
+		t.Fatalf("watermark = %s, want it held at %s", state.LastPollAtFull, startWatermark)
+	}
+	if len(state.DispatchedKeysFull) == 0 {
+		t.Fatal("dispatch evidence for the unrelated issue must still be persisted")
+	}
+
+	delete(mc.issueErr, 5)
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("recovery poll Run: %v", err)
+	}
+	state, _ = mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 0 {
+		t.Fatalf("LabelState[5] = %v, want the removal applied on the recovery poll", got)
+	}
+}
+
+// TestPoll_StaleRemovalUndispatchedReAddHoldsWatermarkAndRecovers: the poll's
+// snapshot predates a re-addition that has no dispatch evidence, so the stale
+// removal is applied. A newer unrelated event would advance the watermark past
+// the issue; it must be held so that, with an updated_after-honoring issue
+// list, the next cycle rediscovers and dispatches the re-addition.
+func TestPoll_StaleRemovalUndispatchedReAddHoldsWatermarkAndRecovers(t *testing.T) {
+	mc := newMockClient()
+	mc.issuesHonorSince = true
+	staleRemovalFixture(mc)
+	// Issue 5 is older than the watermark an advancing cycle would store.
+	mc.issues[0].UpdatedAt = recent.Add(-10 * time.Minute)
+	startWatermark := recent.Add(-time.Hour).Format(time.RFC3339)
+
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("poll Run: %v", err)
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 0 {
+		t.Fatalf("LabelState[5] = %v, want the removal applied", got)
+	}
+	if state.LastPollAtFull != startWatermark {
+		t.Fatalf("watermark = %s, want it held at %s", state.LastPollAtFull, startWatermark)
+	}
+	if len(state.DispatchedKeysFull) == 0 {
+		t.Fatal("dispatch evidence for the unrelated issue must still be persisted")
+	}
+
+	// The forge's issue list now reflects the re-addition on issue 5.
+	mc.issues[0].Labels = []string{"ready-to-code"}
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("recovery poll Run: %v", err)
+	}
+	state, _ = mc.getPollState()
+	if _, ok := state.DispatchedKeysFull["code:issue_label-5-ready-to-code-e3"]; !ok {
+		t.Fatalf("re-addition never dispatched on the recovery poll: %v", state.DispatchedKeysFull)
+	}
+	if got := state.LabelState[5]; len(got) != 1 || got[0] != "ready-to-code" {
+		t.Fatalf("LabelState[5] = %v, want the re-addition recorded", got)
+	}
+}
+
+// TestPoll_FailedAdditionRevalidationHoldsWatermarkAndRecovers: the poll
+// dispatches an addition, but revalidating it before persistence fails, so the
+// label presence is not recorded and no handoff is stored. A newer unrelated
+// event would advance the watermark past the issue; it must be held so, with an
+// updated_after-honoring issue list, the next cycle restores the presence
+// without dispatching the same occurrence again.
+func TestPoll_FailedAdditionRevalidationHoldsWatermarkAndRecovers(t *testing.T) {
+	mc := newMockClient()
+	mc.issuesHonorSince = true
+	pollInDiscoveryWithTrigger(mc, []string{"ready-to-code"}, nil)
+	// Issue 5 is older than the watermark an advancing cycle would store.
+	mc.issues[0].UpdatedAt = recent.Add(-10 * time.Minute)
+	startWatermark := recent.Add(-time.Hour).Format(time.RFC3339)
+	failed := false
+	mc.onBranchRef = func() {
+		if failed || len(mc.pipelineCalls) == 0 {
+			return
+		}
+		failed = true
+		mc.issueErr[5] = fmt.Errorf("issue lookup unavailable")
+	}
+
+	if err := eventsPoller(mc).Run(context.Background()); err == nil {
+		t.Fatal("poll Run: want the failed addition revalidation reported")
+	}
+	if !failed {
+		t.Fatal("lookup failure never injected before persist")
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 0 {
+		t.Fatalf("LabelState[5] = %v, want the unvalidated addition not recorded", got)
+	}
+	if state.LastPollAtFull != startWatermark {
+		t.Fatalf("watermark = %s, want it held at %s", state.LastPollAtFull, startWatermark)
+	}
+	if _, ok := state.DispatchedKeysFull["code:issue_label-5-ready-to-code-e1"]; !ok {
+		t.Fatalf("dispatch evidence missing: %v", state.DispatchedKeysFull)
+	}
+
+	delete(mc.issueErr, 5)
+	dispatched := len(mc.pipelineCalls)
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("recovery poll Run: %v", err)
+	}
+	if len(mc.pipelineCalls) != dispatched {
+		t.Fatalf("pipeline calls = %d, want %d: the recovery poll must not redispatch", len(mc.pipelineCalls), dispatched)
+	}
+	state, _ = mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 1 || got[0] != "ready-to-code" {
+		t.Fatalf("LabelState[5] = %v, want the presence restored on the recovery poll", got)
+	}
+}
+
+// TestPoll_DiscoveredAdditionRemovedBeforePersistNotRestored: the poll
+// discovers an addition (its baseline lacks the label), then the label is
+// removed on the forge — and the removal recorded — before the poll persists.
+// The poll's raw label delta must not restore the stale presence.
+func TestPoll_DiscoveredAdditionRemovedBeforePersistNotRestored(t *testing.T) {
+	mc := newMockClient()
+	webhookLabelAddFixture(mc)
+	mc.setPollState(persistedPollState{
+		LastPollAtFull: recent.Add(-time.Hour).Format(time.RFC3339),
+	})
+	removed := false
+	mc.onBranchRef = func() {
+		if removed || len(mc.pipelineCalls) == 0 {
+			return
+		}
+		removed = true
+		mc.issue[5].Labels = nil
+		mc.labelEvents[5] = append(mc.labelEvents[5], labelEvent(2, "remove", "ready-to-code", alice, recent.Add(time.Minute)))
+	}
+
+	if err := eventsPoller(mc).Run(context.Background()); err != nil {
+		t.Fatalf("poll Run: %v", err)
+	}
+	if !removed {
+		t.Fatal("removal never injected before persist")
+	}
+	state, _ := mc.getPollState()
+	if got := state.LabelState[5]; len(got) != 0 {
+		t.Fatalf("LabelState[5] = %v, want the removed label's stale presence not restored", got)
+	}
+	if _, ok := state.DispatchedKeysFull["code:issue_label-5-ready-to-code-e1"]; !ok {
+		t.Fatalf("dispatch evidence missing: %v", state.DispatchedKeysFull)
+	}
+}

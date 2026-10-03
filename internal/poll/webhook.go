@@ -62,12 +62,17 @@ const webhookMaxClockSkew = 2 * time.Minute
 // same Key() the poller would compute for the same change), Normalized
 // is the routing input produced by toNormalizedEvent, ActorID is the
 // actor bound to the transition, and Stages is the router's decision
-// (nil when the Poller has no router).
+// (nil when the Poller has no router). Deferred is set only for a
+// validated label addition whose normalization or routing failed: the
+// label provenance checks passed, so the occurrence is not dropped but
+// handed to the poller for retry (see dispatchWebhookEvents), and
+// Normalized, ActorID and Stages are unset.
 type WebhookEvent struct {
 	Event      RoutableEvent
 	Normalized dispatch.NormalizedEvent
 	ActorID    int
 	Stages     []string
+	Deferred   error
 }
 
 type webhookUser struct {
@@ -132,9 +137,20 @@ func (p *Poller) BuildWebhookEvents(ctx context.Context, raw []byte) ([]WebhookE
 
 	out := make([]WebhookEvent, 0, len(events))
 	for _, event := range events {
+		// A validated label addition that fails normalization or routing
+		// (for example a transient membership lookup) is deferred rather
+		// than dropped: its label-event provenance already passed, and the
+		// poller's pending-label retry is the recovery path. Every other
+		// failure still fails the whole payload closed.
+		deferrable := event.Type == "issue_label" && event.ChangedLabel != ""
 		ne, actorID, err := p.toNormalizedEvent(ctx, event)
 		if err != nil {
-			return nil, fmt.Errorf("normalize webhook %s event on IID %d: %w", event.Type, event.IID, err)
+			err = fmt.Errorf("normalize webhook %s event on IID %d: %w", event.Type, event.IID, err)
+			if deferrable {
+				out = append(out, WebhookEvent{Event: event, Deferred: err})
+				continue
+			}
+			return nil, err
 		}
 		if event.Type == "issue_label" && actorID != 0 {
 			event.NoteAuthorID = actorID
@@ -143,7 +159,12 @@ func (p *Poller) BuildWebhookEvents(ctx context.Context, raw []byte) ([]WebhookE
 		if p.router != nil {
 			stages, err := p.router.Route(&we.Normalized)
 			if err != nil {
-				return nil, fmt.Errorf("route webhook %s event on IID %d: %w", event.Type, event.IID, err)
+				err = fmt.Errorf("route webhook %s event on IID %d: %w", event.Type, event.IID, err)
+				if deferrable {
+					out = append(out, WebhookEvent{Event: event, Deferred: err})
+					continue
+				}
+				return nil, err
 			}
 			we.Stages = stages
 		}
@@ -474,6 +495,7 @@ func (p *Poller) webhookIssueLabelEvents(ctx context.Context, actorID int, issue
 			UpdatedAt:       latest.CreatedAt,
 			Labels:          issue.Labels,
 			ChangedLabel:    d.title,
+			LabelEventID:    latest.ID,
 			NoteAuthorID:    latest.User.ID,
 			NoteAuthorLogin: latest.User.Username,
 			IsBot:           latest.User.Bot,
