@@ -5,11 +5,13 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -62,6 +64,16 @@ type persistedPollState struct {
 	DispatchedKeysFull map[string]int64 `json:"dispatched_keys_full,omitempty"`
 	FailedKeysFast     map[string]int   `json:"failed_keys_fast,omitempty"`
 	FailedKeysFull     map[string]int   `json:"failed_keys_full,omitempty"`
+	// PendingLabels holds label additions whose webhook dispatch failed,
+	// keyed by occurrence (RoutableEvent.Key()). The events poll retries
+	// them independently of LabelState and the updated_at watermark.
+	//
+	// It is an in-memory view only (json:"-"): on the wire each entry is an
+	// encoded key in FailedKeysFull (see encodePendingLabels). A writer from
+	// before this field existed round-trips unknown failed-key entries
+	// untouched, so it cannot drop a pending handoff, and the legacy HMAC
+	// covers them, so removing or editing one fails verification.
+	PendingLabels map[string]PendingLabel `json:"-"`
 
 	// HMAC is an HMAC-SHA256 signature (hex-encoded) over the rest of
 	// this document, computed with the HMAC field cleared and prefixed
@@ -114,6 +126,7 @@ func pollStateForMode(slash bool, state persistedPollState) persistedPollState {
 		LabelState:         state.LabelState,
 		DispatchedKeysFull: state.DispatchedKeysFull,
 		FailedKeysFull:     state.FailedKeysFull,
+		PendingLabels:      state.PendingLabels,
 	}
 }
 
@@ -127,6 +140,10 @@ func (p *Poller) modeDocument(state persistedPollState) persistedPollState {
 // per-branch domain prefix plus the canonical JSON encoding of state
 // with its own HMAC field cleared. It reuses FULLSEND_DISPATCH_SECRET
 // and the same HMAC-SHA256-hex construction as computeDispatchHMAC.
+//
+// The pending-label handoff travels inside failed_keys_full (see
+// encodePendingLabels), so this signature authenticates its presence and its
+// absence, and an older reader verifies the same canonical document.
 func computeStateHMAC(secret, domain string, state persistedPollState) (string, error) {
 	state.HMAC = ""
 	data, err := json.Marshal(state)
@@ -137,6 +154,215 @@ func computeStateHMAC(secret, domain string, state persistedPollState) (string, 
 	mac.Write([]byte(domain))
 	mac.Write(data)
 	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+// pendingKeyPrefix marks the failed_keys_full entries that carry pending
+// label handoffs on the wire. The whole PendingLabel is encoded in the key
+// (count 1, inside the retry-budget range every writer's prune keeps) because
+// the document's schema is the only thing a writer from before the handoff
+// existed is guaranteed to round-trip. Such a writer ignores the entry —
+// no event key matches it — and re-signs it with the rest of the document.
+const pendingKeyPrefix = "fullsend-pending-label:"
+
+type pendingWire struct {
+	Key     string       `json:"k"`
+	Pending PendingLabel `json:"p"`
+}
+
+// encodePendingLabels returns state with PendingLabels written into
+// FailedKeysFull as pendingKeyPrefix entries (replacing any already there).
+// The input maps are not modified.
+func encodePendingLabels(state persistedPollState) (persistedPollState, error) {
+	if len(state.PendingLabels) == 0 && !hasPendingKeys(state.FailedKeysFull) {
+		return state, nil
+	}
+	failed := make(map[string]int, len(state.FailedKeysFull)+len(state.PendingLabels))
+	for k, c := range state.FailedKeysFull {
+		if !strings.HasPrefix(k, pendingKeyPrefix) {
+			failed[k] = c
+		}
+	}
+	for k, pl := range state.PendingLabels {
+		data, err := json.Marshal(pendingWire{Key: k, Pending: pl})
+		if err != nil {
+			return state, err
+		}
+		failed[pendingKeyPrefix+base64.RawURLEncoding.EncodeToString(data)] = 1
+	}
+	if len(failed) == 0 {
+		failed = nil
+	}
+	state.FailedKeysFull = failed
+	return state, nil
+}
+
+// decodePendingLabels is the inverse of encodePendingLabels: it moves
+// pendingKeyPrefix entries out of FailedKeysFull into PendingLabels. A
+// malformed entry is dropped with a warning; the document is signed, so that
+// only happens on a writer bug, and the occurrence's own failure count and
+// the poller's discovery still bound the damage.
+func decodePendingLabels(state persistedPollState) persistedPollState {
+	if !hasPendingKeys(state.FailedKeysFull) {
+		return state
+	}
+	failed := make(map[string]int, len(state.FailedKeysFull))
+	pending := make(map[string]PendingLabel)
+	for k, c := range state.FailedKeysFull {
+		if !strings.HasPrefix(k, pendingKeyPrefix) {
+			failed[k] = c
+			continue
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(k, pendingKeyPrefix))
+		var w pendingWire
+		if err == nil {
+			err = json.Unmarshal(raw, &w)
+		}
+		if err != nil || w.Key == "" {
+			log.Printf("WARNING: dropping malformed pending-label entry in poll state")
+			continue
+		}
+		pending[w.Key] = w.Pending
+	}
+	if len(failed) == 0 {
+		failed = nil
+	}
+	state.FailedKeysFull = failed
+	if len(pending) > 0 {
+		state.PendingLabels = pending
+	}
+	return state
+}
+
+func hasPendingKeys(failed map[string]int) bool {
+	for k := range failed {
+		if strings.HasPrefix(k, pendingKeyPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// replayKeyPrefix marks failed_keys_{fast,full} entries that mirror a
+// dispatched key on the wire. A writer from before the webhook driver prunes
+// dispatched_keys_* at the poll watermark and re-signs the document, which
+// would erase replay evidence the webhook freshness window still needs. It
+// round-trips unknown failed-key entries untouched (count 1, inside the
+// retry-budget range every writer's prune keeps), so the mirror survives it
+// and the next current writer restores the dispatched key from it.
+const replayKeyPrefix = "fullsend-replay-key:"
+
+type replayWire struct {
+	Key string `json:"k"`
+	TS  int64  `json:"t"`
+}
+
+// encodeReplayKeys returns state with every dispatched key mirrored into the
+// matching failed-keys map (replacing mirrors already there). The input maps
+// are not modified.
+func encodeReplayKeys(state persistedPollState) persistedPollState {
+	state.FailedKeysFast = mirrorDispatchedKeys(state.FailedKeysFast, state.DispatchedKeysFast)
+	state.FailedKeysFull = mirrorDispatchedKeys(state.FailedKeysFull, state.DispatchedKeysFull)
+	return state
+}
+
+func mirrorDispatchedKeys(failed map[string]int, dispatched map[string]int64) map[string]int {
+	if len(dispatched) == 0 && !hasKeyPrefix(failed, replayKeyPrefix) {
+		return failed
+	}
+	out := make(map[string]int, len(failed)+len(dispatched))
+	for k, c := range failed {
+		if !strings.HasPrefix(k, replayKeyPrefix) {
+			out[k] = c
+		}
+	}
+	for k, ts := range dispatched {
+		// Marshalling a string and an int64 cannot fail.
+		data, _ := json.Marshal(replayWire{Key: k, TS: ts})
+		out[replayKeyPrefix+base64.RawURLEncoding.EncodeToString(data)] = 1
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// decodeReplayKeys is the inverse of encodeReplayKeys: it merges mirrored
+// entries back into the dispatched maps (max timestamp wins), restoring
+// evidence an older writer pruned, and strips them from the failed-keys maps.
+func decodeReplayKeys(state persistedPollState) persistedPollState {
+	state.FailedKeysFast, state.DispatchedKeysFast = restoreDispatchedKeys(state.FailedKeysFast, state.DispatchedKeysFast)
+	state.FailedKeysFull, state.DispatchedKeysFull = restoreDispatchedKeys(state.FailedKeysFull, state.DispatchedKeysFull)
+	return state
+}
+
+func restoreDispatchedKeys(failed map[string]int, dispatched map[string]int64) (map[string]int, map[string]int64) {
+	if !hasKeyPrefix(failed, replayKeyPrefix) {
+		return failed, dispatched
+	}
+	outFailed := make(map[string]int, len(failed))
+	outDispatched := make(map[string]int64, len(dispatched))
+	for k, ts := range dispatched {
+		outDispatched[k] = ts
+	}
+	for k, c := range failed {
+		if !strings.HasPrefix(k, replayKeyPrefix) {
+			outFailed[k] = c
+			continue
+		}
+		raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(k, replayKeyPrefix))
+		var w replayWire
+		if err == nil {
+			err = json.Unmarshal(raw, &w)
+		}
+		if err != nil || w.Key == "" {
+			log.Printf("WARNING: dropping malformed replay-key entry in poll state")
+			continue
+		}
+		if prev, ok := outDispatched[w.Key]; !ok || w.TS > prev {
+			outDispatched[w.Key] = w.TS
+		}
+	}
+	if len(outFailed) == 0 {
+		outFailed = nil
+	}
+	if len(outDispatched) == 0 {
+		outDispatched = nil
+	}
+	return outFailed, outDispatched
+}
+
+func hasKeyPrefix(failed map[string]int, prefix string) bool {
+	for k := range failed {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// signPollState encodes state's pending labels and replay-evidence mirrors
+// into the wire document and fills in state.HMAC over it.
+func signPollState(secret, domain string, state persistedPollState) (persistedPollState, error) {
+	state, err := encodePendingLabels(encodeReplayKeys(state))
+	if err != nil {
+		return state, err
+	}
+	sig, err := computeStateHMAC(secret, domain, state)
+	if err != nil {
+		return state, err
+	}
+	state.HMAC = sig
+	return state, nil
+}
+
+// verifyPollState reports whether state's HMAC is valid over the wire
+// document as read (pending handoffs included).
+func verifyPollState(secret, domain string, state persistedPollState) (bool, error) {
+	want, err := computeStateHMAC(secret, domain, state)
+	if err != nil {
+		return false, err
+	}
+	return state.HMAC != "" && hmac.Equal([]byte(state.HMAC), []byte(want)), nil
 }
 
 // loadPollState loads and verifies the poll-state document at the current
@@ -177,17 +403,17 @@ func (p *Poller) loadPollStateAtRef(ctx context.Context, owner, repo, ref string
 		}
 		return persistedPollState{}, fmt.Errorf("unmarshal poll state on %s: %w", branch, err)
 	}
-	want, err := computeStateHMAC(p.opts.DispatchSecret, p.hmacDomain(), state)
+	valid, err := verifyPollState(p.opts.DispatchSecret, p.hmacDomain(), state)
 	if err != nil {
 		return persistedPollState{}, err
 	}
-	if state.HMAC == "" || !hmac.Equal([]byte(state.HMAC), []byte(want)) {
+	if !valid {
 		if discardErr := p.discardPollState(ctx, owner, repo, branch); discardErr != nil {
 			return persistedPollState{}, fmt.Errorf("%w on %s; also failed to discard branch: %v", errPollStateTampered, branch, discardErr)
 		}
 		return persistedPollState{}, fmt.Errorf("%w on %s; discarded branch", errPollStateTampered, branch)
 	}
-	return p.modeDocument(state), nil
+	return p.modeDocument(decodePendingLabels(decodeReplayKeys(state))), nil
 }
 
 func (p *Poller) discardPollState(ctx context.Context, owner, repo, branch string) error {
@@ -207,18 +433,129 @@ type persistDeltas struct {
 	watermark  *time.Time
 	failed     map[string]int
 	labels     LabelState
+	// labelsBase is the LabelState snapshot this writer's labels were
+	// derived from. When non-nil, only the difference between labels and
+	// labelsBase is applied to the reloaded document (see
+	// mergeLabelStateAgainst), so a concurrent change to an issue this
+	// writer also observed is preserved rather than overwritten by this
+	// writer's whole-issue snapshot. Nil keeps the replace-per-IID merge.
+	labelsBase LabelState
+	// discovered lists the label-addition events this writer found while
+	// building labels, so persistWithCAS can revalidate each newly added
+	// label's exact occurrence (see revalidateAdditions).
+	discovered []RoutableEvent
+	// reconcile lists the label-addition occurrences this writer wants
+	// recorded in LabelState. persistWithCAS revalidates each one against
+	// the forge after every SHA-pinned state load (so a CAS retry rechecks
+	// too) and unions only the still-current ones into LabelState via
+	// addedLabels. An occurrence whose lookup fails is not recorded; it is
+	// handed off as pending instead. reconcileFailed carries the labels
+	// that failed dispatch this cycle (see pendingLabelIsCurrent).
+	reconcile       []RoutableEvent
+	reconcileFailed map[int]map[string]bool
+	// addedLabels is unioned into LabelState (never replacing or removing
+	// labels) — the webhook driver's label handoff; see unionLabelState.
+	// persistWithCAS derives it from reconcile on every attempt.
+	addedLabels LabelState
+	// stalePresence lists label presences to remove from the reloaded
+	// LabelState after the merge: a label recorded for an occurrence that a
+	// newer, undispatched occurrence has replaced (see revalidateAdditions).
+	// Left in place, that presence would make the next poll treat the
+	// replacement as already seen. persistWithCAS derives it on every
+	// attempt; it is never set by callers.
+	stalePresence LabelState
+	// failedPresence lists label presences to remove from the reloaded
+	// LabelState after the merge: a poll-discovered occurrence that failed
+	// this cycle while this writer's baseline lacked the label, so a
+	// concurrent writer's presence for an older occurrence would otherwise
+	// hide the failed one from every later poll. Callers set it.
+	failedPresence LabelState
+	// pendingAdd hands failed label occurrences to the poller and
+	// pendingClear removes exactly the occurrences that were dispatched;
+	// see mergePendingLabels. Neither touches any other occurrence.
+	pendingAdd   map[string]PendingLabel
+	pendingClear map[string]bool
+}
+
+// PendingLabel is a label addition whose webhook dispatch failed, kept
+// in poll state until the poller dispatches it (or its retry budget is
+// spent). It carries what the poller needs to rebuild the event without
+// rediscovering it from the issue list: At is the occurrence time in Unix
+// milliseconds. ActorID, ActorLogin and ActorBot are the actor the webhook
+// builder bound to this exact addition; they are carried in the signed
+// handoff so a retry routes the occurrence under its own actor (checking
+// that actor's current access), never under whoever applied the label last.
+type PendingLabel struct {
+	IID        int      `json:"iid"`
+	Label      string   `json:"label"`
+	EventID    int      `json:"event_id,omitempty"`
+	At         int64    `json:"at"`
+	Labels     []string `json:"labels,omitempty"`
+	ActorID    int      `json:"actor_id,omitempty"`
+	ActorLogin string   `json:"actor_login,omitempty"`
+	ActorBot   bool     `json:"actor_bot,omitempty"`
+}
+
+// pendingLabelFor records event as a pending occurrence.
+func pendingLabelFor(event RoutableEvent) PendingLabel {
+	return PendingLabel{
+		IID:        event.IID,
+		Label:      event.ChangedLabel,
+		EventID:    event.LabelEventID,
+		At:         event.UpdatedAt.UnixMilli(),
+		Labels:     event.Labels,
+		ActorID:    event.NoteAuthorID,
+		ActorLogin: event.NoteAuthorLogin,
+		ActorBot:   event.IsBot,
+	}
+}
+
+// routableEvent rebuilds the label-addition event of a pending occurrence,
+// including the actor validated when it was recorded.
+func (pl PendingLabel) routableEvent() RoutableEvent {
+	return RoutableEvent{
+		Type:            "issue_label",
+		IID:             pl.IID,
+		UpdatedAt:       time.UnixMilli(pl.At),
+		Labels:          pl.Labels,
+		ChangedLabel:    pl.Label,
+		LabelEventID:    pl.EventID,
+		NoteAuthorID:    pl.ActorID,
+		NoteAuthorLogin: pl.ActorLogin,
+		IsBot:           pl.ActorBot,
+	}
+}
+
+// mergePendingLabels applies add and clear onto the freshly loaded
+// pending set. Only the exact occurrence keys named in clear are removed,
+// and add never removes anything, so a stale in-flight poll (which clears
+// only what it dispatched) cannot erase a newer retry handoff, and a
+// handoff cannot erase a concurrent poll's clear of another occurrence.
+func mergePendingLabels(existing, add map[string]PendingLabel, clear map[string]bool) map[string]PendingLabel {
+	merged := make(map[string]PendingLabel, len(existing)+len(add))
+	for k, v := range existing {
+		merged[k] = v
+	}
+	for k, v := range add {
+		merged[k] = v
+	}
+	for k := range clear {
+		if _, handedOff := add[k]; handedOff {
+			continue
+		}
+		delete(merged, k)
+	}
+	return merged
 }
 
 func (p *Poller) commitPollState(ctx context.Context, owner, repo string, state persistedPollState, expectedSHA string) error {
 	if p.opts.DispatchSecret == "" {
 		return errDispatchSecretUnset
 	}
-	state = p.modeDocument(state)
-	sig, err := computeStateHMAC(p.opts.DispatchSecret, p.hmacDomain(), state)
+	state, err := signPollState(p.opts.DispatchSecret, p.hmacDomain(), p.modeDocument(state))
 	if err != nil {
 		return err
 	}
-	state.HMAC = sig
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -257,7 +594,23 @@ func (p *Poller) applyPersistDeltas(state persistedPollState, deltas persistDelt
 		p.applyWatermark(&state, *deltas.watermark)
 	}
 	if deltas.labels != nil {
-		state.LabelState = mergeLabelState(state.LabelState, deltas.labels)
+		if deltas.labelsBase != nil {
+			state.LabelState = mergeLabelStateAgainst(state.LabelState, deltas.labelsBase, deltas.labels)
+		} else {
+			state.LabelState = mergeLabelState(state.LabelState, deltas.labels)
+		}
+	}
+	if deltas.addedLabels != nil {
+		state.LabelState = unionLabelState(state.LabelState, deltas.addedLabels)
+	}
+	if deltas.stalePresence != nil {
+		state.LabelState = removeLabelPresence(state.LabelState, deltas.stalePresence)
+	}
+	if deltas.failedPresence != nil {
+		state.LabelState = removeLabelPresence(state.LabelState, deltas.failedPresence)
+	}
+	if !p.slashCommandsOnly && (len(deltas.pendingAdd) > 0 || len(deltas.pendingClear) > 0) {
+		state.PendingLabels = mergePendingLabels(state.PendingLabels, deltas.pendingAdd, deltas.pendingClear)
 	}
 	return state
 }
@@ -302,8 +655,15 @@ func (p *Poller) persistCycleState(ctx context.Context, owner, repo string, disp
 		failed:     failed,
 		labels:     labels,
 	}
-	if watermark != nil {
-		deltas.pruneCut = *watermark
+	return p.persistCycleDeltas(ctx, owner, repo, deltas)
+}
+
+// persistCycleDeltas is persistCycleState for a caller that also carries
+// pending-label clears; the dispatched-key prune cutoff follows the
+// watermark delta.
+func (p *Poller) persistCycleDeltas(ctx context.Context, owner, repo string, deltas persistDeltas) error {
+	if deltas.watermark != nil {
+		deltas.pruneCut = *deltas.watermark
 	}
 	return p.persistWithCAS(ctx, owner, repo, deltas)
 }
@@ -314,6 +674,7 @@ func (p *Poller) persistWithCAS(ctx context.Context, owner, repo string, deltas 
 	}
 	branch := p.stateBranch()
 	var lastErr error
+	var reconcileErrs []error
 	for attempt := 1; attempt <= maxPollStateCASAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
@@ -339,10 +700,53 @@ func (p *Poller) persistWithCAS(ctx context.Context, owner, repo string, deltas 
 		if err != nil {
 			return err
 		}
-		state = p.applyPersistDeltas(state, deltas)
+		// Revalidate label additions against the forge now, after this
+		// attempt's state load: a removal another poll recorded since an
+		// earlier check (or since the previous attempt) is visible on the
+		// forge, so the union below cannot restore its stale presence. A
+		// removal whose state commit lands after this load makes the commit
+		// below lose its CAS, and the next attempt revalidates again.
+		attemptDeltas := deltas
+		reconcileErrs = nil
+		if len(deltas.reconcile) > 0 {
+			attemptDeltas, reconcileErrs = p.revalidateReconcile(ctx, deltas)
+		}
+		// Likewise revalidate the label removals this writer derived from
+		// its own, possibly stale, snapshot: one must not erase a
+		// re-addition another writer recorded (and dispatched) since.
+		attemptDeltas, removalErrs := p.revalidateRemovals(ctx, state, attemptDeltas)
+		reconcileErrs = append(reconcileErrs, removalErrs...)
+		if len(removalErrs) > 0 {
+			// A removal whose revalidation failed leaves its label recorded.
+			// Nothing else stores that unresolved removal, so the watermark
+			// must not advance past the issue: the next poll has to rediscover
+			// it and derive the removal again. Dispatch keys and the other
+			// deltas are still persisted. Retention is relative to the
+			// watermark rediscovery will start from, so the prune cutoff
+			// that followed the proposed watermark is reset too: it must
+			// not drop dispatch evidence the retained watermark needs.
+			attemptDeltas.watermark = nil
+			attemptDeltas.pruneCut = time.Time{}
+		}
+		// Revalidate the label additions this writer discovered the same way:
+		// its raw label delta must not restore presence for an occurrence that
+		// was removed (and recorded as removed) since the snapshot.
+		attemptDeltas, additionErrs := p.revalidateAdditions(ctx, state, attemptDeltas)
+		reconcileErrs = append(reconcileErrs, additionErrs...)
+		if len(additionErrs) > 0 {
+			// A dropped addition whose lookup failed is recorded nowhere: no
+			// label presence and no pending handoff. Hold the watermark so the
+			// next poll rediscovers the issue and restores the presence; the
+			// dispatch keys persisted here deduplicate the rediscovered
+			// occurrence. Reset the prune cutoff with it so that evidence is
+			// not pruned against the proposed (advanced) watermark.
+			attemptDeltas.watermark = nil
+			attemptDeltas.pruneCut = time.Time{}
+		}
+		state = p.applyPersistDeltas(state, attemptDeltas)
 		err = p.commitPollState(ctx, owner, repo, state, expectedSHA)
 		if err == nil {
-			return nil
+			return errors.Join(reconcileErrs...)
 		}
 		if !forge.IsNonFastForward(err) {
 			return err
@@ -353,8 +757,285 @@ func (p *Poller) persistWithCAS(ctx context.Context, owner, repo string, deltas 
 	return fmt.Errorf("%w after %d attempts: %w", errPollStateCASExhausted, maxPollStateCASAttempts, lastErr)
 }
 
+// revalidateReconcile resolves deltas.reconcile into the label presence that
+// may be recorded right now. It returns a copy of deltas with addedLabels set
+// to the occurrences the issue still carries (see pendingLabelIsCurrent) and,
+// for an occurrence whose lookup failed, a pending handoff (so the poller
+// reconciles it later without re-dispatching) instead of a recorded label.
+// Dispatch keys and every other delta are left untouched, so a successful
+// dispatch is preserved independently of label reconciliation. The lookup
+// errors are returned for the caller to report once the commit lands.
+func (p *Poller) revalidateReconcile(ctx context.Context, deltas persistDeltas) (persistDeltas, []error) {
+	added := make(LabelState)
+	pendingAdd := make(map[string]PendingLabel, len(deltas.pendingAdd))
+	for k, v := range deltas.pendingAdd {
+		pendingAdd[k] = v
+	}
+	pendingClear := make(map[string]bool, len(deltas.pendingClear))
+	for k, v := range deltas.pendingClear {
+		pendingClear[k] = v
+	}
+	var errs []error
+	for _, event := range deltas.reconcile {
+		record, err := p.pendingLabelIsCurrent(ctx, event, deltas.reconcileFailed)
+		switch {
+		case err == nil:
+			if record {
+				added[event.IID] = append(added[event.IID], event.ChangedLabel)
+			}
+		case forge.IsNotFound(err):
+			// The issue is gone: nothing to record.
+		default:
+			key := event.Key()
+			errs = append(errs, fmt.Errorf("reconcile label state for %s: %w", key, err))
+			pendingAdd[key] = pendingLabelFor(event)
+			delete(pendingClear, key)
+		}
+	}
+	out := deltas
+	out.pendingAdd = pendingAdd
+	out.pendingClear = pendingClear
+	out.addedLabels = nil
+	if len(added) > 0 {
+		out.addedLabels = added
+	}
+	return out, errs
+}
+
+// revalidateRemovals drops, from the label removals in deltas.labels, those
+// that would erase a newer re-addition. A removal is a label in
+// deltas.labelsBase that deltas.labels no longer carries: this writer's
+// issue snapshot lacked the label. If the freshly loaded state still records
+// the label, a concurrent writer (the webhook driver) may have recorded a
+// re-addition after that snapshot, and applying the stale removal would
+// erase that presence — after the dispatch key expires, discovery would then
+// dispatch the same re-addition again.
+//
+// The forge decides: the removal is kept only when the issue is gone, closed,
+// or no longer carries the label, or when its latest label event is an
+// occurrence with no dispatch evidence (so the next poll must still see it as
+// new). It is dropped (the label stays recorded) when the issue carries the
+// label and the latest add occurrence already has a dispatch key. A failed
+// lookup also keeps the label recorded and is returned for the caller to
+// report; the next cycle sees the label still absent from the issue and
+// removes it again. Returns a copy of deltas; deltas itself is not modified.
+func (p *Poller) revalidateRemovals(ctx context.Context, state persistedPollState, deltas persistDeltas) (persistDeltas, []error) {
+	if deltas.labels == nil || deltas.labelsBase == nil {
+		return deltas, nil
+	}
+	var labels LabelState
+	var errs []error
+	holdWatermark := false
+	for iid, incoming := range deltas.labels {
+		incomingSet := toSet(incoming)
+		recorded := toSet(state.LabelState[iid])
+		for _, label := range deltas.labelsBase[iid] {
+			if incomingSet[label] || !recorded[label] {
+				continue
+			}
+			keep, undispatched, err := p.removalSupersededByDispatchedAdd(ctx, state, deltas, iid, label)
+			if undispatched {
+				holdWatermark = true
+			}
+			if err != nil {
+				errs = append(errs, fmt.Errorf("revalidate label removal for issue %d label %q: %w", iid, label, err))
+			}
+			if !keep {
+				continue
+			}
+			if labels == nil {
+				labels = make(LabelState, len(deltas.labels))
+				for k, v := range deltas.labels {
+					labels[k] = append([]string{}, v...)
+				}
+			}
+			labels[iid] = append(labels[iid], label)
+			incomingSet[label] = true
+		}
+	}
+	out := deltas
+	if labels != nil {
+		out.labels = labels
+	}
+	if holdWatermark {
+		// The removal is applied, but a currently present re-addition has no
+		// dispatch evidence and is recorded nowhere. Hold the watermark so the
+		// next poll rediscovers the issue and dispatches the addition even if
+		// another event advanced the watermark past the issue's updated_at.
+		// The prune cutoff followed the proposed watermark, so reset it too.
+		out.watermark = nil
+		out.pruneCut = time.Time{}
+	}
+	return out, errs
+}
+
+// revalidateAdditions drops, from deltas.labels, the label additions (labels
+// in the incoming snapshot that deltas.labelsBase lacks) whose occurrence the
+// forge no longer shows as current: the issue is gone, closed, no longer
+// carries the label, or its latest label event is a different occurrence than
+// the one this writer discovered (deltas.discovered supplies the event ID).
+// Without this, the merge would add the stale presence on top of a removal
+// another writer already recorded, and a later re-add whose webhook is missed
+// would be suppressed by that presence. A dropped addition is simply not
+// recorded: the next poll rediscovers the label and deduplicates by dispatch
+// key. A failed lookup is handled the same way and returned for the caller to
+// report; since the superseded-versus-current question is then unresolved, any
+// presence a concurrent writer recorded for the label is removed as well
+// (deltas.stalePresence), so the rediscovery is not suppressed by it.
+//
+// When the addition is dropped because a newer addition is currently present
+// and has no dispatch evidence (a replacement occurrence this writer never
+// saw), that replacement is recorded nowhere, so the watermark is held for the
+// next poll to rediscover and dispatch it even if an unrelated event would
+// otherwise advance the watermark past the issue's updated_at, and any label
+// presence a concurrent writer recorded for the superseded occurrence is
+// removed (deltas.stalePresence) so the replacement is not mistaken for an
+// already-seen label. Returns a copy
+// of deltas; deltas itself is not modified.
+func (p *Poller) revalidateAdditions(ctx context.Context, state persistedPollState, deltas persistDeltas) (persistDeltas, []error) {
+	if deltas.labels == nil || deltas.labelsBase == nil {
+		return deltas, nil
+	}
+	discovered := make(map[int]map[string]RoutableEvent)
+	for _, event := range deltas.discovered {
+		if discovered[event.IID] == nil {
+			discovered[event.IID] = make(map[string]RoutableEvent)
+		}
+		discovered[event.IID][event.ChangedLabel] = event
+	}
+	var labels, stale LabelState
+	var errs []error
+	holdWatermark := false
+	for iid, incoming := range deltas.labels {
+		baseSet := toSet(deltas.labelsBase[iid])
+		for _, label := range incoming {
+			if baseSet[label] {
+				continue
+			}
+			event, ok := discovered[iid][label]
+			if !ok {
+				event = RoutableEvent{Type: "issue_label", IID: iid, ChangedLabel: label}
+			}
+			current, err := p.pendingLabelIsCurrent(ctx, event, deltas.reconcileFailed)
+			if err == nil && current {
+				continue
+			}
+			if err != nil && !forge.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("revalidate label addition for issue %d label %q: %w", iid, label, err))
+				// The occurrence could not be resolved, so a presence a
+				// concurrent writer recorded for it may belong to a
+				// superseded occurrence, and the merge would keep it. Holding
+				// the watermark alone cannot recover then: the rediscovery
+				// would see the label as already recorded. Remove the
+				// unresolved presence conservatively; the dispatch keys
+				// persisted here deduplicate the rediscovered occurrence if
+				// it was in fact current and dispatched.
+				if stale == nil {
+					stale = make(LabelState)
+				}
+				stale[iid] = append(stale[iid], label)
+			}
+			if err == nil {
+				// Not current without a lookup error: either the issue lost
+				// the label (nothing to recover) or a different occurrence
+				// replaced the discovered one. Hold the watermark when that
+				// replacement is present without dispatch evidence. A repeat
+				// lookup failure holds it conservatively.
+				_, undispatched, lookupErr := p.removalSupersededByDispatchedAdd(ctx, state, deltas, iid, label)
+				if undispatched || lookupErr != nil {
+					holdWatermark = true
+					// A concurrent writer may already have recorded presence
+					// for the superseded occurrence, and the merge keeps it:
+					// the next poll would then see the replacement's label as
+					// already seen. Remove it so the replacement is
+					// rediscovered (dispatch keys deduplicate if it was
+					// dispatched meanwhile).
+					if stale == nil {
+						stale = make(LabelState)
+					}
+					stale[iid] = append(stale[iid], label)
+				}
+			}
+			if labels == nil {
+				labels = make(LabelState, len(deltas.labels))
+				for k, v := range deltas.labels {
+					labels[k] = append([]string{}, v...)
+				}
+			}
+			kept := labels[iid][:0]
+			for _, l := range labels[iid] {
+				if l != label {
+					kept = append(kept, l)
+				}
+			}
+			labels[iid] = kept
+		}
+	}
+	out := deltas
+	if labels != nil {
+		out.labels = labels
+	}
+	if stale != nil {
+		out.stalePresence = stale
+	}
+	if holdWatermark {
+		out.watermark = nil
+		out.pruneCut = time.Time{}
+	}
+	return out, errs
+}
+
+// removalSupersededByDispatchedAdd reports whether the recorded presence of
+// label on issue iid must survive a removal derived from a stale snapshot:
+// true when the issue currently carries the label and its latest add
+// occurrence already has a dispatch key in the loaded state or in this
+// writer's own dispatched keys. On a lookup failure it returns true with the
+// error, so the presence is kept rather than guessed away.
+//
+// The second result is true when the removal is applied although the issue
+// currently carries the label under a latest add occurrence with no dispatch
+// evidence: that re-addition is recorded nowhere, so the caller must hold the
+// watermark for the next poll to rediscover it.
+func (p *Poller) removalSupersededByDispatchedAdd(ctx context.Context, state persistedPollState, deltas persistDeltas, iid int, label string) (bool, bool, error) {
+	issue, err := p.client.GetIssue(ctx, p.owner, p.repo, iid)
+	switch {
+	case err == nil:
+	case forge.IsNotFound(err):
+		return false, false, nil
+	default:
+		return true, false, err
+	}
+	if issue.State == "closed" || !toSet(issue.Labels)[label] {
+		return false, false, nil
+	}
+	labelEvents, err := p.client.ListResourceLabelEvents(ctx, p.owner, p.repo, iid)
+	if err != nil {
+		return true, false, err
+	}
+	latest, ok := latestLabelEvent(labelEvents, label)
+	if !ok || latest.Action != "add" || latest.ID == 0 {
+		return false, false, nil
+	}
+	suffix := ":" + RoutableEvent{Type: "issue_label", IID: iid, ChangedLabel: label, LabelEventID: latest.ID}.Key()
+	for _, keys := range []map[string]int64{state.DispatchedKeysFull, state.DispatchedKeysFast, deltas.dispatched} {
+		for k := range keys {
+			if strings.HasSuffix(k, suffix) {
+				return true, false, nil
+			}
+		}
+	}
+	return false, true, nil
+}
+
+// dispatchedKeyRetention is how far behind the poll watermark dispatched
+// keys are kept. A watermark is not proof that a particular occurrence was
+// dispatched, and the webhook driver accepts event evidence for up to
+// webhookMaxEventAge (plus clock skew), so a key must outlive that window
+// or a replayed or delayed webhook could dispatch the occurrence again.
+const dispatchedKeyRetention = webhookMaxEventAge + webhookMaxClockSkew
+
 func pruneDispatchedKeys(keys map[string]int64, watermark time.Time) map[string]int64 {
-	cutoff := watermark.Unix()
+	cutoff := watermark.Add(-dispatchedKeyRetention).Unix()
 	pruned := make(map[string]int64, len(keys))
 	for k, ts := range keys {
 		if ts >= cutoff {
@@ -472,6 +1153,102 @@ func mergeLabelState(existing, incoming LabelState) LabelState {
 	return merged
 }
 
+// mergeLabelStateAgainst is mergeLabelState for a writer that knows the
+// snapshot (base) its incoming entries were derived from. For each IID in
+// incoming it applies only what this writer changed relative to base — the
+// labels it added (incoming minus base) and removed (base minus incoming) —
+// on top of the freshly reloaded entry in existing. A label a concurrent
+// writer added or removed after this writer loaded base, and that this
+// writer did not itself change, is therefore preserved; a stale unchanged
+// snapshot is a no-op rather than a revert. An entry left with no labels is
+// deleted.
+func mergeLabelStateAgainst(existing, base, incoming LabelState) LabelState {
+	merged := make(LabelState, len(existing)+len(incoming))
+	for iid, labels := range existing {
+		merged[iid] = labels
+	}
+	for iid, labels := range incoming {
+		baseSet := toSet(base[iid])
+		incomingSet := toSet(labels)
+		var added []string
+		for _, l := range labels {
+			if !baseSet[l] {
+				added = append(added, l)
+			}
+		}
+		removed := make(map[string]bool)
+		for l := range baseSet {
+			if !incomingSet[l] {
+				removed[l] = true
+			}
+		}
+		if len(added) == 0 && len(removed) == 0 {
+			continue
+		}
+		var result []string
+		seen := make(map[string]bool)
+		for _, l := range append(append([]string(nil), merged[iid]...), added...) {
+			if removed[l] || seen[l] {
+				continue
+			}
+			seen[l] = true
+			result = append(result, l)
+		}
+		if len(result) == 0 {
+			delete(merged, iid)
+			continue
+		}
+		merged[iid] = result
+	}
+	return merged
+}
+
+// unionLabelState adds each IID's labels in adds to existing without
+// removing anything, so a label handoff never drops labels a concurrent
+// poll cycle recorded for the same issue.
+func unionLabelState(existing, adds LabelState) LabelState {
+	merged := make(LabelState, len(existing)+len(adds))
+	for iid, labels := range existing {
+		merged[iid] = labels
+	}
+	for iid, labels := range adds {
+		have := toSet(merged[iid])
+		out := append([]string(nil), merged[iid]...)
+		for _, l := range labels {
+			if !have[l] {
+				have[l] = true
+				out = append(out, l)
+			}
+		}
+		merged[iid] = out
+	}
+	return merged
+}
+
+// removeLabelPresence deletes each IID's listed labels from existing,
+// dropping an entry left with no labels. Nothing else is touched.
+func removeLabelPresence(existing, remove LabelState) LabelState {
+	merged := make(LabelState, len(existing))
+	for iid, labels := range existing {
+		merged[iid] = labels
+	}
+	for iid, labels := range remove {
+		drop := toSet(labels)
+		var kept []string
+		for _, l := range merged[iid] {
+			if !drop[l] {
+				kept = append(kept, l)
+			}
+		}
+		if len(kept) == 0 {
+			delete(merged, iid)
+			continue
+		}
+		merged[iid] = kept
+	}
+	return merged
+}
+
 // applyWatermark advances the stored watermark to the later of the newly
 // observed timestamp and whatever is already on the (freshly loaded)
 // document, so a CAS retry cannot roll the watermark backward if a
@@ -497,7 +1274,12 @@ func (p *Poller) applyWatermark(state *persistedPollState, t time.Time) {
 // detectNewLabels compares current issue labels against stored state to find
 // newly-added routable labels. It returns:
 //   - newLabels: IID → labels that were added since the last poll
-//   - updatedState: the new label state (caller persists after dispatch)
+//   - delta: the label mutations this cycle observed (caller persists after
+//     dispatch). It holds only the IIDs this poll discovered or pruned as
+//     closed; entries for other open issues are omitted rather than echoed
+//     back from the loaded snapshot, because mergeLabelState lets incoming
+//     entries win per IID and an echoed stale entry would erase a label a
+//     concurrent webhook recorded after this poll loaded state.
 //   - previousLabels: snapshot of prior state per issue (for rollback)
 //   - error
 func (p *Poller) detectNewLabels(ctx context.Context, owner, repo string, issues []Issue) (map[int][]string, LabelState, map[int][]string, error) {
@@ -506,9 +1288,12 @@ func (p *Poller) detectNewLabels(ctx context.Context, owner, repo string, issues
 		return nil, nil, nil, err
 	}
 	state := ps.LabelState
-	if state == nil {
-		state = LabelState{}
-	}
+	delta := make(LabelState, len(issues))
+	base := make(LabelState, len(issues))
+	// Whatever this cycle's delta says about an issue is relative to this
+	// snapshot; the persist step applies only the difference (see
+	// mergeLabelStateAgainst).
+	p.labelBase = base
 
 	// Snapshot previous labels for each issue (used for rollback).
 	previousLabels := make(map[int][]string, len(issues))
@@ -525,6 +1310,9 @@ func (p *Poller) detectNewLabels(ctx context.Context, owner, repo string, issues
 	polledIIDs := make(map[int]bool, len(issues))
 	for _, iss := range issues {
 		polledIIDs[iss.IID] = true
+		if prev, ok := state[iss.IID]; ok {
+			base[iss.IID] = append([]string(nil), prev...)
+		}
 
 		currentRoutable := filterRoutableLabels(iss.Labels)
 		prevSet := toSet(state[iss.IID])
@@ -540,14 +1328,14 @@ func (p *Poller) detectNewLabels(ctx context.Context, owner, repo string, issues
 		}
 
 		if len(currentRoutable) > 0 {
-			state[iss.IID] = currentRoutable
+			delta[iss.IID] = currentRoutable
 		} else {
 			// Tombstone (present, empty), not delete: this writer
 			// observed the issue currently has no routable labels, and
 			// mergeLabelState must apply that deletion even against a
 			// freshly reloaded document that still carries an older
 			// entry for this IID (see mergeLabelState).
-			state[iss.IID] = []string{}
+			delta[iss.IID] = []string{}
 		}
 	}
 
@@ -558,11 +1346,12 @@ func (p *Poller) detectNewLabels(ctx context.Context, owner, repo string, issues
 		}
 		if p.isIssueClosed(ctx, owner, repo, iid) {
 			// Tombstone rather than delete; see the comment above.
-			state[iid] = []string{}
+			base[iid] = append([]string(nil), state[iid]...)
+			delta[iid] = []string{}
 		}
 	}
 
-	return newLabels, state, previousLabels, nil
+	return newLabels, delta, previousLabels, nil
 }
 
 // persistLabelState writes the label state to the poller state document.
@@ -622,6 +1411,20 @@ func (p *Poller) readFailedKeys(ctx context.Context, owner, repo string) (map[st
 		return make(map[string]int), nil
 	}
 	return keys, nil
+}
+
+// readPendingLabels reads the failed webhook label occurrences awaiting a
+// poller retry. Returns an empty map when there are none.
+func (p *Poller) readPendingLabels(ctx context.Context, owner, repo string) (map[string]PendingLabel, error) {
+	state, err := p.loadPollState(ctx, owner, repo)
+	if err != nil {
+		return nil, fmt.Errorf("read pending labels: %w", err)
+	}
+	pending := make(map[string]PendingLabel, len(state.PendingLabels))
+	for k, v := range state.PendingLabels {
+		pending[k] = v
+	}
+	return pending, nil
 }
 
 // persistFailedKeys writes the failed event retry counts, pruning

@@ -580,7 +580,7 @@ func TestResolveLabelAuthor_FindsMatch(t *testing.T) {
 	p := newEventsPoller(mc)
 
 	// Should find the most recent "add" for "ready-to-code" (ID 3, user 30).
-	la, err := p.resolveLabelAuthor(context.Background(), 1, "ready-to-code")
+	la, err := p.resolveLabelAuthor(context.Background(), 1, "ready-to-code", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -606,7 +606,7 @@ func TestResolveLabelAuthor_NoMatch(t *testing.T) {
 	}
 	p := newEventsPoller(mc)
 
-	_, err := p.resolveLabelAuthor(context.Background(), 1, "ready-to-code")
+	_, err := p.resolveLabelAuthor(context.Background(), 1, "ready-to-code", 0)
 	if err == nil {
 		t.Fatal("expected error when no matching add event found")
 	}
@@ -629,7 +629,10 @@ func TestResolveActorRole_AllLevels(t *testing.T) {
 			mc.memberLevel[1] = tt.level
 			p := newEventsPoller(mc)
 
-			got := p.resolveActorRole(context.Background(), 1)
+			got, err := p.resolveActorRole(context.Background(), 1)
+			if err != nil {
+				t.Fatalf("resolveActorRole(level=%d): %v", tt.level, err)
+			}
 			if got != tt.want {
 				t.Errorf("resolveActorRole(level=%d) = %q, want %q", tt.level, got, tt.want)
 			}
@@ -642,7 +645,10 @@ func TestResolveActorRole_UnknownLevel(t *testing.T) {
 	mc.memberLevel[1] = 99 // unknown level
 	p := newEventsPoller(mc)
 
-	got := p.resolveActorRole(context.Background(), 1)
+	got, err := p.resolveActorRole(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("resolveActorRole(level=99): %v", err)
+	}
 	if got != "none" {
 		t.Errorf("resolveActorRole(level=99) = %q, want %q", got, "none")
 	}
@@ -650,12 +656,27 @@ func TestResolveActorRole_UnknownLevel(t *testing.T) {
 
 func TestResolveActorRole_MemberNotFound(t *testing.T) {
 	mc := newMockClient()
-	// No memberLevel set for userID 1 -> GetMemberAccessLevel returns error.
+	// No memberLevel set for userID 1 -> GetMemberAccessLevel returns
+	// forge.ErrNotFound, a confirmed non-member.
 	p := newEventsPoller(mc)
 
-	got := p.resolveActorRole(context.Background(), 1)
+	got, err := p.resolveActorRole(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("resolveActorRole(not found): %v", err)
+	}
 	if got != "none" {
 		t.Errorf("resolveActorRole(not found) = %q, want %q", got, "none")
+	}
+}
+
+func TestResolveActorRole_TransientFailurePropagates(t *testing.T) {
+	mc := newMockClient()
+	mc.memberErr[1] = fmt.Errorf("gitlab api: 503 unavailable")
+	p := newEventsPoller(mc)
+
+	got, err := p.resolveActorRole(context.Background(), 1)
+	if err == nil {
+		t.Fatalf("expected error for a failed lookup, got role %q", got)
 	}
 }
 

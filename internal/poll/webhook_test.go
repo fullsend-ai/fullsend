@@ -177,8 +177,9 @@ func TestBuildWebhookEvents_IssueLabelAdded(t *testing.T) {
 	if len(we.Stages) != 1 || we.Stages[0] != "code" {
 		t.Errorf("stages = %v, want [code]", we.Stages)
 	}
-	// Same dedup key the poller computes for the same label add.
-	want := RoutableEvent{Type: "issue_label", IID: 5, ChangedLabel: "ready-to-code", UpdatedAt: recent}.Key()
+	// Same dedup key the poller computes for the same label add: both key
+	// on the resource label event ID.
+	want := RoutableEvent{Type: "issue_label", IID: 5, ChangedLabel: "ready-to-code", UpdatedAt: recent, LabelEventID: 2}.Key()
 	if we.Event.Key() != want {
 		t.Errorf("Key() = %q, want %q", we.Event.Key(), want)
 	}
