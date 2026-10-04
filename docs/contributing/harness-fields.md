@@ -10,6 +10,15 @@
 > schema) and [ADR-0088](../ADRs/0088-cel-guarded-overlays.md) (CEL-guarded
 > overlays). Those ADRs are point-in-time records; this document reflects the
 > current state.
+>
+> **Decided, not yet implemented (2026-10-02):**
+> [ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md) will let
+> overlays set any field except `base`, `trigger`, `overlays`, `slug`, `role`
+> and `forge`, with guarded fields limited to trusted inputs, and
+> [ADR 0130](../ADRs/0130-harnesses-declare-supported-models.md) adds a
+> `supported:` block, a structural container under
+> [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)'s
+> field types. The tables below change when they are implemented.
 
 ## Field classification
 
