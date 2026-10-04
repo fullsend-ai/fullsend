@@ -119,6 +119,7 @@ jobs:
           TRIGGERING_LABEL: ${{ github.event.label.name }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
           ORG_NAME: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
@@ -284,7 +285,14 @@ jobs:
                 closed)
                   # Intentional ungated: any closer may trigger read-only retro
                   # (lifecycle accounting). See ADR 0054 #5223 note.
-                  STAGE="retro"
+                  case "${PR_HEAD_REF}" in
+                    fullsend/onboard|fullsend/offboard|fullsend/scaffold-install)
+                      echo "::notice::Skipping retro for fullsend scaffold PR on ${PR_HEAD_REF}"
+                      ;;
+                    *)
+                      STAGE="retro"
+                      ;;
+                  esac
                   ;;
               esac
               ;;
