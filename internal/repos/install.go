@@ -420,6 +420,9 @@ func Install(ctx context.Context, cfg InstallConfig,
 		written := 0
 		for _, name := range maputil.SortedKeys(repoSecrets) {
 			if err := client.CreateRepoSecret(ctx, cfg.Owner, cfg.Repo, name, repoSecrets[name]); err != nil {
+				// %s (not %w) is intentional: redactSecretValues scrubs secret
+				// values from the error message before it propagates to logs.
+				// No callers inspect the returned error with errors.Is/errors.As.
 				return result, fmt.Errorf("setting repo secret %s: %s", name, redactSecretValues(err.Error(), repoSecrets))
 			}
 			written++
