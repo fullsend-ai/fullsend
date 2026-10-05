@@ -1,6 +1,6 @@
 # OpenCode
 
-[OpenCode](https://github.com/anomalyco/opencode) is fullsend's third agent runtime, opt-in per repo. Like pi, it runs through the same sandbox, credentials and egress policy, and reads
+[OpenCode](https://github.com/anomalyco/opencode) is fullsend's fourth agent runtime, opt-in per repo. Like pi, it runs through the same sandbox, credentials and egress policy, and reads
 `AGENTS.md` natively.
 
 ```bash
