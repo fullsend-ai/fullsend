@@ -155,6 +155,10 @@ Do something.
 		agentPath:   writeAgentFile(t, namelessDef),
 	}
 	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+	r := OpenCodeRuntime{}
+	agentMD := string(storedUpload(t, store, r.openCodeAgentPath("triage")))
+	assert.Contains(t, agentMD, "Do something.")
+	assert.Contains(t, agentMD, `"read": "allow"`)
 }
 
 func TestOpenCodeRuntimeBootstrap_BadAgentFile(t *testing.T) {
@@ -190,6 +194,46 @@ func TestOpenCodeRuntimeBootstrap_BodyOnlyAgent(t *testing.T) {
 	r := OpenCodeRuntime{}
 	agentMD := string(storedUpload(t, store, r.openCodeAgentPath("test")))
 	assert.Contains(t, agentMD, "No frontmatter, just a prompt.")
+}
+
+func TestOpenCodeRuntimeBootstrap_InvalidTrustedEnvFailsClosed(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	storeDir := filepath.Join(work, "store")
+	require.NoError(t, os.MkdirAll(storeDir, 0o755))
+	binDir := t.TempDir()
+	// Fake openshell that returns an invalid (empty) permission policy.
+	script := `#!/bin/sh
+echo "$@" >> '` + logPath + `'
+if [ "$2" = "upload" ]; then
+  cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
+  exit 0
+fi
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    "opencode --version") echo "0.1.0"; exit 0 ;;
+    *fullsend-opencode-env-sep*) printf '%s' '{}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
+  esac
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "triage",
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err, "Bootstrap must fail with an invalid permission policy")
+	assert.Contains(t, err.Error(), "no permission policy")
+	// The invalid state must NOT be recorded for Run.
+	_, ok := lookupOpenCodeTrustedEnv("sb")
+	assert.False(t, ok, "invalid trustedEnv must not be recorded")
 }
 
 func TestOpenCodeRuntimeBootstrap_AgentNameSanitizationFailure(t *testing.T) {

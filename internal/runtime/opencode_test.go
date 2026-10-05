@@ -317,6 +317,14 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeBinaryPin()), envIdx, "opencode binary must be pinned before .env")
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeTrustedEnvPin(trustedEnv)), envIdx, "trusted values must be pinned before .env")
 	assert.Greater(t, strings.Index(cmd, "&& "+openCodeTrustedEnvRestore()), envIdx, "trusted values must be restored after .env")
+	// EnvExports re-pin (OPENCODE_CONFIG_DIR, OPENCODE_DISABLE_PROJECT_CONFIG) must
+	// appear after .env sourcing — a hostile .env could otherwise redirect config
+	// discovery or re-enable the workspace config walk.
+	for _, envExport := range (OpenCodeRuntime{}).EnvExports() {
+		exportIdx := strings.Index(cmd, "&& "+envExport)
+		require.NotEqual(t, -1, exportIdx, "EnvExports entry %q must be present", envExport)
+		assert.Greater(t, exportIdx, envIdx, "EnvExports entry %q must appear after .env sourcing", envExport)
+	}
 }
 
 func TestOpenCodeBinaryPin(t *testing.T) {
@@ -403,6 +411,22 @@ func TestOpenCodeReadTrustedEnvErrors(t *testing.T) {
 		_, err := openCodeReadTrustedEnv("sb")
 		require.ErrorContains(t, err, "malformed response")
 	})
+
+	t.Run("non-zero exit", func(t *testing.T) {
+		binDir := t.TempDir()
+		script := `#!/bin/sh
+if [ "$2" = "exec" ]; then
+  echo "sandbox env broken" >&2
+  exit 3
+fi
+exit 0
+`
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		_, err := openCodeReadTrustedEnv("sb")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exited 3")
+	})
 }
 
 func TestOpenCodeTrustedEnvReadCommand(t *testing.T) {
@@ -445,6 +469,9 @@ func TestOpenCodeValidateTrustedEnv(t *testing.T) {
 		{name: "string permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":"deny"}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission policy"},
 		{name: "invalid action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":"sometimes"}}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission action"},
 		{name: "invalid pattern action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{"*":"sometimes"}}}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission action"},
+		{name: "empty pattern map", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{}}}`, CredentialsPath: valid.CredentialsPath}, want: "must be an action or non-empty pattern map"},
+		{name: "non-string pattern value", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{"*":1}}}`, CredentialsPath: valid.CredentialsPath}, want: "must be an action or non-empty pattern map"},
+		{name: "non-object non-string tool value", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":true}}`, CredentialsPath: valid.CredentialsPath}, want: "must be an action or non-empty pattern map"},
 		{name: "empty credentials", env: openCodeTrustedEnv{ConfigContent: valid.ConfigContent}, want: "GOOGLE_APPLICATION_CREDENTIALS is empty"},
 	}
 	for _, tt := range tests {
@@ -531,9 +558,8 @@ func TestBuildOpenCodeRunCommand_DebugMode(t *testing.T) {
 		Debug:         "true",
 	}
 	cmd := buildOpenCodeRunCommand(params, "triage", openCodeTrustedEnv{})
-	assert.Contains(t, cmd, "--print-logs")
-	assert.Contains(t, cmd, "--log-level")
-	assert.Contains(t, cmd, "DEBUG")
+	// Global flags must precede `run` so they apply globally (opencode_run.go comment).
+	assert.Contains(t, cmd, `"`+"$"+openCodeBinaryVar+`" --print-logs --log-level DEBUG run --format json`)
 	assert.Contains(t, cmd, "2>>"+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeDebugLogFile))
 }
 
@@ -735,6 +761,7 @@ func TestOpenCodeExtractTranscripts_ProbeExecError(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "out")
 	err := OpenCodeRuntime{}.ExtractTranscripts("sb", "triage", outDir)
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking transcript")
 }
 
 func TestOpenCodeExtractTranscripts_CreateRejected(t *testing.T) {
@@ -760,4 +787,9 @@ exit 0
 	assert.NoError(t, err)
 	entries, _ := os.ReadDir(outDir)
 	assert.Empty(t, entries)
+	// Verify no file escaped to the parent directory.
+	parentDir := filepath.Dir(outDir)
+	escapedPath := filepath.Join(parentDir, "escape-output.jsonl")
+	_, statErr := os.Stat(escapedPath)
+	assert.True(t, os.IsNotExist(statErr), "file must not escape to parent directory: %s", escapedPath)
 }
