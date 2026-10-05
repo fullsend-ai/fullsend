@@ -413,7 +413,9 @@ def _gh_not_found() -> None:
 
 def run_gh(args: list[str], *, quiet: bool = False) -> str:
     try:
-        result = subprocess.run(["gh", *args], check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            ["gh", *args], check=True, capture_output=True, text=True, timeout=30
+        )
     except FileNotFoundError:
         _gh_not_found()
     except subprocess.CalledProcessError as exc:
