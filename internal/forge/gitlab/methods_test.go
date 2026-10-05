@@ -671,6 +671,37 @@ func TestListPullRequestCommits(t *testing.T) {
 	assert.Equal(t, []string{"first", "second"}, shas, "must be reversed to oldest first")
 }
 
+func TestListPullRequestCommits_Pagination(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	// Page 1 returns a full page of 100 commits (newest first per GitLab convention).
+	// Page 2 returns a partial page, signalling the last page.
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/commits", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		page := r.URL.Query().Get("page")
+		n := 100
+		if page == "2" {
+			n = 3
+		}
+		commits := make([]map[string]any, 0, n)
+		for i := 0; i < n; i++ {
+			commits = append(commits, map[string]any{"id": fmt.Sprintf("p%s-%d", page, i)})
+		}
+		writeJSON(t, w, http.StatusOK, commits)
+	})
+
+	shas, err := client.ListPullRequestCommits(ctx, "myorg", "myrepo", 5)
+	require.NoError(t, err)
+	// 100 from page 1 + 3 from page 2 = 103 total.
+	require.Len(t, shas, 103)
+	// GitLab returns newest first; ListPullRequestCommits reverses to oldest first.
+	// The oldest commit is the last entry on page 2: "p2-2".
+	assert.Equal(t, "p2-2", shas[0], "oldest commit must be first")
+	// The newest commit is the first entry on page 1: "p1-0".
+	assert.Equal(t, "p1-0", shas[102], "newest commit must be last")
+}
+
 func TestListPullRequestCommits_Errors(t *testing.T) {
 	t.Run("request error", func(t *testing.T) {
 		client, mux := setupTest(t)

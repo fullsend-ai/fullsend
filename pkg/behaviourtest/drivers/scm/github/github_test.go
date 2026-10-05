@@ -591,6 +591,33 @@ func TestListPullRequestCommits(t *testing.T) {
 	assert.Equal(t, []string{"first", "second"}, shas)
 }
 
+func TestGetFileContentAtRef(t *testing.T) {
+	t.Run("returns content at ref", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.FileContentsRef["owner/repo/config.yaml@abc123"] = []byte("key: value")
+		d := New(fc)
+
+		content, err := d.GetFileContentAtRef(context.Background(), "owner", "repo", "config.yaml", "abc123")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(content) != "key: value" {
+			t.Errorf("expected content %q, got %q", "key: value", string(content))
+		}
+	})
+
+	t.Run("propagates error", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.Errors["GetFileContentAtRef"] = errors.New("ref lookup failed")
+		d := New(fc)
+
+		_, err := d.GetFileContentAtRef(context.Background(), "owner", "repo", "config.yaml", "abc123")
+		if err == nil || err.Error() != "ref lookup failed" {
+			t.Fatalf("expected ref lookup failed error, got %v", err)
+		}
+	})
+}
+
 func TestListPullRequestCommits_Error(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors["ListPullRequestCommits"] = errors.New("list failed")
