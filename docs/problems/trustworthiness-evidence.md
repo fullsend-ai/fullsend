@@ -8,7 +8,7 @@ How does an organization build confidence that its autonomous agents are safe to
 - [autonomy-spectrum.md](autonomy-spectrum.md) — autonomy tiers and the decision to auto-merge
 - [operational-observability.md](operational-observability.md) — understanding what agents are doing
 - [cross-run-memory.md](cross-run-memory.md) — learning from prior outcomes
-- [review-autonomy-evidence.md](review-autonomy-evidence.md) — empirical observations from agent vs human review on real PRs
+- [review-autonomy-evidence.md](review-autonomy-evidence.md) — empirical observations from agent vs human review on real PRs, plus same-diff comparisons of two review configurations
 
 ## The problem
 
@@ -73,7 +73,7 @@ Track record evidence includes:
 - **Escalation rate.** How often did the agent escalate to humans, and were those escalations appropriate?
 - **Cost trend.** Is the agent getting more or less expensive per task over time?
 
-Track records are meaningful only when the configuration is stable. A configuration change resets the track record for the dimensions affected by that change.
+Track records are meaningful only when the configuration is stable. A configuration change resets the track record for the dimensions affected by that change. [Review autonomy evidence](review-autonomy-evidence.md#runtime-and-configuration-comparison-evidence) records a concrete instance: PR #7116's runtime switch reset the review-quality baseline that PR #6935's second review (on a byte-identical diff) was then compared against.
 
 ### 5. Configuration drift detection
 
