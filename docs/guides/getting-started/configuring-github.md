@@ -130,8 +130,8 @@ Actions tab to see the Fullsend workflow in action. In some minutes the
 
 ## Next steps
 
-* Read [Organization installation mode](org-mode.md) to learn how to share GCP project with other repositories
-within your GitHub organization.
+* Read [Repo Management](repo-management.md) to learn how to install and manage Fullsend across
+many repositories, including sharing configuration presets between them.
 * Read the [Agents](../../agents/README.md) section to learn about the default agents Fullsend
 ships with.
 * Explore other sections of this documentation for more information.

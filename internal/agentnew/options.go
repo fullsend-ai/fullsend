@@ -2,9 +2,11 @@ package agentnew
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 )
 
 // Default values for the generated harness.
@@ -33,6 +35,12 @@ type Options struct {
 	Image          string
 	TimeoutMinutes int
 	ValidationLoop bool
+	// Runtime is the runtime the agent will dispatch under: --runtime, the
+	// spec's runtime:, or else the repo's config.yaml default, resolved by
+	// the caller. It is not written to the harness, but decides which
+	// credentials the harness asks for and whether the model must be an
+	// OpenAI id.
+	Runtime string
 }
 
 // Validate checks every field that reaches a generated file, and does so
@@ -61,6 +69,15 @@ func (o *Options) Validate() error {
 	if o.Model != "" && !config.ValidModelRef(o.Model) {
 		return fmt.Errorf("model %q contains invalid characters", o.Model)
 	}
+	// Refused here rather than by the runtime after the sandbox is up. The
+	// example id is the one docs/runtimes/codex.md uses.
+	if o.Runtime == "codex" {
+		if err := agentruntime.ValidateCodexModel(o.Model); err != nil {
+			return fmt.Errorf("runtime codex takes OpenAI model ids only, and %s: "+
+				"use --model openai/gpt-5.6-luna (or another openai/<id>) on the command, "+
+				"or model: openai/gpt-5.6-luna in the spec file", describeModel(o.Model))
+		}
+	}
 	if o.Effort != "" && !config.ValidEffort(o.Effort) {
 		return fmt.Errorf("effort %q is not valid (allowed: %v)", o.Effort, config.ValidEffortLevels())
 	}
@@ -74,4 +91,38 @@ func (o *Options) Validate() error {
 		return fmt.Errorf("image must not be empty")
 	}
 	return nil
+}
+
+// UsesVertex reports whether the agent calls Vertex, and so whether its
+// harness carries the Vertex provider, GCP credentials and Vertex env. codex
+// never does; pi does unless its model has an explicit openai/ prefix.
+//
+// Not agentruntime.NeedsOpenAIProvider: that reads FULLSEND_PI_PROVIDER from
+// the environment of the run, and the generator runs elsewhere, so the
+// harness would depend on the generating machine.
+func (o Options) UsesVertex() bool {
+	switch o.Runtime {
+	case "codex":
+		return false
+	case "pi":
+		return !hasOpenAIPrefix(o.Model)
+	default:
+		return true
+	}
+}
+
+// hasOpenAIPrefix reports whether model carries an explicit "openai/"
+// provider prefix. Matching is case-insensitive because pi resolves
+// provider prefixes case-insensitively (see translatePiModel).
+func hasOpenAIPrefix(model string) bool {
+	prefix, _, ok := strings.Cut(model, "/")
+	return ok && strings.EqualFold(prefix, "openai")
+}
+
+// describeModel names what was wrong with a model codex refused.
+func describeModel(model string) string {
+	if model == "" {
+		return "no model was named"
+	}
+	return fmt.Sprintf("%q is not one", model)
 }

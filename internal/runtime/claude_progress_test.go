@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -1755,5 +1756,167 @@ func TestParseClaudeStream_ServerToolUseCarriesNoID(t *testing.T) {
 	}
 	if uses[1].Name != "Read" || uses[1].ID != "toolu_01" {
 		t.Errorf("client tool_use must keep its id, got %+v", uses[1])
+	}
+}
+
+// claudeModelUsageResult is a result event whose usage block is parent-only
+// while modelUsage covers an opus parent and a haiku sub-agent. The costs sum
+// to total_cost_usd.
+const claudeModelUsageResult = `{"type":"result","num_turns":5,"total_cost_usd":0.5166,"usage":{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":300,"cache_read_input_tokens":400},` +
+	`"modelUsage":{` +
+	`"claude-opus-4-6":{"inputTokens":1000,"outputTokens":2000,"cacheReadInputTokens":3000,"cacheCreationInputTokens":4000,"thinkingTokens":10,"costUSD":0.5,"canonicalModel":"claude-opus-4-6","provider":"vertex","costBasis":"list"},` +
+	`"claude-haiku-4-5@20251001":{"inputTokens":15,"outputTokens":182,"cacheReadInputTokens":43982,"cacheCreationInputTokens":9023,"thinkingTokens":79,"costUSD":0.0166,"canonicalModel":"claude-haiku-4-5","provider":"vertex","costBasis":"list"}}}`
+
+func TestParseClaudeStreamResultModelUsageSumsTotals(t *testing.T) {
+	events := collectEvents(t, claudeModelUsageResult)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	res, ok := events[0].(ResultEvent)
+	if !ok {
+		t.Fatalf("expected ResultEvent, got %T", events[0])
+	}
+	if res.InputTokens != 1015 || res.OutputTokens != 2182 ||
+		res.CacheReadInputTokens != 46982 || res.CacheCreationInputTokens != 13023 {
+		t.Errorf("token totals are not the modelUsage sum: %+v", res)
+	}
+	if res.ReasoningTokens != 89 {
+		t.Errorf("ReasoningTokens = %d, want 89 (sum of thinkingTokens)", res.ReasoningTokens)
+	}
+	want := map[string]ModelUsage{
+		"claude-opus-4-6": {
+			InputTokens: 1000, OutputTokens: 2000,
+			CacheReadInputTokens: 3000, CacheCreationInputTokens: 4000, CostUSD: 0.5,
+		},
+		"claude-haiku-4-5@20251001": {
+			InputTokens: 15, OutputTokens: 182,
+			CacheReadInputTokens: 43982, CacheCreationInputTokens: 9023, CostUSD: 0.0166,
+		},
+	}
+	if len(res.PerModelUsage) != len(want) {
+		t.Fatalf("expected %d per-model entries, got %+v", len(want), res.PerModelUsage)
+	}
+	var costSum float64
+	for model, w := range want {
+		got, ok := res.PerModelUsage[model]
+		if !ok {
+			t.Fatalf("missing per-model entry %q in %+v", model, res.PerModelUsage)
+		}
+		if got != w {
+			t.Errorf("PerModelUsage[%q] = %+v, want %+v", model, got, w)
+		}
+		costSum += got.CostUSD
+	}
+	if math.Abs(costSum-res.TotalCostUSD) > 1e-9 {
+		t.Errorf("per-model cost sum %v != total_cost_usd %v", costSum, res.TotalCostUSD)
+	}
+}
+
+func TestProgressParserModelUsageFillsMetrics(t *testing.T) {
+	var buf bytes.Buffer
+	metrics := &RunMetrics{}
+	if err := progressParser(strings.NewReader(claudeModelUsageResult), ui.New(&buf), metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+	if metrics.InputTokens != 1015 || metrics.OutputTokens != 2182 ||
+		metrics.CacheReadInputTokens != 46982 || metrics.CacheCreationInputTokens != 13023 {
+		t.Errorf("metrics token totals are not the modelUsage sum: in=%d out=%d cr=%d cw=%d",
+			metrics.InputTokens, metrics.OutputTokens, metrics.CacheReadInputTokens, metrics.CacheCreationInputTokens)
+	}
+	if metrics.ReasoningTokens != 89 {
+		t.Errorf("metrics.ReasoningTokens = %d, want 89", metrics.ReasoningTokens)
+	}
+	if len(metrics.PerModelUsage) != 2 {
+		t.Fatalf("expected 2 per_model_usage entries, got %+v", metrics.PerModelUsage)
+	}
+	data, err := json.Marshal(metrics)
+	if err != nil {
+		t.Fatalf("marshal metrics: %v", err)
+	}
+	if !strings.Contains(string(data), `"per_model_usage":{`) {
+		t.Errorf("metrics JSON lacks per_model_usage: %s", data)
+	}
+}
+
+// TestParseClaudeStreamResultWithoutModelUsageKeepsUsage pins today's
+// behaviour when modelUsage is absent or empty: the usage block supplies the
+// totals and no per-model breakdown is recorded.
+func TestParseClaudeStreamResultWithoutModelUsageKeepsUsage(t *testing.T) {
+	for name, extra := range map[string]string{
+		"absent": ``,
+		"empty":  `,"modelUsage":{}`,
+		"null":   `,"modelUsage":null`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := `{"type":"result","num_turns":8,"total_cost_usd":0.42,"usage":{"input_tokens":12000,"output_tokens":3400,"cache_creation_input_tokens":8000,"cache_read_input_tokens":5000}` + extra + `}`
+			var buf bytes.Buffer
+			metrics := &RunMetrics{}
+			if err := progressParser(strings.NewReader(input), ui.New(&buf), metrics); err != nil {
+				t.Fatalf("progressParser returned error: %v", err)
+			}
+			if metrics.NumTurns != 8 || metrics.TotalCostUSD != 0.42 ||
+				metrics.InputTokens != 12000 || metrics.OutputTokens != 3400 ||
+				metrics.CacheCreationInputTokens != 8000 || metrics.CacheReadInputTokens != 5000 {
+				t.Errorf("unexpected metrics: turns=%d cost=%v in=%d out=%d cw=%d cr=%d",
+					metrics.NumTurns, metrics.TotalCostUSD, metrics.InputTokens, metrics.OutputTokens,
+					metrics.CacheCreationInputTokens, metrics.CacheReadInputTokens)
+			}
+			if metrics.PerModelUsage != nil {
+				t.Errorf("expected no per-model breakdown, got %+v", metrics.PerModelUsage)
+			}
+			if metrics.ReasoningTokens != 0 {
+				t.Errorf("ReasoningTokens = %d, want 0", metrics.ReasoningTokens)
+			}
+		})
+	}
+}
+
+// TestNewClaudeResultEventReasoningTokens pins where ReasoningTokens comes
+// from: the parser's accumulated thinking when modelUsage is absent or empty,
+// the modelUsage thinkingTokens sum (sub-agents included) otherwise.
+func TestNewClaudeResultEventReasoningTokens(t *testing.T) {
+	const parserReasoning = 7
+	var absent, empty resultEvent
+	empty.ModelUsage = map[string]claudeModelUsage{}
+	for name, re := range map[string]resultEvent{"absent": absent, "empty": empty} {
+		if got := newClaudeResultEvent(re, parserReasoning).ReasoningTokens; got != parserReasoning {
+			t.Errorf("%s modelUsage: ReasoningTokens = %d, want parser value %d", name, got, parserReasoning)
+		}
+	}
+	present := resultEvent{ModelUsage: map[string]claudeModelUsage{
+		"claude-sonnet": {ThinkingTokens: 10},
+		"claude-haiku":  {ThinkingTokens: 44},
+	}}
+	if got := newClaudeResultEvent(present, parserReasoning).ReasoningTokens; got != 54 {
+		t.Errorf("present modelUsage: ReasoningTokens = %d, want 54", got)
+	}
+}
+
+// TestProgressParserMultiResultModelUsageNotDoubleCounted: modelUsage is a
+// session running total, so a steered or retried session with two results
+// records the last one, not their sum.
+func TestProgressParserMultiResultModelUsageNotDoubleCounted(t *testing.T) {
+	lines := []string{
+		`{"type":"result","num_turns":2,"total_cost_usd":0.2,"usage":{"input_tokens":10,"output_tokens":20},"modelUsage":{"claude-opus-4-6":{"inputTokens":100,"outputTokens":200,"cacheReadInputTokens":300,"cacheCreationInputTokens":400,"costUSD":0.15},"claude-haiku-4-5":{"inputTokens":1,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4,"costUSD":0.05}}}`,
+		`{"type":"result","num_turns":4,"total_cost_usd":0.3,"usage":{"input_tokens":30,"output_tokens":40},"modelUsage":{"claude-opus-4-6":{"inputTokens":150,"outputTokens":250,"cacheReadInputTokens":350,"cacheCreationInputTokens":450,"costUSD":0.3}}}`,
+	}
+	var buf bytes.Buffer
+	metrics := &RunMetrics{}
+	if err := progressParser(strings.NewReader(strings.Join(lines, "\n")), ui.New(&buf), metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+	if metrics.InputTokens != 150 || metrics.OutputTokens != 250 ||
+		metrics.CacheReadInputTokens != 350 || metrics.CacheCreationInputTokens != 450 {
+		t.Errorf("expected last result's modelUsage totals, got in=%d out=%d cr=%d cw=%d",
+			metrics.InputTokens, metrics.OutputTokens, metrics.CacheReadInputTokens, metrics.CacheCreationInputTokens)
+	}
+	if metrics.TotalCostUSD != 0.3 {
+		t.Errorf("expected cost 0.3, got %v", metrics.TotalCostUSD)
+	}
+	want := map[string]ModelUsage{
+		"claude-opus-4-6": {InputTokens: 150, OutputTokens: 250, CacheReadInputTokens: 350, CacheCreationInputTokens: 450, CostUSD: 0.3},
+	}
+	if len(metrics.PerModelUsage) != len(want) || metrics.PerModelUsage["claude-opus-4-6"] != want["claude-opus-4-6"] {
+		t.Errorf("PerModelUsage = %+v, want %+v (replaced, not merged)", metrics.PerModelUsage, want)
 	}
 }

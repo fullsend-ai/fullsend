@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
@@ -970,6 +971,58 @@ func TestPollClient_CreatePipeline_Error(t *testing.T) {
 
 	_, _, err := pc.CreatePipeline(ctx, "myorg", "myrepo", "main", nil)
 	require.Error(t, err)
+}
+
+func TestPollClient_CreatePipelineWithInputs(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	handlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "main", body["ref"])
+		// Unlike CreatePipeline, this must never send a "variables" key —
+		// that's the user-defined-pipeline-variable transport GitLab's
+		// ci_pipeline_variables_minimum_override_role gates and #7850
+		// moves dispatch away from.
+		_, hasVariables := body["variables"]
+		assert.False(t, hasVariables, "CreatePipelineWithInputs must not send a variables field")
+		inputs, _ := body["inputs"].(map[string]any)
+		assert.Equal(t, "triage", inputs["stage"])
+		assert.Equal(t, true, inputs["is_fork"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      43,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/43",
+		})
+	})
+
+	id, webURL, err := pc.CreatePipelineWithInputs(ctx, "myorg", "myrepo", "main", map[string]forge.PipelineInputValue{
+		"stage":   forge.StringInput("triage"),
+		"is_fork": forge.BoolInput(true),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(43), id)
+	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/pipelines/43", webURL)
+	assert.True(t, handlerCalled, "pipeline handler must be called")
+}
+
+func TestPollClient_CreatePipelineWithInputs_Error(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	handlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+	})
+
+	_, _, err := pc.CreatePipelineWithInputs(ctx, "myorg", "myrepo", "main", nil)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "403")
+	assert.True(t, handlerCalled, "pipeline handler must be called")
 }
 
 func TestPollClient_GetAuthenticatedUserID(t *testing.T) {

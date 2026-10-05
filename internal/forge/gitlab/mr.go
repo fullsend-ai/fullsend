@@ -265,6 +265,43 @@ func (c *LiveClient) ListPullRequestFiles(ctx context.Context, owner, repo strin
 	return files, nil
 }
 
+// ListPullRequestCommits returns the commit SHAs on a merge request,
+// oldest first. GitLab's API reports them newest first, so the result is
+// reversed.
+func (c *LiveClient) ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	var newestFirst []string
+
+	for page := 1; page <= 100; page++ {
+		path := fmt.Sprintf("/projects/%s/merge_requests/%d/commits?per_page=100&page=%d",
+			projectPath(owner, repo), number, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list merge request commits page %d: %w", page, err)
+		}
+
+		var commits []struct {
+			ID string `json:"id"`
+		}
+		if err := decodeJSON(resp, &commits); err != nil {
+			return nil, fmt.Errorf("decode merge request commits page %d: %w", page, err)
+		}
+
+		for _, cm := range commits {
+			newestFirst = append(newestFirst, cm.ID)
+		}
+
+		if len(commits) < 100 {
+			break
+		}
+	}
+
+	shas := make([]string, 0, len(newestFirst))
+	for i := len(newestFirst) - 1; i >= 0; i-- {
+		shas = append(shas, newestFirst[i])
+	}
+	return shas, nil
+}
+
 // ListPullRequestFileDiffs returns the files changed by a merge request
 // along with their unified diff patches.
 func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestFileDiff, error) {

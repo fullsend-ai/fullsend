@@ -123,6 +123,7 @@ func buildStageMintDriver(
 	// PLAYBACK_RUNTIME when set, so this factory can also back a playback
 	// suite (see NewPlaybackDriver) in the stage environment.
 	setupOpts := common.GitHubSetupOpts{
+		AppSet:       envAppSet(),
 		Vendor:       false,
 		FullsendRef:  stageFullsendRef,
 		ConfigPreset: envConfigPreset(),

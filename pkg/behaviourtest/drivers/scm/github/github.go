@@ -59,6 +59,10 @@ func (d *Driver) GetFileContent(ctx context.Context, owner, repo, path string) (
 	return d.Client.GetFileContent(ctx, owner, repo, path)
 }
 
+func (d *Driver) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+	return d.Client.GetFileContentAtRef(ctx, owner, repo, path, ref)
+}
+
 func (d *Driver) CreateBranch(ctx context.Context, owner, repo, branch string) error {
 	return d.Client.CreateBranch(ctx, owner, repo, branch)
 }
@@ -168,6 +172,10 @@ func (d *Driver) CreateForkChangeProposal(ctx context.Context, baseOwner, baseRe
 
 func (d *Driver) ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error) {
 	return d.Client.ListPullRequestReviews(ctx, owner, repo, number)
+}
+
+func (d *Driver) ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	return d.Client.ListPullRequestCommits(ctx, owner, repo, number)
 }
 
 // ParseRepo splits "owner/repo" into owner and repo name.

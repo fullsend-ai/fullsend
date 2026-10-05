@@ -183,58 +183,22 @@ func resolvePersonaModels(
 		skippedOut[sk.Name] = sk.Reason
 	}
 
-	// Bare values resolve against the manifest's model table, as the
-	// extension does. Not translatePiModel: it prefixes with
-	// FULLSEND_PI_PROVIDER, turning a bare `opus` into
-	// `xai-vertex/xai/claude-opus-4-6` under a Grok run.
-	// Both tables come from the alias entries only, in sorted key order:
-	// "default" is the agent's own model under whatever provider the run
-	// selected, so its bare id must not shadow an alias entry's, and two
-	// aliases sharing a trailing id must resolve the same way every run.
-	byAlias := make(map[string]string, len(modelsTable))
-	byBareID := make(map[string]string, len(modelsTable))
-	aliases := make([]string, 0, len(modelsTable))
-	for alias := range modelsTable {
-		aliases = append(aliases, alias)
-	}
-	slices.Sort(aliases)
-	for _, alias := range aliases {
-		spec := modelsTable[alias]
-		if spec == "" || alias == "default" {
-			continue
-		}
-		byAlias[strings.ToLower(alias)] = spec
-		id := spec
-		if i := strings.LastIndex(spec, "/"); i >= 0 {
-			id = spec[i+1:]
-		}
-		if _, taken := byBareID[strings.ToLower(id)]; !taken {
-			byBareID[strings.ToLower(id)] = spec
-		}
-	}
-
 	// canonicalise resolves a model to a spec this run serves, or refuses
-	// it. The "@suffix" strip mirrors piAgentModels: ValidModelRef admits
-	// `opus@20250101`.
+	// it. piChildSpec does the resolution; this adds the trust check.
+	resolveSpec := piChildSpecResolver(modelsTable)
 	canonicalise := func(what, model string) (string, error) {
-		base, _, _ := strings.Cut(strings.TrimSpace(model), "@")
-		base = strings.TrimSpace(base)
-		spec := base
-		if !strings.Contains(base, "/") {
-			key := strings.ToLower(base)
-			if s, ok := byAlias[key]; ok {
-				spec = s
-			} else if s, ok := byBareID[key]; ok {
-				spec = s
-			}
-		} else if head, _, _ := strings.Cut(base, "/"); true {
-			// A qualified spec names its own provider, so read it from the
-			// string rather than the environment.
-			if s, ok := normalizeXaiVertexModel(strings.ToLower(head), base); ok {
-				spec = s
-			}
-		}
+		spec := resolveSpec(model)
 		if _, ok := trustedSpecs[strings.ToLower(spec)]; !ok {
+			// Name the remedy for the openai case (#7981) instead of only
+			// listing what is accepted: the run attaches the openai provider
+			// for a configured child only when the harness declares it and
+			// the runner has a credential to put in it.
+			if head, _, ok := strings.Cut(spec, "/"); ok && strings.EqualFold(head, piOpenAIProvider) {
+				return "", fmt.Errorf("%s: resolved model %q is not available in this run; accepted: %s; "+
+					"declare %q in the harness providers list and give the runner an OpenAI credential, or move the sub-agent off %s/",
+					what, spec, strings.Join(trustedSpecNames(trustedSpecs), ", "), piOpenAIProvider, piOpenAIProvider)
+			}
+
 			return "", fmt.Errorf("%s: resolved model %q is not available in this run; accepted: %s",
 				what, spec, strings.Join(trustedSpecNames(trustedSpecs), ", "))
 		}
@@ -346,7 +310,7 @@ func resolvePersonaModels(
 		// Tools: the manifest carries the persona's declared set and the
 		// extension intersects it with the parent's at dispatch.
 		if p.Tools != nil {
-			piTools, unsupported := piToolsFor(p.Tools)
+			filtered, unsupported := piPersonaTools(p.Tools)
 			// Fail rather than drop: dropping every declared tool leaves
 			// an empty set, which must never widen to the parent's.
 			if len(unsupported) > 0 {
@@ -355,12 +319,6 @@ func resolvePersonaModels(
 					return nil, "", nil, err
 				}
 				continue
-			}
-			filtered := make([]string, 0, len(piTools))
-			for _, t := range piTools {
-				if t != piAgentToolName && t != piAgentToolAlias {
-					filtered = append(filtered, t)
-				}
 			}
 			if len(filtered) == 0 {
 				if err := skip("declares an empty tool set; give it the tools it needs, or omit tools: to inherit the agent's"); err != nil {
@@ -392,6 +350,217 @@ func piClaudeToolNames() []string {
 	return names
 }
 
+// piChildSpecResolver returns the function resolvePersonaModels resolves a
+// child's model with, before the trust check: bare values against the
+// manifest's model table, as the extension does, and a qualified xai spec
+// normalised. Not translatePiModel: it prefixes with FULLSEND_PI_PROVIDER,
+// turning a bare `opus` into `xai-vertex/xai/claude-opus-4-6` under a Grok
+// run. Both tables come from the alias entries only, in sorted key order:
+// "default" is the agent's own model under whatever provider the run
+// selected, so its bare id must not shadow an alias entry's, and two
+// aliases sharing a trailing id must resolve the same way every run. The
+// "@suffix" strip mirrors piAgentModels: ValidModelRef admits
+// `opus@20250101`. A value nothing matches is returned as written.
+func piChildSpecResolver(modelsTable map[string]string) func(model string) string {
+	byAlias := make(map[string]string, len(modelsTable))
+	byBareID := make(map[string]string, len(modelsTable))
+	aliases := make([]string, 0, len(modelsTable))
+	for alias := range modelsTable {
+		aliases = append(aliases, alias)
+	}
+	slices.Sort(aliases)
+	for _, alias := range aliases {
+		spec := modelsTable[alias]
+		if spec == "" || alias == "default" {
+			continue
+		}
+		byAlias[strings.ToLower(alias)] = spec
+		id := spec
+		if i := strings.LastIndex(spec, "/"); i >= 0 {
+			id = spec[i+1:]
+		}
+		if _, taken := byBareID[strings.ToLower(id)]; !taken {
+			byBareID[strings.ToLower(id)] = spec
+		}
+	}
+	return func(model string) string {
+		base, _, _ := strings.Cut(strings.TrimSpace(model), "@")
+		base = strings.TrimSpace(base)
+		if !strings.Contains(base, "/") {
+			key := strings.ToLower(base)
+			if s, ok := byAlias[key]; ok {
+				return s
+			}
+			if s, ok := byBareID[key]; ok {
+				return s
+			}
+			return base
+		}
+		// A qualified spec names its own provider, so read it from the
+		// string rather than the environment.
+		head, _, _ := strings.Cut(base, "/")
+		if s, ok := normalizeXaiVertexModel(strings.ToLower(head), base); ok {
+			return s
+		}
+		return base
+	}
+}
+
+// piPersonaTools maps a persona's declared Claude tools to the pi tools a
+// child gets, minus Agent/Task (children cannot dispatch), and lists the
+// ones pi cannot serve. resolvePersonaModels skips a persona with any
+// unsupported tool or an empty result; piConfiguredChildren applies
+// the same rule so a persona that will not register never counts.
+func piPersonaTools(claudeTools []string) (filtered, unsupported []string) {
+	piTools, unsupported := piToolsFor(claudeTools)
+	filtered = make([]string, 0, len(piTools))
+	for _, t := range piTools {
+		if t != piAgentToolName && t != piAgentToolAlias {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered, unsupported
+}
+
+// piPersonaRegistrable reports whether resolvePersonaModels would register
+// p on its tools alone: no Bash(...) allowlist, and a declared tool set pi
+// can serve that is not empty once Agent/Task are dropped.
+func piPersonaRegistrable(p piPersona) bool {
+	if len(p.BashAllowlist) > 0 {
+		return false
+	}
+	if p.Tools == nil {
+		return true
+	}
+	filtered, unsupported := piPersonaTools(p.Tools)
+	return len(unsupported) == 0 && len(filtered) > 0
+}
+
+// PiChild is one configured pi child whose model resolves to a provider
+// the runner must prepare for (openai, or a Vertex provider). Source says
+// where the model came from ("subagents.x", "subagents.default", or a
+// persona's frontmatter) and Spec is the resolved "<provider>/<id>".
+// Configured is true for a subagents entry: the repo asked for that model,
+// so a run that cannot serve it must fail. A persona's own frontmatter
+// model is not configured that way; it is refused later, at Bootstrap or
+// dispatch.
+type PiChild struct {
+	Source     string
+	Spec       string
+	Configured bool
+}
+
+func (c PiChild) String() string { return c.Source + " → " + c.Spec }
+
+// piConfiguredChildren is the single resolver behind OpenAIChildren,
+// VertexChildren and piConfiguredOpenAIIDs (#7981, #7980): the configured
+// children whose model resolves to one of providers. It resolves each
+// model with piChildSpecResolver over modelsTable, exactly as
+// resolvePersonaModels does, and follows its order: a subagents.<persona>
+// entry wins over that persona's frontmatter, and a tombstoned (nil) entry
+// is no reference. subagents.default counts on its own, since anonymous
+// children use it. A frontmatter model counts only for a persona
+// resolvePersonaModels would register (no Bash(...) allowlist, tools pi
+// can serve). Sorted by source.
+func piConfiguredChildren(personas []piPersona, subagentsCfg map[string]*string, modelsTable map[string]string, providers ...string) []PiChild {
+	resolveSpec := piChildSpecResolver(modelsTable)
+	var out []PiChild
+	add := func(source, model string, configured bool) {
+		if strings.TrimSpace(model) == "" {
+			return
+		}
+		spec := resolveSpec(model)
+		// Only a well-formed reference is admitted: these ids extend the
+		// trusted set and are echoed to host stderr, so a frontmatter
+		// value carrying a newline or other control text must never pass
+		// (it then fails canonicalise, whose error quotes it).
+		if !config.ValidModelRef(spec) {
+			return
+		}
+		head, id, ok := strings.Cut(spec, "/")
+		head = strings.ToLower(head)
+		if ok && id != "" && slices.Contains(providers, head) {
+			out = append(out, PiChild{Source: source, Spec: head + "/" + id, Configured: configured})
+		}
+	}
+	// registrable is the subset of personas resolvePersonaModels would
+	// register; a subagents key naming any other one gets Bootstrap's own
+	// error instead of a provider one.
+	names := make(map[string]bool, len(personas))
+	for _, p := range personas {
+		names[p.Name] = piPersonaRegistrable(p)
+	}
+	for key, v := range subagentsCfg {
+		// A key naming no discovered persona is Bootstrap's error to
+		// report ("no persona ... was discovered"), not a provider need.
+		if v != nil && (key == "default" || names[key]) {
+			add("subagents."+key, *v, true)
+		}
+	}
+	for _, p := range personas {
+		if subagentsCfg[p.Name] != nil || !piPersonaRegistrable(p) {
+			continue
+		}
+		add(fmt.Sprintf("persona %q frontmatter model", p.Name), p.Model, false)
+	}
+	slices.SortFunc(out, func(a, b PiChild) int { return strings.Compare(a.Source, b.Source) })
+	return out
+}
+
+// piVertexProviders are the pi providers that authenticate with the
+// sandbox's Vertex ADC (GOOGLE_APPLICATION_CREDENTIALS).
+var piVertexProviders = []string{piDefaultProvider, piGoogleVertexProvider, piXaiVertexProvider}
+
+// piChildrenOn loads the agent definition and its personas the way
+// Bootstrap does and returns the configured children on providers. It is
+// empty for every backend other than pi and for an agent without the
+// Agent tool, which dispatches no children.
+func piChildrenOn(backend, agentPath string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string, providers ...string) []PiChild {
+	if backend != "pi" {
+		return nil
+	}
+	data, err := os.ReadFile(agentPath)
+	if err != nil {
+		return nil
+	}
+	def, err := parsePiAgent(data)
+	if err != nil || !piAgentToolEnabled(def) {
+		return nil
+	}
+	// discoverPersonas never returns a non-nil error; Bootstrap runs the
+	// same discovery on the same directories.
+	personas, _, _ := discoverPersonas(skillDirs, agentName)
+	return piConfiguredChildren(personas, subagentsCfg, piAgentModels(def.Model, configAliases), providers...)
+}
+
+// VertexChildren lists the configured pi children whose model resolves to
+// a Vertex provider (anthropic-vertex, google-vertex, xai-vertex). The
+// runner fails a non-Vertex parent before the sandbox when a subagents
+// entry is among them and no Vertex credential reaches the sandbox (#7980).
+func VertexChildren(backend, agentPath string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string) []PiChild {
+	return piChildrenOn(backend, agentPath, subagentsCfg, skillDirs, agentName, configAliases, piVertexProviders...)
+}
+
+// piConfiguredOpenAIIDs is the bare ids of the configured openai children,
+// deduplicated, for the manifest's openai allowlist. These are
+// repo-controlled and known before the sandbox starts, so piAgentManifestFor
+// extends the allowlist with them the way piGoogleVertexModels and
+// piXaiVertexModels extend theirs — but only once the run-scoped OpenAI
+// provider is attached.
+func piConfiguredOpenAIIDs(personas []piPersona, subagentsCfg map[string]*string, modelsTable map[string]string) []string {
+	seen := map[string]bool{}
+	var ids []string
+	for _, c := range piConfiguredChildren(personas, subagentsCfg, modelsTable, piOpenAIProvider) {
+		id := strings.TrimPrefix(c.Spec, piOpenAIProvider+"/")
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
 // piTrustedSpecs is the closed set a persona's model is checked against:
 // the alias table, every provider-model id, the agent definition's model
 // and the model the parent actually runs on. The parent's effective model
@@ -400,19 +569,26 @@ func piClaudeToolNames() []string {
 // built before any persona is resolved and never widened by one.
 func piTrustedSpecs(models map[string]string, providerModels map[string][]string, parentModel string, configAliases map[string]string) map[string]string {
 	trusted := make(map[string]string)
+	// Only well-formed references are trusted. A resolved child model is
+	// echoed to host stderr and listed in errors, and the agent
+	// definition's frontmatter model reaches this table unvalidated, so a
+	// value carrying a newline must never become an accepted spec.
+	add := func(spec string) {
+		if config.ValidModelRef(spec) {
+			trusted[strings.ToLower(spec)] = spec
+		}
+	}
 	for _, spec := range models {
-		trusted[strings.ToLower(spec)] = spec
+		add(spec)
 	}
 	for provider, ids := range providerModels {
 		for _, id := range ids {
-			full := provider + "/" + id
-			trusted[strings.ToLower(full)] = full
+			add(provider + "/" + id)
 		}
 	}
 	if p := strings.TrimSpace(parentModel); p != "" {
 		// Canonicalised the way the parent itself is launched.
-		spec := translatePiModel(p, configAliases)
-		trusted[strings.ToLower(spec)] = spec
+		add(translatePiModel(p, configAliases))
 	}
 	return trusted
 }

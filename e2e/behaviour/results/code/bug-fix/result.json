@@ -1,0 +1,4 @@
+{
+  "target_branch": "main",
+  "pr_body": "Fixes the concurrent map read/write panic by guarding the cache map with a sync.RWMutex."
+}

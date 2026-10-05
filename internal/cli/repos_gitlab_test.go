@@ -50,22 +50,54 @@ func (cliRoleTokenInventory) RevokeProjectAccessToken(context.Context, string, s
 func TestSetupGitLabPipelineSchedules(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("creates two poll schedules with correct variables", func(t *testing.T) {
-		fake := &forge.FakeClient{}
+	t.Run("creates two poll schedules without pipeline variables", func(t *testing.T) {
+		fake := forge.NewFakeClient()
 		var buf bytes.Buffer
 		printer := ui.New(&buf)
 
-		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+		// typed=true: the install queued a typed-dispatch wrapper, so poll
+		// mode is selected from the schedule description and schedules
+		// must stay variable-free.
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", true)
 		require.NoError(t, err)
 		require.Len(t, fake.CreatedSchedules, 2)
 
 		// Slash poll: every 5 minutes.
 		assert.Equal(t, "*/5 * * * *", fake.CreatedSchedules[0].Cron)
 		assert.Equal(t, "fullsend slash poll", fake.CreatedSchedules[0].Description)
-		assert.Equal(t, map[string]string{forge.VarPollMode: "slash"}, fake.CreatedSchedules[0].Variables)
+		assert.Empty(t, fake.CreatedSchedules[0].Variables)
 
 		// Event poll: offset cron to avoid collision with slash poll.
 		assert.Equal(t, "2,17,32,47 * * * *", fake.CreatedSchedules[1].Cron)
+		assert.Equal(t, "fullsend event poll", fake.CreatedSchedules[1].Description)
+		assert.Empty(t, fake.CreatedSchedules[1].Variables)
+	})
+
+	// TestSetupGitLabPipelineSchedules/legacy-pin guards the regression
+	// where fresh-install schedule creation always submitted the
+	// (now variable-free) canonical spec.Variables, even for a repo whose
+	// effective wrapper is still the legacy variable-based dispatch
+	// contract. That wrapper selects poll mode from the schedule's
+	// FULLSEND_POLL_MODE pipeline variable, not its description, so
+	// omitting the variable collapses the slash schedule into event
+	// polling. setupGitLabPipelineSchedules must select variables the same
+	// transport-aware way convergeSchedules does.
+	t.Run("legacy pin keeps FULLSEND_POLL_MODE on both schedules", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		var buf bytes.Buffer
+		printer := ui.New(&buf)
+
+		// typed=false: the install queued (or left in place) the legacy
+		// variable-based wrapper, which selects poll mode from the
+		// schedule's FULLSEND_POLL_MODE pipeline variable, not its
+		// description.
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
+		require.NoError(t, err)
+		require.Len(t, fake.CreatedSchedules, 2)
+
+		assert.Equal(t, "fullsend slash poll", fake.CreatedSchedules[0].Description)
+		assert.Equal(t, map[string]string{forge.VarPollMode: "slash"}, fake.CreatedSchedules[0].Variables)
+
 		assert.Equal(t, "fullsend event poll", fake.CreatedSchedules[1].Description)
 		assert.Equal(t, map[string]string{forge.VarPollMode: "events"}, fake.CreatedSchedules[1].Variables)
 	})
@@ -79,7 +111,7 @@ func TestSetupGitLabPipelineSchedules_ScheduleError(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating fullsend slash poll schedule")
 }
@@ -94,7 +126,7 @@ func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testi
 		var buf bytes.Buffer
 		printer := ui.New(&buf)
 
-		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "creating fullsend event poll schedule")
 		require.Len(t, fake.CreatedSchedules, 1, "only slash schedule should have been created")
@@ -109,7 +141,7 @@ func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testi
 		var buf bytes.Buffer
 		printer := ui.New(&buf)
 
-		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "creating fullsend event poll schedule")
 		assert.Contains(t, buf.String(), "Failed to clean up schedule")
@@ -124,7 +156,7 @@ func TestSetupGitLabPipelineSchedules_ListError(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "Could not list existing schedules")
 }
@@ -163,7 +195,7 @@ func TestSetupGitLabPipelineSchedules_DeletesExisting(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", false)
 	require.NoError(t, err)
 	assert.Equal(t, []int64{5}, fake.DeletedScheduleIDs, "should delete existing fullsend schedule")
 	require.Len(t, fake.CreatedSchedules, 2)
@@ -1016,4 +1048,34 @@ func TestAnnotateGitLabRoleLifecyclePipelineRefWithoutTokenList(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "pipeline-ref drift should still be reported without token inventory")
+}
+
+func TestAnnotateGitLabRoleLifecycleSkipsConfigRejectedRepos(t *testing.T) {
+	ctx := context.Background()
+	var calledPaths []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		calledPaths = append(calledPaths, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	// A GitLab repo rejected for a missing inference.auth selection was
+	// never evaluated, so annotation must not inspect its project or
+	// append drift.
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{{
+			Owner: "group", Repo: "project", Forge: repos.ForgeGitLab,
+			Error:          "no inference authentication selected for group/project",
+			ConfigRejected: true,
+		}},
+		Summary: repos.StatusSummary{Total: 1, Errored: 1, NotInstalled: 1},
+	}
+	annotateGitLabRoleLifecycle(ctx, newSingleClientFactory(glClient), result)
+	assert.Empty(t, calledPaths, "rejected repo must not be inspected, got requests: %v", calledPaths)
+	assert.Empty(t, result.Repos[0].Drifts)
+	assert.Equal(t, 0, result.Summary.Drifted)
 }

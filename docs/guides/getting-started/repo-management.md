@@ -40,48 +40,19 @@ needed only for Vertex agents.
 
 ## Getting started
 
-### Creating a manifest via migration
-
-Migrate an org from per-org to per-repo install and generate a
-`repos.yaml` manifest:
-
-```bash
-fullsend repos migrate <org> --project <gcp-project>
-```
-
-Migrate only specific repos:
-
-```bash
-fullsend repos migrate <org> --project <gcp-project> --repo api --repo web
-```
-
-Preview what would be migrated without making changes:
-
-```bash
-fullsend repos migrate <org> --project <gcp-project> --dry-run
-```
-
-The command discovers enrolled repos from the per-org config, provisions
-WIF infrastructure per repo, installs per-repo (scaffold, variables,
-secrets), removes migrated repository entries from the per-org config,
-and generates a `repos.yaml` manifest. If a manifest already exists,
-newly migrated repos are merged into it rather than overwriting it.
-Successful migrations delete the source config entry entirely rather
-than setting `enabled: false`.
-
 ### Creating a manifest from scratch
 
-If you do not have an existing per-org installation to migrate from,
 `repos install` can bootstrap a new manifest for you. Pass repo names
-as positional arguments with `--forge`:
+as positional arguments with `--forge` and `--inference-auth`:
 
 ```bash
-fullsend repos install acme/api acme/web --forge github --direct
+fullsend repos install acme/api acme/web --forge github --inference-auth vertex-wif --direct
 ```
 
 This creates `repos.yaml` (or the path given by `-f`) with
-`version: 1`, adds the specified repos, and runs the install. The
-`--forge` flag is required when no manifest exists.
+`version: 1`, adds the specified repos with `inference.auth` pinned on
+each entry, and runs the install. The `--forge` and `--inference-auth`
+flags are required when no manifest exists.
 
 ### Multi-forge manifests
 
@@ -91,6 +62,9 @@ platform — no per-entry forge selector is needed:
 
 ```yaml
 version: 1
+defaults:
+  inference:
+    auth: vertex-wif
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v2.5.0
@@ -134,8 +108,8 @@ repos are present, including gitlab.com; there is no manifest default. Pass
 `--forge=gitlab` when no forge is specified), or set it later with
 `fullsend repos set-default gitlab.url <url>`. The env-var fallback chain
 (`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to
-gitlab.com) applies only to call paths without a manifest URL, such as
-`repos migrate`; it does not override manifest validation. Self-hosted
+gitlab.com) applies only to call paths without a manifest URL; it does
+not override manifest validation. Self-hosted
 instances that use a private CA need runner `tls-ca-file` plus separate
 sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
 
@@ -159,6 +133,74 @@ The `none` sentinel works for string fields (`fullsend_ref`,
 cannot be cleared per-repo. For `app_set`, `none` resets the effective
 value to the built-in default `fullsend-ai` rather than disabling the
 field (an app set is always required to resolve App slugs).
+
+### Inference authentication
+
+Every repo must resolve an explicit inference authentication method,
+`inference.auth`: either `vertex-wif` (Vertex AI through GCP Workload
+Identity Federation) or `openai-api-key`. There is no implicit default. A
+repo with no selection is reported as a configuration error by
+`repos install` and `repos status`, before any forge change is made for
+that repo. Uninstall does not need the setting: it removes every
+Fullsend-managed inference credential whether `inference.auth` is set,
+valid, or missing.
+
+The selection can be set under `defaults`, in each forge section, and on
+repo or glob entries. It resolves entry → forge section → `defaults`
+using the normal entry matching rules (an explicit entry wins over a glob),
+so a repo-level value never affects its siblings:
+
+```yaml
+version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  repos:
+    - name: acme/api
+    - name: acme/openai-*
+      inference:
+        auth: openai-api-key
+gitlab:
+  url: https://gitlab.example.com
+  inference:
+    auth: openai-api-key
+  repos:
+    - name: group/project
+```
+
+Only the selection is stored. Credentials and GCP values are still
+supplied separately on the command line (`--vertex-project` for
+`vertex-wif`, `--openai-api-key` for `openai-api-key`), and `none` is not
+a valid value. `repos install` provisions only the credentials of each
+repo's selected method; see
+[Inference credentials](../../cli/repos.md#inference-credentials).
+
+`fullsend repos install <repo> --inference-auth <value>` persists the
+selection as `inference.auth` on each selected manifest entry, for repos
+added by the command and for existing entries alike. It never changes
+`defaults`, forge sections, or unselected repos, so later `status` and
+`install` runs resolve the same value without the flag. To set the
+forge-wide or global selection, use `repos set-default`
+(`defaults.inference.auth`, `github.inference.auth`,
+`gitlab.inference.auth`). See
+[fullsend repos § Inference authentication selection](../../cli/repos.md#inference-authentication-selection)
+for the full precedence rules.
+
+**Upgrading:** manifests written before `inference.auth` existed are not
+treated as Vertex. Add the selection your repos actually use before
+upgrading. For example, to keep the previous Vertex WIF behaviour
+everywhere:
+
+```bash
+fullsend repos set-default defaults.inference.auth vertex-wif
+```
+
+**Shared manifests:** older CLI versions reject unknown manifest fields, so
+a `repos.yaml` that contains `inference.auth` cannot be parsed by a CLI
+that predates the key. When several people or pipelines share one
+manifest, upgrade every consumer's CLI before committing the manifest edit
+that adds `inference.auth`.
 
 ### Configuration presets
 
@@ -339,7 +381,10 @@ Install runs in two phases:
    branch are checked for component drift (workflow, thin callers,
    variables, secrets, pipeline schedules, GitLab poller protected-ref
    pipeline access, GitLab pipeline-variable override-role inspection —
-   report-only by default), scaffold content drift, managed `.fullsend/config.yaml`
+   typed dispatch activation fails closed without `no_one_allowed`;
+   runnable typed templates require that setting to be verified before
+   delivery, even when enforcement is requested; legacy variable-based
+   wrappers are exempt), scaffold content drift, managed `.fullsend/config.yaml`
    drift, scaffold ref drift, and declared configuration-preset drift against
    `.fullsend/config.base.yaml`. Missing or drifted components are repaired
    automatically; ref updates are committed as PRs (or direct pushes with
@@ -401,6 +446,12 @@ The command reports per-repo status (installed, not installed, error) and
 any configuration drift. Returns a non-zero exit code when drift or
 errors exist, making it suitable for CI checks.
 
+Inference credentials are checked against each repo's own
+`inference.auth`. A missing credential of the selected method and a
+leftover Fullsend-managed secret of the other method are both reported as
+drift, by name only. See
+[`repos status` output](../../cli/repos.md#output).
+
 Use `--json` for machine-readable output:
 
 ```bash
@@ -412,7 +463,10 @@ fullsend repos status -f repos.yaml --json
 Run `repos install` to detect and fix component drift (workflow, thin
 callers, variables, secrets, pipeline schedules, GitLab poller
 protected-ref pipeline access, GitLab pipeline-variable override-role
-inspection — report-only by default), scaffold ref drift,
+inspection — typed dispatch activation fails closed without
+`no_one_allowed` before runnable template delivery, even when enforcement
+is requested; legacy upgrades need maintenance-window preparation and legacy variable-based wrappers are
+exempt), scaffold ref drift,
 scaffold content drift, declared configuration-preset drift, and managed
 `.fullsend/config.yaml` drift across all manifest repos:
 
@@ -430,8 +484,10 @@ The convergence phase checks all components (workflow, thin callers,
 variables, secrets, pipeline schedules, GitLab poller protected-ref
 pipeline access — a disabled GitLab schedule is
 reported as drift and reactivated only when `--reactivate-schedules` is
-passed; GitLab pipeline-variable override-role inspection, report-only
-by default), scaffold content drift (including structural rewrites of
+passed; GitLab pipeline-variable override-role inspection — typed
+dispatch activation fails closed without `no_one_allowed`;
+runnable typed templates require the setting to be verified before delivery,
+even when enforcement is requested; legacy variable-based wrappers are exempt), scaffold content drift (including structural rewrites of
 `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and
 removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs
 predating #7707),
@@ -463,6 +519,14 @@ Add a new repo to the manifest and install it in one step:
 fullsend repos install acme/new-api --forge github --direct
 ```
 
+This requires an inherited `inference.auth` selection (forge section or
+`defaults`). Otherwise pass `--inference-auth`, which also pins the value on
+the new entry:
+
+```bash
+fullsend repos install acme/new-api --forge github --inference-auth openai-api-key
+```
+
 Add multiple repos:
 
 ```bash
@@ -483,8 +547,9 @@ fullsend repos install acme/new-api --forge github --roles triage,coder,review
 ```
 
 Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
-`--app-set`, `--allowed-remote-resources`, and `--vendor`. The
-`--inference-region` flag is install-time only and is not stored in the
+`--app-set`, `--allowed-remote-resources`, `--inference-auth`, and
+`--vendor`. The
+`--vertex-region` flag is install-time only and is not stored in the
 manifest.
 
 ### Removing repos
@@ -609,6 +674,21 @@ Common causes:
 To fix, correct the field name or remove the unrecognized entry and re-run
 the command.
 
+### No inference authentication selected
+
+```
+no inference authentication selected for acme/api: set inference.auth (vertex-wif or openai-api-key) on the repository entry, in the github section, or under defaults in repos.yaml, or pass --inference-auth to repos install
+```
+
+The repo resolves no `inference.auth` from its entry, its forge section,
+or `defaults`. This is expected after upgrading from a release without
+the setting. Add the selection at the appropriate level (see
+[Inference authentication](#inference-authentication)) and re-run.
+`fullsend repos set-default defaults.inference.auth vertex-wif` restores
+the previous Vertex WIF behaviour for every repo. An unrecognised value
+(for example `vertex`) fails manifest validation and names the offending
+key.
+
 ### Partial secret state
 
 Both GCP inference secrets may be absent. If only one exists, `repos status`
@@ -618,8 +698,13 @@ fails its early credential check. An OpenAI run does not use the GCP pair.
 
 ## Migrating from per-org mode to manifest management
 
+> **Removed:** `fullsend repos migrate` and the `fullsend github` org commands
+> referenced in this section have been removed along with per-org installation.
+> Install repositories directly with `fullsend repos install` instead. This
+> section is kept for historical reference only.
+
 Organizations migrating from per-org mode to per-repo manifest management
-can use `repos migrate` — a single command that handles the full migration.
+could use `repos migrate` — a single command that handled the full migration.
 
 ### Step 1: Migrate from per-org to per-repo
 

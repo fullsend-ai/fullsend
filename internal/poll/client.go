@@ -7,6 +7,8 @@ package poll
 import (
 	"context"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // GitLabClient defines the GitLab API surface the poller requires.
@@ -75,6 +77,18 @@ type GitLabClient interface {
 	// CreatePipeline creates a new pipeline on the given ref with the
 	// given variables. Returns the pipeline ID and web URL.
 	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error)
+	// CreatePipelineWithInputs creates a new pipeline on the given ref
+	// using typed GitLab CI/CD pipeline inputs (spec:inputs) instead of
+	// user-defined pipeline variables. Unlike CreatePipeline, this
+	// remains usable when a project's
+	// ci_pipeline_variables_minimum_override_role is
+	// forge.PipelineVarOverrideNoOneAllowed, because that setting does
+	// not govern pipeline inputs (#7850). dispatch() uses this for a
+	// target repository whose committed wrapper declares the typed
+	// contract (see usesTypedDispatch) and falls back to CreatePipeline
+	// otherwise, since a poller binary upgrade is not synchronized with
+	// that repository's own scaffold migration.
+	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error)
 }
 
 // Issue represents a GitLab issue as returned by the API.
@@ -85,6 +99,9 @@ type Issue struct {
 	State     string    `json:"state"`
 	Labels    []string  `json:"labels"`
 	Author    UserRef   `json:"author"`
+	ClosedBy  UserRef   `json:"closed_by"`
+	ClosedAt  time.Time `json:"closed_at"`
+	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -152,5 +169,6 @@ type ResourceLabelEvent struct {
 	Label  struct {
 		Name string `json:"name"`
 	} `json:"label"`
-	User UserRef `json:"user"`
+	User      UserRef   `json:"user"`
+	CreatedAt time.Time `json:"created_at"`
 }

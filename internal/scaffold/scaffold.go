@@ -45,6 +45,11 @@ func FileMode(path string) string {
 // workflow workspace preparation. The scaffold does not install these;
 // customization uses base: harness composition instead. See ADR 0064.
 //
+// profiles/ and providers/ are listed so they are never installed, but
+// workspace preparation does not layer them: fullsend run resolves a bare
+// built-in provider name and its profile from this embed (#7268). See
+// TestLayeredDirsMatchWorkspacePreparation.
+//
 // policies/ is absent: the scaffold ships no policy, and workspace
 // preparation's [[ -d ]] guard skips an entry with no embedded files (#6834).
 // See TestLayeredDirsShipContent.

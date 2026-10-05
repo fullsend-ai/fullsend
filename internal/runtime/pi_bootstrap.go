@@ -325,7 +325,7 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		if err := uploadBytes(sandboxName, cfg+"/"+piAgentExtensionFile, piAgentExtensionJS); err != nil {
 			return fmt.Errorf("installing agent extension: %w", err)
 		}
-		block, err := r.piAgentManifestFor(sandboxName, def, tools, hooksEnabled, input.ModelAliases(), personas, skipped, input.AgentSubagents(), input.ParentModel())
+		block, err := r.piAgentManifestFor(sandboxName, def, tools, hooksEnabled, input.ModelAliases(), personas, skipped, input.AgentSubagents(), input.ParentModel(), input.OpenAIProviderAttached())
 		if err != nil {
 			return err
 		}
@@ -468,8 +468,9 @@ const piNoSubagentNote = "\n## Runtime note\n\n" +
 //
 // personas are the pre-discovered sub-agent personas (from discoverPersonas).
 // subagentsCfg is the merged agents[].subagents map from the config, driving
-// per-persona model overrides (#7031).
-func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools []string, hooksEnabled bool, configAliases map[string]string, personas []piPersona, skipped []piSkippedPersona, subagentsCfg map[string]*string, parentModel string) (*piAgentManifest, error) {
+// per-persona model overrides (#7031). openAIProviderAttached is whether the
+// run-scoped OpenAI provider was actually created for this run (#7981).
+func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools []string, hooksEnabled bool, configAliases map[string]string, personas []piPersona, skipped []piSkippedPersona, subagentsCfg map[string]*string, parentModel string, openAIProviderAttached bool) (*piAgentManifest, error) {
 	piBin, providerExts, err := piAgentProbe(sandboxName)
 	if err != nil {
 		return nil, err
@@ -508,6 +509,34 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 	}
 	if editRepair {
 		manifest.EditRepairExtension = editRepairExt
+	}
+
+	// A pre-configured child — a subagents.<persona> override, subagents.
+	// default, or a discovered persona's own frontmatter model: — that
+	// resolves to the openai provider is repo-controlled and known before
+	// the sandbox starts, unlike a model an Agent call chooses at dispatch
+	// time. Admit it into the provider-model allowlist the same way a
+	// google-vertex/xai-vertex catalog entry is admitted, but only when the
+	// run-scoped OpenAI provider actually attached OPENAI_API_KEY to this
+	// sandbox — otherwise the credential a trusted spec implies exists
+	// would not (#7981).
+	if openAIProviderAttached {
+		if ids := piConfiguredOpenAIIDs(personas, subagentsCfg, manifest.Models); len(ids) > 0 {
+			manifest.ProviderModels[piOpenAIProvider] = ids
+		}
+	} else {
+		// Without the provider there is no managed OpenAI credential and
+		// the launch skips the OpenAI safeguards, so no model-table entry
+		// may make an openai child servable: not a models.aliases entry
+		// that maps to openai, and not "default" (the agent definition's
+		// model) when the run moved the parent off it. A parent that does
+		// run on openai has the provider attached, so this never touches
+		// it; the extension takes the parent's own spec from pi itself.
+		for alias, spec := range manifest.Models {
+			if head, _, ok := strings.Cut(spec, "/"); ok && strings.EqualFold(head, piOpenAIProvider) {
+				delete(manifest.Models, alias)
+			}
+		}
 	}
 
 	// Resolve per-persona models and the blanket subagents.default (#7031).
@@ -662,8 +691,8 @@ var piXaiVertexModels = []string{"xai/grok-4.6"}
 // because the extension always accepts the parent's own model spec.
 func piAgentProviderModels() map[string][]string {
 	return map[string][]string{
-		"google-vertex":     append([]string(nil), piGoogleVertexModels...),
-		piXaiVertexProvider: append([]string(nil), piXaiVertexModels...),
+		piGoogleVertexProvider: append([]string(nil), piGoogleVertexModels...),
+		piXaiVertexProvider:    append([]string(nil), piXaiVertexModels...),
 	}
 }
 

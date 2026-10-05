@@ -17,10 +17,10 @@ GitHub repositories use a different command (`fullsend github setup`). See
   [Getting Inference](getting-inference.md). OpenAI-only installation does not
   need a GCP project. GitLab does **not** use
   `fullsend inference provision` — inference credentials are written by
-  `repos install --inference-project` (see [Inference Setup](#inference-setup)
-  below). Unless you also pass `--inference-wif-provider` (see
+  `repos install --vertex-project` (see [Inference Setup](#inference-setup)
+  below). Unless you also pass `--vertex-wif-provider` (see
   [Inference Setup](#inference-setup)), `repos install` derives the
-  project number from `--inference-project` via the GCP Resource
+  project number from `--vertex-project` via the GCP Resource
   Manager API, so the machine running `repos install` needs
   Application Default Credentials with `cloudresourcemanager.googleapis.com`
   `projects.get` access on that project.
@@ -34,6 +34,69 @@ GitHub repositories use a different command (`fullsend github setup`). See
   may be insufficient for sustained polling because polling consumes CI
   minutes. See
   [Runner Configuration](#runner-configuration).
+* The project's `ci_pipeline_variables_minimum_override_role` must already
+  be `no_one_allowed` before typed pipeline-input dispatch can activate —
+  install/converge refuse runnable template delivery on a weaker, unset,
+  or unverifiable setting, even with automatic enforcement requested.
+  Follow [Typed-input dispatch migration](#typed-input-dispatch-migration)
+  before upgrading a legacy installation; legacy variable-based pins keep
+  their compatible setting. See [GitLab Role-Credential
+  Contract](../../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)
+  for the remaining live-validation rollout gates for this transport.
+
+## Typed-input dispatch migration
+
+`ci_pipeline_variables_minimum_override_role` is a GitLab project setting,
+not a `.fullsend` configuration field. Before installing typed-input jobs,
+an administrator must set it to `no_one_allowed`; Fullsend reads it back
+and refuses delivery if it is weaker, unsupported, or unreadable. Setting
+`FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` does not bypass this
+pre-delivery check. A failed setting change must leave the new jobs undelivered,
+not runnable under an unsafe policy.
+
+For an existing variable-based installation, plan a maintenance window:
+stop its poller and prevent its legacy credential-bearing jobs from running,
+remove the managed schedules' obsolete `FULLSEND_POLL_MODE` variables, and
+apply and verify the GitLab restriction before installing the new templates.
+Do not apply the restriction to a running legacy installation: its dispatch
+and schedule variables would stop working. If preparation fails, keep jobs
+stopped and do not deliver or merge the typed setup. Inspect an asynchronous
+installation/repair MR before merging, keep the restriction in place, and
+rerun `repos install` after it merges to complete activation. Other user-owned
+schedule variables must be migrated separately; Fullsend does not delete them.
+
+Root, wrapper, agent, and poll templates are delivered together using the
+effective target version. Fullsend does not migrate managed schedule variables
+until the compatible wrapper **and** agent/poll templates are on the default
+branch, including when a repair MR is still open. Dry runs never mutate them.
+Typed jobs derive slash/event mode from the schedule description; legacy
+variable wrappers retain their existing restriction and schedule variables.
+
+Version skew between the poller and the installed wrapper behaves as follows:
+
+| Poller | Installed wrapper | Result |
+| --- | --- | --- |
+| New | Typed | Dispatches with pipeline inputs. |
+| New | Legacy | Detects the legacy wrapper and falls back to pipeline variables. |
+| Old (sends variables) | Legacy | Dispatches with pipeline variables, as before. |
+| Old (sends variables) | Typed, after activation set `no_one_allowed` | Cannot dispatch: GitLab rejects the variables. Upgrade the poller. |
+
+The transport declares eleven metadata inputs and nine base64 chunks, at
+most 1000 characters each. All three template layers validate the chunk
+alphabet and length; fixed code reconstructs the payload as data. Variable
+bridges disable expansion, and creator/HMAC authentication precedes caller
+link logging and credential selection. Note bodies are bounded to 800 Unicode
+characters with a truncation marker and note ID; oversized payloads fail
+before a pipeline is created. GitLab's 20-input limit leaves no spare root
+inputs: conflicting declarations or excess inputs fail explicitly.
+
+Compatible user input declarations, jobs, includes, and header settings
+survive merge/uninstall. Declarations referenced directly by surviving user
+configuration, and the `STAGE` bridge/input used indirectly through `$STAGE`,
+are retained. Different version pins need matching upstream templates; a
+recorded ref matching the running release uses embedded templates even
+without GitHub credentials, including status checks. GitLab vendor mode
+and typed pins predating the secured contract are unsupported.
 
 > **GitLab tier:** Project access tokens require GitLab Premium or
 > Ultimate **on gitlab.com**; self-managed Community Edition can create
@@ -79,15 +142,28 @@ Run the command:
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>"
+  --inference-auth vertex-wif \
+  --vertex-project "<gcp-project>"
 ```
 
 Where `<group/project>` is the GitLab project path (nested groups are
 supported, for example `group/subgroup/project`), and `<gcp-project>` is
 the GCP project from [Getting Inference](getting-inference.md).
 
-For an installation without Vertex credentials, omit `--inference-project`.
-No GCP inference secrets are written; a later Vertex agent run requires them.
+`--inference-auth` selects the inference authentication method
+(`vertex-wif` or `openai-api-key`) and is persisted as `inference.auth` on
+the project's manifest entry. There is no default: when the manifest does
+not already provide a selection, `repos install` fails before changing the
+project. See
+[Repository management § Inference authentication](repo-management.md#inference-authentication).
+
+For an installation without Vertex credentials, pass
+`--inference-auth openai-api-key --openai-api-key <key>` and omit
+`--vertex-project`. The key is written as the masked
+`FULLSEND_OPENAI_API_KEY` CI/CD variable, and no GCP inference secrets are
+written or looked up. An unprefixed `OPENAI_API_KEY` CI/CD variable is no
+longer used; see the
+[upgrade steps](../../cli/repos.md#gitlab-fullsend_openai_api_key-replaces-openai_api_key-breaking).
 Configure each enabled agent's runtime and model for OpenAI before it runs.
 GitLab OpenAI runs use an API key, not GitHub Actions WIF; see
 [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
@@ -105,6 +181,10 @@ then converges the project:
 
 * Scaffolds `.gitlab/ci/fullsend-*.yml` and merges an include, stages, and
   workflow rules into `.gitlab-ci.yml` without overwriting unrelated CI.
+  Dispatch uses typed pipeline inputs, which requires
+  `ci_pipeline_variables_minimum_override_role=no_one_allowed` (see
+  [Prerequisites](#prerequisites) above) — installation fails closed when
+  the project doesn't already have it set.
 * Provisions the built-in and registered custom role credentials as protected
   CI/CD variables. Runtime jobs select the registered role credential
   unconditionally; there is no legacy shared-token fallback.
@@ -119,7 +199,7 @@ then converges the project:
   re-enable it. Leave that flag unset on repos using [Off-system
   polling](#off-system-polling), where the schedules are disabled on
   purpose.
-* Writes inference CI/CD variables when `--inference-project` is set.
+* Writes inference CI/CD variables when `--vertex-project` is set.
 
 By default the scaffold lands as a merge request. Pass `--direct` to push
 to the default branch instead. Preview with `--dry-run`.
@@ -137,7 +217,7 @@ agents, pass `--roles`:
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>" \
+  --vertex-project "<gcp-project>" \
   --roles triage,review
 ```
 
@@ -151,7 +231,7 @@ Pass `--runtime` to set it (`claude` is the stable default; `pi` and
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>" \
+  --vertex-project "<gcp-project>" \
   --runtime claude
 ```
 
@@ -167,7 +247,7 @@ role with a personal access token:
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>" \
+  --vertex-project "<gcp-project>" \
   --gitlab-role-token "poller=<poller-pat>" \
   --gitlab-role-token "analyst=<analyst-pat>" \
   --gitlab-role-token "coder=<coder-pat>"
@@ -347,7 +427,7 @@ the pipeline-ref falls back to `CI_COMMIT_REF_NAME` then
 
 ## Inference Setup
 
-Pass `--inference-project` so install writes `FULLSEND_GCP_PROJECT_ID`
+Pass `--vertex-project` so install writes `FULLSEND_GCP_PROJECT_ID`
 and `FULLSEND_GCP_WIF_PROVIDER`. **This only writes CI/CD variables
 that reference the shared `gitlab-oidc` provider's resource name — it
 does not create the Workload Identity Pool, the `gitlab-oidc`
@@ -610,13 +690,13 @@ resource name instead of relying on the default `gitlab-oidc` path:
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>" \
-  --inference-wif-provider "projects/<number>/locations/global/workloadIdentityPools/fullsend-inference/providers/gitlab-oidc"
+  --vertex-project "<gcp-project>" \
+  --vertex-wif-provider "projects/<number>/locations/global/workloadIdentityPools/fullsend-inference/providers/gitlab-oidc"
 ```
 
 The GCP project still needs the Vertex AI APIs enabled as described in
-[Getting Inference](getting-inference.md). `--inference-region` defaults
-to `global` when `--inference-project` is set.
+[Getting Inference](getting-inference.md). `--vertex-region` defaults
+to `global` when `--vertex-project` is set.
 
 ## Runner Configuration
 
@@ -641,7 +721,7 @@ fullsend repos set-default gitlab.agent_runner_tags fullsend-gitlab-runner
 fullsend repos install <group/project> \
   --forge gitlab \
   --gitlab-url https://gitlab.com \
-  --inference-project "<gcp-project>"
+  --vertex-project "<gcp-project>"
 ```
 
 To route the poll job to a different fleet than the sandbox agents (for
@@ -664,7 +744,9 @@ fullsend repos set-default gitlab.control_runner_tags fullsend-api
 > `gitlab.control_runner_tags` explicitly before or immediately after
 > upgrading, or the poll job sits pending. `fullsend repos converge`
 > auto-remediates the rendered `fullsend-poll.yml` with a repair commit
-> for unpinned, vendored, or post-split-pinned installs; a
+> for unpinned or post-split-pinned installs (GitLab vendor mode is no
+> longer supported and is rejected by install/converge, so a previously
+> vendored install is not repaired this way); a
 > `gitlab.fullsend_ref` still pinned to a pre-split ref keeps the
 > leftover `__RUNNER_TAGS__` placeholder stamped with the agent tags, so
 > no drift is detected and no repair commit runs there — that install
@@ -811,21 +893,23 @@ external scheduler instead — see [Off-system polling](#off-system-polling)
 | Bot identity | Per-role GitHub Apps | Role-specific project access tokens (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`); Free tier must enroll these via `--gitlab-role-token` since runtime authentication never falls back to the shared PAT or `fullsend-bot` |
 | Token mint | Required for App installation tokens | Not used — GitLab uses the stored PAT |
 | Event dispatch | Native Actions webhooks | Cron polling (`fullsend slash poll` / `fullsend event poll`) |
-| Inference WIF | Per-repo provider from `inference provision` | Shared `gitlab-oidc` provider via `--inference-project` |
+| Inference WIF | Per-repo provider from `inference provision` | Shared `gitlab-oidc` provider via `--vertex-project` |
 | CI entrypoint | `.github/workflows/fullsend.yaml` | `.gitlab/ci/fullsend-*.yml` included from `.gitlab-ci.yml` |
 
 ### `workflow:` block and `auto_cancel`
 
-Install merges an include, `poll` / `agent` stages, and workflow rules into
-the existing `.gitlab-ci.yml`. Installs from before the removal of the empty
-`dispatch` stage may still contain that legacy stage; converge and uninstall
-clean it up. Install does not overwrite unrelated jobs.
+Install merges an include, `dispatch` / `poll` / `agent` stages, and workflow
+rules into the existing `.gitlab-ci.yml`. The `dispatch` stage hosts the
+webhook dispatcher job (`fullsend-dispatcher.yml`), which runs only in
+`trigger` pipelines started by a GitLab pipeline trigger on the protected
+default branch; such a pipeline runs the dispatcher alone, never an agent
+job. Install does not overwrite unrelated jobs.
 
 When an existing, non-empty file already has a `workflow:` block, fullsend sets
 `workflow.auto_cancel.on_new_commit: none` if that key is missing, and does not
 overwrite an existing value. It also adds a `CI_DEBUG_TRACE` deny-before-admit
-rule (`when: never`) followed by the protected-ref `schedule`/`api` rules if
-the block has no `rules:` key. Because `workflow.rules` is an
+rule (`when: never`) followed by the protected-ref `schedule`/`api` rules and
+the protected-default-branch `trigger` rule if the block has no `rules:` key. Because `workflow.rules` is an
 allowlist, ordinary push pipelines stop running in that case unless the block
 already has a matching rule; add a catch-all/push rule (or an explicit
 `when: always` rule) before installing, or remove the name-only `workflow:`
@@ -833,8 +917,8 @@ block so fullsend can leave it absent. When an existing, non-empty file has no
 `workflow:` block, fullsend leaves it absent so push-triggered pipelines keep
 running. For a missing or empty `.gitlab-ci.yml`, fullsend instead writes a
 fullsend-owned `workflow:` block with a name, `auto_cancel.on_new_commit:
-none`, the `CI_DEBUG_TRACE` deny rule, and protected-ref `schedule`/`api`
-rules. Later ordinary push jobs added to that file likewise need additional
+none`, the `CI_DEBUG_TRACE` deny rule, protected-ref `schedule`/`api`
+rules, and the protected-default-branch `trigger` rule. Later ordinary push jobs added to that file likewise need additional
 `workflow.rules` (or an explicit `when: always` rule), or GitLab will skip
 them.
 
@@ -874,7 +958,7 @@ Pass `--gitlab-url` at install time to record the instance URL in
 ```bash
 fullsend repos install <group/project> \
   --gitlab-url https://gitlab.example.com \
-  --inference-project "<gcp-project>"
+  --vertex-project "<gcp-project>"
 ```
 
 That env-var fallback (`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` →

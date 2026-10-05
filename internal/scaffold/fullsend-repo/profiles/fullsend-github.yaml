@@ -3,6 +3,11 @@ id: fullsend-github
 display_name: Fullsend GitHub
 description: GitHub API and Git operations for fullsend agents
 category: source_control
+credentials:
+  - name: api_token
+    description: GitHub token used by the gh CLI
+    env_vars: [GH_TOKEN]
+    required: true
 endpoints:
   - host: api.github.com
     port: 443

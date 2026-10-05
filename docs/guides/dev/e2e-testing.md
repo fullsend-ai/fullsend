@@ -1,6 +1,6 @@
 # E2E Testing
 
-Guide for running and debugging fullsend admin e2e tests locally and in CI.
+Guide for running and debugging fullsend behaviour and playback tests locally and in CI.
 
 Related ADRs: [0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md) (org pool),
 [0060](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md) (cross-org mint),
@@ -22,12 +22,47 @@ Before running e2e locally or in CI:
 
 ## Local runs
 
+The default local environment is `dev`. Both suites deploy a temporary
+Cloudflare preview mint; GitHub authentication alone is not sufficient.
+
 1. Authenticate as an admin on the pool orgs (`gh auth login --web`, or export `GH_TOKEN`).
-2. Run tests (uses `gh auth token`, `GH_TOKEN`, or `GITHUB_TOKEN`):
+2. Load the following environment variables from your approved secret store
+   before running either suite. Use test credentials, not production credentials;
+   never commit them or paste them into logs.
+
+   | Environment variables | Required values |
+   |-----------------------|-----------------|
+   | `TEST_FULLSEND_PEM`, `TEST_TRIAGE_PEM`, `TEST_CODER_PEM`, `TEST_REVIEW_PEM`, `TEST_RETRO_PEM`, `TEST_PRIORITIZE_PEM` | Private-key **contents**, not paths, for the installed test GitHub Apps. The driver materializes temporary PEM files for mint deployment and removes them afterward. |
+   | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | Test Cloudflare account and token authorized to deploy preview mint Workers. Locally use these names, not the CI secret names `TEST_CLOUDFLARE_*`. |
+   | `E2E_GCP_PROJECT_ID` | Test inference project. Authenticate locally with GCP permissions to inspect/provision inference WIF for the pool repos; see [inference setup](behaviour-testing.md#repo-allocation-via-unified-driver). |
+   | `TEST_ACTOR_WRITE_PAT`, `TEST_ACTOR_TRIAGE_PAT`, `TEST_ACTOR_OUTSIDER_PAT` | Human-like test-actor PATs used by SCM steps. Playback uses the triage PAT to create its tracking issue. |
+
+   The default app set is `fullsend-test`; the PEMs must match those installed
+   Apps. Set `BEHAVIOUR_APP_SET` only when using a different test app set.
+   Overriding `FULLSEND_MINT_URL` does **not** disable preview mint deployment.
+   If no PEMs are loaded, initialization fails with
+   `PEMDir is required (no PEMs materialized)`.
+
+3. Run tests (uses `gh auth token`, `GH_TOKEN`, or `GITHUB_TOKEN`):
 
 ```bash
-make e2e-test
+make behaviour-test   # Gherkin behaviour suite
+make playback-test    # @playback scenarios on the dummy-playback runtime
 ```
+
+The obsolete admin install/uninstall suite and `make e2e-test` target have
+been removed. CI keeps both the regular behaviour and playback suites.
+
+To run playback manually, select **E2E Tests → Run workflow**, choose the branch,
+and leave **Run the playback behaviour suite** enabled. From the CLI:
+
+```bash
+gh workflow run e2e.yml --repo fullsend-ai/fullsend \
+  --ref YOUR_BRANCH -f run_playback=true
+```
+
+Manual runs use the dev org pool and run playback only. Normal CI runs both
+suites, concurrently in dev and serialized against the single stage org.
 
 Optional environment variables:
 
@@ -38,12 +73,12 @@ Optional environment variables:
 | `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m) |
 | `E2E_GCP_PROJECT_ID` | GCP project for inference setup (`github setup --inference-project`) |
 
-Behaviour tests use the same pool orgs (for `ENVIRONMENT=dev`) but install via `fullsend github setup` (per-repo) instead of `fullsend admin install`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
+Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
 Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
 `halfsend-12` for DEV, or `halfsend` for STAGE) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
 
-Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests live in `internal/e2etest/`. Admin-specific test logic remains in `e2e/admin/`.
+Shared pool, CLI, and cleanup helpers used by the behaviour and playback suites live in `internal/e2etest/`.
 
 ## CI runs
 
@@ -90,9 +125,9 @@ Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so ru
 
 Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org behaviour repos must be enrolled once by a GCP admin on the hosted mint project.
 
-Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour tests allocate numbered `halfsend-NN/test-repo-01` … `test-repo-12` names via the unified `install.Driver`; these repos are **lazily created and installed** on demand (see [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-unified-driver)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
+Behaviour tests allocate numbered `halfsend-NN/test-repo-01` … `test-repo-12` names via the unified `install.Driver`; these repos are **lazily created and installed** on demand (see [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-unified-driver)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
 
-Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver resolves the repo-scoped WIF provider using CI credentials on the inference project (same access model as admin e2e) and passes it to `github setup`. It runs `fullsend inference status <org>/test-repo-NN` first and runs `fullsend inference provision` only when the provider is not healthy, one provision at a time. The provider is cached per repo name for the rest of the run. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
+Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver resolves the repo-scoped WIF provider using CI credentials on the inference project and passes it to `github setup`. It runs `fullsend inference status <org>/test-repo-NN` first and runs `fullsend inference provision` only when the provider is not healthy, one provision at a time. The provider is cached per repo name for the rest of the run. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
 
 The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 
@@ -101,7 +136,7 @@ The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 | `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped inference WIF providers |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to repo WIF principals |
 
-One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `test-repo` (used by the driver today) and the behaviour pool `test-repo-01` … `test-repo-12` (pre-provisioned for planned parallelization):
+One-time enrollment for all pool orgs (idempotent). Enroll the singular `test-repo` (used by the driver today) and the behaviour pool `test-repo-01` … `test-repo-12` (pre-provisioned for planned parallelization):
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
@@ -280,8 +315,9 @@ gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
    workflows call the same suites via `workflow_call` (fork / external path)
 3. **Gate** — authorize the PR author or a fresh `ok-to-test` label (base
    checkout only; never checks out PR head)
-4. **E2E** — checkout PR head SHA, authenticate to GCP via WIF, mint cross-org
-   tokens per pool org, `make e2e-test`
+4. **Behaviour / playback** — checkout PR head SHA, authenticate to GCP via
+   WIF, mint cross-org tokens per pool org, `make behaviour-test` (or
+   `make playback-test` for the playback job)
 
 Pushes to `main`, merge queue, and `workflow_dispatch` skip the gate and run e2e
 directly.

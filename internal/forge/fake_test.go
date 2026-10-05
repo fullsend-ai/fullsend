@@ -6,10 +6,28 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFakeClient_ListPullRequestCommits(t *testing.T) {
+	f := NewFakeClient()
+	f.PRCommits = map[string][]string{"o/r/7": {"a", "b"}}
+
+	shas, err := f.ListPullRequestCommits(context.Background(), "o", "r", 7)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b"}, shas)
+
+	shas, err = f.ListPullRequestCommits(context.Background(), "o", "r", 8)
+	require.NoError(t, err)
+	assert.Empty(t, shas)
+
+	f.Errors["ListPullRequestCommits"] = errors.New("boom")
+	_, err = f.ListPullRequestCommits(context.Background(), "o", "r", 7)
+	require.Error(t, err)
+}
 
 func TestFakeClient_ListOrgRepos(t *testing.T) {
 	ctx := context.Background()
@@ -1593,6 +1611,53 @@ func TestFakeClient_ListWorkflowRuns_WorkflowRunsList(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, runs, 1)
 	assert.Equal(t, 1, runs[0].ID)
+}
+
+// TestFakeClient_ListWorkflowRunsSince is a regression test (#7996 review):
+// ListWorkflowRunsSince was added to FakeClient alongside the live GitHub
+// and GitLab clients' paginated implementations, but nothing exercised it
+// directly within this package, leaving it at 0% patch coverage. It filters
+// the same configured runs as ListWorkflowRuns down to those created at or
+// after since, and must also surface a ListWorkflowRuns error and treat an
+// unparsable CreatedAt as excluded rather than included.
+func TestFakeClient_ListWorkflowRunsSince(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowRunsList = map[string][]WorkflowRun{
+		"org/repo/ci.yml": {
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-03T00:00:00Z"},
+			{ID: 2, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-01T00:00:00Z"},
+			{ID: 3, Status: "completed", Conclusion: "success", CreatedAt: "not-a-time"},
+		},
+	}
+
+	since := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	runs, err := fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since)
+	require.NoError(t, err)
+	require.Len(t, runs, 1, "only the run at or after since with a parsable CreatedAt must be included")
+	assert.Equal(t, 1, runs[0].ID)
+
+	fc.Errors = map[string]error{"ListWorkflowRuns": errors.New("boom")}
+	_, err = fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since)
+	require.Error(t, err, "an underlying ListWorkflowRuns error must propagate")
+}
+
+// TestFakeClient_ListWorkflowRunsSince_OwnErrorKey is a regression test
+// (#7996 review): ListWorkflowRunsSince delegated to ListWorkflowRuns, which
+// only checks FakeClient.Errors["ListWorkflowRuns"], so tests could not
+// inject a failure under the method-name error-injection convention's
+// expected key, "ListWorkflowRunsSince".
+func TestFakeClient_ListWorkflowRunsSince_OwnErrorKey(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowRunsList = map[string][]WorkflowRun{
+		"org/repo/ci.yml": {
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-03T00:00:00Z"},
+		},
+	}
+	fc.Errors = map[string]error{"ListWorkflowRunsSince": errors.New("boom")}
+
+	since := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	_, err := fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since)
+	require.Error(t, err, "injecting ListWorkflowRunsSince's own error key must fail the call")
 }
 
 func TestFakeClient_DownloadWorkflowRunArtifact(t *testing.T) {

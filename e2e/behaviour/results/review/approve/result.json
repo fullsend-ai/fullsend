@@ -1,0 +1,24 @@
+{
+  "action": "approve",
+  "pr_number": 2,
+  "repo": "owner/repo",
+  "head_sha": "5fcdfb95cc5d61819a8e1f5bf60db024cf88b5f0",
+  "body": "<!-- **Head SHA:** 5fcdfb95cc5d61819a8e1f5bf60db024cf88b5f0 -->\n\n## Review\n\nThe TOCTOU race from the previous review round is fixed: the delete path now re-checks the entry under the write lock before removing it, so a concurrent write can no longer be silently discarded. No further concerns.",
+  "risk_assessment": {
+    "score": 1,
+    "level": "low",
+    "tier1_signals": [
+      {"dimension": "FILES_CHANGED", "value": "1"},
+      {"dimension": "LINES_CHANGED", "value": "8"},
+      {"dimension": "BLAST_RADIUS", "value": "low"},
+      {"dimension": "PROTECTED_PATH_COUNT", "value": "0"},
+      {"dimension": "SECURITY_SENSITIVE_COUNT", "value": "0"},
+      {"dimension": "CI_WORKFLOW_CHANGED", "value": "false"},
+      {"dimension": "DEPENDENCY_FILES_CHANGED", "value": "none"},
+      {"dimension": "TEST_FILE_RATIO", "value": "0.0"},
+      {"dimension": "AUTHOR_IS_BOT", "value": "true"},
+      {"dimension": "AUTHOR_IS_FIRST_TIME", "value": "false"}
+    ],
+    "rationale": "Small, targeted fix that directly addresses the single finding from the prior review round, with no new risk signals."
+  }
+}

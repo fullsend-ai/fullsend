@@ -55,12 +55,17 @@ if [ "$2" = "download" ]; then
   exit 0
 fi
 if [ "$2" = "upload" ]; then
+  case "$5" in /tmp/fs-upload-*/) cp -- "$4" "$5/"; exit $? ;; esac
   cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
   exit 0
 fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
+    "mkdir -m 700 -- /tmp/"*|"mkdir -m 700 -- '/tmp/"*|"rm -f -- '/tmp/fs-upload-"*) sh -c "$last"; exit $? ;;
+    "test -f '/tmp/fs-upload-"*)
+      sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
+      exit $? ;;
     "codex --version") echo "` + versionOutput + `"; exit 0 ;;
     "command -v python3") echo "/usr/bin/python3"; exit 0 ;;
     *"sys.version_info"*) echo "${FULLSEND_TEST_PYVER:-3.12}"; exit 0 ;;

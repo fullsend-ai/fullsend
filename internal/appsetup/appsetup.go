@@ -616,14 +616,13 @@ func (s *Setup) handleExistingApp(ctx context.Context, inst *forge.Installation,
 				return nil, fmt.Errorf(
 					"app %s was recreated (ID changed) and needs a new private key; "+
 						"generate one at https://github.com/apps/%s "+
-						"or run 'fullsend admin uninstall' and re-run install",
+						"or delete the app and re-run install",
 					inst.AppSlug, inst.AppSlug,
 				)
 			}
 			return nil, fmt.Errorf(
 				"app %s exists but its private key secret is missing; "+
-					"run 'fullsend admin uninstall' first, then delete the app at "+
-					"https://github.com/apps/%s and re-run install",
+					"delete the app at https://github.com/apps/%s and re-run install",
 				inst.AppSlug, inst.AppSlug,
 			)
 		}

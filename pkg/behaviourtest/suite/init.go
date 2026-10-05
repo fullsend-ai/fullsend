@@ -122,6 +122,11 @@ func resetScenarioWorld(w *world.World) {
 	w.JiraMockServer = nil
 	w.JiraMockState = nil
 	w.JiraConfigDir = ""
+	w.PlaybackEntries = nil
+	w.PlaybackCommitted = false
+	w.ConsumedHarnessRunIDs = nil
+	w.HarnessRunArtifactDirs = nil
+	w.StagePublishedSHA = nil
 }
 
 func tagNames(tags []*messages.PickleTag) []string {
@@ -144,6 +149,16 @@ func SkipErrorForTagNames(tags []string, w *world.World) error {
 		case name == "requires:per-repo" && w.Config.InstallMode != "per-repo":
 			return godog.ErrSkip
 		case name == "skip:gitlab" && w.Config.SCM == "gitlab":
+			return godog.ErrSkip
+		case name == "playback" && !w.IsPlaybackMode():
+			// @playback scenarios replay canned results via the
+			// dummy-playback runtime and only make sense under the
+			// playback suite (pkg/behaviourtest.RunPlaybackSuite),
+			// whose template World wraps install.Driver in a
+			// *install.PlaybackDriver. Skip them under the standard
+			// behaviour suite regardless of GODOG_TAGS so a shared
+			// "features" directory can hold both without the normal
+			// suite trying (and failing) to run playback-only steps.
 			return godog.ErrSkip
 		case strings.HasPrefix(name, "requires:capability:"):
 			// Skip unless the runner declares the capability via

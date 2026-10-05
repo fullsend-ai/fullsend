@@ -107,6 +107,7 @@ func baseCfg() InstallConfig {
 // newFakeClientWithRepo returns a FakeClient pre-populated with a repo.
 func newFakeClientWithRepo() *forge.FakeClient {
 	fc := forge.NewFakeClient()
+	fc.PipelineVarOverrideRoles["acme/widgets"] = forge.PipelineVarOverrideNoOneAllowed
 	fc.Repos = []forge.Repository{{
 		FullName:      "acme/widgets",
 		Name:          "widgets",
@@ -1415,10 +1416,12 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		".gitlab/ci/fullsend-pipeline.yml",
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/fullsend-dispatcher.yml",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		".gitlab/ci/scripts/pin-ci-job-identity.sh",
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",
+		".gitlab/ci/scripts/run-dispatcher-job.sh",
 		".gitlab/ci/scripts/run-agent-job.sh",
 		".gitlab/ci/scripts/checkout-mr-source.sh",
 		".fullsend/config.yaml",

@@ -294,14 +294,17 @@ func (d *Driver) DownloadArtifacts(ctx context.Context, owner, repo string, runI
 }
 
 // DownloadNamedArtifactFromRun downloads a specific named artifact from
-// a pipeline. On GitLab, artifact names correspond to job names.
+// a pipeline. On GitLab, artifact names correspond to job names, so the
+// portable "fullsend-<agent>" name callers pass in is translated via
+// gitlabArtifactJobName before matching.
 func (d *Driver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error {
 	artifacts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, runID)
 	if err != nil {
 		return err
 	}
+	want := gitlabArtifactJobName(artifactName)
 	for _, art := range artifacts {
-		if art.Name != artifactName {
+		if art.Name != want {
 			continue
 		}
 		zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
@@ -314,8 +317,12 @@ func (d *Driver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo s
 }
 
 // DownloadNamedArtifactAfter polls for a repository-level artifact matching
-// the name created after the trigger time, then downloads it.
+// the name created after the trigger time, then downloads it. The portable
+// "fullsend-<agent>" name callers pass in is translated via
+// gitlabArtifactJobName before matching, since GitLab artifact names
+// correspond to job names.
 func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error {
+	jobName := gitlabArtifactJobName(artifactName)
 	var listErrs pollErrors
 	deadline := d.now().Add(artifactRunWait)
 	var lastNewestCreatedAt string
@@ -339,7 +346,7 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 		}
 		lastNewestCreatedAt = newestCreatedAt
 
-		if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
+		if art := selectRepositoryArtifactAfter(arts, jobName, after); art != nil {
 			zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
 			if err != nil {
 				return err
@@ -355,11 +362,31 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 	return fmt.Errorf("artifact %q not found after %s%s", artifactName, after.Format(time.RFC3339), listErrs.describe(nil, "polls"))
 }
 
-// harnessJobSuffix returns the job name suffix used by the harness
-// pipeline for a given agent on GitLab. The naming convention mirrors
-// GitHub Actions' "Harness run (<agent>)" pattern.
+// harnessJobSuffix returns the job name used by the harness pipeline for a
+// given agent on GitLab. Unlike GitHub Actions — which names a custom
+// harness's matrix job "Harness run (<agent>)" separately from built-in
+// stage jobs like "Triage" — GitLab's scaffold runs every agent (built-in
+// stage or custom harness alike) through one generic template that names
+// the job "fullsend <agent> agent", with STAGE (== agent) substituted
+// directly (fullsend-agent.yml, run-agent-job.sh; #7957 review).
 func harnessJobSuffix(agent string) string {
-	return "Harness run (" + agent + ")"
+	return "fullsend " + agent + " agent"
+}
+
+// gitlabArtifactJobName translates the portable "fullsend-<agent>"
+// artifact name used by driver-agnostic callers (pkg/behaviourtest/steps,
+// shared with the GitHub driver) into the actual job name that carries it
+// on GitLab. GitLab has no separate named-artifact concept —
+// ListRepositoryArtifacts and ListWorkflowRunArtifacts synthesize
+// RepositoryArtifact/WorkflowArtifact Name from the owning job's own name
+// (harnessJobSuffix), not the portable convention (#7957 review). Names
+// that do not match the portable convention pass through unchanged, so a
+// caller that already has a literal job name keeps working.
+func gitlabArtifactJobName(name string) string {
+	if agent, ok := strings.CutPrefix(name, "fullsend-"); ok {
+		return harnessJobSuffix(agent)
+	}
+	return name
 }
 
 // runHasAgentJob reports whether the given pipeline contains a job whose
@@ -439,7 +466,9 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, owner, repo, agent string, after time.Time, artifactErrs, runsErrs, lookupErrs *pollErrors) (run *forge.WorkflowRun, done bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, remaining)
 	defer cancel()
-	artifactName := "fullsend-" + agent
+	// RepositoryArtifact.Name is the owning job's name on GitLab, not the
+	// portable "fullsend-<agent>" convention (#7957 review).
+	artifactName := harnessJobSuffix(agent)
 
 	// Quick-success: check for the agent's artifact.
 	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
@@ -486,6 +515,135 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 	return nil, false, nil
 }
 
+// WaitForHarnessAgentRound is like WaitForHarnessAgent, but for scenarios
+// where the same agent's harness is dispatched more than once (e.g.
+// dummy-playback's review round, retried after fix). It selects the
+// earliest eligible successful run whose ID is not in consumed instead of
+// WaitForHarnessAgent's artifact-first "latest eligible run wins"
+// selection, which would pick a later round's run when an earlier round's
+// own completion is asserted only after the later round has also already
+// finished (#7957).
+func (d *Driver) WaitForHarnessAgentRound(ctx context.Context, owner, repo, agent string, after time.Time, consumed map[int]bool) (*forge.WorkflowRun, error) {
+	deadline := d.now().Add(dispatchWait)
+	interval := dispatchPollInit
+	var runsErrs, lookupErrs pollErrors
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-d.timerAfter(interval):
+		}
+		interval = nextBackoff(interval, dispatchPollMax)
+		remaining := deadline.Sub(d.now())
+		if remaining < pollMinBudget {
+			break
+		}
+		run, done, err := d.harnessRoundPollOnce(ctx, remaining, owner, repo, agent, after, consumed, &runsErrs, &lookupErrs)
+		if done {
+			return run, err
+		}
+	}
+	return nil, fmt.Errorf("harness agent %q did not complete a new round successfully within deadline%s%s",
+		agent, runsErrs.describe(nil, "run polls"), lookupErrs.describe(nil, "lookups"))
+}
+
+// harnessRoundPollOnce performs one WaitForHarnessAgentRound poll: it scans
+// pipelines created at or after `after`, oldest first, skipping any already
+// in consumed, and settles on the first one that schedules agent's job
+// (success returns it; a genuine terminal failure returns it with an
+// error). A still-in-flight job on the earliest candidate holds off
+// considering any later pipeline until it settles. An earliest candidate
+// that has not reached a terminal pipeline state and does not yet show
+// agent's job is treated the same way: its absence is inconclusive until
+// the pipeline finishes, so a later, already-resolved pipeline must not win
+// selection instead (#7957 review).
+//
+// This uses ListWorkflowRunsSince rather than ListWorkflowRuns: the live
+// client's ListWorkflowRuns returns only the newest 100 pipelines, so
+// enough newer pipelines (for this agent or others) can push the earliest
+// eligible, not-yet-consumed round off that single page entirely — sorting
+// and checking consumed afterward cannot recover a pipeline the listing
+// never returned, and a later round would be selected instead (#7996
+// review; mirrors the GitHub driver's earliest-round pagination fix).
+func (d *Driver) harnessRoundPollOnce(ctx context.Context, remaining time.Duration, owner, repo, agent string, after time.Time, consumed map[int]bool, runsErrs, lookupErrs *pollErrors) (run *forge.WorkflowRun, done bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, remaining)
+	defer cancel()
+
+	allRuns, err := d.Client.ListWorkflowRunsSince(ctx, owner, repo, "", after)
+	runsErrs.record(ctx, err)
+	if err != nil {
+		return nil, false, nil
+	}
+
+	var ordered []forge.WorkflowRun
+	for _, r := range allRuns {
+		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
+		if parseErr != nil || runTime.Before(after) {
+			continue
+		}
+		ordered = append(ordered, r)
+	}
+	for i := 1; i < len(ordered); i++ {
+		for j := i; j > 0 && runCreatedBefore(ordered[j], ordered[j-1]); j-- {
+			ordered[j-1], ordered[j] = ordered[j], ordered[j-1]
+		}
+	}
+
+	for i := range ordered {
+		r := ordered[i]
+		if consumed[r.ID] {
+			continue
+		}
+		hasJob, job, jobErr := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		lookupErrs.record(ctx, jobErr)
+		if jobErr != nil {
+			// The earliest not-yet-consumed candidate's job state is
+			// unknown — do not let the scan fall through to a later,
+			// already-resolved pipeline while that is still uncertain
+			// (#7957 review): a transient lookup failure here must not
+			// let a later round win selection out of order.
+			return nil, false, nil
+		}
+		if !hasJob {
+			if r.Status != "completed" {
+				// The pipeline has not reached a terminal state yet, so
+				// agent's absence from its current job list does not
+				// yet rule out scheduling — e.g. a later stage's job
+				// has not been created/listed yet. Wait rather than
+				// letting a later, already-resolved pipeline win
+				// selection out of order (#7957 review).
+				return nil, false, nil
+			}
+			continue
+		}
+		if job.Status != "completed" {
+			return nil, false, nil
+		}
+		if job.Conclusion == "success" {
+			found := r
+			return &found, true, nil
+		}
+		if isConcurrencySuperseded(job.Conclusion) {
+			continue
+		}
+		failed := r
+		return &failed, true, fmt.Errorf("harness agent %q: pipeline %d's job concluded with %q (url=%s)",
+			agent, r.ID, job.Conclusion, r.HTMLURL)
+	}
+	return nil, false, nil
+}
+
+// runCreatedBefore reports whether a was created before b, using run ID as
+// a tiebreak/fallback when CreatedAt does not parse on either side.
+func runCreatedBefore(a, b forge.WorkflowRun) bool {
+	at, aErr := time.Parse(time.RFC3339, a.CreatedAt)
+	bt, bErr := time.Parse(time.RFC3339, b.CreatedAt)
+	if aErr == nil && bErr == nil && !at.Equal(bt) {
+		return at.Before(bt)
+	}
+	return a.ID < b.ID
+}
+
 // WaitForFailedHarnessAgent waits for the named agent's harness run to
 // complete with a terminal failure conclusion. It errors out early when
 // the run completes successfully instead.
@@ -520,7 +678,9 @@ func (d *Driver) WaitForFailedHarnessAgent(ctx context.Context, owner, repo, age
 func (d *Driver) failedHarnessPollOnce(ctx context.Context, remaining time.Duration, owner, repo, agent string, after time.Time, artifactErrs, runsErrs, lookupErrs *pollErrors) (run *forge.WorkflowRun, done bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, remaining)
 	defer cancel()
-	artifactName := "fullsend-" + agent
+	// RepositoryArtifact.Name is the owning job's name on GitLab, not the
+	// portable "fullsend-<agent>" convention (#7957 review).
+	artifactName := harnessJobSuffix(agent)
 
 	// Artifact-first: resolve the agent's run from its artifact.
 	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)

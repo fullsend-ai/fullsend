@@ -1,10 +1,74 @@
 ---
+# fullsend-input-contract: literal-scheduled-v2
+spec:
+  inputs:
+    stage:
+      default: ''
+      # See internal/poll/dispatch.go (dispatchInputNames) and the root
+      # .gitlab-ci.yml's spec:inputs comment: anchored to safe identifier
+      # characters, matching the empty default non-dispatch pipeline
+      # sources resolve to, excluding GitLab variable-reference syntax.
+      regex: '^[A-Za-z0-9_-]*$'
+    event_type:
+      default: ''
+    resource_key:
+      default: ''
+      # Matches resourceKey()'s "issue-<iid>"/"mr-<iid>" format or the
+      # empty default — see internal/poll/dispatch.go (resourceKey).
+      regex: '^((issue|mr)-[0-9]+)?$'
+    is_fork:
+      default: ''
+    originating_url:
+      default: ''
+    repo_full_name:
+      default: ''
+    mr_author_id:
+      default: ''
+    actor_id:
+      default: ''
+    status_iid:
+      default: ''
+    poll_job_url:
+      default: ''
+    dispatch_hmac:
+      default: ''
+    event_payload_chunk_00:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_01:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_02:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_03:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_04:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_05:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_06:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_07:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_08:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+---
 # Fullsend CI pipeline — include directives and stage declarations.
 #
 # This file is managed by fullsend. Do not edit it directly.
 # The root .gitlab-ci.yml includes this file via:
 #   include:
 #     - local: '.gitlab/ci/fullsend-pipeline.yml'
+#       inputs:
+#         stage: $[[ inputs.stage ]]
+#         ... (every input below, forwarded unchanged)
 #
 # A version-marker comment is injected at install/upgrade time so
 # `repos status` and drift detection can identify the installed
@@ -14,6 +78,14 @@
 #
 # The workflow: block lives in the root .gitlab-ci.yml because GitLab
 # does not merge multiple workflow: definitions across includes.
+#
+# spec:inputs above declares every pipeline input the root
+# .gitlab-ci.yml forwards into this file (#7850); each is re-forwarded
+# into fullsend-agent.yml by the include: entry below so the typed
+# inputs the API-triggered pipeline carries survive both include hops
+# from pipeline creation to the agent template. See
+# internal/poll/dispatch.go (dispatchInputs) for the Go authority on
+# the input contract these names must match.
 
 include:
   - local: '.gitlab/ci/fullsend-poll.yml'
@@ -25,20 +97,72 @@ include:
       - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
         when: never
       - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
-  # Native merge_request_event dispatch (fullsend-dispatch.yml) was
-  # removed in #7322, and the leftover stub was dropped in #7707. All
-  # events route through the cron poller, which creates standalone
-  # pipelines via the API; those run .gitlab-ci.yml with STAGE set and
-  # include the agent template via the rule below.
-  - local: '.gitlab/ci/fullsend-agent.yml'
+  # Webhook dispatcher (ADR 0125, #7771). GitLab's native "use a webhook"
+  # pipeline trigger starts a source=trigger pipeline; only this include
+  # admits it, so a trigger pipeline runs the dispatcher alone and never
+  # the agent job below (api only) or the poller above (schedule only).
+  # The dispatcher reads the native TRIGGER_PAYLOAD file variable and
+  # launches agents through a separate signed-input API pipeline, so no
+  # inputs are forwarded into it. This is the distinct
+  # fullsend-dispatcher.yml, not the retired fullsend-dispatch.yml.
+  - local: '.gitlab/ci/fullsend-dispatcher.yml'
     rules:
       - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
         when: never
-      - if: $CI_PIPELINE_SOURCE == "api" && $STAGE && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
+      - if: $CI_PIPELINE_SOURCE == "trigger" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
+  # Native merge_request_event dispatch (fullsend-dispatch.yml) was
+  # removed in #7322, and the leftover stub was dropped in #7707. All
+  # events route through the cron poller, which creates standalone
+  # pipelines via the API; those run .gitlab-ci.yml with the stage
+  # pipeline input set and include the agent template via the rule
+  # below. inputs: forwards every pipeline input this file declares
+  # above into fullsend-agent.yml's own spec:inputs (#7850) — GitLab
+  # does not propagate inputs across an include hop on its own.
+  - local: '.gitlab/ci/fullsend-agent.yml'
+    inputs:
+      stage: $[[ inputs.stage ]]
+      event_type: $[[ inputs.event_type ]]
+      resource_key: $[[ inputs.resource_key ]]
+      is_fork: $[[ inputs.is_fork ]]
+      originating_url: $[[ inputs.originating_url ]]
+      repo_full_name: $[[ inputs.repo_full_name ]]
+      mr_author_id: $[[ inputs.mr_author_id ]]
+      actor_id: $[[ inputs.actor_id ]]
+      status_iid: $[[ inputs.status_iid ]]
+      poll_job_url: $[[ inputs.poll_job_url ]]
+      dispatch_hmac: $[[ inputs.dispatch_hmac ]]
+      event_payload_chunk_00: $[[ inputs.event_payload_chunk_00 ]]
+      event_payload_chunk_01: $[[ inputs.event_payload_chunk_01 ]]
+      event_payload_chunk_02: $[[ inputs.event_payload_chunk_02 ]]
+      event_payload_chunk_03: $[[ inputs.event_payload_chunk_03 ]]
+      event_payload_chunk_04: $[[ inputs.event_payload_chunk_04 ]]
+      event_payload_chunk_05: $[[ inputs.event_payload_chunk_05 ]]
+      event_payload_chunk_06: $[[ inputs.event_payload_chunk_06 ]]
+      event_payload_chunk_07: $[[ inputs.event_payload_chunk_07 ]]
+      event_payload_chunk_08: $[[ inputs.event_payload_chunk_08 ]]
+    rules:
+      - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
+        when: never
+      # Include rules are evaluated before this file's variables: block is
+      # available. Stage admission therefore belongs to fullsend-agent.yml's
+      # job rules, after the root input has been forwarded.
+      - if: $CI_PIPELINE_SOURCE == "api" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
+
+# Bridges the stage input into a real CI/CD variable so the include rule
+# above can reference it. GitLab's rules:if requires a CI/CD variable on
+# at least one side of a comparison operator; $[[ inputs.stage ]] is
+# resolved by textual interpolation before rules are evaluated, so
+# comparing it directly produces an invalid literal-to-literal
+# comparison. See the root .gitlab-ci.yml's variables: comment for the
+# same pattern.
+variables:
+  STAGE: $[[ inputs.stage ]]
 
 stages:
-  # Native MR dispatch was removed in #7322. The empty 'dispatch' stage
-  # was dropped from this list in #7337; uninstall and converge still
-  # strip it from already-enrolled repos via obsoleteGitLabStages.
+  # Native MR dispatch was removed in #7322 and its empty 'dispatch'
+  # stage dropped in #7337. #7771 reintroduces 'dispatch' for the
+  # webhook dispatcher job (fullsend-dispatcher.yml), which only runs in
+  # source=trigger pipelines.
+  - dispatch
   - poll
   - agent

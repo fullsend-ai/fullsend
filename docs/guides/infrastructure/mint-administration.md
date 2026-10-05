@@ -78,7 +78,7 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` (admin e2e) and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by the unified `install.Driver` — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-unified-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by the unified `install.Driver` — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-unified-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 
@@ -258,7 +258,7 @@ Requires typing the role name to confirm (unless `--dry-run` or `--yolo`). Remov
 | `--dry-run` | `false` | Preview changes without making them |
 | `--yolo` | `false` | Skip interactive confirmation |
 
-This command does not uninstall GitHub Apps from organizations or update org `.fullsend` configuration — use `fullsend github setup` or edit config repos separately.
+This command does not uninstall GitHub Apps from organizations or update any repository's `.fullsend` configuration — edit repository configuration separately (for example with `fullsend github set <owner/repo> <key> <value>`).
 
 ## Enrolling organizations and repositories
 
@@ -504,6 +504,7 @@ A single token mint can serve multiple GitHub organizations. The first org deplo
 
 ```bash
 export FIRST_ORG="<first-github-org>"
+export FIRST_REPO="<first-github-repo>"
 export GCP_PROJECT="<your-gcp-project>"
 
 # 1. Deploy the token mint
@@ -512,15 +513,20 @@ fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems
 # 2. Enroll the first org in the mint
 fullsend mint enroll "$FIRST_ORG" --project="$GCP_PROJECT"
 
-# 3. Provision inference WIF
-fullsend inference provision "$FIRST_ORG" --project="$GCP_PROJECT"
+# 3. Provision inference WIF for the repository. Use the same owner/repo
+#    target as the GitHub setup in step 4, so the Vertex AI role is granted to
+#    that repository. Repeat this step for each repository you configure.
+fullsend inference provision "$FIRST_ORG/$FIRST_REPO" --project="$GCP_PROJECT"
 
-# 4. Configure GitHub with public apps (installable by other orgs)
+# 4. Configure a repository and create public apps (installable by other orgs).
+#    `github setup` does not create GitHub Apps, so use `admin install`, which
+#    creates the apps (as public with --public) and configures the repository.
+#    It targets a single owner/repo; repeat per repository.
 # $MINT_URL: the "Mint deployed at ..." URL printed by step 1.
 # $WIF_PROVIDER: the FULLSEND_GCP_WIF_PROVIDER value from step 3 — run
-#   `fullsend inference status "$FIRST_ORG" --project="$GCP_PROJECT" --format=env`
+#   `fullsend inference status "$FIRST_ORG/$FIRST_REPO" --project="$GCP_PROJECT" --format=env`
 #   and copy it, or parse it from `--format=json`.
-fullsend github setup "$FIRST_ORG" \
+fullsend admin install "$FIRST_ORG/$FIRST_REPO" \
   --mint-url "$MINT_URL" \
   --inference-wif-provider "$WIF_PROVIDER" \
   --inference-project "$GCP_PROJECT" \
@@ -532,7 +538,7 @@ The `--public` flag creates GitHub Apps as public unlisted — they won't appear
 When the first org uses a custom app set prefix, pass `--app-set` so the apps are named accordingly:
 
 ```bash
-fullsend github setup "$FIRST_ORG" \
+fullsend admin install "$FIRST_ORG/$FIRST_REPO" \
   --mint-url "$MINT_URL" \
   --inference-wif-provider "$WIF_PROVIDER" \
   --inference-project "$GCP_PROJECT" \
@@ -546,6 +552,7 @@ This creates public apps named `{first-org}-fullsend`, `{first-org}-coder`, etc.
 
 ```bash
 export ADDITIONAL_ORG="<additional-github-org>"
+export ADDITIONAL_REPO="<additional-github-repo>"
 ```
 
 `GCP_PROJECT` carries over from the first-org step above.
@@ -554,11 +561,16 @@ export ADDITIONAL_ORG="<additional-github-org>"
 # 1. Enroll the additional org in the existing mint
 fullsend mint enroll "$ADDITIONAL_ORG" --project="$GCP_PROJECT"
 
-# 2. Provision inference WIF for the additional org
-fullsend inference provision "$ADDITIONAL_ORG" --project="$GCP_PROJECT"
+# 2. Provision inference WIF for the additional repository. Each repository
+#    has its own WIF provider, so do not reuse the first repository's value.
+fullsend inference provision "$ADDITIONAL_ORG/$ADDITIONAL_REPO" --project="$GCP_PROJECT"
 
-# 3. Configure GitHub — auto-detects shared public apps
-fullsend github setup "$ADDITIONAL_ORG" \
+# 3. Get this repository's WIF provider (FULLSEND_GCP_WIF_PROVIDER) and set it
+#    as $WIF_PROVIDER for the commands below.
+fullsend inference status "$ADDITIONAL_ORG/$ADDITIONAL_REPO" --project="$GCP_PROJECT" --format=env
+
+# 4. Configure a repository (owner/repo) — auto-detects shared public apps
+fullsend github setup "$ADDITIONAL_ORG/$ADDITIONAL_REPO" \
   --mint-url "$MINT_URL" \
   --inference-wif-provider "$WIF_PROVIDER" \
   --inference-project "$GCP_PROJECT"
@@ -569,7 +581,7 @@ The setup command auto-detects shared public apps by matching installed app IDs 
 If the public apps were created with a custom `--app-set`, pass the same value so the CLI uses the correct slug prefix for convention-based lookups:
 
 ```bash
-fullsend github setup "$ADDITIONAL_ORG" \
+fullsend github setup "$ADDITIONAL_ORG/$ADDITIONAL_REPO" \
   --mint-url "$MINT_URL" \
   --inference-wif-provider "$WIF_PROVIDER" \
   --inference-project "$GCP_PROJECT" \

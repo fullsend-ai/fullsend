@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Compile-time interface checks.
@@ -18,6 +19,7 @@ func NewFakeClient() *FakeClient {
 		FileContents:             make(map[string][]byte),
 		WorkflowRuns:             make(map[string]*WorkflowRun),
 		Secrets:                  make(map[string]bool),
+		SecretProtections:        make(map[string]SecretProtection),
 		VariablesExist:           make(map[string]bool),
 		VariableValues:           make(map[string]string),
 		Errors:                   make(map[string]error),
@@ -198,6 +200,7 @@ type FakeClient struct {
 	OrgPlan                   string                          // plan name returned by GetOrgPlan (default: "free")
 	Installations             []Installation
 	Secrets                   map[string]bool             // key: "owner/repo/name"
+	SecretProtections         map[string]SecretProtection // key: "owner/repo/name"; overrides the default fully-protected report for existing secrets
 	PullRequests              map[string][]ChangeProposal // key: "owner/repo"
 	TokenScopes               []string                    // scopes returned by GetTokenScopes
 	InstallationToken         bool                        // IsInstallationToken return value
@@ -334,6 +337,9 @@ type FakeClient struct {
 
 	// Pull request files for ListPullRequestFiles.
 	PRFiles map[string][]string // key: "owner/repo/number"
+
+	// Pull request commit SHAs (oldest first) for ListPullRequestCommits.
+	PRCommits map[string][]string // key: "owner/repo/number"
 
 	// Pull request file diffs for ListPullRequestFileDiffs.
 	PRFileDiffs map[string][]PullRequestFileDiff // key: "owner/repo/number"
@@ -1278,6 +1284,24 @@ func (f *FakeClient) RepoSecretExists(_ context.Context, owner, repo, name strin
 	return f.Secrets[owner+"/"+repo+"/"+name], nil
 }
 
+func (f *FakeClient) GetRepoSecretProtection(_ context.Context, owner, repo, name string) (SecretProtection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetRepoSecretProtection"); e != nil {
+		return SecretProtection{}, e
+	}
+
+	key := owner + "/" + repo + "/" + name
+	if p, ok := f.SecretProtections[key]; ok {
+		return p, nil
+	}
+	if !f.Secrets[key] {
+		return SecretProtection{}, nil
+	}
+	return SecretProtection{Exists: true, Masked: true, Protected: true}, nil
+}
+
 func (f *FakeClient) CreateOrUpdateRepoVariable(_ context.Context, owner, repo, name, value string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1824,6 +1848,16 @@ func (f *FakeClient) ListPullRequestFiles(_ context.Context, owner, repo string,
 	return nil, nil
 }
 
+func (f *FakeClient) ListPullRequestCommits(_ context.Context, owner, repo string, number int) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListPullRequestCommits"); e != nil {
+		return nil, e
+	}
+	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+	return f.PRCommits[key], nil
+}
+
 func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1945,6 +1979,35 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 		return []WorkflowRun{*run}, nil
 	}
 	return nil, nil
+}
+
+// ListWorkflowRunsSince returns the same configured runs as ListWorkflowRuns,
+// filtered to those created at or after since. Unlike the live GitHub
+// client's ListWorkflowRuns (capped at per_page=10), FakeClient never
+// truncates its configured list, so this filters rather than paginates —
+// tests configure WorkflowRunsList directly with as many runs as a scenario
+// needs, including more than a single live-API page, to exercise
+// since-bounded selection (#7996 review).
+func (f *FakeClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]WorkflowRun, error) {
+	f.mu.Lock()
+	e := f.err("ListWorkflowRunsSince")
+	f.mu.Unlock()
+	if e != nil {
+		return nil, e
+	}
+	runs, err := f.ListWorkflowRuns(ctx, owner, repo, workflowFile)
+	if err != nil {
+		return nil, err
+	}
+	var matched []WorkflowRun
+	for _, run := range runs {
+		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+		if parseErr != nil || runTime.Before(since) {
+			continue
+		}
+		matched = append(matched, run)
+	}
+	return matched, nil
 }
 
 func (f *FakeClient) ListWorkflowRunJobs(_ context.Context, _, _ string, runID int) ([]WorkflowJob, error) {
@@ -2522,6 +2585,40 @@ func (f *FakeClient) DeletePipelineSchedule(_ context.Context, owner, repo strin
 		f.PipelineSchedules[key] = filtered
 	}
 	return nil
+}
+
+func (f *FakeClient) GetPipelineSchedule(_ context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.err("GetPipelineSchedule"); err != nil {
+		return nil, err
+	}
+	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
+		if schedule.ID == scheduleID {
+			result := schedule
+			result.Variables = make(map[string]string, len(schedule.Variables))
+			for key, value := range schedule.Variables {
+				result.Variables[key] = value
+			}
+			return &result, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (f *FakeClient) DeletePipelineScheduleVariable(_ context.Context, owner, repo string, scheduleID int64, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.err("DeletePipelineScheduleVariable"); err != nil {
+		return err
+	}
+	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
+		if schedule.ID == scheduleID {
+			delete(schedule.Variables, key)
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 
 func (f *FakeClient) UpdatePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64, active bool) error {

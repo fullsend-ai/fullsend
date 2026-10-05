@@ -3,7 +3,6 @@ package agentnew
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
@@ -44,30 +43,31 @@ func TestCheckGeneratedAcceptsAFreshTree(t *testing.T) {
 	}
 }
 
-// TestCheckGeneratedCatchesMissingResources is the reason the fourth step
-// exists. ValidateFilesExist skips providers and profiles on purpose, so
-// without validateResourceFilesExist a missing one is invisible until run
-// time. Each file is deleted individually and the error must name it.
-func TestCheckGeneratedCatchesMissingResources(t *testing.T) {
-	role, err := LookupRole("retro") // the role with the most resources
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, victim := range append(append([]string{}, role.Providers...), role.Profiles...) {
-		t.Run(victim, func(t *testing.T) {
+// TestGeneratedTreeHasNoProviderOrProfileFiles pins the fix for the "no
+// update path" problem (#7268, #6990): a generated harness's providers:
+// entries are bare builtin names that resolve against fullsend's own
+// embedded definitions and profiles at run time, so `agent new` writes no
+// providers/ or profiles/ files for a role to go stale against, and
+// validateResourceFilesExist has nothing on disk to check for them (bare
+// names are not provider paths).
+func TestGeneratedTreeHasNoProviderOrProfileFiles(t *testing.T) {
+	for _, role := range RoleNames() {
+		t.Run(role, func(t *testing.T) {
 			dir := t.TempDir()
-			opts := testOptions("lint-docs", "retro")
-			generateInto(t, dir, opts)
-
-			if err := os.Remove(filepath.Join(dir, victim)); err != nil {
-				t.Fatal(err)
+			generateInto(t, dir, testOptions("lint-docs", role))
+			for _, sub := range []string{"providers", "profiles"} {
+				if _, err := os.Stat(filepath.Join(dir, sub)); err == nil {
+					t.Errorf("role %q: generated tree should not write a %s/ directory", role, sub)
+				} else if !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
 			}
-			_, err := loadAndCheck(t, dir, "lint-docs")
-			if err == nil {
-				t.Fatalf("deleting %s was not detected", victim)
+			diags, err := loadAndCheck(t, dir, "lint-docs")
+			if err != nil {
+				t.Fatalf("freshly generated tree with no providers/profiles files failed CheckGenerated: %v", err)
 			}
-			if !strings.Contains(err.Error(), filepath.Base(victim)) {
-				t.Errorf("error should name the missing file %q, got: %v", victim, err)
+			if len(diags) != 0 {
+				t.Errorf("unexpected lint diagnostics: %v", diags)
 			}
 		})
 	}

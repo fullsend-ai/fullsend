@@ -113,6 +113,7 @@ func buildCFMintDriverWithOpts(
 	setupOpts common.GitHubSetupOpts,
 	logf func(string, ...any),
 ) (Driver, error) {
+	setupOpts.AppSet = envAppSet()
 	ctx := context.Background()
 	mintURL, err := md.Install(ctx, org)
 	if err != nil {

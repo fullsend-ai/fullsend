@@ -47,12 +47,6 @@ fi
 FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 
 # Back-link to the poll job that dispatched this pipeline
-if [ -n "${FULLSEND_POLL_JOB_URL:-}" ]; then
-  case "${FULLSEND_POLL_JOB_URL}" in
-    https://*) echo "Dispatched by: ${FULLSEND_POLL_JOB_URL}" ;;
-    *) echo "WARNING: FULLSEND_POLL_JOB_URL is not a valid HTTPS URL — ignoring" ;;
-  esac
-fi
 
 # Inference credential setup — write a file-based credential config
 # for Vertex AI so GOOGLE_APPLICATION_CREDENTIALS is available in the
@@ -81,6 +75,22 @@ INFERENCECRED
   export GOOGLE_CLOUD_PROJECT="${FULLSEND_GCP_PROJECT_ID}"
   export GCP_OIDC_TOKEN_FILE="${OIDC_TOKEN_FILE}"
 fi
+
+# OpenAI static key (inference.auth openai-api-key) — `fullsend repos
+# install` writes FULLSEND_OPENAI_API_KEY as a masked CI/CD variable.
+# Map it to OPENAI_API_KEY, the name the fullsend CLI reads on the host.
+# There is deliberately no fallback to an unprefixed OPENAI_API_KEY
+# CI/CD variable (it may be shared with unrelated jobs): when
+# FULLSEND_OPENAI_API_KEY is unset, any inherited OPENAI_API_KEY is
+# cleared so it cannot satisfy the credential check. The prefixed name is
+# unset after mapping so the real key is exported under only one name,
+# which the runner treats as runner-only (oidcDenyKeys).
+if [ -n "${FULLSEND_OPENAI_API_KEY:-}" ]; then
+  export OPENAI_API_KEY="${FULLSEND_OPENAI_API_KEY}"
+else
+  unset OPENAI_API_KEY
+fi
+unset FULLSEND_OPENAI_API_KEY
 
 # Bootstrap identity for the pre-verification calls below (resource
 # group PUT, pipeline-metadata GET, bot-identity /user call): select
@@ -232,6 +242,13 @@ fi
 # it is kept explicit as a second, independent guard against a
 # role-specific credential ever being selected on an unverified STAGE.
 if [ "${DISPATCH_VERIFIED}" = "true" ]; then
+  # Never log caller-controlled metadata before creator/HMAC authentication.
+  if [ -n "${FULLSEND_POLL_JOB_URL:-}" ]; then
+    case "${FULLSEND_POLL_JOB_URL}" in
+      https://*) echo "Dispatched by: ${FULLSEND_POLL_JOB_URL}" ;;
+      *) echo "WARNING: FULLSEND_POLL_JOB_URL is not a valid HTTPS URL — ignoring" ;;
+    esac
+  fi
   # shellcheck disable=SC2034  # consumed by sourced select-gitlab-role-token.sh
   FULLSEND_JOB_KIND=agent
   FULLSEND_JOB_AGENT="${STAGE:-}"

@@ -43,11 +43,12 @@ func TestRunGitHubSetupWithOpts_CustomRuntime(t *testing.T) {
 		return "", nil
 	}
 
-	opts := GitHubSetupOpts{Vendor: true, Runtime: "dummy-playback"}
+	opts := GitHubSetupOpts{Vendor: true, Runtime: "dummy-playback", AppSet: "fullsend-test"}
 	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
 	require.NoError(t, err)
 
 	assert.Contains(t, capturedArgs, "--runtime")
+	assert.Contains(t, strings.Join(capturedArgs, " "), "--app-set fullsend-test")
 	assert.Contains(t, capturedArgs, "dummy-playback")
 	assert.NotContains(t, capturedArgs, "dummy")
 }
@@ -134,7 +135,6 @@ func TestRunGitHubSetupWithOpts_ConfigPreset(t *testing.T) {
 	assert.Equal(t, []string{
 		"github", "setup", "org/repo",
 		"--direct",
-		"--skip-app-setup",
 		"--mint-url", "https://mint.test",
 		"--config", "https://example.com/preset.yaml",
 		"--vendor",

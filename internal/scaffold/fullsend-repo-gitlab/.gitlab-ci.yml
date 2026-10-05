@@ -1,9 +1,115 @@
 ---
+spec:
+  inputs:
+    stage:
+      default: ''
+      # Anchored to safe identifier characters (registered agent/stage
+      # names only) and to the empty default non-dispatch pipeline
+      # sources (push, etc.) resolve to, excluding GitLab variable-
+      # reference syntax ($, quotes, braces) this value is later
+      # interpolated next to (workflow.name, workflow:rules, the agent
+      # job name) — see internal/poll/dispatch.go (dispatchInputNames).
+      regex: '^[A-Za-z0-9_-]*$'
+    event_type:
+      default: ''
+    resource_key:
+      default: ''
+      # Matches resourceKey()'s "issue-<iid>"/"mr-<iid>" format (or the
+      # empty default), excluding variable-reference syntax — see
+      # internal/poll/dispatch.go (resourceKey). This value is
+      # interpolated into workflow.name below.
+      regex: '^((issue|mr)-[0-9]+)?$'
+    is_fork:
+      default: ''
+    originating_url:
+      default: ''
+    repo_full_name:
+      default: ''
+    mr_author_id:
+      default: ''
+    actor_id:
+      default: ''
+    status_iid:
+      default: ''
+    poll_job_url:
+      default: ''
+    dispatch_hmac:
+      default: ''
+    event_payload_chunk_00:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_01:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_02:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_03:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_04:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_05:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_06:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_07:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_08:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+---
+# spec:inputs above declares the pipeline-level inputs the cron-poller's
+# API-triggered dispatch sets (#7850) — GitLab only accepts pipeline
+# inputs a top-level pipeline configuration file declares via
+# spec:inputs, so this declaration has to live here, not in an included
+# file. include: below forwards every one of them, unchanged, into
+# fullsend-pipeline.yml, which forwards them again into the agent
+# template; see that file's own spec:inputs comment for the rest of the
+# chain. See internal/poll/dispatch.go (dispatchInputs) for the Go
+# authority on the input contract these names must match.
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
+    inputs:
+      stage: $[[ inputs.stage ]]
+      event_type: $[[ inputs.event_type ]]
+      resource_key: $[[ inputs.resource_key ]]
+      is_fork: $[[ inputs.is_fork ]]
+      originating_url: $[[ inputs.originating_url ]]
+      repo_full_name: $[[ inputs.repo_full_name ]]
+      mr_author_id: $[[ inputs.mr_author_id ]]
+      actor_id: $[[ inputs.actor_id ]]
+      status_iid: $[[ inputs.status_iid ]]
+      poll_job_url: $[[ inputs.poll_job_url ]]
+      dispatch_hmac: $[[ inputs.dispatch_hmac ]]
+      event_payload_chunk_00: $[[ inputs.event_payload_chunk_00 ]]
+      event_payload_chunk_01: $[[ inputs.event_payload_chunk_01 ]]
+      event_payload_chunk_02: $[[ inputs.event_payload_chunk_02 ]]
+      event_payload_chunk_03: $[[ inputs.event_payload_chunk_03 ]]
+      event_payload_chunk_04: $[[ inputs.event_payload_chunk_04 ]]
+      event_payload_chunk_05: $[[ inputs.event_payload_chunk_05 ]]
+      event_payload_chunk_06: $[[ inputs.event_payload_chunk_06 ]]
+      event_payload_chunk_07: $[[ inputs.event_payload_chunk_07 ]]
+      event_payload_chunk_08: $[[ inputs.event_payload_chunk_08 ]]
+
+# Bridges the stage input into a real CI/CD variable so workflow:rules
+# below can reference it. GitLab's rules:if requires a CI/CD variable on
+# at least one side of a comparison operator; $[[ inputs.stage ]] is
+# resolved by textual interpolation before rules are evaluated, so
+# comparing it directly (e.g. "$[[ inputs.stage ]]" != "") produces a
+# literal-to-literal comparison GitLab rejects as invalid. Declaring it
+# here first, then referencing $STAGE like any other pipeline variable,
+# is GitLab's documented pattern for using inputs within rules
+# expressions.
+variables:
+  STAGE: $[[ inputs.stage ]]
 
 workflow:
-  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  name: 'fullsend $CI_PIPELINE_SOURCE $[[ inputs.stage ]] $[[ inputs.resource_key ]]'
   auto_cancel:
     # Prevents new commits from canceling queued API-triggered agent
     # pipelines. Applies globally because GitLab does not scope
@@ -22,8 +128,19 @@ workflow:
     # Scheduled polling (issues, comments, labels, MR open/merge/close)
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     # API-triggered pipelines from the cron-poller (dispatched via
-    # POST /projects/:id/pipeline with STAGE variable set)
+    # POST /projects/:id/pipeline with the stage pipeline input set,
+    # not a pipeline variable — #7850). $STAGE is the variables: block
+    # above, bridged from the stage input, so this is a normal
+    # variable truthiness check, not a literal-to-literal comparison.
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+    # Webhook dispatcher pipelines (ADR 0125, #7771): GitLab's native
+    # "use a webhook" pipeline trigger, URL-pinned to the protected
+    # default branch. fullsend-pipeline.yml includes only the dispatcher
+    # job for this source — never the agent job — and the dispatcher
+    # launches agents through a separate signed-input API pipeline. The
+    # webhook body arrives as the native TRIGGER_PAYLOAD file variable,
+    # not as extra pipeline inputs.
+    - if: $CI_PIPELINE_SOURCE == "trigger" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
     # NOTE: Push-triggered pipelines are intentionally excluded — this
     # scaffold handles only fullsend agent dispatch. If the adopting
     # repo has existing push-triggered CI jobs (build, test, lint),

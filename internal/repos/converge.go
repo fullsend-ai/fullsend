@@ -1,8 +1,11 @@
 package repos
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -72,6 +75,19 @@ type ConvergeConfig struct {
 	// (e.g., assertion.repository_owner == 'acme').
 	WIFProvider string
 
+	// ResolveProjectNumber, when set, derives the numeric project number
+	// for InferenceProject when InferenceProjectNumber and WIFProvider are
+	// both unset. It is called at most once, and only when a vertex-wif
+	// repository needs a derived WIF provider, so OpenAI-only runs never
+	// perform GCP lookups.
+	ResolveProjectNumber func(ctx context.Context, projectID string) (string, error)
+
+	// OpenAIAPIKey is the static OpenAI API key written as
+	// FULLSEND_OPENAI_API_KEY to repositories whose inference.auth is
+	// openai-api-key. Command-line input only: never persisted to the
+	// manifest and never logged or reported.
+	OpenAIAPIKey string
+
 	// ReviewAppClientID is the OAuth client ID of the review agent's
 	// GitHub App, pre-resolved by the caller for ReviewAppClientIDAppSet.
 	// It seeds the per-repo resolution cache so repos on that app set
@@ -139,6 +155,16 @@ type ConvergeResult struct {
 	// on this field, so a retry where the schedules already exist does
 	// not delete and recreate them.
 	NeedsGitLabPipelineSchedules bool
+
+	// GitLabTypedDispatch reports whether the GitLab wrapper this run
+	// installed (still possibly queued in an unmerged upgrade MR) uses the
+	// pipeline-input dispatch contract rather than the legacy
+	// pipeline-variable one. Set from InstallResult.GitLabTypedDispatch
+	// for fresh installs (see Installed). Post-install schedule setup
+	// must use this instead of re-reading the default branch, which can
+	// still show the prior or absent wrapper while the install MR is
+	// unmerged.
+	GitLabTypedDispatch bool
 
 	// Converged is true when the repo had drifted components that were
 	// repaired (variables, refs, or missing scaffold files).
@@ -228,7 +254,22 @@ type convergeDiscovery struct {
 	// resolved for the same effective app set as appSet (GitHub only).
 	// Empty when unavailable (best-effort) or for GitLab.
 	reviewClientID string
-	err            error
+	// configErr is a manifest configuration error for this repository
+	// (e.g. no inference.auth selection). It is detected before any forge
+	// call and reported verbatim, without discovery wrapping.
+	configErr error
+	err       error
+
+	// credsPresent reports that every inference secret for the repo's
+	// inference.auth existed before this run. credsSupplied reports that
+	// the run supplied inputs for that method, so its secrets are
+	// (re)written. Set by the serial validation phase.
+	credsPresent  bool
+	credsSupplied bool
+	// unsafeOpenAIKey reports that the existing GitLab
+	// FULLSEND_OPENAI_API_KEY variable, which this run would reuse, is not
+	// both masked and protected. Only set when no replacement key is supplied.
+	unsafeOpenAIKey bool
 }
 
 // hasComponent returns true if the named component is present in the probe results.
@@ -241,10 +282,294 @@ func hasComponent(components []ComponentStatus, name string) bool {
 	return false
 }
 
-// secretsPresent returns true when both optional GCP inference secrets are present.
-func secretsPresent(components []ComponentStatus) bool {
-	return hasComponent(components, "secret:"+forge.SecretGCPProjectID) &&
-		hasComponent(components, "secret:"+forge.SecretGCPWIFProvider)
+// secretsPresent returns true when every inference secret for auth is present.
+func secretsPresent(components []ComponentStatus, auth string) bool {
+	for _, name := range inferenceSecretsForAuth(auth) {
+		if !hasComponent(components, "secret:"+name) {
+			return false
+		}
+	}
+	return true
+}
+
+// openAIKeyDefect names why an existing FULLSEND_OPENAI_API_KEY cannot be
+// reused as the agent job's credential, or returns "" when it can. Jobs
+// receive only a masked, protected environment variable that is not
+// limited to specific environments: anything else exposes the key to
+// unprotected branches or job logs, is delivered as a file path, or never
+// reaches the job. Probe/status and convergence share this check.
+func openAIKeyDefect(p forge.SecretProtection) string {
+	if !p.Exists {
+		return ""
+	}
+	switch {
+	case p.FileType:
+		return "file-type variable"
+	case p.EnvironmentScoped:
+		return "environment-scoped variable"
+	case !p.Masked && !p.Protected:
+		return "unmasked and unprotected variable"
+	case !p.Masked:
+		return "unmasked variable"
+	case !p.Protected:
+		return "unprotected variable"
+	}
+	return ""
+}
+
+// missingSecretNames returns the inference secrets for auth that are absent.
+func missingSecretNames(components []ComponentStatus, auth string) []string {
+	var missing []string
+	for _, name := range inferenceSecretsForAuth(auth) {
+		if !hasComponent(components, "secret:"+name) {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// gitlabMaskableRe matches the values GitLab accepts for a masked CI/CD
+// variable: a single line of at least 8 characters from the Base64 alphabet
+// (including the URL-safe - and _) plus @ : . ~.
+var gitlabMaskableRe = regexp.MustCompile(`^[A-Za-z0-9_+=/@:.~-]{8,}$`)
+
+// inferenceInputsSupplied reports whether this run supplied credential
+// inputs for auth: --vertex-project for vertex-wif, --openai-api-key
+// for openai-api-key.
+func inferenceInputsSupplied(cfg ConvergeConfig, auth string) bool {
+	if auth == InferenceAuthOpenAIAPIKey {
+		return cfg.OpenAIAPIKey != ""
+	}
+	return cfg.InferenceProject != ""
+}
+
+// inferenceInputFlags names the command-line inputs that supply the
+// credentials for auth.
+func inferenceInputFlags(auth string) string {
+	if auth == InferenceAuthOpenAIAPIKey {
+		return "--openai-api-key"
+	}
+	return "--vertex-project and --vertex-region (plus --vertex-wif-provider when the project number cannot be derived)"
+}
+
+// inferenceSecretValues returns the secret values to write for auth from
+// the run's inputs. Values are secrets and must never be logged.
+func inferenceSecretValues(cfg ConvergeConfig, auth, wifProvider string) map[string]string {
+	if auth == InferenceAuthOpenAIAPIKey {
+		return map[string]string{forge.SecretOpenAIAPIKey: cfg.OpenAIAPIKey}
+	}
+	return map[string]string{
+		forge.SecretGCPProjectID:   cfg.InferenceProject,
+		forge.SecretGCPWIFProvider: wifProvider,
+	}
+}
+
+// scaffoldFilesOnDefaultBranch reports whether every file is already on the
+// default branch with the delivered content (or, for deletions, absent).
+// Scaffold delivery succeeds when it merely opens an unmerged PR/MR, so
+// success of the commit step alone does not mean the files are live.
+func scaffoldFilesOnDefaultBranch(ctx context.Context, client forge.Client, owner, repo string, files []forge.TreeFile) (bool, error) {
+	for _, f := range files {
+		existing, err := client.GetFileContent(ctx, owner, repo, f.Path)
+		if err != nil && !forge.IsNotFound(err) {
+			return false, fmt.Errorf("reading %s: %w", f.Path, err)
+		}
+		missing := err != nil
+		if f.Delete {
+			if !missing {
+				return false, nil
+			}
+			continue
+		}
+		if missing || !bytes.Equal(existing, f.Content) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// githubLegacyOpenAIConsumers inspects every installed GitHub inference
+// credential consumer: the shim workflow and each per-repo thin caller (for
+// example prioritize.yml). It reports whether the shim is missing or does not
+// reference FULLSEND_OPENAI_API_KEY, and lists the installed thin callers that
+// do not. A thin caller that is not installed is not a consumer.
+func githubLegacyOpenAIConsumers(ctx context.Context, resolved ResolvedConfig, client forge.Client) (bool, []string, error) {
+	content, _, err := readWorkflowContent(ctx, client, resolved.Owner, resolved.Repo, resolved.ForgeConfig)
+	if err != nil {
+		return false, nil, fmt.Errorf("reading %s: %w", githubOpenAIConsumerPath, err)
+	}
+	shimLegacy := content == nil || !bytes.Contains(content, []byte(forge.SecretOpenAIAPIKey))
+	var legacyCallers []string
+	for _, path := range scaffold.PerRepoThinCallerPaths() {
+		callerContent, err := client.GetFileContent(ctx, resolved.Owner, resolved.Repo, path)
+		if err != nil {
+			if forge.IsNotFound(err) {
+				continue
+			}
+			return false, nil, fmt.Errorf("reading %s: %w", path, err)
+		}
+		if !bytes.Contains(callerContent, []byte(forge.SecretOpenAIAPIKey)) {
+			legacyCallers = append(legacyCallers, path)
+		}
+	}
+	return shimLegacy, legacyCallers, nil
+}
+
+// selectedCredentialContractLive reports whether the default branch already
+// carries a consumer of the selected method's credential. Only openai-api-key
+// needs it: GitLab's agent job script maps FULLSEND_OPENAI_API_KEY, and on
+// GitHub every installed consumer (the shim workflow and each per-repo thin
+// caller) must forward that secret. A consumer that predates either would
+// leave the job without credentials once the old secrets are deleted.
+func selectedCredentialContractLive(ctx context.Context, resolved ResolvedConfig, client forge.Client) (bool, error) {
+	if resolved.InferenceAuth != InferenceAuthOpenAIAPIKey {
+		return true, nil
+	}
+	if resolved.Forge != ForgeGitLab {
+		shimLegacy, legacyCallers, err := githubLegacyOpenAIConsumers(ctx, resolved, client)
+		if err != nil {
+			return false, err
+		}
+		return !shimLegacy && len(legacyCallers) == 0, nil
+	}
+	content, err := client.GetFileContent(ctx, resolved.Owner, resolved.Repo, gitlabAgentJobScriptPath)
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading %s: %w", gitlabAgentJobScriptPath, err)
+	}
+	return bytes.Contains(content, []byte(forge.SecretOpenAIAPIKey)), nil
+}
+
+// obsoleteInferenceItem is one Fullsend-managed inference secret or
+// variable that the repo's selected method no longer uses.
+type obsoleteInferenceItem struct {
+	name     string
+	variable bool
+}
+
+// kind is the noun used in messages ("secret" or "variable").
+func (i obsoleteInferenceItem) kind() string {
+	if i.variable {
+		return "variable"
+	}
+	return "secret"
+}
+
+// component is the ComponentAction component name ("var:" or "secret:").
+func (i obsoleteInferenceItem) component() string {
+	if i.variable {
+		return "var:" + i.name
+	}
+	return "secret:" + i.name
+}
+
+// removeObsoleteInferenceSecrets deletes the Fullsend-managed inference
+// secrets and variables of the method the repo no longer selects. Callers
+// invoke it only after the selected method's credentials were written
+// successfully, so a failed setup keeps the old credentials. Dry runs
+// report the deletions without performing them.
+//
+// scaffoldFiles are the files delivered in this run. Delivery can merely
+// open an unmerged pull/merge request, so before the first deletion they
+// must be observed on the default branch, and the default branch must
+// carry a job script that consumes the selected credential even when
+// nothing was delivered; until then the obsolete items are kept (a later
+// run retries once the change is merged). Pass nil when nothing was
+// delivered.
+func removeObsoleteInferenceSecrets(ctx context.Context, resolved ResolvedConfig, dryRun bool, scaffoldFiles []forge.TreeFile, progress ProgressFunc) []ComponentAction {
+	repoFullName := resolved.Owner + "/" + resolved.Repo
+	client := resolved.ForgeConfig.Client
+	var items []obsoleteInferenceItem
+	for _, name := range obsoleteInferenceSecrets(resolved.InferenceAuth) {
+		items = append(items, obsoleteInferenceItem{name: name})
+	}
+	for _, name := range obsoleteInferenceVariables(resolved.InferenceAuth) {
+		items = append(items, obsoleteInferenceItem{name: name, variable: true})
+	}
+	var actions []ComponentAction
+	readinessChecked := false
+	ready := true
+	for _, item := range items {
+		name := item.name
+		var exists bool
+		var err error
+		if item.variable {
+			_, exists, err = client.GetRepoVariable(ctx, resolved.Owner, resolved.Repo, name)
+		} else {
+			exists, err = client.RepoSecretExists(ctx, resolved.Owner, resolved.Repo, name)
+		}
+		if err != nil {
+			actions = append(actions, ComponentAction{
+				Component: item.component(),
+				Action:    "error",
+				Detail:    fmt.Sprintf("checking obsolete %s %s: %v; delete it manually if it is no longer needed", item.kind(), name, err),
+			})
+			continue
+		}
+		if !exists {
+			continue
+		}
+		if dryRun {
+			actions = append(actions, ComponentAction{
+				Component: item.component(),
+				Action:    "delete",
+				Detail:    fmt.Sprintf("would delete obsolete %s (inference.auth is %s)", name, resolved.InferenceAuth),
+			})
+			progress(repoFullName, "dry-run", fmt.Sprintf("Would delete obsolete %s %s", item.kind(), name))
+			continue
+		}
+		if !readinessChecked {
+			readinessChecked = true
+			var readyErr error
+			ready, readyErr = scaffoldFilesOnDefaultBranch(ctx, client, resolved.Owner, resolved.Repo, scaffoldFiles)
+			if readyErr == nil && ready {
+				// Delivering no files proves nothing: an established
+				// installation may already run a script that cannot read
+				// the selected credential.
+				ready, readyErr = selectedCredentialContractLive(ctx, resolved, client)
+			}
+			if readyErr != nil {
+				ready = false
+				actions = append(actions, ComponentAction{
+					Component: item.component(),
+					Action:    "error",
+					Detail:    fmt.Sprintf("kept obsolete %s: could not verify the replacement configuration on the default branch: %v", name, readyErr),
+				})
+				continue
+			}
+		}
+		if !ready {
+			actions = append(actions, ComponentAction{
+				Component: item.component(),
+				Action:    "none",
+				Detail:    fmt.Sprintf("kept obsolete %s: the replacement configuration is not yet on the default branch; re-run after the scaffold change is merged", name),
+			})
+			progress(repoFullName, "sync", fmt.Sprintf("Keeping obsolete %s %s until the scaffold change is merged", item.kind(), name))
+			continue
+		}
+		if item.variable {
+			err = client.DeleteRepoVariable(ctx, resolved.Owner, resolved.Repo, name)
+		} else {
+			err = client.DeleteRepoSecret(ctx, resolved.Owner, resolved.Repo, name)
+		}
+		if err != nil {
+			actions = append(actions, ComponentAction{
+				Component: item.component(),
+				Action:    "error",
+				Detail:    fmt.Sprintf("failed to delete obsolete %s: %v; delete it manually", name, err),
+			})
+			continue
+		}
+		actions = append(actions, ComponentAction{
+			Component: item.component(),
+			Action:    "delete",
+			Detail:    fmt.Sprintf("deleted obsolete %s (inference.auth is %s)", name, resolved.InferenceAuth),
+		})
+		progress(repoFullName, "sync", fmt.Sprintf("Deleted obsolete %s %s", item.kind(), name))
+	}
+	return actions
 }
 
 func shouldWarnRemotePreset(source, hash string, warned map[string]bool) bool {
@@ -253,21 +578,6 @@ func shouldWarnRemotePreset(source, hash string, warned map[string]bool) bool {
 	}
 	warned[source] = true
 	return true
-}
-
-// existingSecretNames returns the drift field names (e.g.
-// "FULLSEND_GCP_PROJECT_ID") of secret components already present on the
-// repo. Install uses this to skip rewriting individual secrets that
-// already exist, even when hasSecrets/ReuseSecrets is false because only
-// some of the required secrets are present yet.
-func existingSecretNames(components []ComponentStatus) []string {
-	var names []string
-	for _, c := range components {
-		if strings.HasPrefix(c.Name, "secret:") && c.Present {
-			names = append(names, DriftFieldName(c.Name))
-		}
-	}
-	return names
 }
 
 // anyComponentPresent returns true when at least one probed component exists.
@@ -323,6 +633,12 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		progress = func(_, _, _ string) {}
 	}
 
+	// Normalize the OpenAI key once so the value that is validated, written
+	// and later read by the runner is identical. Surrounding whitespace
+	// (e.g. a trailing newline from a pipe) would otherwise defeat GitLab
+	// masking and be trimmed only at runtime.
+	cfg.OpenAIAPIKey = strings.TrimSpace(cfg.OpenAIAPIKey)
+
 	manifest := cfg.Manifest
 	if err := manifest.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid manifest: %w", err)
@@ -348,28 +664,38 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		return &ConvergeBatchResult{}, nil
 	}
 
-	// Validate inference flags. When --inference-wif-provider is set,
-	// --inference-project-number is not required (the project number is
+	// Validate inference flags. When --vertex-wif-provider is set,
+	// --vertex-project-number is not required (the project number is
 	// embedded in the provider path).
 	if cfg.WIFProvider != "" {
-		// --inference-project and --inference-region are required
-		// alongside --inference-wif-provider because the secret-writing
+		// --vertex-project and --vertex-region are required
+		// alongside --vertex-wif-provider because the secret-writing
 		// paths gate on InferenceProject to decide whether to write
 		// FULLSEND_GCP_PROJECT_ID and FULLSEND_GCP_WIF_PROVIDER.
 		if cfg.InferenceProject == "" {
-			return nil, fmt.Errorf("--inference-project is required when --inference-wif-provider is set")
+			return nil, fmt.Errorf("--vertex-project is required when --vertex-wif-provider is set")
 		}
 		if !IsValidGCPProjectID(cfg.InferenceProject) {
-			return nil, fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
+			return nil, fmt.Errorf("--vertex-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
 		}
 		if !IsValidGCPRegion(cfg.InferenceRegion) {
-			return nil, fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
+			return nil, fmt.Errorf("--vertex-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
+		}
+		if !WIFProviderPattern.MatchString(cfg.WIFProvider) {
+			return nil, fmt.Errorf("--vertex-wif-provider %q is not a valid WIF provider (expected projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id})", cfg.WIFProvider)
 		}
 	} else {
+		// A project number the caller can derive on demand counts as
+		// supplied; it is resolved lazily for vertex-wif repos only.
+		projectNumber := cfg.InferenceProjectNumber
+		derivable := projectNumber == "" && cfg.ResolveProjectNumber != nil && cfg.InferenceProject != ""
+		if derivable {
+			projectNumber = "derived"
+		}
 		inferenceFlags := []struct{ name, val string }{
-			{"--inference-project", cfg.InferenceProject},
-			{"--inference-project-number", cfg.InferenceProjectNumber},
-			{"--inference-region", cfg.InferenceRegion},
+			{"--vertex-project", cfg.InferenceProject},
+			{"--vertex-project-number", projectNumber},
+			{"--vertex-region", cfg.InferenceRegion},
 		}
 		var inferenceSet, inferenceMissing []string
 		for _, f := range inferenceFlags {
@@ -386,15 +712,41 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 
 		if cfg.InferenceProject != "" {
 			if !IsValidGCPProjectID(cfg.InferenceProject) {
-				return nil, fmt.Errorf("--inference-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
+				return nil, fmt.Errorf("--vertex-project %q is not a valid GCP project ID (must be 6-30 lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceProject)
 			}
 			if !IsValidGCPRegion(cfg.InferenceRegion) {
-				return nil, fmt.Errorf("--inference-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
+				return nil, fmt.Errorf("--vertex-region %q is not a valid GCP region (must be lowercase letters, digits, hyphens; start with a letter)", cfg.InferenceRegion)
 			}
-			if !IsNumeric(cfg.InferenceProjectNumber) {
-				return nil, fmt.Errorf("--inference-project-number must be numeric, got %q", cfg.InferenceProjectNumber)
+			if !derivable && !IsNumeric(cfg.InferenceProjectNumber) {
+				return nil, fmt.Errorf("--vertex-project-number must be numeric, got %q", cfg.InferenceProjectNumber)
 			}
 		}
+	}
+
+	// Lazily derive the project number at most once, and only for a
+	// vertex-wif repository that needs a derived WIF provider.
+	var (
+		projectNumberOnce sync.Once
+		projectNumber     = cfg.InferenceProjectNumber
+		projectNumberErr  error
+	)
+	resolveProjectNumber := func() (string, error) {
+		projectNumberOnce.Do(func() {
+			if projectNumber != "" || cfg.ResolveProjectNumber == nil || cfg.InferenceProject == "" {
+				return
+			}
+			n, err := cfg.ResolveProjectNumber(ctx, cfg.InferenceProject)
+			switch {
+			case err != nil:
+				projectNumberErr = fmt.Errorf("deriving project number for --vertex-project %q: %w (set --vertex-wif-provider to skip the lookup)", cfg.InferenceProject, err)
+			case !IsNumeric(n):
+				projectNumberErr = fmt.Errorf("derived project number for %q is not numeric: %q", cfg.InferenceProject, n)
+			default:
+				projectNumber = n
+				progress("", "inference", fmt.Sprintf("Derived project number %s from project %s", n, cfg.InferenceProject))
+			}
+		})
+		return projectNumber, projectNumberErr
 	}
 
 	// Create a ref resolver for SHA resolution and ancestry checks.
@@ -454,6 +806,13 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			defer func() { <-sem }()
 
 			resolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+			// A missing inference.auth selection is a configuration error
+			// for this repository only; report it before any forge call so
+			// nothing is probed or written for it.
+			if authErr := resolved.RequireInferenceAuth(); authErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: authErr}
+				return
+			}
 			repoFullName := rr.Owner + "/" + rr.Repo
 			progress(repoFullName, "discover", "Checking installation status")
 
@@ -491,7 +850,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
 				Forge:             resolved.Forge,
 				MintURL:           resolved.MintURL,
-				InferenceRegion:   cfg.InferenceRegion,
+				InferenceRegion:   inferenceRegionForAuth(resolved.InferenceAuth, cfg.InferenceRegion),
 				ReviewAppClientID: reviewClientID,
 				AppSet:            effectiveAppSet,
 			}, resolved.MintURL)
@@ -499,22 +858,59 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
 				return
 			}
-			probed, probeErr := ProbeComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc, expectedVars)
+			probed, probeErr := ProbeComponentsForAuth(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, resolved.InferenceAuth, fc, expectedVars)
 			if probeErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: probeErr}
 				return
 			}
 
+			// An existing GitLab OpenAI key that this run would reuse must
+			// already be usable by jobs (see openAIKeyDefect): supplied
+			// keys are written masked, protected and unscoped, reused ones
+			// would otherwise bypass those controls. The probe reports an
+			// existing but unusable key as present without a match.
+			unsafeKey := false
+			if resolved.Forge == ForgeGitLab && resolved.InferenceAuth == InferenceAuthOpenAIAPIKey &&
+				cfg.OpenAIAPIKey == "" {
+				for _, c := range probed {
+					if c.Name == "secret:"+forge.SecretOpenAIAPIKey {
+						unsafeKey = c.Present && !c.Match
+						break
+					}
+				}
+			}
+
 			discoveries[idx] = convergeDiscovery{
-				repo:           rr,
-				resolved:       resolved,
-				components:     probed,
-				appSet:         effectiveAppSet,
-				reviewClientID: reviewClientID,
+				repo:            rr,
+				resolved:        resolved,
+				components:      probed,
+				appSet:          effectiveAppSet,
+				reviewClientID:  reviewClientID,
+				unsafeOpenAIKey: unsafeKey,
 			}
 		}(i, r)
 	}
 	wg.Wait()
+
+	// Reject credential inputs that no selected repository consumes, before
+	// any write: silently ignoring them would leave the caller believing the
+	// credentials were provisioned. Mixed fleets keep working because each
+	// input group only needs one consumer.
+	usesOpenAI, usesVertex := false, false
+	for _, d := range discoveries {
+		switch d.resolved.InferenceAuth {
+		case InferenceAuthOpenAIAPIKey:
+			usesOpenAI = true
+		case InferenceAuthVertexWIF:
+			usesVertex = true
+		}
+	}
+	if cfg.OpenAIAPIKey != "" && !usesOpenAI {
+		return nil, fmt.Errorf("--openai-api-key was supplied but no selected repository uses inference.auth %s", InferenceAuthOpenAIAPIKey)
+	}
+	if cfg.InferenceProject != "" && !usesVertex {
+		return nil, fmt.Errorf("--vertex-project was supplied but no selected repository uses inference.auth %s", InferenceAuthVertexWIF)
+	}
 
 	// Phase 2: parallel convergence — apply needed actions.
 	result := &ConvergeBatchResult{
@@ -536,6 +932,14 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	warnedRemote := make(map[string]bool)
 
 	for i, d := range discoveries {
+		if d.configErr != nil {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: d.configErr,
+			}
+			continue
+		}
 		if d.err != nil {
 			result.Results[i] = ConvergeResult{
 				Owner: d.repo.Owner,
@@ -579,19 +983,72 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			d.managedConfig = body
 		}
 
-		// Compute WIF for repos that need secrets written.
-		hasSecrets := secretsPresent(d.components)
+		// Validate this repo's inference credentials before any writes:
+		// the selected method's secrets must already exist or this run
+		// must supply inputs for that method (which then replace them).
+		auth := d.resolved.InferenceAuth
+		d.credsPresent = secretsPresent(d.components, auth)
+		d.credsSupplied = inferenceInputsSupplied(cfg, auth)
+		if !d.credsPresent && !d.credsSupplied {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("%s/%s uses inference.auth %s: missing %s and no credentials were supplied; supply %s",
+					d.repo.Owner, d.repo.Repo, auth,
+					strings.Join(missingSecretNames(d.components, auth), ", "),
+					inferenceInputFlags(auth)),
+			}
+			continue
+		}
+
+		// Reusing an existing GitLab key that is unmasked or unprotected
+		// would expose it to unprotected branches or job logs; reject it
+		// without naming the value.
+		if d.unsafeOpenAIKey {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("%s/%s: the existing %s CI/CD variable is not a masked, protected environment variable available to all environments; fix it, or supply a replacement with --openai-api-key",
+					d.repo.Owner, d.repo.Repo, forge.SecretOpenAIAPIKey),
+			}
+			continue
+		}
+
+		// GitLab silently stores a CI/CD variable unmasked when masking is
+		// rejected; refuse an OpenAI key that cannot be masked rather than
+		// storing the credential in the clear.
+		if d.credsSupplied && auth == InferenceAuthOpenAIAPIKey && d.resolved.Forge == ForgeGitLab && !gitlabMaskableRe.MatchString(cfg.OpenAIAPIKey) {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("%s/%s: the OpenAI API key cannot be stored as a masked GitLab CI/CD variable (at least 8 characters from A-Z a-z 0-9 _ + = / @ : . ~ -, no whitespace); check the --openai-api-key value",
+					d.repo.Owner, d.repo.Repo),
+			}
+			continue
+		}
+
+		// Compute WIF for vertex-wif repos whose secrets are written.
 		var wif string
-		if !hasSecrets {
+		if d.credsSupplied && auth != InferenceAuthOpenAIAPIKey {
+			number := cfg.InferenceProjectNumber
+			if cfg.WIFProvider == "" && number == "" {
+				n, numErr := resolveProjectNumber()
+				if numErr != nil {
+					// The lookup is shared by every vertex-wif repo in the
+					// batch; fail the run before any write.
+					return nil, numErr
+				}
+				number = n
+			}
 			switch {
 			case cfg.WIFProvider != "":
 				// Explicit WIF provider — use it verbatim for all repos.
 				// No per-repo derivation or collision check needed.
 				wif = cfg.WIFProvider
-			case d.resolved.Forge == ForgeGitHub && cfg.InferenceProjectNumber != "":
+			case d.resolved.Forge == ForgeGitHub && number != "":
 				providerID := mintcore.BuildRepoProviderID(d.repo.Owner, d.repo.Repo)
 				wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
-					cfg.InferenceProjectNumber, mintcore.DefaultInferencePool, providerID)
+					number, mintcore.DefaultInferencePool, providerID)
 				repoFullName := d.repo.Owner + "/" + d.repo.Repo
 				if existing, ok := wifSeen[wif]; ok {
 					collisionErr := fmt.Errorf("WIF provider collision: repos %s and %s produce the same provider ID %q (truncated to 32 chars)",
@@ -609,9 +1066,9 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 					continue
 				}
 				wifSeen[wif] = wifEntry{repoFullName: repoFullName, index: i}
-			case d.resolved.Forge == ForgeGitLab && cfg.InferenceProject != "" && cfg.InferenceProjectNumber != "":
+			case d.resolved.Forge == ForgeGitLab && number != "":
 				wif = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/gitlab-oidc",
-					cfg.InferenceProjectNumber, mintcore.DefaultInferencePool)
+					number, mintcore.DefaultInferencePool)
 			}
 		}
 		candidates[i] = candidateInfo{discovery: d, wifProvider: wif}
@@ -680,8 +1137,53 @@ func convergeRepo(ctx context.Context,
 		Repo:        rr.Repo,
 		WIFProvider: wifProvider,
 	}
+	if resolved.Forge == ForgeGitLab {
+		vendor := resolved.Vendor
+		if cfg.VendorOverride != nil {
+			vendor = *cfg.VendorOverride
+		}
+		if vendor {
+			cr.Error = fmt.Errorf("GitLab vendor mode is unsupported: its installer does not execute a matching vendored binary")
+			return cr
+		}
+		// Only an explicit manifest fullsend_ref pin that actually differs
+		// from the running release's own default ref requires a matching
+		// upstream client: resolveTargetRef leaves manifestRef empty in
+		// that case, since its embedded templates already match and no
+		// remote fetch is attempted. A released CLI binary always has
+		// cfg.UpstreamRef/UpstreamTag set, so comparing only for
+		// non-emptiness here (instead of inequality) would reject every
+		// GitLab-only convergence once a prior successful install writes
+		// that same release-default ref back into the manifest as
+		// gitlab.fullsend_ref (see runReposInstall's writeback) — even
+		// though the recorded ref still matches the running release and
+		// no GitHub client is actually needed.
+		if refResolver == nil && resolved.FullsendRef != "" &&
+			resolved.FullsendRef != cfg.UpstreamRef && resolved.FullsendRef != cfg.UpstreamTag {
+			cr.Error = fmt.Errorf("matching pinned GitLab templates require an upstream GitHub client; refusing embedded-template fallback")
+			return cr
+		}
+	}
 
-	hasSecrets := secretsPresent(d.components)
+	auth := resolved.InferenceAuth
+	// A pinned scaffold that predates the OpenAI credential mapping cannot
+	// consume FULLSEND_OPENAI_API_KEY; reject it before any credential is
+	// written or any existing credential is removed.
+	if auth == InferenceAuthOpenAIAPIKey {
+		if err := checkPinnedOpenAICredentialContract(ctx, resolved, cfg, refResolver); err != nil {
+			cr.Error = err
+			return cr
+		}
+		// With no ref at all nothing refreshes an established
+		// installation's scaffold, so its current consumer must already
+		// read the key. A fresh install renders the embedded templates.
+		if workflowPresent(d.components) {
+			if err := checkEstablishedOpenAICredentialContract(ctx, resolved, cfg); err != nil {
+				cr.Error = err
+				return cr
+			}
+		}
+	}
 	// Treat the repo as new until the workflow file is on the default
 	// branch. Variables and secrets are written before the scaffold
 	// commit (see Install), so anyComponentPresent is true while an
@@ -734,14 +1236,133 @@ func convergeRepo(ctx context.Context,
 			configAdoptionRequired = len(existing) > 0 && !hasManagedConfigMarker(existing)
 			configSafetyRejected = checkManagedConfigSafetyGate(ctx, resolved, existing)
 		}
+		// Obsolete inference credentials must outlive a blocked
+		// replacement configuration: the old runtime/model configuration
+		// stays active until the adoption or safety rejection is resolved.
+		configBlocked := configAdoptionRequired || configSafetyRejected != nil
+
+		// Resolve the target ref and scaffold inputs before branching on
+		// DryRun, not after: a dry run must run the same pin-resolution,
+		// remote-fetch, and (for GitLab) typed-contract/restriction/root-
+		// merge preflight checks the real install below performs, so a
+		// fresh-install plan that would actually fail is reported as an
+		// error instead of "Would install (new)" (see the review finding
+		// on preview fidelity).
+		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
+		ref, tag, manifestRef := rref.ref, rref.tag, rref.manifestRef
+
+		vendor := resolved.Vendor
+		if cfg.VendorOverride != nil {
+			vendor = *cfg.VendorOverride
+		}
+		if vendor && resolved.Forge == ForgeGitLab {
+			progress(rr.Owner+"/"+rr.Repo, "vendor",
+				"vendor enabled but GitLab CI templates do not yet reference the vendored binary")
+		}
+
+		installRoles := defaultRoles(cfg.Roles)
+		if len(d.preset) > 0 && !cfg.RolesExplicit {
+			// A base preset is declared and the caller did not
+			// explicitly pass --roles: leave Roles unset so
+			// BuildScaffoldFiles writes a stub overlay and the
+			// preset's own roles (or its code-default fallback) take
+			// effect via the layered accessor chain, instead of the
+			// fleet-wide default roles shadowing them.
+			installRoles = nil
+		}
+
+		installCfg := InstallConfig{
+			Owner:             rr.Owner,
+			Repo:              rr.Repo,
+			Forge:             resolved.Forge,
+			Roles:             installRoles,
+			MintURL:           resolved.MintURL,
+			InferenceAuth:     auth,
+			InferenceRegion:   inferenceRegionForAuth(auth, cfg.InferenceRegion),
+			UpstreamRef:       ref,
+			UpstreamTag:       tag,
+			Pinned:            manifestRef != "",
+			WIFProvider:       wifProvider,
+			ReviewAppClientID: d.reviewClientID,
+			AppSet:            d.appSet,
+			AgentRunnerTags:   gitlabAgentRunnerTags(cfg.Manifest),
+			ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
+			Runtime:           resolved.Runtime,
+			Direct:            cfg.Direct,
+			// Supplied inputs replace every secret of the selected
+			// method; without inputs the existing secrets are reused
+			// (validation already required them to be present).
+			ReuseSecrets:                  !d.credsSupplied,
+			VendorBinary:                  vendor,
+			Preset:                        d.preset,
+			ManagedConfig:                 d.managedConfig,
+			ManagedConfigAdoptionRequired: configAdoptionRequired || configSafetyRejected != nil,
+		}
+		if d.credsSupplied {
+			if auth == InferenceAuthOpenAIAPIKey {
+				installCfg.OpenAIAPIKey = cfg.OpenAIAPIKey
+			} else {
+				installCfg.InferenceProject = cfg.InferenceProject
+			}
+		}
+
+		// When vendored, the running binary's embedded templates match the
+		// binary being committed to the repo — no version-skew concern, so
+		// skip the remote fetch to avoid unnecessary API calls.
+		if manifestRef != "" && refResolver != nil && !vendor {
+			scaffoldFiles, fetchErr := FetchRemoteScaffold(
+				ctx, refResolver.client,
+				manifestRef, ref, resolved.Forge,
+				gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest),
+				vendor,
+			)
+			if fetchErr == nil {
+				installCfg.PrebuiltScaffoldFiles = scaffoldFiles
+			} else {
+				if resolved.Forge == ForgeGitLab {
+					cr.Error = fmt.Errorf("fetching pinned GitLab scaffold: %w", fetchErr)
+					return cr
+				}
+				progress(repoFullName, "install", fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
+			}
+		}
 
 		if cfg.DryRun {
 			cr.Installed = true
+			if resolved.Forge == ForgeGitLab {
+				if err := gitlabFreshInstallDryRunPreflight(ctx, resolved, installCfg); err != nil {
+					cr.Error = err
+					cr.Actions = append(cr.Actions, ComponentAction{
+						Component: "gitlab-ci-inputs",
+						Action:    "error",
+						Detail:    err.Error(),
+					})
+					return cr
+				}
+			}
 			cr.Actions = append(cr.Actions, ComponentAction{
 				Component: "all",
 				Action:    "add",
 				Detail:    "Would install (new)",
 			})
+			cr.Actions = append(cr.Actions, plannedInferenceSecretActions(d, progress)...)
+			// The previous credentials stay while the replacement
+			// configuration is blocked on adoption or a safety rejection.
+			if !configBlocked {
+				dryCleanup := removeObsoleteInferenceSecrets(ctx, resolved, true, nil, progress)
+				cr.Actions = append(cr.Actions, dryCleanup...)
+				// A lookup failure means the removals cannot be determined, so
+				// the preview must not be reported as successful.
+				var dryCleanupErrors []string
+				for _, a := range dryCleanup {
+					if a.Action == "error" {
+						dryCleanupErrors = append(dryCleanupErrors, a.Detail)
+					}
+				}
+				if len(dryCleanupErrors) > 0 {
+					cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(dryCleanupErrors, "; "))
+				}
+			}
 			if len(d.preset) > 0 {
 				cr.Actions = append(cr.Actions, ComponentAction{
 					Component: preset.BasePath,
@@ -777,71 +1398,6 @@ func convergeRepo(ctx context.Context,
 			return cr
 		}
 
-		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
-		ref, tag, manifestRef := rref.ref, rref.tag, rref.manifestRef
-
-		vendor := resolved.Vendor
-		if cfg.VendorOverride != nil {
-			vendor = *cfg.VendorOverride
-		}
-		if vendor && resolved.Forge == ForgeGitLab {
-			progress(rr.Owner+"/"+rr.Repo, "vendor",
-				"vendor enabled but GitLab CI templates do not yet reference the vendored binary")
-		}
-
-		installRoles := defaultRoles(cfg.Roles)
-		if len(d.preset) > 0 && !cfg.RolesExplicit {
-			// A base preset is declared and the caller did not
-			// explicitly pass --roles: leave Roles unset so
-			// BuildScaffoldFiles writes a stub overlay and the
-			// preset's own roles (or its code-default fallback) take
-			// effect via the layered accessor chain, instead of the
-			// fleet-wide default roles shadowing them.
-			installRoles = nil
-		}
-
-		installCfg := InstallConfig{
-			Owner:                         rr.Owner,
-			Repo:                          rr.Repo,
-			Forge:                         resolved.Forge,
-			Roles:                         installRoles,
-			MintURL:                       resolved.MintURL,
-			InferenceProject:              cfg.InferenceProject,
-			InferenceRegion:               cfg.InferenceRegion,
-			UpstreamRef:                   ref,
-			UpstreamTag:                   tag,
-			WIFProvider:                   wifProvider,
-			ReviewAppClientID:             d.reviewClientID,
-			AppSet:                        d.appSet,
-			AgentRunnerTags:               gitlabAgentRunnerTags(cfg.Manifest),
-			ControlRunnerTags:             gitlabControlRunnerTags(cfg.Manifest),
-			Runtime:                       resolved.Runtime,
-			Direct:                        cfg.Direct,
-			ReuseSecrets:                  hasSecrets,
-			ExistingSecrets:               existingSecretNames(d.components),
-			VendorBinary:                  vendor,
-			Preset:                        d.preset,
-			ManagedConfig:                 d.managedConfig,
-			ManagedConfigAdoptionRequired: configAdoptionRequired || configSafetyRejected != nil,
-		}
-
-		// When vendored, the running binary's embedded templates match the
-		// binary being committed to the repo — no version-skew concern, so
-		// skip the remote fetch to avoid unnecessary API calls.
-		if manifestRef != "" && refResolver != nil && !vendor {
-			scaffoldFiles, fetchErr := FetchRemoteScaffold(
-				ctx, refResolver.client,
-				manifestRef, ref, resolved.Forge,
-				gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest),
-				vendor,
-			)
-			if fetchErr == nil {
-				installCfg.PrebuiltScaffoldFiles = scaffoldFiles
-			} else {
-				progress(repoFullName, "install", fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
-			}
-		}
-
 		installResult, installErr := Install(ctx, installCfg, resolved.ForgeConfig.Client, commitScaffold, progress)
 		if installErr != nil {
 			cr.Error = installErr
@@ -853,11 +1409,30 @@ func convergeRepo(ctx context.Context,
 
 		cr.Installed = true
 		cr.WIFProvider = installResult.WIFProvider
+		cr.GitLabTypedDispatch = installResult.GitLabTypedDispatch
 		cr.Actions = append(cr.Actions, ComponentAction{
 			Component: "all",
 			Action:    "add",
 			Detail:    "Installed",
 		})
+		// The selected method's credentials were written before the
+		// scaffold commit; only now remove the other method's secrets.
+		// This runs on every successful install, including a retry after an
+		// earlier run wrote the credentials but failed to complete setup or
+		// to delete the obsolete secrets.
+		if !configBlocked {
+			cleanup := removeObsoleteInferenceSecrets(ctx, resolved, false, installResult.ScaffoldFiles, progress)
+			cr.Actions = append(cr.Actions, cleanup...)
+			var cleanupErrors []string
+			for _, a := range cleanup {
+				if a.Action == "error" {
+					cleanupErrors = append(cleanupErrors, a.Detail)
+				}
+			}
+			if len(cleanupErrors) > 0 {
+				cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(cleanupErrors, "; "))
+			}
+		}
 		if configAdoptionRequired {
 			detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be converged automatically (ADR-0122)", preset.OverlayPath)
 			if configSafetyRejected != nil && configSafetyRejected.Action == ActionSafetyRejected {
@@ -893,8 +1468,7 @@ func convergeRepo(ctx context.Context,
 	}
 
 	// 2b: Converge secrets (existence-only — values cannot be read back).
-	secretActions := convergeSecrets(ctx, resolved, d.components, hasSecrets,
-		wifProvider, cfg, progress)
+	secretActions := convergeSecrets(ctx, d, wifProvider, cfg, progress)
 	cr.Actions = append(cr.Actions, secretActions...)
 
 	// 2c: Converge pipeline schedules (GitLab only).
@@ -934,6 +1508,18 @@ func convergeRepo(ctx context.Context,
 		cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(refErrors, "; "))
 		return cr
 	}
+
+	// A ref upgrade only rewrites the shim's version marker. When the
+	// installed GitHub shim cannot forward FULLSEND_OPENAI_API_KEY, queueing
+	// that marker-only rewrite would also exclude the shim from content-drift
+	// repair and deliver a shim that still cannot use the selected credential.
+	// Leave the shim to content-drift repair, which renders the full template
+	// at the target ref.
+	refFiles, legacyErr := withoutLegacyOpenAIConsumer(ctx, resolved, refFiles)
+	if legacyErr != nil {
+		cr.Error = legacyErr
+		return cr
+	}
 	allScaffoldFiles = append(allScaffoldFiles, refFiles...)
 
 	// 2d-i: Migrate obsolete GitLab root .gitlab-ci.yml entries
@@ -942,29 +1528,11 @@ func convergeRepo(ctx context.Context,
 	// workflow ref is already current, since the root file is only
 	// otherwise touched by the install (fresh install) and uninstall
 	// (teardown) paths.
-	rootCIFiles, rootCIActions := convergeGitLabRootCIFiles(ctx, resolved, cfg, progress)
-	cr.Actions = append(cr.Actions, rootCIActions...)
-
-	var rootCIErrors []string
-	for _, a := range rootCIActions {
-		if a.Action == "error" {
-			rootCIErrors = append(rootCIErrors, a.Detail)
-		}
-	}
-	if len(rootCIErrors) > 0 {
-		cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(rootCIErrors, "; "))
-		return cr
-	}
-	allScaffoldFiles = append(allScaffoldFiles, rootCIFiles...)
-
 	// Track paths already queued so missing-component repair and
 	// content-drift detection skip duplicates. GitLab rejects two
 	// create actions for the same path in one commit (#7645).
-	refFileSet := make(map[string]bool, len(refFiles)+len(rootCIFiles))
+	refFileSet := make(map[string]bool, len(refFiles))
 	for _, f := range refFiles {
-		refFileSet[f.Path] = true
-	}
-	for _, f := range rootCIFiles {
 		refFileSet[f.Path] = true
 	}
 
@@ -1027,6 +1595,18 @@ func convergeRepo(ctx context.Context,
 	}
 	allScaffoldFiles = append(allScaffoldFiles, contentDriftFiles...)
 
+	// Root input migration uses the wrapper that will actually be committed,
+	// including ref upgrades, repairs and remote pinned templates.
+	rootCIFiles, rootCIActions := convergeGitLabRootCIFiles(ctx, resolved, cfg, progress, allScaffoldFiles)
+	cr.Actions = append(cr.Actions, rootCIActions...)
+	for _, action := range rootCIActions {
+		if action.Action == "error" {
+			cr.Error = fmt.Errorf("convergence errors: %s", action.Detail)
+			return cr
+		}
+	}
+	allScaffoldFiles = append(allScaffoldFiles, rootCIFiles...)
+
 	// 2d-iii: Configuration preset — replace .fullsend/config.base.yaml
 	// wholesale when a preset is declared and the installed bytes differ.
 	// No declared preset is a no-op so an existing base file is preserved
@@ -1079,7 +1659,45 @@ func convergeRepo(ctx context.Context,
 				Action:    "error",
 				Detail:    fmt.Sprintf("failed to commit scaffold changes: %v", err),
 			})
+		} else if resolved.Forge == ForgeGitLab {
+			// commitScaffold can fall back to opening a merge/pull request
+			// instead of landing a direct commit; activateGitLabTypedDispatch
+			// independently re-reads the wrapper and only activates once
+			// it actually observes the typed contract, so an unmerged
+			// upgrade MR correctly leaves activation for a later run.
+			cr.Actions = append(cr.Actions, activateGitLabTypedDispatch(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo)...)
 		}
+	} else if !cfg.DryRun && resolved.Forge == ForgeGitLab {
+		// Nothing needed to be committed to deliver compatible templates
+		// (e.g. the root CI contract and scaffold were already current),
+		// so it's already safe to check activation — there is nothing
+		// pending for a commit failure to leave stranded.
+		cr.Actions = append(cr.Actions, activateGitLabTypedDispatch(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo)...)
+	}
+
+	// 2f: Remove the other inference method's Fullsend-managed secrets, but
+	// only once every earlier step succeeded (variables, secrets, schedules,
+	// scaffold commit) so a failed setup keeps the previous credentials. It
+	// runs whenever the selected method is established, including reuse and
+	// retries, so a deletion that failed earlier is attempted again.
+	setupFailed := false
+	for _, a := range cr.Actions {
+		// A markerless managed configuration awaiting adoption is left
+		// untouched, so the previous runtime/model configuration is still
+		// active and still needs the old credentials.
+		if a.Action == "error" || a.Action == ActionAdoptionRequired {
+			setupFailed = true
+			break
+		}
+	}
+	if !setupFailed {
+		// Only files committed in this run can still be pending; when the
+		// commit was skipped nothing was delivered.
+		var delivered []forge.TreeFile
+		if !cfg.DryRun {
+			delivered = allScaffoldFiles
+		}
+		cr.Actions = append(cr.Actions, removeObsoleteInferenceSecrets(ctx, resolved, cfg.DryRun, delivered, progress)...)
 	}
 
 	// Determine result state.
@@ -1154,6 +1772,184 @@ func resolveConvergeAppSet(ctx context.Context, client forge.Client, owner, repo
 	return appsetup.ResolvePersistedAppSet("", existing), nil
 }
 
+// githubOpenAIConsumerPath is the GitHub shim workflow that forwards the
+// repository's FULLSEND_OPENAI_API_KEY secret to the reusable workflows.
+const githubOpenAIConsumerPath = ".github/workflows/fullsend.yaml"
+
+// openAIConsumerPath returns the scaffold file that must read or forward
+// FULLSEND_OPENAI_API_KEY for the forge to deliver the credential to agents.
+func openAIConsumerPath(forgeName string) string {
+	if forgeName == ForgeGitLab {
+		return gitlabAgentJobScriptPath
+	}
+	return githubOpenAIConsumerPath
+}
+
+// validateOpenAICredentialContract rejects a scaffold whose credential
+// consumer (the GitLab agent job script, or the GitHub shim workflow's
+// secret forwarding) does not reference FULLSEND_OPENAI_API_KEY. Scaffolds
+// that predate that mapping would accept the new secret but never deliver it
+// to the agent, and cleanup of the previous credentials would then break the
+// installation.
+func validateOpenAICredentialContract(forgeName string, files scaffold.InstallFiles) error {
+	consumer := openAIConsumerPath(forgeName)
+	for _, f := range files {
+		if f.Path != consumer {
+			continue
+		}
+		if bytes.Contains(f.Content, []byte(forge.SecretOpenAIAPIKey)) {
+			return nil
+		}
+		break
+	}
+	return fmt.Errorf("the pinned %s scaffold does not support inference.auth %s: its %s does not reference %s; "+
+		"upgrade the pinned fullsend_ref to a release that supports it (existing credentials were left unchanged)",
+		forgeName, InferenceAuthOpenAIAPIKey, consumer, forge.SecretOpenAIAPIKey)
+}
+
+// checkPinnedOpenAICredentialContract fetches the scaffold of an explicit
+// manifest pin and validates its OpenAI credential contract. An unpinned
+// manifest renders the running binary's embedded templates, which always
+// satisfy it. The fetch is read-only.
+func checkPinnedOpenAICredentialContract(ctx context.Context, resolved ResolvedConfig, cfg ConvergeConfig, refResolver *RefResolver) error {
+	rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
+	if rref.manifestRef == "" || refResolver == nil {
+		return nil
+	}
+	vendor := resolved.Vendor
+	if cfg.VendorOverride != nil {
+		vendor = *cfg.VendorOverride
+	}
+	if vendor {
+		// A vendored install commits the running binary's embedded
+		// templates, which always satisfy the contract.
+		return nil
+	}
+	files, err := FetchRemoteScaffold(ctx, refResolver.client,
+		rref.manifestRef, rref.ref, resolved.Forge,
+		gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), false)
+	if err != nil {
+		// Fail closed on both forges. The embedded-template fallback used by
+		// other mutation paths renders against the pinned upstream ref, not
+		// the running binary's version, so it cannot prove that the pinned
+		// reusable workflow declares FULLSEND_OPENAI_API_KEY. Without that
+		// proof, credentials could be written (and the previous ones
+		// deleted) for a workflow that never receives the key.
+		return fmt.Errorf("fetching pinned %s scaffold to verify %s support (existing credentials were left unchanged): %w",
+			resolved.Forge, InferenceAuthOpenAIAPIKey, err)
+	}
+	return validateOpenAICredentialContract(resolved.Forge, files)
+}
+
+// checkEstablishedOpenAICredentialContract covers an established installation
+// for which no convergence will refresh scaffold content (neither a manifest
+// ref nor a build-time upstream ref): the consumer on the default branch is
+// all there is, so a legacy one must be rejected before any credential is
+// written rather than left unable to read the new key.
+func checkEstablishedOpenAICredentialContract(ctx context.Context, resolved ResolvedConfig, cfg ConvergeConfig) error {
+	if resolved.FullsendRef != "" || cfg.UpstreamRef != "" {
+		return nil
+	}
+	live, err := selectedCredentialContractLive(ctx, resolved, resolved.ForgeConfig.Client)
+	if err != nil {
+		return err
+	}
+	if live {
+		return nil
+	}
+	consumers := openAIConsumerPath(resolved.Forge)
+	if resolved.Forge != ForgeGitLab {
+		consumers = strings.Join(append([]string{consumers}, scaffold.PerRepoThinCallerPaths()...), ", ")
+	}
+	return fmt.Errorf("the installed %s scaffold does not support inference.auth %s: not every credential consumer (%s) references %s and no scaffold ref is configured to refresh it; "+
+		"set fullsend_ref (or run a release build) so the scaffold can be upgraded (existing credentials were left unchanged)",
+		resolved.Forge, InferenceAuthOpenAIAPIKey, consumers, forge.SecretOpenAIAPIKey)
+}
+
+// withoutLegacyOpenAIConsumer drops the marker-only ref rewrite of every
+// installed GitHub inference credential consumer from files when
+// inference.auth is openai-api-key and that consumer does not yet reference
+// FULLSEND_OPENAI_API_KEY: the shim workflow and each per-repo thin caller
+// such as prioritize.yml. Each consumer is checked independently. A dropped
+// consumer is then repaired in full by convergeContentDriftFiles, so the first
+// delivered copy forwards the key. GitLab ref upgrades already rewrite the
+// consumer wholesale, so its files are returned unchanged.
+func withoutLegacyOpenAIConsumer(ctx context.Context, resolved ResolvedConfig, files []forge.TreeFile) ([]forge.TreeFile, error) {
+	if len(files) == 0 || resolved.InferenceAuth != InferenceAuthOpenAIAPIKey || resolved.Forge == ForgeGitLab {
+		return files, nil
+	}
+	shimLegacy, legacyCallers, err := githubLegacyOpenAIConsumers(ctx, resolved, resolved.ForgeConfig.Client)
+	if err != nil {
+		return nil, err
+	}
+	if !shimLegacy && len(legacyCallers) == 0 {
+		return files, nil
+	}
+	kept := make([]forge.TreeFile, 0, len(files))
+	for _, f := range files {
+		if shimLegacy && slices.Contains(resolved.ForgeConfig.WorkflowPaths, f.Path) {
+			continue
+		}
+		if slices.Contains(legacyCallers, f.Path) {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	return kept, nil
+}
+
+// gitlabFreshInstallDryRunPreflight runs the read-only portion of the
+// GitLab-specific fresh-install checks Install performs before writes:
+// resolving the effective wrapper, validating the typed pipeline-input
+// contract (or rejecting an incomplete one) and the live pipeline-variable
+// override restriction, refusing a typed-to-legacy transition, and
+// confirming the root .gitlab-ci.yml would merge cleanly (e.g. no STAGE
+// conflict). It performs no writes and never mutates project state. A
+// fresh-install dry run that skips these checks can report "Would install
+// (new)" for a plan the real installation would reject — see the review
+// finding on preview fidelity.
+func gitlabFreshInstallDryRunPreflight(ctx context.Context, resolved ResolvedConfig, installCfg InstallConfig) error {
+	client := resolved.ForgeConfig.Client
+	owner, repo := installCfg.Owner, installCfg.Repo
+
+	files, err := BuildScaffoldFiles(installCfg)
+	if err != nil {
+		return fmt.Errorf("generating scaffold files: %w", err)
+	}
+
+	existing, err := client.GetFileContent(ctx, owner, repo, ".gitlab-ci.yml")
+	if err != nil && !forge.IsNotFound(err) {
+		return fmt.Errorf("reading existing .gitlab-ci.yml: %w", err)
+	}
+	wrapper, err := effectiveGitLabWrapper(ctx, client, owner, repo, files)
+	if err != nil {
+		return fmt.Errorf("reading effective GitLab wrapper: %w", err)
+	}
+
+	if gitlabWrapperHasDispatchInputs(wrapper) {
+		if err := validateGitLabTypedContract(wrapper); err != nil {
+			return err
+		}
+		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
+			return err
+		}
+		if err := requireGitLabPipelineVariableRestriction(ctx, client, owner, repo, true); err != nil {
+			return err
+		}
+	} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
+		return err
+	} else if gitlabWrapperHasDispatchInputs(existing) {
+		return fmt.Errorf("refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch")
+	}
+
+	if !HasFullsendEntries(existing) || gitlabWrapperHasDispatchInputs(wrapper) {
+		if _, err := mergeGitLabCIWithWrapper(existing, wrapper); err != nil {
+			return fmt.Errorf("merging .gitlab-ci.yml: %w", err)
+		}
+	}
+	return nil
+}
+
 // convergeVariables checks and repairs variable drift for an installed repo.
 func convergeVariables(ctx context.Context,
 	resolved ResolvedConfig,
@@ -1223,29 +2019,30 @@ func convergeVariables(ctx context.Context,
 	return actions
 }
 
-// convergeSecrets checks and repairs missing inference secrets.
-// Secrets are write-only (values cannot be read back from the forge API),
-// so convergence can only detect absence, not value drift.
+// convergeSecrets converges the inference secrets for the repo's
+// inference.auth. Secrets are write-only (values cannot be read back from
+// the forge API), so without supplied inputs convergence only confirms
+// presence; validation already rejected repos missing them. Supplied
+// inputs replace every secret of the selected method. Removing the other
+// method's Fullsend-managed secrets is not done here: Converge does it
+// after every convergence step succeeded, so a failed setup keeps the old
+// credentials.
 func convergeSecrets(ctx context.Context,
-	resolved ResolvedConfig,
-	components []ComponentStatus,
-	hasSecrets bool,
+	d convergeDiscovery,
 	wifProvider string,
 	cfg ConvergeConfig,
 	progress ProgressFunc) []ComponentAction {
 
-	if hasSecrets {
+	resolved := d.resolved
+	auth := resolved.InferenceAuth
+	if !d.credsSupplied {
 		var actions []ComponentAction
-		for _, c := range components {
+		for _, c := range d.components {
 			if strings.HasPrefix(c.Name, "secret:") {
-				detail := fmt.Sprintf("%s exists", DriftFieldName(c.Name))
-				if !c.Present {
-					detail = fmt.Sprintf("%s not present (not managed by convergence)", DriftFieldName(c.Name))
-				}
 				actions = append(actions, ComponentAction{
 					Component: c.Name,
 					Action:    "none",
-					Detail:    detail,
+					Detail:    fmt.Sprintf("%s exists", DriftFieldName(c.Name)),
 				})
 			}
 		}
@@ -1256,48 +2053,86 @@ func convergeSecrets(ctx context.Context,
 	client := resolved.ForgeConfig.Client
 	var actions []ComponentAction
 
-	secrets := map[string]string{}
-	if cfg.InferenceProject != "" {
-		secrets[forge.SecretGCPProjectID] = cfg.InferenceProject
-		secrets[forge.SecretGCPWIFProvider] = wifProvider
-	}
-
-	for _, c := range components {
-		if !strings.HasPrefix(c.Name, "secret:") || c.Present {
-			continue
-		}
-		secretName := DriftFieldName(c.Name)
-		val, ok := secrets[secretName]
-		if !ok {
-			continue
-		}
-
+	// FULLSEND_GCP_REGION is probed only when present; establish it with
+	// the Vertex credentials (e.g. after switching from openai-api-key).
+	region := inferenceRegionForAuth(auth, cfg.InferenceRegion)
+	if region != "" && !hasComponent(d.components, "var:"+forge.VarGCPRegion) {
 		if cfg.DryRun {
 			actions = append(actions, ComponentAction{
-				Component: c.Name,
+				Component: "var:" + forge.VarGCPRegion,
 				Action:    "add",
-				Detail:    fmt.Sprintf("would add %s", secretName),
+				Detail:    fmt.Sprintf("would add %s: %s", forge.VarGCPRegion, region),
 			})
-			progress(repoFullName, "dry-run", fmt.Sprintf("Would add secret %s", secretName))
-			continue
-		}
-
-		if err := client.CreateRepoSecret(ctx, resolved.Owner, resolved.Repo, secretName, val); err != nil {
+			progress(repoFullName, "dry-run", fmt.Sprintf("Would add variable %s", forge.VarGCPRegion))
+		} else if err := client.CreateOrUpdateRepoVariable(ctx, resolved.Owner, resolved.Repo, forge.VarGCPRegion, region); err != nil {
 			actions = append(actions, ComponentAction{
-				Component: c.Name,
+				Component: "var:" + forge.VarGCPRegion,
 				Action:    "error",
-				Detail:    fmt.Sprintf("failed to set %s: %v", secretName, err),
+				Detail:    fmt.Sprintf("failed to set %s: %v", forge.VarGCPRegion, err),
+			})
+			return actions
+		} else {
+			actions = append(actions, ComponentAction{
+				Component: "var:" + forge.VarGCPRegion,
+				Action:    "add",
+				Detail:    fmt.Sprintf("set %s = %s", forge.VarGCPRegion, region),
+			})
+			progress(repoFullName, "sync", fmt.Sprintf("Set variable %s", forge.VarGCPRegion))
+		}
+	}
+
+	if cfg.DryRun {
+		actions = append(actions, plannedInferenceSecretActions(d, progress)...)
+		return actions
+	}
+
+	values := inferenceSecretValues(cfg, auth, wifProvider)
+	for _, name := range inferenceSecretsForAuth(auth) {
+		action := secretWriteAction(d.components, name)
+		if err := client.CreateRepoSecret(ctx, resolved.Owner, resolved.Repo, name, values[name]); err != nil {
+			actions = append(actions, ComponentAction{
+				Component: "secret:" + name,
+				Action:    "error",
+				Detail:    fmt.Sprintf("failed to set %s: %s", name, redactSecretValues(err.Error(), values)),
 			})
 			continue
 		}
 		actions = append(actions, ComponentAction{
-			Component: c.Name,
-			Action:    "add",
-			Detail:    fmt.Sprintf("set %s", secretName),
+			Component: "secret:" + name,
+			Action:    action,
+			Detail:    fmt.Sprintf("set %s", name),
 		})
-		progress(repoFullName, "sync", fmt.Sprintf("Set secret %s", secretName))
+		progress(repoFullName, "sync", fmt.Sprintf("Set secret %s", name))
 	}
+	return actions
+}
 
+// secretWriteAction returns "update" when the secret already exists and
+// "add" otherwise.
+func secretWriteAction(components []ComponentStatus, name string) string {
+	if hasComponent(components, "secret:"+name) {
+		return "update"
+	}
+	return "add"
+}
+
+// plannedInferenceSecretActions reports the inference secret writes a dry
+// run would perform. Only names are reported, never values.
+func plannedInferenceSecretActions(d convergeDiscovery, progress ProgressFunc) []ComponentAction {
+	if !d.credsSupplied {
+		return nil
+	}
+	repoFullName := d.resolved.Owner + "/" + d.resolved.Repo
+	var actions []ComponentAction
+	for _, name := range inferenceSecretsForAuth(d.resolved.InferenceAuth) {
+		action := secretWriteAction(d.components, name)
+		actions = append(actions, ComponentAction{
+			Component: "secret:" + name,
+			Action:    action,
+			Detail:    fmt.Sprintf("would %s %s", action, name),
+		})
+		progress(repoFullName, "dry-run", fmt.Sprintf("Would %s secret %s", action, name))
+	}
 	return actions
 }
 
@@ -1310,6 +2145,42 @@ func convergeSecrets(ctx context.Context,
 // operators running off-system polling intentionally disable these
 // schedules, so by default a disabled schedule is only reported as
 // drift, not silently re-enabled.
+// scheduleErrorActions builds a uniform "error" ComponentAction for each
+// named schedule component, used when a check that gates all pending
+// schedule mutations (the effective dispatch transport, or the
+// pipeline-variable override restriction) fails before any of them run.
+func scheduleErrorActions(names []string, detail string) []ComponentAction {
+	actions := make([]ComponentAction, 0, len(names))
+	for _, name := range names {
+		actions = append(actions, ComponentAction{
+			Component: name,
+			Action:    "error",
+			Detail:    detail,
+		})
+	}
+	return actions
+}
+
+// scheduleDeferredActions builds a uniform "none" ComponentAction for each
+// named schedule component, used when compatible templates have not yet
+// landed on the default branch. This is a benign, expected wait state —
+// not a failure — so it must not surface as an "error" action: convergeRepo
+// treats any "error" action as a reason to bail out before collecting or
+// committing scaffold file changes, which would otherwise repair the very
+// templates this deferral is waiting on. Mirrors the "none" action already
+// used above for a disabled schedule that is intentionally left untouched.
+func scheduleDeferredActions(names []string, detail string) []ComponentAction {
+	actions := make([]ComponentAction, 0, len(names))
+	for _, name := range names {
+		actions = append(actions, ComponentAction{
+			Component: name,
+			Action:    "none",
+			Detail:    detail,
+		})
+	}
+	return actions
+}
+
 func convergeSchedules(ctx context.Context,
 	resolved ResolvedConfig,
 	components []ComponentStatus,
@@ -1382,6 +2253,68 @@ func convergeSchedules(ctx context.Context,
 		return actions
 	}
 
+	// Legacy (non-typed) templates select poll mode from a schedule
+	// pipeline variable rather than the schedule description, so schedule
+	// creation/repair must still set it for repos that haven't migrated to
+	// the typed pipeline-input contract. Checked once per call against the
+	// currently effective wrapper — not any scaffold queued by this same
+	// convergence run, which hasn't committed yet. Checked before either
+	// mutation below (reactivating or creating), not just before creating:
+	// for a typed installation, both actions resume scheduled polling, and
+	// resuming it ahead of the required pipeline-variable override
+	// restriction would let credential-bearing polling run under a weaker
+	// policy with no rollback once convergeGitLabRootCIFiles reports the
+	// restriction error later in this same convergence pass — see the
+	// review finding on this ordering.
+	//
+	// A typed wrapper alone is not sufficient evidence that scheduled
+	// polling is actually safe to resume: the root .gitlab-ci.yml may not
+	// yet declare/forward the dispatch-input contract, or a sibling agent
+	// or poll template repair may still be unmerged, leaving the legacy
+	// template's event-based polling in place. Gate typed schedule
+	// creation and reactivation on the same committed-template readiness
+	// checks ActivateGitLabTypedDispatch uses before activation, so a
+	// missing schedule can't start (or a disabled one resume) polling
+	// under a stale template ahead of compatible scaffold delivery.
+	typed, typedErr := GitLabUsesTypedDispatch(ctx, client, owner, repo)
+	if errors.Is(typedErr, errGitLabIncompatibleWrapper) {
+		// The installed wrapper's content is incompatible; a scaffold
+		// repair (collected by convergeRepo only when no action is an
+		// "error") is what fixes it. Defer schedule mutations instead of
+		// failing, so the repair can land. API/read failures below stay
+		// hard errors.
+		detail := fmt.Sprintf("deferring pipeline schedule creation/reactivation until the installed GitLab wrapper is repaired: %v", typedErr)
+		return append(actions, scheduleDeferredActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+	}
+	if typedErr != nil {
+		detail := fmt.Sprintf("checking effective GitLab dispatch transport for schedule creation: %v", typedErr)
+		return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+	}
+	if typed {
+		rootReady, rootErr := gitlabRootDeclaresDispatchInputs(ctx, client, owner, repo)
+		if rootErr != nil {
+			detail := fmt.Sprintf("checking committed GitLab root CI input contract for schedule creation: %v", rootErr)
+			return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+		}
+		if !rootReady {
+			detail := "deferring pipeline schedule creation/reactivation until the root .gitlab-ci.yml declares and forwards the pipeline-input contract"
+			return append(actions, scheduleDeferredActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+		}
+		landed, landedErr := gitlabPollAndAgentTemplatesLanded(ctx, client, owner, repo)
+		if landedErr != nil {
+			detail := fmt.Sprintf("checking committed GitLab agent/poll templates for schedule creation: %v", landedErr)
+			return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+		}
+		if !landed {
+			detail := "deferring pipeline schedule creation/reactivation until compatible agent and poll templates land"
+			return append(actions, scheduleDeferredActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+		}
+		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
+			detail := fmt.Sprintf("refusing to create or reactivate pipeline schedules before the GitLab pipeline-variable override restriction is established: %v", err)
+			return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
+		}
+	}
+
 	if len(inactiveSchedules) > 0 {
 		actions = append(actions, activatePipelineSchedules(
 			ctx, client, owner, repo, repoFullName, inactiveSchedules, progress)...)
@@ -1420,7 +2353,7 @@ func convergeSchedules(ctx context.Context,
 		}
 
 		_, createErr := client.CreatePipelineSchedule(
-			ctx, owner, repo, defaultBranch, spec.Description, spec.Cron, spec.Variables)
+			ctx, owner, repo, defaultBranch, spec.Description, spec.Cron, ScheduleVariablesFor(*spec, typed))
 		if createErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: name,
@@ -1533,7 +2466,7 @@ func activatePipelineSchedules(ctx context.Context, client forge.Client,
 func convergeGitLabRootCIFiles(ctx context.Context,
 	resolved ResolvedConfig,
 	cfg ConvergeConfig,
-	progress ProgressFunc) ([]forge.TreeFile, []ComponentAction) {
+	progress ProgressFunc, pending []forge.TreeFile) ([]forge.TreeFile, []ComponentAction) {
 
 	var actions []ComponentAction
 	if resolved.Forge != ForgeGitLab {
@@ -1545,10 +2478,7 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 	repoFullName := owner + "/" + repo
 
 	existing, err := client.GetFileContent(ctx, owner, repo, ".gitlab-ci.yml")
-	if err != nil {
-		if forge.IsNotFound(err) {
-			return nil, actions
-		}
+	if err != nil && !forge.IsNotFound(err) {
 		actions = append(actions, ComponentAction{
 			Component: "gitlab-ci-rules",
 			Action:    "error",
@@ -1559,6 +2489,11 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 
 	content := existing
 	changed := false
+	wrapper, wrapperErr := effectiveGitLabWrapper(ctx, client, owner, repo, pending)
+	if wrapperErr != nil {
+		return nil, []ComponentAction{{Component: "gitlab-ci-inputs", Action: "error",
+			Detail: fmt.Sprintf("error reading effective GitLab wrapper: %v", wrapperErr)}}
+	}
 
 	stripped, rulesChanged, stripErr := StripObsoleteGitLabWorkflowRules(content)
 	if stripErr != nil {
@@ -1632,7 +2567,7 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 		// trusting its verdict, confirm the on-repo pipeline wrapper it
 		// gated on doesn't itself still pull in the obsolete native-dispatch
 		// job — see gitlabPipelineWrapperStillIncludesDispatch.
-		pullsInDispatch, wrapperErr := gitlabPipelineWrapperStillIncludesDispatch(ctx, client, owner, repo)
+		pullsInDispatch, wrapperErr := gitlabWrapperContentIncludesDispatch(wrapper)
 		if wrapperErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: "gitlab-ci-stages",
@@ -1663,6 +2598,70 @@ func convergeGitLabRootCIFiles(ctx context.Context,
 			})
 			progress(repoFullName, "repair", "Removing obsolete dispatch stage from .gitlab-ci.yml")
 		}
+	}
+
+	// Dispatch now uses typed pipeline inputs. Existing installations were
+	// merged from the user's root file rather than the embedded root
+	// scaffold, so converge the root contract before an upgraded poller can
+	// create an inputs-only pipeline.
+	if gitlabWrapperHasDispatchInputs(wrapper) {
+		if err := validateGitLabTypedContract(wrapper); err != nil {
+			return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
+		}
+		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
+			return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
+		}
+		// Validate only — never mutate — here. The wrapper checked above
+		// may still be queued in pending rather than already committed
+		// (see effectiveGitLabWrapper), so flipping the live schedule
+		// variables and project restriction at this point can activate
+		// typed dispatch before compatible templates actually reach the
+		// protected default branch. If the batched commit below then
+		// fails to land (or a later convergence step errors first), a
+		// legacy poller would be stranded behind a restriction it can't
+		// satisfy. The real activation runs from convergeRepo only after
+		// commitScaffold succeeds, re-checking the now-committed wrapper.
+		if err := requireGitLabPipelineVariableRestriction(ctx, client, owner, repo, true); err != nil {
+			return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
+		}
+		migrated, mergeErr := mergeGitLabCIWithWrapper(content, wrapper)
+		if mergeErr != nil {
+			actions = append(actions, ComponentAction{
+				Component: "gitlab-ci-inputs",
+				Action:    "error",
+				Detail:    fmt.Sprintf("error migrating .gitlab-ci.yml to the pipeline-input contract: %v", mergeErr),
+			})
+			return nil, actions
+		}
+		if !bytes.Equal(migrated, content) {
+			content = migrated
+			changed = true
+			detail := "migrated .gitlab-ci.yml to the typed pipeline-input contract"
+			progressText, progressAction := "Migrating .gitlab-ci.yml to the typed pipeline-input contract", "repair"
+			if cfg.DryRun {
+				detail = "would migrate .gitlab-ci.yml to the typed pipeline-input contract"
+				progressText, progressAction = "Would migrate .gitlab-ci.yml to the typed pipeline-input contract", "dry-run"
+			}
+			actions = append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "update", Detail: detail})
+			progress(repoFullName, progressAction, progressText)
+		}
+	} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
+		return nil, append(actions, ComponentAction{Component: "gitlab-ci-inputs", Action: "error", Detail: err.Error()})
+	} else if gitlabWrapperHasDispatchInputs(content) {
+		// Forced typed-to-legacy transition: the committed root already
+		// carries the typed spec:inputs header and include:inputs
+		// forwarding map from a previous typed install, but the
+		// effective wrapper for this convergence is legacy and declares
+		// none of those inputs. Nothing above migrates or reverts the
+		// root in that direction, so delivering the legacy wrapper
+		// alongside an untouched typed root would leave an invalid
+		// include and restriction/schedule state incompatible with
+		// legacy dispatch. Refuse rather than commit that broken mix.
+		return nil, append(actions, ComponentAction{
+			Component: "gitlab-ci-inputs",
+			Action:    "error",
+			Detail:    "refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch",
+		})
 	}
 
 	if !changed {
@@ -1761,14 +2760,30 @@ func convergeRefFiles(ctx context.Context,
 		}
 	}
 
+	// A targetRef matching the running release's own upstream ref/tag is
+	// the generated release-default baseline (see resolveTargetRef's doc
+	// comment and the matching guard in convergeRepo), not an explicit
+	// pin to a different release. Its installed/rendered ref and tag
+	// annotation must render as exactly cfg.UpstreamRef/cfg.UpstreamTag —
+	// not whatever the generic SHA-resolution logic below would produce
+	// from targetRef alone — so the marker comparison against the
+	// previously installed content stays idempotent across repeated
+	// convergence runs even when UpstreamRef (e.g. a release SHA) and
+	// UpstreamTag (its distinct version tag) differ. Applied in both the
+	// dry-run and real paths, and reused by the GitLab template-rendering
+	// decision below.
+	isExplicitPin := targetRef != cfg.UpstreamRef && targetRef != cfg.UpstreamTag
+
 	// DryRun path.
 	if cfg.DryRun {
 		dryRef := targetRef
 		dryTag := ""
-		// Only resolve to SHA for semver tags. Branch refs are used
-		// directly to match resolveTargetRef and avoid non-idempotent
-		// SHA pinning. See #6553.
-		if !isSHARef(targetRef) && isSHARef(currentRef) && isSemver(targetRef) {
+		if !isExplicitPin {
+			dryRef, dryTag = cfg.UpstreamRef, cfg.UpstreamTag
+		} else if !isSHARef(targetRef) && isSHARef(currentRef) && isSemver(targetRef) {
+			// Only resolve to SHA for semver tags. Branch refs are used
+			// directly to match resolveTargetRef and avoid non-idempotent
+			// SHA pinning. See #6553.
 			if resolver != nil {
 				if sha := resolver.Resolve(ctx, targetRef); sha != "" && sha != targetRef {
 					dryRef = sha
@@ -1838,7 +2853,9 @@ func convergeRefFiles(ctx context.Context,
 	// makes the write non-idempotent because each convergence commit
 	// shifts the branch HEAD. See #6553.
 	var newRef, newTag string
-	if isSHARef(targetRef) {
+	if !isExplicitPin {
+		newRef, newTag = cfg.UpstreamRef, cfg.UpstreamTag
+	} else if isSHARef(targetRef) {
 		newRef = targetRef
 	} else if isSHARef(currentRef) && isSemver(targetRef) {
 		var sha string
@@ -1887,9 +2904,32 @@ func convergeRefFiles(ctx context.Context,
 	// GitLab CI templates — include only when the ref changed.
 	// Unchanged-ref structural drift is repaired by convergeContentDriftFiles.
 	if changed && resolved.Forge == ForgeGitLab {
+		// A release-default targetRef (!isExplicitPin, computed above)
+		// already has newRef/newTag normalized to
+		// cfg.UpstreamRef/cfg.UpstreamTag. Its embedded templates already
+		// match the running binary, so render them directly instead of
+		// fetching remotely — a failed remote template read must not
+		// abort an upgrade that the embedded templates already satisfy.
+		templateRef, templateTag := newRef, newTag
 		templateFiles, tplErr := collectGitLabUpgradeTemplates(
-			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), newRef, newTag,
+			gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), templateRef, templateTag,
 		)
+		vendor := resolved.Vendor
+		if cfg.VendorOverride != nil {
+			vendor = *cfg.VendorOverride
+		}
+		if resolver != nil && !vendor && isExplicitPin {
+			remote, remoteErr := FetchRemoteScaffold(ctx, resolver.client, targetRef, newRef, ForgeGitLab,
+				gitlabAgentRunnerTags(cfg.Manifest), gitlabControlRunnerTags(cfg.Manifest), false)
+			if remoteErr != nil {
+				return nil, []ComponentAction{{Component: "ref", Action: "error",
+					Detail: fmt.Sprintf("fetching pinned GitLab scaffold: %v", remoteErr)}}
+			}
+			templateFiles = nil
+			for _, file := range remote {
+				templateFiles = append(templateFiles, forge.TreeFile{Path: file.Path, Content: file.Content, Mode: file.Mode})
+			}
+		}
 		if tplErr != nil {
 			actions = append(actions, ComponentAction{
 				Component: "ref",
@@ -2022,6 +3062,9 @@ func convergeScaffoldFiles(ctx context.Context,
 		if fetchErr == nil {
 			installCfg.PrebuiltScaffoldFiles = scaffoldFiles
 		} else {
+			if resolved.Forge == ForgeGitLab {
+				return nil, []ComponentAction{{Component: "scaffold", Action: "error", Detail: fmt.Sprintf("fetching pinned GitLab scaffold: %v", fetchErr)}}
+			}
 			progress(repoFullName, "repair", fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
 		}
 	}
@@ -2150,6 +3193,9 @@ func convergeContentDriftFiles(ctx context.Context,
 		if fetchErr == nil {
 			installCfg.PrebuiltScaffoldFiles = scaffoldFiles
 		} else {
+			if resolved.Forge == ForgeGitLab {
+				return nil, []ComponentAction{{Component: "scaffold", Action: "error", Detail: fmt.Sprintf("fetching pinned GitLab scaffold: %v", fetchErr)}}
+			}
 			progress(repoFullName, "content-drift",
 				fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
 		}
@@ -2187,6 +3233,7 @@ func convergeContentDriftFiles(ctx context.Context,
 			continue
 		}
 		if cfg.DryRun {
+			repairFiles = append(repairFiles, forge.TreeFile{Path: df.Path, Content: df.Expected, Mode: "100644"})
 			actions = append(actions, ComponentAction{
 				Component: df.Path,
 				Action:    "update",
@@ -2344,12 +3391,30 @@ type resolvedRef struct {
 // with each commit, making SHA resolution non-idempotent — each
 // convergence commit shifts the branch, causing the next run to
 // resolve a different SHA and re-converge. See #6553.
+//
+// fullsendRef matching upstreamRef or upstreamTag is treated the same
+// as an empty fullsendRef (manifestRef left empty, no "pin"): a
+// successful unpinned install writes the resolved release-default ref
+// back into the manifest as gitlab.fullsend_ref/github.fullsend_ref
+// (runReposInstall), so a subsequent run's resolved.FullsendRef is
+// that generated baseline, not an explicit pin to a different release.
+// Its embedded templates already match the running binary, so no
+// remote fetch or upstream client is required — see the GitLab-only
+// guard in convergeRepo and InstallConfig.Pinned.
 func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag string, resolver *RefResolver) resolvedRef {
 	ref := fullsendRef
 	tag := upstreamTag
 	var manifestRef string
 
 	if ref == "" && upstreamRef != "" {
+		ref = upstreamRef
+	} else if ref != "" && (ref == upstreamRef || ref == upstreamTag) {
+		// The manifest's fullsendRef is the generated release-default
+		// baseline, not a differing explicit pin (see doc comment
+		// above). Resolve to upstreamRef exactly as the unpinned branch
+		// above does, so status/drift comparisons against the actually
+		// committed workflow ref stay consistent regardless of whether
+		// resolved.FullsendRef happens to be populated yet.
 		ref = upstreamRef
 	} else if ref != "" {
 		manifestRef = ref

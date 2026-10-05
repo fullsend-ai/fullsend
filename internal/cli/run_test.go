@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -769,6 +770,141 @@ openshell:
 	assert.NotContains(t, err.Error(), "importing profile")
 	assert.NotContains(t, err.Error(), "ensuring provider")
 	assert.NotContains(t, err.Error(), "creating sandbox")
+}
+
+// TestRunAgent_BareBuiltinProviderResolvesEmbeddedDefinitionAndProfile
+// exercises the #7268 path end to end: a harness declares the bare name
+// "vertex-ai" with no local providers/vertex-ai.yaml and no
+// openshell.profiles entry at all. appendEmbeddedProviderDefs must fill in
+// the scaffold's embedded provider definition, and the orchestration loop in
+// runAgent must import the embedded fullsend-vertex-ai profile
+// (ensureEmbeddedProfile) and create the provider — the same way it always
+// has for the bare "openai" name, now generalised to every builtin. Uses
+// recordingProvidersStub (like TestRunAgent_UnlistedProfileDirectoryFileIsNotImported)
+// so the run gets past sandbox creation — the stub fails the first
+// in-sandbox exec on purpose, stopping the run right after.
+func TestRunAgent_BareBuiltinProviderResolvesEmbeddedDefinitionAndProfile(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// No providers/vertex-ai.yaml on disk and no openshell.profiles entry:
+	// both the provider definition and its profile must come from the
+	// binary's embedded scaffold.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\nproviders:\n  - vertex-ai\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	// The stub cannot bootstrap an agent past sandbox creation, but the run
+	// must get past the provider/profile orchestration steps without error.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "gateway check failed")
+	assert.NotContains(t, err.Error(), "enabling providers v2")
+	assert.NotContains(t, err.Error(), "importing provider profile")
+	assert.NotContains(t, err.Error(), "ensuring provider")
+	assert.Contains(t, buf.String(), `using the definition shipped with fullsend`, "appendEmbeddedProviderDefs should report the embedded fallback")
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	log := string(data)
+	assert.Regexp(t, `provider profile import --file \S*fullsend-vertex-ai-\S*\.yaml`, log, "the embedded fullsend-vertex-ai profile must be imported (ensureEmbeddedProfile)")
+	assert.Contains(t, log, "provider create --name vertex-ai --type fullsend-vertex-ai", "the embedded vertex-ai provider definition must be used to create the provider")
+}
+
+// runAgentWithProviderFiles writes a minimal workspace whose harness
+// declares providers and lists openshell.profiles, plus the given files
+// (relative path -> content), runs it against recordingProvidersStub, and
+// returns the stub's argument log and the printer output.
+func runAgentWithProviderFiles(t *testing.T, harnessYAML string, files map[string]string) (dir, log, out string) {
+	t.Helper()
+	logPath := recordingProvidersStub(t)
+	dir = t.TempDir()
+	files["agents/code.md"] = "You are a coding agent."
+	files["harness/code.yaml"] = harnessYAML
+	files["config.yaml"] = "agents:\n  - harness/code.yaml\n"
+	for rel, content := range files {
+		path := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	}
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	var buf bytes.Buffer
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+	// The stub fails the first in-sandbox exec, after provider setup.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "importing")
+	assert.NotContains(t, err.Error(), "ensuring provider")
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	return dir, string(data), buf.String()
+}
+
+// TestRunAgent_ReservedProfileCopyWarnsAndStaysLive: during the warning
+// release, a harness that still lists its own copy of a reserved profile
+// keeps it. The copy is imported, the run warns with the migration, and the
+// embedded copy is not imported over it under the same id (#7268).
+func TestRunAgent_ReservedProfileCopyWarnsAndStaysLive(t *testing.T) {
+	dir, log, out := runAgentWithProviderFiles(t,
+		"agent: agents/code.md\nrole: test\nproviders:\n  - github-ro\nopenshell:\n  profiles:\n    - profiles/fullsend-github-ro.yaml\n",
+		map[string]string{"profiles/fullsend-github-ro.yaml": "id: fullsend-github-ro\ndisplay_name: Repo copy\n"})
+
+	assert.Contains(t, out, `provider profile "fullsend-github-ro" will be rejected in a future release`)
+	assert.Contains(t, out, `declare the bare provider name "github-ro"`)
+	imports := regexp.MustCompile(`provider profile import --file (\S+)`).FindAllStringSubmatch(log, -1)
+	require.Len(t, imports, 1, "only the repo copy is imported; the embedded copy must not replace it: %q", log)
+	assert.Equal(t, filepath.Join(dir, "profiles", "fullsend-github-ro.yaml"), imports[0][1])
+	assert.Contains(t, log, "provider create --name github-ro --type fullsend-github-ro")
+}
+
+// TestRunAgent_ReservedProfileCopyWithoutProviderWarns: a listed copy of a
+// reserved profile that no provider in the run uses is still imported and
+// still warned about (#7268).
+func TestRunAgent_ReservedProfileCopyWithoutProviderWarns(t *testing.T) {
+	dir, log, out := runAgentWithProviderFiles(t,
+		"agent: agents/code.md\nrole: test\nproviders:\n  - vertex-ai\nopenshell:\n  profiles:\n    - profiles/fullsend-gitleaks.yaml\n",
+		map[string]string{"profiles/fullsend-gitleaks.yaml": "id: fullsend-gitleaks\ndisplay_name: Repo copy\n"})
+
+	assert.Contains(t, out, `provider profile "fullsend-gitleaks" will be rejected in a future release`)
+	assert.Contains(t, log, "provider profile import --file "+filepath.Join(dir, "profiles", "fullsend-gitleaks.yaml"))
+	assert.Regexp(t, `provider profile import --file \S*fullsend-vertex-ai-\S*\.yaml`, log, "the unlisted reserved profile still comes from the embed")
+}
+
+// TestRunAgent_CustomNamedProviderOverrideWins: a provider and profile under
+// the operator's own name are used as written, with no reservation warning
+// and no embedded profile import (#7268).
+func TestRunAgent_CustomNamedProviderOverrideWins(t *testing.T) {
+	dir, log, out := runAgentWithProviderFiles(t,
+		"agent: agents/code.md\nrole: test\nproviders:\n  - myorg-github-ro\nopenshell:\n  profiles:\n    - profiles/myorg-github-ro.yaml\n",
+		map[string]string{
+			"providers/myorg-github-ro.yaml": "name: myorg-github-ro\ntype: myorg-github-ro\n",
+			"profiles/myorg-github-ro.yaml":  "id: myorg-github-ro\ndisplay_name: My org GitHub RO\n",
+		})
+
+	assert.NotContains(t, out, "reserved")
+	assert.NotContains(t, out, "future release")
+	imports := regexp.MustCompile(`provider profile import --file (\S+)`).FindAllStringSubmatch(log, -1)
+	require.Len(t, imports, 1, "%q", log)
+	assert.Equal(t, filepath.Join(dir, "profiles", "myorg-github-ro.yaml"), imports[0][1])
+	assert.Contains(t, log, "provider create --name myorg-github-ro --type myorg-github-ro")
 }
 
 // TestRunAgent_UnlistedProfileDirectoryFileIsNotImported guards the #7095
@@ -2381,6 +2517,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"FULLSEND_OPENAI_SERVICE_ACCOUNT_ID",
 		// The static key of a local run must not be expandable under any name.
 		"OPENAI_API_KEY",
+		// The GitLab CI/CD variable carrying the real key must stay runner-only.
+		"FULLSEND_OPENAI_API_KEY",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)

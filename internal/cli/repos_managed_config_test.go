@@ -10,6 +10,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +25,8 @@ const githubManagedManifestYAML = `version: 1
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
+  inference:
+    auth: vertex-wif
   repos:
     - name: acme/api
       config:
@@ -34,6 +37,8 @@ const githubUnmanagedManifestYAML = `version: 1
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
+  inference:
+    auth: vertex-wif
   repos:
     - name: acme/api
 `
@@ -42,6 +47,8 @@ const githubMixedManifestYAML = `version: 1
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
+  inference:
+    auth: vertex-wif
   repos:
     - name: acme/managed
       config:
@@ -53,6 +60,8 @@ const gitlabManagedManifestYAML = `version: 1
 gitlab:
   url: https://gitlab.example.com
   fullsend_ref: v1.0.0
+  inference:
+    auth: openai-api-key
   repos:
     - name: group/project
       config:
@@ -74,6 +83,29 @@ func githubManagedInstallOpts(manifestPath string, fc *forge.FakeClient) *reposI
 		inferenceRegion:        "us-central1",
 		testClient:             fc,
 	}
+}
+
+// useOpenAIInputs swaps the helper's default Vertex inputs for an OpenAI
+// key; Converge rejects input groups that no selected repository consumes.
+//
+// Converge fails closed when it cannot fetch an explicit pin's scaffold to
+// verify the OpenAI credential contract, so the fake upstream also serves a
+// shim at the v1.0.0 and v2.0.0 pins these tests use that forwards the key.
+func useOpenAIInputs(opts *reposInstallConfig) *reposInstallConfig {
+	if fc, ok := opts.testClient.(*forge.FakeClient); ok {
+		shim, err := scaffold.PerRepoShimTemplate()
+		if err != nil {
+			panic(err)
+		}
+		for _, ref := range []string{"v1.0.0", "v2.0.0"} {
+			fc.FileContentsRef["fullsend-ai/fullsend/internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml@"+ref] = shim
+		}
+	}
+	opts.inferenceProject = ""
+	opts.inferenceProjectNumber = ""
+	opts.inferenceRegion = ""
+	opts.openAIAPIKey = "test-openai-key"
+	return opts
 }
 
 func statusJSON(t *testing.T, manifestPath string, fc *forge.FakeClient) (repos.StatusResult, error) {
@@ -308,6 +340,7 @@ func TestRunRepos_GitLabManagedConfigStatusAndDryRun(t *testing.T) {
 
 func newGitLabInstalledFake(repo string) *forge.FakeClient {
 	fc := forge.NewFakeClient()
+	seedGitLabInputPrerequisites(fc, repo, "v1.0.0")
 	fc.InstallationToken = true
 	fc.AuthenticatedUser = "fullsend-app[bot]"
 	fc.CollaboratorPermissions = map[string]string{
@@ -320,11 +353,10 @@ func newGitLabInstalledFake(repo string) *forge.FakeClient {
 		DefaultBranch: "main",
 	}}
 	fc.Secrets[repo+"/"+forge.SecretForgeToken] = true
-	fc.Secrets[repo+"/"+forge.SecretGCPProjectID] = true
-	fc.Secrets[repo+"/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets[repo+"/"+forge.SecretOpenAIAPIKey] = true
 	fc.PipelineSchedules[repo] = []forge.PipelineSchedule{
-		{Description: "fullsend slash poll", Active: true},
-		{Description: "fullsend event poll", Active: true},
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
 	}
 	fc.FileContents[repo+"/.gitlab/ci/fullsend-pipeline.yml"] = []byte("---\n# fullsend-ref: v1.0.0\n  ref: v1.0.0\n")
 	return fc

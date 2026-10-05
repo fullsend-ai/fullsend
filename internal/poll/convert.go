@@ -2,12 +2,14 @@ package poll
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // toNormalizedEvent converts a RoutableEvent into a dispatch.NormalizedEvent
@@ -64,14 +66,31 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		isBot = event.IsBot || (p.botUserID != 0 && event.NoteAuthorID == p.botUserID) || isProjectAccessTokenBot(event.NoteAuthorLogin)
 	case "issue_label":
 		if event.ChangedLabel != "" {
-			la, err := p.resolveLabelAuthor(ctx, event.IID, event.ChangedLabel)
-			if err != nil {
-				return dispatch.NormalizedEvent{}, 0, fmt.Errorf("resolve label author: %w", err)
+			if event.NoteAuthorID != 0 && event.NoteAuthorLogin != "" {
+				// The webhook builder already bound this actor to the
+				// validated label transition. Do not re-resolve it from a
+				// second label-event snapshot, which could name a different
+				// actor. Poll discovery presets them from the same label-event
+				// snapshot that supplied LabelEventID, and a pending-label
+				// handoff (PendingLabel) restores the actor bound to that
+				// exact occurrence.
+				authorID = event.NoteAuthorID
+				actorLogin = event.NoteAuthorLogin
+				isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
+			} else {
+				la, err := p.resolveLabelAuthor(ctx, event.IID, event.ChangedLabel, event.LabelEventID)
+				if err != nil {
+					return dispatch.NormalizedEvent{}, 0, fmt.Errorf("resolve label author: %w", err)
+				}
+				authorID = la.ID
+				actorLogin = la.Username
+				isBot = la.IsBot || (p.botUserID != 0 && la.ID == p.botUserID) || isProjectAccessTokenBot(la.Username)
 			}
-			authorID = la.ID
-			actorLogin = la.Username
-			isBot = la.IsBot || (p.botUserID != 0 && la.ID == p.botUserID) || isProjectAccessTokenBot(la.Username)
 		}
+	case "issue_event":
+		authorID = event.NoteAuthorID
+		actorLogin = event.NoteAuthorLogin
+		isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
 	case "mr_event":
 		authorID = event.NoteAuthorID
 		switch event.Action {
@@ -104,10 +123,14 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		actorKind = "bot"
 	}
 
+	role, err := p.resolveActorRole(ctx, authorID)
+	if err != nil {
+		return dispatch.NormalizedEvent{}, 0, err
+	}
 	ne.Actor = dispatch.Actor{
 		ID:   actorLogin,
 		Kind: actorKind,
-		Role: p.resolveActorRole(ctx, authorID),
+		Role: role,
 	}
 
 	// Best-effort: determine if the actor authored the entity.
@@ -145,17 +168,36 @@ func translateEventType(event RoutableEvent) string {
 		default:
 			return "merged"
 		}
+	case "issue_event":
+		// Issue lifecycle events are produced only by the webhook
+		// builder (webhook.go), which admits just these two actions.
+		return event.Action
 	default:
 		return event.Type
 	}
 }
 
 // resolveLabelAuthor determines who applied a label by inspecting the
-// resource label events API for the issue.
-func (p *Poller) resolveLabelAuthor(ctx context.Context, issueIID int, labelName string) (LabelAuthor, error) {
+// resource label events API for the issue. When eventID is non-zero the
+// actor is taken from exactly that add event, never from a later
+// remove/re-add of the same label.
+func (p *Poller) resolveLabelAuthor(ctx context.Context, issueIID int, labelName string, eventID int) (LabelAuthor, error) {
 	events, err := p.client.ListResourceLabelEvents(ctx, p.owner, p.repo, issueIID)
 	if err != nil {
 		return LabelAuthor{}, fmt.Errorf("list resource label events: %w", err)
+	}
+
+	if eventID != 0 {
+		for _, e := range events {
+			if e.ID == eventID && e.Action == "add" && e.Label.Name == labelName {
+				return LabelAuthor{
+					ID:       e.User.ID,
+					Username: e.User.Username,
+					IsBot:    e.User.Bot,
+				}, nil
+			}
+		}
+		return LabelAuthor{}, fmt.Errorf("no add event %d found for label %q on issue %d", eventID, labelName, issueIID)
 	}
 
 	// Iterate in reverse to find the most recent "add" event for the label.
@@ -175,26 +217,34 @@ func (p *Poller) resolveLabelAuthor(ctx context.Context, issueIID int, labelName
 
 // resolveActorRole maps a GitLab project member's access level to a
 // normalized role string.
-func (p *Poller) resolveActorRole(ctx context.Context, userID int) string {
+//
+// Only a confirmed non-member (forge.ErrNotFound) maps to "none". Any other
+// lookup failure (network error, rate limit, 5xx) is returned so the caller
+// treats the event as unresolved and retries it, instead of routing it as an
+// unprivileged actor and then resolving (and clearing) a pending handoff.
+func (p *Poller) resolveActorRole(ctx context.Context, userID int) (string, error) {
 	level, err := p.client.GetMemberAccessLevel(ctx, p.owner, p.repo, userID)
 	if err != nil {
-		log.Printf("WARNING: resolveActorRole for user %d: %v (defaulting to none)", userID, err)
-		return "none"
+		if errors.Is(err, forge.ErrNotFound) {
+			log.Printf("WARNING: resolveActorRole for user %d: not a project member (role none)", userID)
+			return "none", nil
+		}
+		return "", fmt.Errorf("resolve role for user %d: %w", userID, err)
 	}
 
 	switch level {
 	case 10: // Guest
-		return "read"
+		return "read", nil
 	case 20: // Reporter
-		return "triage"
+		return "triage", nil
 	case 30: // Developer
-		return "write"
+		return "write", nil
 	case 40: // Maintainer
-		return "maintain"
+		return "maintain", nil
 	case 50: // Owner
-		return "admin"
+		return "admin", nil
 	default:
-		return "none"
+		return "none", nil
 	}
 }
 
@@ -227,7 +277,7 @@ func extractCommand(body string) (command, instruction string) {
 
 func mapRawType(eventType string) string {
 	switch eventType {
-	case "issue_label", "issue_note":
+	case "issue_label", "issue_note", "issue_event":
 		return "issues"
 	case "mr_note", "mr_event":
 		return "merge_request"
@@ -251,6 +301,8 @@ func mapRawAction(event RoutableEvent) string {
 		default:
 			return "merged"
 		}
+	case "issue_event":
+		return event.Action
 	default:
 		return ""
 	}
@@ -259,7 +311,7 @@ func mapRawAction(event RoutableEvent) string {
 // entityKind returns the Entity.Kind based on the event type.
 func entityKind(eventType string) string {
 	switch eventType {
-	case "issue_label", "issue_note":
+	case "issue_label", "issue_note", "issue_event":
 		return "work_item"
 	case "mr_note", "mr_event":
 		return "change_proposal"
@@ -272,7 +324,7 @@ func entityKind(eventType string) string {
 func entityURL(gitlabURL, projectPath, eventType string, iid int) string {
 	base := strings.TrimRight(gitlabURL, "/") + "/" + projectPath
 	switch eventType {
-	case "issue_label", "issue_note":
+	case "issue_label", "issue_note", "issue_event":
 		return base + "/-/issues/" + strconv.Itoa(iid)
 	case "mr_note", "mr_event":
 		return base + "/-/merge_requests/" + strconv.Itoa(iid)
@@ -286,7 +338,7 @@ func entityURL(gitlabURL, projectPath, eventType string, iid int) string {
 // determined.
 func (p *Poller) isEntityAuthor(ctx context.Context, event RoutableEvent, actorID int) bool {
 	switch event.Type {
-	case "issue_label", "issue_note":
+	case "issue_label", "issue_note", "issue_event":
 		issue, err := p.client.GetIssue(ctx, p.owner, p.repo, event.IID)
 		if err != nil {
 			return false

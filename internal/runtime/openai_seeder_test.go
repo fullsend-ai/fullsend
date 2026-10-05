@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -87,6 +89,105 @@ func TestNeedsOpenAIProvider(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(piProviderEnv, tc.provider)
 			assert.Equal(t, tc.want, NeedsOpenAIProvider(tc.backend, tc.model, tc.agentModel, tc.configAliases))
+		})
+	}
+}
+
+// OpenAIChildren is the runner's provider gate and pre-sandbox check for a
+// configured pi child on the openai provider (#7981). It must resolve each
+// model exactly as resolvePersonaModels does, and count only children the
+// run could dispatch.
+func TestOpenAIChildren(t *testing.T) {
+	agentDir := t.TempDir()
+	writeAgent := func(name, frontmatter string) string {
+		p := filepath.Join(agentDir, name+".md")
+		require.NoError(t, os.WriteFile(p, []byte(frontmatter+"You review.\n"), 0o644))
+		return p
+	}
+	// No tools: line means pi's defaults, which include Agent.
+	withAgent := writeAgent("with-agent", "---\nname: code\nmodel: opus\n---\n")
+	noAgent := writeAgent("no-agent", "---\nname: code\nmodel: opus\ntools: Read, Grep\n---\n")
+
+	noOpenAI := t.TempDir()
+	writePersonaFile(t, noOpenAI, "correctness", "---\nname: correctness\nmodel: opus\n---\nReview for correctness.\n")
+	writePersonaFile(t, noOpenAI, "style", "---\nname: style\n---\nReview for style.\n")
+	writePersonaFile(t, noOpenAI, "writer", "---\nname: writer\nmodel: sonnet\n---\nWrite.\n")
+
+	withOpenAI := t.TempDir()
+	writePersonaFile(t, withOpenAI, "correctness", "---\nname: correctness\nmodel: opus\n---\nReview for correctness.\n")
+	writePersonaFile(t, withOpenAI, "checker", "---\nname: checker\nmodel: openai/gpt-5.6-luna\n---\nCheck something.\n")
+
+	// Personas resolvePersonaModels would skip: they never dispatch, so
+	// their model must not create a provider.
+	unregistrable := t.TempDir()
+	writePersonaFile(t, unregistrable, "bashy", "---\nname: bashy\nmodel: openai/gpt-5.6-luna\ntools: Bash(git)\n---\nRun git.\n")
+	writePersonaFile(t, unregistrable, "webby", "---\nname: webby\nmodel: openai/gpt-5.6-luna\ntools: WebSearch\n---\nSearch.\n")
+	writePersonaFile(t, unregistrable, "empty", "---\nname: empty\nmodel: openai/gpt-5.6-luna\ntools: []\n---\nNothing.\n")
+	writePersonaFile(t, unregistrable, "multiline", "---\nname: multiline\nmodel: |\n  openai/gpt-5\n  ::warning::injected\n---\nInject.\n")
+	writePersonaFile(t, unregistrable, "dispatcher", "---\nname: dispatcher\nmodel: openai/gpt-5.6-luna\ntools: Agent, Task\n---\nDispatch.\n")
+
+	withAlias := t.TempDir()
+	writePersonaFile(t, withAlias, "checker", "---\nname: checker\nmodel: Luna@default\n---\nCheck something.\n")
+	aliases := map[string]string{"luna": "openai/gpt-5.6-luna"}
+
+	luna := "openai/gpt-5.6-luna"
+	for _, tc := range []struct {
+		name          string
+		backend       string
+		agentPath     string
+		subagentsCfg  map[string]*string
+		skillDirs     []string
+		configAliases map[string]string
+		providerEnv   string
+		want          []PiChild
+	}{
+		{name: "not pi: always empty regardless of config", backend: "codex",
+			subagentsCfg: map[string]*string{"default": strp(luna)}},
+		{name: "an agent without the Agent tool dispatches no children", backend: "pi", agentPath: noAgent,
+			skillDirs: []string{withOpenAI}, subagentsCfg: map[string]*string{"default": strp(luna)}},
+		{name: "no config, no openai persona frontmatter", backend: "pi",
+			skillDirs: []string{noOpenAI}, subagentsCfg: map[string]*string{"correctness": strp("opus")}},
+		{name: "a persona's own frontmatter names openai", backend: "pi", skillDirs: []string{withOpenAI},
+			want: []PiChild{{Source: `persona "checker" frontmatter model`, Spec: luna}}},
+		{name: "a mixed-case frontmatter alias with @suffix resolves through models.aliases", backend: "pi",
+			skillDirs: []string{withAlias}, configAliases: aliases,
+			want: []PiChild{{Source: `persona "checker" frontmatter model`, Spec: luna}}},
+		{name: "the same alias without models.aliases is not openai", backend: "pi", skillDirs: []string{withAlias}},
+		{name: "a bare id that is an alias's target resolves to it", backend: "pi",
+			subagentsCfg: map[string]*string{"default": strp("gpt-5.6-luna")}, configAliases: aliases,
+			want: []PiChild{{Source: "subagents.default", Spec: luna, Configured: true}}},
+		{name: "FULLSEND_PI_PROVIDER=openai does not move a Claude alias to openai", backend: "pi",
+			skillDirs: []string{noOpenAI}, providerEnv: "openai"},
+		{name: "personas Bootstrap would skip do not count", backend: "pi", skillDirs: []string{unregistrable}},
+		{name: "subagents.default names openai", backend: "pi",
+			subagentsCfg: map[string]*string{"default": strp(luna)},
+			want:         []PiChild{{Source: "subagents.default", Spec: luna, Configured: true}}},
+		{name: "subagents.<persona> override names openai", backend: "pi", skillDirs: []string{noOpenAI},
+			subagentsCfg: map[string]*string{"style": strp(luna)},
+			want:         []PiChild{{Source: "subagents.style", Spec: luna, Configured: true}}},
+		{name: "a key naming no discovered persona is left to Bootstrap", backend: "pi", skillDirs: []string{noOpenAI},
+			subagentsCfg: map[string]*string{"typo": strp(luna)}},
+		{name: "a key naming a persona Bootstrap would skip is left to Bootstrap", backend: "pi",
+			skillDirs: []string{unregistrable}, subagentsCfg: map[string]*string{"bashy": strp(luna)}},
+		{name: "a config override away from openai beats an openai frontmatter", backend: "pi",
+			skillDirs: []string{withOpenAI}, subagentsCfg: map[string]*string{"checker": strp("opus")}},
+		{name: "a tombstoned entry (nil) is not a model reference", backend: "pi",
+			subagentsCfg: map[string]*string{"default": nil}},
+		{name: "several sources are listed sorted", backend: "pi", skillDirs: []string{withOpenAI},
+			subagentsCfg: map[string]*string{"default": strp(luna)},
+			want: []PiChild{
+				{Source: `persona "checker" frontmatter model`, Spec: luna},
+				{Source: "subagents.default", Spec: luna, Configured: true},
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(piProviderEnv, tc.providerEnv)
+			agentPath := tc.agentPath
+			if agentPath == "" {
+				agentPath = withAgent
+			}
+			got := OpenAIChildren(tc.backend, agentPath, tc.subagentsCfg, tc.skillDirs, "code", tc.configAliases)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }

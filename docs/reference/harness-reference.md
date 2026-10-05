@@ -23,8 +23,8 @@ model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
 readonly_repo: false                # Mount repo as read-only in sandbox
 providers:                           # Network access via provider profiles
-  - vertex-ai                       # References providers/vertex-ai.yaml
-  - github                          # References providers/github.yaml
+  - vertex-ai                       # Bare builtin name: resolves to fullsend's embedded definition
+  - github                          # Same; or a providers/<name>.yaml path for a local/custom definition
 
 # ── Skills & plugins ──────────────────────────────────────────
 skills:
@@ -44,7 +44,7 @@ openshell:                           # OpenShell sandbox profiles
 # ── Scripts (local paths only) ────────────────────────────────
 pre_script: scripts/pre-my-agent.sh
 post_script: scripts/post-my-agent.sh
-agent_input: inputs/my-input.md     # File passed as initial input to the agent
+agent_input: inputs/my-agent/        # Local directory of files passed as agent input
 
 # ── Mint privilege per run-stage (ADR 0073) ───────────────────
 privilege_levels:
@@ -56,6 +56,7 @@ privilege_levels:
 # ── Validation ────────────────────────────────────────────────
 validation_loop:
   script: scripts/validate-output-schema.sh
+  preflight_check: 'python3 -c "import jsonschema"'  # Literal sh -c command (NOT a script path); runs before sandbox creation
   max_iterations: 2
   feedback_mode: append              # "none" (default) or "append" — append the
                                      # previous iteration's validation failure to
@@ -111,9 +112,9 @@ overlays:
   pre_script: scripts/pre-gh.sh
   post_script: scripts/post-gh.sh
   skills: [skills/github-specific]    # Merged with top-level
-  providers: [providers/github.yaml]  # Concatenated with top-level
+  providers: [providers/myorg-github.yaml]  # Concatenated with top-level
   openshell:
-    profiles: [profiles/github.yaml]  # Concatenated with top-level
+    profiles: [profiles/myorg-github.yaml]  # Concatenated with top-level
   host_files:                         # Overlay-specific host files
     - src: env/github.env
       dest: /run/secrets/forge.env
@@ -152,6 +153,10 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
 
+**`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory.
+
+**`agent_input`** — A local directory, not a file. When a URL `base:` harness declares it, the inherited value is cleared rather than fetched; supply the directory in the child harness if needed. See [Harness field semantic types](../contributing/harness-fields.md#semantic-types-adr-0127).
+
 **`timeout_minutes`** — Wall-clock budget for one agent iteration, default 30. The runner ends the iteration and sweeps the processes the agent left running in the sandbox (best effort) when it is spent, and a killed iteration ends the run with `agent timed out after <elapsed> without completing (timeout: <budget>)` unless its output validates anyway. Before every iteration the runner writes the budget as `FULLSEND_TIMEOUT_MINUTES`, the kill time as `FULLSEND_ITERATION_DEADLINE` (Unix seconds), and the current agent span as `TRACEPARENT` into the agent's environment — see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline). Those names are reserved: an `env.sandbox` entry with any of them is dropped.
 
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
@@ -187,7 +192,7 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
-**`api_servers`** — Host-side HTTP servers that run outside the sandbox and are exposed to it via port forwarding. Use these to give an agent access to APIs that require credentials the sandbox should not hold -- the server script runs on the trusted runner with full env access, while the sandbox connects to `localhost:<port>`.
+**`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
 
 ## Deprecated fields
 
@@ -241,6 +246,8 @@ agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=ab
 ```
 
 **Scripts are local-only** — `pre_script`, `post_script`, and `validation_loop.script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed.
+
+**`validation_loop.preflight_check` is a command, not a script resource** — The runner expands `${VAR}` references from its permitted host environment, then passes the result to `sh -c` on the host; it does not fetch or stage a file named by the command. Do not interpolate untrusted values or credentials, even within shell quotes: on failure or timeout the expanded command currently appears in diagnostics.
 
 ## See also
 

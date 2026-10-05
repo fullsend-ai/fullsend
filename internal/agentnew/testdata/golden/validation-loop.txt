@@ -45,6 +45,8 @@ Write exactly one JSON object to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 - `status` — one of `ok`, `findings`, `error`.
 - `summary` — one line, at most 200 characters. Used as the comment heading.
 - `comment` — Markdown body posted on the work item, at most 16384 characters.
+  Required for `findings` and `error`. For `ok` nothing new is posted, so you
+  may omit it.
 
 Do not push commits, open issues, apply labels, or call any mutating API. The
 post-script performs every side effect; your only output is this file.
@@ -69,12 +71,9 @@ slug: my-org-lint-docs
 image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:f8255971fec8a72a60adb20f501e55098f237e699dc829f0894647c0de2a19c2
 policy: policies/base.yaml
 providers:
-  - providers/vertex-ai.yaml
-  - providers/github-ro.yaml
-openshell:
-  profiles:
-    - profiles/fullsend-vertex-ai.yaml
-    - profiles/fullsend-github-ro.yaml
+  - vertex-ai
+  - github-ro
+  - openai
 host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
@@ -100,7 +99,6 @@ env:
     CLAUDE_CODE_USE_VERTEX: "1"
     CLOUD_ML_REGION: ${CLOUD_ML_REGION}
     FULLSEND_FORGE: github
-    GH_TOKEN: ${GH_TOKEN}
     GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json
     ISSUE_NUMBER: ${ISSUE_NUMBER}
     ISSUE_URL: ${GITHUB_ISSUE_URL}
@@ -114,24 +112,28 @@ trigger: |
     && (!has(event.state.change_proposal) || !event.state.change_proposal.is_fork)
 === policies/base.yaml mode=644 (shared, written only when absent)
 <copied verbatim from the embedded scaffold>
-=== profiles/fullsend-github-ro.yaml mode=644 (shared, written only when absent)
-<copied verbatim from the embedded scaffold>
-=== profiles/fullsend-vertex-ai.yaml mode=644 (shared, written only when absent)
-<copied verbatim from the embedded scaffold>
-=== providers/github-ro.yaml mode=644 (shared, written only when absent)
-<copied verbatim from the embedded scaffold>
-=== providers/vertex-ai.yaml mode=644 (shared, written only when absent)
-<copied verbatim from the embedded scaffold>
 === schemas/lint-docs-result.schema.json mode=644
 {
   "$id": "https://fullsend.sh/schemas/lint-docs-result.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Structured output from the lint-docs agent, consumed by scripts/post-lint-docs.sh.",
+  "if": {
+    "properties": {
+      "status": {
+        "enum": [
+          "findings",
+          "error"
+        ]
+      }
+    },
+    "required": [
+      "status"
+    ]
+  },
   "properties": {
     "comment": {
       "maxLength": 16384,
-      "minLength": 1,
       "type": "string"
     },
     "status": {
@@ -151,9 +153,18 @@ trigger: |
   },
   "required": [
     "status",
-    "summary",
-    "comment"
+    "summary"
   ],
+  "then": {
+    "properties": {
+      "comment": {
+        "minLength": 1
+      }
+    },
+    "required": [
+      "comment"
+    ]
+  },
   "title": "lint-docs Agent Result",
   "type": "object"
 }
@@ -180,8 +191,9 @@ trigger: |
 #     one, so it wins over the scan below.
 #
 # Treat the result file as untrusted: it is model output. Only the three
-# fields below are ever read, each is required to be a string, and the
-# comment body is piped on stdin rather than interpolated into a command.
+# fields below are ever read, each must be a string, and the comment body is
+# piped on stdin rather than interpolated into a command. comment may be
+# missing or empty when status is ok, because nothing new is posted then.
 
 set -euo pipefail
 
@@ -238,6 +250,10 @@ fi
 status=$(jq -r 'if (.status | type) == "string" then .status else empty end' "${RESULT_FILE}")
 summary=$(jq -r 'if (.summary | type) == "string" then .summary else empty end' "${RESULT_FILE}")
 comment=$(jq -r 'if (.comment | type) == "string" then .comment else empty end' "${RESULT_FILE}")
+if ! jq -e '(has("comment") | not) or (.comment | type) == "string"' "${RESULT_FILE}" >/dev/null; then
+  echo "post-lint-docs: comment must be a string" >&2
+  exit 1
+fi
 
 case "${status}" in
   ok|findings|error) ;;
@@ -257,7 +273,10 @@ if [[ "${summary}" == *$'\n'* || "${summary}" == *$'\r'* ]]; then
   echo "post-lint-docs: summary must be a single line" >&2
   exit 1
 fi
-[[ -n "${comment}" ]] || { echo "post-lint-docs: comment is required" >&2; exit 1; }
+if [[ "${status}" != "ok" && -z "${comment}" ]]; then
+  echo "post-lint-docs: comment is required when status is ${status}" >&2
+  exit 1
+fi
 if (( ${#summary} > MAX_SUMMARY_CHARS )); then
   echo "post-lint-docs: summary exceeds ${MAX_SUMMARY_CHARS} characters" >&2
   exit 1
@@ -312,8 +331,13 @@ if [[ "${status}" == "ok" ]]; then
     exit 0
   fi
   # --keep-history=false: the all-clear replaces the comment in place, so
-  # repeated clean runs do not stack identical "Previous run" blocks.
-  printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
+  # repeated clean runs do not stack identical "Previous run" blocks. With
+  # no comment the all-clear is the summary alone.
+  # The format is chosen here, never taken from the result file.
+  body_format='**%s**\n\n%s\n'
+  [[ -n "${comment}" ]] || body_format='**%s**\n%s'
+  # shellcheck disable=SC2059
+  printf "${body_format}" "${summary}" "${comment}" \
     | fullsend issues post-comment \
         --tracker github \
         --project "${REPO}" \

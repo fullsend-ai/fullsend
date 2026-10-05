@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -56,6 +57,13 @@ func Render(opts Options) ([]File, error) {
 	if err != nil {
 		return nil, err
 	}
+	if opts.Runtime == "pi" && !opts.UsesVertex() {
+		block, blockErr := vertexSubagentBlock()
+		if blockErr != nil {
+			return nil, blockErr
+		}
+		harnessYAML = append(harnessYAML, block...)
+	}
 
 	agentMD, err := renderAgentDefinition(opts)
 	if err != nil {
@@ -77,7 +85,7 @@ func Render(opts Options) ([]File, error) {
 		{Path: "scripts/post-" + opts.Name + ".sh", Data: postScript, Mode: 0o755},
 	}
 
-	shared, err := sharedAssets(role, opts.ValidationLoop)
+	shared, err := sharedAssets(opts.ValidationLoop)
 	if err != nil {
 		return nil, err
 	}
@@ -88,19 +96,47 @@ func Render(opts Options) ([]File, error) {
 // Building the real struct rather than formatting text means the generator
 // cannot emit a field the validator does not know about.
 func buildHarness(opts Options, role Role) (*harness.Harness, error) {
+	// No GH_TOKEN (#7883): the github providers declare it, so OpenShell
+	// gives gh a placeholder; the raw value stays in env.runner for the
+	// post-script.
+	sandboxEnv := map[string]string{
+		"ISSUE_URL": "${GITHUB_ISSUE_URL}",
+		// ISSUE_NUMBER / REPO_FULL_NAME are the fetch arguments the
+		// generated prompt uses. A github.com URL in a `gh` command is
+		// blocked by the SSRF PreToolUse hook: the sandbox cannot
+		// resolve github.com, and github-ro allowlists api.github.com
+		// only. gh itself talks to the API; the HTML URL is only an
+		// argument it never fetches. #7563.
+		"ISSUE_NUMBER":   "${ISSUE_NUMBER}",
+		"REPO_FULL_NAME": "${REPO_FULL_NAME}",
+		"FULLSEND_FORGE": "github",
+	}
+	var hostFiles []harness.HostFile
+	providers := append([]string(nil), role.Providers...)
+	// GCP credentials and the Vertex env block are load-bearing for claude
+	// and for pi on a Vertex model, and a hard failure for an agent that
+	// calls only OpenAI: every ${VAR} in env.sandbox must be set on the
+	// host before the sandbox is created, so an unset
+	// ANTHROPIC_VERTEX_PROJECT_ID refuses an agent that never calls Vertex
+	// (#7264, #7971). Such an agent declares no Vertex provider either.
+	if opts.UsesVertex() {
+		hostFiles = vertexHostFiles(true)
+		for k, v := range vertexSandboxEnv() {
+			sandboxEnv[k] = v
+		}
+	} else {
+		providers = slices.DeleteFunc(providers, func(p string) bool { return p == vertexProvider })
+	}
+
 	h := &harness.Harness{
-		Agent:       "agents/" + opts.Name + ".md",
-		Description: opts.Description,
-		Role:        role.Name,
-		Slug:        opts.Slug,
-		Image:       opts.Image,
-		Policy:      "policies/base.yaml",
-		Providers:   append([]string(nil), role.Providers...),
-		OpenShell:   &harness.OpenShellConfig{Profiles: append([]string(nil), role.Profiles...)},
-		HostFiles: []harness.HostFile{
-			{Src: "${GOOGLE_APPLICATION_CREDENTIALS}", Dest: "/tmp/.gcp-credentials.json", Optional: true},
-			{Src: "${GCP_OIDC_TOKEN_FILE}", Dest: "/sandbox/workspace/.gcp-oidc-token", Optional: true},
-		},
+		Agent:          "agents/" + opts.Name + ".md",
+		Description:    opts.Description,
+		Role:           role.Name,
+		Slug:           opts.Slug,
+		Image:          opts.Image,
+		Policy:         "policies/base.yaml",
+		Providers:      providers,
+		HostFiles:      hostFiles,
 		Model:          opts.Model,
 		Effort:         opts.Effort,
 		PostScript:     "scripts/post-" + opts.Name + ".sh",
@@ -113,26 +149,7 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 				"GH_TOKEN":       "${GH_TOKEN}",
 				"FULLSEND_FORGE": "github",
 			},
-			// The scaffold ships no env/ directory and nothing in fullsend
-			// sets CLAUDE_CODE_USE_VERTEX, so the Vertex variables the fleet
-			// delivers via host_files: env/gcp-vertex.env are set here.
-			Sandbox: map[string]string{
-				"CLAUDE_CODE_USE_VERTEX":         "1",
-				"ANTHROPIC_VERTEX_PROJECT_ID":    "${ANTHROPIC_VERTEX_PROJECT_ID}",
-				"CLOUD_ML_REGION":                "${CLOUD_ML_REGION}",
-				"GOOGLE_APPLICATION_CREDENTIALS": "/tmp/.gcp-credentials.json",
-				"ISSUE_URL":                      "${GITHUB_ISSUE_URL}",
-				// ISSUE_NUMBER / REPO_FULL_NAME are the fetch arguments the
-				// generated prompt uses. A github.com URL in a `gh` command is
-				// blocked by the SSRF PreToolUse hook: the sandbox cannot
-				// resolve github.com, and github-ro allowlists api.github.com
-				// only. gh itself talks to the API; the HTML URL is only an
-				// argument it never fetches. #7563.
-				"ISSUE_NUMBER":   "${ISSUE_NUMBER}",
-				"REPO_FULL_NAME": "${REPO_FULL_NAME}",
-				"GH_TOKEN":       "${GH_TOKEN}",
-				"FULLSEND_FORGE": "github",
-			},
+			Sandbox: sandboxEnv,
 		},
 	}
 	if opts.ValidationLoop {
@@ -149,6 +166,70 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 		}
 	}
 	return h, nil
+}
+
+// vertexHostFiles mounts the GCP credentials file and the CI OIDC token.
+// The OIDC token is only present in CI, so it is always optional.
+func vertexHostFiles(gacOptional bool) []harness.HostFile {
+	return []harness.HostFile{
+		{Src: "${GOOGLE_APPLICATION_CREDENTIALS}", Dest: "/tmp/.gcp-credentials.json", Optional: gacOptional},
+		{Src: "${GCP_OIDC_TOKEN_FILE}", Dest: "/sandbox/workspace/.gcp-oidc-token", Optional: true},
+	}
+}
+
+// vertexSandboxEnv is the sandbox environment a Vertex model needs. The
+// scaffold ships no env/ directory and nothing in fullsend sets
+// CLAUDE_CODE_USE_VERTEX, so the variables the fleet delivers via
+// host_files: env/gcp-vertex.env are set here.
+func vertexSandboxEnv() map[string]string {
+	return map[string]string{
+		"CLAUDE_CODE_USE_VERTEX":         "1",
+		"ANTHROPIC_VERTEX_PROJECT_ID":    "${ANTHROPIC_VERTEX_PROJECT_ID}",
+		"CLOUD_ML_REGION":                "${CLOUD_ML_REGION}",
+		"GOOGLE_APPLICATION_CREDENTIALS": "/tmp/.gcp-credentials.json",
+	}
+}
+
+// vertexSubagentHeader is the one line above the commented-out block.
+const vertexSubagentHeader = "# To dispatch Vertex sub-agents (e.g. sonnet), uncomment this overlay, which is merged on top of the settings above; GOOGLE_APPLICATION_CREDENTIALS is then required.\n"
+
+// vertexSubagentBlock renders, commented out, the overlay that adds every
+// Vertex setting to a pi agent on an openai/ model, so its prompt can
+// dispatch sub-agents on Vertex models. An overlay keeps the settings in one
+// block a user uncomments as a whole, instead of lines scattered across
+// providers, profiles, host_files and env. It is marshalled from the real
+// struct, so uncommenting it yields a harness the loader accepts.
+//
+// The credentials mount is required, not optional as in a Vertex harness:
+// a missing file then fails the run up front, where an optional mount
+// would let it start and refuse each Vertex child at dispatch.
+func vertexSubagentBlock() ([]byte, error) {
+	overlay := struct {
+		Overlays []harness.OverlayEntry `yaml:"overlays"`
+	}{Overlays: []harness.OverlayEntry{{
+		When: "true",
+		ForgeConfig: harness.ForgeConfig{
+			Providers: []string{vertexProvider},
+			HostFiles: vertexHostFiles(false),
+			Env:       &harness.EnvConfig{Sandbox: vertexSandboxEnv()},
+		},
+	}}}
+	var body bytes.Buffer
+	enc := yaml.NewEncoder(&body)
+	enc.SetIndent(yamlIndent)
+	if err := enc.Encode(overlay); err != nil {
+		return nil, fmt.Errorf("marshalling the Vertex sub-agent block: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("marshalling the Vertex sub-agent block: %w", err)
+	}
+	var buf bytes.Buffer
+	buf.WriteString("\n" + vertexSubagentHeader)
+	for _, line := range strings.SplitAfter(strings.TrimSuffix(body.String(), "\n"), "\n") {
+		buf.WriteString("# " + line)
+	}
+	buf.WriteString("\n")
+	return buf.Bytes(), nil
 }
 
 func marshalHarness(h *harness.Harness, name string) ([]byte, error) {
@@ -239,7 +320,19 @@ func renderSchema(name string) ([]byte, error) {
 		"description":          "Structured output from the " + name + " agent, consumed by scripts/post-" + name + ".sh.",
 		"type":                 "object",
 		"additionalProperties": false,
-		"required":             []string{"status", "summary", "comment"},
+		// comment is required only when there is something to post: an ok
+		// result posts nothing new, so an agent may omit it or leave it
+		// empty. Draft 2020-12 if/then keeps it required, and non-empty,
+		// for findings and error.
+		"required": []string{"status", "summary"},
+		"if": map[string]any{
+			"required":   []string{"status"},
+			"properties": map[string]any{"status": map[string]any{"enum": []string{"findings", "error"}}},
+		},
+		"then": map[string]any{
+			"required":   []string{"comment"},
+			"properties": map[string]any{"comment": map[string]any{"minLength": 1}},
+		},
 		"properties": map[string]any{
 			"status": map[string]any{"type": "string", "enum": []string{"ok", "findings", "error"}},
 			// pattern, not just maxLength: the generated post-script refuses
@@ -250,7 +343,7 @@ func renderSchema(name string) ([]byte, error) {
 				"type": "string", "minLength": 1, "maxLength": 200,
 				"pattern": `^[^\r\n]*$`,
 			},
-			"comment": map[string]any{"type": "string", "minLength": 1, "maxLength": 16384},
+			"comment": map[string]any{"type": "string", "maxLength": 16384},
 		},
 	}
 	data, err := json.MarshalIndent(schema, "", "  ")
@@ -277,6 +370,14 @@ func toolsFor(opts Options) string {
 	bash := "gh,jq"
 	if opts.ValidationLoop {
 		bash = "gh,jq,fullsend-check-output"
+	}
+	// codex has no Read, Grep or Glob tool: it does that work through its
+	// shell, so on codex those entries would only print a "no codex tool"
+	// notice on every run, and Bash still covers what the body instructs.
+	// The Bash allowlist stays even though codex records it without
+	// enforcing it, so it still applies if the agent later moves to pi.
+	if opts.Runtime == "codex" {
+		return "Bash(" + bash + "), Write"
 	}
 	return "Bash(" + bash + "), Read, Grep, Glob, Write"
 }

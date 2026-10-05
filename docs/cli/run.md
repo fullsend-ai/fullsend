@@ -91,7 +91,18 @@ subagents: docs-currency → google-vertex/gemini-3.8-flash (from subagents.docs
 A malformed `subagents` key or model reference is rejected by config validation, before the
 sandbox is created, like the other invalid overrides above. A key that names no discovered
 persona, or a model this run cannot serve, is caught slightly later — at Bootstrap, once the
-harness's skills have been read — so the sandbox exists but the agent has not started. See
+harness's skills have been read — so the sandbox exists but the agent has not started. Two
+cases fail earlier:
+
+- A `subagents` entry on `openai/` when the harness declares no `openai` provider stops the run
+  before the sandbox is created
+  ([pi § Route a persona to OpenAI](../runtimes/pi.md#route-a-persona-to-openai)).
+- A `subagents` entry on a Vertex provider, under a parent off Vertex, stops the run before the
+  pre-script when the harness mounts `${GOOGLE_APPLICATION_CREDENTIALS}` and the variable has no
+  usable file
+  ([pi § Vertex sub-agents under an OpenAI parent](../runtimes/pi.md#vertex-sub-agents-under-an-openai-parent)).
+
+See
 [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration).
 
 ## Output artifacts
@@ -120,14 +131,26 @@ depend on the process cwd.
 | `total_cost_usd` | Total inference cost in USD, as reported by the runtime (raw floating-point aggregate across all iterations; no fullsend-side pricing-table fallback). See [Cost data contract](../guides/infrastructure/distributed-tracing.md#cost-data-contract) |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of agent iterations run; an iteration killed at the budget is not retried (see [Budget and deadline](#budget-and-deadline)) |
-| `per_model_usage` | Per-model-spec breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled). See below |
+| `per_model_usage` | Per-model breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled, and `claude` when Claude Code's result carries `modelUsage`). See below |
 
 #### Per-model usage
 
-A map from pi model spec (`anthropic-vertex/claude-opus-4-6`) to
+A map from model spec to
 `{requests, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd}`.
-It exists because a pi sub-agent is a separate `pi` process whose tokens never appear in the
-parent's stream, so without it `total_cost_usd` would grow with no way to attribute it.
+On `pi` the key is the pi model spec (`anthropic-vertex/claude-opus-4-6`). It exists because a pi
+sub-agent is a separate `pi` process whose tokens never appear in the parent's stream, so without it
+`total_cost_usd` would grow with no way to attribute it.
+
+On `claude` the key is the model id Claude Code reports (`claude-haiku-4-5@20251001`), with one
+entry per model that ran, sub-agents included. The token totals come from the result event's
+`modelUsage` rather than its `usage` block, because `usage` covers only the top-level loop while
+`total_cost_usd` covers sub-agents too; the Claude token totals therefore include sub-agent usage.
+Claude Code reports `modelUsage` as a session running total, so a steered or retried session
+records its last value rather than adding each result's. `requests` has no counterpart in Claude
+Code's result and stays `0`. A result without `modelUsage` keeps the parent-only `usage` totals and
+records no breakdown, and an iteration that ends without a result (cancelled at the budget)
+contributes to the totals but not to the breakdown, so the invariant below can fall short in those
+two cases. The rest of this section describes the `pi` breakdown.
 
 - **What folds.** Tokens and cost, from both the parent and every child, summed across retry
   iterations. Each iteration contributes one `requests` for the parent plus one per sub-agent call,
@@ -307,11 +330,12 @@ gets its credential from the runner, never from the harness or the sandbox:
 | `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID`, `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` | Workload Identity Federation (GitHub Actions only): the run exchanges the job's OIDC token for a short-lived OpenAI token, refreshes it before expiry, and refuses a token whose mapping grants more than model access. All three must be set together; when unset, the `inference.openai` block of `config.yaml` (written by `fullsend github setup --openai-*`) supplies them — except on a machine without a GitHub OIDC endpoint where `OPENAI_API_KEY` is set, which then wins. |
 | `OPENAI_API_KEY` | Static key for local runs, or CI when supplied by the `FULLSEND_OPENAI_API_KEY` repository secret (used only when the three above are unset). In harness YAML, `env.sandbox` and provider definitions `${OPENAI_API_KEY}` expands to the empty string (like the other runner-only variables), and it is never passed to pre/post scripts; the sandbox sees only the gateway placeholder. In CI the runner warns and WIF remains preferred. |
 
-In CI the run prepares `.fullsend/providers/` from the upstream defaults, so a file there with a
-scaffold-shipped name (`openai.yaml`, `github-ro.yaml`, `vertex-ai.yaml`, …) is replaced by the
-upstream copy; give repository-specific providers their own file name. A harness that declares the
-bare name `openai` with no `providers/openai.yaml` on disk gets the definition built into fullsend;
-other bare names still need a file.
+A bare provider name that fullsend ships (`openai`, `github-ro`, `vertex-ai`, and the others listed
+in [`agent new`](agent.md#what-gets-written)) resolves to the
+definition and profile built into fullsend, locally and in CI, with nothing on disk. These names
+and their `fullsend-<name>` profile ids are reserved: a harness that still uses its own copy under
+one gets a warning and keeps the copy for now, and a later release rejects it (`fullsend-openai`
+is already rejected). Give repository-specific providers and profiles their own names.
 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).

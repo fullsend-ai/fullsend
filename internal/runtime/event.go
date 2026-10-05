@@ -100,6 +100,10 @@ type ResultEvent struct {
 	ReasoningTokens          int
 	CacheCreationInputTokens int
 	CacheReadInputTokens     int
+	// PerModelUsage breaks the token totals and cost down by model id.
+	// Only the claude parser fills it (from the result's modelUsage); it is
+	// nil otherwise.
+	PerModelUsage map[string]ModelUsage
 }
 
 func (ResultEvent) agentEvent() {}

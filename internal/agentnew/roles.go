@@ -12,6 +12,15 @@ import (
 // role the Bring Your Own Agent guide's examples use.
 const DefaultRole = "triage"
 
+// OpenAIProviderName is the bare provider name every generated harness
+// declares; the runner fills the definition in from the binary, and skips
+// it on a run that does not call OpenAI.
+const OpenAIProviderName = "openai"
+
+// The Vertex provider every role starts from; an agent that calls only
+// OpenAI drops it.
+const vertexProvider = "vertex-ai"
+
 // Role describes one mint role that `fullsend agent new` will generate for,
 // together with the sandbox resources a harness needs to run under it.
 //
@@ -29,13 +38,11 @@ type Role struct {
 	// It is reproduced here so the CLI can explain what a role grants
 	// without importing the mint's internals into its help text.
 	Permissions map[string]string
-	// Providers are harness `providers:` entries, by path. Paths rather than
-	// bare names: a bare name that has no definition on disk degrades to a
-	// warning and then a sandbox that cannot reach Vertex, because the
-	// embedded provider fallback covers only the OpenAI provider.
+	// Providers are harness `providers:` entries, by bare name. Each is a
+	// name the fullsend binary ships, so the runner resolves its definition
+	// and imports its profile from the binary; no providers/ or profiles/
+	// files and no openshell.profiles entries are written (#7268).
 	Providers []string
-	// Profiles are harness `openshell.profiles:` entries, by path.
-	Profiles []string
 	// Image is the sandbox image this role's agents run under.
 	Image string
 	// ReadonlyRepo mirrors the fleet: the review harness makes the checked-out
@@ -54,8 +61,7 @@ var roleTable = map[string]Role{
 	"triage": {
 		Name:        "triage",
 		Permissions: map[string]string{"contents": "read", "issues": "write", "metadata": "read"},
-		Providers:   []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml"},
-		Profiles:    []string{"profiles/fullsend-vertex-ai.yaml", "profiles/fullsend-github-ro.yaml"},
+		Providers:   []string{vertexProvider, "github-ro", OpenAIProviderName},
 		Image:       config.DefaultSandboxImage,
 	},
 	"review": {
@@ -64,8 +70,7 @@ var roleTable = map[string]Role{
 			"contents": "read", "pull_requests": "write", "issues": "write",
 			"checks": "read", "metadata": "read",
 		},
-		Providers:    []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml"},
-		Profiles:     []string{"profiles/fullsend-vertex-ai.yaml", "profiles/fullsend-github-ro.yaml"},
+		Providers:    []string{vertexProvider, "github-ro", OpenAIProviderName},
 		Image:        config.DefaultCodeImage,
 		ReadonlyRepo: true,
 	},
@@ -75,8 +80,7 @@ var roleTable = map[string]Role{
 			"contents": "write", "packages": "read", "pull_requests": "write",
 			"issues": "write", "checks": "read", "metadata": "read",
 		},
-		Providers: []string{"providers/vertex-ai.yaml", "providers/github.yaml"},
-		Profiles:  []string{"profiles/fullsend-vertex-ai.yaml", "profiles/fullsend-github.yaml"},
+		Providers: []string{vertexProvider, "github", OpenAIProviderName},
 		Image:     config.DefaultCodeImage,
 	},
 	"retro": {
@@ -87,13 +91,8 @@ var roleTable = map[string]Role{
 		},
 		// retro is the only role taking two forge providers: github-ro for
 		// the repository and github-artifacts for workflow run artifacts.
-		Providers: []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml", "providers/github-artifacts.yaml"},
-		Profiles: []string{
-			"profiles/fullsend-vertex-ai.yaml",
-			"profiles/fullsend-github-ro.yaml",
-			"profiles/fullsend-github-artifacts.yaml",
-		},
-		Image: config.DefaultSandboxImage,
+		Providers: []string{vertexProvider, "github-ro", "github-artifacts", OpenAIProviderName},
+		Image:     config.DefaultSandboxImage,
 	},
 	"prioritize": {
 		Name: "prioritize",
@@ -101,8 +100,7 @@ var roleTable = map[string]Role{
 			"contents": "read", "issues": "write",
 			"organization_projects": "write", "metadata": "read",
 		},
-		Providers: []string{"providers/vertex-ai.yaml", "providers/github-ro.yaml"},
-		Profiles:  []string{"profiles/fullsend-vertex-ai.yaml", "profiles/fullsend-github-ro.yaml"},
+		Providers: []string{vertexProvider, "github-ro", OpenAIProviderName},
 		Image:     config.DefaultSandboxImage,
 	},
 }

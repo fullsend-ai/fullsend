@@ -124,6 +124,12 @@ type RepoStatus struct {
 	Drifts          []Drift `json:"drifts,omitempty"`
 	Error           string  `json:"error,omitempty"`
 
+	// ConfigRejected marks a repo whose manifest configuration was rejected
+	// before any forge state was inspected (for example a missing
+	// inference.auth selection). Callers that enrich status with further
+	// forge lookups must skip these rows. Not serialized.
+	ConfigRejected bool `json:"-"`
+
 	// GitLab role-credential status. Names only; never token values.
 	GitLabRolesReady      bool     `json:"gitlab_roles_ready,omitempty"`
 	GitLabRolesPartial    bool     `json:"gitlab_roles_partial,omitempty"`
@@ -152,7 +158,9 @@ type StatusResult struct {
 // Status compares the manifest's desired state against the actual forge
 // state for each repo. It returns a StatusResult with per-repo status
 // and aggregate counts. API calls are parallelised up to maxConcurrency.
-func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string) (*StatusResult, error) {
+// The optional release supplies the running binary's ref/tag for matching
+// embedded scaffold templates after release-default manifest writeback.
+func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory, maxConcurrency int, repoFilter []string, release ...DriftConfig) (*StatusResult, error) {
 	resolved, err := manifest.ExpandGlobs(ctx, clients)
 	if err != nil {
 		return nil, fmt.Errorf("resolving repos: %w", err)
@@ -193,6 +201,10 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 		AgentRunnerTags:   gitlabAgentRunnerTags(manifest),
 		ControlRunnerTags: gitlabControlRunnerTags(manifest),
 	}
+	if len(release) > 0 {
+		dcfg.UpstreamRef = release[0].UpstreamRef
+		dcfg.UpstreamTag = release[0].UpstreamTag
+	}
 
 	results := make([]RepoStatus, len(resolved))
 	sem := make(chan struct{}, maxConcurrency)
@@ -212,6 +224,19 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 			defer func() { <-sem }()
 
 			cfg := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+			// Status checks the same desired state as install, so a repo
+			// without an inference.auth selection cannot be evaluated.
+			if authErr := cfg.RequireInferenceAuth(); authErr != nil {
+				results[idx] = RepoStatus{
+					Owner: rr.Owner,
+					Repo:  rr.Repo,
+					Forge: cfg.Forge,
+					Error: authErr.Error(),
+
+					ConfigRejected: true,
+				}
+				return
+			}
 			fc, fcErr := clients.ConfigFor(cfg.Forge)
 			if fcErr != nil {
 				results[idx] = RepoStatus{
@@ -275,7 +300,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
 		Forge:             cfg.Forge,
 		MintURL:           cfg.MintURL,
-		InferenceRegion:   dcfg.InferenceRegion,
+		InferenceRegion:   inferenceRegionForAuth(cfg.InferenceAuth, dcfg.InferenceRegion),
 		ReviewAppClientID: dcfg.ReviewAppClientID,
 		AppSet:            appSet,
 	}, cfg.MintURL)
@@ -283,12 +308,15 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)
 		return status
 	}
-	components, probeErr := ProbeComponents(ctx, client, owner, repo, cfg.Forge, fc, expectedVars)
+	components, probeErr := ProbeComponentsForAuth(ctx, client, owner, repo, cfg.Forge, cfg.InferenceAuth, fc, expectedVars)
 	if probeErr != nil {
 		status.Error = fmt.Sprintf("probing components for %s/%s: %v", owner, repo, probeErr)
 		return status
 	}
 	if !anyComponentPresent(components) {
+		// Leftover credentials of an unselected method are drift even
+		// when none of the selected method's components exist.
+		checkObsoleteInferenceConfig(ctx, client, cfg, &status)
 		return status
 	}
 	status.Installed = true
@@ -327,6 +355,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		})
 	}
 
+	checkObsoleteInferenceConfig(ctx, client, cfg, &status)
+	if status.Error != "" {
+		return status
+	}
+
 	// Resolve the manifest's fullsend_ref to a commit SHA for
 	// comparison. Skip when the workflow is absent — that is already
 	// reported as a component drift; an empty ref is a consequence,
@@ -338,8 +371,17 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	// installed ref stays symbolic.
 	if workflowPresent && cfg.FullsendRef != "" && status.CurrentRef != cfg.FullsendRef {
 		expectedSHA := cfg.FullsendRef
-		if resolver != nil {
+		switch {
+		case resolver != nil:
 			expectedSHA = resolver.Resolve(ctx, cfg.FullsendRef)
+		case dcfg.UpstreamRef != "" && (cfg.FullsendRef == dcfg.UpstreamTag || cfg.FullsendRef == dcfg.UpstreamRef):
+			// Release-default match: the manifest ref is the running
+			// release's own tag (written back by install without a
+			// GitHub client — see ExpectedScaffoldContent's release-
+			// default support), not an explicit pin. Compare against
+			// the release's own SHA directly instead of requiring a
+			// GitHub resolver to resolve the tag it already came from.
+			expectedSHA = dcfg.UpstreamRef
 		}
 		if status.CurrentRef != expectedSHA {
 			status.Drifts = append(status.Drifts, Drift{
@@ -384,6 +426,55 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	}
 
 	return status
+}
+
+// checkObsoleteInferenceConfig reports Fullsend-managed inference secrets
+// and variables that belong to a method the repository's inference.auth
+// does not select. A valid selection does not make leftover configuration
+// healthy desired state: convergence deletes these once the selected
+// method is established, so status reports them as drift. Secrets are
+// checked for presence only — secret values are never read. GitLab's
+// unprefixed OPENAI_API_KEY is not Fullsend-managed and never reported.
+func checkObsoleteInferenceConfig(ctx context.Context, client forge.Client, cfg ResolvedConfig, status *RepoStatus) {
+	checkObsoleteInferenceSecrets(ctx, client, cfg, status)
+	if status.Error != "" {
+		return
+	}
+	for _, name := range obsoleteInferenceVariables(cfg.InferenceAuth) {
+		_, exists, err := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, name)
+		if err != nil {
+			status.Error = fmt.Sprintf("checking obsolete variable %s for %s/%s: %v", name, cfg.Owner, cfg.Repo, err)
+			return
+		}
+		if !exists {
+			continue
+		}
+		status.Drifts = append(status.Drifts, Drift{
+			Field:    name,
+			Expected: "absent",
+			Actual:   fmt.Sprintf("obsolete variable (inference.auth is %s)", cfg.InferenceAuth),
+		})
+	}
+}
+
+// checkObsoleteInferenceSecrets reports the secret half of
+// checkObsoleteInferenceConfig.
+func checkObsoleteInferenceSecrets(ctx context.Context, client forge.Client, cfg ResolvedConfig, status *RepoStatus) {
+	for _, name := range obsoleteInferenceSecrets(cfg.InferenceAuth) {
+		exists, err := client.RepoSecretExists(ctx, cfg.Owner, cfg.Repo, name)
+		if err != nil {
+			status.Error = fmt.Sprintf("checking obsolete secret %s for %s/%s: %v", name, cfg.Owner, cfg.Repo, err)
+			return
+		}
+		if !exists {
+			continue
+		}
+		status.Drifts = append(status.Drifts, Drift{
+			Field:    name,
+			Expected: "absent",
+			Actual:   fmt.Sprintf("obsolete secret (inference.auth is %s)", cfg.InferenceAuth),
+		})
+	}
 }
 
 func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, repo string, status *RepoStatus) {

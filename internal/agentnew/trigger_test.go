@@ -131,20 +131,25 @@ func TestUnknownPresetErrorListsAlternatives(t *testing.T) {
 	}
 }
 
-// TestRoleResourcesExistInScaffold proves every provider and profile path the
-// role table names is a file the CLI can actually produce. A path that names
-// nothing would pass harness validation and then fail at run time as "agent
-// crashes at 0s", because the embedded provider fallback covers only the
-// OpenAI provider.
+// TestRoleResourcesExistInScaffold proves every bare provider name the role
+// table names is one fullsend actually ships an embedded definition and
+// profile for. A name that names nothing would pass harness validation
+// (validateResourceFilesExist skips bare names on purpose) and then fail at
+// run time as "agent crashes at 0s" — appendEmbeddedProviderDefs degrades a
+// name with no scaffold file to a warning and a sandbox that cannot reach
+// the provider.
 func TestRoleResourcesExistInScaffold(t *testing.T) {
 	for _, name := range RoleNames() {
 		role, err := LookupRole(name)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, p := range append(append([]string{}, role.Providers...), role.Profiles...) {
-			if _, err := scaffold.FullsendRepoFile(p); err != nil {
-				t.Errorf("role %q references %q, which is not in the embedded scaffold: %v", name, p, err)
+		for _, p := range role.Providers {
+			if _, err := scaffold.FullsendRepoFile("providers/" + p + ".yaml"); err != nil {
+				t.Errorf("role %q references provider %q, which is not in the embedded scaffold: %v", name, p, err)
+			}
+			if _, err := scaffold.FullsendRepoFile("profiles/fullsend-" + p + ".yaml"); err != nil {
+				t.Errorf("role %q references provider %q, whose profile is not in the embedded scaffold: %v", name, p, err)
 			}
 		}
 	}

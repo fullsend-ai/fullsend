@@ -58,7 +58,23 @@ func provisionGitLabPollState(ctx context.Context, client forge.Client, printer 
 // for polling: a fast slash-command poll (every 5 min) and an offset
 // event-discovery poll (at minutes 2,17,32,47). Each schedule has its own
 // resource group so they never cancel each other.
-func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, defaultBranch string) error {
+//
+// Variables are selected via the same transport-aware logic convergence
+// uses (repos.ScheduleVariablesFor): a repo whose effective GitLab wrapper
+// is still on the legacy (variable-based) dispatch contract needs the
+// legacy FULLSEND_POLL_MODE override, since that wrapper selects poll mode
+// from the schedule variable rather than the schedule description. Using
+// the canonical (variable-free) spec unconditionally here would silently
+// collapse a legacy-pinned install's slash schedule into event polling.
+//
+// typed must reflect the dispatch transport of the wrapper this install
+// actually queued (repos.ConvergeResult.GitLabTypedDispatch /
+// repos.InstallResult.GitLabTypedDispatch), not a live re-read of the
+// default branch: this is called immediately after a fresh install, whose
+// commit may still be an unmerged upgrade MR, so a live read could observe
+// the prior (or absent) wrapper and wrongly treat a pending typed
+// installation as a legacy one.
+func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, defaultBranch string, typed bool) error {
 	// Delete existing fullsend schedules to avoid duplicates on re-install.
 	existing, listErr := client.ListPipelineSchedules(ctx, owner, repo)
 	if listErr != nil {
@@ -79,7 +95,7 @@ func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, prin
 	var createdIDs []int64
 	for _, spec := range repos.PipelineScheduleSpecs() {
 		id, err := client.CreatePipelineSchedule(ctx, owner, repo, defaultBranch,
-			spec.Description, spec.Cron, spec.Variables)
+			spec.Description, spec.Cron, repos.ScheduleVariablesFor(spec, typed))
 		if err != nil {
 			// Roll back any schedules created in this call.
 			for _, prevID := range createdIDs {
@@ -189,6 +205,11 @@ func annotateGitLabRoleLifecycle(ctx context.Context, clients repos.ForgeClientF
 		if st.Forge != "" && st.Forge != repos.ForgeGitLab {
 			continue
 		}
+		// Rows rejected for configuration (e.g. missing inference.auth) were
+		// never evaluated; do not inspect their project or append drift.
+		if st.ConfigRejected {
+			continue
+		}
 		toks, listErr := adapter.ListProjectAccessTokens(ctx, st.Owner, st.Repo)
 		if listErr != nil {
 			toks = nil
@@ -254,30 +275,23 @@ func ensureGitLabPollerPipelineAccess(ctx context.Context, client forge.Client, 
 }
 
 // ensureGitLabPipelineVariableOverrideRole converges a GitLab project's
-// ci_pipeline_variables_minimum_override_role toward owner (#7769). It
+// ci_pipeline_variables_minimum_override_role toward no_one_allowed
+// (#7850, superseding the owner-role direction #7769 had left open). It
 // is called for both fresh installs and converge/repair of
-// already-installed repos, and is idempotent: an already-owner project
-// reports Action "none" every time. Enforcement itself defaults to off
-// (see repos.GitLabPipelineVarRestrictionEnforced) pending the poller
-// credential follow-up tracked in #7769, so this is safe to call
-// unconditionally today — it currently only reports drift. Action
-// "report-only" (not-owner, enforcement disabled) is surfaced via
-// StepWarn rather than StepDone so a skimming operator does not mistake
-// "control not yet applied" for "control applied".
+// already-installed repos, and is idempotent: an already-no_one_allowed
+// project reports Action "none" every time. Automatic setting changes
+// default to off, but drift is an activation error, not report-only success.
+// Schedule migration and ADR 0125 live validation remain rollout gates.
 func ensureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool) error {
 	repoFullName := owner + "/" + repo
-	res, err := repos.EnsureGitLabPipelineVariableOverrideRole(ctx, client, owner, repo, dryRun)
+	res, err := repos.ActivateGitLabTypedDispatch(ctx, client, owner, repo, dryRun)
 	if err != nil {
 		printer.StepFail(fmt.Sprintf("[%s] GitLab pipeline-variable override role: %v", repoFullName, err))
 		return err
 	}
 	if res.Detail != "" {
 		msg := fmt.Sprintf("[%s] %s", repoFullName, res.Detail)
-		if res.Action == "report-only" {
-			printer.StepWarn(msg)
-		} else {
-			printer.StepDone(msg)
-		}
+		printer.StepDone(msg)
 	}
 	return nil
 }

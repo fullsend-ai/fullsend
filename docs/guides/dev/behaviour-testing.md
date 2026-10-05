@@ -1,23 +1,24 @@
 # Behaviour testing
 
-End-to-end Gherkin tests under `e2e/behaviour/` validate **deterministic platform code** with inference removed. They are **orthogonal** to LLM and instruction testing in [testing-agents.md](../../problems/testing-agents.md) and to admin install e2e in `e2e/admin/`.
+End-to-end Gherkin tests under `e2e/behaviour/` validate **deterministic platform code** with inference removed. They are **orthogonal** to LLM and instruction testing in [testing-agents.md](../../problems/testing-agents.md).
 
-| | Behaviour tests | LLM evals | Admin e2e | Unit tests |
-|---|-----------------|-----------|-----------|------------|
-| **Target** | Platform workflows, sandbox, SCM | Prompts, models | Install/uninstall | Go functions |
-| **Inference** | Dummy runtime | Real LLM | Real LLM | N/A |
-| **Infrastructure** | Live GitHub + GHA | Varies | Live GitHub + GHA | None |
+| | Behaviour tests | LLM evals | Unit tests |
+|---|-----------------|-----------|------------|
+| **Target** | Platform workflows, sandbox, SCM | Prompts, models | Go functions |
+| **Inference** | Dummy runtime | Real LLM | N/A |
+| **Infrastructure** | Live GitHub + GHA | Varies | None |
 
 ## When to add a behaviour test
 
-Add one when a **user-visible workflow** must be verified end-to-end (dispatch → workflow → post-script → SCM state) and the assertion is **binary**. Prefer unit tests for pure Go logic and admin e2e for install provisioning.
+Add one when a **user-visible workflow** must be verified end-to-end (dispatch → workflow → post-script → SCM state) and the assertion is **binary**. Prefer unit tests for pure Go logic.
 
 ## Layout
 
 Shared framework (importable by external repos):
 
 ```
-pkg/behaviourtest/   # RunSuite public entry (build tag: behaviour)
+pkg/behaviourtest/   # RunSuite public entry (build tag: behaviour);
+                     # RunPlaybackSuite public entry (build tag: playback)
   world/             # Scenario state
   steps/             # Step definitions + CleanupScenario
   artifacts/         # Artifact lookup helpers
@@ -28,7 +29,7 @@ pkg/behaviourtest/   # RunSuite public entry (build tag: behaviour)
 In-repo live-test infrastructure (not a public API):
 
 ```
-internal/e2etest/    # Org pool, CLI runner, cleanup (shared with admin e2e)
+internal/e2etest/    # Org pool, CLI runner, cleanup
 ```
 
 In-repo runner and scenarios:
@@ -38,6 +39,7 @@ e2e/behaviour/
   features/          # Portable Gherkin scenarios
   fixtures/          # Static content for write_fixture ops
   suite_test.go      # Thin RunSuite caller (build tag: behaviour)
+  playback_suite_test.go  # Thin RunPlaybackSuite caller (build tag: playback)
 ```
 
 ## Writing scenarios
@@ -85,7 +87,7 @@ Every scenario runs the stage under the dummy runtime selected at install time (
 - **Runtime-specific (gated):** `Given the repository runtime is "<name>"` commits `runtime: <name>` to the leased repo's config for this scenario only (CleanupScenario restores `dummy` — slots are reused, so never set it any other way; the step refuses if the slot is not on `dummy` to begin with). The custom-harness step commits only a placeholder for a relative `agent:` path, which a real runtime cannot act on, so follow it with the agent step for the runtime under test (`And a pi agent "<name>" defined as:`, `And a codex agent "<name>" defined as:` — both commit the same file) and a docstring holding the full agent file (frontmatter + body) — `{{fixture:fixtures/<stage>/<file>.json}}` inlines a result fixture so the model has a concrete, deterministic file to write (the custom harness carries no post-script, so nothing validates it; the assertions are on the transcript and metrics). Then the scenario dispatches the harness and asserts on artifacts: `the run selected the "pi" runtime`, `the pi session transcript records at least one tool call` (the agent used a tool through pi; with security enabled the run refuses to start without the intact hook adapter, so the call was mediated by it — the step does not inspect hook output), `the run metrics report tokens`. Such scenarios cost a real model run on the pool repo's repo-scoped Vertex WIF and must be tagged `@requires:capability:runtime-<name>` so they only run where the runner declares the capability; `make behaviour-test` declares `runtime-pi` by default (a `Makefile` variable, so a PR adding a gated scenario exercises it on its own `pull_request_target` run — the workflow file itself comes from `main`); `BEHAVIOUR_CAPABILITIES= make behaviour-test` skips them. See `features/runtime/pi.feature`. `features/runtime/pi-openai.feature` is the same shape on `openai/gpt-5.6-luna` with the `openai` provider instead of Vertex host files; it is gated on `runtime-pi-openai`, which is **not** declared by default because it needs an OpenAI organization mapped to the pool repositories plus their `FULLSEND_OPENAI_*` variables ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)). `features/runtime/codex-openai.feature` is that same shape on the codex runtime — `And a codex agent "<name>" defined as:` for the agent, and `the codex output stream records at least one tool call`, which reads the tee'd `codex exec --json` stream (`output.jsonl`) rather than a session transcript. It is gated on `runtime-codex-openai` for the same reason, and codex has no Vertex path, so — unlike pi, whose `runtime-pi` scenario runs on every job — codex has **no default behaviour coverage at all** until that organization exists; its evidence until then is unit tests, recorded fixtures and local smoke runs.
 - **Per-agent (every run):** `Given the repository agents are configured with:` with a YAML docstring (`triage:\n  runtime: dummy`) sets runtime/model/effort on the leased repo's `agents:` entries (a name-only entry for a built-in, the sourced entry for a custom agent; only the settings given change) — validated the way `fullsend run` validates them — and CleanupScenario restores the pre-scenario `agents:` list. Pair it with `the repository runtime is "<real runtime>"` and pin every agent the scenario can dispatch (triage hands off to `code` via `ready-to-code`) back to `dummy`, then assert `the run selected the "dummy" runtime from "agents.triage"`, which also checks `runtime_source` in `metrics.json` ends with that entry — proof the per-agent entry decided, at dummy cost. The gated second scenario in the same file leaves the repo on `dummy` and puts one custom agent on pi with `model: haiku` from its entry (the harness says `opus`); `the run requested model "haiku" from "agents.<name>" and the provider reported a "haiku" model` checks `requested_model`, `override_source`, the reported `model` and `num_turns` in `metrics.json`. See `features/runtime/agent-settings.feature`.
 
-Do not add runtime coverage to `e2e/admin` (org-mode install, deprecated per ADR 0044) or behind new `fullsend admin` flags.
+Do not add runtime coverage behind new `fullsend admin` flags (org-mode install, deprecated per ADR 0044).
 
 ### Branch assertion steps
 
@@ -221,7 +223,42 @@ GODOG_CONCURRENCY=1 make behaviour-test
 Serial mode (`GODOG_CONCURRENCY=1`) is useful when debugging a single
 scenario or when `-v` output from multiple scenarios would interleave.
 
-In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. Before `github setup`, the install driver resolves the repo-scoped inference WIF provider: it runs `fullsend inference status` and runs `fullsend inference provision` only when the provider is not healthy. Provisions are serialised across the process. The resolved provider is cached per repo name for the rest of the run, including after the repo is deleted and recreated, because the provider ID, its attribute condition and the Vertex AI grant are all keyed by `owner/repo`, not by repo ID (`Provisioner.ProvisionWIF` in `internal/dispatch/gcf/provisioner.go` creates the provider and the grant, and is the source of truth for these bindings). See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+### Playback suite
+
+The dummy-playback scenarios (`@playback`, e.g. `features/runtime/playback.feature`) run under their own target:
+
+```bash
+make playback-test
+```
+
+The target runs `go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/`. It uses only the `playback` build tag, so only `TestPlaybackSuite` (`behaviourtest.RunPlaybackSuite`) is compiled and `TestBehaviourSuite` is left out. Do not add `behaviour` to the tag list; that would run both suites. `RunPlaybackSuite` fixes the godog tag filter to `@playback` (`GODOG_TAGS` is ignored) and sets `PLAYBACK_RUNTIME=dummy-playback` for the install driver. Everything else is configured from the same environment as `make behaviour-test`: `ENVIRONMENT`, `BEHAVIOUR_SCM` / `BEHAVIOUR_CI` / `BEHAVIOUR_INSTALL_MODE`, `E2E_GCP_*`, `E2E_LOCK_TIMEOUT`, `GODOG_CONCURRENCY`, `BEHAVIOUR_ARTIFACT_DIR`, and the role PEM / Cloudflare credentials the install factories need. `make behaviour-test` skips `@playback` scenarios, so the two targets never run the same scenario.
+
+#### Running the playback suite in CI
+
+The `playback` job mirrors the `behaviour` job in [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml), with these specifics:
+
+- **Target and environment.** Run `make playback-test` with `shell: bash`, teeing output (for example to `playback-test.log`) so `pipefail` propagates failures. Pass the same `env:` block as the behaviour job: `BEHAVIOUR_SCM=github`, `BEHAVIOUR_CI=githubactions`, `BEHAVIOUR_INSTALL_MODE=per-repo`, `E2E_GCP_*`, `TEST_*_PEM`, and the `TEST_CLOUDFLARE_*` credentials. Point `BEHAVIOUR_ARTIFACT_DIR` at a playback-specific directory (for example `${{ runner.temp }}/playback-artifacts`). You do not need to set `GODOG_TAGS` or `PLAYBACK_RUNTIME`, because `RunPlaybackSuite` sets them itself.
+- **Triggers, gate, and environment binding.** Use `needs: gate` for authorized `pull_request_target`, `merge_group`, and push to `main`; manual dispatch runs playback when `run_playback=true`. Bind to the same GitHub Environment (`stage` on push, `dev` otherwise) and set `ENVIRONMENT` to match. The job checks out and runs PR-head code with secrets, so the [CI Workflows security rules](../../contributing/ci-workflows.md#review-checklist-for-secrets-in-behaviourplayback-jobs) apply.
+- **Org reservation.** The playback and behaviour jobs share a job concurrency group within each stage workflow run, so they execute one at a time. Dev jobs use distinct groups and run concurrently, reserving separate orgs. `RunPlaybackSuite` reserves a pool org with the same `e2etest.AcquireOrg` lock that `RunSuite` uses (`orgPoolForEnvironment`), and the lock is released in `t.Cleanup`. Two limits make relying on that lock alone unsafe when both suites target the single stage org:
+  - `AcquireOrg` waits for the lock for the `E2E_LOCK_TIMEOUT` default of 10 minutes, far less than the 45-minute suite budget, so a job that starts while the other suite is running can fail while waiting.
+  - A lock is treated as stale and reclaimed once it is older than 30 minutes (`staleLockTimeout` in `internal/e2etest`). That check uses only the lock's creation time and does not check whether the holder is still running, so a later contender can reclaim an org that a long-running suite is still using.
+
+  On `dev`, the pool has several orgs, so contention is lower, but the same limits apply when the pool is exhausted. The org lock remains responsible for reservation; job concurrency prevents contention between these two suites in the same stage run.
+- **Change detection.** Reuse the behaviour job's file filter (its `grep -qE` path list and the `push.paths` entries under the same `SYNC-WITH` comment). It already covers `e2e/behaviour/` (playback features, fixtures and results), `pkg/behaviourtest/`, `internal/runtime/` (the `dummy-playback` runtime), and `Makefile`. Keep the two filters in sync, and keep the behaviour job's fallback of running the tests when the file list cannot be fetched or may be truncated.
+- **Cancellation.** The job inherits the workflow-level `concurrency` group and `cancel-in-progress` expression. A cancelled or killed run cannot run `t.Cleanup`, so its org lock is reclaimed by the stale-lock timeout in `internal/e2etest`, exactly as for the behaviour job. Gate post-test steps on `always()` rather than `success()` so that redaction still runs after a failure.
+- **Artifacts.** Before uploading, redact the playback artifact directory with the base-branch `scripts/redact-behaviour-artifacts.sh`, run through `env -i` with the full secret list, as described in [Behaviour debug artifact redaction](../../contributing/ci-workflows.md#behaviour-debug-artifact-redaction). Upload only when `steps.redact.outcome == 'success'` and the suite step failed, with `if-no-files-found: ignore`. Use an artifact name distinct from `behaviour-artifacts-*`, for example `playback-artifacts-<pr-or-run-id>`.
+- **Timeout.** Set `timeout-minutes: 45` to match the target's `go test -timeout` (see [CI timeout budgeting](#ci-timeout-budgeting-for-lazy-provisioning)).
+
+To run playback from a trusted PR branch before merging, dispatch the existing E2E workflow with that branch as the ref:
+
+```bash
+gh workflow run e2e.yml --repo fullsend-ai/fullsend \
+  --ref agent/7942-playback-test-target -f run_playback=true
+```
+
+This runs the branch's workflow and test target in the dev environment. The regular `behaviour` job is skipped for this playback dispatch. Artifact redaction uses the default-branch script.
+
+In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. Before `github setup`, the install driver resolves the repo-scoped inference WIF provider: it runs `fullsend inference status` and runs `fullsend inference provision` only when the provider is not healthy. Provisions are serialised across the process. The resolved provider is cached per repo name for the rest of the run, including after the repo is deleted and recreated, because the provider ID, its attribute condition and the Vertex AI grant are all keyed by `owner/repo`, not by repo ID (`Provisioner.ProvisionWIF` in `internal/dispatch/gcf/provisioner.go` creates the provider and the grant, and is the source of truth for these bindings). See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
 ### Repo allocation via unified Driver
 
@@ -246,6 +283,7 @@ Runner env (defaults shown):
 BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
 BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
+BEHAVIOUR_APP_SET=fullsend-test # app identities for both mint deployment and github setup; must match the supplied role PEMs
 BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
@@ -403,7 +441,7 @@ Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ens
 
 Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete leftover state + create + `github setup` + Actions settle; the first lease of each name also resolves inference WIF), including when a later scenario reuses the same `test-repo-NN` name. The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leases in the suite.
 
-Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection.
+Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection. The same rule applies to the `playback-test` target (also 45 minutes) and to any CI job that runs it.
 
 Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
 
@@ -488,9 +526,32 @@ func TestBehaviourSuite(t *testing.T) {
 
 `RunSuite` builds the CLI from module `github.com/fullsend-ai/fullsend` (equivalent to `e2etest.BuildModuleBinary`), so the caller's module root is not used. Run with `-tags behaviour` and the same env vars as CI (see above).
 
+The dummy-playback suite has its own entry point, `behaviourtest.RunPlaybackSuite`, which takes the same `SuiteOptions` and is called from a test file built with `-tags playback` (see `e2e/behaviour/playback_suite_test.go`). It installs pool repos with the `dummy-playback` runtime, runs only `@playback`-tagged scenarios (the filter is fixed; `GODOG_TAGS` is not consulted), and is otherwise configured from the same environment variables as `RunSuite`. `@playback` scenarios are skipped automatically by the standard `RunSuite` suite, so the two runners do not overlap. In this repo, `make playback-test` runs it (see [Playback suite](#playback-suite)). External callers should build it with `-tags playback`:
+
+```go
+//go:build playback
+
+package behaviour_test
+
+import (
+    "testing"
+
+    "github.com/fullsend-ai/fullsend/pkg/behaviourtest"
+)
+
+func TestPlaybackSuite(t *testing.T) {
+    behaviourtest.RunPlaybackSuite(t, behaviourtest.SuiteOptions{
+        FeaturePaths: []string{"features"},
+        FixturesRoot: "e2e/behaviour", // module-relative
+    })
+}
+```
+
 Lower-level packages (`world`, `steps`, `drivers`, `suite.InitScenario`) remain available for custom bootstraps. Org pool and CLI helpers live in `internal/e2etest` and are not importable outside this module. Prefer `RunSuite` unless you need to inject drivers the env-based selector does not cover.
 
 ### API changes
+
+**`behaviourtest.RunPlaybackSuite`:** New entry point for the dummy-playback suite (build tag: `playback`). Callers pass the same `SuiteOptions{FeaturePaths, FixturesRoot}`; the `@playback` tag filter is fixed.
 
 **`behaviourtest.RunSuite`:** New high-level entry point. Callers pass `SuiteOptions{FeaturePaths, FixturesRoot}` only. Replaces the ~80-line bootstrap previously duplicated in `e2e/behaviour/suite_test.go`.
 
@@ -532,5 +593,11 @@ suiteRunner := godog.TestSuite{
 **`ci.Driver.WaitForFailedHarnessAgent` addition:** `WaitForFailedHarnessAgent(ctx, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error)` waits for the named agent's harness run to complete with a terminal failure conclusion (artifact-first detection, job-name fallback) and errors out early when the run succeeds instead. External `ci.Driver` implementations must add this method.
 
 **`scm.Driver.ListPullRequestReviews` addition (breaking change):** The `scm.Driver` interface now includes `ListPullRequestReviews(ctx, owner, repo, number) ([]forge.PullRequestReview, error)`, returning the formal reviews submitted on a change proposal. The GitHub and GitLab reference implementations pass through to the existing `forge.Client` method of the same name. This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
+
+**`ci.Driver.WaitForHarnessAgentRound` addition (breaking change):** The `ci.Driver` interface now includes `WaitForHarnessAgentRound(ctx, owner, repo, agent string, after time.Time, consumed map[int]bool) (*forge.WorkflowRun, error)`, for scenarios where the same agent's harness is dispatched more than once (e.g. dummy-playback's review round, retried after fix). Unlike `WaitForHarnessAgent`'s latest-eligible-run selection, it selects the earliest eligible run whose ID is not in `consumed`. This widens the required method set, so external `ci.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
+
+**`scm.Driver.GetFileContentAtRef` addition (breaking change):** The `scm.Driver` interface now includes `GetFileContentAtRef(ctx, owner, repo, path, ref string) ([]byte, error)`, retrieving a file's content at a specific ref (commit SHA, branch, or tag) rather than `GetFileContent`'s implicit default-branch/HEAD read. The dummy-playback suite's "the published repository matches fixture" step uses it to verify, file by file, that a stage actually published the expected content at a pinned commit. The GitHub and GitLab reference implementations pass through to the existing `forge.Client` method of the same name. This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
+
+**`scm.Driver.ListPullRequestCommits` addition (breaking change):** The `scm.Driver` interface now includes `ListPullRequestCommits(ctx, owner, repo, number) ([]string, error)`, returning the commit SHAs on a pull request, oldest first. The dummy-playback suite uses the first entry as the code stage's published commit: review and fix only append commits to the branch, so unlike the head branch's live tip, that commit cannot be displaced by a later stage that races ahead. The GitHub and GitLab reference implementations pass through to the new `forge.Client.ListPullRequestCommits` method (GitHub caps results at 250 commits). This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.

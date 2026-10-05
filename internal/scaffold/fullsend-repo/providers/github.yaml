@@ -1,3 +1,5 @@
 ---
 name: github
 type: fullsend-github
+credentials:
+  GH_TOKEN: "${GH_TOKEN}"

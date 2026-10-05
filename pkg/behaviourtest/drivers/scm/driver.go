@@ -24,6 +24,10 @@ type Driver interface {
 	AddComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error)
 	GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error)
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
+	// GetFileContentAtRef retrieves the content of a file at a specific
+	// ref (commit SHA, branch, or tag), rather than GetFileContent's
+	// implicit default-branch/HEAD read.
+	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 	CommitFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 	CreateBranch(ctx context.Context, owner, repo, branch string) error
 	// DeleteBranch deletes a branch from a repository. Returns
@@ -80,4 +84,10 @@ type Driver interface {
 	// ListPullRequestReviews returns the formal reviews submitted on a
 	// change proposal (pull request / merge request).
 	ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error)
+
+	// ListPullRequestCommits returns the commit SHAs on a change
+	// proposal, oldest first. The result is the proposal's current commit
+	// list, so a force-push or rebase of the head branch can replace it;
+	// it makes no promise about the commits the proposal was opened with.
+	ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 }

@@ -156,7 +156,7 @@ When using `base:` composition, the base harness can declare its own providers a
 - **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
 - **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
 
-Only profiles listed in `openshell.profiles` are imported. A YAML file that merely exists under the `profiles/` directory is **not** imported unless the harness names it. To use a local profile as a per-repo override, list it explicitly (e.g., `profiles/fullsend-vertex-ai.yaml`); the child-wins dedup rule applies by `id`.
+Only profiles listed in `openshell.profiles` are imported. A YAML file that merely exists under the `profiles/` directory is **not** imported unless the harness names it. To use a local profile as a per-repo override, list it explicitly under its own `id` (e.g., `profiles/myorg-vertex-ai.yaml`); the child-wins dedup rule applies by `id`. The `fullsend-<name>` ids of the built-in profiles are reserved: list a copy under one and `fullsend run` warns and uses it for now, and a later release rejects it.
 
 Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash is checked on every resolution to ensure the content hasn't been tampered with since it was pinned.
 

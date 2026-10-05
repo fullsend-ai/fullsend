@@ -51,7 +51,7 @@ type gitCommitFunc func(playlistPath string, playlist *Playlist) error
 // advances the index via a git commit+push.
 //
 // ExecFn, UploadFn, and GitCommitFn are optional test overrides; production
-// uses sandbox.Exec, sandbox.Upload, and a real git commit+push. Forge API
+// uses sandbox.Exec, sandbox.UploadFile, and a real git commit+push. Forge API
 // calls (reading/updating the tracking comment) go through
 // RunParams.ForgeClient — per the forge-abstraction rule, this runtime must
 // not shell out to `gh`/`glab` itself.
@@ -72,7 +72,7 @@ func (r DummyPlaybackRuntime) uploadFn() sandboxUploadFunc {
 	if r.UploadFn != nil {
 		return r.UploadFn
 	}
-	return sandbox.Upload
+	return sandbox.UploadFile
 }
 
 func (DummyPlaybackRuntime) Name() string { return "dummy-playback" }

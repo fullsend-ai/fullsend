@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -527,6 +528,129 @@ func TestRunAgent_OpenAIProviderSkippedWhenRuntimeDoesNotNeedIt(t *testing.T) {
 	}
 }
 
+// TestRunAgent_OpenAIProviderNeededBySubagent covers #7981: a pi parent on
+// a Vertex model still needs the run-scoped OpenAI provider when the
+// repo's agents: entry configures a child (subagents.default here) that
+// resolves to the openai provider. Before the fix, NeedsOpenAIProvider
+// looked at the parent's model alone, so this harness/config combination
+// skipped the provider exactly like the "runtime does not need it" cases
+// above — leaving the sandbox with no OPENAI_API_KEY for a child the repo
+// explicitly asked to run on openai.
+func TestRunAgent_OpenAIProviderNeededBySubagent(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
+	// Overwrite config.yaml with an agents: entry naming the code agent and
+	// giving it a subagents.default that resolves to openai, in addition to
+	// the bare-string form writeOpenAIFullsendDirFor already proved works.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(""+
+		"version: \"1\"\nruntime: pi\nagents:\n"+
+		"  - name: code\n    source: harness/code.yaml\n    subagents:\n      default: openai/gpt-5.6-luna\n"), 0o644))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	// The stub cannot bootstrap an agent past sandbox creation, but the
+	// provider block (what this test checks) must have completed first.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "no OpenAI credential")
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	log := string(data)
+	assert.Contains(t, log, "provider create --name openai-",
+		"the Vertex parent's configured openai child still needs the run-scoped credential")
+	var sandboxLine string
+	for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
+		if strings.HasPrefix(l, "sandbox create ") {
+			sandboxLine = l
+		}
+	}
+	require.NotEmpty(t, sandboxLine)
+	assert.Regexp(t, `--provider openai-[0-9a-f]{12}`, sandboxLine, "the run-scoped instance is attached to the sandbox")
+}
+
+// TestRunAgent_OpenAISubagentWithoutOpenAIProviderFailsBeforeSandbox
+// covers the other half of #7981: when a configured child needs the openai
+// provider and the harness declares none, the run fails before the sandbox
+// is created, naming the child and the fix, instead of at Bootstrap.
+func TestRunAgent_OpenAISubagentWithoutOpenAIProviderFailsBeforeSandbox(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
+	// The same harness with the openai provider removed.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\nmodel: anthropic-vertex/claude-opus-4-6\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(""+
+		"version: \"1\"\nruntime: pi\nagents:\n"+
+		"  - name: code\n    source: harness/code.yaml\n    subagents:\n      default: openai/gpt-5.6-luna\n"), 0o644))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subagents.default → openai/gpt-5.6-luna")
+	assert.Contains(t, err.Error(), `declare "openai" in the harness providers list`)
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(data), "sandbox create ", "the run stops before a sandbox exists")
+	assert.NotContains(t, string(data), "provider create --name openai-")
+}
+
+// TestRunAgent_OpenAIFrontmatterChildWithoutCredential covers the #7981
+// compatibility rule: a persona whose own frontmatter names openai widens
+// the provider gate, but a runner with no OpenAI credential does not fail
+// the run over it. Before #7981 Bootstrap skipped such a persona with a
+// warning, and it still does. A subagents entry on openai is something the
+// repo asked for, so there the missing credential stays fatal.
+func TestRunAgent_OpenAIFrontmatterChildWithoutCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		subagents string
+		wantFatal bool
+	}{
+		{name: "frontmatter only: skipped, run continues"},
+		{name: "subagents entry: fatal", subagents: "    subagents:\n      checker: openai/gpt-5.6-luna\n", wantFatal: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath := recordingProvidersStub(t)
+			for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS", "OPENAI_API_KEY"} {
+				t.Setenv(k, "")
+			}
+			dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
+			skill := filepath.Join(dir, "skills", "probe")
+			require.NoError(t, os.MkdirAll(filepath.Join(skill, "sub-agents"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("---\nname: probe\ndescription: probe\n---\nProbe.\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(skill, "sub-agents", "checker.md"),
+				[]byte("---\nname: checker\nmodel: openai/gpt-5.6-luna\n---\nCheck.\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(
+				"agent: agents/code.md\nrole: test\nmodel: anthropic-vertex/claude-opus-4-6\nskills:\n  - skills/probe\nproviders:\n  - openai\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+				"version: \"1\"\nruntime: pi\nagents:\n  - name: code\n    source: harness/code.yaml\n"+tc.subagents), 0o644))
+
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+			require.Error(t, err, "the stub cannot bootstrap either way")
+			data, readErr := os.ReadFile(logPath)
+			require.NoError(t, readErr)
+			if tc.wantFatal {
+				assert.Contains(t, err.Error(), "no OpenAI credential")
+				assert.NotContains(t, string(data), "sandbox create ")
+				return
+			}
+			assert.NotContains(t, err.Error(), "no OpenAI credential")
+			assert.Contains(t, string(data), "sandbox create ", "the run reaches the sandbox")
+			assert.NotContains(t, string(data), "provider create --name openai-")
+			assert.NotRegexp(t, `--provider openai`, string(data), "nothing openai is attached")
+		})
+	}
+}
+
 func TestRunAgent_OpenAIProviderIsRunScopedAndDeleted(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -637,7 +761,7 @@ func profileListingStub(t *testing.T, listing string) string {
 func TestEnsureOpenAIProfile(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    fullsend-openai  Fullsend OpenAI  endpoints: 1\n    nvidia  NVIDIA  endpoints: 1  inference")
-	require.NoError(t, ensureOpenAIProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
+	require.NoError(t, ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
 	lines := readArgLines(t, argsLog)
 	require.Len(t, lines, 3, "delete, import, then confirm the listing: %q", lines)
 	assert.Equal(t, "provider profile delete fullsend-openai", lines[0])
@@ -646,13 +770,13 @@ func TestEnsureOpenAIProfile(t *testing.T) {
 
 	// Second call: the content cache is deliberately not trusted, so the
 	// embedded profile is sent again and the gateway asked again.
-	require.NoError(t, ensureOpenAIProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
+	require.NoError(t, ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
 	lines = readArgLines(t, argsLog)
 	require.Len(t, lines, 6, "%q", lines)
 	assert.Equal(t, "provider profile delete fullsend-openai", lines[3])
 	assert.Equal(t, "provider list-profiles -o json", lines[5])
 
-	err := ensureOpenAIProfile(context.Background(), "no-such-profile", ui.New(io.Discard))
+	err := ensureEmbeddedProfile(context.Background(), "no-such-profile", ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not shipped by this fullsend build")
 }
@@ -661,7 +785,7 @@ func TestEnsureOpenAIProfile_StaleCacheReimports(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	// A cache that says "imported" against a gateway that does not list it.
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    nvidia  NVIDIA  endpoints: 1  inference")
-	err := ensureOpenAIProfile(context.Background(), "fullsend-openai", ui.New(io.Discard))
+	err := ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard))
 	require.Error(t, err, "the stub never lists it, so the re-import cannot be confirmed either")
 	assert.Contains(t, err.Error(), "not on the gateway after import")
 	lines := readArgLines(t, argsLog)
@@ -961,17 +1085,24 @@ func TestCheckProviderProfileIntegrity_KnowsEmbeddedOpenAIProfile(t *testing.T) 
 	providers := []resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "openai", Type: openAIProviderType}}}
 	err := checkProviderProfileIntegrity(providers, nil)
 	require.NoError(t, err, "the runner imports fullsend-openai itself, so a path-form provider needs no profiles: entry")
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "openai", Type: "Fullsend-OpenAI"}}}, nil)
+	require.NoError(t, err, "the OpenAI path normalizes the spelling, so a mixed-case type is known too")
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "gh", Type: "fullsend-github-ro"}}}, nil)
+	require.NoError(t, err, "every reserved id is imported from the embed when nothing lists it")
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "gh", Type: "Fullsend-GitHub-RO"}}}, nil)
+	require.Error(t, err, "only the OpenAI spelling is normalized; nothing imports a mixed-case reserved id")
 	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "x", Type: "no-such-profile"}}}, nil)
 	require.Error(t, err)
 }
 
 func TestAppendEmbeddedProviderDefs(t *testing.T) {
-	defs := appendEmbeddedProviderDefs(nil, nil, []string{"openai", "vertex-ai", "no-such-provider", "https://x/p.yaml"}, ui.New(io.Discard))
+	defs := appendEmbeddedProviderDefs(nil, nil, []string{"openai", "vertex-ai", "github-ro", "no-such-provider", "https://x/p.yaml"}, ui.New(io.Discard))
 	names := make([]string, 0, len(defs))
 	for _, d := range defs {
 		names = append(names, d.Name+":"+d.Type)
 	}
-	assert.Equal(t, []string{"openai:fullsend-openai"}, names, "only the scaffold-shipped OpenAI definition is filled in; other bare names keep their warning")
+	assert.Equal(t, []string{"openai:fullsend-openai", "vertex-ai:fullsend-vertex-ai", "github-ro:fullsend-github-ro"}, names,
+		"every scaffold-shipped builtin definition is filled in (#7268); a name with no scaffold file (no-such-provider) or that is a URL keeps its warning")
 	local := []harness.ProviderDef{{Name: "openai", Type: "custom-type"}}
 	defs = appendEmbeddedProviderDefs(local, nil, []string{"openai"}, ui.New(io.Discard))
 	require.Len(t, defs, 1)
@@ -984,6 +1115,94 @@ func TestRejectReservedProfileID(t *testing.T) {
 	err := rejectReservedProfileID(openAIProviderType, []resolve.ResolvedProfile{{ID: "fullsend-openai"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reserved")
+}
+
+// TestWarnReservedProfileCopies: every listed copy of a reserved profile is
+// warned about once and reported, whether or not a provider uses it;
+// fullsend-openai (already an error) and non-reserved ids are not (#7268).
+func TestWarnReservedProfileCopies(t *testing.T) {
+	var buf bytes.Buffer
+	listed := warnReservedProfileCopies([]resolve.ResolvedProfile{
+		{ID: "fullsend-github-ro"},
+		{ID: "fullsend-gitleaks", FromURL: true},
+		{ID: "fullsend-github-ro"},
+		{ID: "fullsend-openai"},
+		{ID: "myorg-github-ro"},
+	}, ui.New(&buf))
+	assert.Equal(t, map[string]struct{}{"fullsend-github-ro": {}, "fullsend-gitleaks": {}}, listed)
+	out := buf.String()
+	assert.Equal(t, 1, strings.Count(out, `"fullsend-github-ro" will be rejected`), "one warning per id")
+	assert.Contains(t, out, `declare the bare provider name "gitleaks"`)
+	assert.Contains(t, out, "still used for now")
+	assert.NotContains(t, out, "fullsend-openai")
+	assert.NotContains(t, out, "myorg-")
+}
+
+// TestBuiltinProviderNamesMatchEmbed keeps builtinProviderNames from
+// drifting from the scaffold it describes: every embedded provider
+// definition is listed, each declares the "fullsend-"+name profile type that
+// isReservedProfileID reserves, and that profile is embedded too (#7268).
+func TestBuiltinProviderNamesMatchEmbed(t *testing.T) {
+	var embedded []string
+	require.NoError(t, scaffold.WalkFullsendRepoAll(func(path string, data []byte) error {
+		name, ok := strings.CutPrefix(path, "providers/")
+		if !ok || !strings.HasSuffix(name, ".yaml") {
+			return nil
+		}
+		name = strings.TrimSuffix(name, ".yaml")
+		embedded = append(embedded, name)
+		def, err := harness.ParseProviderDef(data)
+		require.NoError(t, err, path)
+		assert.Equal(t, name, def.Name, path)
+		assert.Equal(t, "fullsend-"+name, def.Type, path)
+		_, err = scaffold.FullsendRepoFile("profiles/" + def.Type + ".yaml")
+		assert.NoError(t, err, "%s declares profile %s, which the scaffold does not embed", path, def.Type)
+		return nil
+	}))
+	assert.ElementsMatch(t, embedded, builtinProviderNames)
+}
+
+func TestIsReservedProfileID(t *testing.T) {
+	for _, id := range []string{"fullsend-openai", "fullsend-vertex-ai", "fullsend-github", "fullsend-github-ro", "fullsend-github-artifacts", "fullsend-gitleaks", "fullsend-package-registries", "fullsend-atlassian-cloud"} {
+		assert.True(t, isReservedProfileID(id), "%s should be reserved", id)
+	}
+	assert.False(t, isReservedProfileID("fullsend-gitlab-forge"))
+	assert.False(t, isReservedProfileID("myorg-github-ro"))
+}
+
+func TestWarnReservedProviderNameOverrides(t *testing.T) {
+	var buf bytes.Buffer
+	warnReservedProviderNameOverrides(
+		[]harness.ProviderDef{
+			{Name: "github-ro", Type: "custom-type"},
+			{Name: "myorg-github-ro", Type: "custom-type"},
+		},
+		[]resolve.ResolvedProvider{
+			{Def: harness.ProviderDef{Name: "vertex-ai"}, LocalPath: "/ws/providers/vertex-ai.yaml"},
+			{Def: harness.ProviderDef{Name: "github"}, FromURL: true},
+			{Def: harness.ProviderDef{Name: "myorg-vertex"}, LocalPath: "/ws/providers/myorg-vertex.yaml"},
+			{Def: harness.ProviderDef{Name: "gitleaks"}, LocalPath: "/ws/providers/x\n::error::forged.yaml"},
+			{Def: harness.ProviderDef{Name: "github-artifacts"}, LocalPath: "/ws/providers/##[error]a.yaml"},
+			{Def: harness.ProviderDef{Name: "package-registries"}, LocalPath: "/ws/providers/##[warning]b.yaml"},
+			{Def: harness.ProviderDef{Name: "atlassian-cloud"}, LocalPath: "/ws/providers/##[add-mask]c.yaml"},
+		},
+		ui.New(&buf))
+	out := buf.String()
+	assert.Contains(t, out, `provider "github-ro"`)
+	assert.Contains(t, out, "the copy in the workspace providers/ directory")
+	assert.Contains(t, out, `provider "vertex-ai"`, "a path-form entry is a reserved-name copy too")
+	assert.Contains(t, out, `"/ws/providers/vertex-ai.yaml"`)
+	assert.Contains(t, out, `provider "github"`, "a URL-resolved definition is a reserved-name copy too")
+	assert.Contains(t, out, "the URL-resolved copy")
+	assert.Contains(t, out, "future release")
+	assert.Contains(t, out, "still used for now")
+	assert.NotContains(t, out, "myorg-")
+	assert.NotContains(t, out, "\n::error::", "a path cannot start a new log line")
+	assert.Contains(t, out, `x\n::error::forged.yaml`, "the newline is escaped")
+	assert.NotContains(t, out, "##[", "a path cannot carry a legacy workflow command")
+	for _, cmd := range []string{"error]a", "warning]b", "add-mask]c"} {
+		assert.Contains(t, out, `#\#[`+cmd, "the path stays readable with the command neutralized")
+	}
 }
 
 func TestEnsureOpenAIProvider_RefusesUnredactableCredential(t *testing.T) {

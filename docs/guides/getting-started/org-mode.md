@@ -4,11 +4,12 @@ sidebar_position: 5
 
 # Per-Org Mode
 
-> **Deprecated:** Per-org installation mode is deprecated in favor of per-repo
-> installation. New installations should use the [per-repo Getting Started guides](README.md).
-> Existing per-org installations continue to work and are fully supported during
-> the transition. To migrate, run `fullsend github setup` per-repo instead of
-> `fullsend admin install` per-org.
+> **Removed:** The CLI no longer supports per-org installation. The org-targeted
+> commands described below (`fullsend admin install <org>`, `fullsend github setup <org>`,
+> `fullsend github enroll`/`unenroll`/`status`/`sync-scaffold`/`uninstall`, and
+> `fullsend repos migrate`) have been removed. Use the
+> [per-repo Getting Started guides](README.md) and run `fullsend github setup <owner/repo>`
+> for each repository. This page is kept for historical reference only.
 
 The goal of this document is that you install Fullsend for your whole
 GitHub organization, so different repositories share inference and infrastructure.

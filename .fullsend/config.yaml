@@ -5,13 +5,15 @@
 # See ADR 0033 for details.
 version: "1"
 runtime: claude
-# What the `sonnet` alias means in this repo, for the parent run of every agent
-# on both runtimes and for pi sub-agents. fullsend's pinned default is one
-# generation older; Vertex enables models per project, so this only works
-# where claude-sonnet-5 is served (a pinned alias has no fallback).
+# What the `opus` and `sonnet` aliases mean in this repo, for the parent run of
+# every agent on both runtimes and for pi sub-agents. fullsend's pinned defaults
+# are older; Vertex enables models per project, so this only works where
+# claude-opus-5-5 and claude-sonnet-5-5 are served (a pinned alias has no
+# fallback).
 models:
     aliases:
-        sonnet: claude-sonnet-5
+        opus: claude-opus-5-5
+        sonnet: claude-sonnet-5-5
 roles:
     - fullsend
     - triage
@@ -23,7 +25,7 @@ agents:
     - source: https://raw.githubusercontent.com/redhat-community-ai-tools/qualityflow-fullsend/572ba470c8d1e539516620adcc92bbee1863a3a1/harness/qualityflow.yaml#sha256=c0a51b2f75172aebd577fd38c8012a7c566a84f84812ebd9aa4cc07ad3b2220e
     - name: code
       runtime: claude
-      model: sonnet
+      model: opus
     - name: fix
       model: sonnet
     - name: prioritize

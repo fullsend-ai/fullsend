@@ -151,11 +151,8 @@ role: triage                        # a role the mint serves — not the agent's
 providers:
   - vertex-ai          # Required: model access (Anthropic API + GCP)
   - github             # GitHub API + Git transport
-
-openshell:
-  profiles:
-    - profiles/fullsend-vertex-ai.yaml  # must be listed explicitly to be imported
-    - profiles/fullsend-github.yaml
+  # Built-in names resolve to the definition and profile in the fullsend
+  # binary; no openshell.profiles entry is needed. See Step 3.
 
 host_files:
   # GCP credentials for Vertex AI (required for model access)
@@ -244,26 +241,36 @@ providers:
   - vertex-ai       # Anthropic API + GCP (required for model access)
   - github           # GitHub API + Git transport
   - package-registries  # npm, PyPI, Go modules (optional)
+```
+
+`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`,
+`package-registries`, `atlassian-cloud` and `openai` are the names fullsend
+ships: each resolves against the provider definition and profile built into
+the `fullsend` binary, with no `openshell.profiles` entry to add.
+These names are reserved for the built-in copies. If a harness still uses its
+own copy under one (a `providers/<name>.yaml` file, a path or URL entry, or an
+`openshell.profiles` entry with the `fullsend-<name>` id), `fullsend run` uses
+that copy and prints a warning; a later release rejects it. To customise one,
+copy it under your own name, as below.
+
+For a service not in that list, define your own provider under its own name
+and list its profile under `openshell.profiles` explicitly — the gateway
+only composes the profiles named there (or inherited via `base:`
+composition) into the effective network policy, not every file that happens
+to exist under `profiles/`:
+
+```yaml
+providers:
+  - my-service
 
 openshell:
   profiles:
-    - profiles/fullsend-vertex-ai.yaml
-    - profiles/fullsend-github.yaml
-    - profiles/fullsend-package-registries.yaml
-```
-
-Each provider has a profile that defines its endpoints and binaries. Every profile a provider needs must be listed under `openshell.profiles` (or inherited via `base:` composition) — the gateway only composes the profiles named there into the effective network policy, not every file that happens to exist under `profiles/`. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
-
-The scaffold ships with profiles for common services. To see what's available:
-
-```bash
-ls .fullsend/providers/     # provider definitions (name + type)
-ls .fullsend/profiles/      # profile YAMLs (endpoints + binaries)
+    - profiles/my-service.yaml
 ```
 
 > **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/my-custom-profile.yaml`).
 
-For services not covered by existing profiles, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
+For services not covered by a builtin or custom profile, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
 
 ### Network access via inline policies (alternative)
 
@@ -287,7 +294,7 @@ Inline rules and provider-composed rules coexist — composition is additive. If
 
 ### Policy design principles
 
-- **Vertex AI is always required** — the agent needs it to talk to the LLM. Use the `vertex-ai` provider.
+- **The agent needs network access to whichever LLM provider it runs inference through.** Use the `vertex-ai` provider for the default Claude/Vertex setup. An agent running on the `pi` or `codex` runtime with an OpenAI model uses the `openai` provider instead — see [Get an OpenAI key](running-agents-locally.md#get-an-openai-key-gpt-on-pi-or-codex). Such an agent's GCP credentials mount (the `${GOOGLE_APPLICATION_CREDENTIALS}` entry under `host_files:` in Step 2) must be `optional: true` or removed; with `GOOGLE_APPLICATION_CREDENTIALS` unset, a required mount stops the run with `GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file`. A `pi` agent on an OpenAI model whose sub-agents run on Vertex needs both providers and the mount. Keeping that mount required is the simplest choice: an unset `GOOGLE_APPLICATION_CREDENTIALS` then stops the run before the sandbox starts. With an optional mount, a configured Vertex sub-agent stops the run before the pre-script, and one chosen at dispatch is refused ([pi › Vertex sub-agents under an OpenAI parent](../../runtimes/pi.md#vertex-sub-agents-under-an-openai-parent)).
 - **Add network access only for what the agent needs.** If the agent doesn't need web search, don't allow it.
 - **Use `binaries` to restrict which programs can access each endpoint.** This prevents the agent from using unexpected tools to exfiltrate data.
 - **Prefer providers for shared services.** Use inline policies only for agent-specific endpoints.
@@ -477,7 +484,26 @@ The post-script runs on the trusted runner with full credentials, but reads outp
 
 Place your skill at `.fullsend/skills/my-skill/SKILL.md`, then reference it in both the agent frontmatter (`skills: [my-skill]`) and the harness (`skills: [skills/my-skill]`).
 
-## Step 7: Create the GitHub Actions workflow
+## Step 7: Run it in CI
+
+In a repository scaffolded with
+[`fullsend github setup`](../getting-started/configuring-github.md), you do not
+write a workflow. The dispatch workflow that setup installs runs every agent
+registered in `config.yaml` whose harness `trigger:` matches an event — see
+[Bring Your Own Agent](bring-your-own-agent.md). Dispatch needs a harness that has
+a `trigger:` ([CEL Triggers Reference](cel-triggers-reference.md)) and reads
+the inputs dispatch provides, such as `GITHUB_ISSUE_URL`. The examples in this
+guide do neither: the Step 2 harness and Step 5 scripts read `ISSUE_KEY` and
+`ISSUE_SOURCE`, which only the standalone workflow below sets. For a
+dispatched agent, start from `fullsend agent new`, whose harness and
+post-script already read what dispatch provides, then commit `.fullsend/` and
+fire the trigger.
+
+### A standalone workflow (only outside dispatch)
+
+The examples in this guide run from a workflow of your own like the one
+below. Write one only for an agent that dispatch does not run: one started by `workflow_dispatch`, or one
+in a repository that `fullsend github setup` did not scaffold.
 
 Create `.github/workflows/my-agent.yml`:
 
@@ -531,11 +557,10 @@ jobs:
         run: |
           set -euo pipefail
           SRC=".defaults/internal/scaffold/fullsend-repo"
-          # Layer the scaffold's provider definitions so the providers
-          # configured in Step 2 resolve without vendoring copies into this
-          # repository. The policy (Step 3) and profiles are committed with
-          # the harness; this step layers neither.
-          LAYERED_DIRS="providers scripts"
+          # Layer the scaffold's shared scripts. The providers configured in
+          # Step 2 resolve from the fullsend binary, and the policy (Step 3)
+          # is committed with the harness, so neither is layered here.
+          LAYERED_DIRS="scripts"
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p ".fullsend/${dir}"
@@ -641,14 +666,17 @@ for more information.
 
 ## Step 8: Trigger the agent
 
-The workflow above uses `workflow_dispatch`, which means you trigger it manually:
+A dispatched agent runs when its `trigger:` matches — for a `/fs-my-agent`
+command trigger, comment that on an issue or pull request.
+
+The standalone workflow above uses `workflow_dispatch`, which means you trigger it manually:
 
 - **From the GitHub UI:** Actions → fullsend-my-agent → Run workflow → fill in `issue_key` and `issue_source`.
 - **From the CLI:** `gh workflow run my-agent.yml -f issue_key=123 -f issue_source=github`
 
 ### Slash-command dispatch (optional)
 
-If you want slash-command triggers (e.g., `/my-command` on a GitHub issue), create a dispatch workflow. This requires adding `actions: write` and `issues: write` permissions:
+This is for the standalone workflow only: a registered agent's `/fs-<name>` command is already handled by the dispatch workflow `fullsend github setup` installs. If you want slash-command triggers (e.g., `/my-command` on a GitHub issue) for a standalone workflow, create a dispatch workflow. This requires adding `actions: write` and `issues: write` permissions:
 
 ```yaml
 name: my-agent-dispatch
@@ -710,8 +738,8 @@ When creating a new agent, you need these files:
   skills/my-skill/SKILL.md               # Domain knowledge (optional)
 
 .github/workflows/
-  my-agent.yml                           # GitHub Actions workflow
-  my-agent-dispatch.yml                  # Slash command trigger (optional)
+  my-agent.yml                           # Standalone workflow (only outside dispatch)
+  my-agent-dispatch.yml                  # Slash command trigger for it (optional)
 ```
 
 ## Reference

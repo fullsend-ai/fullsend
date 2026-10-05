@@ -174,3 +174,15 @@ Fully backwards-compatible with ADR 0070:
 - The `IsProviderPath` heuristic introduces a naming constraint: bare provider
   names must not contain `/` or end with `.yaml`/`.yml` (existing provider names
   already follow this convention).
+
+> **Note (#7268):** A bare provider name that fullsend ships (`vertex-ai`,
+> `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`,
+> `atlassian-cloud`, `openai`) now resolves to the definition embedded in the
+> binary when no other definition is found, and its `fullsend-<name>` profile
+> is imported from the embedded copy with no `openshell.profiles` entry. These
+> names and profile ids are reserved for the embedded copies. For one release,
+> a harness that still uses its own copy under a reserved name or id (a
+> `providers/` file, a path or URL entry, or an `openshell.profiles` entry)
+> keeps that copy live and gets a warning with the migration; a later release
+> makes it an error. `fullsend-openai` stays an error, as before. Paths and
+> URLs remain full overrides under their own, non-reserved names and ids.

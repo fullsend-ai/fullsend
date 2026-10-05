@@ -133,7 +133,7 @@ func githubTokenFlagError(flag string) error {
 // is derived from the instance URL (<url>/api/v3).
 //
 // The GITHUB_API_URL environment variable is kept as a fallback for
-// callers without a manifest (e.g., repos migrate) and for tests.
+// callers without a manifest and for tests.
 func newGitHubLiveClient(token, manifestURL string) *gh.LiveClient {
 	client := gh.New(token)
 	if apiURL := githubAPIURL(manifestURL); apiURL != "" {

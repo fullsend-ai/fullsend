@@ -1,0 +1,33 @@
+{
+  "action": "request-changes",
+  "pr_number": 2,
+  "repo": "owner/repo",
+  "head_sha": "5429609dce9a122a2721107edb51551c8d73cc6f",
+  "body": "<!-- **Head SHA:** 5429609dce9a122a2721107edb51551c8d73cc6f -->\n\n## Review\n\n### Findings\n\n#### Medium\n\n- **[race condition]** `main.go` — TOCTOU race in getHandler: the entry is read under RLock, then the lock is released. The expiry check and conditional delete happen without holding any lock. Between the RUnlock and the Lock for delete, another goroutine can call setHandler and write a fresh entry for the same key. The delete then destroys the newly-written entry, causing silent data loss.\n  Remediation: re-check the entry under the write lock before deleting.",
+  "findings": [
+    {
+      "severity": "medium",
+      "category": "race condition",
+      "file": "main.go",
+      "line": 35,
+      "description": "TOCTOU race in getHandler: the entry is read under RLock, then the lock is released. The expiry check and conditional delete happen without holding any lock. Between the RUnlock and the Lock for delete, another goroutine can call setHandler and write a fresh entry for the same key. The delete then destroys the newly-written entry, causing silent data loss.",
+      "remediation": "Re-check the entry under the write lock before deleting. For example:\n\ncacheMu.Lock()\nif current, exists := cache[key]; exists && current.ExpiresAt.Equal(entry.ExpiresAt) {\n    delete(cache, key)\n}\ncacheMu.Unlock()",
+      "actionable": true
+    }
+  ],
+  "risk_assessment": {
+    "score": 1,
+    "level": "low",
+    "tier1_signals": [
+      {"dimension": "change_size_composite", "value": "2 (max of files:1, lines:1, blast:2)"},
+      {"dimension": "protected_path_count", "value": "0"},
+      {"dimension": "security_sensitive_count", "value": "0"},
+      {"dimension": "ci_workflow_changed", "value": "false"},
+      {"dimension": "dependency_files_changed", "value": "none"},
+      {"dimension": "test_file_ratio", "value": "0.0"},
+      {"dimension": "author_is_bot", "value": "true"},
+      {"dimension": "author_is_first_time", "value": "false"}
+    ],
+    "rationale": "Small, focused concurrency bug fix with clear issue scope match and minimal git history risk signals."
+  }
+}

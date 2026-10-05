@@ -141,7 +141,14 @@ func whenIssueLabeled(w *world.World, label string) error {
 	if w.IssueNumber == 0 {
 		return fmt.Errorf("no issue created")
 	}
-	w.ScenarioStart = time.Now()
+	// Truncate to second precision: forge-reported workflow/pipeline
+	// CreatedAt timestamps have second precision, but time.Now() carries
+	// a fractional component. A run created in the same wall-clock second
+	// as this trigger can therefore have a CreatedAt that parses earlier
+	// than an untruncated boundary and be rejected by every creation-time
+	// filter derived from it (CountHarnessDispatches, WaitForHarnessAgentRound)
+	// on every retry, not just the first (#7957 review).
+	w.ScenarioStart = time.Now().Truncate(time.Second)
 	w.TriageTriggerEvent = issueOpenEvent
 	return w.SCM.AddIssueLabels(context.Background(), w.RepoOwner, w.RepoName, w.IssueNumber, label)
 }

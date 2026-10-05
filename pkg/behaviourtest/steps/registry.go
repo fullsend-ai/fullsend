@@ -19,4 +19,5 @@ func Register(sc *godog.ScenarioContext) {
 	registerBranchSteps(sc)
 	registerReactionSteps(sc)
 	registerOwnersSteps(sc)
+	registerPlaybackSteps(sc)
 }

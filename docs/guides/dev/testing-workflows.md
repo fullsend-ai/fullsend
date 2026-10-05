@@ -19,24 +19,21 @@ CLI diverge, potentially causing mismatch in behavior and failures.
 
 ## Vendored installs (recommended for PR testing)
 
-Install or re-install with `--vendor` to copy reusable workflows, actions, agent
-definitions, and the CLI binary from your local checkout into the config repo or
-`.fullsend/` directory:
+Install or re-install a test repository with `--vendor` to copy reusable
+workflows, actions, agent definitions, and the CLI binary from your checkout
+into its `.fullsend/` directory:
 
 ```bash
-go run ./cmd/fullsend admin install "$ORG" \
+go run ./cmd/fullsend github setup "$OWNER/$REPO" \
   --vendor \
   --fullsend-source "$PWD" \
-  --skip-app-setup \
-  --skip-mint-check \
-  --mint-url "$MINT_URL" \
-  # ... other flags
+  --mint-url "$MINT_URL"
 ```
 
-After changing reusable workflows or agent content, re-run install (or
-`go run ./cmd/fullsend github setup`) with `--vendor` to refresh vendored files.
-`go run ./cmd/fullsend github sync-scaffold` updates thin caller templates and auto-detects
-vendored vs layered mode from `.defaults/action.yml` presence.
+After changing reusable workflows or agent content, re-run the same
+`go run ./cmd/fullsend github setup "$OWNER/$REPO"` command above, including
+`--vendor` and `--fullsend-source "$PWD"`, to refresh the target repository's
+vendored files and workflow callers.
 
 Runtime skips the upstream sparse checkout when `.defaults/action.yml` is
 present (vendored install) and stages content from `.defaults/` instead.
@@ -52,8 +49,6 @@ change the `uses:` ref and matching `with:` inputs in the thin caller workflows.
 
 **Note**: for forks, change the `fullsend-ai/fullsend` portion to point to your fork.
 
-### Per-repo mode
-
 In your repository modify the dispatch job at `.github/workflows/fullsend.yaml`:
 
 ```yaml
@@ -68,26 +63,6 @@ jobs:
       # [...]
 ```
 
-### Per-org mode
-
-**WARNING**: this impacts all repositories, so proceed with care. You can install
-your test repository using per-repo mode to avoid this problem.
-
-In your `.fullsend` repository change the references for the `reusable-<stage>.yml` you want to
-test (triage in the example below):
-
-```yaml
-# .github/workflows/triage.yml
-jobs:
-  triage:
-    # [...]
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@<YOUR_BRANCH>
-    with:
-      # [...]
-      fullsend_version: <YOUR_BRANCH>
-      # [...]
-```
-
-Then push this change and trigger a Fullsend action on your test repository: `/fs-triage`, `/fs-code`, ...
-When the ref is deleted from fullsend-ai/fullsend (branch deleted or commit amended), revert this back
-to the desired reference.
+Push the change and trigger a Fullsend action on the test repository:
+`/fs-triage`, `/fs-code`, or another agent command. Revert the references to
+the desired release or branch before deleting or rewriting the test ref.

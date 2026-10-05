@@ -56,7 +56,7 @@ Each row lists the documentation touchpoints for a major CLI command group. The 
 
 ### `admin foreign`
 
-The `admin` command group's `install`/`uninstall`/`analyze`/`enable`/`disable` subcommands are deprecated per-org installation tooling ([ADR-0044](../ADRs/0044-deprecate-per-org-installation-mode.md)). The actively supported subcommand is `admin foreign` (cross-org mint-authorization allow-list).
+The `admin` command group's `uninstall`/`analyze`/`enable`/`disable` subcommands were removed with per-org installation ([ADR-0044](../ADRs/0044-deprecate-per-org-installation-mode.md)); `admin install` remains as repository-only (`<owner/repo>`) installation. The other actively supported subcommand is `admin foreign` (cross-org mint-authorization allow-list).
 
 | Category | Files |
 |----------|-------|

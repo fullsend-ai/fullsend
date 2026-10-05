@@ -242,6 +242,7 @@ func (s stubBootstrapInput) Plugins() []PluginInput             { return nil }
 func (s stubBootstrapInput) ModelAliases() map[string]string    { return nil }
 func (s stubBootstrapInput) AgentSubagents() map[string]*string { return nil }
 func (s stubBootstrapInput) ParentModel() string                { return "" }
+func (s stubBootstrapInput) OpenAIProviderAttached() bool       { return false }
 
 func TestDummyRuntime_Bootstrap(t *testing.T) {
 	t.Parallel()

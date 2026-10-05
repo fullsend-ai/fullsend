@@ -342,6 +342,30 @@ mapped:
 | `issue` | `update` + `changes.labels` | `label_changed` (one per label diffed) | each named label present (add) / absent (remove) as claimed |
 | `issue` | `update` (other) | — | **uncheckable as a unit → MUST fail closed** |
 
+**Dispatch stack and implementation status.** The webhook event builder
+(`BuildWebhookEvents` in `internal/poll/webhook.go`, [#7770](https://github.com/fullsend-ai/fullsend/issues/7770))
+reuses the **poll** stack (`RoutableEvent` → `toNormalizedEvent` →
+`dispatch.HarnessRouter` → the ADR 0131 signed pipeline-input dispatch), not
+the CEL spine over `normevent.Event`. That way the fast-path and the poller
+backstop share one authorization gate, one `RoutableEvent.Key()`
+deduplication scheme, and one launch transport. A `dispatch.NormalizedEvent`
+→ `normevent.Event` bridge belongs to any later work that moves GitLab onto
+the CEL spine. The builder only takes the project from its caller-pinned
+client, so the base-URL and `CI_JOB_TOKEN` identity-pin requirements above
+fall on the driver that wires it in ([#7773](https://github.com/fullsend-ai/fullsend/issues/7773)).
+That driver MUST NOT ship until those residuals close. Current builder
+behavior, all of it fail-closed:
+
+- Rows whose actor has no event-time evidence in the re-fetch are rejected:
+  `merge_request`/`reopen` and `issue`/`reopen`, which need resource state
+  events.
+- `merge_request` + `changes.labels` is rejected because the poll stack has
+  no MR label transition.
+- Label removals are validated and then dropped, because the poll stack
+  routes only label additions.
+- Every re-fetched event time must fall within a 30-minute window. This
+  narrows replay but does not close it.
+
 The `MUST fail closed` cells above have **no implementer-defined extension
 point**: an `update` action that is not resolved by a row in this table MUST
 fail closed. Any future named sub-check (e.g. draft→ready for `marked_ready`)

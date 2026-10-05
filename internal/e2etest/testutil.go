@@ -41,11 +41,16 @@ const (
 	// "just acquired" and we reset the wait timer.
 	freshLockThreshold = 1 * time.Minute
 
-	// staleLockTimeout is the age above which a lock from a crashed run
-	// is considered stale and eligible for force-reclaim. Must be longer
-	// than the longest expected e2e run (~7 min) but shorter than the
-	// job timeout (30 min).
-	staleLockTimeout = 15 * time.Minute
+	// staleLockTimeout is the age above which a lock is considered stale
+	// and eligible for force-reclaim. Reclaim uses only the lock repo's
+	// creation time and does not check whether the holder is still
+	// running, so this must exceed how long live suites hold the lock.
+	// Successful playback runs (October 2026 sample, #8060) held the lock
+	// for a median of ~14.5 min and up to ~20.5 min; 30 min leaves about
+	// 9 min of headroom at the cost of slower recovery after a crashed or
+	// cancelled run. Suites may run up to their 45-min ceiling, so an
+	// unusually slow live run can still have its lock reclaimed.
+	staleLockTimeout = 30 * time.Minute
 
 	// rateLimitBackoffInitial is the first backoff interval after a
 	// rate-limit error during pool acquisition.

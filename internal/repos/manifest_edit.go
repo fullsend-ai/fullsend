@@ -95,8 +95,16 @@ func UpdateAppSet(cfg ManifestEditConfig, filters []string, appSet string) ([]st
 				}
 			}
 			if matchedGlob {
-				github.Repos = append(github.Repos, RepoEntry{Name: filter, AppSet: appSet})
-				updated[filter] = true
+				// Copy the effective glob entry so the repository keeps the
+				// glob's inference.auth and other overrides.
+				carved, err := carveOutGlobEntry([]*PlatformConfig{github}, filter, nil)
+				if err != nil {
+					return nil, err
+				}
+				if carved != nil {
+					carved.AppSet = appSet
+					updated[filter] = true
+				}
 			}
 		}
 	}
@@ -116,6 +124,348 @@ func UpdateAppSet(cfg ManifestEditConfig, filters []string, appSet string) ([]st
 	}
 	slices.Sort(result)
 	return result, nil
+}
+
+// UpdateInferenceAuth persists an inference.auth selection on the manifest
+// entries selected by filters, in both forge sections. With no filters every
+// entry is updated. A concrete filter that matches no explicit entry but is
+// covered by a glob gets a new explicit entry copied from the first matching
+// glob (the same glob resolution would use), so the repository keeps that
+// glob's other overrides while sibling repositories are left untouched. The
+// selection is never written to defaults or to a forge section.
+//
+// A glob filter that is narrower than (or merely overlaps) a glob manifest
+// entry cannot select that entry without changing sibling repositories, so
+// when clients is non-nil the glob entries are expanded the same way
+// convergence expands them and each concrete repository matching a filter
+// gets its own copied explicit entry. Glob entries selected directly by an
+// identical filter pattern are updated in place and are not expanded further.
+// With a nil clients factory no expansion happens.
+//
+// Returns the names of entries whose value changed; the manifest is written
+// only when something changed and DryRun is not set.
+func UpdateInferenceAuth(ctx context.Context, cfg ManifestEditConfig, filters []string, auth string, clients ForgeClientFactory) ([]string, error) {
+	if cfg.Manifest == nil {
+		return nil, fmt.Errorf("manifest is required")
+	}
+	if auth == "" {
+		return nil, fmt.Errorf("inference auth is required")
+	}
+	if err := ValidateInferenceAuth("inference.auth", auth); err != nil {
+		return nil, err
+	}
+
+	m := cfg.Manifest
+	platforms := []*PlatformConfig{m.GitHub, m.GitLab}
+	var updated []string
+	matchedExact := make(map[string]bool)
+	selectedGlobs := make(map[string]bool)
+	unselectedGlob := false
+
+	for _, platform := range platforms {
+		if platform == nil {
+			continue
+		}
+		for i := range platform.Repos {
+			entry := &platform.Repos[i]
+			selected := len(filters) == 0
+			for _, filter := range filters {
+				// A glob manifest entry is selected in place only by the
+				// identical pattern. Matching a filter against the entry's
+				// literal text (acme/api? matches "acme/api*") says nothing
+				// about which repositories the entry covers, so any other
+				// filter goes through the expansion path below.
+				if isGlob(entry.Name) {
+					if strings.EqualFold(filter, entry.Name) {
+						selected = true
+						break
+					}
+					continue
+				}
+				ok, err := matchesPattern(filter, entry.Name)
+				if err != nil {
+					return nil, fmt.Errorf("invalid repo filter %q: %w", filter, err)
+				}
+				if ok {
+					selected = true
+					break
+				}
+			}
+			if !selected {
+				if isGlob(entry.Name) {
+					unselectedGlob = true
+				}
+				continue
+			}
+			if isGlob(entry.Name) {
+				selectedGlobs[strings.ToLower(entry.Name)] = true
+			} else {
+				matchedExact[strings.ToLower(entry.Name)] = true
+			}
+			if entry.Inference.Auth != auth {
+				entry.Inference.Auth = auth
+				updated = append(updated, entry.Name)
+			}
+		}
+	}
+
+	// Repeated or case-variant concrete filters name one repository, so keep
+	// only the first spelling to avoid writing duplicate explicit entries.
+	var concrete []string
+	for _, filter := range filters {
+		if !isGlob(filter) && !matchedExact[strings.ToLower(filter)] &&
+			!slices.ContainsFunc(concrete, func(c string) bool { return strings.EqualFold(c, filter) }) {
+			concrete = append(concrete, filter)
+		}
+	}
+	// A discovery failure aborts before anything is carved or written: the
+	// first-glob fallback is only correct once discovery succeeded and found
+	// no repository, otherwise the entry could land on the wrong forge.
+	discovered, err := m.discoverGlobForges(ctx, clients, concrete)
+	if err != nil {
+		return nil, fmt.Errorf("discovering forge for glob-covered repos: %w", err)
+	}
+	for _, filter := range concrete {
+		carved, _, err := carveOutForForge(m, filter, discovered[strings.ToLower(filter)], nil)
+		if err != nil {
+			return nil, err
+		}
+		if carved != nil {
+			carved.Inference.Auth = auth
+			matchedExact[strings.ToLower(filter)] = true
+			updated = append(updated, filter)
+		}
+	}
+
+	// Glob filters that overlap a glob entry without selecting it: persist
+	// the selection on explicit copies of just the matching repositories.
+	if clients != nil && unselectedGlob && slices.ContainsFunc(filters, isGlob) {
+		expanded, err := m.ExpandGlobsFor(ctx, clients, filters)
+		if err != nil {
+			return nil, fmt.Errorf("expanding glob entries for inference.auth: %w", err)
+		}
+		for _, rr := range expanded {
+			name := rr.Owner + "/" + rr.Repo
+			if matchedExact[strings.ToLower(name)] {
+				continue
+			}
+			inFilter := false
+			for _, filter := range filters {
+				ok, err := matchesPattern(filter, name)
+				if err != nil {
+					return nil, fmt.Errorf("invalid repo filter %q: %w", filter, err)
+				}
+				if ok {
+					inFilter = true
+					break
+				}
+			}
+			if !inFilter {
+				continue
+			}
+			// Carve only within the forge that expansion discovered the
+			// repository on, so the explicit entry stays on that forge and
+			// copies the glob that expansion resolved it from.
+			platform := m.PlatformFor(rr.Forge)
+			if platform == nil {
+				continue
+			}
+			carved, err := carveOutGlobEntry([]*PlatformConfig{platform}, name, selectedGlobs)
+			if err != nil {
+				return nil, err
+			}
+			if carved != nil {
+				carved.Inference.Auth = auth
+				matchedExact[strings.ToLower(name)] = true
+				updated = append(updated, name)
+			}
+		}
+	}
+
+	if len(updated) == 0 {
+		return nil, nil
+	}
+	if cfg.ManifestPath != "" && !cfg.DryRun {
+		if err := writeManifest(cfg.ManifestPath, m); err != nil {
+			return nil, err
+		}
+	}
+	slices.Sort(updated)
+	return updated, nil
+}
+
+// discoverGlobForges returns, for each concrete name covered by glob entries
+// in more than one forge section, the forge whose glob expansion discovers
+// the repository (the same resolution convergence uses). Names covered on a
+// single forge, names that expansion does not discover, and calls with a nil
+// clients factory yield no entry, leaving the caller to fall back to the
+// first covering glob.
+func (m *Manifest) discoverGlobForges(ctx context.Context, clients ForgeClientFactory, names []string) (map[string]string, error) {
+	if clients == nil {
+		return nil, nil
+	}
+	var ambiguous []string
+	for _, name := range names {
+		if isGlob(name) {
+			continue
+		}
+		covering := 0
+		for _, platform := range []*PlatformConfig{m.GitHub, m.GitLab} {
+			if platform == nil {
+				continue
+			}
+			for _, entry := range platform.Repos {
+				if !isGlob(entry.Name) {
+					continue
+				}
+				ok, err := matchesPattern(entry.Name, name)
+				if err != nil {
+					return nil, fmt.Errorf("invalid manifest repo pattern %q: %w", entry.Name, err)
+				}
+				if ok {
+					covering++
+					break
+				}
+			}
+		}
+		if covering > 1 {
+			ambiguous = append(ambiguous, name)
+		}
+	}
+	if len(ambiguous) == 0 {
+		return nil, nil
+	}
+	expanded, err := m.ExpandGlobsFor(ctx, clients, ambiguous)
+	if err != nil {
+		return nil, err
+	}
+	forges := make(map[string]string, len(expanded))
+	for _, rr := range expanded {
+		forges[strings.ToLower(rr.Owner+"/"+rr.Repo)] = rr.Forge
+	}
+	return forges, nil
+}
+
+// carveOutForForge carves an explicit entry for name from the covering glob
+// in the discovered forge section, or from the first covering glob across
+// forges (GitHub before GitLab) when discovered is empty. It returns the new
+// entry and the forge section it was added to.
+func carveOutForForge(m *Manifest, name, discovered string, skipGlobs map[string]bool) (*RepoEntry, string, error) {
+	order := []string{ForgeGitHub, ForgeGitLab}
+	if discovered != "" {
+		order = []string{discovered}
+	}
+	for _, forgeName := range order {
+		platform := m.PlatformFor(forgeName)
+		if platform == nil {
+			continue
+		}
+		carved, err := carveOutGlobEntry([]*PlatformConfig{platform}, name, skipGlobs)
+		if err != nil {
+			return nil, "", err
+		}
+		if carved != nil {
+			return carved, forgeName, nil
+		}
+	}
+	return nil, "", nil
+}
+
+// carveOutGlobEntry appends an explicit entry for name copied from the first
+// glob entry (GitHub before GitLab, matching resolution order) that covers
+// it, and returns a pointer to the new entry. It returns nil when no glob
+// covers name, or when the first covering glob is listed (lowercased) in
+// skipGlobs because the caller already updated it in place.
+func carveOutGlobEntry(platforms []*PlatformConfig, name string, skipGlobs map[string]bool) (*RepoEntry, error) {
+	for _, platform := range platforms {
+		if platform == nil {
+			continue
+		}
+		for _, entry := range platform.Repos {
+			if !isGlob(entry.Name) {
+				continue
+			}
+			ok, err := matchesPattern(entry.Name, name)
+			if err != nil {
+				return nil, fmt.Errorf("invalid manifest repo pattern %q: %w", entry.Name, err)
+			}
+			if !ok {
+				continue
+			}
+			if skipGlobs[strings.ToLower(entry.Name)] {
+				return nil, nil
+			}
+			explicit := entry
+			explicit.Name = name
+			explicit.AllowedRemoteResources = slices.Clone(entry.AllowedRemoteResources)
+			if entry.Vendor != nil {
+				v := *entry.Vendor
+				explicit.Vendor = &v
+			}
+			platform.Repos = append(platform.Repos, explicit)
+			return &platform.Repos[len(platform.Repos)-1], nil
+		}
+	}
+	return nil, nil
+}
+
+// CarveOutGlobCovered gives each concrete repository in names that is covered
+// only by a glob entry its own explicit entry, copied from the glob that
+// resolution would use, and passes the new entry to apply together with its
+// forge name and platform section so per-entry overrides can be recorded
+// while the glob's other settings are preserved. When globs on more than one
+// forge cover a name, the forge whose expansion discovers the repository is
+// used (when clients is non-nil); undiscovered names use the first covering
+// glob, GitHub before GitLab. Sibling repositories covered by the glob are
+// left untouched. Names that already have an explicit entry, or that no glob
+// covers, are skipped. An error from apply aborts before the manifest is
+// written. Returns the names that received a new entry; the manifest is
+// written when any did and DryRun is not set.
+func CarveOutGlobCovered(ctx context.Context, cfg ManifestEditConfig, names []string, clients ForgeClientFactory, apply func(forgeName string, platform *PlatformConfig, entry *RepoEntry) error) ([]string, error) {
+	if cfg.Manifest == nil {
+		return nil, fmt.Errorf("manifest is required")
+	}
+	m := cfg.Manifest
+	var candidates []string
+	for _, name := range names {
+		if isGlob(name) {
+			continue
+		}
+		if slices.ContainsFunc(m.AllRepos(), func(e RepoEntry) bool { return strings.EqualFold(e.Name, name) }) ||
+			slices.ContainsFunc(candidates, func(c string) bool { return strings.EqualFold(c, name) }) {
+			continue
+		}
+		candidates = append(candidates, name)
+	}
+	// A discovery failure aborts before anything is carved or written; the
+	// first-glob fallback applies only after successful discovery.
+	discovered, err := m.discoverGlobForges(ctx, clients, candidates)
+	if err != nil {
+		return nil, fmt.Errorf("discovering forge for glob-covered repos: %w", err)
+	}
+	var carvedNames []string
+	for _, name := range candidates {
+		carved, forgeName, err := carveOutForForge(m, name, discovered[strings.ToLower(name)], nil)
+		if err != nil {
+			return nil, err
+		}
+		if carved == nil {
+			continue
+		}
+		if err := apply(forgeName, m.PlatformFor(forgeName), carved); err != nil {
+			return nil, err
+		}
+		carvedNames = append(carvedNames, name)
+	}
+	if len(carvedNames) == 0 {
+		return nil, nil
+	}
+	if cfg.ManifestPath != "" && !cfg.DryRun {
+		if err := writeManifest(cfg.ManifestPath, m); err != nil {
+			return nil, err
+		}
+	}
+	return carvedNames, nil
 }
 
 func appSetEntrySelected(name string, filters []string) (bool, error) {
@@ -432,6 +782,7 @@ func writeManifest(path string, m *Manifest) error {
 var ValidDefaultKeys = []string{
 	"defaults.allowed_remote_resources",
 	"defaults.runtime",
+	"defaults.inference.auth",
 	"defaults.vendor",
 	"defaults.config_base.source",
 	"defaults.config_base.sha256",
@@ -439,8 +790,10 @@ var ValidDefaultKeys = []string{
 	"github.mint_url",
 	"github.mint_mode",
 	"github.fullsend_ref",
+	"github.inference.auth",
 	"gitlab.url",
 	"gitlab.fullsend_ref",
+	"gitlab.inference.auth",
 	"gitlab.agent_runner_tags",
 	"gitlab.control_runner_tags",
 	"gitlab.runner_tags", // deprecated alias for gitlab.agent_runner_tags
@@ -491,6 +844,20 @@ func SetDefault(manifestPath, key, value string) error {
 	switch key {
 	case "defaults.runtime":
 		m.Defaults.Runtime = value
+	case "defaults.inference.auth":
+		m.Defaults.Inference.Auth = value
+	case "github.inference.auth":
+		if value != "" {
+			m.EnsurePlatform(ForgeGitHub).Inference.Auth = value
+		} else if m.GitHub != nil {
+			m.GitHub.Inference.Auth = ""
+		}
+	case "gitlab.inference.auth":
+		if value != "" {
+			m.EnsurePlatform(ForgeGitLab).Inference.Auth = value
+		} else if m.GitLab != nil {
+			m.GitLab.Inference.Auth = ""
+		}
 	case "defaults.config_base.source":
 		m.Defaults.ConfigBase.Source = value
 	case "defaults.config_base.sha256":
@@ -611,6 +978,10 @@ func validateDefaultValue(key, value string) error {
 		}
 	case "defaults.runtime":
 		if err := validateRuntimeValue(key, value); err != nil {
+			return err
+		}
+	case "defaults.inference.auth", "github.inference.auth", "gitlab.inference.auth":
+		if err := ValidateInferenceAuth(key, value); err != nil {
 			return err
 		}
 	case "defaults.config_base.source":

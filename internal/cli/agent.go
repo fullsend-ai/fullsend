@@ -304,6 +304,9 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 		msg += " subagents: " + s
 	}
 	printer.StepDone(msg)
+	if f.subagentSet {
+		warnOpenAISubagentWithoutProvider(cfg, absDir, agentName, runtimeName, subagents, printer)
+	}
 	return nil
 }
 

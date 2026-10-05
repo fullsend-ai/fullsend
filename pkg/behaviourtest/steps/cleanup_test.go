@@ -499,6 +499,10 @@ func (f *fakeCleanupSCM) GetFileContent(context.Context, string, string, string)
 	return f.fileContent, f.getFileErr
 }
 
+func (f *fakeCleanupSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
+	return f.fileContent, f.getFileErr
+}
+
 func (f *fakeCleanupSCM) CommitFile(_ context.Context, _, _, _, _ string, _ []byte) error {
 	f.commitFileCalled = true
 	return f.commitFileErr
@@ -553,6 +557,10 @@ func (f *fakeCleanupSCM) CommitFileToFork(context.Context, string, string, strin
 }
 
 func (f *fakeCleanupSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+
+func (f *fakeCleanupSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
 	return nil, nil
 }
 
@@ -1123,6 +1131,10 @@ func (f *fakeRetryCleanupSCM) GetFileContent(context.Context, string, string, st
 	return nil, nil
 }
 
+func (f *fakeRetryCleanupSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
+	return nil, nil
+}
+
 func (f *fakeRetryCleanupSCM) CreateBranch(context.Context, string, string, string) error {
 	return nil
 }
@@ -1172,6 +1184,10 @@ func (f *fakeRetryCleanupSCM) CommitFileToFork(context.Context, string, string, 
 }
 
 func (f *fakeRetryCleanupSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+
+func (f *fakeRetryCleanupSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
 	return nil, nil
 }
 

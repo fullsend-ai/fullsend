@@ -1093,6 +1093,100 @@ func TestPrependManagedHeaderNoHeader(t *testing.T) {
 	assert.Equal(t, content, result, "files without headers should be returned unchanged")
 }
 
+func TestScaffoldGitHubROProfile_GraphQLEndpoint(t *testing.T) {
+	data, err := FullsendRepoFile("profiles/fullsend-github-ro.yaml")
+	require.NoError(t, err)
+
+	var profile struct {
+		Endpoints []struct {
+			Host        string `yaml:"host"`
+			Port        int    `yaml:"port"`
+			Protocol    string `yaml:"protocol"`
+			Access      string `yaml:"access"`
+			Enforcement string `yaml:"enforcement"`
+			Path        string `yaml:"path"`
+		} `yaml:"endpoints"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &profile))
+
+	// The scaffold copy must include exactly one GraphQL endpoint for
+	// api.github.com so that generated agents can use `gh --json`,
+	// `gh issue view`, etc. without an egress policy denial. Its shape
+	// matches the fullsend-ai/agents copy of this profile. See #7014.
+	var found int
+	for _, ep := range profile.Endpoints {
+		if ep.Host != "api.github.com" || ep.Protocol != "graphql" {
+			continue
+		}
+		found++
+		assert.Equal(t, 443, ep.Port,
+			"GraphQL endpoint port must be 443")
+		assert.Equal(t, "/graphql", ep.Path,
+			"GraphQL endpoint path must be /graphql")
+		assert.Equal(t, "read-only", ep.Access,
+			"GraphQL endpoint access must be read-only")
+		assert.Equal(t, "enforce", ep.Enforcement,
+			"GraphQL endpoint enforcement must be enforce")
+	}
+	assert.Equal(t, 1, found,
+		"scaffold fullsend-github-ro profile must include exactly one GraphQL endpoint for api.github.com")
+}
+
+func TestScaffoldPackageRegistriesProfile_Permissions(t *testing.T) {
+	data, err := FullsendRepoFile("profiles/fullsend-package-registries.yaml")
+	require.NoError(t, err)
+
+	var profile struct {
+		Endpoints []struct {
+			Host              string `yaml:"host"`
+			AllowEncodedSlash bool   `yaml:"allow_encoded_slash"`
+		} `yaml:"endpoints"`
+		Binaries []string `yaml:"binaries"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &profile))
+
+	// The embedded copy is the authoritative definition of this built-in
+	// provider, so it must keep the permissions the fullsend-ai/agents copy
+	// has. Scoped npm package metadata requests use a %2F-encoded slash,
+	// which the proxy rejects unless allow_encoded_slash is set. See #8007.
+	encodedSlash := map[string]bool{}
+	for _, ep := range profile.Endpoints {
+		encodedSlash[ep.Host] = ep.AllowEncodedSlash
+	}
+	npmHosts := map[string]bool{"registry.npmjs.org": true, "registry.yarnpkg.com": true}
+	for host := range npmHosts {
+		require.Contains(t, encodedSlash, host,
+			"scaffold package-registries profile must include endpoint %s", host)
+	}
+	require.Contains(t, encodedSlash, "pypi.org",
+		"scaffold package-registries profile must include endpoint pypi.org")
+	// allow_encoded_slash is scoped to the npm registries only.
+	for host, allowed := range encodedSlash {
+		assert.Equal(t, npmHosts[host], allowed,
+			"endpoint %s: allow_encoded_slash must be set exactly on the npm registries", host)
+	}
+
+	for _, bin := range []string{"**/uv", "**/uvx"} {
+		assert.Contains(t, profile.Binaries, bin,
+			"scaffold package-registries profile must allow binary %s", bin)
+	}
+}
+
+func TestScaffoldGitleaksProfile_Permissions(t *testing.T) {
+	data, err := FullsendRepoFile("profiles/fullsend-gitleaks.yaml")
+	require.NoError(t, err)
+
+	var profile struct {
+		Binaries []string `yaml:"binaries"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &profile))
+
+	// pre-commit uses git to clone the gitleaks hook repository from
+	// github.com; the fullsend-ai/agents copy allowed it. See #8007.
+	assert.Contains(t, profile.Binaries, "**/git",
+		"scaffold gitleaks profile must allow binary **/git")
+}
+
 func TestScaffoldVertexProfile_BinaryAllowlist(t *testing.T) {
 	data, err := FullsendRepoFile("profiles/fullsend-vertex-ai.yaml")
 	require.NoError(t, err)

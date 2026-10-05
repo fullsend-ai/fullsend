@@ -20,8 +20,9 @@
 #     one, so it wins over the scan below.
 #
 # Treat the result file as untrusted: it is model output. Only the three
-# fields below are ever read, each is required to be a string, and the
-# comment body is piped on stdin rather than interpolated into a command.
+# fields below are ever read, each must be a string, and the comment body is
+# piped on stdin rather than interpolated into a command. comment may be
+# missing or empty when status is ok, because nothing new is posted then.
 
 set -euo pipefail
 
@@ -78,6 +79,10 @@ fi
 status=$(jq -r 'if (.status | type) == "string" then .status else empty end' "${RESULT_FILE}")
 summary=$(jq -r 'if (.summary | type) == "string" then .summary else empty end' "${RESULT_FILE}")
 comment=$(jq -r 'if (.comment | type) == "string" then .comment else empty end' "${RESULT_FILE}")
+if ! jq -e '(has("comment") | not) or (.comment | type) == "string"' "${RESULT_FILE}" >/dev/null; then
+  echo "post-__AGENT_NAME__: comment must be a string" >&2
+  exit 1
+fi
 
 case "${status}" in
   ok|findings|error) ;;
@@ -97,7 +102,10 @@ if [[ "${summary}" == *$'\n'* || "${summary}" == *$'\r'* ]]; then
   echo "post-__AGENT_NAME__: summary must be a single line" >&2
   exit 1
 fi
-[[ -n "${comment}" ]] || { echo "post-__AGENT_NAME__: comment is required" >&2; exit 1; }
+if [[ "${status}" != "ok" && -z "${comment}" ]]; then
+  echo "post-__AGENT_NAME__: comment is required when status is ${status}" >&2
+  exit 1
+fi
 if (( ${#summary} > MAX_SUMMARY_CHARS )); then
   echo "post-__AGENT_NAME__: summary exceeds ${MAX_SUMMARY_CHARS} characters" >&2
   exit 1
@@ -152,8 +160,13 @@ if [[ "${status}" == "ok" ]]; then
     exit 0
   fi
   # --keep-history=false: the all-clear replaces the comment in place, so
-  # repeated clean runs do not stack identical "Previous run" blocks.
-  printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
+  # repeated clean runs do not stack identical "Previous run" blocks. With
+  # no comment the all-clear is the summary alone.
+  # The format is chosen here, never taken from the result file.
+  body_format='**%s**\n\n%s\n'
+  [[ -n "${comment}" ]] || body_format='**%s**\n%s'
+  # shellcheck disable=SC2059
+  printf "${body_format}" "${summary}" "${comment}" \
     | fullsend issues post-comment \
         --tracker github \
         --project "${REPO}" \

@@ -27,12 +27,18 @@ func TestGitHubCommand_HasSubcommands(t *testing.T) {
 		names[sub.Name()] = true
 	}
 	assert.True(t, names["setup"], "expected setup subcommand")
-	assert.True(t, names["enroll"], "expected enroll subcommand")
-	assert.True(t, names["unenroll"], "expected unenroll subcommand")
 	assert.True(t, names["set"], "expected set subcommand")
-	assert.True(t, names["status"], "expected status subcommand")
-	assert.True(t, names["uninstall"], "expected uninstall subcommand")
-	assert.True(t, names["sync-scaffold"], "expected sync-scaffold subcommand")
+	assert.Len(t, names, 2, "expected only setup and set subcommands")
+	for _, removed := range []string{"enroll", "unenroll", "status", "uninstall", "sync-scaffold"} {
+		assert.False(t, names[removed], "per-org subcommand %q should have been removed", removed)
+	}
+}
+
+func TestGitHubCommand_UseStringsRequireOwnerRepo(t *testing.T) {
+	assert.Equal(t, "setup <owner/repo>", newGitHubSetupCmd().Use)
+	setUse := newGitHubSetCmd().Use
+	assert.Contains(t, setUse, "<owner/repo>")
+	assert.NotContains(t, setUse, "<org")
 }
 
 func TestGitHubCommand_RegisteredInRoot(t *testing.T) {
@@ -63,26 +69,20 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 
 	agentsFlag := cmd.Flags().Lookup("agents")
 	require.NotNil(t, agentsFlag, "expected --agents flag")
-	assert.Equal(t, strings.Join(config.DefaultAgentRoles(), ","), agentsFlag.DefValue)
+	assert.Equal(t, strings.Join(config.PerRepoDefaultRoles(), ","), agentsFlag.DefValue)
 
 	dryRunFlag := cmd.Flags().Lookup("dry-run")
 	require.NotNil(t, dryRunFlag, "expected --dry-run flag")
 
-	skipAppSetupFlag := cmd.Flags().Lookup("skip-app-setup")
-	require.NotNil(t, skipAppSetupFlag, "expected --skip-app-setup flag")
-
-	publicFlag := cmd.Flags().Lookup("public")
-	require.NotNil(t, publicFlag, "expected --public flag")
+	assert.Nil(t, cmd.Flags().Lookup("skip-app-setup"), "--skip-app-setup has no effect on repository setup; app creation is handled by admin install")
+	assert.Nil(t, cmd.Flags().Lookup("public"), "--public has no effect on repository setup; app creation is handled by admin install")
 
 	appSetFlag := cmd.Flags().Lookup("app-set")
 	require.NotNil(t, appSetFlag, "expected --app-set flag")
 	assert.Equal(t, "fullsend-ai", appSetFlag.DefValue)
 
-	enrollAllFlag := cmd.Flags().Lookup("enroll-all")
-	require.NotNil(t, enrollAllFlag, "expected --enroll-all flag")
-
-	enrollNoneFlag := cmd.Flags().Lookup("enroll-none")
-	require.NotNil(t, enrollNoneFlag, "expected --enroll-none flag")
+	assert.Nil(t, cmd.Flags().Lookup("enroll-all"), "--enroll-all was removed with per-org installation")
+	assert.Nil(t, cmd.Flags().Lookup("enroll-none"), "--enroll-none was removed with per-org installation")
 
 	vendorFlag := cmd.Flags().Lookup("vendor")
 	require.NotNil(t, vendorFlag, "expected --vendor flag")
@@ -124,46 +124,46 @@ func TestGitHubSetupCmd_UsesDefaultMintURL(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
 	// Without explicit --mint-url, the default should be used and
-	// validation should not fail on a missing URL. The command will
-	// fail later (listing repos), but not with a "mint-url is required" error.
-	cmd.SetArgs([]string{"github", "setup", "acme",
-		"--enroll-none"})
+	// validation should not fail on a missing URL.
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--dry-run"})
 	err := cmd.Execute()
-	// The error should be from a downstream step (e.g. listing repos),
-	// not from missing --mint-url.
-	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "--mint-url is required")
+	require.NoError(t, err)
 }
 
-func TestGitHubSetupCmd_PerRepoRejectsPerOrgFlags(t *testing.T) {
-	perOrgOnly := []struct {
-		flag  string
-		value string
-	}{
-		{"enroll-all", ""},
-		{"enroll-none", ""},
-	}
-	for _, tc := range perOrgOnly {
-		t.Run(tc.flag, func(t *testing.T) {
-			cmd := newRootCmd()
-			args := []string{"github", "setup", "acme/widget",
-				"--mint-url", "https://mint-test-abc123.run.app"}
-			if tc.value != "" {
-				args = append(args, "--"+tc.flag, tc.value)
-			} else {
-				args = append(args, "--"+tc.flag)
-			}
-			cmd.SetArgs(args)
-			err := cmd.Execute()
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "only valid for per-org")
-		})
-	}
+func TestGitHubSetupCmd_RejectsOrgOnlyTarget(t *testing.T) {
+	// Point token resolution at a value so that, if the org-target guard
+	// were missing, the command would proceed toward forge calls instead of
+	// failing on a missing token. The guard must fire before any of that.
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme",
+		"--mint-url", "https://mint-test-abc123.run.app"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owner/repo")
+	assert.Contains(t, err.Error(), "per-org installation has been removed")
+	assert.Contains(t, err.Error(), `"acme"`)
+}
+
+func TestGitHubSetupCmd_OrgTargetCheckedBeforeOtherValidation(t *testing.T) {
+	// The org-target guard is the first check in RunE, so it wins over
+	// flag validation errors that would otherwise be reported.
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme",
+		"--mint-url", "http://not-secure.run.app",
+		"--fullsend-ref", "main"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-org installation has been removed")
+	assert.NotContains(t, err.Error(), "HTTPS URL")
 }
 
 func TestGitHubSetupCmd_ValidatesMintURLHTTPS(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "setup", "acme",
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
 		"--mint-url", "http://not-secure.run.app"})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -315,15 +315,6 @@ func TestGitHubSetupCmd_FullsendRefRejectsInvalidChars(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid characters")
 }
 
-func TestGitHubSetupCmd_FullsendRefRejectedForPerOrg(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "setup", "acme",
-		"--fullsend-ref", "main"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "only valid for per-repo setup")
-}
-
 func TestGitHubSetupCmd_FullsendRefAcceptedForPerRepo(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
@@ -374,50 +365,6 @@ func TestRunGitHubSetupPerRepo_FullsendRefPropagatesIntoScaffold(t *testing.T) {
 	shimStr := string(shimContent)
 	assert.Contains(t, shimStr, "custom-branch-ref",
 		"expected the custom --fullsend-ref to appear in the rendered scaffold workflow")
-}
-
-// --- Enroll command tests ---
-
-func TestGitHubEnrollCmd_RequiresOrg(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "enroll"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires at least 1 arg")
-}
-
-func TestGitHubEnrollCmd_RequiresReposOrAllFlag(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "enroll", "testorg"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must specify repository names or use --all flag")
-}
-
-func TestGitHubEnrollCmd_HasAllFlag(t *testing.T) {
-	cmd := newGitHubEnrollCmd()
-	allFlag := cmd.Flags().Lookup("all")
-	require.NotNil(t, allFlag, "expected --all flag")
-	assert.Equal(t, "false", allFlag.DefValue)
-}
-
-func TestGitHubEnrollCmd_DelegatesCorrectly(t *testing.T) {
-	cfg := setupTestConfig(map[string]bool{
-		"web-app": false,
-		"api":     false,
-	})
-	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
-	printer := ui.New(&discardWriter{})
-
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
-	require.NoError(t, err)
-
-	require.Len(t, client.CreatedFiles, 1)
-	updatedCfg, err := config.ParseOrgConfig(client.CreatedFiles[0].Content)
-	require.NoError(t, err)
-	assert.True(t, updatedCfg.RepoMap()["web-app"].Enabled)
-	assert.False(t, updatedCfg.RepoMap()["api"].Enabled)
 }
 
 // --- buildPresetOverlay tests ---
@@ -638,33 +585,6 @@ func TestRunGitHubSetupPerRepo_NoPreset_PartialFlags(t *testing.T) {
 	assert.Equal(t, config.DefaultPerRepoInferenceRegion, varNames["FULLSEND_GCP_REGION"])
 }
 
-// --- Unenroll command tests ---
-
-func TestGitHubUnenrollCmd_RequiresOrg(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "unenroll"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires at least 1 arg")
-}
-
-func TestGitHubUnenrollCmd_RequiresReposOrAllFlag(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "unenroll", "testorg"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must specify repository names or use --all flag")
-}
-
-func TestGitHubUnenrollCmd_HasFlags(t *testing.T) {
-	cmd := newGitHubUnenrollCmd()
-	allFlag := cmd.Flags().Lookup("all")
-	require.NotNil(t, allFlag, "expected --all flag")
-	yoloFlag := cmd.Flags().Lookup("yolo")
-	require.NotNil(t, yoloFlag, "expected --yolo flag")
-}
-
 // --- Set command tests ---
 
 func TestGitHubSetCmd_RequiresArgs(t *testing.T) {
@@ -678,7 +598,7 @@ func TestGitHubSetCmd_RequiresArgs(t *testing.T) {
 func TestGitHubSetCmd_RejectsUnknownKey(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "set", "acme", "UNKNOWN_KEY", "some-value"})
+	cmd.SetArgs([]string{"github", "set", "acme/widget", "UNKNOWN_KEY", "some-value"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown config key")
@@ -689,7 +609,7 @@ func TestGitHubSetCmd_RejectsMintURL(t *testing.T) {
 	client := forge.NewFakeClient()
 	printer := ui.New(&discardWriter{})
 
-	err := runGitHubSet(context.Background(), client, printer, "acme", "FULLSEND_MINT_URL", "https://new-mint.run.app/")
+	err := runGitHubSet(context.Background(), client, printer, "acme/widget", "FULLSEND_MINT_URL", "https://new-mint.run.app/")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown config key")
 }
@@ -784,9 +704,9 @@ func TestGitHubSetCmd_ValidatesTarget(t *testing.T) {
 	client := forge.NewFakeClient()
 	printer := ui.New(&discardWriter{})
 
-	err := runGitHubSet(context.Background(), client, printer, "-invalid", "FULLSEND_GCP_REGION", "us-east5")
+	err := runGitHubSet(context.Background(), client, printer, "-invalid/widget", "FULLSEND_GCP_REGION", "us-east5")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot start or end with a hyphen")
+	assert.Contains(t, err.Error(), "invalid owner name")
 }
 
 func TestGitHubSetCmd_ValidatesRepoTarget(t *testing.T) {
@@ -798,315 +718,29 @@ func TestGitHubSetCmd_ValidatesRepoTarget(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid owner name")
 }
 
-func TestRunGitHubStatus_NonNotFoundError(t *testing.T) {
+func TestRunGitHubSet_RejectsOrgOnlyTarget(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.Errors = map[string]error{
-		"GetRepo": fmt.Errorf("permission denied"),
-	}
 	printer := ui.New(&discardWriter{})
 
-	err := runGitHubStatus(context.Background(), client, printer, "acme")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking config repo")
+	for _, key := range []string{"FULLSEND_GCP_REGION", "FULLSEND_GCP_PROJECT_ID"} {
+		err := runGitHubSet(context.Background(), client, printer, "acme", key, "some-value")
+		require.Error(t, err, "org-only target must be rejected for %s", key)
+		assert.Contains(t, err.Error(), "owner/repo")
+		assert.Contains(t, err.Error(), "per-org installation has been removed")
+		assert.Contains(t, err.Error(), "fullsend github set")
+	}
+	assert.Empty(t, client.Variables, "no variable may be written for an org-only target")
+	assert.Empty(t, client.CreatedSecrets, "no secret may be written for an org-only target")
 }
 
-// --- Status command tests ---
-
-func TestGitHubStatusCmd_RequiresOrg(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "status"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "accepts 1 arg(s)")
-}
-
-func TestGitHubStatusCmd_ValidatesOrg(t *testing.T) {
+func TestGitHubSetCmd_RejectsOrgOnlyTarget(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newRootCmd()
-	// Use "--" to prevent cobra from parsing the org name as a flag.
-	cmd.SetArgs([]string{"github", "status", "--", "-leading"})
+	cmd.SetArgs([]string{"github", "set", "acme", "FULLSEND_GCP_REGION", "us-east5"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot start or end with a hyphen")
-}
-
-func TestRunGitHubStatus_BasicReport(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{
-		{Name: ".fullsend", FullName: "acme/.fullsend"},
-	}
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, []string{"triage"}, "", "")
-	cfgData, _ := cfg.Marshal()
-	client.FileContents["acme/.fullsend/config.yaml"] = cfgData
-	client.OrgVariables = map[string]bool{"acme/FULLSEND_MINT_URL": true}
-	printer := ui.New(&discardWriter{})
-
-	err := runGitHubStatus(context.Background(), client, printer, "acme")
-	require.NoError(t, err)
-}
-
-func TestRunGitHubStatus_ForeignVariableOmitsParsedRole(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{
-		{Name: ".fullsend", FullName: "acme/.fullsend"},
-	}
-	client.OrgVariables = map[string]bool{
-		"acme/FULLSEND_MINT_URL":               true,
-		"acme/FULLSEND_FOREIGN_CI_CHECK_REPOS": true,
-	}
-	client.OrgVariableValues = map[string]string{
-		"acme/FULLSEND_FOREIGN_CI_CHECK_REPOS": "fullsend-ai/fullsend",
-	}
-	var buf strings.Builder
-	printer := ui.New(&buf)
-
-	err := runGitHubStatus(context.Background(), client, printer, "acme")
-	require.NoError(t, err)
-	out := buf.String()
-	assert.Contains(t, out, "FULLSEND_FOREIGN_CI_CHECK_REPOS: fullsend-ai/fullsend")
-	assert.NotContains(t, out, "(ci_check)")
-	assert.NotContains(t, out, "(ci-check)")
-}
-
-func TestRunGitHubStatus_NoConfigRepo(t *testing.T) {
-	client := forge.NewFakeClient()
-	printer := ui.New(&discardWriter{})
-
-	err := runGitHubStatus(context.Background(), client, printer, "acme")
-	require.NoError(t, err)
-}
-
-// --- Uninstall command tests ---
-
-func TestGitHubUninstallCmd_RequiresOrg(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "uninstall"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "accepts 1 arg(s)")
-}
-
-func TestGitHubUninstallCmd_HasFlags(t *testing.T) {
-	cmd := newGitHubUninstallCmd()
-	yoloFlag := cmd.Flags().Lookup("yolo")
-	require.NotNil(t, yoloFlag, "expected --yolo flag")
-	appSetFlag := cmd.Flags().Lookup("app-set")
-	require.NotNil(t, appSetFlag, "expected --app-set flag")
-}
-
-func TestRunGitHubUninstall_NonGitHub_SkipsAppUninstall(t *testing.T) {
-	inner := forge.NewFakeClient()
-	client := &nonGitHubClient{Client: inner}
-	var buf strings.Builder
-	printer := ui.New(&buf)
-
-	err := runGitHubUninstall(context.Background(), client, printer, "acme", "fullsend-ai")
-	require.NoError(t, err)
-	assert.Contains(t, buf.String(), "App uninstall is not available on this forge")
-}
-
-func TestRunGitHubUninstall_DeletesResources(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{
-		{Name: ".fullsend", FullName: "acme/.fullsend"},
-	}
-	client.OrgVariables = map[string]bool{"acme/FULLSEND_MINT_URL": true}
-	printer := ui.New(&discardWriter{})
-
-	err := runGitHubUninstall(context.Background(), client, printer, "acme", "fullsend-ai")
-	require.NoError(t, err)
-
-	// Verify repo was deleted.
-	assert.Contains(t, client.DeletedRepos, "acme/.fullsend")
-	// Verify org variable was deleted.
-	assert.Contains(t, client.DeletedOrgVariables, "acme/FULLSEND_MINT_URL")
-}
-
-func TestRunGitHubUninstall_NoConfigRepo(t *testing.T) {
-	client := forge.NewFakeClient()
-	printer := ui.New(&discardWriter{})
-
-	err := runGitHubUninstall(context.Background(), client, printer, "acme", "fullsend-ai")
-	require.NoError(t, err)
-}
-
-func TestRunGitHubUninstall_UsesHarnessDiscovery(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{
-		{Name: ".fullsend", FullName: "acme/.fullsend"},
-	}
-	// Provide config.yaml with agents: block (should be bypassed).
-	client.FileContents = map[string][]byte{
-		"acme/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\nagents:\n  - role: triage\n    slug: old-triage\n"),
-	}
-	// Provide harness directory with wrapper files.
-	client.DirContents = map[string][]forge.DirectoryEntry{
-		"acme/.fullsend/harness@main": {
-			{Path: "harness/triage.yaml", Type: "file"},
-		},
-	}
-	client.FileContentsRef = map[string][]byte{
-		"acme/.fullsend/harness/triage.yaml@main": []byte("role: triage\nslug: harness-triage\n"),
-	}
-	client.Installations = []forge.Installation{
-		{ID: 1, AppSlug: "harness-triage"},
-	}
-
-	var buf strings.Builder
-	printer := ui.New(&buf)
-
-	err := runGitHubUninstall(context.Background(), client, printer, "acme", "fullsend-ai")
-	require.NoError(t, err)
-
-	output := buf.String()
-	assert.Contains(t, output, "harness-triage")
-	assert.NotContains(t, output, "old-triage")
-	assert.NotContains(t, output, "agents: block")
-}
-
-func TestRunGitHubUninstall_NoHarnessFiles_FallsBackToDefaultNaming(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{
-		{Name: ".fullsend", FullName: "acme/.fullsend"},
-	}
-	client.FileContents = map[string][]byte{
-		"acme/.fullsend/config.yaml": []byte("version: v1\ndispatch:\n  platform: github-actions\n"),
-	}
-	client.Installations = []forge.Installation{
-		{ID: 1, AppSlug: "fullsend-ai-triage"},
-	}
-
-	var buf strings.Builder
-	printer := ui.New(&buf)
-
-	err := runGitHubUninstall(context.Background(), client, printer, "acme", "fullsend-ai")
-	require.NoError(t, err)
-
-	output := buf.String()
-	assert.Contains(t, output, "fullsend-ai-triage")
-}
-
-// --- Sync-scaffold command tests ---
-
-func TestGitHubSyncScaffoldCmd_RequiresOrg(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "sync-scaffold"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "accepts 1 arg(s)")
-}
-
-func TestRunGitHubSyncScaffold_CommitsFiles(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{
-		{Name: ".fullsend", FullName: "acme/.fullsend"},
-	}
-	client.AuthenticatedUser = "testuser"
-	printer := ui.New(&discardWriter{})
-
-	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
-	require.NoError(t, err)
-
-	// sync-scaffold uses direct mode — files are committed to the default branch.
-	require.NotEmpty(t, client.CommittedFiles, "expected scaffold files to be committed directly")
-}
-
-func TestRunGitHubSyncScaffold_VendoredMarker(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{
-		{Name: ".fullsend", FullName: "acme/.fullsend"},
-	}
-	client.AuthenticatedUser = "testuser"
-	client.FileContents = map[string][]byte{
-		"acme/.fullsend/.defaults/action.yml": []byte("marker"),
-		"acme/.fullsend/config.yaml":          []byte("repos: {}\n"),
-	}
-	printer := ui.New(&discardWriter{})
-
-	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
-	require.NoError(t, err)
-	require.NotEmpty(t, client.CommittedFiles)
-}
-
-func TestRunGitHubSyncScaffold_InvalidConfig(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{{Name: ".fullsend", FullName: "acme/.fullsend"}}
-	client.AuthenticatedUser = "testuser"
-	client.FileContents = map[string][]byte{
-		"acme/.fullsend/config.yaml": []byte("not: valid: yaml: ["),
-	}
-	printer := ui.New(&discardWriter{})
-
-	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config.yaml")
-}
-
-func TestRunGitHubSyncScaffold_DefaultCreatesPR(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{
-		{Name: ".fullsend", FullName: "acme/.fullsend", DefaultBranch: "main"},
-	}
-	client.AuthenticatedUser = "acme"
-	printer := ui.New(&discardWriter{})
-
-	// direct=false means PR-based delivery (the default).
-	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", false)
-	require.NoError(t, err)
-
-	// Should create a branch and PR, not commit directly.
-	assert.NotEmpty(t, client.CreatedBranches, "expected a scaffold branch to be created")
-	assert.NotEmpty(t, client.CreatedProposals, "expected a scaffold PR to be created")
-	assert.Empty(t, client.CommittedFiles, "expected no direct commits when using PR delivery")
-}
-
-func TestGitHubSyncScaffoldCmd_HasDirectFlag(t *testing.T) {
-	cmd := newGitHubSyncScaffoldCmd()
-	directFlag := cmd.Flags().Lookup("direct")
-	require.NotNil(t, directFlag, "expected --direct flag")
-	assert.Equal(t, "false", directFlag.DefValue)
-	// --pr flag should not exist; PR delivery is the default.
-	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
-}
-
-func TestGitHubEnrollCmd_HasDirectFlag(t *testing.T) {
-	cmd := newGitHubEnrollCmd()
-	directFlag := cmd.Flags().Lookup("direct")
-	require.NotNil(t, directFlag, "expected --direct flag")
-	assert.Equal(t, "false", directFlag.DefValue)
-	// --pr flag should not exist; PR delivery is the default.
-	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
-}
-
-func TestGitHubUnenrollCmd_HasDirectFlag(t *testing.T) {
-	cmd := newGitHubUnenrollCmd()
-	directFlag := cmd.Flags().Lookup("direct")
-	require.NotNil(t, directFlag, "expected --direct flag")
-	// --pr flag should not exist; PR delivery is the default.
-	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
-}
-
-func TestRunGitHubSetupPerOrg_DryRun(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "testuser"
-	client.Repos = []forge.Repository{
-		{Name: forge.ConfigRepoName, FullName: "acme/" + forge.ConfigRepoName},
-		{Name: "widget", FullName: "acme/widget"},
-	}
-	var buf strings.Builder
-	err := runGitHubSetupPerOrg(context.Background(), client, ui.New(&buf), githubSetupConfig{
-		target:               "acme",
-		mintURL:              "https://mint.example.com/v1/token",
-		agents:               strings.Join(config.DefaultAgentRoles(), ","),
-		inferenceProject:     "my-project",
-		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
-		dryRun:               true,
-		enrollNone:           true,
-		skipAppSetup:         true,
-		vendor:               true,
-	})
-	require.NoError(t, err)
-	assert.Contains(t, buf.String(), "Layer: vendor")
+	assert.Contains(t, err.Error(), "owner/repo")
+	assert.Contains(t, err.Error(), "per-org installation has been removed")
 }
 
 // --- parseTarget tests ---
@@ -1545,14 +1179,6 @@ func TestRunGitHubSetupPerRepo_SignoffDirect(t *testing.T) {
 	assert.Contains(t, commitMsg, "Signed-off-by: Test User <test@example.com>")
 }
 
-func TestGitHubSetupCmd_SignoffRejectedForOrgTarget(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "setup", "acme", "--signoff"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--signoff is only valid for per-repo setup")
-}
-
 func TestRunGitHubSetupPerRepo_SignoffEmptyIdentityFields(t *testing.T) {
 	client, cfg := newSignoffTestSetup(t)
 	client.AuthenticatedUserIdentity = &forge.UserIdentity{Name: "", Email: ""}
@@ -1591,52 +1217,6 @@ func TestRunGitHubSetupPerRepo_DryRunSignoffMissingIdentity(t *testing.T) {
 	err := runGitHubSetupPerRepo(context.Background(), client, printer, cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--signoff requires a GitHub user identity")
-}
-
-func TestGitHubSetCmd_OrgTargetDefaultsToConfigRepo(t *testing.T) {
-	client := forge.NewFakeClient()
-	printer := ui.New(&discardWriter{})
-
-	err := runGitHubSet(context.Background(), client, printer, "acme", "FULLSEND_GCP_REGION", "us-east5")
-	require.NoError(t, err)
-
-	// Org target should default to .fullsend repo.
-	require.Len(t, client.Variables, 1)
-	assert.Equal(t, "FULLSEND_GCP_REGION", client.Variables[0].Name)
-	assert.Equal(t, "us-east5", client.Variables[0].Value)
-	assert.Equal(t, "acme", client.Variables[0].Owner)
-	assert.Equal(t, forge.ConfigRepoName, client.Variables[0].Repo)
-}
-
-func TestGitHubSetCmd_OrgTargetSecretDefaultsToConfigRepo(t *testing.T) {
-	client := forge.NewFakeClient()
-	printer := ui.New(&discardWriter{})
-
-	err := runGitHubSet(context.Background(), client, printer, "acme", "FULLSEND_GCP_PROJECT_ID", "my-project")
-	require.NoError(t, err)
-
-	require.Len(t, client.CreatedSecrets, 1)
-	assert.Equal(t, "FULLSEND_GCP_PROJECT_ID", client.CreatedSecrets[0].Name)
-	assert.Equal(t, "my-project", client.CreatedSecrets[0].Value)
-	assert.Equal(t, "acme", client.CreatedSecrets[0].Owner)
-	assert.Equal(t, forge.ConfigRepoName, client.CreatedSecrets[0].Repo)
-}
-
-func TestRunGitHubUninstall_ListInstallationsError(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{
-		{Name: ".fullsend", FullName: "acme/.fullsend"},
-	}
-	client.Errors = map[string]error{
-		"ListOrgInstallations": fmt.Errorf("insufficient permissions"),
-	}
-	printer := ui.New(&discardWriter{})
-
-	err := runGitHubUninstall(context.Background(), client, printer, "acme", "fullsend-ai")
-	require.NoError(t, err)
-
-	// Verify repo was still deleted despite ListOrgInstallations failure.
-	assert.Contains(t, client.DeletedRepos, "acme/.fullsend")
 }
 
 func TestParseTarget_MultipleSlashes(t *testing.T) {

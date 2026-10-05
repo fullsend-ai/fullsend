@@ -581,6 +581,25 @@ func TestListPullRequestReviews(t *testing.T) {
 	assert.Equal(t, "APPROVE", reviews[0].State)
 }
 
+func TestListPullRequestCommits(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRCommits = map[string][]string{"owner/repo/1": {"first", "second"}}
+	d := New(fc)
+
+	shas, err := d.ListPullRequestCommits(context.Background(), "owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first", "second"}, shas)
+}
+
+func TestListPullRequestCommits_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ListPullRequestCommits"] = errors.New("list failed")
+	d := New(fc)
+
+	_, err := d.ListPullRequestCommits(context.Background(), "owner", "repo", 1)
+	assert.ErrorContains(t, err, "list failed")
+}
+
 func TestListPullRequestReviews_Error(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors["ListPullRequestReviews"] = errors.New("list failed")

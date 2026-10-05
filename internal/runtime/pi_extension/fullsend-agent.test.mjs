@@ -18,13 +18,25 @@ import defaultExport, {
   CHILD_SYSTEM_NOTE,
   MAX_DESCRIPTION_BYTES,
   MAX_STDOUT_LINE_CHARS,
+  OVERSIZED_PREFIX_CHARS,
   RESULT_MAX_BYTES,
   childArgs,
   childEnv,
   childTools,
   createAgentTool,
+  isAgentEndPrefix,
+  isAssistantMessageEndPrefix,
   resolveModel,
+  vertexChildAuthenticated,
+  vertexCredentialsUsable,
 } from "./fullsend-agent.js";
+
+// Vertex children need an ADC file at dispatch (#7980). Give the whole file
+// one, so a test that does not exercise that check is independent of the
+// machine it runs on.
+const ADC_DIR = mkdtempSync(join(tmpdir(), "fullsend-agent-adc-"));
+process.env.GOOGLE_APPLICATION_CREDENTIALS = join(ADC_DIR, "creds.json");
+writeFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, "{}");
 
 // FAKE_PI reads its prompt from stdin, the way real pi does in --print
 // mode, and answers by prompt: "ok" prints a successful stream whose final
@@ -209,6 +221,99 @@ test("resolveModel: a Grok spec is normalized and then checked against the close
   for (const spec of ["xai/grok-4.6", "xai-vertex/xai/grok-4.6"]) {
     assert.throws(() => resolveModel(noXai, spec, parent), /provider "xai-vertex" is not available in this run/, spec);
   }
+});
+
+test("resolveModel: openai under a non-openai parent needs a configured openai child (#7981)", () => {
+  const { manifest } = fixture();
+  const parent = "anthropic-vertex/claude-opus-4-6";
+  // No configured openai child: the provider is not attached, so a model
+  // argument cannot pick openai, and the refusal names how to get it.
+  assert.throws(
+    () => resolveModel(manifest.agent, "openai/gpt-5.6-luna", parent),
+    /provider "openai" is not available in this run \(declare "openai" in the harness providers and set the model on a persona or subagents\.default/,
+  );
+  // A configured openai child puts its id in providerModels: that exact
+  // model is now servable by name, and any other openai id is not.
+  const a = { ...manifest.agent, providerModels: { ...manifest.agent.providerModels, openai: ["gpt-5.6-luna"] } };
+  assert.equal(resolveModel(a, "openai/gpt-5.6-luna", parent), "openai/gpt-5.6-luna");
+  assert.throws(
+    () => resolveModel(a, "openai/gpt-9", parent),
+    /"gpt-9" is not a model this run serves on "openai" \(it serves the openai models configured on a persona or subagents\.default/,
+  );
+  // An empty list admits nothing.
+  const empty = { ...manifest.agent, providerModels: { ...manifest.agent.providerModels, openai: [] } };
+  assert.throws(() => resolveModel(empty, "openai/gpt-5.6-luna", parent), /provider "openai" is not available in this run/);
+});
+
+test("vertexCredentialsUsable: a non-empty regular file, else gcloud's ADC file (#7980)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fullsend-adc-"));
+  const file = join(dir, "creds.json");
+  writeFileSync(file, "{}");
+  const empty = join(dir, "empty.json");
+  writeFileSync(empty, "");
+  const home = join(dir, "home");
+  mkdirSync(join(home, ".config", "gcloud"), { recursive: true });
+  assert.equal(vertexCredentialsUsable({ GOOGLE_APPLICATION_CREDENTIALS: file }), true);
+  assert.equal(vertexCredentialsUsable({ google_application_credentials: file }), true, "the lowercase form when the variable is unset");
+  assert.equal(vertexCredentialsUsable({ GOOGLE_APPLICATION_CREDENTIALS: join(dir, "nope.json"), google_application_credentials: file }), false, "a set variable wins");
+  assert.equal(vertexCredentialsUsable({ GOOGLE_APPLICATION_CREDENTIALS: `${file} ` }), false, "the value is used verbatim");
+  assert.equal(vertexCredentialsUsable({ GOOGLE_APPLICATION_CREDENTIALS: " ", google_application_credentials: file }), false, "a whitespace-only variable still wins");
+  for (const [name, env] of Object.entries({
+    missing: { GOOGLE_APPLICATION_CREDENTIALS: join(dir, "nope.json") },
+    empty: { GOOGLE_APPLICATION_CREDENTIALS: empty },
+    directory: { GOOGLE_APPLICATION_CREDENTIALS: dir },
+    unset: { HOME: home },
+    "no home": {},
+  })) {
+    assert.equal(vertexCredentialsUsable(env), false, name);
+  }
+  writeFileSync(join(home, ".config", "gcloud", "application_default_credentials.json"), "{}");
+  assert.equal(vertexCredentialsUsable({ HOME: home }), true, "gcloud's ADC file when the variable is unset");
+  assert.equal(vertexCredentialsUsable({ HOME: home, GOOGLE_APPLICATION_CREDENTIALS: empty }), false, "a set variable is not bypassed");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("Vertex children are refused at dispatch without an ADC file (#7980)", async () => {
+  const { dir, manifest } = personaFixture();
+  const parentModel = "openai/gpt-5.6-luna";
+  const why = /: provider "anthropic-vertex" is not available in this run \(Vertex sub-agents need GOOGLE_APPLICATION_CREDENTIALS set on the runner and mounted in host_files\)$/;
+  const noADC = { ...process.env, GOOGLE_APPLICATION_CREDENTIALS: "", HOME: join(dir, "no-home") };
+  const tool = createAgentTool(manifest, { spawn, ...quiet, env: noADC });
+  const cases = [
+    [{ prompt: "ok", model: "sonnet" }, /^model "sonnet"/],
+    [{ prompt: "ok", subagent_type: "style" }, /^persona "style"/],
+  ];
+  for (const [params, subject] of cases) {
+    const res = await tool.run(params, { parentModel });
+    assert.equal(res.isError, true);
+    assert.equal(res.stopReason, "rejected");
+    assert.match(res.error, subject);
+    assert.match(res.error, why);
+  }
+  manifest.agent.subagentDefault = "anthropic-vertex/claude-haiku-4-5";
+  const def = await createAgentTool(manifest, { spawn, ...quiet, env: noADC }).run({ prompt: "ok" }, { parentModel });
+  assert.match(def.error, /^the default sub-agent model "anthropic-vertex\/claude-haiku-4-5": provider "anthropic-vertex"/);
+
+  // The stat is injectable; a usable file serves the child, and a
+  // non-Vertex child never needs one.
+  const stat = () => ({ isFile: () => true, size: 10 });
+  const ok = await createAgentTool(manifest, { spawn, ...quiet, env: { ...noADC, GOOGLE_APPLICATION_CREDENTIALS: "/x.json" }, stat }).run({ prompt: "ok", model: "sonnet" }, { parentModel });
+  assert.equal(ok.isError, false, ok.error);
+  assert.equal(ok.model, "anthropic-vertex/claude-sonnet-4-6");
+  // pi's google-vertex takes GOOGLE_CLOUD_API_KEY before ADC; the other
+  // Vertex providers do not.
+  const withKey = { ...noADC, GOOGLE_CLOUD_API_KEY: "k" };
+  assert.equal(vertexChildAuthenticated("google-vertex", withKey), true);
+  assert.equal(vertexChildAuthenticated("anthropic-vertex", withKey), false);
+  assert.equal(vertexChildAuthenticated("xai-vertex", withKey), false);
+  const keyTool = createAgentTool(manifest, { spawn, ...quiet, env: withKey });
+  const gemini = await keyTool.run({ prompt: "ok", model: "google-vertex/gemini-3.8-flash" }, { parentModel });
+  assert.equal(gemini.isError, false, gemini.error);
+  const claude = await keyTool.run({ prompt: "ok", model: "sonnet" }, { parentModel });
+  assert.match(claude.error, why);
+  const own = await createAgentTool(manifest, { spawn, ...quiet, env: noADC }).run({ prompt: "ok", model: parentModel }, { parentModel });
+  assert.notEqual(own.stopReason, "rejected", own.error);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("childTools: Explore is read-only, everything else is the parent's built-ins minus Agent/Task", () => {
@@ -781,6 +886,203 @@ test("run: result text is capped at 64 KB with a marker", async () => {
   assert.equal(res.isError, false);
   assert.ok(res.text.endsWith("\n[truncated]"));
   assert.ok(Buffer.byteLength(res.text) <= RESULT_MAX_BYTES + "\n[truncated]".length);
+});
+
+// Oversized completion envelopes (#8073). pi's agent_end carries every
+// message of the run, so a long run's envelope crosses the line cap while
+// the final answer is small and already arrived as a message_end.
+const finalMessage = (stopReason, text = "[]", extra = {}) => ({
+  role: "assistant", content: [{ type: "text", text }], model: "m", provider: "p",
+  usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } }, stopReason, ...extra,
+});
+const bigToolResult = { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "r".repeat(MAX_STDOUT_LINE_CHARS + 10) }] };
+const jsonLine = (o) => JSON.stringify(o) + "\n";
+const bigAgentEnd = (final) => JSON.stringify({ type: "agent_end", messages: [bigToolResult, final] });
+
+// finishRaw writes stdout exactly as given (each string one write, so one
+// chunk) and closes the child once stdout has drained, the order a real
+// child's "close" follows.
+async function finishRaw(child, chunks, code = 0) {
+  child.exitCode = code;
+  const drained = new Promise((r) => child.stdout.once("end", r));
+  for (const c of chunks) child.stdout.write(c);
+  child.stdout.end();
+  child.stderr.end();
+  await drained;
+  child.emit("close", code, null);
+}
+
+// chunked splits s into 64 KiB pieces, the size a pipe delivers.
+function chunked(s, size = 64 * 1024) {
+  const out = [];
+  for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size));
+  return out;
+}
+
+async function runRaw(chunksFor, { code = 0, manifestEdit } = {}) {
+  const { manifest } = fixture();
+  if (manifestEdit) manifestEdit(manifest);
+  const { spawn, children } = fakeSpawn();
+  const logs = [];
+  const tool = createAgentTool(manifest, { log: (l) => logs.push(l), spawn });
+  const p = tool.run({ prompt: "p" }, {});
+  await new Promise((r) => setImmediate(r));
+  await finishRaw(children[0].child, chunksFor, code);
+  return { res: await p, logs };
+}
+
+test("isAgentEndPrefix: only a line that starts as an agent_end envelope matches", () => {
+  for (const line of ['{"type":"agent_end","messages":[', '{"type":"agent_end"}', '  { "type" : "agent_end" ,', bigAgentEnd(finalMessage("stop"))]) {
+    assert.equal(isAgentEndPrefix(line), true, line.slice(0, 40));
+  }
+  for (const line of ['{"type":"message_end","message":{', '{"type":"agent_end_x",', '{"pad":"{\\"type\\":\\"agent_end\\",', 'rrrr{"type":"agent_end",', "",
+    " ".repeat(OVERSIZED_PREFIX_CHARS) + '{"type":"agent_end",']) {
+    assert.equal(isAgentEndPrefix(line), false, line.slice(0, 40));
+  }
+});
+
+test("run: an oversized agent_end in one chunk still completes the child (#8073)", async () => {
+  const { res, logs } = await runRaw([
+    jsonLine({ type: "message_end", message: finalMessage("stop") }) + bigAgentEnd(finalMessage("stop")) + "\n" + jsonLine({ type: "agent_settled" }),
+  ]);
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.text, "[]");
+  assert.equal(res.stopReason, "stop");
+  assert.ok(logs.some((l) => /dropped 1 stdout line/.test(l)), "the envelope itself is still dropped, not parsed");
+});
+
+test("run: an oversized agent_end delivered in pipe-sized chunks still completes the child (#8073)", async () => {
+  const stream = jsonLine({ type: "agent_start" }) + jsonLine({ type: "message_end", message: finalMessage("stop") }) + bigAgentEnd(finalMessage("stop")) + "\n" + jsonLine({ type: "agent_settled" });
+  const { res, logs } = await runRaw(chunked(stream));
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.text, "[]");
+  assert.ok(logs.some((l) => /dropped 1 stdout line/.test(l)));
+});
+
+test("run: an oversized intermediate line followed by a small agent_end completes the child", async () => {
+  const stream = jsonLine({ type: "message_end", message: bigToolResult }) + jsonLine({ type: "message_end", message: finalMessage("stop", "done") }) + jsonLine({ type: "agent_end", messages: [] });
+  const { res } = await runRaw(chunked(stream));
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.text, "done");
+});
+
+test("run: an oversized agent_end does not hide an error stop reason", async () => {
+  const failed = finalMessage("error", "", { errorMessage: "quota exhausted" });
+  const { res } = await runRaw(chunked(jsonLine({ type: "message_end", message: failed }) + bigAgentEnd(failed) + "\n"));
+  assert.equal(res.isError, true);
+  assert.equal(res.stopReason, "error");
+  assert.match(res.error, /quota exhausted/);
+});
+
+test("isAssistantMessageEndPrefix: any message_end not shown to be user, toolResult, custom or system", () => {
+  for (const line of ['{"type":"message_end","message":{"role":"assistant",', '{"type":"message_end","message":{"content":[', '{"type":"message_end"}']) {
+    assert.equal(isAssistantMessageEndPrefix(line), true, line);
+  }
+  for (const line of ['{"type":"message_end","message":{"role":"toolResult",', '{"type":"message_end","message":{"role":"user",', '{"type":"message_end","message":{"role":"custom",', '{"type":"message_end","message":{"role":"system",', '{"type":"agent_end",', '{"type":"message_end_x",', ""]) {
+    assert.equal(isAssistantMessageEndPrefix(line), false, line);
+  }
+});
+
+// A custom message queued during streaming is emitted after the final
+// assistant response; when it and the completion envelope both exceed the
+// cap, the child still completed and its final assistant message was read.
+for (const [name, split] of [["one chunk", (s) => [s]], ["pipe-sized chunks", chunked]]) {
+  test(`run: an oversized custom message after the final assistant message does not fail the child (${name})`, async () => {
+    const bigCustom = { role: "custom", customType: "note", content: "c".repeat(MAX_STDOUT_LINE_CHARS + 10), display: false, timestamp: 1 };
+    const final = finalMessage("stop", "done");
+    const stream = jsonLine({ type: "message_end", message: final }) +
+      jsonLine({ type: "message_end", message: bigCustom }) +
+      JSON.stringify({ type: "agent_end", messages: [bigCustom, final] }) + "\n";
+    const { res } = await runRaw(split(stream));
+    assert.equal(res.isError, false, res.error);
+    assert.equal(res.text, "done");
+    assert.equal(res.stopReason, "stop");
+  });
+}
+
+// An oversized final assistant message is dropped together with the
+// agent_end envelope that repeats it, so neither the answer nor the stop
+// reason is known; the run must not report success on stale state.
+for (const stopReason of ["stop", "error", "aborted"]) {
+  for (const [name, split] of [["one chunk", (s) => [s]], ["pipe-sized chunks", chunked]]) {
+    test(`run: an oversized final assistant message_end (${stopReason}, ${name}) fails closed over a stale earlier message`, async () => {
+      const earlier = finalMessage("toolUse", "earlier answer");
+      const big = finalMessage(stopReason, "t".repeat(MAX_STDOUT_LINE_CHARS + 10), stopReason === "stop" ? {} : { errorMessage: "big failure" });
+      const stream = jsonLine({ type: "message_end", message: earlier }) +
+        jsonLine({ type: "message_end", message: big }) +
+        JSON.stringify({ type: "agent_end", messages: [earlier, big] }) + "\n";
+      const { res } = await runRaw(split(stream));
+      assert.equal(res.isError, true);
+      assert.equal(res.stopReason, "incomplete");
+      assert.match(res.error, /last assistant message exceeded/);
+    });
+  }
+}
+
+test("run: a dropped assistant message_end is forgotten once a later assistant message is read", async () => {
+  const big = finalMessage("toolUse", "t".repeat(MAX_STDOUT_LINE_CHARS + 10));
+  const stream = jsonLine({ type: "message_end", message: big }) + jsonLine({ type: "message_end", message: finalMessage("stop", "done") }) + bigAgentEnd(finalMessage("stop", "done")) + "\n";
+  const { res } = await runRaw(chunked(stream));
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.text, "done");
+});
+
+test("run: an oversized assistant message_end cut off by EOF is also a failure", async () => {
+  const big = finalMessage("stop", "t".repeat(MAX_STDOUT_LINE_CHARS + 10));
+  const { res } = await runRaw(chunked(jsonLine({ type: "message_end", message: finalMessage("toolUse", "earlier") }) + JSON.stringify({ type: "message_end", message: big })));
+  assert.equal(res.isError, true);
+  assert.match(res.error, /last assistant message exceeded/);
+});
+
+test("run: an oversized agent_end does not hide a non-zero exit", async () => {
+  const { res } = await runRaw(chunked(jsonLine({ type: "message_end", message: finalMessage("stop") }) + bigAgentEnd(finalMessage("stop")) + "\n"), { code: 3 });
+  assert.equal(res.isError, true);
+  assert.match(res.error, /exited 3/);
+});
+
+test("run: oversized junk alone, or an agent_end cut off before its newline, is still no agent_end", async () => {
+  const start = jsonLine({ type: "message_end", message: finalMessage("stop") });
+  const junk = await runRaw(chunked(start + JSON.stringify({ type: "junk", pad: "z".repeat(MAX_STDOUT_LINE_CHARS + 10) }) + "\n"));
+  assert.equal(junk.res.isError, true);
+  assert.match(junk.res.error, /no agent_end/);
+
+  const cut = await runRaw(chunked(start + bigAgentEnd(finalMessage("stop"))));
+  assert.equal(cut.res.isError, true, "an unterminated envelope may be truncated");
+  assert.match(cut.res.error, /no agent_end/);
+  assert.equal(cut.res.text, "[]", "whatever text arrived is still returned");
+});
+
+test("run: agent_end-looking content deep inside an oversized line is not its prefix", async () => {
+  // The line overflows the buffer twice; the second overflow begins with
+  // text shaped like an agent_end envelope, which must not be mistaken for
+  // the start of the line.
+  const head = '{"type":"junk","pad":"' + "z".repeat(MAX_STDOUT_LINE_CHARS);
+  const decoy = '{"type":"agent_end","messages":[]}' + "y".repeat(MAX_STDOUT_LINE_CHARS);
+  const chunks = [jsonLine({ type: "message_end", message: finalMessage("stop") }), head, decoy, '"}\n'];
+  const { res, logs } = await runRaw(chunks);
+  assert.equal(res.isError, true);
+  assert.match(res.error, /no agent_end/);
+  assert.ok(logs.some((l) => /dropped 1 stdout line/.test(l)), "one line, dropped once");
+});
+
+test("run: a timeout during an oversized agent_end is still a timeout", async () => {
+  const { manifest } = fixture();
+  manifest.agent.timeoutSeconds = 0.05;
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, killGraceMs: 5 });
+  const p = tool.run({ prompt: "p" }, {});
+  await new Promise((r) => setImmediate(r));
+  const { child } = children[0];
+  const envelope = bigAgentEnd(finalMessage("stop"));
+  child.stdout.write(jsonLine({ type: "message_end", message: finalMessage("stop") }));
+  child.stdout.write(envelope.slice(0, MAX_STDOUT_LINE_CHARS + 100));
+  for (let i = 0; i < 100 && child.signals.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(child.signals.slice(0, 1), ["SIGTERM"]);
+  await finishRaw(child, [envelope.slice(MAX_STDOUT_LINE_CHARS + 100) + "\n"], 143);
+  const res = await p;
+  assert.equal(res.isError, true);
+  assert.equal(res.stopReason, "timeout");
+  assert.match(res.error, /timed out/);
 });
 
 test("shutdown stops in-flight children, fails their calls and settles the queue", async () => {

@@ -136,6 +136,53 @@ type World struct {
 	JiraMockServer *httptest.Server
 	JiraMockState  *jiramock.State
 	JiraConfigDir  string // temp dir holding .fullsend/ layout for the poller
+
+	// PlaybackEntries accumulates the ordered list of canned-result
+	// directories a playback scenario will serve, built up by "a <agent>
+	// agent that returns <result>" steps before the triggering issue is
+	// created. PlaybackCommitted records whether the playlist (and its
+	// result fixtures) has already been committed to the leased repo,
+	// so a scenario that creates more than one issue does not commit
+	// the playlist twice. Both are only meaningful when IsPlaybackMode
+	// is true.
+	PlaybackEntries   []runtime.PlaybackEntry
+	PlaybackCommitted bool
+
+	// ConsumedHarnessRunIDs tracks, per agent, the harness-run IDs
+	// already matched by a prior "the <agent> agent completes
+	// successfully" step in this scenario. A playback scenario can
+	// trigger the same agent's harness more than once (e.g. review is
+	// retried after fix); WaitForHarnessAgentRound uses this set to
+	// select the earliest eligible successful run not yet consumed
+	// instead of re-matching (or skipping past) a round already recorded
+	// here.
+	ConsumedHarnessRunIDs map[string]map[int]bool
+
+	// HarnessRunArtifactDirs caches each harness run's downloaded
+	// artifact directory, keyed by run ID. A playback scenario dispatches
+	// several stages in one scenario (triage, code, review, fix); unlike
+	// ensureHarnessArtifacts (dispatch.go), which downloads once per
+	// scenario into the single ArtifactDir for the single-dispatch case,
+	// "the <agent> agent completes successfully" (playback.go) needs a
+	// fresh download per round so a later stage's artifacts — and any
+	// download failure — are not hidden behind an earlier stage's
+	// already-populated ArtifactDir.
+	HarnessRunArtifactDirs map[int]string
+
+	// StagePublishedSHA pins, per stage name (the leading path segment of
+	// a result fixture, e.g. "code" or "fix"), the pull request's head
+	// commit SHA captured at the earliest moment that stage's publication
+	// can be observed. "the published repository matches fixture" reads
+	// this instead of re-resolving the branch's live tip at comparison
+	// time: review and fix can progress automatically (dispatched by
+	// forge webhooks) independently of how quickly this scenario's own
+	// steps execute, so a later stage can advance the same branch before
+	// an earlier stage's own assertion gets around to resolving it
+	// (#7957 review). Currently populated only for the "code" stage, from
+	// the pull request's first commit (immutable once later stages append
+	// to the branch) rather than the branch's live tip; a stage with no
+	// pinned entry falls back to live resolution.
+	StagePublishedSHA map[string]string
 }
 
 // Clone creates a shallow copy of w. Drivers and shared state (SCM,

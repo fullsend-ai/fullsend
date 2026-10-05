@@ -299,8 +299,11 @@ What this trades away: a long-lived key stored as a GitHub secret, no per-reposi
 not change: the key never enters the sandbox, only the endpoint-bound placeholder does; egress stays
 `POST /v1/responses` on `api.openai.com`; the value is masked and reserved through `oidcDenyKeys`.
 
-**GitLab CI.** A masked `OPENAI_API_KEY` CI/CD variable already works on the same runner path — GitLab
-injects CI variables into the job environment, so no extra forwarding is required.
+**GitLab CI.** Store the key as a masked `FULLSEND_OPENAI_API_KEY` CI/CD variable. You can do this
+with `fullsend repos install <group/project> --openai-api-key <value>` for projects whose
+`inference.auth` is `openai-api-key`. The Fullsend job maps it to `OPENAI_API_KEY` on the runner.
+An unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used, with no fallback. See the
+[upgrade steps](../../cli/repos.md#gitlab-fullsend_openai_api_key-replaces-openai_api_key-breaking).
 
 ## 4. Tell fullsend the three identifiers
 
@@ -379,14 +382,15 @@ providers:
 ```
 
 Declaring it costs nothing on runs that do not use it: the run-scoped provider is created only
-when the selected runtime will actually call OpenAI (codex, or pi on an `openai/` model), so the
-same harness can carry the provider for every runtime — a Vertex run notes that the declared
+when the selected runtime will actually call OpenAI — codex, pi on an `openai/` model, or a pi run
+on any model whose sub-agents are routed to `openai/`
+([pi › Route a persona to OpenAI](../../runtimes/pi.md#route-a-persona-to-openai)) — so the same
+harness can carry the provider for every runtime. Any other Vertex run notes that the declared
 provider was skipped and needs no OpenAI credential.
 
 A custom agent (a `source:` entry) declares it on its own harness; the built-in fleet agents declare
-it from the first fullsend release after v0.43.0. `providers/openai.yaml` arrives with
-the other upstream defaults when a run prepares its workspace, and both it and the matching profile
-are built into fullsend — a local run needs nothing on disk, and you commit neither. The profile lets the sandbox reach `api.openai.com` for the Responses API and
+it from the first fullsend release after v0.43.0. The provider definition and the matching profile
+are built into fullsend — a run needs nothing on disk, and you commit neither. The profile lets the sandbox reach `api.openai.com` for the Responses API and
 nothing else. Use a model id from OpenAI's catalog — on pi, `pi --list-models openai` in the sandbox image
 prints the ones it knows; `gpt-5.6-luna` is the inexpensive
 reasoning model and `gpt-5.6-sol` the capable one, and a model the mapping's project cannot use is

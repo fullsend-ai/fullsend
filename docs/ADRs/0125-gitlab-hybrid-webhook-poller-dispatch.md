@@ -23,6 +23,19 @@ Date: 2026-09-26
 
 Accepted
 
+> **Update (#7850):** The trigger-variable control question this ADR left
+> open below — "if the role-scoped direction is adopted... Owner-role PAT"
+> — is resolved by
+> [ADR 0131](0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md): GitLab
+> CI/CD pipeline inputs, not user-defined pipeline variables, carry dispatch
+> fields into the agent-launch pipeline, so
+> `ci_pipeline_variables_minimum_override_role` converges to
+> `no_one_allowed` on a Developer(30)-role poller/dispatcher credential —
+> the Owner-role PAT direction described immediately below was not adopted.
+> The rest of this ADR (dispatch topology, shared spine, CI scaffold
+> isolation, in-job identity/HMAC gates, and the still-open ship gates in
+> Caveats) is unaffected.
+
 Supersedes the GitLab **dispatch topology** in
 [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md) (native-CI two-path,
 later pure cron-polling after #7322). ADR 0067's credential model, poller
@@ -305,6 +318,10 @@ entity state; the poller is the scheduled backstop.
 > (e.g. a monotonic generation/sequence number the loader rejects on
 > regression) or scheduled compaction/GC of the poll-state branches;
 > neither is implemented yet.
+>
+> **Update (#7773):** the occurrence-aware shared poller state the
+> `gitlab-webhook` driver needs is decided in
+> [ADR 0132](0132-occurrence-aware-shared-poller-state.md).
 
 ### CI scaffold changes
 

@@ -1,0 +1,38 @@
+{
+  "action": "sufficient",
+  "reasoning": "Classic Go concurrency bug. The global cache variable is a plain map with no synchronization, but the default HTTP server dispatches each request in a separate goroutine. Concurrent reads and writes to a Go map without a mutex cause a runtime panic. The issue provides exact error output, specific reproduction steps, and the code confirms the root cause. No open PRs, no duplicates, no prerequisites.",
+  "clarity_scores": {
+    "symptom": 1.0,
+    "cause": 1.0,
+    "reproduction": 1.0,
+    "impact": 0.9,
+    "overall": 0.985
+  },
+  "triage_summary": {
+    "title": "Cache server panics under concurrency due to unsynchronized map access",
+    "severity": "critical",
+    "category": "bug",
+    "problem": "The global cache map in main.go is a plain Go map accessed concurrently by HTTP handlers without any synchronization, causing fatal error: concurrent map read and map write panics under load.",
+    "root_cause_hypothesis": "Go built-in maps are not safe for concurrent use. The default HTTP handler spawns a new goroutine per request, so getHandler and setHandler race on the shared cache map. The Go runtime detects this and panics.",
+    "reproduction_steps": [
+      "Run go run main.go",
+      "Send concurrent requests with hey -n 1000 -c 50 against the server /set endpoint on port 8080",
+      "Server panics within seconds with fatal error: concurrent map read and map write"
+    ],
+    "environment": "Go 1.22, Linux x86_64",
+    "impact": "Server crashes completely under any concurrent load, making it unusable in production or any multi-client scenario.",
+    "recommended_fix": "Protect the cache map with a sync.RWMutex - use RLock/RUnlock in getHandler and Lock/Unlock in setHandler. Also protect the delete(cache, key) call in getHandler by upgrading to a write lock when expiry eviction occurs.",
+    "proposed_test_case": "Write a concurrency test that exercises the race condition: launch the server in a test goroutine, spawn N goroutines (e.g., 100) that each call /set with unique keys and /get concurrently, use go test -race to verify no data races are detected, and assert the server does not panic and all requests return valid HTTP status codes.",
+    "requires_workflow_changes": false
+  },
+  "comment": "### Root cause\n\nThe `cache` variable on line 12 of `main.go` is a plain `map[string]cacheEntry` — Go maps are not safe for concurrent use. Since `net/http` handles each request in its own goroutine, any concurrent traffic causes a data race that the Go runtime detects and panics on.\n\nNote that `getHandler` also has a write path (`delete(cache, key)` for expired entries), so both handlers need write-lock protection.\n\n### Recommended fix\n\nWrap the map with a `sync.RWMutex`:\n- `RLock`/`RUnlock` for the read path in `getHandler` (when not evicting)\n- `Lock`/`Unlock` for writes in `setHandler` and for the `delete` branch in `getHandler`\n\n### Proposed test\n\n```go\nfunc TestConcurrentAccess(t *testing.T) {\n    // Start test server\n    // Spawn 100 goroutines hitting /set and /get concurrently\n    // Run under go test -race\n    // Assert: no panics, all responses return valid HTTP status codes\n}\n```",
+  "label_actions": {
+    "reason": "Server crash bug confirmed via code inspection — the bug label matches the repo standard label set.",
+    "actions": [
+      {
+        "action": "add",
+        "label": "bug"
+      }
+    ]
+  }
+}

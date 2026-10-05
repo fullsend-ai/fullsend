@@ -33,8 +33,7 @@ func resolveGitLabToken() (string, error) {
 // The baseURL parameter, when non-empty, sets the forge instance URL
 // (from the manifest's forge section). It takes precedence over the
 // GITLAB_API_URL / GITHUB_API_URL environment variables, which are
-// kept as a fallback for callers that don't have a manifest yet
-// (e.g., repos migrate).
+// kept as a fallback for callers that don't have a manifest yet.
 func newForgeClient(forgeName, gitlabToken, baseURL string, glOpts ...gl.Option) (forge.Client, error) {
 	switch forgeName {
 	case repos.ForgeGitLab:

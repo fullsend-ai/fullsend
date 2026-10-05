@@ -245,7 +245,7 @@ func TestRunMultipleStages(t *testing.T) {
 		{IID: 1, Labels: []string{"ready-to-code"}, UpdatedAt: now, Author: UserRef{ID: 5}},
 	}
 	mc.notes[1] = []Note{}
-	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 5}}
+	mc.issue[1] = &Issue{IID: 1, Labels: []string{"ready-to-code"}, Author: UserRef{ID: 5}}
 	mc.labelEvents[1] = []ResourceLabelEvent{
 		{
 			ID:     100,
@@ -325,6 +325,60 @@ func TestRunLabelEventThreadsActorID(t *testing.T) {
 	vars := mc.pipelineCalls[0].Variables
 	if vars["ACTOR_ID"] != "77" {
 		t.Errorf("ACTOR_ID: got %q, want 77 (label author threaded through Run)", vars["ACTOR_ID"])
+	}
+}
+
+// A transient failure of the label-event lookup during discovery must not
+// produce a timestamp-keyed dispatch: it could duplicate an ID-keyed
+// dispatch of the same addition. The label is held and dispatched, keyed
+// by its occurrence ID, once the lookup recovers.
+func TestRunLabelEventsLookupFailureHoldsLabelThenDispatches(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
+	mc.issues = []Issue{
+		{IID: 1, Labels: []string{"ready-to-code"}, UpdatedAt: now, Author: UserRef{ID: 5}},
+	}
+	mc.notes[1] = []Note{}
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 5}}
+	mc.labelEvents[1] = []ResourceLabelEvent{
+		{
+			ID:     100,
+			Action: "add",
+			Label: struct {
+				Name string `json:"name"`
+			}{Name: "ready-to-code"},
+			User: UserRef{ID: 77, Username: "alice-dev"},
+		},
+	}
+	mc.memberLevel[77] = 30
+	mc.labelEventsErr[1] = fmt.Errorf("label events unavailable")
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
+
+	if err := p.Run(context.Background()); err == nil {
+		t.Fatal("Run() = nil while the label-event lookup fails, want the failure reported")
+	}
+	if mc.pipelineCounter != 0 {
+		t.Fatalf("expected no pipeline while the label-event lookup fails, got %d", mc.pipelineCounter)
+	}
+	if got, ok := mc.getPollState(); ok {
+		for _, l := range got.LabelState[1] {
+			if l == "ready-to-code" {
+				t.Error("label recorded in state although its occurrence was never dispatched")
+			}
+		}
+	}
+
+	delete(mc.labelEventsErr, 1)
+	p = New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() after recovery: %v", err)
+	}
+	if mc.pipelineCounter != 1 {
+		t.Fatalf("expected 1 pipeline after recovery, got %d", mc.pipelineCounter)
 	}
 }
 
@@ -787,7 +841,7 @@ func TestRecordEventFailure(t *testing.T) {
 		UpdatedAt:    time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 	}
 
-	recordEventFailure(&cycleErrs, failedKeys, event, &minFailedAt, failedLabels, fmt.Errorf("dispatch boom"))
+	recordEventFailure(&cycleErrs, failedKeys, nil, event, &minFailedAt, failedLabels, fmt.Errorf("dispatch boom"))
 
 	if failedKeys["note-1"] != maxEventRetries {
 		t.Errorf("count = %d, want %d", failedKeys["note-1"], maxEventRetries)

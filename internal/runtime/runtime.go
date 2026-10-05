@@ -22,8 +22,9 @@ type RunMetrics struct {
 	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
 	Model                    string  `json:"model"`
 	// PerModelUsage breaks the totals above down by the model spec that
-	// spent them. Runtimes that dispatch sub-agents (pi's Agent tool) fill
-	// it with one entry per child model plus the parent's own, so a run
+	// spent them. Runtimes that dispatch sub-agents fill it — pi's Agent
+	// tool with one entry per child model plus the parent's own, claude
+	// with one entry per model id from the result's modelUsage — so a run
 	// whose cost is dominated by children is legible in metrics.json;
 	// runtimes without sub-agents leave it nil and the totals stand alone.
 	PerModelUsage map[string]ModelUsage `json:"per_model_usage,omitempty"`
@@ -31,7 +32,8 @@ type RunMetrics struct {
 
 // ModelUsage is one model's token and cost contribution to a run. Requests
 // counts the agent invocations attributed to the model (one for the parent
-// iteration, one per sub-agent call).
+// iteration, one per sub-agent call); the claude runtime has no source for
+// it and leaves it zero.
 type ModelUsage struct {
 	Requests                 int     `json:"requests"`
 	InputTokens              int     `json:"input_tokens"`

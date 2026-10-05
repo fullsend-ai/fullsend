@@ -1,0 +1,51 @@
+---
+# fullsend-stage: dispatch
+#
+# Control-plane webhook dispatcher job (ADR 0125, #7771). GitLab's native
+# "use a webhook" pipeline trigger, URL-pinned to the protected default
+# branch, starts a source=trigger pipeline; this job is the only job such
+# a pipeline runs. fullsend-pipeline.yml includes this file only when
+# $CI_PIPELINE_SOURCE == "trigger", and the agent template is included
+# only for "api" pipelines, so a trigger pipeline never admits the agent
+# job directly. The dispatcher's only path to an agent is the same
+# authenticated typed-input transport the cron poller uses
+# (CreatePipelineWithInputs, producing a source=api agent pipeline with the
+# signed scalar metadata and event_payload_chunk_NN inputs — ADR 0131),
+# never caller-supplied pipeline variables.
+#
+# The webhook body arrives as GitLab's native file-type TRIGGER_PAYLOAD
+# variable (its value is a path to a temporary file, not the JSON body).
+# No extra root pipeline inputs are declared for it: the root
+# .gitlab-ci.yml keeps exactly the 20-input dispatch contract. The payload
+# is untrusted hinting only; the gitlab-webhook input driver re-fetches
+# every referenced resource through the project-pinned API.
+#
+# Job behavior lives in .gitlab/ci/scripts/run-dispatcher-job.sh so the
+# shell can be linted and tested independently of this YAML.
+
+"fullsend webhook dispatcher":
+  stage: dispatch
+  image:
+    name: ghcr.io/fullsend-ai/fullsend-runner:dev
+    entrypoint: [""]
+  tags: __CONTROL_RUNNER_TAGS__
+  rules:
+    # Deny-before-admit: GitLab evaluates rules first-match, so a
+    # debug-trace pipeline must not reach the trigger admit rule.
+    # Secrets materialize at job init; a script-level abort is too late.
+    # Matches the full truthy set gitlab-runner accepts for this
+    # variable (Go strconv.ParseBool: "1", "t"/"T", "true"/"TRUE"/"True").
+    - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
+      when: never
+    # Disjoint source allowlist: trigger only (the poller admits only
+    # schedule, the agent only api). This rule is a scheduling filter;
+    # run-dispatcher-job.sh re-derives the real source, project, pipeline
+    # and protected default branch from the CI_JOB_TOKEN job record before
+    # any credential-bearing call.
+    - if: $CI_PIPELINE_SOURCE == "trigger" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
+  variables:
+    FULLSEND_FORGE: "gitlab"
+  before_script:
+    - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/install-fullsend-cli.sh"
+  script:
+    - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/run-dispatcher-job.sh"

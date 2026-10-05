@@ -1221,3 +1221,24 @@ func TestSetDefault_Vendor(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "vendor:")
 }
+
+func TestUpdateAppSet_ConcreteFilterCopiesGlobEntry(t *testing.T) {
+	manifest := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{Repos: []RepoEntry{{
+			Name:        "acme/*",
+			FullsendRef: "v2.0.0",
+			Inference:   InferenceSettings{Auth: InferenceAuthOpenAIAPIKey},
+		}}},
+	}
+	updated, err := UpdateAppSet(ManifestEditConfig{Manifest: manifest}, []string{"acme/api"}, "custom-set")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/api"}, updated)
+	require.Len(t, manifest.GitHub.Repos, 2)
+	assert.Empty(t, manifest.GitHub.Repos[0].AppSet)
+	api := manifest.GitHub.Repos[1]
+	assert.Equal(t, "acme/api", api.Name)
+	assert.Equal(t, "custom-set", api.AppSet)
+	assert.Equal(t, InferenceAuthOpenAIAPIKey, api.Inference.Auth)
+	assert.Equal(t, "v2.0.0", api.FullsendRef)
+}

@@ -68,9 +68,8 @@ func TestAppendStaleVendoredDeletes(t *testing.T) {
 	})
 }
 
-// Pruning must fire on every vendor commit path, not just acquireAndVendor —
-// prepareVendorFiles is the chokepoint, exercised here through
-// appendVendorTreeFiles and the combined-commit collect func.
+// Pruning must fire on every vendor commit path — prepareVendorFiles is the
+// chokepoint, exercised here through appendVendorTreeFiles.
 func TestVendorCommitPathsPruneStaleFiles(t *testing.T) {
 	exe := amd64VendorBinary(t)
 	ctx := context.Background()
@@ -97,9 +96,4 @@ func TestVendorCommitPathsPruneStaleFiles(t *testing.T) {
 	out, _, err := appendVendorTreeFiles(ctx, seed(), ui.New(&strings.Builder{}), "org", "my-repo", nil, true, exe, "")
 	require.NoError(t, err)
 	assert.Equal(t, 1, countDeletes(out), "appendVendorTreeFiles must prune")
-
-	fn := makeVendorCollectFunc(exe, "")
-	out, _, err = fn(ctx, seed(), ui.New(&strings.Builder{}), "org", "my-repo")
-	require.NoError(t, err)
-	assert.Equal(t, 1, countDeletes(out), "combined collect func must prune")
 }

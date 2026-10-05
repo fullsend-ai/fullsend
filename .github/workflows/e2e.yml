@@ -1,23 +1,21 @@
 name: E2E Tests
 
-# PR-triggered e2e uses pull_request_target so fork PRs receive secrets.
-# Authorization runs in a separate gate job (base checkout only) before the e2e
-# job checks out the PR head — see gate/e2e job comments for why this is split.
+# PR-triggered behaviour and playback use pull_request_target for fork secrets.
+# A separate gate job authorizes PRs before either suite checks out PR-head code.
 
 permissions: {}
 
 on:
   push:
     branches: [main]
-    # SYNC-WITH: grep in "Check for e2e-relevant changes" (e2e job) and
-    # "Check for behaviour-relevant changes" (behaviour job). push.paths is the
-    # union of both filters (plus **/*.go); each job grep may be narrower.
+    # SYNC-WITH: behaviour and playback relevance filters below.
+    # push.paths includes both filters; each job grep may be narrower.
     paths:
       - '**/*.go'
       - 'go.mod'
       - 'go.sum'
       - 'e2e/**'
-      - 'pkg/e2etest/**'
+      - 'internal/e2etest/**'
       - 'pkg/behaviourtest/**'
       - 'internal/scaffold/fullsend-repo/**'
       - 'internal/security/hooks/**'
@@ -48,6 +46,12 @@ on:
     types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
+    inputs:
+      run_playback:
+        description: Run the playback behaviour suite
+        required: true
+        type: boolean
+        default: true
   workflow_call:
 
 concurrency:
@@ -65,8 +69,8 @@ concurrency:
 
 jobs:
   gate:
-    # Separate job (not steps in e2e) so pull-requests: write stays out of the
-    # job that checks out fork head and runs make e2e-test with secrets.
+    # Separate job so pull-requests: write stays out of suite jobs that
+    # check out PR-head code and run behaviour/playback tests with secrets.
     # Never checkout github.event.pull_request.head.sha here.
     # workflow_call from e2e-ok-to-test.yml still has event_name pull_request_target.
     if: github.event_name == 'pull_request_target'
@@ -94,96 +98,12 @@ jobs:
           pr_author_login: ${{ github.event.pull_request.user.login }}
           label_actor_login: ${{ github.event.sender.login }}
 
-  e2e:
-    # For pull_request_target, runs only when gate sets authorized=true.
-    # This job checks out untrusted PR head code — no pull-requests: write here.
-    needs: gate
-    if: >-
-      !cancelled() &&
-      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Check for e2e-relevant changes
-        id: changes
-        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
-          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
-        # SYNC-WITH: push.paths filter above
-        run: |
-          if [ "$EVENT_NAME" = "merge_group" ]; then
-            FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
-              echo "::warning::Failed to fetch merge group files — running e2e tests as a precaution"
-              echo "relevant=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            }
-            FILE_COUNT=$(echo "$FILES" | wc -l)
-            if [ "$FILE_COUNT" -ge 300 ]; then
-              echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running e2e tests as a precaution"
-              echo "relevant=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          else
-            FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
-              echo "::warning::Failed to fetch PR files — running e2e tests as a precaution"
-              echo "relevant=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            }
-          fi
-          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^pkg/e2etest/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^action\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
-            echo "relevant=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::No e2e-relevant files changed — skipping tests"
-            echo "relevant=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.changes.outputs.relevant != 'false'
-        with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-          # checkout@v7 blocks fork PR head checkouts on pull_request_target by default.
-          # Safe here: gate job authorizes before this job runs; no pull-requests: write.
-          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
-
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        if: steps.changes.outputs.relevant != 'false'
-        with:
-          go-version-file: go.mod
-
-      - name: Authenticate to GCP
-        if: steps.changes.outputs.relevant != 'false'
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
-        with:
-          workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
-
-      - name: Run e2e tests
-        if: steps.changes.outputs.relevant != 'false'
-        run: make e2e-test
-        env:
-          E2E_SCREENSHOT_DIR: ${{ runner.temp }}/e2e-screenshots
-          E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
-
-      - name: Upload debug screenshots
-        if: always() && steps.changes.outputs.relevant != 'false'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-screenshots-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
-          path: ${{ runner.temp }}/e2e-screenshots/
-          if-no-files-found: ignore
-          retention-days: 5
-
   behaviour:
-    # Same gate authorization as e2e — checks out untrusted PR head with secrets.
+    # Share a group with playback only for stage; dev jobs reserve separate orgs.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.run_id }}-${{ github.event_name == 'push' && 'stage-org' || 'behaviour-dev' }}
+      cancel-in-progress: false
+    # Gate authorization protects checkout of untrusted PR-head code with secrets.
     # Runs only on authorized PRs, merge_group (required check; treated as
     # PR-class / dev), and push to main (stage). Skip workflow_dispatch.
     # Environment uses event_name, not github.ref: pull_request_target sets
@@ -237,8 +157,10 @@ jobs:
               exit 0
             }
           fi
-          # pkg/e2etest: shared pool/CLI/cleanup; pkg/behaviourtest: framework; e2e/admin: admin-only helpers
-          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^pkg/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^scripts/redact-behaviour-artifacts\.sh$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          # Any Go change runs the suite: shared dependencies extend beyond
+          # the explicit non-Go paths. Keep both filters in sync and covered
+          # by scripts/check-live-test-relevance-test.sh.
+          if echo "$FILES" | grep -qE '\.go$|^e2e/behaviour/|^internal/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^internal/sentencetoken/english\.json$|^Makefile$|^action\.yml$|^\.github/scripts/|^scripts/redact-behaviour-artifacts\.sh$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No behaviour-relevant files changed — skipping behaviour tests"
@@ -351,5 +273,182 @@ jobs:
         with:
           name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
           path: ${{ runner.temp }}/behaviour-artifacts/
+          if-no-files-found: ignore
+          retention-days: 5
+
+  playback:
+    # Serialize with behaviour only on stage, whose pool has a single org.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.run_id }}-${{ github.event_name == 'push' && 'stage-org' || 'playback-dev' }}
+      cancel-in-progress: false
+    # Manual dispatch uses the selected trusted branch and the dev environment.
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'merge_group') ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_playback) ||
+        (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true')
+      )
+    # Scalar form keeps default deployment: true so runs list under Environments.
+    environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
+    steps:
+      - name: Check for playback-relevant changes
+        id: changes
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        # SYNC-WITH: push.paths behaviour entries above
+        run: |
+          if [ "$EVENT_NAME" = "merge_group" ]; then
+            FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch merge group files — running playback tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+            FILE_COUNT=$(echo "$FILES" | wc -l)
+            if [ "$FILE_COUNT" -ge 300 ]; then
+              echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running playback tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
+              echo "::warning::Failed to fetch PR files — running playback tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+          fi
+          # Any Go change runs the suite: shared dependencies extend beyond
+          # the explicit non-Go paths. Keep both filters in sync and covered
+          # by scripts/check-live-test-relevance-test.sh.
+          if echo "$FILES" | grep -qE '\.go$|^e2e/behaviour/|^internal/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^internal/sentencetoken/english\.json$|^Makefile$|^action\.yml$|^\.github/scripts/|^scripts/redact-behaviour-artifacts\.sh$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No playback-relevant files changed — skipping playback tests"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          go-version-file: go.mod
+
+      - name: Authenticate to GCP
+        if: steps.changes.outputs.relevant != 'false'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+
+      - name: Run playback tests
+        id: tests
+        if: steps.changes.outputs.relevant != 'false'
+        shell: bash
+        run: |
+          mkdir -p "${{ runner.temp }}/playback-artifacts"
+          make playback-test 2>&1 | tee "${{ runner.temp }}/playback-artifacts/playback-test.log"
+        env:
+          GODOG_CONCURRENCY: "1"
+          BEHAVIOUR_SCM: github
+          BEHAVIOUR_CI: githubactions
+          BEHAVIOUR_INSTALL_MODE: per-repo
+          BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/playback-artifacts
+          E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          # CF mint BT path: temp Worker deploy needs role PEMs + Cloudflare creds
+          TEST_FULLSEND_PEM: ${{ secrets.TEST_FULLSEND_PEM }}
+          TEST_TRIAGE_PEM: ${{ secrets.TEST_TRIAGE_PEM }}
+          TEST_CODER_PEM: ${{ secrets.TEST_CODER_PEM }}
+          TEST_REVIEW_PEM: ${{ secrets.TEST_REVIEW_PEM }}
+          TEST_RETRO_PEM: ${{ secrets.TEST_RETRO_PEM }}
+          TEST_PRIORITIZE_PEM: ${{ secrets.TEST_PRIORITIZE_PEM }}
+          # Env names match Wrangler/mint deploy; values come from TEST_*-prefixed
+          # repo secrets (not the prod site-deploy CLOUDFLARE_* secrets).
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.TEST_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.TEST_CLOUDFLARE_API_TOKEN }}
+          # Human-like actor PATs (write / triage / outsider) for behaviour SCM ops.
+          # Env names match repo secret names; consumption is driver/step work (#6027).
+          TEST_ACTOR_WRITE_PAT: ${{ secrets.TEST_ACTOR_WRITE_PAT }}
+          TEST_ACTOR_TRIAGE_PAT: ${{ secrets.TEST_ACTOR_TRIAGE_PAT }}
+          TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.TEST_ACTOR_OUTSIDER_PAT }}
+
+      - name: Check out redaction script from base branch
+        if: always() && steps.changes.outputs.relevant != 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Base-branch script only — PR head must not control artifact redaction (#5221).
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch || github.sha }}
+          sparse-checkout: scripts/redact-behaviour-artifacts.sh
+          path: base-scripts
+          persist-credentials: false
+
+      - name: Redact secrets from playback debug artifacts
+        id: redact
+        if: always() && steps.changes.outputs.relevant != 'false'
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/playback-artifacts
+          TEST_FULLSEND_PEM: ${{ secrets.TEST_FULLSEND_PEM }}
+          TEST_TRIAGE_PEM: ${{ secrets.TEST_TRIAGE_PEM }}
+          TEST_CODER_PEM: ${{ secrets.TEST_CODER_PEM }}
+          TEST_REVIEW_PEM: ${{ secrets.TEST_REVIEW_PEM }}
+          TEST_RETRO_PEM: ${{ secrets.TEST_RETRO_PEM }}
+          TEST_PRIORITIZE_PEM: ${{ secrets.TEST_PRIORITIZE_PEM }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.TEST_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.TEST_CLOUDFLARE_API_TOKEN }}
+          TEST_ACTOR_WRITE_PAT: ${{ secrets.TEST_ACTOR_WRITE_PAT }}
+          TEST_ACTOR_TRIAGE_PAT: ${{ secrets.TEST_ACTOR_TRIAGE_PAT }}
+          TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.TEST_ACTOR_OUTSIDER_PAT }}
+          E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+        run: |
+          exec /usr/bin/env -i \
+            PATH=/usr/bin:/bin \
+            LC_ALL=C \
+            HOME="${{ runner.temp }}" \
+            ARTIFACT_DIR="${ARTIFACT_DIR}" \
+            TEST_FULLSEND_PEM="${TEST_FULLSEND_PEM}" \
+            TEST_TRIAGE_PEM="${TEST_TRIAGE_PEM}" \
+            TEST_CODER_PEM="${TEST_CODER_PEM}" \
+            TEST_REVIEW_PEM="${TEST_REVIEW_PEM}" \
+            TEST_RETRO_PEM="${TEST_RETRO_PEM}" \
+            TEST_PRIORITIZE_PEM="${TEST_PRIORITIZE_PEM}" \
+            CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID}" \
+            CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN}" \
+            TEST_ACTOR_WRITE_PAT="${TEST_ACTOR_WRITE_PAT}" \
+            TEST_ACTOR_TRIAGE_PAT="${TEST_ACTOR_TRIAGE_PAT}" \
+            TEST_ACTOR_OUTSIDER_PAT="${TEST_ACTOR_OUTSIDER_PAT}" \
+            E2E_GCP_PROJECT_ID="${E2E_GCP_PROJECT_ID}" \
+            E2E_GCP_WIF_PROVIDER="${E2E_GCP_WIF_PROVIDER}" \
+            E2E_GCP_SERVICE_ACCOUNT="${E2E_GCP_SERVICE_ACCOUNT}" \
+            /usr/bin/bash "${{ github.workspace }}/base-scripts/scripts/redact-behaviour-artifacts.sh"
+
+      - name: Upload playback debug artifacts
+        if: always() && steps.tests.outcome == 'failure' && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playback-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
+          path: ${{ runner.temp }}/playback-artifacts/
           if-no-files-found: ignore
           retention-days: 5

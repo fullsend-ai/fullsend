@@ -159,17 +159,33 @@ func assertAgentOutput(w *world.World, fileName, doc string) error {
 }
 
 func findModuleSubdir(rel string) (string, error) {
+	dir, err := moduleRootDir()
+	if err != nil {
+		return "", err
+	}
+	candidate := filepath.Join(dir, rel)
+	if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+		return candidate, nil
+	}
+	return "", fmt.Errorf("could not find %s under module root %s", rel, dir)
+}
+
+// moduleRootDir returns the directory containing go.mod, walking up from
+// the current working directory. It is the trust boundary fixtureSubpath
+// (playback.go) anchors its symlink-containment check to: everything
+// beneath it that this package reads fixture/scenario data from (the
+// fixtures root, its category subdirectories, and requested fixture
+// names) must be checked for symlink escapes, but the module root itself
+// is the checked-out repository and not attacker-influenced fixture
+// content (#7957 review).
+func moduleRootDir() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			candidate := filepath.Join(dir, rel)
-			if st, err := os.Stat(candidate); err == nil && st.IsDir() {
-				return candidate, nil
-			}
-			return "", fmt.Errorf("could not find %s under module root %s", rel, dir)
+			return dir, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -177,5 +193,5 @@ func findModuleSubdir(rel string) (string, error) {
 		}
 		dir = parent
 	}
-	return "", fmt.Errorf("could not find go.mod while searching for %s", rel)
+	return "", fmt.Errorf("could not find go.mod while searching from %s", dir)
 }

@@ -1621,7 +1621,10 @@ func TestHarnessRunMapsHyphensInRoleIdentifiers(t *testing.T) {
 // embedded scaffold by `fullsend run` instead. policies/ is on neither list:
 // the scaffold ships no policy (#6834).
 func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
-	notLayered := map[string]bool{"profiles": true}
+	// providers/ and profiles/ stay in layeredDirs so they are never
+	// installed, but CI does not layer them: fullsend run resolves a bare
+	// provider name and its profile from the binary (#7268).
+	notLayered := map[string]bool{"profiles": true, "providers": true}
 	want := make([]string, 0, len(layeredDirs))
 	for _, d := range layeredDirs {
 		if d := strings.TrimSuffix(d, "/"); !notLayered[d] {

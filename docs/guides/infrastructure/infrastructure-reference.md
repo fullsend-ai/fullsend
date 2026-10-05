@@ -317,11 +317,11 @@ During installation, the GCF provisioner creates:
 
 ## GitHub Secrets & Variables Deployment
 
-> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Operations](../getting-started/operations.md#updating-configuration-values) for the full configuration management guide.
+> Individual values can be updated with `fullsend github set <owner/repo> <key> <value>`. See [Operations](../getting-started/operations.md#updating-configuration-values) for the full configuration management guide.
 
-Secrets and variables are deployed at different scopes depending on the installation mode.
+Secrets and variables are deployed on the target repository. The CLI no longer installs per-org secrets and variables; the legacy per-org layout below is retained only as a historical reference for existing org-mode installations.
 
-### Per-Org Mode Secrets/Variables
+### Per-Org Mode Secrets/Variables (historical, removed from CLI installation)
 
 **Org-level variable:**
 - `FULLSEND_MINT_URL` — URL of the token mint Cloud Function
@@ -346,7 +346,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 **Target repo secrets:**
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
-- `FULLSEND_OPENAI_API_KEY` — opt-in static OpenAI API key when OpenAI WIF is unavailable (not set by `github setup`)
+- `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for repos whose `inference.auth` is `openai-api-key` (written by `repos install --openai-api-key`; not set by `github setup`)
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
@@ -363,7 +363,7 @@ Ordinary unflagged `repos install` provisions role credentials; it does not remo
 - `FULLSEND_DISPATCH_SECRET` — Shared HMAC secret for signing dispatch variables and poll-state documents. Auto-provisioned by `repos install` (on both fresh installs and re-run/convergence of already-enrolled repos) as a masked, protected CI/CD variable.
 - `FULLSEND_TRIGGER_TOKEN` — GitLab pipeline trigger token for the webhook fast-path dispatcher. Stored as a masked, protected CI/CD variable when the fast-path is enabled. Never logged.
 - `FULLSEND_WEBHOOK_SECRET` — GitLab project-webhook secret (`X-Gitlab-Token`) for the webhook fast-path. Stored as a masked, protected CI/CD variable when the fast-path is enabled. Never logged.
-- `FULLSEND_POLL_MODE` — Pipeline schedule variable (`"slash"` or `"events"`); set automatically per schedule during install, not a project-level CI/CD variable
+- `FULLSEND_POLL_MODE` — Job-local variable (`"slash"` or `"events"`), selected by job rules from `CI_PIPELINE_SCHEDULE_DESCRIPTION`; managed schedules do not submit pipeline variables. Typed activation removes legacy schedule-level overrides.
 - `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` — masked, protected role PATs provisioned by `repos install` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)). Fresh installs provision these role tokens directly, with no shared token to retire. Existing installs that predate the role-only model and still have the shared token get the missing role tokens provisioned, but `FULLSEND_FORGE_TOKEN` is left in place — an administrator must revoke it manually. GitLab CI poll/agent jobs (`select-gitlab-role-token.sh`) and `fullsend poll` / `fullsend run` authenticate with the matching role token and fail closed if it is missing. Custom `own` roles use `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`; `reuse` roles share another registered credential.
 - `FULLSEND_GITLAB_ROLE_REGISTRY` — protected, unmasked administrator registry JSON (policy and credential references, never secret values). Written by `repos install`; not repository or merge-request content.
 - `FULLSEND_GITLAB_ROLE_ROTATION` — protected, unmasked per-role rotation state (lock, token IDs, expiry dates, phase; never secret values). Written when `repos install` rotates a role credential ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)).
@@ -423,7 +423,7 @@ access instead of Maintainer. See ADR 0067.
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
-- `OPENAI_API_KEY` — optional static OpenAI API key when OpenAI WIF is unavailable (masked CI/CD variable; already on the runner path, no extra forwarding)
+- `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for projects whose `inference.auth` is `openai-api-key` (masked CI/CD variable written by `repos install --openai-api-key`; the job maps it to `OPENAI_API_KEY`, and an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used)
 
 ### Secrets Layer Behavior
 

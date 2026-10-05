@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
@@ -358,6 +359,17 @@ func (pc *PollClient) GetMergeRequest(ctx context.Context, owner, repo string, m
 // variables. Returns the pipeline ID and web URL.
 func (pc *PollClient) CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error) {
 	p, err := pc.LiveClient.CreatePipeline(ctx, owner, repo, ref, variables)
+	if err != nil {
+		return 0, "", err
+	}
+	return p.ID, p.WebURL, nil
+}
+
+// CreatePipelineWithInputs creates a new pipeline on the given ref using
+// typed GitLab CI/CD pipeline inputs instead of user-defined pipeline
+// variables. Returns the pipeline ID and web URL.
+func (pc *PollClient) CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	p, err := pc.LiveClient.CreatePipelineWithInputs(ctx, owner, repo, ref, inputs)
 	if err != nil {
 		return 0, "", err
 	}

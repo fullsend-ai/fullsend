@@ -21,7 +21,14 @@ spec:
     # variable (Go strconv.ParseBool: "1", "t"/"T", "true"/"TRUE"/"True").
     - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
       when: never
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
+    # Select mode from GitLab's schedule identity, not pipeline variables,
+    # which no_one_allowed prohibits. No extra root input is needed.
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i && $CI_PIPELINE_SCHEDULE_DESCRIPTION == "fullsend slash poll"
+      variables:
+        FULLSEND_POLL_MODE: "slash"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i && $CI_PIPELINE_SCHEDULE_DESCRIPTION == "fullsend event poll"
+      variables:
+        FULLSEND_POLL_MODE: "events"
   variables:
     FULLSEND_FORGE: "gitlab"
     FULLSEND_POLL_MODE: "events"

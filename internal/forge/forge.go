@@ -95,18 +95,16 @@ const (
 	// masked, protected CI/CD variable. Never logged.
 	SecretWebhookSecret = "FULLSEND_WEBHOOK_SECRET"
 
-	// Opt-in OpenAI static-key secret (ADR 0092), GitHub only: never part
-	// of requiredSecrets/requiredSecretsForForge — a repository with no
-	// OpenAI WIF and no static key configured is not unhealthy. Uninstall
-	// deletes it if present so a torn-down repo doesn't keep a long-lived
-	// key around. It's a dedicated, FULLSEND_-namespaced secret (via
-	// `fullsend github set` or pasted directly into GitHub settings)
-	// fullsend can safely delete regardless of who created it — unlike
+	// OpenAI static-key secret (ADR 0092). `fullsend repos install`
+	// writes it on GitHub and GitLab for repositories whose inference.auth
+	// is openai-api-key, and probe/converge require it for those repos
+	// only — it is never part of requiredSecrets/requiredSecretsForForge.
+	// GitHub uninstall deletes it if present so a torn-down repo doesn't
+	// keep a long-lived key around. GitLab CI maps it to OPENAI_API_KEY
+	// for the job. GitLab uninstall deletes this prefixed key too;
 	// GitLab's unprefixed, potentially-shared OPENAI_API_KEY CI/CD
-	// variable, which fullsend never forwards and does not delete on
-	// uninstall — see gitlabUninstallSecrets
-	// in internal/repos/uninstall.go for why that one is deliberately not
-	// deleted.
+	// variable is no longer read by the job and is never deleted — see
+	// gitlabUninstallSecrets in internal/repos/uninstall.go.
 	SecretOpenAIAPIKey = "FULLSEND_OPENAI_API_KEY"
 
 	// Legacy uninstall-only variables — GitLab.
@@ -300,6 +298,26 @@ var ErrNotSupported = errors.New("operation not supported by this forge")
 // IsNotSupported reports whether err indicates an unsupported operation.
 func IsNotSupported(err error) bool {
 	return errors.Is(err, ErrNotSupported)
+}
+
+// SecretProtection describes the exposure controls on an existing repo
+// secret. Forges that always encrypt and mask secrets report both true.
+type SecretProtection struct {
+	// Exists reports whether the secret is present.
+	Exists bool
+	// Masked reports that the forge redacts the value in job logs.
+	Masked bool
+	// Protected reports that the value is only exposed to jobs on
+	// protected branches and tags.
+	Protected bool
+	// FileType reports that the secret is a file-type variable, whose
+	// value jobs receive as a temporary file path rather than the value.
+	// Forges without variable types always report false.
+	FileType bool
+	// EnvironmentScoped reports that the secret is limited to specific
+	// environments, so jobs that declare no environment do not receive
+	// it. Forges without environment scopes always report false.
+	EnvironmentScoped bool
 }
 
 // Repository represents a repository on a git forge.
@@ -773,8 +791,16 @@ type Client interface {
 	IsInstallationToken(ctx context.Context) (bool, error)
 
 	// Secrets and variables
+	//
+	// On GitLab, RepoSecretExists, GetRepoSecretProtection, and
+	// DeleteRepoSecret address only the wildcard-scoped (environment_scope
+	// "*") variable; an environment-specific variable with the same key is
+	// ignored and left untouched.
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
+	// GetRepoSecretProtection reports whether a repo secret exists and the
+	// masking/protection controls applied to it. It never returns the value.
+	GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (SecretProtection, error)
 	DeleteRepoSecret(ctx context.Context, owner, repo, name string) error
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
 	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
@@ -865,6 +891,14 @@ type Client interface {
 	// ListPullRequestFiles returns the relative file paths changed by a pull
 	// request. On GitHub, the API caps results at 3000 files total.
 	ListPullRequestFiles(ctx context.Context, owner, repo string, number int) ([]string, error)
+	// ListPullRequestCommits returns the commit SHAs on a pull request,
+	// oldest first. The result is the pull request's current commit list,
+	// not a historical record: force-pushing or rebasing the head branch
+	// can replace it, and the first entry is the commit the PR was opened
+	// with only while the PR has not been rewritten (and, for a
+	// multi-commit PR, the PR opens at its last commit). On GitHub the
+	// API caps results at 250 commits.
+	ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 	// ListPullRequestFileDiffs returns the files changed by a pull request
 	// along with their unified diff patches. Use this when you need to
 	// determine which lines are within diff hunks (e.g. for inline comments).
@@ -889,6 +923,13 @@ type Client interface {
 
 	// Workflow run listing
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
+	// ListWorkflowRunsSince returns workflow runs for workflowFile created at
+	// or after since, paginating as needed rather than returning only the
+	// newest page. Use this instead of ListWorkflowRuns when the caller must
+	// not miss an older-but-still-eligible run that newer runs (including
+	// ones for other agents) could otherwise push off the first page (#7996
+	// review).
+	ListWorkflowRunsSince(ctx context.Context, owner, repo, workflowFile string, since time.Time) ([]WorkflowRun, error)
 	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
 
@@ -961,6 +1002,11 @@ type Client interface {
 
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
+	// GetPipelineSchedule includes variables omitted by GitLab's list endpoint.
+	GetPipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error)
+	// DeletePipelineScheduleVariable deletes one schedule-level variable from
+	// an existing pipeline schedule. GitHub returns ErrNotSupported.
+	DeletePipelineScheduleVariable(ctx context.Context, owner, repo string, scheduleID int64, key string) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
 	// UpdatePipelineSchedule sets whether an existing pipeline schedule is
 	// active. Used to reactivate required GitLab schedules that exist but

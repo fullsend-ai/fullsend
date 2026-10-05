@@ -330,3 +330,90 @@ func TestGeneratedPostScriptOkRejectsANonGitHubIssueURL(t *testing.T) {
 		t.Fatalf("expected the ISSUE_URL rejection, got:\n%s", stderr)
 	}
 }
+
+// TestGeneratedPostScriptOkWithoutCommentPostsNothing: comment is optional
+// for ok, missing or empty, because nothing new is posted then.
+func TestGeneratedPostScriptOkWithoutCommentPostsNothing(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	for name, result := range map[string]map[string]any{
+		"missing": {"status": "ok", "summary": "All clear"},
+		"empty":   {"status": "ok", "summary": "All clear", "comment": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stdout, stderr, err := runPostScript(t, script, writeRunDir(t, map[string]any{"iteration-1": result}))
+			if err != nil {
+				t.Fatalf("ok without a comment must exit 0, got %v; stderr:\n%s", err, stderr)
+			}
+			if strings.TrimSpace(stdout) != "" {
+				t.Fatalf("ok must print no comment body, got:\n%s", stdout)
+			}
+		})
+	}
+}
+
+// TestGeneratedPostScriptOkWithoutCommentReplacesWithSummary: on the live ok
+// path the all-clear that replaces an earlier findings comment is the
+// summary alone when there is no comment.
+func TestGeneratedPostScriptOkWithoutCommentReplacesWithSummary(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	binDir := t.TempDir()
+	bodyFile := filepath.Join(binDir, "body")
+	stub := "#!/usr/bin/env bash\nif [[ \"$*\" == *--help* ]]; then echo '  --only-if-exists   update an existing comment but never create one'; exit 0; fi\ncat > " + bodyFile + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "fullsend"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{"iteration-1": map[string]any{"status": "ok", "summary": "All clear"}})
+	cmd := exec.Command("bash", script)
+	cmd.Dir = runDir
+	cmd.Env = append(os.Environ(),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ISSUE_URL=https://github.com/fullsend-ai/demo/pull/99",
+		"GH_TOKEN=test-token",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ok live path must exit 0, got %v:\n%s", err, out)
+	}
+	got, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "**All clear**\n" {
+		t.Errorf("all-clear body = %q, want the summary alone", got)
+	}
+}
+
+// TestGeneratedPostScriptFindingsRequiresComment: findings and error still
+// need a comment, because that is what gets posted.
+func TestGeneratedPostScriptFindingsRequiresComment(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	for _, status := range []string{"findings", "error"} {
+		runDir := writeRunDir(t, map[string]any{"iteration-1": map[string]any{"status": status, "summary": "s", "comment": ""}})
+		_, stderr, err := runPostScript(t, script, runDir)
+		if err == nil || !strings.Contains(stderr, "comment is required when status is "+status) {
+			t.Errorf("%s with an empty comment must fail naming the rule, got %v; stderr:\n%s", status, err, stderr)
+		}
+	}
+}
+
+// TestGeneratedPostScriptRejectsANonStringComment: an optional comment is
+// still never accepted in another type, even when status is ok.
+func TestGeneratedPostScriptRejectsANonStringComment(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{"iteration-1": map[string]any{"status": "ok", "summary": "s", "comment": []string{"a"}}})
+	_, stderr, err := runPostScript(t, script, runDir)
+	if err == nil || !strings.Contains(stderr, "comment must be a string") {
+		t.Errorf("a non-string comment must be refused, got %v; stderr:\n%s", err, stderr)
+	}
+}

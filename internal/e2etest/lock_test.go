@@ -239,3 +239,109 @@ func TestAcquireOrg_RateLimitBacksOff(t *testing.T) {
 	assert.True(t, backoffSeen,
 		"should log rate-limit backoff during polling")
 }
+
+const otherHolder = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+// stubLockAge makes lockRepoCreatedAtFn report a lock created age ago, so
+// stale-lock decisions can be tested without calling the GitHub API.
+func stubLockAge(t *testing.T, age time.Duration) {
+	t.Helper()
+	orig := lockRepoCreatedAtFn
+	t.Cleanup(func() { lockRepoCreatedAtFn = orig })
+	lockRepoCreatedAtFn = func(context.Context, string, string, string) (time.Time, error) {
+		return time.Now().Add(-age), nil
+	}
+}
+
+// seedLock creates the lock repo on org held by holder.
+func seedLock(t *testing.T, fake *forge.FakeClient, org, holder string) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := fake.CreateRepo(ctx, org, lockRepo, "E2E test lock", false)
+	require.NoError(t, err)
+	require.NoError(t, fake.CreateFile(ctx, org, lockRepo, "README.md", "acquire lock", []byte(holder)))
+}
+
+func TestStaleLockTimeout(t *testing.T) {
+	assert.Equal(t, 30*time.Minute, staleLockTimeout)
+}
+
+func TestTryReclaimStaleLock_AgeBoundary(t *testing.T) {
+	tests := []struct {
+		name          string
+		age           time.Duration
+		wantReclaimed bool
+	}{
+		{name: "16m not reclaimed (was stale at 15m)", age: 16 * time.Minute},
+		{name: "25m not reclaimed", age: 25 * time.Minute},
+		{name: "29m not reclaimed", age: 29 * time.Minute},
+		{name: "31m reclaimed", age: 31 * time.Minute, wantReclaimed: true},
+		{name: "45m reclaimed", age: 45 * time.Minute, wantReclaimed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := forge.NewFakeClient()
+			ctx := context.Background()
+			seedLock(t, fake, testLockOrg, otherHolder)
+			stubLockAge(t, tt.age)
+
+			got := tryReclaimStaleLock(ctx, fake, "token", testLockOrg, "our-run", t.Logf)
+			assert.Equal(t, tt.wantReclaimed, got)
+
+			content, err := fake.GetFileContent(ctx, testLockOrg, lockRepo, "README.md")
+			require.NoError(t, err)
+			if tt.wantReclaimed {
+				assert.Contains(t, fake.DeletedRepos, testLockOrg+"/"+lockRepo)
+				assert.Equal(t, "our-run", string(content))
+			} else {
+				assert.Empty(t, fake.DeletedRepos, "fresh lock must not be deleted")
+				assert.Equal(t, otherHolder, string(content))
+			}
+		})
+	}
+}
+
+func TestTryReclaimStaleLock_AgeLookupError(t *testing.T) {
+	fake := forge.NewFakeClient()
+	seedLock(t, fake, testLockOrg, otherHolder)
+	orig := lockRepoCreatedAtFn
+	t.Cleanup(func() { lockRepoCreatedAtFn = orig })
+	lockRepoCreatedAtFn = func(context.Context, string, string, string) (time.Time, error) {
+		return time.Time{}, fmt.Errorf("boom")
+	}
+
+	assert.False(t, tryReclaimStaleLock(context.Background(), fake, "token", testLockOrg, "our-run", t.Logf))
+	assert.Empty(t, fake.DeletedRepos)
+}
+
+func TestAcquireLock_ReclaimsLockOlderThanStaleTimeout(t *testing.T) {
+	fake := forge.NewFakeClient()
+	ctx := context.Background()
+	seedLock(t, fake, testLockOrg, otherHolder)
+	stubLockAge(t, staleLockTimeout+time.Minute)
+
+	require.NoError(t, acquireLock(ctx, fake, "token", testLockOrg, "our-run", 5*time.Minute, t.Logf))
+
+	assert.Contains(t, fake.DeletedRepos, testLockOrg+"/"+lockRepo)
+	content, err := fake.GetFileContent(ctx, testLockOrg, lockRepo, "README.md")
+	require.NoError(t, err)
+	assert.Equal(t, "our-run", string(content))
+}
+
+func TestAcquireLock_DoesNotReclaimLockYoungerThanStaleTimeout(t *testing.T) {
+	fake := forge.NewFakeClient()
+	seedLock(t, fake, testLockOrg, otherHolder)
+	stubLockAge(t, staleLockTimeout-time.Minute)
+
+	// The lock is not stale, so acquireLock waits; cancel the context to
+	// stop it from polling.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := acquireLock(ctx, fake, "token", testLockOrg, "our-run", 5*time.Minute, t.Logf)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	assert.Empty(t, fake.DeletedRepos, "fresh lock must not be deleted")
+	content, err := fake.GetFileContent(context.Background(), testLockOrg, lockRepo, "README.md")
+	require.NoError(t, err)
+	assert.Equal(t, otherHolder, string(content))
+}

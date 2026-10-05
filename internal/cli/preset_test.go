@@ -76,21 +76,6 @@ func TestGitHubSetupCmd_ConfigWithAgents_Accepted(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestGitHubSetupCmd_ConfigInPerOrgMode_Rejected(t *testing.T) {
-	t.Setenv("GH_TOKEN", "test-token")
-
-	dir := t.TempDir()
-	presetPath := filepath.Join(dir, "preset.yaml")
-	require.NoError(t, os.WriteFile(presetPath, []byte("version: \"1\"\n"), 0o644))
-
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"github", "setup", "acme",
-		"--config", presetPath})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--config is only valid for per-repo setup")
-}
-
 func TestRunGitHubSetupPerRepo_WithPreset_DryRun(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 

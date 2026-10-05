@@ -307,6 +307,20 @@ func TestListPullRequestReviews(t *testing.T) {
 	}
 }
 
+func TestListPullRequestCommits(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRCommits = map[string][]string{"owner/repo/1": {"first", "second"}}
+	d := New(fc)
+
+	shas, err := d.ListPullRequestCommits(context.Background(), "owner", "repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(shas) != 2 || shas[0] != "first" || shas[1] != "second" {
+		t.Fatalf("expected [first second], got %v", shas)
+	}
+}
+
 func TestListPullRequestReviews_Error(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors["ListPullRequestReviews"] = errors.New("list failed")

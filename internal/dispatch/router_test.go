@@ -224,6 +224,25 @@ func TestHarnessRouter_Closed(t *testing.T) {
 	}
 }
 
+func TestHarnessRouter_ClosedWorkItemNotRouted(t *testing.T) {
+	r := NewHarnessRouter([]string{"retro", "code"})
+
+	for _, kind := range []string{"closed", "merged"} {
+		event := &NormalizedEvent{
+			Entity:     Entity{Kind: "work_item", ID: 42},
+			Transition: Transition{Kind: kind},
+			Actor:      Actor{ID: "alice", Role: "write"},
+		}
+		stages, err := r.Route(event)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(stages) != 0 {
+			t.Fatalf("expected no stages for %s work_item, got %v", kind, stages)
+		}
+	}
+}
+
 func TestHarnessRouter_Opened(t *testing.T) {
 	r := NewHarnessRouter([]string{"review", "retro"})
 

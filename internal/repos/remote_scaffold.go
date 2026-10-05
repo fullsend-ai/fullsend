@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -12,6 +13,10 @@ import (
 // Remote scaffold template paths within the fullsend-ai/fullsend repo.
 const scaffoldGitHubShimPath = "internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml"
 
+// scaffoldGitLabPaths lists the GitLab scaffold files fetched from a pinned
+// ref. The pipeline wrapper must come first: the webhook dispatcher files
+// (#7771) are fetched only when it references them, so refs that predate
+// the dispatcher keep their original scaffold (see fetchRemoteGitLabScaffold).
 var scaffoldGitLabPaths = []struct {
 	repoPath string
 	outPath  string
@@ -19,11 +24,13 @@ var scaffoldGitLabPaths = []struct {
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-pipeline.yml", ".gitlab/ci/fullsend-pipeline.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml", ".gitlab/ci/fullsend-agent.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-poll.yml", ".gitlab/ci/fullsend-poll.yml"},
+	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-dispatcher.yml", ".gitlab/ci/fullsend-dispatcher.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/trust-ci-server-ca.sh", ".gitlab/ci/scripts/trust-ci-server-ca.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/pin-ci-job-identity.sh", ".gitlab/ci/scripts/pin-ci-job-identity.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/select-gitlab-role-token.sh", ".gitlab/ci/scripts/select-gitlab-role-token.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/install-fullsend-cli.sh", ".gitlab/ci/scripts/install-fullsend-cli.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-poll-job.sh", ".gitlab/ci/scripts/run-poll-job.sh"},
+	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-dispatcher-job.sh", ".gitlab/ci/scripts/run-dispatcher-job.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-agent-job.sh", ".gitlab/ci/scripts/run-agent-job.sh"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/checkout-mr-source.sh", ".gitlab/ci/scripts/checkout-mr-source.sh"},
 }
@@ -40,8 +47,9 @@ var scaffoldGitLabPaths = []struct {
 //
 // Template paths (scaffoldGitHubShimPath, scaffoldGitLabPaths) are pinned
 // to the current binary's layout. If the remote ref reorganises these
-// paths, the fetch fails gracefully and the caller falls back to embedded
-// templates — cross-version compatibility is best-effort.
+// paths, the fetch returns an error. GitLab mutation paths must not fall back
+// to embedded templates: their pipeline-input contract may be incompatible
+// with the pinned version. Other callers may use best-effort fallback.
 func FetchRemoteScaffold(ctx context.Context, ghClient forge.Client,
 	manifestRef, resolvedSHA, forgeName string,
 	agentRunnerTags, controlRunnerTags []string,
@@ -109,10 +117,24 @@ func fetchRemoteGitLabScaffold(ctx context.Context, client forge.Client,
 	fullsendVersion := scaffold.ResolveFullsendVersion(resolvedSHA, manifestRef)
 
 	var files scaffold.InstallFiles
+	// dispatcherRequired is set from the fetched pipeline wrapper: a ref
+	// whose wrapper does not include the webhook dispatcher template
+	// predates it, so its dispatcher files are skipped rather than
+	// synthesized from newer embedded content. A wrapper that does
+	// reference them must have both, or the fetch fails.
+	dispatcherRequired := false
 	for _, sp := range scaffoldGitLabPaths {
+		isDispatcherFile := slices.Contains(gitlabDispatcherPaths(), sp.outPath)
+		if isDispatcherFile && !dispatcherRequired {
+			continue
+		}
 		content, err := client.GetFileContentAtRef(ctx, shimOwner, shimRepo, sp.repoPath, manifestRef)
 		if err != nil {
 			return nil, fmt.Errorf("fetching GitLab template %s at %s: %w", sp.repoPath, manifestRef, err)
+		}
+
+		if sp.outPath == fullsendPipelineInclude {
+			dispatcherRequired = gitlabWrapperReferencesDispatcher(content)
 		}
 
 		rendered := strings.ReplaceAll(string(content), "__AGENT_RUNNER_TAGS__", agentTagYAML)

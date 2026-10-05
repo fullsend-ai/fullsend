@@ -39,6 +39,8 @@ const (
 	// used by translatePiModel to normalize short-form xai/ specs and by
 	// buildPiRunCommand to gate extension loading and env hygiene.
 	piXaiVertexProvider = "xai-vertex"
+	// piGoogleVertexProvider is pi's built-in Gemini-on-Vertex provider.
+	piGoogleVertexProvider = "google-vertex"
 	// piOpenAIProvider is the lowercase provider name used as a gate in
 	// buildPiRunCommand. Unlike Vertex providers, OpenAI models use pi's
 	// built-in openai provider, which reads OPENAI_API_KEY from the env —
@@ -391,7 +393,13 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	provider := piModelProvider(model, params.ModelAliases)
 	vertex := provider == piDefaultProvider
 	xaiVertex := provider == piXaiVertexProvider
-	openai := provider == piOpenAIProvider
+	// The openai safeguards below (config-dir guard, placeholder seed,
+	// OPENAI_* cleanup) cover the children too: children spawn pi from this
+	// process's environment and config dir, so a run whose manifest admits
+	// configured openai children needs them under any parent (#7981).
+	// Bootstrap lists openai ids only when the provider is attached.
+	openai := provider == piOpenAIProvider ||
+		(agentEnabled && len(m.Agent.ProviderModels[piOpenAIProvider]) > 0)
 
 	parts := []string{"cd " + shellQuote(params.RepoDir)}
 	// Resolve the pi binary before the agent-writable .env is sourced and

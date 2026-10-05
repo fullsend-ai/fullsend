@@ -49,13 +49,8 @@ fullsend
 │       │   └── --repo <owner/repo>          #   Select from a multi-repo reply; target for --variables
 │       └── status   <owner/repo>            # Resolved identifiers, and the exchange inside Actions
 ├── github                                   # GitHub-only configuration
-│   ├── setup        <org|owner/repo>        # Configure fullsend (no GCP needed)
-│   ├── enroll       <org> [repo...]         # Enable repos for agent workflows
-│   ├── unenroll     <org> [repo...]         # Disable repos from agent workflows
-│   ├── set          <target> <key> <value>  # Update a config value
-│   ├── status       <org>                   # Analyze GitHub-side state
-│   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
-│   └── sync-scaffold <org>                  # Update workflow templates
+│   ├── setup        <owner/repo>            # Configure fullsend (no GCP needed)
+│   └── set          <owner/repo> <key> <value> # Update a config value
 ├── repos                                    # Manage per-repo installations via manifest
 │   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
 │   ├── migrate      <org>                   # Migrate org from per-org to per-repo install
@@ -71,14 +66,16 @@ fullsend
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
-│   │   ├── --inference-project <id>         #   GCP project ID for inference (install-time only)
-│   │   ├── --inference-wif-provider <path>  #   Full WIF provider resource name (uses verbatim; skips per-repo derivation)
+│   │   ├── --vertex-project <id>            #   GCP project ID for Vertex inference (install-time only)
+│   │   ├── --vertex-wif-provider <path>     #   Full WIF provider resource name (uses verbatim; skips per-repo derivation)
+│   │   ├── --openai-api-key <key>           #   FULLSEND_OPENAI_API_KEY for openai-api-key repos (CLI-only; never in repos.yaml)
 │   │   ├── --forge <type>                   #   Forge type for new repos (github or gitlab)
-│   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
+│   │   ├── --vertex-region <region>         #   Per-repo GCP inference region override
 │   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
 │   │   ├── --app-set <prefix>               #   GitHub App set prefix override ($FULLSEND_APP_SET); GitHub-only
 │   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
+│   │   ├── --inference-auth <method>        #   vertex-wif or openai-api-key; persisted as inference.auth on each selected manifest entry (a repo covered only by a glob gets its own copied entry); never changes defaults or forge sections
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
@@ -103,6 +100,8 @@ fullsend
 │   │   ├── --role <name>                    #   Mint role: triage|review|coder|retro|prioritize
 │   │   ├── --on <preset>                    #   Trigger preset (command:/label:/issue-opened/pr-opened)
 │   │   ├── --trigger <cel>                  #   Raw CEL trigger (mutually exclusive with --on)
+│   │   ├── --runtime <claude|pi|codex>      #   Runtime in config.yaml; shapes Vertex vs OpenAI harness fields
+│   │   ├── --model <alias|id>               #   Model (opus default; OpenAI id required for codex)
 │   │   ├── -f, --file <spec.yaml>           #   Read the agent definition from a spec file
 │   │   ├── --validation-loop                #   Add a schema validation_loop
 │   │   ├── --no-register                    #   Write files without touching config.yaml
@@ -232,31 +231,33 @@ GH_TOKEN env var  →  GITHUB_TOKEN env var  →  `gh auth token` CLI
 
 ### Install Mode Detection
 
-The `install` command auto-detects mode from the positional argument:
+The `install` command accepts only an `owner/repo` target. An org-only
+argument is rejected before any forge call, because per-org installation
+has been removed:
 
 ```
-fullsend admin install <org>              → Per-org mode (full infrastructure)
 fullsend admin install <owner>/<repo>     → Per-repo mode (single repo bootstrap)
+fullsend admin install <org>              → error: requires an owner/repo target
 ```
 
 ---
 
 ## Unified Installation Flow
 
-Both per-org and per-repo modes share the same core pipeline. The code follows the same phases in the same order — the only differences are *where* artifacts land and *scope* of WIF/enrollment.
+`fullsend admin install` runs a single per-repo pipeline. Per-org installation (the `.fullsend` config repo, org-wide WIF, and org enrollment) has been removed from the CLI.
 
 ### Shared Pipeline
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│              Unified Install Pipeline (both modes)              │
+│                   Per-Repo Install Pipeline                     │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  fullsend admin install <target>                                │
+│  fullsend admin install <owner/repo>                            │
 │  ┌──────────────────────┐                                       │
 │  │ Parse target          │                                      │
-│  │  "acme"      → org   │                                       │
 │  │  "acme/repo" → repo  │                                       │
+│  │  "acme"      → error │                                       │
 │  └──────────┬───────────┘                                       │
 │             ▼                                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
@@ -288,42 +289,34 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │  If mint exists    → register org (EnsureOrgInMint)        │ │
 │  │                    → store PEMs in Secret Manager          │ │
 │  │                                                            │ │
-│  │  Both modes use gcf.NewProvisioner with same Config{}      │ │
+│  │  Uses gcf.NewProvisioner with a shared Config{}            │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │ Phase 4: WIF provisioning (inference auth)                 │ │
 │  │                                                            │ │
-│  │  Both modes: ProvisionWIF() → create pool, provider, IAM   │ │
-│  │  ┌──────────────────────────────────────────┐              │ │
-│  │  │ Per-org:  org-wide WIF provider          │              │ │
-│  │  │ Per-repo: repo-scoped WIF provider       │              │ │
-│  │  └──────────────────────────────────────────┘              │ │
+│  │  ProvisionWIF() → create pool, provider, IAM               │ │
+│  │  Repo-scoped WIF provider (mintcore.BuildRepoProviderID)   │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │ Phase 5: Write scaffold + config files                     │ │
 │  │                                                            │ │
-│  │  Both modes: write workflow files                           │ │
 │  │  CommitScaffoldFiles() delivery modes:                     │ │
 │  │    Default (PR):  create feature branch → commit → open PR │ │
 │  │    --direct:      try CommitFiles (default branch)         │ │
 │  │      if ErrBranchProtected → fall back to PR mode          │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
-│  │  │ Per-org:  create .fullsend config repo   │              │ │
-│  │  │           push reusable workflows        │              │ │
-│  │  │           vendor fullsend binary (opt)   │              │ │
-│  │  │                                          │              │ │
-│  │  │ Per-repo: write .fullsend/ dir in repo   │              │ │
-│  │  │           push shim workflow template    │              │ │
-│  │  │           vendor fullsend binary (opt)   │              │ │
+│  │  │ Write .fullsend/ dir in the target repo  │              │ │
+│  │  │ Push shim workflow template              │              │ │
+│  │  │ Vendor fullsend binary (opt)             │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │ Phase 6: Set secrets & variables                           │ │
 │  │                                                            │ │
-│  │  Both modes write the same credential set:                 │ │
+│  │  Writes the credential set to the target repo:             │ │
 │  │    Secrets (install-time only, not managed by sync):       │ │
 │  │              FULLSEND_GCP_PROJECT_ID                       │ │
 │  │              FULLSEND_GCP_WIF_PROVIDER                     │ │
@@ -334,66 +327,34 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │              FULLSEND_APP_SET (GitHub only)                │ │
 │  │                                                            │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
-│  │  │ Per-org:  secrets → .fullsend config repo│              │ │
-│  │  │           MINT_URL → org variable        │              │ │
-│  │  │           + repo var (dot-prefix fix)    │              │ │
-│  │  │           + PEM keys as repo secrets     │              │ │
-│  │  │           + client IDs as repo variables │              │ │
+│  │  │ secrets → target repo                    │              │ │
+│  │  │ + FULLSEND_PER_REPO_INSTALL=true         │              │ │
 │  │  │                                          │              │ │
-│  │  │ Per-repo: secrets → target repo          │              │ │
-│  │  │          + FULLSEND_PER_REPO_INSTALL=true│              │ │
-│  │  │                                          │              │ │
-│  │  │ NOTE: Per-repo runs Phase 6 before       │              │ │
-│  │  │ Phase 5 (vars/secrets before scaffold    │              │ │
-│  │  │ commit) to prevent a race window (#6122) │              │ │
+│  │  │ NOTE: Phase 6 runs before Phase 5        │              │ │
+│  │  │ (vars/secrets before scaffold commit)    │              │ │
+│  │  │ to prevent a race window (#6122)         │              │ │
 │  │  └──────────────────────────────────────────┘              │ │
-│  └──────────┬─────────────────────────────────────────────────┘ │
-│             ▼                                                   │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │ Phase 7: Enrollment (per-org only)                         │ │
 │  │                                                            │ │
-│  │  Per-org:  enable agent workflows on target repos          │ │
-│  │  Per-repo: no-op (single repo, self-contained)             │ │
+│  │  No enrollment phase: the repo is self-contained.          │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Mode Differences
+### Per-Repo Phase Details
 
-Both modes call the same functions (`runAppSetup`, `gcf.NewProvisioner`, `ProvisionWIF`). The differences are narrow:
+| Phase | Code | Per-repo behavior |
+|-------|------|-------------------|
+| **1. Discover** | `DiscoverMint()`, resolve app IDs | Single repo validation |
+| **2. App setup** | `runAppSetup()` → PEMs + App IDs | Excludes "fullsend" role |
+| **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | Deploys the mint if absent, otherwise registers the owner in it (use `mint enroll` separately for later changes) |
+| **4. WIF** | `ProvisionWIF()` | `mintcore.BuildRepoProviderID()` (repo-scoped, GitHub only; GitLab uses shared `gitlab-oidc` provider) |
+| **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Writes `.fullsend/` dir + shim workflow + thin caller workflows + optional binary in target repo (committed after secrets, see #6122) |
+| **6. Secrets** | Repository secret and variable writes | Target repo + `FULLSEND_PER_REPO_INSTALL` (written before scaffold commit, see #6122) |
 
-| Phase | Shared Code | Per-Org Variation | Per-Repo Variation |
-|-------|-------------|-------------------|-------------------|
-| **1. Discover** | `DiscoverMint()`, resolve app IDs | Discovers all org repos | Single repo validation |
-| **2. App setup** | `runAppSetup()` → PEMs + App IDs | All 7 roles by default | Excludes "fullsend" role |
-| **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | — | — (use `mint enroll` separately) |
-| **4. WIF** | `ProvisionWIF()` | Org-wide provider ID | `mintcore.BuildRepoProviderID()` (repo-scoped, GitHub only; GitLab uses shared `gitlab-oidc` provider) |
-| **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + thin caller workflows + optional binary in target repo (committed after secrets in per-repo, see #6122) |
-| **6. Secrets** | Same secret names, same API calls | Config repo + org variable | Target repo + `FULLSEND_PER_REPO_INSTALL` (written before scaffold commit in per-repo, see #6122) |
-| **7. Enrollment** | — | `EnrollmentLayer` enables repos | No-op (self-contained) |
+### Install orchestration
 
-### Per-Org Layer Stack
-
-Per-org mode wraps phases 5-7 in a `Layer` interface for composability (install forward, uninstall reverse):
-
-```go
-type Layer interface {
-    Name() string
-    RequiredScopes(op Operation) []string
-    Install(ctx context.Context) error
-    Uninstall(ctx context.Context) error
-    Analyze(ctx context.Context) (LayerStatus, string, error)
-}
-```
-
-```
-Stack order:  ConfigRepo → Workflows → VendorBinary → Secrets → Inference → Dispatch → Enrollment
-Install:      process 1→7 (forward)
-Uninstall:    process 7→1 (reverse)
-```
-
-Per-repo mode does not use the layer stack — `runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. There's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
+`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation; the `Layer` types under `internal/layers` that remain (for example `EnrollmentLayer`) are not used by CLI orchestration. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -405,7 +366,7 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
-Vendoring commit messages use title + body (upload and stale delete). `github status` reports stale vendored assets at `bin/fullsend` or `.fullsend/bin/fullsend` without install-intent flags.
+Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `bin/fullsend` or `.fullsend/bin/fullsend` when `--vendor` is not set.
 
 ---
 
@@ -654,7 +615,8 @@ fullsend-repo/                      (embedded template)
 ├── skills/                         → Layered (runtime, not installed)
 ├── schemas/                        → Layered (runtime, not installed)
 ├── harness/                        → Layered (runtime, not installed)
-├── providers/                      → Layered (runtime, not installed)
+├── providers/                      → Built into the binary (not installed or layered)
+├── profiles/                       → Built into the binary (not installed or layered)
 ├── scripts/                        → Layered (runtime, not installed)
 ├── env/                            → Layered (runtime, not installed)
 ├── templates/
@@ -662,12 +624,13 @@ fullsend-repo/                      (embedded template)
 └── (other files)                   → Installed to config repo
 ```
 
-**Three categories:**
+**Four categories:**
 
 | Category | Installed? | Source | Purpose |
 |----------|-----------|--------|---------|
 | **Installed** | Yes | Scaffold → `.fullsend` repo | Workflows, configs, static files |
-| **Layered** | No (runtime) or yes with `--vendor` | Upstream `@main` sparse checkout, or vendored at install | agents/, skills/, harness/, plugins/, providers/, scripts/, schemas/, env/ |
+| **Layered** | No (runtime) or yes with `--vendor` | Upstream `@main` sparse checkout, or vendored at install | agents/, skills/, harness/, plugins/, scripts/, schemas/, env/ |
+| **Built in** | No | Embedded in the `fullsend` binary; `fullsend run` resolves a bare provider name to it | providers/, profiles/ |
 | **Upstream-only** | No (layered) or yes with `--vendor` | Referenced directly or vendored at install | .github/actions/, .github/scripts/ |
 
 Runtime skips upstream fetch when `.defaults/action.yml` is present (vendored); layered installs sparse-checkout `fullsend-ai/fullsend@main` into `.defaults/`.

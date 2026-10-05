@@ -131,14 +131,6 @@ The setup command detects that the public apps are already installed in the org 
 
 > **Migration note:** Prior to this change, the default app set was `fullsend`, producing slugs like `fullsend-coder`. The default is now `fullsend-ai`, producing `fullsend-ai-coder`. Existing installations that used the old default should pass `--app-set fullsend` explicitly to continue matching their existing GitHub App slugs, or re-install with the new default.
 
-#### Uninstalling a custom app set
-
-When uninstalling an org that used a custom app set, pass the same `--app-set` value so the CLI generates the correct fallback slugs if the config repo is unavailable:
-
-```bash
-fullsend github uninstall "$ORG_NAME" --app-set "$ORG_NAME"
-```
-
 #### Constraints
 
 - App set names must be lowercase alphanumeric with optional hyphens (no leading/trailing hyphens, no consecutive hyphens), max 23 characters (GitHub App names are limited to 34 characters, and the role suffix is appended)
@@ -201,7 +193,7 @@ fullsend github setup "$ORG_NAME" \
 
 ## Deprecated: all-in-one admin install
 
-> **Deprecated.** The `fullsend admin install` all-in-one command that provisions GCP mint, inference, and GitHub in a single invocation is deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands) instead: `fullsend inference provision` + `fullsend github setup` for per-repo, or `fullsend mint deploy` + `fullsend mint enroll` + `fullsend github setup` for per-org. See [Getting Started](../getting-started/configuring-github.md) for the recommended per-repo flow.
+> **Deprecated.** The `fullsend admin install` all-in-one command that provisions GCP mint, inference, and GitHub in a single invocation is deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands) instead: `fullsend inference provision` + `fullsend github setup <owner/repo>`. Per-org installation has been removed, so `fullsend admin install` and `fullsend github setup` accept only `owner/repo` targets. See [Getting Started](../getting-started/configuring-github.md) for the recommended per-repo flow.
 
 ## See Also
 

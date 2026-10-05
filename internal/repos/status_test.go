@@ -16,7 +16,8 @@ import (
 
 func newTestManifest() *Manifest {
 	return &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -525,7 +526,8 @@ func TestStatus_MultipleDrifts(t *testing.T) {
 func TestStatus_WorkflowMissing_NotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -547,7 +549,8 @@ func TestStatus_WorkflowMissing_NotInstalled(t *testing.T) {
 func TestStatus_WorkflowYAMLExtension(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -615,7 +618,8 @@ func TestStatus_RepoFilterCaseInsensitive(t *testing.T) {
 func TestStatus_APIError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
 			Repos:   []RepoEntry{{Name: "acme-corp/api-server"}},
@@ -650,7 +654,8 @@ func TestStatus_GlobExpansion(t *testing.T) {
 	}
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -680,7 +685,8 @@ func TestStatus_GlobExpansion(t *testing.T) {
 func TestStatus_PerRepoOverride(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -709,7 +715,8 @@ func TestStatus_PerRepoOverride(t *testing.T) {
 func TestStatus_DefaultConcurrency(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
 			Repos:   []RepoEntry{{Name: "org/repo"}},
@@ -728,7 +735,8 @@ func TestStatus_DefaultConcurrency(t *testing.T) {
 func TestStatus_EmptyManifest(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
 		},
@@ -746,7 +754,8 @@ func TestStatus_EmptyManifest(t *testing.T) {
 func TestStatus_InstalledButWorkflowGetError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -777,7 +786,8 @@ func TestStatus_InstalledButWorkflowGetError(t *testing.T) {
 func TestStatus_NoWorkflowFiles(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -1016,7 +1026,8 @@ func TestFilterRepos(t *testing.T) {
 func TestStatus_NoKnownVariables(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
 			Repos:   []RepoEntry{{Name: "org/repo"}},
@@ -1036,7 +1047,8 @@ func TestStatus_NoKnownVariables(t *testing.T) {
 func TestStatus_MultiOrg(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -1068,7 +1080,8 @@ func TestStatus_GlobExpandError(t *testing.T) {
 	fc.Errors["ListOrgRepos"] = fmt.Errorf("org not found")
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
 			Repos:   []RepoEntry{{Name: "bad-org/*"}},
@@ -1084,7 +1097,8 @@ func TestStatus_GlobExpandError(t *testing.T) {
 func TestStatus_DefaultMintURL_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			FullsendRef: "v2.3.0",
 			Repos:       []RepoEntry{{Name: "org/repo"}},
@@ -1106,7 +1120,8 @@ func TestStatus_DefaultMintURL_NoDrift(t *testing.T) {
 func TestStatus_EmptyExpectedRef_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL: "https://mint.example.com",
 			Repos:   []RepoEntry{{Name: "org/repo"}},
@@ -1134,7 +1149,8 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 		fc.Refs["fullsend-ai/fullsend/tags/v0.35.0"] = sha
 
 		m := &Manifest{
-			Version: 1,
+			Version:  1,
+			Defaults: testInferenceDefaults(),
 			GitHub: &PlatformConfig{
 				MintURL:     "https://mint.example.com",
 				FullsendRef: "v0.35.0",
@@ -1161,7 +1177,8 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 		fc.Refs["fullsend-ai/fullsend/tags/v0.36.0"] = "newsha000000000000000000000000000000000"
 
 		m := &Manifest{
-			Version: 1,
+			Version:  1,
+			Defaults: testInferenceDefaults(),
 			GitHub: &PlatformConfig{
 				MintURL:     "https://mint.example.com",
 				FullsendRef: "v0.36.0",
@@ -1187,7 +1204,8 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 		fc.Refs["fullsend-ai/fullsend/heads/main"] = "latestsha00000000000000000000000000000"
 
 		m := &Manifest{
-			Version: 1,
+			Version:  1,
+			Defaults: testInferenceDefaults(),
 			GitHub: &PlatformConfig{
 				MintURL:     "https://mint.example.com",
 				FullsendRef: "main",
@@ -1218,7 +1236,8 @@ func TestStatus_SymbolicRefMatch_NoDrift(t *testing.T) {
 	fc.Refs["fullsend-ai/fullsend/tags/v0"] = sha
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v0",
@@ -1247,7 +1266,8 @@ func TestStatus_DifferentSymbolicRefs_Drift(t *testing.T) {
 	fc.Refs["fullsend-ai/fullsend/tags/v1"] = "newsha000000000000000000000000000000000"
 
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1",
@@ -1278,7 +1298,8 @@ func TestStatus_DifferentSymbolicRefs_Drift(t *testing.T) {
 func TestStatus_Concurrency(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -1343,7 +1364,8 @@ func TestStatus_RepoFilterPartialUnmatched(t *testing.T) {
 func TestStatus_DetectsContentDrift_Workflow(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -1421,7 +1443,8 @@ jobs:
 func TestStatus_DetectsContentDrift_ThinCaller(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -1457,7 +1480,8 @@ func TestStatus_DetectsContentDrift_ThinCaller(t *testing.T) {
 func TestStatus_DetectsOrphanFile(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -1494,7 +1518,8 @@ func TestStatus_DetectsOrphanFile(t *testing.T) {
 func TestStatus_DetectsOrphanVariable(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -1530,7 +1555,8 @@ func TestStatus_DetectsOrphanVariable(t *testing.T) {
 func TestStatus_OrphanCheckError_ReportsStatusError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -1588,7 +1614,8 @@ func TestStatus_ContentDrift_BranchRef(t *testing.T) {
 	// that content drift is detected even when the ref matches.
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "main",
@@ -1656,7 +1683,8 @@ func TestStatus_ContentDrift_RefDifference_NoFalsePositive(t *testing.T) {
 	// the template structure is the same (only the ref differs).
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.4.0",
@@ -1704,7 +1732,8 @@ func TestStatus_NoContentDrift_IndependentInstalledContent(t *testing.T) {
 	// them tautological for content-drift verification.
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v2.3.0",
@@ -1772,7 +1801,8 @@ func TestStatus_NoContentDrift_IndependentInstalledContent(t *testing.T) {
 func TestStatus_GitLab_MissingSchedules_ReportsDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := &Manifest{
-		Version: 1,
+		Version:  1,
+		Defaults: testInferenceDefaults(),
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",
@@ -1897,10 +1927,10 @@ func TestStatus_NoPresetDoesNotCompareBase(t *testing.T) {
 
 func TestStatus_GitLab_ConfigPresetDrift(t *testing.T) {
 	presetPath := writePresetFile(t, testPresetYAML)
-	fc := forge.NewFakeClient()
+	fc := newFakeClientForBatch("acme/api")
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: presetPath}},
+		Defaults: DefaultsConfig{ConfigBase: ConfigBase{Source: presetPath}, Inference: InferenceSettings{Auth: InferenceAuthVertexWIF}},
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v2.5.0",

@@ -19,6 +19,9 @@ type harnessBootstrap struct {
 	agentSubagents map[string]*string
 	parentModel    string
 	repoDir        string
+	// openAIProviderAttached is whether the run-scoped OpenAI provider was
+	// created for this run; see runtime.BootstrapInput.OpenAIProviderAttached.
+	openAIProviderAttached bool
 }
 
 type harnessBootstrapWithHooks struct {
@@ -35,6 +38,7 @@ func (b *harnessBootstrap) ModelAliases() map[string]string    { return b.modelA
 func (b *harnessBootstrap) AgentSubagents() map[string]*string { return b.agentSubagents }
 func (b *harnessBootstrap) ParentModel() string                { return b.parentModel }
 func (b *harnessBootstrap) RepoDir() string                    { return b.repoDir }
+func (b *harnessBootstrap) OpenAIProviderAttached() bool       { return b.openAIProviderAttached }
 
 func (b *harnessBootstrapWithHooks) SandboxHookConfig() security.SandboxHookConfig {
 	return b.hooks
@@ -75,21 +79,22 @@ func pluginInputs(specs []harness.PluginSpec) ([]runtime.PluginInput, error) {
 	return out, nil
 }
 
-func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName, forgeEgressEntry string, modelAliases map[string]string, agentSubagents map[string]*string, parentModel, repoDir string) (runtime.BootstrapInput, error) {
+func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName, forgeEgressEntry string, modelAliases map[string]string, agentSubagents map[string]*string, parentModel, repoDir string, openAIProviderAttached bool) (runtime.BootstrapInput, error) {
 	plugins, err := pluginInputs(h.Plugins)
 	if err != nil {
 		return nil, err
 	}
 	base := &harnessBootstrap{
-		sandboxName:    sandboxName,
-		agentPath:      h.Agent,
-		agentName:      agentName,
-		skillDirs:      harness.SkillSources(h.Skills),
-		plugins:        plugins,
-		modelAliases:   modelAliases,
-		agentSubagents: agentSubagents,
-		parentModel:    parentModel,
-		repoDir:        repoDir,
+		sandboxName:            sandboxName,
+		agentPath:              h.Agent,
+		agentName:              agentName,
+		skillDirs:              harness.SkillSources(h.Skills),
+		plugins:                plugins,
+		modelAliases:           modelAliases,
+		agentSubagents:         agentSubagents,
+		parentModel:            parentModel,
+		repoDir:                repoDir,
+		openAIProviderAttached: openAIProviderAttached,
 	}
 	if !h.SecurityEnabled() {
 		return base, nil

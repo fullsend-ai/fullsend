@@ -35,6 +35,17 @@ type Driver interface {
 	// before the scenario's repository is torn down; on a timeout or
 	// context error the run is nil.
 	WaitForHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error)
+	// WaitForHarnessAgentRound is like WaitForHarnessAgent, but for
+	// scenarios where the same agent's harness is dispatched more than
+	// once (e.g. dummy-playback's review round, retried after fix). It
+	// selects the earliest eligible successful run whose ID is not in
+	// consumed, rather than WaitForHarnessAgent's latest-eligible-run
+	// selection: that selection exists for dual-dispatch resilience when
+	// a single occurrence is expected, but it picks a later round's run
+	// when an earlier round's own completion is asserted only after the
+	// later round has also already finished, and advancing the caller's
+	// time cursor afterward cannot repair that selection (#7957).
+	WaitForHarnessAgentRound(ctx context.Context, owner, repo, agent string, after time.Time, consumed map[int]bool) (*forge.WorkflowRun, error)
 	// WaitForFailedHarnessAgent waits for the named agent's harness run to
 	// complete with a terminal failure conclusion (resolved artifact-first
 	// via the agent's uploaded artifact, falling back to a job-name scan).

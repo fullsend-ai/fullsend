@@ -196,6 +196,7 @@ GitLab permissions than the implementation uses.
 | Job | Role |
 | --- | --- |
 | GitLab poller/controller (`fullsend poll`, `fullsend-poll.yml`) | Poller |
+| GitLab webhook dispatcher (`fullsend poll --input-driver gitlab-webhook`, `fullsend-dispatcher.yml`) | Poller |
 | Agents / harness roles `review`, `triage`, `prioritize`, `retro`, `scribe` | Analyst |
 | Agents / harness roles `code`, `fix`, `coder` | Coder |
 | Custom agent whose name or harness `role:` is listed on a registered custom role | That custom role |
@@ -258,9 +259,10 @@ unlisted), exports `GITLAB_TOKEN` from that secret, and sets
 `approve_merge_request`. Selection also publishes non-secret diagnostic
 env vars `FULLSEND_GITLAB_ROLE`, `FULLSEND_GITLAB_ROLE_SECRET`, and
 `FULLSEND_GITLAB_ROLE_SOURCE`.
-GitLab CI templates (`fullsend-poll.yml`, `fullsend-agent.yml`) source
-`run-poll-job.sh` and `run-agent-job.sh`, which resolve credentials via
-`select-gitlab-role-token.sh`. Both job scripts first source
+GitLab CI templates (`fullsend-poll.yml`, `fullsend-dispatcher.yml`,
+`fullsend-agent.yml`) source `run-poll-job.sh`, `run-dispatcher-job.sh`, and
+`run-agent-job.sh`, which resolve credentials via
+`select-gitlab-role-token.sh`. All three job scripts first source
 `pin-ci-job-identity.sh`, which takes project, pipeline, and ref from
 the `CI_JOB_TOKEN` job record (`GET /api/v4/job`) rather than from the
 overridable `CI_PROJECT_ID` / `CI_PIPELINE_ID` / `CI_COMMIT_REF_PROTECTED`
@@ -310,24 +312,42 @@ pin plus HMAC close the gap where a forged dispatch that spoofed the
 pipeline source via overridable CI variables (an overridden
 `CI_API_V4_URL`, the residual risk previously documented here and in
 ADR 0067) could otherwise obtain a higher-privilege role token. The
-GitLab-side `ci_pipeline_variables_minimum_override_role=owner`
+GitLab-side `ci_pipeline_variables_minimum_override_role=no_one_allowed`
 restriction remains the required control against `CI_JOB_TOKEN` /
 `CI_API_V4_URL` outranking; it is applied at install/converge time by
 this repo (not a separate issue); the in-job pin is defense-in-depth.
+`no_one_allowed` (not `owner`) is the target as of #7850: the
+poller/dispatcher dispatches exclusively via typed GitLab CI/CD pipeline
+inputs (`forge.Client.CreatePipelineWithInputs`,
+`internal/poll/dispatch.go`), which this setting does not govern, so the
+restriction no longer needs an Owner-role poller/dispatcher credential —
+`PollerCanCreatePipeline` / `EnsureGitLabPollerPipelineAccess` in
+`internal/repos/gitlab_pipeline_access.go` stay built around the
+Developer-level poller unchanged.
 `repos.EnsureGitLabPipelineVariableOverrideRole`
 (`internal/repos/gitlab_pipeline_var_restriction.go`) reads and converges
-this setting at install/converge time for both fresh installs and
-repair of already-installed repos, idempotently. Active enforcement
+this setting idempotently after compatible templates have landed. Active enforcement
 (actually calling `SetPipelineVariablesMinimumOverrideRole`) is gated
 behind `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` and defaults
-to report-only: restricting to `owner` also blocks the Developer-level
-poller/dispatcher's own `CreatePipeline` call
-(`internal/poll/dispatch.go`) unless the poller identity is separately
-raised to Owner, and that credential-cost tradeoff — which touches
-`PollerCanCreatePipeline` / `EnsureGitLabPollerPipelineAccess` in
-`internal/repos/gitlab_pipeline_access.go` — is still open, tracked in
-#7769. Flip the env var to `enforced` fleet-wide only after that
-follow-up ships. Poll jobs
+to no automatic setting changes. However, typed dispatch activation fails
+closed before delivering runnable templates unless the project already has
+verified `no_one_allowed`, even when enforcement is requested. Unset, weaker,
+or unsupported settings cannot succeed as a planned update or report-only
+installation. Prepare legacy upgrades in a maintenance window before delivery;
+see [Typed-input dispatch migration](../guides/getting-started/configuring-gitlab.md#typed-input-dispatch-migration).
+Managed schedules use no pipeline variables; job rules derive poll mode
+from `CI_PIPELINE_SCHEDULE_DESCRIPTION`. Activation removes the obsolete
+`FULLSEND_POLL_MODE` schedule override only after the wrapper and compatible
+agent/poll templates are confirmed on the default branch, even on already-restricted projects,
+and fails if other user-owned schedule variables remain. The typed restriction
+does not apply to pinned legacy variable wrappers. GitLab vendor mode and
+version pins without matching upstream templates are rejected before writes.
+Agent input bridges explicitly disable expansion, and poll-job links are
+logged only after creator/HMAC authentication.
+The webhook fast-path's `TRIGGER_PAYLOAD` classification
+and the `CI_JOB_TOKEN` running-job identity pin are still open,
+live-GitLab-only ship gates tracked in ADR 0125 (Caveats). Flip the env
+var to `enforced` fleet-wide only after those close. Poll jobs
 resolve `FULLSEND_GITLAB_POLLER_TOKEN` once, after the schedule-only pin.
 The Go CLI then overrides `GITLAB_TOKEN` / `PUSH_TOKEN` from the
 registered role credential; nothing restores `FULLSEND_FORGE_TOKEN`.

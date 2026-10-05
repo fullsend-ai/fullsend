@@ -4,34 +4,22 @@ sidebar_label: fullsend github
 
 # fullsend github
 
-Configure fullsend on GitHub organizations and repositories without requiring GCP credentials. All GCP infrastructure values (mint URL, WIF provider) are passed as flags.
+Configure fullsend on GitHub repositories without requiring GCP credentials. All GCP infrastructure values (mint URL, WIF provider) are passed as flags.
+
+Every command takes an `owner/repo` target. Organization-only targets (per-org mode) are no longer supported and are rejected with an error; install each repository individually, or use [`fullsend repos`](repos.md) to manage many repositories from a manifest.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `fullsend github setup <org\|owner/repo>` | Configure fullsend for an org or repo |
-| `fullsend github enroll <org> [repo...]` | Enable repositories for agent workflows |
-| `fullsend github unenroll <org> [repo...]` | Disable repositories from agent workflows |
-| `fullsend github set <target> <key> <value>` | Update a single config value (secret or variable) |
-| `fullsend github status <org>` | Analyze GitHub-side installation state |
-| `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
-| `fullsend github uninstall <org>` | Remove fullsend GitHub configuration |
+| `fullsend github setup <owner/repo>` | Configure fullsend for a repo |
+| `fullsend github set <owner/repo> <key> <value>` | Update a single config value (secret or variable) |
 
 ## `github setup`
 
-Configures a GitHub organization or repository with fullsend. Creates the `.fullsend` config repo (per-org mode), installs GitHub Apps, and sets variables and secrets.
+Configures a GitHub repository with fullsend: writes the `.fullsend/` scaffold, installs GitHub Apps, and sets repository variables and secrets.
 
-**Per-org mode** requires GitHub organization owner access:
-
-```bash
-fullsend github setup <org> \
-  --mint-url="<MINT_URL>" \
-  --inference-project "<GCP_PROJECT>" \
-  --inference-wif-provider "<WIF_PROVIDER>"
-```
-
-**Per-repo mode** requires repo admin access only:
+Setup requires repo admin access only:
 
 ```bash
 fullsend github setup <owner/repo> \
@@ -64,9 +52,8 @@ than being regenerated.
 | `--openai-identity-provider-id` | | OpenAI Workload Identity provider ID |
 | `--openai-service-account-id` | | OpenAI service account ID the provider maps this repository to |
 | `--inference-region` | | GCP region for inference; resolved to `global` if unset |
-| `--skip-app-setup` | `false` | Skip GitHub App creation/installation |
 | `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps. For per-repo setup it is persisted as the `FULLSEND_APP_SET` repository variable; reruns that omit `--app-set` preserve an existing custom value rather than overwriting it with the default. `repos install` accepts the same option and the `app_set` manifest field. |
-| `--agents` | `fullsend,triage,coder,review,retro,prioritize` | Agent roles to provision |
+| `--agents` | `triage,coder,review,fix,retro,prioritize` | Agent roles to provision |
 | `--direct` | `false` | Push scaffold directly instead of creating a PR |
 | `--runtime` | `claude` | Agent runtime backend (`claude`, `pi`, `codex`, `opencode`, `dummy` or `dummy-playback`; `dummy` and `dummy-playback` are for behaviour tests only — see [runtimes.md](../runtimes.md)) |
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override (conflicts with `--vendor`; per-repo only) |
@@ -82,38 +69,17 @@ applies to any HTTPS preset source, whether passed via `--config` or declared in
 
 ### Required OAuth scopes
 
-| Scope | Per-org | Per-repo |
-|-------|:-------:|:--------:|
-| `repo` | x | x |
-| `workflow` | x | x |
-| `admin:org` | x | |
-
-## `github enroll`
-
-Enables agent workflows on repositories by updating `config.yaml` in the `.fullsend` repo and triggering enrollment PRs.
-
-```bash
-fullsend github enroll <org> <repo-name> [repo-name...]
-fullsend github enroll <org> --all
-```
-
-## `github unenroll`
-
-Disables agent workflows on repositories.
-
-```bash
-fullsend github unenroll <org> <repo-name> [repo-name...]
-fullsend github unenroll <org> --all [--yolo]
-```
-
-The `--all` flag prompts for confirmation. Pass `--yolo` to skip the prompt.
+| Scope | Required |
+|-------|:--------:|
+| `repo` | x |
+| `workflow` | x |
 
 ## `github set`
 
-Updates a single configuration value (secret or variable) on a GitHub org or repo.
+Updates a single configuration value (secret or variable) on a GitHub repo.
 
 ```bash
-fullsend github set <org|owner/repo> <key> <value>
+fullsend github set <owner/repo> <key> <value>
 ```
 
 | Key | Storage | Description |
@@ -124,30 +90,6 @@ fullsend github set <org|owner/repo> <key> <value>
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project for inference |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | WIF provider resource name |
 | `FULLSEND_OPENAI_API_KEY` | Repo secret | Opt-in OpenAI API key used only when the WIF trio is unset. Do not add this via `github setup`; set it only when you cannot enrol OpenAI WIF. |
-
-## `github status`
-
-Analyzes the GitHub-side installation state. Read-only.
-
-```bash
-fullsend github status <org>
-```
-
-## `github sync-scaffold`
-
-Updates workflow templates in enrolled repositories to match the current CLI version.
-
-```bash
-fullsend github sync-scaffold <org>
-```
-
-## `github uninstall`
-
-Removes fullsend GitHub configuration for an organization. Deletes the `.fullsend` config repo and associated resources.
-
-```bash
-fullsend github uninstall <org> [--yolo] [--app-set <name>]
-```
 
 ## See also
 

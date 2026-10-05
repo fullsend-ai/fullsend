@@ -66,11 +66,13 @@ func TestGitLabPerRepoFilesExist(t *testing.T) {
 		".gitlab/ci/fullsend-pipeline.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/fullsend-agent.yml",
+		gitlabDispatcherTemplatePath,
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		gitlabPinCIJobIdentityScriptPath,
 		gitlabInstallCLIScriptPath,
 		gitlabRunPollJobScriptPath,
+		gitlabRunDispatcherJobScriptPath,
 		gitlabRunAgentJobScriptPath,
 		gitlabCheckoutMRSourceScriptPath,
 	}
@@ -252,10 +254,14 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "fullsend-code:latest")
 	// Resource group parameterized by STAGE
 	assert.Contains(t, s, `fullsend-${STAGE}-${RESOURCE_KEY}`)
-	// Rules gate on STAGE being set (truthy form — `$STAGE != ""` would
-	// match when STAGE is undefined because GitLab evaluates null != "" as true)
-	assert.Contains(t, s, "if: $STAGE")
-	assert.NotContains(t, s, `$STAGE != ""`)
+	// Rules gate on the stage pipeline input being set (#7850: STAGE is no
+	// longer a pipeline variable set by the dispatcher, but the job
+	// bridges the stage input into a same-named STAGE variable above, so
+	// the admit rule references it like any other CI/CD variable rather
+	// than comparing the raw interpolated input as a literal (which
+	// GitLab rejects as an invalid literal-to-literal comparison).
+	assert.Contains(t, s, "STAGE:\n      value: $[[ inputs.stage ]]\n      expand: false")
+	assert.Contains(t, s, "if: $CI_DEBUG_TRACE !~ /^(1|t|true)$/i && $STAGE")
 	// ENTRYPOINT override for runner image
 	assert.Contains(t, s, `entrypoint: [""]`)
 	// Uses python3 for YAML parsing (yq not in runner image)
@@ -856,7 +862,8 @@ func TestGitLabPipelineWrapperContent(t *testing.T) {
 	assert.Contains(t, s, `$CI_DEBUG_TRACE =~ /^(1|t|true)$/i`)
 	assert.Contains(t, s, "when: never")
 	assert.Contains(t, s, "stages:")
-	assert.NotContains(t, s, "- dispatch", "dispatch stage was removed in #7337")
+	// #7771 reintroduces the dispatch stage for the webhook dispatcher.
+	assert.Contains(t, s, "- dispatch")
 	assert.Contains(t, s, "- poll")
 	assert.Contains(t, s, "- agent")
 	assert.NotContains(t, s, "- generate")

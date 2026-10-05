@@ -10,7 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
@@ -648,6 +651,49 @@ func TestListPullRequestFiles(t *testing.T) {
 	require.Len(t, files, 2)
 	assert.Equal(t, "new.go", files[0])
 	assert.Equal(t, "same.go", files[1])
+}
+
+func TestListPullRequestCommits(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/commits", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		// GitLab reports newest first.
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": "second"},
+			{"id": "first"},
+		})
+	})
+
+	shas, err := client.ListPullRequestCommits(ctx, "myorg", "myrepo", 5)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first", "second"}, shas, "must be reversed to oldest first")
+}
+
+func TestListPullRequestCommits_Errors(t *testing.T) {
+	t.Run("request error", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/commits", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
+		})
+
+		_, err := client.ListPullRequestCommits(context.Background(), "myorg", "myrepo", 5)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "list merge request commits page 1")
+	})
+
+	t.Run("decode error", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/commits", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("not json"))
+		})
+
+		_, err := client.ListPullRequestCommits(context.Background(), "myorg", "myrepo", 5)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode merge request commits page 1")
+	})
 }
 
 func TestListPullRequestFileDiffs(t *testing.T) {
@@ -1551,6 +1597,51 @@ func TestDeleteRepoSecret(t *testing.T) {
 
 	err := client.DeleteRepoSecret(ctx, "myorg", "myrepo", "MY_SECRET")
 	require.NoError(t, err)
+}
+
+// TestRepoSecretCleanup_DuplicateKeysAcrossScopes covers switching away
+// from a credential whose key exists both with the wildcard scope and for a
+// specific environment. GitLab answers an unscoped request with a conflict
+// because the key is ambiguous, so the existence check and the deletion must
+// both name the wildcard scope and leave the environment-specific variable.
+func TestRepoSecretCleanup_DuplicateKeysAcrossScopes(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	wildcardPresent := true
+	var deleted bool
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/DUP", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("filter[environment_scope]") != "*" {
+			writeJSON(t, w, http.StatusConflict, map[string]string{"message": "409 Conflict: There are multiple variables with provided parameters. Please use 'filter[environment_scope]'"})
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			if !wildcardPresent {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			writeJSON(t, w, http.StatusOK, map[string]string{"key": "DUP", "environment_scope": "*"})
+		case http.MethodDelete:
+			deleted = true
+			wildcardPresent = false
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	})
+
+	exists, err := client.RepoSecretExists(ctx, "myorg", "myrepo", "DUP")
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	require.NoError(t, client.DeleteRepoSecret(ctx, "myorg", "myrepo", "DUP"))
+	assert.True(t, deleted, "the scoped deletion must reach the handler")
+
+	// Only the environment-specific variable remains, which is ignored.
+	exists, err = client.RepoSecretExists(ctx, "myorg", "myrepo", "DUP")
+	require.NoError(t, err)
+	assert.False(t, exists)
 }
 
 func TestDeleteRepoSecret_AlreadyGone(t *testing.T) {
@@ -2749,6 +2840,117 @@ func TestListWorkflowRuns(t *testing.T) {
 	assert.Equal(t, "failure", runs[1].Conclusion)
 }
 
+// TestListWorkflowRunsSince_PaginatesBeyondFirstPage is a regression test
+// (#7996 review): unlike ListWorkflowRuns's single page, ListWorkflowRunsSince
+// must paginate until it reaches a pipeline older than the since boundary,
+// so a pipeline far older than a single page is still returned.
+func TestListWorkflowRunsSince_PaginatesBeyondFirstPage(t *testing.T) {
+	client, mux := setupTest(t)
+	since := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	var pages []string
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		pages = append(pages, r.URL.Query().Get("page"))
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			w.Header().Set("X-Next-Page", "2")
+			pipelines := make([]string, 100)
+			for i := range pipelines {
+				pipelines[i] = fmt.Sprintf(`{"id":%d,"status":"success","ref":"main","created_at":"2026-01-03T00:00:00Z"}`, 300-i)
+			}
+			fmt.Fprint(w, "["+strings.Join(pipelines, ",")+"]")
+		case "2":
+			fmt.Fprint(w, `[{"id":100,"status":"success","ref":"main","created_at":"2026-01-02T00:00:00Z"},`+
+				`{"id":99,"status":"success","ref":"main","created_at":"2026-01-01T00:00:00Z"}]`)
+		default:
+			t.Errorf("unexpected page request %q", r.URL.RawQuery)
+		}
+	})
+
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", since)
+	require.NoError(t, err)
+	require.Len(t, runs, 101, "should include the 100 newer pipelines plus the earliest eligible pipeline at the boundary")
+	assert.Equal(t, 100, runs[len(runs)-1].ID, "the earliest eligible pipeline beyond the first page must be included")
+	for _, r := range runs {
+		assert.NotEqual(t, 99, r.ID, "a pipeline older than the since boundary must not be included")
+	}
+	assert.Equal(t, []string{"1", "2"}, pages, "pagination must stop once a pipeline older than since is seen")
+}
+
+// TestListWorkflowRunsSince_WithRefFilter covers the branch where a
+// non-empty workflowFile (treated as a ref) is appended to the pipelines
+// query, mirroring ListWorkflowRuns's ref filter.
+func TestListWorkflowRunsSince_WithRefFilter(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "develop", r.URL.Query().Get("ref"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":10,"status":"success","ref":"develop","created_at":"2026-01-01T00:00:00Z"}]`)
+	})
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "develop", time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, 10, runs[0].ID)
+}
+
+func TestListWorkflowRunsSince_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	called := false
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", time.Now())
+	require.Error(t, err)
+	assert.True(t, called, "the registered 500-response handler must have been invoked, not an unmatched route")
+	assert.Contains(t, err.Error(), "list pipelines since")
+}
+
+func TestListWorkflowRunsSince_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{not valid json")
+	})
+	_, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", time.Now())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode pipelines since")
+}
+
+func TestListWorkflowRunsSince_EmptyFirstPage(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "[]")
+	})
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", time.Now())
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
+// TestListWorkflowRunsSince_PaginationExceeded guards the maxPages safety
+// valve: if every page is full and since is never reached, pagination must
+// stop with an error instead of looping indefinitely.
+func TestListWorkflowRunsSince_PaginationExceeded(t *testing.T) {
+	client, mux := setupTest(t)
+	page := 0
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		page++
+		pipelines := make([]string, 100)
+		for i := range pipelines {
+			pipelines[i] = fmt.Sprintf(`{"id":%d,"status":"success","ref":"main","created_at":"2026-01-03T00:00:00Z"}`, page*1000+i)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
+		fmt.Fprint(w, "["+strings.Join(pipelines, ",")+"]")
+	})
+	since := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", since)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pagination exceeded")
+	assert.Equal(t, 100, page)
+}
+
 func TestListRecentWorkflowRuns(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
@@ -2774,6 +2976,31 @@ func TestListWorkflowRunJobs(t *testing.T) {
 	assert.Equal(t, "success", jobs[0].Conclusion)
 	assert.Equal(t, "test", jobs[1].Name)
 	assert.Equal(t, "failure", jobs[1].Conclusion)
+}
+
+func TestListWorkflowRunJobs_PaginatesBeyondFirstPage(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			jobs := make([]string, 100)
+			for i := range jobs {
+				jobs[i] = fmt.Sprintf(`{"id":%d,"name":"job-%d","status":"success"}`, i+1, i+1)
+			}
+			w.Header().Set("X-Next-Page", "2")
+			fmt.Fprint(w, "["+strings.Join(jobs, ",")+"]")
+		case "2":
+			fmt.Fprint(w, `[{"id":101,"name":"fullsend review agent","status":"success"}]`)
+		default:
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	})
+
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+	require.NoError(t, err)
+	require.Len(t, jobs, 101)
+	assert.Equal(t, "fullsend review agent", jobs[100].Name)
 }
 
 func TestListWorkflowRunArtifacts(t *testing.T) {
@@ -3937,6 +4164,8 @@ func TestCreateRepoSecret_Upsert(t *testing.T) {
 		readJSONBody(t, r, &body)
 		assert.Equal(t, "newvalue", body["value"])
 		assert.Equal(t, true, body["protected"])
+		// Replacing a file-type variable must convert it to an env var.
+		assert.Equal(t, "env_var", body["variable_type"])
 		updated = true
 		writeJSON(t, w, http.StatusOK, map[string]any{"key": "MY_SECRET"})
 	})
@@ -3960,6 +4189,55 @@ func TestCreateRepoSecret_MaskedFallbackNotOnNonMaskError(t *testing.T) {
 	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", "BAD_KEY!", "value")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "key is invalid")
+}
+
+func TestCreateRepoSecret_MaskingRequiredNoUnmaskedFallback(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["masked"], "must never send masked:false")
+		writeJSON(t, w, http.StatusBadRequest, map[string]string{
+			"message": "This variable can not be masked",
+		})
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretOpenAIAPIKey, "sk-valid-looking-key")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be stored unmasked")
+	assert.Equal(t, 1, callCount, "must not retry with masked:false")
+}
+
+func TestUpdateRepoSecret_MaskingRequiredNoUnmaskedFallback(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]string{
+			"message": forge.SecretOpenAIAPIKey + " has already been taken",
+		})
+	})
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/"+forge.SecretOpenAIAPIKey, func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["masked"], "must never send masked:false")
+		writeJSON(t, w, http.StatusBadRequest, map[string]string{
+			"message": "This variable can not be masked",
+		})
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretOpenAIAPIKey, "sk-valid-looking-key")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be stored unmasked")
+	assert.Equal(t, 1, callCount, "must not retry with masked:false")
 }
 
 func TestCreatePipelineSchedule_CleansUpOnVariableFailure(t *testing.T) {
@@ -4298,4 +4576,59 @@ func TestCreateCrossRepoChangeProposal_NotSupported(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, cp)
 	assert.ErrorIs(t, err, forge.ErrNotSupported)
+}
+
+func TestGetRepoSecretProtection(t *testing.T) {
+	ctx := context.Background()
+	const path = "/api/v4/projects/myorg%2Fmyrepo/variables/K"
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+		want forge.SecretProtection
+	}{
+		{"masked and protected", map[string]any{"key": "K", "value": "v", "masked": true, "protected": true}, forge.SecretProtection{Exists: true, Masked: true, Protected: true}},
+		{"unmasked", map[string]any{"key": "K", "masked": false, "protected": true}, forge.SecretProtection{Exists: true, Protected: true}},
+		{"unprotected", map[string]any{"key": "K", "masked": true, "protected": false}, forge.SecretProtection{Exists: true, Masked: true}},
+		{"env var", map[string]any{"key": "K", "masked": true, "protected": true, "variable_type": "env_var"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true}},
+		{"file type", map[string]any{"key": "K", "masked": true, "protected": true, "variable_type": "file"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true, FileType: true}},
+		{"wildcard scope", map[string]any{"key": "K", "masked": true, "protected": true, "environment_scope": "*"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true}},
+		{"environment scope", map[string]any{"key": "K", "masked": true, "protected": true, "environment_scope": "production"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true, EnvironmentScoped: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			called := false
+			mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"), "the lookup must be limited to the wildcard scope")
+				writeJSON(t, w, http.StatusOK, tc.body)
+			})
+			got, err := client.GetRepoSecretProtection(ctx, "myorg", "myrepo", "K")
+			require.NoError(t, err)
+			assert.True(t, called, "the registered handler must serve the request")
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	t.Run("missing", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusNotFound)
+		})
+		got, err := client.GetRepoSecretProtection(ctx, "myorg", "myrepo", "K")
+		require.NoError(t, err)
+		assert.True(t, called, "the handler must report the 404, not ServeMux's default")
+		assert.False(t, got.Exists)
+	})
+
+	t.Run("unexpected status", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		_, err := client.GetRepoSecretProtection(ctx, "myorg", "myrepo", "K")
+		require.Error(t, err)
+	})
 }

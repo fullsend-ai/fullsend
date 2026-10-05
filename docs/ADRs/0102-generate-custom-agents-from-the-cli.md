@@ -93,6 +93,11 @@ convenience:
    are written when absent and never overwritten. Providers are referenced by
    path rather than bare name, because the embedded provider fallback fills in
    only the OpenAI provider.
+
+   > **Note (#7268):** Providers are now referenced by bare name for every
+   > role, not by path: the embedded fallback this point describes now covers
+   > every builtin provider, not only OpenAI, so `agent new` writes only
+   > `policies/base.yaml` and no `providers/` or `profiles/` files at all.
 4. **The result is validated in process.** Everything is rendered into a
    scratch directory and loaded through the same loader dispatch uses, so a
    harness that would fail validation never leaves a partially written

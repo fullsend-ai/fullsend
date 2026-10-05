@@ -525,6 +525,40 @@ func TestBuildPiRunCommand_OpenAI(t *testing.T) {
 	assert.Less(t, pin, secondGuard, "and before the second guard checks that dir")
 }
 
+// TestBuildPiRunCommand_OpenAIChildrenUnderVertexParent covers #7981:
+// children spawn pi from the parent's environment and config dir, so a
+// Vertex parent whose manifest admits configured openai children gets the
+// same openai safeguards an openai parent does, alongside its own Vertex
+// hygiene. Without openai ids in the manifest nothing changes.
+func TestBuildPiRunCommand_OpenAIChildrenUnderVertexParent(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	params := piTestParams()
+	params.Model = "opus"
+	seed := "&& " + PiOpenAIAuthSeed(PiRuntime{}.ConfigDir())
+	guard := piOpenAIConfigGuard(PiRuntime{}.ConfigDir())
+
+	withChildren := &piManifest{AgentName: "review", Model: "opus", Tools: []string{"bash"},
+		Agent: &piAgentManifest{Enabled: true, ProviderModels: map[string][]string{"openai": {"gpt-5.6-luna"}}}}
+	cmd := buildPiRunCommand(params, withChildren, nil, "")
+	assert.Contains(t, cmd, seed, "auth.json is seeded for the children")
+	assert.Equal(t, 2, strings.Count(cmd, guard), "config-dir guard runs before and after .env")
+	assert.Contains(t, cmd, "&& unset OPENAI_BASE_URL AZURE_OPENAI_API_KEY OPENAI_API_KEY", "OpenAI env cleared for the children")
+	assert.Contains(t, cmd, "unset ANTHROPIC_API_KEY", "the parent's own Vertex hygiene still runs")
+	assert.Contains(t, cmd, "--model 'anthropic-vertex/", "the parent stays on Vertex")
+
+	for name, m := range map[string]*piManifest{
+		"no openai ids": {AgentName: "review", Model: "opus", Tools: []string{"bash"},
+			Agent: &piAgentManifest{Enabled: true, ProviderModels: map[string][]string{"google-vertex": {"gemini-3.8-flash"}}}},
+		"agent tool disabled": {AgentName: "review", Model: "opus", Tools: []string{"bash"},
+			Agent: &piAgentManifest{Enabled: false, ProviderModels: map[string][]string{"openai": {"gpt-5.6-luna"}}}},
+	} {
+		cmd := buildPiRunCommand(params, m, nil, "")
+		assert.NotContains(t, cmd, seed, name)
+		assert.NotContains(t, cmd, guard, name)
+	}
+}
+
 // TestPiBinaryPin runs the pin under a real sh: pi resolves to the real
 // binary before .env, a pi() function or a PATH swap in .env changes
 // nothing, and an attempt to reassign the pinned path aborts the sourcing.

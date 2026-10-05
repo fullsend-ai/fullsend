@@ -14,6 +14,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -37,6 +38,9 @@ func (p *panickingSCM) GetIssue(context.Context, string, string, int) (*forge.Is
 	return nil, nil
 }
 func (p *panickingSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
+	return nil, nil
+}
+func (p *panickingSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
 	return nil, nil
 }
 func (p *panickingSCM) CommitFile(context.Context, string, string, string, string, []byte) error {
@@ -80,6 +84,10 @@ func (p *panickingSCM) CommitFileToFork(context.Context, string, string, string,
 func (p *panickingSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
+func (p *panickingSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
 func (p *panickingSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
 	return nil, nil
 }
@@ -158,6 +166,9 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		AllowedResourcesOriginal:   []string{"https://example.com/"},
 		AgentsOverridden:           true,
 		AgentsOriginal:             []config.AgentEntry{{Name: "test", Source: "harness/test.yaml"}},
+		PlaybackEntries:            []runtime.PlaybackEntry{{Result: "triage/bug"}},
+		PlaybackCommitted:          true,
+		ConsumedHarnessRunIDs:      map[string]map[int]bool{"review": {10: true}},
 	}
 	resetScenarioWorld(w)
 	assert.Equal(t, 0, w.PRNumber)
@@ -175,16 +186,24 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Nil(t, w.AllowedResourcesOriginal)
 	assert.False(t, w.AgentsOverridden)
 	assert.Nil(t, w.AgentsOriginal)
+	assert.Nil(t, w.PlaybackEntries)
+	assert.False(t, w.PlaybackCommitted)
+	assert.Nil(t, w.ConsumedHarnessRunIDs)
 }
 
 func TestSkipErrorForTagNames(t *testing.T) {
 	w := &world.World{Config: env.RunnerConfig{InstallMode: "per-repo", SCM: "github"}}
+	playbackWorld := &world.World{
+		Config: env.RunnerConfig{InstallMode: "per-repo", SCM: "github"},
+		Driver: install.NewPlaybackDriver(newFakeDriver(1)),
+	}
 
 	tests := []struct {
 		name    string
 		tags    []string
 		wantErr error
 		cfg     env.RunnerConfig
+		world   *world.World
 	}{
 		{name: "no tags", tags: nil, wantErr: nil},
 		{name: "skip per-repo on per-repo", tags: []string{"@skip:per-repo"}, wantErr: godog.ErrSkip},
@@ -198,11 +217,16 @@ func TestSkipErrorForTagNames(t *testing.T) {
 			cfg: env.RunnerConfig{InstallMode: "per-repo", SCM: "github", Capabilities: []string{"applier-branch-namespace"}}},
 		{name: "requires capability other declared", tags: []string{"@requires:capability:applier-branch-namespace"}, wantErr: godog.ErrSkip,
 			cfg: env.RunnerConfig{InstallMode: "per-repo", SCM: "github", Capabilities: []string{"something-else"}}},
+		{name: "playback tag outside playback suite", tags: []string{"@playback"}, wantErr: godog.ErrSkip},
+		{name: "playback tag inside playback suite", tags: []string{"@playback"}, wantErr: nil, world: playbackWorld},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ww := w
-			if tt.cfg.InstallMode != "" || tt.cfg.SCM != "" {
+			switch {
+			case tt.world != nil:
+				ww = tt.world
+			case tt.cfg.InstallMode != "" || tt.cfg.SCM != "":
 				ww = &world.World{Config: tt.cfg}
 			}
 			err := SkipErrorForTagNames(tt.tags, ww)

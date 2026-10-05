@@ -2,13 +2,99 @@
 spec:
   inputs:
     stage:
-      default: '$STAGE'
+      default: ''
+      # See internal/poll/dispatch.go (dispatchInputNames): anchored to
+      # safe identifier characters or the empty default, excluding
+      # GitLab variable-reference syntax — this value is interpolated
+      # into this job's own name key ("fullsend $[[ inputs.stage |
+      # expand_vars ]] agent") and its rules: below.
+      regex: '^[A-Za-z0-9_-]*$'
+    event_type:
+      default: ''
+    resource_key:
+      default: ''
+      # Matches resourceKey()'s "issue-<iid>"/"mr-<iid>" format or the
+      # empty default — see internal/poll/dispatch.go (resourceKey).
+      regex: '^((issue|mr)-[0-9]+)?$'
+    is_fork:
+      default: ''
+    originating_url:
+      default: ''
+    repo_full_name:
+      default: ''
+    mr_author_id:
+      default: ''
+    actor_id:
+      default: ''
+    status_iid:
+      default: ''
+    poll_job_url:
+      default: ''
+    dispatch_hmac:
+      default: ''
+    event_payload_chunk_00:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_01:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_02:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_03:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_04:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_05:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_06:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_07:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
+    event_payload_chunk_08:
+      default: ''
+      regex: '^[A-Za-z0-9+/=]{0,1000}$'
 ---
-# Generic agent stage template — parameterized by $STAGE.
+# Generic agent stage template — parameterized by typed GitLab CI/CD
+# pipeline inputs rather than user-defined pipeline variables (#7850).
 # A single template handles all agent stages (triage, code, review, fix,
-# retro, prioritize). The cron-poller's API-triggered pipeline sets
-# STAGE as a pipeline variable; this template reads it to select the
-# agent.
+# retro, prioritize). The cron-poller's API-triggered pipeline sets these
+# as pipeline inputs instead of variables, so the agent launch path keeps
+# working on a Developer-level poller/dispatcher credential even when a
+# project's ci_pipeline_variables_minimum_override_role is
+# no_one_allowed — that GitLab setting gates user-defined pipeline
+# variables, not pipeline inputs. This template bridges every scalar
+# input straight back into the same-named CI variable (STAGE,
+# RESOURCE_KEY, ...) run-agent-job.sh, resource_group, and the rules
+# below already expect, so none of that downstream logic changes.
+#
+# event_payload_record (a single array-typed input whose elements were
+# interpolated directly into before_script as executable statements) was
+# replaced by event_payload_chunk_00..08 — fixed, individually-declared
+# scalar inputs — after a security review found the array form let any
+# caller with API access to trigger a pipeline supply arbitrary shell
+# commands that would run, as the runner, before run-agent-job.sh's
+# identity/pipeline-creator/HMAC checks ever executed. Each
+# event_payload_chunk_NN input is bridged into a same-named
+# EVENT_PAYLOAD_CHUNK_NN job variable below exactly like every other
+# scalar input — a value, never script text — and before_script
+# reassembles them with a fixed sequence of printf statements (present
+# in this file whether or not a caller supplied any chunks) that only
+# ever reference those variables' values, never interpolate caller
+# content into the script itself. Only 9 chunks (00-08) are declared,
+# not 40: GitLab rejects a configuration that declares more than 20
+# pipeline inputs in total, and the 11 other named dispatch fields
+# already consume 11 of that budget. 9 chunks of up to 1000 base64
+# characters each cover a worst-case truncate(event.NoteBody, 800) note
+# body after JSON escaping and base64 encoding; dispatch() returns an
+# error rather than silently dropping data if a payload ever needs more.
+# See internal/poll/dispatch.go (dispatchInputs / eventPayloadChunks /
+# maxEventPayloadChunks), the Go authority for this contract.
 #
 # Job behavior lives in .gitlab/ci/scripts/run-agent-job.sh so the
 # shell can be linted and tested independently of this YAML.
@@ -28,7 +114,87 @@ stages:
   variables:
     FULLSEND_FORGE: "gitlab"
     CODE_ALLOWED_TARGET_BRANCHES: ''
+    STAGE:
+      value: $[[ inputs.stage ]]
+      expand: false
+    EVENT_TYPE:
+      value: $[[ inputs.event_type ]]
+      expand: false
+    RESOURCE_KEY:
+      value: $[[ inputs.resource_key ]]
+      expand: false
+    IS_FORK:
+      value: $[[ inputs.is_fork ]]
+      expand: false
+    ORIGINATING_URL:
+      value: $[[ inputs.originating_url ]]
+      expand: false
+    REPO_FULL_NAME:
+      value: $[[ inputs.repo_full_name ]]
+      expand: false
+    MR_AUTHOR_ID:
+      value: $[[ inputs.mr_author_id ]]
+      expand: false
+    ACTOR_ID:
+      value: $[[ inputs.actor_id ]]
+      expand: false
+    STATUS_IID:
+      value: $[[ inputs.status_iid ]]
+      expand: false
+    FULLSEND_POLL_JOB_URL:
+      value: $[[ inputs.poll_job_url ]]
+      expand: false
+    FULLSEND_DISPATCH_HMAC:
+      value: $[[ inputs.dispatch_hmac ]]
+      expand: false
+    EVENT_PAYLOAD_CHUNK_00:
+      value: $[[ inputs.event_payload_chunk_00 ]]
+      expand: false
+    EVENT_PAYLOAD_CHUNK_01:
+      value: $[[ inputs.event_payload_chunk_01 ]]
+      expand: false
+    EVENT_PAYLOAD_CHUNK_02:
+      value: $[[ inputs.event_payload_chunk_02 ]]
+      expand: false
+    EVENT_PAYLOAD_CHUNK_03:
+      value: $[[ inputs.event_payload_chunk_03 ]]
+      expand: false
+    EVENT_PAYLOAD_CHUNK_04:
+      value: $[[ inputs.event_payload_chunk_04 ]]
+      expand: false
+    EVENT_PAYLOAD_CHUNK_05:
+      value: $[[ inputs.event_payload_chunk_05 ]]
+      expand: false
+    EVENT_PAYLOAD_CHUNK_06:
+      value: $[[ inputs.event_payload_chunk_06 ]]
+      expand: false
+    EVENT_PAYLOAD_CHUNK_07:
+      value: $[[ inputs.event_payload_chunk_07 ]]
+      expand: false
+    EVENT_PAYLOAD_CHUNK_08:
+      value: $[[ inputs.event_payload_chunk_08 ]]
+      expand: false
   before_script:
+    # Reconstruct EVENT_PAYLOAD_B64 from the fixed event_payload_chunk_NN
+    # variables before anything else runs: run-agent-job.sh (sourced
+    # from script: below) and the HMAC verification it performs both
+    # expect a plain EVENT_PAYLOAD_B64 environment variable, unchanged
+    # from before #7850. This sequence of printf statements is fixed —
+    # present verbatim in every pipeline — and only ever reads each
+    # chunk variable's value, so a caller can control what data ends up
+    # in the file but never what command runs. Truncate first — each
+    # statement only appends.
+    - ': > /tmp/.fs-dispatch-payload.b64'
+    - printf %s "${EVENT_PAYLOAD_CHUNK_00:-}" >> /tmp/.fs-dispatch-payload.b64
+    - printf %s "${EVENT_PAYLOAD_CHUNK_01:-}" >> /tmp/.fs-dispatch-payload.b64
+    - printf %s "${EVENT_PAYLOAD_CHUNK_02:-}" >> /tmp/.fs-dispatch-payload.b64
+    - printf %s "${EVENT_PAYLOAD_CHUNK_03:-}" >> /tmp/.fs-dispatch-payload.b64
+    - printf %s "${EVENT_PAYLOAD_CHUNK_04:-}" >> /tmp/.fs-dispatch-payload.b64
+    - printf %s "${EVENT_PAYLOAD_CHUNK_05:-}" >> /tmp/.fs-dispatch-payload.b64
+    - printf %s "${EVENT_PAYLOAD_CHUNK_06:-}" >> /tmp/.fs-dispatch-payload.b64
+    - printf %s "${EVENT_PAYLOAD_CHUNK_07:-}" >> /tmp/.fs-dispatch-payload.b64
+    - printf %s "${EVENT_PAYLOAD_CHUNK_08:-}" >> /tmp/.fs-dispatch-payload.b64
+    - export EVENT_PAYLOAD_B64="$(cat /tmp/.fs-dispatch-payload.b64 2>/dev/null || true)"
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/install-fullsend-cli.sh"
   script:
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/run-agent-job.sh"
@@ -40,10 +206,15 @@ stages:
   resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"
   rules:
     # Deny-before-admit: GitLab evaluates rules first-match, so a
-    # debug-trace pipeline must not reach the STAGE admit rule.
+    # debug-trace pipeline must not reach the stage admit rule.
     # Secrets materialize at job init; a script-level abort is too late.
     # Matches the full truthy set gitlab-runner accepts for this
     # variable (Go strconv.ParseBool: "1", "t"/"T", "true"/"TRUE"/"True").
     - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
       when: never
-    - if: $STAGE && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
+    # STAGE is this job's own variables: block above, bridged from the
+    # stage input, so this is a normal variable truthiness check, not a
+    # literal-to-literal comparison (GitLab's rules:if requires a CI/CD
+    # variable on at least one side; $[[ inputs.stage ]] resolves to a
+    # literal before rules are evaluated).
+    - if: $CI_DEBUG_TRACE !~ /^(1|t|true)$/i && $STAGE

@@ -793,7 +793,7 @@ func TestPersistDispatchedKeys_PrunesAndWrites(t *testing.T) {
 	watermark := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
 	keys := map[string]int64{
 		"keep": watermark.Unix() + 10,
-		"drop": watermark.Unix() - 10,
+		"drop": watermark.Add(-dispatchedKeyRetention).Unix() - 10,
 	}
 	if err := p.persistDispatchedKeys(context.Background(), "testgroup", "testrepo", keys, watermark); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -949,7 +949,7 @@ func TestPersistCycleState_WritesAllFieldsOnce(t *testing.T) {
 	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
 	dispatched := map[string]int64{
 		"keep": wm.Unix() + 10,
-		"drop": wm.Unix() - 10,
+		"drop": wm.Add(-dispatchedKeyRetention).Unix() - 10,
 	}
 	failed := map[string]int{"retry": 2, "done": maxEventRetries + 1}
 	labels := LabelState{1: {"ready-to-code"}}
@@ -1519,7 +1519,7 @@ func TestUnionDispatchedKeys_MaxTimestampWins(t *testing.T) {
 		DispatchedKeysFull: map[string]int64{"a": 10, "b": 20},
 	}
 	wm := time.Unix(5, 0)
-	unionDispatchedKeys(&state, false, map[string]int64{"b": 15, "c": 30}, wm)
+	unionDispatchedKeys(&state, false, map[string]int64{"b": 15, "c": 30}, wm, nil)
 	if state.DispatchedKeysFull["a"] != 10 {
 		t.Errorf("a = %d, want 10", state.DispatchedKeysFull["a"])
 	}
@@ -1536,7 +1536,7 @@ func TestUnionDispatchedKeys_SlashMode(t *testing.T) {
 		DispatchedKeysFast: map[string]int64{"keep": 10},
 		DispatchedKeysFull: map[string]int64{"full": 99},
 	}
-	unionDispatchedKeys(&state, true, map[string]int64{"slash": 20}, time.Unix(5, 0))
+	unionDispatchedKeys(&state, true, map[string]int64{"slash": 20}, time.Unix(5, 0), nil)
 	if state.DispatchedKeysFast["keep"] != 10 || state.DispatchedKeysFast["slash"] != 20 {
 		t.Errorf("fast keys = %v", state.DispatchedKeysFast)
 	}
@@ -1783,13 +1783,19 @@ func TestDetectNewLabels_DoesNotPruneOpenIssues(t *testing.T) {
 		{IID: 10, Labels: []string{"ready-to-code"}},
 	}
 
-	_, state, _, err := p.detectNewLabels(context.Background(), "testgroup", "testrepo", issues)
+	_, delta, _, err := p.detectNewLabels(context.Background(), "testgroup", "testrepo", issues)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, ok := state[88]; !ok {
-		t.Error("expected open issue 88 to remain in state")
+	// Open issue 88 is outside discovery: it is omitted from the delta (not
+	// tombstoned, not echoed from the loaded snapshot), so persisting the
+	// delta leaves whatever the stored document carries for it untouched.
+	if labels, ok := delta[88]; ok {
+		t.Errorf("expected open issue 88 to be absent from the delta, got %v", labels)
+	}
+	if _, ok := delta[10]; !ok {
+		t.Error("expected discovered issue 10 in the delta")
 	}
 }
 

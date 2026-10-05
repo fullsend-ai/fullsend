@@ -226,6 +226,18 @@ func CleanupScenario(w *world.World) {
 			worldLogf(w, "behaviour cleanup: remove artifact dir: %v", err)
 		}
 	}
+	// A playback scenario's per-round artifact directories
+	// (HarnessRunArtifactDirs, playback.go) are cached separately from
+	// ArtifactDir above and include it, so clean up any not already
+	// removed. os.RemoveAll is idempotent on an already-removed path.
+	for _, dir := range w.HarnessRunArtifactDirs {
+		if dir == "" || !shouldRemoveArtifactDir(dir, os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			worldLogf(w, "behaviour cleanup: remove round artifact dir: %v", err)
+		}
+	}
 
 	// --- Kill switch cleanup ---
 	// Deactivate the kill switch so the next scenario on this slot is

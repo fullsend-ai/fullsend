@@ -196,6 +196,9 @@ type fakeDispatchSCM struct {
 func (f *fakeDispatchSCM) GetFileContent(_ context.Context, _, _, _ string) ([]byte, error) {
 	return f.fileContent, f.getFileErr
 }
+func (f *fakeDispatchSCM) GetFileContentAtRef(_ context.Context, _, _, _, _ string) ([]byte, error) {
+	return f.fileContent, f.getFileErr
+}
 func (f *fakeDispatchSCM) CommitFile(_ context.Context, _, _, _, _ string, content []byte) error {
 	f.commitCalled = true
 	f.committedContent = content
@@ -235,6 +238,10 @@ func (f *fakeDispatchSCM) CommitFileToFork(context.Context, string, string, stri
 func (f *fakeDispatchSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
+func (f *fakeDispatchSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
 func (f *fakeDispatchSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
 	return nil, nil
 }

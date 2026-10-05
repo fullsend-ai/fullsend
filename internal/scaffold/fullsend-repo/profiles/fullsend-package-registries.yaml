@@ -9,11 +9,13 @@ endpoints:
     protocol: rest
     access: read-only
     enforcement: enforce
+    allow_encoded_slash: true
   - host: registry.yarnpkg.com
     port: 443
     protocol: rest
     access: read-only
     enforcement: enforce
+    allow_encoded_slash: true
   - host: pypi.org
     port: 443
     protocol: rest
@@ -51,5 +53,7 @@ binaries:
   - "**/python"
   - "**/python3"
   - "**/python3.*"
+  - "**/uv"
+  - "**/uvx"
   - "**/go"
   - "**/pre-commit"

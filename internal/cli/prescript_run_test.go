@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -120,6 +121,28 @@ func TestRunAgent_VertexMissingGCPCredentialsFailsBeforePreScript(t *testing.T) 
 	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
 		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
 	require.ErrorContains(t, err, "GOOGLE_APPLICATION_CREDENTIALS")
+	assert.NoFileExists(t, marker)
+}
+
+// A Vertex parent with a required credential mount and an empty variable
+// fails before the pre-script: validateVertexGCPCredentials checks only
+// optional mounts.
+func TestRunAgent_VertexRequiredGCPMountEmptyVariableFailsBeforePreScript(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	marker := filepath.Join(t.TempDir(), "pre-script-ran")
+	dir := newSkipHarnessDir(t, "touch "+marker+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.EqualError(t, err, "host_files[0]: GOOGLE_APPLICATION_CREDENTIALS is empty; provide a credential file")
 	assert.NoFileExists(t, marker)
 }
 
@@ -1125,4 +1148,165 @@ func newSkipHarnessDir(t *testing.T, preScriptBody string) string {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
 		[]byte(harnessYAML), 0o644))
 	return dir
+}
+
+// newVertexChildDir builds a pi harness whose pre-script touches marker.
+// extra (harness YAML) and subagents (config YAML) are appended verbatim; a
+// "writer" persona with frontmatter model: sonnet is available under
+// skills/probe (#7980).
+func newVertexChildDir(t *testing.T, marker, runtimeName, model, extra, subagents string) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "code.md"), []byte("You are a coding agent."), 0o644))
+	skill := filepath.Join(dir, "skills", "probe")
+	require.NoError(t, os.MkdirAll(filepath.Join(skill, "sub-agents"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("---\nname: probe\ndescription: probe\n---\nProbe.\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(skill, "sub-agents", "writer.md"), []byte("---\nname: writer\nmodel: sonnet\n---\nWrite.\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(
+		"agent: agents/code.md\nrole: test\nmodel: "+model+"\npre_script: "+writePreScript(t, "touch "+marker+"\n")+"\n"+extra), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"version: \"1\"\nruntime: "+runtimeName+"\nagents:\n  - name: code\n    source: harness/code.yaml\n"+subagents), 0o644))
+	return dir
+}
+
+// A pi parent off Vertex fails before its pre-script when a subagents
+// entry resolves to Vertex, the harness mounts
+// ${GOOGLE_APPLICATION_CREDENTIALS}, and the variable has no usable file.
+// Every other case passes and is judged at dispatch (#7980).
+func TestRunAgent_VertexSubagentCredentials(t *testing.T) {
+	credFile := filepath.Join(t.TempDir(), "creds.json")
+	require.NoError(t, os.WriteFile(credFile, []byte(`{"type":"service_account"}`), 0o600))
+	emptyFile := filepath.Join(t.TempDir(), "empty.json")
+	require.NoError(t, os.WriteFile(emptyFile, nil, 0o600))
+	gacEnvFile := filepath.Join(t.TempDir(), "gcp.env")
+	require.NoError(t, os.WriteFile(gacEnvFile, []byte("export GOOGLE_APPLICATION_CREDENTIALS=/sandbox/sa.json\n"), 0o600))
+	textFile := filepath.Join(t.TempDir(), "notes.txt")
+	require.NoError(t, os.WriteFile(textFile, []byte("notes\n"), 0o600))
+	const optionalMount = "host_files:\n  - src: ${GOOGLE_APPLICATION_CREDENTIALS}\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n"
+	const sonnetDefault = "    subagents:\n      default: sonnet\n"
+	const openAIParent = "openai/gpt-5.6-luna"
+	for _, tc := range []struct {
+		name, runtime, model, extra, subagents, gac string
+		env                                         map[string]string
+		wantErr                                     []string // empty: the gate passes and the pre-script runs
+		wantInfo                                    string
+	}{
+		{name: "configured Vertex child, variable empty", runtime: "pi", model: openAIParent, extra: optionalMount, subagents: sonnetDefault,
+			wantErr: []string{"sub-agent model resolves to Vertex, but GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default → anthropic-vertex/claude-sonnet-", "or move the sub-agent off Vertex"}},
+		{name: "subagents.<persona> on Vertex", runtime: "pi", model: openAIParent, extra: optionalMount + "skills:\n  - skills/probe\n",
+			subagents: "    subagents:\n      writer: haiku\n",
+			wantErr:   []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.writer → anthropic-vertex/claude-haiku-"}},
+		{name: "configured Vertex child, file missing", runtime: "pi", model: openAIParent, extra: optionalMount, gac: "/nonexistent/creds.json",
+			subagents: "    subagents:\n      default: haiku\n",
+			wantErr:   []string{"GOOGLE_APPLICATION_CREDENTIALS does not point to a non-empty credential file: subagents.default → anthropic-vertex/claude-haiku-"}},
+		{name: "configured google-vertex child: left to dispatch", runtime: "pi", model: openAIParent, extra: optionalMount,
+			subagents: "    subagents:\n      default: google-vertex/gemini-3.8-flash\n",
+			wantInfo:  "Vertex sub-agents need a credential file: GOOGLE_APPLICATION_CREDENTIALS is not set"},
+		{name: "configured Vertex child, empty file", runtime: "pi", model: openAIParent, extra: optionalMount, gac: emptyFile,
+			subagents: "    subagents:\n      default: xai/grok-4.6\n",
+			wantErr:   []string{"GOOGLE_APPLICATION_CREDENTIALS does not point to a non-empty credential file: subagents.default → xai-vertex/xai/grok-4.6"}},
+		{name: "Actions setup failure is named", runtime: "pi", model: openAIParent, extra: optionalMount, subagents: sonnetDefault,
+			env:     map[string]string{"GITHUB_ACTIONS": "true", "FULLSEND_GCP_PROJECT_ID": "p", "FULLSEND_GCP_WIF_PROVIDER": ""},
+			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set (Vertex credential setup failed; see the warning above): subagents.default"}},
+		{name: "no configured Vertex child", runtime: "pi", model: openAIParent, extra: optionalMount,
+			wantInfo: "Vertex sub-agents need a credential file: GOOGLE_APPLICATION_CREDENTIALS is not set"},
+		{name: "frontmatter-only Vertex persona", runtime: "pi", model: openAIParent, extra: optionalMount + "skills:\n  - skills/probe\n",
+			wantInfo: "Vertex sub-agents need a credential file: GOOGLE_APPLICATION_CREDENTIALS is not set"},
+		{name: "no variable mount: left to dispatch", runtime: "pi", model: openAIParent, subagents: sonnetDefault},
+		{name: "literal-path mount: left to dispatch", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra: "host_files:\n  - src: " + credFile + "\n    dest: /tmp/.gcp-credentials.json\n"},
+		{name: "env.sandbox points at another usable mount", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra: optionalMount + "  - src: " + credFile + "\n    dest: /sandbox/sa.json\nenv:\n  sandbox:\n    GOOGLE_APPLICATION_CREDENTIALS: /sandbox/sa.json\n"},
+		{name: "env.sandbox equals the mount dest: still gated", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra:   optionalMount + "env:\n  sandbox:\n    GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json\n",
+			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default"}},
+		{name: "another mounted credential file and an env file", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra: optionalMount + "  - src: " + credFile + "\n    dest: /sandbox/sa.json\n  - src: " + gacEnvFile + "\n    dest: /sandbox/workspace/.env.d/gcp.env\n"},
+		{name: "env.sandbox pins the missing mount despite another credential file", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra:   optionalMount + "  - src: " + credFile + "\n    dest: /sandbox/other.json\nenv:\n  sandbox:\n    GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json\n",
+			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default"}},
+		{name: "a non-credential extra file: still gated", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra:   optionalMount + "  - src: " + textFile + "\n    dest: /sandbox/notes.txt\n",
+			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default"}},
+		{name: "generated overlay shape: still gated", runtime: "pi", model: openAIParent, subagents: sonnetDefault,
+			extra:   optionalMount + "  - src: ${GCP_OIDC_TOKEN_FILE}\n    dest: /sandbox/workspace/.gcp-oidc-token\n    optional: true\n",
+			env:     map[string]string{"GCP_OIDC_TOKEN_FILE": ""},
+			wantErr: []string{"GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default"}},
+		{name: "credential file set", runtime: "pi", model: openAIParent, extra: optionalMount, subagents: sonnetDefault, gac: credFile},
+		{name: "dummy runtime", runtime: "dummy", model: openAIParent, extra: optionalMount, subagents: sonnetDefault},
+		{name: "Vertex parent keeps its own check", runtime: "pi", model: "anthropic-vertex/claude-opus-4-6", extra: optionalMount, subagents: sonnetDefault,
+			wantErr: []string{"host_files[0]: Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePreScriptStub(t)
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", tc.gac)
+			t.Setenv("OPENAI_API_KEY", "sk-test")
+			t.Setenv("FULLSEND_RUNTIME", "")
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			marker := filepath.Join(t.TempDir(), "pre-script-ran")
+			dir := newVertexChildDir(t, marker, tc.runtime, tc.model, tc.extra, tc.subagents)
+			var out bytes.Buffer
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+				statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+			require.Error(t, err, "the stub never creates a sandbox")
+			if len(tc.wantErr) > 0 {
+				for _, want := range tc.wantErr {
+					assert.Contains(t, err.Error(), want)
+				}
+				assert.NoFileExists(t, marker)
+				return
+			}
+			assert.NotContains(t, err.Error(), "GOOGLE_APPLICATION_CREDENTIALS")
+			assert.FileExists(t, marker)
+			info := strings.Count(out.String(), "Vertex sub-agents need a credential file")
+			if tc.wantInfo != "" {
+				assert.Equal(t, 1, info, out.String())
+				assert.Contains(t, out.String(), tc.wantInfo)
+			} else {
+				assert.Zero(t, info, out.String())
+			}
+		})
+	}
+}
+
+func TestVertexCredentialGap(t *testing.T) {
+	mount := harness.HostFile{Src: "${GOOGLE_APPLICATION_CREDENTIALS}", Dest: "/tmp/.gcp-credentials.json"}
+	cred := filepath.Join(t.TempDir(), "creds.json")
+	require.NoError(t, os.WriteFile(cred, []byte("{}"), 0o600))
+	empty := filepath.Join(t.TempDir(), "empty.json")
+	require.NoError(t, os.WriteFile(empty, nil, 0o600))
+	h := &harness.Harness{HostFiles: []harness.HostFile{mount}}
+
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", cred)
+	assert.Empty(t, vertexCredentialGap(h))
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	assert.Equal(t, "GOOGLE_APPLICATION_CREDENTIALS is not set", vertexCredentialGap(h))
+	assert.Empty(t, vertexCredentialGap(&harness.Harness{HostFiles: []harness.HostFile{{Src: cred, Dest: "/tmp/.gcp-credentials.json"}}}),
+		"no variable mount: nothing to judge here")
+	withEnv := func(v string) *harness.Harness {
+		return &harness.Harness{HostFiles: []harness.HostFile{mount}, Env: &harness.EnvConfig{Sandbox: map[string]string{"GOOGLE_APPLICATION_CREDENTIALS": v}}}
+	}
+	assert.Empty(t, vertexCredentialGap(withEnv("/sandbox/sa.json")), "env.sandbox elsewhere: left to dispatch")
+	assert.Empty(t, vertexCredentialGap(withEnv("${SANDBOX_GAC}")), "unexpanded env.sandbox: left to dispatch")
+	assert.Equal(t, "GOOGLE_APPLICATION_CREDENTIALS is not set", vertexCredentialGap(withEnv("/tmp/.gcp-credentials.json")))
+	for name, path := range map[string]string{"missing": "/nonexistent/creds.json", "empty": empty, "directory": t.TempDir()} {
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+		assert.Equal(t, "GOOGLE_APPLICATION_CREDENTIALS does not point to a non-empty credential file", vertexCredentialGap(h), name)
+	}
+}
+
+// A Vertex parent's required mount needs the file, so its message does
+// not suggest marking the mount optional; other providers keep the hint.
+func TestValidateRequiredGCPHostFile(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+	h := &harness.Harness{HostFiles: []harness.HostFile{{Src: "${GOOGLE_APPLICATION_CREDENTIALS}", Dest: "/tmp/.gcp-credentials.json"}}}
+	assert.EqualError(t, validateRequiredGCPHostFile(h, runProviderVertex),
+		"host_files[0]: GOOGLE_APPLICATION_CREDENTIALS is empty; provide a credential file")
+	assert.EqualError(t, validateRequiredGCPHostFile(h, runProviderOpenAI),
+		"host_files[0]: GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file")
 }

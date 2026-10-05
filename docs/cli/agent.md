@@ -37,26 +37,26 @@ fullsend agent new lint-docs --fullsend-dir .fullsend \
   schemas/lint-docs-result.schema.json
   scripts/post-lint-docs.sh
   policies/base.yaml
-  providers/vertex-ai.yaml
-  providers/github-ro.yaml
-  profiles/fullsend-vertex-ai.yaml
-  profiles/fullsend-github-ro.yaml
   ✓ Added agent "lint-docs"
 
 Next:
   1. Fill in the marked sections of agents/lint-docs.md — that file is the agent's prompt.
-  2. Test locally:
-       fullsend run lint-docs --fullsend-dir .fullsend \
+  2. Test locally, printing the result instead of commenting:
+       POST_LINT_DOCS_DRY_RUN=1 fullsend run lint-docs --fullsend-dir .fullsend \
          --target-repo . --env-file .env.local
      .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,
      GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, and
-     GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP
-     credentials file — the harness copies that file into the sandbox, so the
-     run stops before it starts without it. GH_TOKEN must be a real token: a
-     connectivity check runs before the agent does. See
-     docs/guides/user/running-agents-locally.md.
+     GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP credentials file;
+     the run stops before it starts without them.
+     GH_TOKEN must be a real token: a connectivity check runs before the
+     agent does. See docs/guides/user/running-agents-locally.md.
   3. Commit .fullsend, then comment `/fs-lint-docs` on an issue or pull request to run it in CI.
 ```
+
+Step 2 lists the Vertex route's variables. For the full walkthrough — picking
+a route (Claude, codex, or pi; Vertex or OpenAI), what a run does end to end,
+and how to try it without a model — see
+[Bring Your Own Agent](../guides/user/bring-your-own-agent.md).
 
 The generated tree:
 
@@ -69,10 +69,6 @@ find .fullsend -type f | sort
 .fullsend/config.yaml
 .fullsend/harness/lint-docs.yaml
 .fullsend/policies/base.yaml
-.fullsend/profiles/fullsend-github-ro.yaml
-.fullsend/profiles/fullsend-vertex-ai.yaml
-.fullsend/providers/github-ro.yaml
-.fullsend/providers/vertex-ai.yaml
 .fullsend/schemas/lint-docs-result.schema.json
 .fullsend/scripts/post-lint-docs.sh
 ```
@@ -89,22 +85,39 @@ it ships with marked sections to fill in. Everything else is complete.
 | `schemas/<name>-result.schema.json` | always | yes |
 | `scripts/post-<name>.sh` (mode 0755) | always | yes |
 | `policies/base.yaml` | when absent | **no** |
-| `providers/*.yaml` (per role) | when absent | **no** |
-| `profiles/*.yaml` (per role) | when absent | **no** |
 | `scripts/validate-output-schema.sh` | with `--validation-loop`, when absent | **no** |
 | `config.yaml` `agents:` entry | unless `--no-register` | n/a |
 
-The policy, provider and profile files are shared by every agent in the
-directory. `agent new` writes them once, never overwrites them (not even with
-`--force`), and `fullsend github setup` does not create them — so commit
-them with the agent. In CI they behave differently, which matters when you
-want to change one:
+The generated harness's `providers:` entries are bare names (`vertex-ai`,
+`github-ro`, ...), not paths, and no `providers/` or `profiles/` files are
+written. `fullsend run` resolves each built-in name to the provider
+definition and profile in the `fullsend` binary, so a fix to one reaches
+you with the next `fullsend` release. `policies/base.yaml` is the one shared
+file: there is no built-in policy, so `agent new` writes one copy for every
+agent in the directory and never overwrites it (not even with `--force`).
+Commit it with the agent.
 
-| Directory | In CI | To customize |
-|-----------|-------|--------------|
+| What | In CI and locally | To customize |
+|------|-------------------|--------------|
 | `policies/` | Your committed copy is used as-is | Edit `policies/base.yaml`, or add another policy file and point the harness `policy:` at it |
-| `profiles/` | Your committed copy is used as-is | Edit the file |
-| `providers/` | Replaced with the scaffold's copies on every run | Add a provider under a new name; edits to a scaffold-named file are overwritten |
+| Built-in providers and their profiles | Resolved from the `fullsend` binary | Copy the provider and profile under your own name (for example `providers/myorg-github-ro.yaml` with `name: myorg-github-ro` and `type: myorg-github-ro`, and `profiles/myorg-github-ro.yaml` with `id: myorg-github-ro`), list the profile under `openshell.profiles`, and declare `myorg-github-ro` instead of the built-in name |
+
+The built-in names (`vertex-ai`, `github`, `github-ro`, `github-artifacts`,
+`gitleaks`, `package-registries`, `atlassian-cloud`, `openai`) and their
+`fullsend-<name>` profile ids are reserved. A harness that still uses its own
+copy under one of them keeps working for now: `fullsend run` uses the copy
+and prints a warning naming the migration below. A later release rejects
+it. `fullsend-openai` is already rejected.
+
+Bare names need the same `fullsend` release in CI as the one that
+generated the agent, or a newer one. The scaffolded workflows run the
+binary that matches the workflow commit, so this holds unless your workflow
+passes an older `fullsend_version`.
+
+Migrating a harness generated by v0.44.0 or earlier (`providers/*.yaml` and
+`profiles/fullsend-*.yaml` referenced by path)? See
+[Upgrading agents generated before built-in providers](../guides/user/bring-your-own-agent.md#upgrading-agents-generated-before-built-in-providers)
+for the four-step migration to the bare built-in names above.
 
 ### Flags
 
@@ -116,9 +129,9 @@ want to change one:
 | `--description` | `Custom <name> agent.` | One-line description; written to both the harness and the agent definition |
 | `--on` | `command:/fs-<name>` | Trigger preset; mutually exclusive with `--trigger` |
 | `--trigger` | | A trigger written by hand, in CEL (the expression language dispatch evaluates); mutually exclusive with `--on` |
-| `--model` | `opus` | Model for the agent |
+| `--model` | `opus` | Model for the agent. With `--runtime codex` there is no default: pass an OpenAI id such as `openai/<id>`, or the command refuses |
 | `--effort` | `high` | Effort level (`low`, `medium`, `high`, `xhigh`, `max`) |
-| `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi` or `codex`) |
+| `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi` or `codex`); when omitted, the repo's `runtime:` default applies. The runtime and model decide which credentials the harness asks for: see [Picking a route](#picking-a-route) |
 | `--slug` | `<owner>-<name>` | Names the GitHub App to look for when the agent is installed; `<owner>` comes from the `origin` remote |
 | `--image` | per-role pin | Container image the agent runs inside |
 | `--timeout-minutes` | `15` | Agent timeout in minutes |
@@ -140,11 +153,17 @@ command refuses an unknown one up front. The hosted mint serves these:
 
 | `--role` | Permissions | Providers |
 |----------|-------------|-----------|
-| `triage` (default) | `contents:read`, `issues:write`, `metadata:read` | vertex-ai, github-ro |
-| `review` | `contents:read`, `pull_requests:write`, `issues:write`, `checks:read`, `metadata:read` | vertex-ai, github-ro |
-| `coder` | `contents:write`, `packages:read`, `pull_requests:write`, `issues:write`, `checks:read`, `metadata:read` | vertex-ai, github |
-| `retro` | `actions:read`, `contents:read`, `pull_requests:write`, `issues:write`, `metadata:read` | vertex-ai, github-ro, github-artifacts |
-| `prioritize` | `contents:read`, `issues:write`, `organization_projects:write`, `metadata:read` | vertex-ai, github-ro |
+| `triage` (default) | `contents:read`, `issues:write`, `metadata:read` | vertex-ai, github-ro, openai |
+| `review` | `contents:read`, `pull_requests:write`, `issues:write`, `checks:read`, `metadata:read` | vertex-ai, github-ro, openai |
+| `coder` | `contents:write`, `packages:read`, `pull_requests:write`, `issues:write`, `checks:read`, `metadata:read` | vertex-ai, github, openai |
+| `retro` | `actions:read`, `contents:read`, `pull_requests:write`, `issues:write`, `metadata:read` | vertex-ai, github-ro, github-artifacts, openai |
+| `prioritize` | `contents:read`, `issues:write`, `organization_projects:write`, `metadata:read` | vertex-ai, github-ro, openai |
+
+Every provider is a bare name: the runner resolves its definition and
+profile from the binary, and nothing is written under `.fullsend/providers/`
+or `.fullsend/profiles/`. A codex agent declares no Vertex provider; a pi
+agent on an `openai/` model declares none but keeps a commented-out overlay
+that adds it (see [Picking a route](#picking-a-route)).
 
 A `review` agent also gets `readonly_repo: true`: the checked-out repository is made read-only in the sandbox, so a reviewer cannot modify the code it reviews. That matches `harness/review.yaml` in fullsend-ai/agents.
 
@@ -153,6 +172,15 @@ immediately with this table, rather than returning `403` from the mint the
 first time the agent runs. To use a role the hosted mint does not serve, you
 need to run your own — see
 [Custom Agent Identity](../guides/user/custom-agent-identity.md).
+
+### Picking a route
+
+`--runtime` and `--model` together decide which credentials the generated
+harness asks for — Claude on Vertex, codex or pi on OpenAI, or a pi agent
+that mixes both. See
+[Bring Your Own Agent § Pick a route](../guides/user/bring-your-own-agent.md#pick-a-route)
+for the full table and the two mixed-route cases (an OpenAI parent with
+Vertex sub-agents, and a Vertex parent with a persona routed to OpenAI).
 
 ### Triggers
 
@@ -204,10 +232,6 @@ fullsend agent new -f link-check.agent.yaml --fullsend-dir .fullsend
   schemas/link-check-result.schema.json
   scripts/post-link-check.sh
   policies/base.yaml  (already present, left unchanged)
-  providers/vertex-ai.yaml  (already present, left unchanged)
-  providers/github-ro.yaml  (already present, left unchanged)
-  profiles/fullsend-vertex-ai.yaml  (already present, left unchanged)
-  profiles/fullsend-github-ro.yaml  (already present, left unchanged)
   ✓ Added agent "link-check"
 ```
 
@@ -288,95 +312,12 @@ to delete or keep.
 
 ### Running it
 
-Generation is step one. Fill in the marked sections of `agents/<name>.md`,
-then run it. A real run needs GCP credentials, a sandbox image, and the
-environment listed in
-[Running agents locally](../guides/user/running-agents-locally.md).
-
-You can exercise the whole pipeline without spending any inference by using
-the `dummy` runtime, which runs the real sandbox and the real post-script but
-replaces the model with a scripted result. Set `POST_<NAME>_DRY_RUN=1` so the
-post-script prints its comment instead of posting it:
-
-```bash
-export GOOGLE_APPLICATION_CREDENTIALS=~/.config/gcloud/application_default_credentials.json
-POST_LINT_DOCS_DRY_RUN=1 \
-  GITHUB_ISSUE_URL="https://github.com/OWNER/REPO/pull/99" \
-  ISSUE_NUMBER=99 \
-  REPO_FULL_NAME=OWNER/REPO \
-  GH_TOKEN="$(gh auth token)" \
-  ANTHROPIC_VERTEX_PROJECT_ID=... CLOUD_ML_REGION=us-east5 \
-  fullsend run lint-docs --fullsend-dir .fullsend \
-    --runtime dummy --forge github --target-repo .
-```
-
-The tail of a successful run:
-
-```
-    Agent exit code: 0
-    Agent runs: 1
-
-  • Cleaning up sandbox
-  ✓ Sandbox deleted (45.7s)
-  • Running post-script: .fullsend/scripts/post-lint-docs.sh
-::stop-commands::0e3a20110bf83ae618cd260cbd0e67e4
-**2 broken links added in docs/**
-
-### Broken links
-
-- `docs/a.md:14` -> `../missing.md`
-- `docs/b.md:3` -> `/docs/gone.md`
-::0e3a20110bf83ae618cd260cbd0e67e4::
-post-lint-docs: dry run, not posting
-  ✓ Post-script completed (0.1s)
-```
-
-The `::stop-commands::` lines around the preview stop GitHub Actions from
-reading anything the model wrote as a workflow command. The token is
-random on every run, so the model cannot predict the line that closes the
-block.
-
-With `--runtime claude`, the same agent against a real pull request — the
-model does the work, the schema gate runs, and the post-script still only
-prints:
-
-```
-  ✓ Extracted 1 output file(s)
-  • Running validation: .fullsend/scripts/validate-output-schema.sh
-  ✓ Validation passed: PASS: output validated against schema
-    Agent exit code: 0
-    Agent runs: 1
-    Validation: passed
-  • Running post-script: .fullsend/scripts/post-link-check.sh
-post-link-check: status=ok, nothing to post
-  ✓ Post-script completed (0.3s)
-```
-
-That run is the reference agent from
-[fullsend-ai/agents](https://github.com/fullsend-ai/agents) `examples/link-check/`,
-not the generated stub — the stub has sections still to fill in, so it has no
-work to do. Both runtimes exercise the same harness, sandbox, validation loop
-and post-script; only the agent's own reasoning differs.
-
-The `dummy` runtime reads a scripted result from
-`.fullsend/behaviour/current-scenario.yaml`; write one that produces
-`output/agent-result.json` to try this. That last block is the whole contract
-working: the sandbox started, the agent wrote its result, and the post-script
-found it and rendered the comment.
-
-Three things that stop a local run before it starts, all of them easy to hit:
-
-- `--forge github` is required. Without it no forge overlay applies, so the
-  environment the harness expects is never assembled.
-- `GOOGLE_APPLICATION_CREDENTIALS` must point at a real file. The harness
-  copies it into the sandbox, so the run fails validation without it — even
-  under `dummy`, which does no inference.
-- `GH_TOKEN` must be a real token. A GitHub connectivity check runs before the
-  agent, and a placeholder fails it with `Bad credentials (HTTP 401)`.
-
-In CI, commit `.fullsend/` and fire the agent with whatever its trigger
-describes — for the default preset, comment `/fs-<name>` on an issue or pull
-request.
+For the full walkthrough — testing locally with `fullsend run`, dry-running
+without a model, and firing the agent in CI — see
+[Bring Your Own Agent](../guides/user/bring-your-own-agent.md), starting at
+[Quick start](../guides/user/bring-your-own-agent.md#quick-start). Runtime
+and model resolve independently (flag, then config, then default); see
+[Selecting a runtime and model](../runtimes.md#selecting-a-runtime-and-model).
 
 ### Troubleshooting
 
@@ -384,15 +325,18 @@ request.
 |-------|-------|-----|
 | `unknown role "scribe"` followed by the role table | The role is not one the hosted mint serves | Use one of the five listed; for a custom role see [Custom Agent Identity](../guides/user/custom-agent-identity.md) |
 | `agent name "..." contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)` | The name would not be safe to interpolate into a shell script | Rename. Nothing is written when this fires |
-| `these files already exist:` followed by a list | An agent of that name was already generated | Pick another name, or pass `--force`. `--force` never overwrites `policies/`, `providers/` or `profiles/` |
+| `these files already exist:` followed by a list | An agent of that name was already generated | Pick another name, or pass `--force`. `--force` never overwrites `policies/` |
 | `agent "..." already exists in config` | The name is registered in `config.yaml` | `fullsend agent remove <name>` first. `--force` deliberately does not override this |
 | `trigger does not compile: ERROR: <input>:1:5: Syntax error: ...` | A `--trigger` expression is not valid CEL, or does not return a boolean | Compare against the `--on` presets above |
 | `unknown --on preset "..."` followed by the preset list | `--on` is not one of the four presets | Use a listed preset, or pass raw CEL with `--trigger` |
 | `a trigger is required: pass --on with a preset, or --trigger` | `--trigger ""` was passed explicitly | Give a real trigger. A trigger-less agent is silently never dispatched |
 | `fullsend dir ... does not exist; run ` + "`fullsend github setup`" + ` first` | `--fullsend-dir` points at nothing | Scaffold the repo first |
-| `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that is not committed next to it. Neither `fullsend github setup` nor CI creates one | Commit a copy of the fleet policy in [fullsend-ai/agents](https://github.com/fullsend-ai/agents) at the path the error shows, or set `policy:` to its URL with a `#sha256=` hash, under a prefix listed in `allowed_remote_resources`. Re-running `agent new` on this agent name does not help — it refuses (registered name or existing files, see the rows above) rather than adding the missing policy |
-| Agent crashes at 0s in CI | A profile file is missing (locally, a provider file can be missing too) | Commit `profiles/` next to the harness. CI layers `providers/` for you, but never `profiles/` |
-| `validating env:` followed by unresolved host variables at `fullsend run` | A `${VAR}` in an environment-aware harness field is unset | `agent new` does not check host variables at generation time; supply them via `--env-file` locally or the workflow `env:` block in CI |
+| `runtime codex takes OpenAI model ids only, and ...: use --model openai/gpt-5.6-luna ...` | `--runtime codex`, or a repo whose `config.yaml` sets `runtime: codex`, with no `--model` or with a model that is not an OpenAI id, such as `opus` | Use `--model openai/<id>` on the same command. Nothing is written when this fires |
+
+These are generation-time errors — `agent new` refuses before writing
+anything. For errors from `fullsend run` or in CI (missing credentials,
+stale provider profiles, schema validation, triggers that never fire), see
+[Bring Your Own Agent § Troubleshooting](../guides/user/bring-your-own-agent.md#troubleshooting).
 
 ## `agent add`
 
@@ -476,7 +420,7 @@ fullsend agent set review --fullsend-dir .fullsend --subagent correctness=opus -
 | `--runtime` | Agent runtime for this agent (`claude`, `pi`, `codex` or `opencode`) |
 | `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi and codex (codex takes OpenAI ids only) |
 | `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
-| `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference. Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (its frontmatter model, then `subagents.default`) |
+| `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference. Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (its frontmatter model, then `subagents.default`). On pi, a value that resolves to `openai/` prints a warning when the agent's local harness declares no `openai` provider; see [pi § Route a persona to OpenAI](../runtimes/pi.md#route-a-persona-to-openai) |
 
 See [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort) for precedence.
 See [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration) for

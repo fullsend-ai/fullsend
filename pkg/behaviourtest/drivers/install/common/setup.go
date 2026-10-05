@@ -34,6 +34,9 @@ type GitHubSetupOpts struct {
 	// lifecycle (allocation, install, validation, teardown).
 	Runtime string
 
+	// AppSet selects the GitHub App identities used by the configured mint.
+	AppSet string
+
 	// ResolveWIFProvider, when set, returns the inference WIF provider
 	// for target in project. Callers use it to cache or serialise the
 	// lookup. When nil, ResolveInferenceWIFProvider is used.
@@ -74,8 +77,10 @@ func RunGitHubSetupWithOpts(
 	args := []string{
 		"github", "setup", target,
 		"--direct",
-		"--skip-app-setup",
 		"--mint-url", mintURL,
+	}
+	if opts.AppSet != "" {
+		args = append(args, "--app-set", opts.AppSet)
 	}
 	// Omit the implicit default runtime when a preset is supplied so the
 	// preset's runtime is inherited rather than pinned in the overlay.

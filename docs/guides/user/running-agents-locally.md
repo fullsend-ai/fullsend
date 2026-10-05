@@ -526,7 +526,7 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 
 **`API Error: Error code policy_denied` on the first model call (agent exits after ~2 s, 0 tokens)**
 - The gateway denied the agent's binary, not the model. Run `grep DENIED <run-dir>/logs/openshell-sandbox.log`; a line ending in `binary '…/claude.exe' not allowed in policy '_provider_vertex_ai'` means the Vertex profile lacks `**/claude.exe` (Claude Code 2.1.2xx runs as `claude.exe`, even on Linux)
-- Only profiles listed in `openshell.profiles` are imported. If `--fullsend-dir` contains a `profiles/` directory, files there are **not** imported unless explicitly listed on the harness. To override a harness profile locally, add it to `openshell.profiles` (e.g., `profiles/fullsend-vertex-ai.yaml`)
+- For the built-in `fullsend-vertex-ai` profile, upgrade fullsend: the profile ships in the binary. To try a changed profile locally, copy it under your own id (for example `profiles/myorg-vertex-ai.yaml` with `id: myorg-vertex-ai`), list it in `openshell.profiles`, and point a provider of your own at it (`type: myorg-vertex-ai`). Files under `profiles/` are **not** imported unless the harness lists them
 
 **Agent fails with missing environment variable**
 - Check your env file contains all variables listed in the agent's harness YAML (`harness/{agent}.yaml` in the `.fullsend` config directory)

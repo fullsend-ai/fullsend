@@ -20,7 +20,7 @@ OpenAI agent run needs no GCP credentials and stores no key on the recommended p
 setup can omit the GCP project and WIF provider pair. If you cannot enrol an OpenAI WIF
 provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret.
 
-For **GitLab repos**, inference credentials are configured via `repos install --inference-project`
+For **GitLab repos**, inference credentials are configured via `repos install --vertex-project`
 rather than the steps below. See [Configuring GitLab](configuring-gitlab.md#inference-setup).
 
 You may need to create a new GCP project or reuse one. The output of this process is a WIF provider
@@ -94,4 +94,4 @@ Head over to [Configuring GitHub](configuring-github.md) to use your WIF provide
 
 For GitLab repositories, skip this provision output and follow
 [Configuring GitLab](configuring-gitlab.md) instead — GitLab inference credentials
-are written by `repos install --inference-project`, not by this command.
+are written by `repos install --vertex-project`, not by this command.

@@ -23,9 +23,10 @@ func TestGolden(t *testing.T) {
 	// Two trees, not one per role. The roles differ only in table data —
 	// image, providers, profiles — which TestRoleTableMatchesMint and its
 	// siblings assert directly and more precisely than a byte diff does.
-	// validation-loop is kept because it is the only variant that exercises
-	// an actual conditional in the generator: `if opts.ValidationLoop` in
-	// both buildHarness and sharedAssets.
+	// The other variants each exercise a conditional in the generator:
+	// validation-loop is `if opts.ValidationLoop` in buildHarness and
+	// sharedAssets; codex drops the Vertex block and the tools codex lacks;
+	// pi-openai drops the Vertex block on a pi agent with an openai/ model.
 	cases := []struct {
 		name string
 		opts func() Options
@@ -34,6 +35,12 @@ func TestGolden(t *testing.T) {
 		{"validation-loop", func() Options {
 			o := testOptions("lint-docs", "triage")
 			o.ValidationLoop = true
+			return o
+		}},
+		{"codex", func() Options { return testCodexOptions("lint-docs", "triage") }},
+		{"pi-openai", func() Options {
+			o := testOptions("lint-docs", "triage")
+			o.Runtime, o.Model = "pi", "openai/gpt-5.6-luna"
 			return o
 		}},
 	}

@@ -39,7 +39,7 @@ func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 			Enabled: &disabled,
 		},
 	}
-	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", nil, nil, "", "/sandbox/workspace/repo")
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", nil, nil, "", "/sandbox/workspace/repo", false)
 	require.NoError(t, err)
 
 	_, ok := boot.(agentruntime.SandboxHooksBootstrap)
@@ -63,9 +63,16 @@ func TestNewHarnessBootstrap_CarriesModelAliases(t *testing.T) {
 		},
 	}
 	aliases := map[string]string{"sonnet": "claude-sonnet-5"}
-	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", aliases, nil, "", "/sandbox/workspace/repo")
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", aliases, nil, "", "/sandbox/workspace/repo", false)
 	require.NoError(t, err)
 	assert.Equal(t, aliases, boot.ModelAliases())
+	assert.False(t, boot.OpenAIProviderAttached())
+
+	// The run passes whether the run-scoped openai provider was attached,
+	// and pi trusts a configured openai child only then (#7981).
+	attached, err := newHarnessBootstrap(h, "sandbox-1", "test", "", aliases, nil, "", "/sandbox/workspace/repo", true)
+	require.NoError(t, err)
+	assert.True(t, attached.OpenAIProviderAttached())
 }
 
 func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {
@@ -80,7 +87,7 @@ func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {
 			},
 		},
 	}
-	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", nil, nil, "", "/sandbox/workspace/repo")
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "", nil, nil, "", "/sandbox/workspace/repo", false)
 	require.NoError(t, err)
 
 	hooksBoot, ok := boot.(agentruntime.SandboxHooksBootstrap)
@@ -101,7 +108,7 @@ func TestNewHarnessBootstrap_WithForgeEgressEntry(t *testing.T) {
 			SandboxHooks: &harness.SandboxHooks{},
 		},
 	}
-	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "gitlab.company.com:443", nil, nil, "", "/sandbox/workspace/repo")
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "test", "gitlab.company.com:443", nil, nil, "", "/sandbox/workspace/repo", false)
 	require.NoError(t, err)
 
 	hooksBoot, ok := boot.(agentruntime.SandboxHooksBootstrap)
@@ -130,7 +137,7 @@ func TestNewHarnessBootstrap_CarriesPlugins(t *testing.T) {
 			},
 		},
 	}
-	boot, err := newHarnessBootstrap(h, "sb", "code", "", nil, nil, "", "/sandbox/workspace/repo")
+	boot, err := newHarnessBootstrap(h, "sb", "code", "", nil, nil, "", "/sandbox/workspace/repo", false)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"/fs/skills/a"}, boot.SkillDirs())
 	assert.Equal(t, []agentruntime.PluginInput{
@@ -148,7 +155,7 @@ func TestNewHarnessBootstrap_CarriesPlugins(t *testing.T) {
 	require.True(t, hooked, "security defaults on, so the hooks wrapper is returned")
 
 	// No plugins: nil, not an empty slice, so runtimes can len() it.
-	bare, err := newHarnessBootstrap(&harness.Harness{Agent: "a.md"}, "sb", "code", "", nil, nil, "", "/sandbox/workspace/repo")
+	bare, err := newHarnessBootstrap(&harness.Harness{Agent: "a.md"}, "sb", "code", "", nil, nil, "", "/sandbox/workspace/repo", false)
 	require.NoError(t, err)
 	assert.Nil(t, bare.Plugins())
 	got, err := pluginInputs(nil)
@@ -169,7 +176,7 @@ func TestNewHarnessBootstrap_UndetectablePlugin(t *testing.T) {
 	_, err := newHarnessBootstrap(&harness.Harness{
 		Agent:   "a.md",
 		Plugins: []harness.PluginSpec{{Path: dir}},
-	}, "sb", "code", "", nil, nil, "", "/sandbox/workspace/repo")
+	}, "sb", "code", "", nil, nil, "", "/sandbox/workspace/repo", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "plugins[0]")
 	assert.Contains(t, err.Error(), "not a Claude plugin")
@@ -177,7 +184,7 @@ func TestNewHarnessBootstrap_UndetectablePlugin(t *testing.T) {
 	_, err = newHarnessBootstrap(&harness.Harness{
 		Agent:   "a.md",
 		Plugins: []harness.PluginSpec{{Path: filepath.Join(t.TempDir(), "missing")}},
-	}, "sb", "code", "", nil, nil, "", "/sandbox/workspace/repo")
+	}, "sb", "code", "", nil, nil, "", "/sandbox/workspace/repo", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "plugins[0]")
 }
