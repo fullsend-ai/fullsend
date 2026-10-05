@@ -10,6 +10,15 @@ workflow:
     # auto_cancel per pipeline source.
     on_new_commit: none
   rules:
+    # Deny-before-admit (ADR 0125): GitLab evaluates workflow:rules
+    # first-match, so a debug-trace pipeline must not reach an admit
+    # rule. Secrets materialize at job init; a script abort is too late.
+    # Matches the full truthy set gitlab-runner accepts for this
+    # variable (Go strconv.ParseBool: "1", "t"/"T", "true"/"TRUE"/"True"),
+    # not just an exact "true" — a case-insensitive regex is required
+    # because exact-match misses runner-recognized truthy variants.
+    - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
+      when: never
     # Scheduled polling (issues, comments, labels, MR open/merge/close)
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     # API-triggered pipelines from the cron-poller (dispatched via

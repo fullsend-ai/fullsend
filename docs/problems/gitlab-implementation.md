@@ -547,9 +547,10 @@ Modified packages (minimized via forge.Client abstraction):
 > registry — is defined in
 > [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
 > `repos install` provisions built-in and custom role credentials on
-> fresh and existing shared-token installs and, when every registered
-> role is ready, retires
-> `FULLSEND_FORGE_TOKEN` automatically. GitLab CI poll/agent jobs and
+> fresh and existing shared-token installs, but leaves a leftover
+> `FULLSEND_FORGE_TOKEN` secret and its matching `fullsend-bot` project
+> access token in place — there is no automated retirement path, so an
+> administrator must clean those up manually. GitLab CI poll/agent jobs and
 > `fullsend poll` / `fullsend run` select the registered role credential
 > unconditionally and fail closed if it is missing; the shared
 > `fullsend-bot` identity no longer authenticates with

@@ -150,6 +150,22 @@ func firstReadableSystemCABundle() string {
 	return ""
 }
 
+func TestTrustCIServerCAScript_ExportedFlagDoesNotSkip(t *testing.T) {
+	script := trustCIServerCAScript(t)
+	caPEM := testCACertPEM(t)
+	caPath := filepath.Join(t.TempDir(), "extra-ca.pem")
+	require.NoError(t, os.WriteFile(caPath, caPEM, 0o644))
+
+	out, stderr, err := sourceTrustScript(t, script, []string{
+		"CI_SERVER_TLS_CA_FILE=" + caPath,
+		"FULLSEND_CI_SERVER_CA_TRUSTED=1",
+	})
+	require.NoError(t, err, "stderr: %s", stderr)
+	assert.Contains(t, stderr, "Trusted extra CA",
+		"a trigger-supplied FULLSEND_CI_SERVER_CA_TRUSTED=1 must not skip CA pinning")
+	assert.Contains(t, out, "SSL_CERT_FILE=")
+}
+
 func TestTrustCIServerCAScript_Idempotent(t *testing.T) {
 	script := trustCIServerCAScript(t)
 	caPEM := testCACertPEM(t)

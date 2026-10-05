@@ -827,8 +827,6 @@ func TestRotateGitLabRoleCredentials_DoesNotTouchSharedToken(t *testing.T) {
 func TestEnrichGitLabRoleStatusExpiredIsDriftWhenEnforced(t *testing.T) {
 	t.Parallel()
 	fc := provisionClient(t)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabPollerToken, "oldvalueXXXX"))
 	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabAnalystToken, "oldvalueXXXX"))
 	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabCoderToken, "oldvalueXXXX"))
@@ -871,8 +869,6 @@ func TestEnrichGitLabRoleStatusExpiredIsDriftWhenEnforced(t *testing.T) {
 func TestEnrichGitLabRoleStatusAcceptsAdministratorEnrollment(t *testing.T) {
 	t.Parallel()
 	fc := provisionClient(t)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
 		require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
 	}
@@ -892,8 +888,6 @@ func TestEnrichGitLabRoleStatusAcceptsAdministratorEnrollment(t *testing.T) {
 func TestEnrichGitLabRoleStatusIncludesRegisteredReadiness(t *testing.T) {
 	t.Parallel()
 	fc := provisionClient(t)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[{"name":"scanner","responsibility":"scan","credential":"own","capabilities":["read_issues"],"agents":[]}]}`
 	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
 	fc.Secrets["group/project/"+gitlabroles.CustomSecretName("scanner")] = true

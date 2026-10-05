@@ -76,4 +76,8 @@ type Driver interface {
 	// The forkRepo parameter is required to disambiguate same-owner forks
 	// (where forkOwner == baseOwner) from branches on the base repo.
 	CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, forkRepo, head, base string) (*forge.ChangeProposal, error)
+
+	// ListPullRequestReviews returns the formal reviews submitted on a
+	// change proposal (pull request / merge request).
+	ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error)
 }

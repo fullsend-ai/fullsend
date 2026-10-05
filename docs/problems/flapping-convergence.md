@@ -94,6 +94,7 @@ Default thresholds should be conservative (escalate early) and configurable per 
 - **[Cross-Run Memory](cross-run-memory.md)** — Context injection during cooldown requires memory. Flapping detection across runs requires tracking prior attempts. Both create the trust and poisoning concerns that cross-run memory addresses.
 - **[Operational Observability](operational-observability.md)** — Flapping agents are a key operational concern. Dashboards should surface flapping rate per repo, per agent role, and per task type.
 - **[Code Review](code-review.md)** — Review ping-pong is one specific form of flapping. The code-review doc describes the review process but does not address what happens when the process does not converge.
+- **[Agentic SDLC Adoption and Organizational Communication](agentic-sdlc-adoption-org-communication.md)** — A circuit-breaker escalation hands the work to a human who may not have seen any of the failed attempts. Who receives it, and whether they can act, is covered in [escalation without context](agentic-sdlc-adoption-org-communication.md#escalation-without-context).
 - **[Trustworthiness Evidence](trustworthiness-evidence.md)** — Flapping rate is a negative trustworthiness signal. An agent that flaps frequently on a repo is less trustworthy than one that converges reliably.
 
 ## Open questions

@@ -9,10 +9,14 @@ on:
     paths:
       - "images/sandbox/**"
       - "images/code/**"
+      - go.mod
+      - go.sum
   pull_request:
     paths:
       - "images/sandbox/**"
       - "images/code/**"
+      - go.mod
+      - go.sum
   workflow_dispatch:
 
 # NOTE: GitHub Actions ignores `paths` filters on tag pushes, so every

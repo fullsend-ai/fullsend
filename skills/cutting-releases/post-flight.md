@@ -9,12 +9,13 @@ step F.
 
 ## A. Wait for CI workflows
 
-Wait for the Release workflow (triggered by the `v*` tag) and the
-Sandbox Images workflow (triggered by release workflow) to complete:
+Wait for the Release workflow and the Sandbox Images workflow, both
+triggered by the `v*` tag push, to complete. Sandbox Images also runs
+on `main` pushes, so scope both lists to the tag:
 
 ```
-gh run list --workflow=release.yml --limit=1
-gh run list --workflow=sandbox-images.yml --limit=1
+gh run list --workflow=release.yml --branch <tag> --limit=1
+gh run list --workflow=sandbox-images.yml --branch <tag> --limit=1
 ```
 
 Both must pass before proceeding. If either fails, investigate and
@@ -39,19 +40,21 @@ release tag, and only then does `release` run GoReleaser. `tag-agents`
 pushes the version tag to agents last. Every failure path sends a Slack
 notification.
 
-Verify the four jobs succeeded in the release workflow run:
+Verify the release jobs succeeded:
 
 ```
 gh run view <run-id> --repo fullsend-ai/fullsend --json jobs \
-  --jq '.jobs[] | select(.name | test("resolve-agents|validate-agents|release|tag-agents")) | {name, conclusion}'
+  --jq '.jobs[] | select(.name | test("^(resolve-agents|validate-agents|recheck-tag|release|tag-agents)")) | {name, conclusion}'
 ```
 
-If `resolve-agents` or `validate-agents` failed, the release was
+`validate-agents / gate` is skipped on tag pushes; that is expected.
+If `resolve-agents`, `validate-agents` or `recheck-tag` failed (the
+last means the tag moved during the gate), the release was
 blocked before publishing: no binaries, no GitHub Release, no moved
 `v0` tag, and no agents tag. Step B above will show nothing to verify.
-Investigate the failure, then use "Re-run failed jobs" on the existing
-run rather than re-tagging — the tag is already correct and must not be
-moved (re-verification would fail the release if it were).
+Pick the recovery from "When a release run fails" in the SKILL.md
+Notes: a flake, an agents-only fix and a fullsend fix each need a
+different action.
 
 If only `tag-agents` failed, the fullsend release shipped but agents
 was not tagged; fix that job's cause and re-run it.
@@ -62,14 +65,46 @@ If all jobs succeeded, verify the tag and release exist on agents:
 gh release view <tag> --repo fullsend-ai/agents
 ```
 
-For non-prerelease tags, verify the `v0` floating tag was moved:
+Verify the agents tag includes the repin (SKILL.md step 8). The tag
+is the agents `main` commit the gate validated, which can be later than
+the repin merge:
 
 ```
+gh api repos/fullsend-ai/agents/compare/<repin-merge-sha>...<tag> --jq .status
+```
+
+`<repin-merge-sha>` was recorded in SKILL.md step 8.4.
+
+`identical` or `ahead` passes; anything else means the release shipped
+without the repinned images.
+
+For non-prerelease tags, verify `v0` moved on both repos. Each pair
+must print the same SHA (`commits/` resolves the annotated fullsend
+tag to its commit; agents tags are lightweight):
+
+```
+gh api repos/fullsend-ai/fullsend/commits/<tag> --jq .sha
+gh api repos/fullsend-ai/fullsend/git/ref/tags/v0 --jq '.object.sha'
+gh api repos/fullsend-ai/agents/git/ref/tags/<tag> --jq '.object.sha'
 gh api repos/fullsend-ai/agents/git/ref/tags/v0 --jq '.object.sha'
 ```
 
 If the agents release workflow failed, investigate before continuing —
 downstream consumers may reference agents by tag.
+
+## B3. Verify the harness image pins
+
+The released agents harness files must pin the RC's digests from
+SKILL.md step 8, not a fresh `skopeo inspect` of `X.Y.Z` — the final's
+images are a separate, non-reproducible build with different digests:
+
+```
+for f in $(gh api "repos/fullsend-ai/agents/contents/harness?ref=<tag>" --jq '.[].name'); do gh api "repos/fullsend-ai/agents/contents/harness/$f?ref=<tag>" --jq ".content|@base64d|split(\"\n\")[]|select(test(\"image:.*fullsend-(sandbox|code)\"))|\"$f: \"+."; done
+```
+
+Expect one line per harness that pins an image, each with an RC digest.
+Empty output or an error means the check did not run — treat it as a
+failure, not a pass.
 
 ## C. Skip fullsend-ai repos
 
@@ -129,6 +164,9 @@ Summarize results to the user:
 
 Note: `fullsend-ai` repos are excluded from this table — they use
 `@main` and were checked during pre-flight.
+
+Also report B2 (repin included, `v0` moved on both repos) and B3
+(harness pins match the RC digests). A failure in either is a blocker.
 
 Distinguish between:
 - **Release-related failures** — workflow resolution errors, missing

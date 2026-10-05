@@ -39,6 +39,9 @@ const (
 	// separate calls on a value receiver, so the sandbox is the only state
 	// between them.
 	codexManifestFile = "fullsend-manifest.json"
+	// codexModelsCacheFile is codex's cached model catalog. The runner never
+	// writes it; buildCodexRunCommand deletes it before launch.
+	codexModelsCacheFile = "models_cache.json"
 )
 
 //go:embed codex_hook/fullsend-codex-hook.py

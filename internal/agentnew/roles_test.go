@@ -126,3 +126,15 @@ func TestCoderUsesEmbeddedGithubProvider(t *testing.T) {
 		t.Errorf("coder should use providers/github.yaml, got %v", role.Providers)
 	}
 }
+
+// TestReviewRoleMountsTheRepositoryReadOnly pins fleet parity: the review
+// harness in fullsend-ai/agents sets readonly_repo, and only the review role
+// does.
+func TestReviewRoleMountsTheRepositoryReadOnly(t *testing.T) {
+	for _, name := range RoleNames() {
+		want := name == "review"
+		if got := roleTable[name].ReadonlyRepo; got != want {
+			t.Errorf("role %q: ReadonlyRepo = %v, want %v", name, got, want)
+		}
+	}
+}

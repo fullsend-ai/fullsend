@@ -65,7 +65,7 @@ than being regenerated.
 | `--openai-service-account-id` | | OpenAI service account ID the provider maps this repository to |
 | `--inference-region` | | GCP region for inference; resolved to `global` if unset |
 | `--skip-app-setup` | `false` | Skip GitHub App creation/installation |
-| `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps |
+| `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps. For per-repo setup it is persisted as the `FULLSEND_APP_SET` repository variable; reruns that omit `--app-set` preserve an existing custom value rather than overwriting it with the default. `repos install` accepts the same option and the `app_set` manifest field. |
 | `--agents` | `fullsend,triage,coder,review,retro,prioritize` | Agent roles to provision |
 | `--direct` | `false` | Push scaffold directly instead of creating a PR |
 | `--runtime` | `claude` | Agent runtime backend (`claude`, `pi`, `codex`, `opencode`, `dummy` or `dummy-playback`; `dummy` and `dummy-playback` are for behaviour tests only — see [runtimes.md](../runtimes.md)) |

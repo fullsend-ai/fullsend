@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
@@ -421,6 +422,194 @@ func TestConverge_VariableDriftSync(t *testing.T) {
 	val := fc.VariableValues["acme/api/FULLSEND_MINT_URL"]
 	if val != "https://mint.example.com" {
 		t.Errorf("variable not updated: got %q, want %q", val, "https://mint.example.com")
+	}
+}
+
+func TestConverge_FreshInstallWritesDefaultAppSet(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	m := newConvergeManifest(repoNames...)
+
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != appsetup.DefaultAppSet {
+		t.Errorf("FULLSEND_APP_SET = %q, want built-in default %q", got, appsetup.DefaultAppSet)
+	}
+}
+
+func TestConverge_FreshInstallWritesManifestAppSet(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.AppSet = "custom-set"
+
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != "custom-set" {
+		t.Errorf("FULLSEND_APP_SET = %q, want %q", got, "custom-set")
+	}
+}
+
+// TestConverge_PreservesCustomAppSetWhenNotExplicit verifies that a rerun over a
+// repo with a custom FULLSEND_APP_SET does NOT revert it to the built-in default
+// when the manifest does not specify app_set (preserve semantics).
+func TestConverge_PreservesCustomAppSetWhenNotExplicit(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = "custom-set"
+
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != "custom-set" {
+		t.Errorf("custom FULLSEND_APP_SET not preserved: got %q, want %q", got, "custom-set")
+	}
+}
+
+// TestConverge_RejectsMalformedExistingAppSet verifies that a malformed
+// FULLSEND_APP_SET value already on the repo (e.g. written outside of
+// fullsend's validated CLI/manifest paths) is not preserved as-is: it fails
+// appsetup.ValidateAppSet and so resolveConvergeAppSet falls back to the
+// built-in default instead of passing the unvalidated value through to
+// review-app slug resolution.
+func TestConverge_RejectsMalformedExistingAppSet(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = "not valid!/app set"
+
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != appsetup.DefaultAppSet {
+		t.Errorf("malformed FULLSEND_APP_SET was not rejected: got %q, want built-in default %q", got, appsetup.DefaultAppSet)
+	}
+}
+
+// TestConverge_RepairsAppSetDriftWhenExplicit verifies that when the manifest
+// explicitly sets app_set, a drifted repo variable is repaired to the manifest
+// value.
+func TestConverge_RepairsAppSetDriftWhenExplicit(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = "stale-set"
+
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.AppSet = "custom-set"
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	convergedRepos := result.Converged()
+	if len(convergedRepos) != 1 {
+		t.Fatalf("expected 1 converged repo, got %d", len(convergedRepos))
+	}
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != "custom-set" {
+		t.Errorf("drift not repaired: got %q, want %q", got, "custom-set")
+	}
+}
+
+// TestConverge_RepairsMissingAppSetOnOldInstall verifies that a repo installed
+// before FULLSEND_APP_SET existed gets the built-in default written on rerun,
+// even when the manifest does not specify app_set.
+func TestConverge_RepairsMissingAppSetOnOldInstall(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+	delete(fc.VariableValues, "acme/api/FULLSEND_APP_SET")
+
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_APP_SET"]; got != appsetup.DefaultAppSet {
+		t.Errorf("missing FULLSEND_APP_SET not repaired: got %q, want %q", got, appsetup.DefaultAppSet)
+	}
+}
+
+// TestConverge_PerRepoReviewClientIDTracksAppSet verifies that
+// FULLSEND_REVIEW_CLIENT_ID is resolved per-repo against each repo's
+// effective app set, rather than the run-wide default seeded by the caller.
+// Two repos with distinct per-repo app_set overrides must each receive the
+// review client ID of their own "{app_set}-review" app.
+func TestConverge_PerRepoReviewClientIDTracksAppSet(t *testing.T) {
+	repoNames := []string{"acme/api", "acme/web"}
+	fc := newFakeClientForBatch(repoNames...)
+	fc.AppClientIDs = map[string]string{
+		"team-a-review": "Iv23liTEAMA",
+		"team-b-review": "Iv23liTEAMB",
+	}
+
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.Repos[0].AppSet = "team-a"
+	m.GitHub.Repos[1].AppSet = "team-b"
+
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+	// Caller pre-resolved the default app set's review app; per-repo
+	// overrides must override this, not inherit it.
+	cfg.ReviewAppClientID = "Iv23liDEFAULT"
+	cfg.ReviewAppClientIDAppSet = appsetup.DefaultAppSet
+
+	if _, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress); err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	if got := fc.VariableValues["acme/api/FULLSEND_REVIEW_CLIENT_ID"]; got != "Iv23liTEAMA" {
+		t.Errorf("acme/api FULLSEND_REVIEW_CLIENT_ID = %q, want %q", got, "Iv23liTEAMA")
+	}
+	if got := fc.VariableValues["acme/web/FULLSEND_REVIEW_CLIENT_ID"]; got != "Iv23liTEAMB" {
+		t.Errorf("acme/web FULLSEND_REVIEW_CLIENT_ID = %q, want %q", got, "Iv23liTEAMB")
 	}
 }
 
@@ -3271,6 +3460,13 @@ workflow:
 	}
 }
 
+// TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction covers a repo that has
+// no obsolete merge_request_event rule but is still missing the
+// CI_DEBUG_TRACE deny-before-admit rule (ADR 0125) — the state of a repo
+// enrolled via the merge path before that rule existed. convergeGitLabRootCIFiles
+// must backfill it via MergeMissingGitLabDebugTraceRule, since the install
+// merge path only reruns when HasFullsendEntries is false and the periodic
+// converge path otherwise never touches workflow:rules.
 func TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
@@ -3288,7 +3484,9 @@ func TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction(t *testing.T) {
 		{ID: 1, Description: "fullsend slash poll", Active: true},
 		{ID: 2, Description: "fullsend event poll", Active: true},
 	}
-	// Already migrated — no obsolete rule present.
+	// No obsolete merge_request_event rule, but also no CI_DEBUG_TRACE
+	// rule — this repo enrolled via the merge path before ADR 0125 added
+	// that guard.
 	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
@@ -3298,6 +3496,185 @@ workflow:
   auto_cancel:
     on_new_commit: none
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+	}
+
+	sc := &spyScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
+	}
+
+	found := false
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-rules" && a.Action == "update" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a gitlab-ci-rules update action backfilling the debug-trace rule, got %+v", result.Results[0].Actions)
+	}
+
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	var updated []byte
+	for _, f := range sc.files {
+		if f.Path == ".gitlab-ci.yml" {
+			updated = f.Content
+		}
+	}
+	if updated == nil {
+		t.Fatalf("expected .gitlab-ci.yml to be committed, got files: %+v", sc.files)
+	}
+	s := string(updated)
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	if debugIdx == -1 {
+		t.Fatalf("expected debug-trace deny rule to be inserted, got:\n%s", s)
+	}
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	if scheduleIdx == -1 {
+		t.Fatalf("expected schedule admit rule to be preserved, got:\n%s", s)
+	}
+	if debugIdx >= scheduleIdx {
+		t.Errorf("expected debug-trace deny rule to precede the schedule admit rule, got:\n%s", s)
+	}
+	if !strings.Contains(s, `$CI_PIPELINE_SOURCE == "api"`) {
+		t.Errorf("expected current api rule to be preserved, got:\n%s", s)
+	}
+}
+
+// TestConverge_GitLab_DebugTraceRuleBackfillDryRun is the DryRun
+// counterpart of TestConverge_GitLab_NoObsoleteWorkflowRuleNoAction: the
+// missing CI_DEBUG_TRACE rule is reported as a would-be update, but
+// nothing is actually committed.
+func TestConverge_GitLab_DebugTraceRuleBackfillDryRun(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:         "https://gitlab.example.com",
+			FullsendRef: "v2.5.0",
+			Repos:       []RepoEntry{{Name: "acme/api"}},
+		},
+	}
+	cfg := ConvergeConfig{
+		Manifest:               m,
+		MaxConcurrency:         4,
+		Roles:                  []string{"triage"},
+		Direct:                 true,
+		InferenceProject:       "test-inference",
+		InferenceProjectNumber: "123456789",
+		InferenceRegion:        "us-central1",
+		DryRun:                 true,
+	}
+
+	sc := &fakeScaffoldCommit{}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+	if len(result.Failed()) != 0 {
+		t.Fatalf("expected 0 failed, got %d: %+v", len(result.Failed()), result.Results[0].Error)
+	}
+
+	var detail string
+	for _, a := range result.Results[0].Actions {
+		if a.Component == "gitlab-ci-rules" && a.Action == "update" {
+			detail = a.Detail
+		}
+	}
+	if !strings.Contains(detail, "would add") {
+		t.Errorf("expected a dry-run gitlab-ci-rules update action, got %+v", result.Results[0].Actions)
+	}
+	if sc.called {
+		t.Error("scaffold commit should not be called in dry-run mode")
+	}
+}
+
+// TestConverge_GitLab_FullyMigratedNoAction covers a repo that already has
+// both fullsend's current workflow rules and the CI_DEBUG_TRACE
+// deny-before-admit rule — convergeGitLabRootCIFiles must not report any
+// gitlab-ci-rules action for it.
+func TestConverge_GitLab_FullyMigratedNoAction(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 1, Description: "fullsend slash poll", Active: true},
+		{ID: 2, Description: "fullsend event poll", Active: true},
+	}
+	// Fully migrated — no obsolete rule, and the debug-trace rule is
+	// already present.
+	fc.FileContents["acme/api/.gitlab-ci.yml"] = []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
 `)
@@ -4766,6 +5143,7 @@ func gitlabRequiredScaffoldPaths() []string {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".gitlab/ci/scripts/pin-ci-job-identity.sh",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",
@@ -4941,9 +5319,8 @@ func TestConverge_GitLab_NeedsPostInstallSurvivesUnrelatedSecrets(t *testing.T) 
 }
 
 // TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts covers a
-// leftover FULLSEND_GITLAB_ROLE_MIGRATION value and leftover shared-token
-// secret: neither restores bot-token recovery, and post-install is gated
-// only on missing pipeline schedules.
+// leftover shared-token secret: it does not restore bot-token recovery,
+// and post-install is gated only on missing pipeline schedules.
 func TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -4951,19 +5328,6 @@ func TestConverge_GitLab_NeedsPostInstallFlagsForPartialArtifacts(t *testing.T) 
 		wantSchedules   bool
 		wantPostInstall bool
 	}{
-		{
-			name: "leftover enforced gate with schedules and no shared token",
-			seed: func(fc *forge.FakeClient, full string) {
-				fc.VariableValues[full+"/"+forge.VarGitLabRoleMigration] = " EnFoRcEd "
-				fc.VariablesExist[full+"/"+forge.VarGitLabRoleMigration] = true
-				fc.PipelineSchedules[full] = []forge.PipelineSchedule{
-					{Description: "fullsend slash poll"},
-					{Description: "fullsend event poll"},
-				}
-			},
-			wantSchedules:   false,
-			wantPostInstall: false,
-		},
 		{
 			name: "leftover shared token present, schedules missing",
 			seed: func(fc *forge.FakeClient, full string) {
@@ -5029,8 +5393,6 @@ func TestConverge_GitLab_ExistingRepoReportsSharedCredentialRecovery(t *testing.
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
 	delete(fc.Secrets, "acme/api/"+forge.SecretForgeToken)
-	fc.VariableValues["acme/api/"+forge.VarGitLabRoleMigration] = "rollback"
-	fc.VariablesExist["acme/api/"+forge.VarGitLabRoleMigration] = true
 
 	result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), (&spyScaffoldCommit{}).fn(), noopProgress)
 	if err != nil {

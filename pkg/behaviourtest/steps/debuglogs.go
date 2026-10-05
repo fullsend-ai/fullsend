@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -28,6 +29,11 @@ const logFetchTimeout = 30 * time.Second
 //
 // Logs are fetched before the debug directory is created so that a
 // failed API call does not leave an empty directory behind.
+//
+// The logs are external content that leaves the runner as a CI artifact,
+// so they are passed through the secret redactor and written 0o600
+// (docs/contributing/go-code.md, "Credential redaction for external
+// content").
 //
 // Errors are logged but not returned — log collection is best-effort
 // and must not fail the scenario.
@@ -57,7 +63,11 @@ func saveWorkflowRunLogs(ctx context.Context, w *world.World, label string, run 
 	}
 
 	logPath := filepath.Join(debugDir, "workflow-logs.txt")
-	if err := os.WriteFile(logPath, []byte(logs), 0o644); err != nil {
+	redacted := logs
+	if res := security.NewSecretRedactor().Scan(logs); res.Sanitized != "" {
+		redacted = res.Sanitized
+	}
+	if err := os.WriteFile(logPath, []byte(redacted), 0o600); err != nil {
 		worldLogf(w, "save workflow run logs: write %s: %v", logPath, err)
 		return
 	}

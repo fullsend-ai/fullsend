@@ -53,11 +53,14 @@ func getFileWithRetry(ctx context.Context, client forge.Client, org, repo, path 
 }
 
 // validateShimAndConfig checks that a per-repo install left the expected
-// workflow shim and config with a "dummy" runtime. Shared by both
+// workflow shim and config with the expected runtime. Shared by both
 // vendored and non-vendored validation. When config.base.yaml is present
 // (a --config preset install), runtime is resolved through the overlay
-// → base → defaults chain so a preset that sets runtime: dummy passes.
-func validateShimAndConfig(ctx context.Context, client forge.Client, org, repo string) error {
+// → base → defaults chain. An empty expectedRuntime defaults to "dummy".
+func validateShimAndConfig(ctx context.Context, client forge.Client, org, repo, expectedRuntime string) error {
+	if expectedRuntime == "" {
+		expectedRuntime = "dummy"
+	}
 	shimPath := ".github/workflows/fullsend.yaml"
 	if _, err := getFileWithRetry(ctx, client, org, repo, shimPath); err != nil {
 		return fmt.Errorf("post-install: missing %s on %s/%s: %w", shimPath, org, repo, err)
@@ -83,16 +86,24 @@ func validateShimAndConfig(ctx context.Context, client forge.Client, org, repo s
 	if err := cfgW.Validate(); err != nil {
 		return fmt.Errorf("post-install: invalid %s: %w", cfgPath, err)
 	}
-	if cfgW.ConfigRuntime() != "dummy" {
-		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfgW.ConfigRuntime())
+	if cfgW.ConfigRuntime() != expectedRuntime {
+		return fmt.Errorf("post-install: %s runtime is %q, want %s", cfgPath, cfgW.ConfigRuntime(), expectedRuntime)
 	}
 	return nil
 }
 
 // ValidatePerRepoPostInstall checks that a per-repo install left the
-// expected files and configuration in the target repo.
+// expected files and configuration in the target repo, with the
+// standard "dummy" runtime.
 func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, repo string) error {
-	if err := validateShimAndConfig(ctx, client, org, repo); err != nil {
+	return ValidatePerRepoPostInstallWithRuntime(ctx, client, org, repo, "dummy")
+}
+
+// ValidatePerRepoPostInstallWithRuntime is like ValidatePerRepoPostInstall
+// but accepts the expected runtime name, so callers that install with a
+// non-default runtime (e.g. "dummy-playback") can validate against it.
+func ValidatePerRepoPostInstallWithRuntime(ctx context.Context, client forge.Client, org, repo, expectedRuntime string) error {
+	if err := validateShimAndConfig(ctx, client, org, repo, expectedRuntime); err != nil {
 		return err
 	}
 
@@ -107,10 +118,17 @@ func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, r
 }
 
 // ValidatePerRepoPostInstallNonVendored checks that a non-vendored
-// per-repo install left the expected workflow shim and config. Unlike
-// ValidatePerRepoPostInstall it does not require vendored assets
-// (marker file and binary) because non-vendored installs reference a
-// remote fullsend-ref instead.
+// per-repo install left the expected workflow shim and config, with the
+// standard "dummy" runtime. Unlike ValidatePerRepoPostInstall it does not
+// require vendored assets (marker file and binary) because non-vendored
+// installs reference a remote fullsend-ref instead.
 func ValidatePerRepoPostInstallNonVendored(ctx context.Context, client forge.Client, org, repo string) error {
-	return validateShimAndConfig(ctx, client, org, repo)
+	return ValidatePerRepoPostInstallNonVendoredWithRuntime(ctx, client, org, repo, "dummy")
+}
+
+// ValidatePerRepoPostInstallNonVendoredWithRuntime is like
+// ValidatePerRepoPostInstallNonVendored but accepts the expected runtime
+// name.
+func ValidatePerRepoPostInstallNonVendoredWithRuntime(ctx context.Context, client forge.Client, org, repo, expectedRuntime string) error {
+	return validateShimAndConfig(ctx, client, org, repo, expectedRuntime)
 }

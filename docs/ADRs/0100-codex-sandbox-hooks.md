@@ -18,6 +18,9 @@ Date: 2026-09-02
 
 Accepted
 
+The hook contract is extended to native Codex children by
+[ADR 0126](0126-fullsend-owned-codex-subagents.md).
+
 ## Context
 
 [ADR 0090](0090-runtime-neutral-sandbox-hooks-contract.md) made the sandbox tool hooks — Tirith,

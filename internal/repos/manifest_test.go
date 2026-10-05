@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/stretchr/testify/assert"
@@ -707,6 +708,153 @@ github:
 	cfg, found := m.ResolveConfig("acme", "no-ref")
 	assert.True(t, found)
 	assert.Equal(t, "", cfg.FullsendRef) // none stops fallback
+}
+
+func TestResolveConfig_AppSet(t *testing.T) {
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  app_set: org-wide
+  repos:
+    - name: acme/inherits
+    - name: acme/overrides
+      app_set: repo-local
+    - name: acme/resets
+      app_set: none
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	// Inherits the manifest default; explicit because the platform set it.
+	cfg, found := m.ResolveConfig("acme", "inherits")
+	require.True(t, found)
+	assert.Equal(t, "org-wide", cfg.AppSet)
+	assert.True(t, cfg.AppSetExplicit)
+
+	// Per-repo override wins over the manifest default.
+	cfg, found = m.ResolveConfig("acme", "overrides")
+	require.True(t, found)
+	assert.Equal(t, "repo-local", cfg.AppSet)
+	assert.True(t, cfg.AppSetExplicit)
+
+	// "none" resets to the built-in default (reset, not disable).
+	cfg, found = m.ResolveConfig("acme", "resets")
+	require.True(t, found)
+	assert.Equal(t, appsetup.DefaultAppSet, cfg.AppSet)
+	assert.True(t, cfg.AppSetExplicit)
+}
+
+func TestResolveConfig_AppSet_BuiltinDefaultWhenUnset(t *testing.T) {
+	input := `
+version: 1
+github:
+  mint_url: https://mint.example.com
+  repos:
+    - name: acme/plain
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	cfg, found := m.ResolveConfig("acme", "plain")
+	require.True(t, found)
+	assert.Equal(t, appsetup.DefaultAppSet, cfg.AppSet)
+	assert.False(t, cfg.AppSetExplicit)
+}
+
+func TestResolveConfig_AppSet_EmptyForGitLab(t *testing.T) {
+	input := `
+version: 1
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: acme/service
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	cfg, found := m.ResolveConfig("acme", "service")
+	require.True(t, found)
+	assert.Equal(t, "", cfg.AppSet)
+	assert.False(t, cfg.AppSetExplicit)
+}
+
+func TestValidate_AppSet_GitHubValid(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			AppSet:  "org-wide",
+			Repos:   []RepoEntry{{Name: "acme/repo", AppSet: "repo-local"}},
+		},
+	}
+	assert.NoError(t, m.Validate())
+}
+
+func TestValidate_AppSet_GitHubInvalid(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			AppSet:  "Invalid_AppSet",
+			Repos:   []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "github.app_set")
+}
+
+func TestValidate_AppSet_PerRepoInvalid(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			Repos:   []RepoEntry{{Name: "acme/repo", AppSet: "Bad Value"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app_set")
+}
+
+func TestValidate_AppSet_NoneSentinelSkipsFormatCheck(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL: "https://mint.example.com",
+			AppSet:  "none",
+			Repos:   []RepoEntry{{Name: "acme/repo", AppSet: "none"}},
+		},
+	}
+	assert.NoError(t, m.Validate())
+}
+
+func TestValidate_AppSet_RejectedOnGitLabPlatform(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:    "https://gitlab.example.com",
+			AppSet: "org-wide",
+			Repos:  []RepoEntry{{Name: "acme/repo"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gitlab.app_set is not supported")
+}
+
+func TestValidate_AppSet_RejectedOnGitLabRepo(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []RepoEntry{{Name: "acme/repo", AppSet: "repo-local"}},
+		},
+	}
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app_set is only supported for GitHub repos")
 }
 
 func TestResolveConfig_UnknownRepo(t *testing.T) {

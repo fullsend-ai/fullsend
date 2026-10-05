@@ -12,6 +12,7 @@ import (
 
 const (
 	gitlabInstallCLIScriptPath       = ".gitlab/ci/scripts/install-fullsend-cli.sh"
+	gitlabPinCIJobIdentityScriptPath = ".gitlab/ci/scripts/pin-ci-job-identity.sh"
 	gitlabRunPollJobScriptPath       = ".gitlab/ci/scripts/run-poll-job.sh"
 	gitlabRunAgentJobScriptPath      = ".gitlab/ci/scripts/run-agent-job.sh"
 	gitlabCheckoutMRSourceScriptPath = ".gitlab/ci/scripts/checkout-mr-source.sh"
@@ -40,6 +41,7 @@ func gitlabAgentScaffold(t *testing.T) string {
 	return gitlabJoinTexts(t,
 		".gitlab/ci/fullsend-agent.yml",
 		gitlabInstallCLIScriptPath,
+		gitlabPinCIJobIdentityScriptPath,
 		gitlabRunAgentJobScriptPath,
 	)
 }
@@ -51,6 +53,7 @@ func gitlabPollScaffold(t *testing.T) string {
 	return gitlabJoinTexts(t,
 		".gitlab/ci/fullsend-poll.yml",
 		gitlabInstallCLIScriptPath,
+		gitlabPinCIJobIdentityScriptPath,
 		gitlabRunPollJobScriptPath,
 	)
 }
@@ -65,6 +68,7 @@ func TestGitLabPerRepoFilesExist(t *testing.T) {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		gitlabPinCIJobIdentityScriptPath,
 		gitlabInstallCLIScriptPath,
 		gitlabRunPollJobScriptPath,
 		gitlabRunAgentJobScriptPath,
@@ -234,11 +238,14 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "FULLSEND_JOB_KIND=agent")
 	assert.Contains(t, s, `PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}`)
 	assert.NotContains(t, s, `PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}`)
-	// Bot identity verification uses server-side .source from Pipelines API
-	// (deny-by-default case statement, not forgeable CI_PIPELINE_SOURCE env var)
+	// Bot identity verification pins .source from the CI_JOB_TOKEN job
+	// record (deny-by-default, not forgeable CI_PIPELINE_SOURCE env var)
+	// and admits only api — parent_pipeline is no longer an allowlist arm.
 	assert.Contains(t, s, `jq -r '.source // empty'`)
-	assert.Contains(t, s, `parent_pipeline)`)
-	assert.Contains(t, s, "unexpected pipeline source")
+	assert.Contains(t, s, "FULLSEND_ADMIT_SOURCE=api")
+	assert.NotRegexp(t, `(?m)^\s+parent_pipeline\)\s*$`, s,
+		"agent job must not admit parent_pipeline as an allowlist arm")
+	assert.Contains(t, s, "disjoint allowlist deny")
 	assert.Contains(t, s, "rejecting forged dispatch")
 	// Generic runner image, not agent-specific
 	assert.Contains(t, s, "fullsend-runner:dev")
@@ -489,7 +496,7 @@ func TestGitLabAgentTemplateFixStageReviewNoteUsesAnalystIdentity(t *testing.T) 
 	// The restore must happen before the TARGET_BRANCH lookup (later in
 	// the same fix-only block), which authenticates with FULLSEND_JOB_TOKEN
 	// and must use the restored coder token, not the analyst token.
-	targetBranchIdx := strings.Index(fixBlock, "TARGET_BRANCH=$(curl")
+	targetBranchIdx := strings.Index(fixBlock, "TARGET_BRANCH=$(fullsend_gate_curl")
 	require.NotEqual(t, -1, targetBranchIdx, "TARGET_BRANCH lookup not found in fix block")
 	assert.Greater(t, targetBranchIdx, restoreIdx,
 		"TARGET_BRANCH lookup must run after the coder token is restored")
@@ -534,10 +541,11 @@ func TestGitLabAgentTemplateFixChecksOutMRSourceBeforeSandbox(t *testing.T) {
 	assert.Contains(t, s, `git show "${DEFAULT_BRANCH_SHA}:.fullsend/config.yaml"`)
 	assert.Contains(t, s, `git show "${DEFAULT_BRANCH_SHA}:.fullsend/eval/measurements/${STAGE}.yaml"`)
 
-	// Fork MRs still cannot run the fix stage; the checkout helper
-	// itself also fails closed on any cross-project source mismatch
-	// (see TestCheckoutMRSource_CrossProjectSourceRejected) — there is
-	// no cross-project fetch path in this implementation.
+	// Fork jobs still die at the job-level IS_FORK gate before reaching
+	// this checkout logic — that gate is unchanged by this PR. The
+	// checkout helper itself, however, has a working cross-project fetch
+	// path for when a future PR lifts that gate (see
+	// TestCheckoutMRSource_CrossProjectSourceCheckedOut).
 	assert.Contains(t, s, "Fork MR detected")
 }
 
@@ -605,6 +613,34 @@ func TestGitLabAgentTemplateMRIIDPrefersSignedStatusIID(t *testing.T) {
 	// CI_MERGE_REQUEST_IID is validated as numeric before use, like the
 	// other untrusted CI identity variables in this file.
 	assert.Contains(t, shared, `*[!0-9]*) _FS_CI_MR_IID=""`)
+}
+
+// TestGitLabAgentTemplateReviewPriorLookupPrefersSignedStatusIID guards
+// against a regression of the STAGE=review prior-review-lookup block
+// (which runs before the shared code|fix|review MR_IID resolution)
+// trusting the unsigned CI_MERGE_REQUEST_IID over the HMAC-signed
+// STATUS_IID when selecting which MR's notes to query with the role PAT.
+func TestGitLabAgentTemplateReviewPriorLookupPrefersSignedStatusIID(t *testing.T) {
+	s := gitlabAgentScaffold(t)
+
+	reviewMarker := `if [ "${STAGE}" = "review" ]; then`
+	reviewIdx := strings.Index(s, reviewMarker)
+	require.NotEqual(t, -1, reviewIdx, "STAGE=review prior-review block marker not found")
+	reviewBlock := s[reviewIdx:]
+	mktempIdx := strings.Index(reviewBlock, "PRIOR_REVIEW_FILE=$(mktemp)")
+	require.NotEqual(t, -1, mktempIdx, "PRIOR_REVIEW_FILE mktemp not found in review block")
+	reviewBlock = reviewBlock[:mktempIdx]
+
+	// STATUS_IID is preferred when present and non-zero, not the unsigned
+	// CI_MERGE_REQUEST_IID fallback the fail-open finding flagged.
+	assert.Contains(t, reviewBlock, `MR_IID="${STATUS_IID}"`)
+	assert.NotContains(t, reviewBlock, `MR_IID="${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"`)
+	// A disagreeing CI_MERGE_REQUEST_IID fails closed instead of being trusted.
+	assert.Contains(t, reviewBlock, "does not match the signed dispatch STATUS_IID")
+	assert.Contains(t, reviewBlock, "exit 1")
+	// CI_MERGE_REQUEST_IID is validated as numeric before use, like the
+	// other untrusted CI identity variables in this file.
+	assert.Contains(t, reviewBlock, `*[!0-9]*) _FS_REVIEW_CI_MR_IID=""`)
 }
 
 func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
@@ -685,6 +721,13 @@ func TestGitLabPollContent(t *testing.T) {
 	assert.Contains(t, s, "fullsend poll")
 	assert.Contains(t, s, "schedule")
 	assert.Contains(t, s, "CI_COMMIT_REF_PROTECTED")
+	assert.Contains(t, s, "FULLSEND_ADMIT_SOURCE=schedule")
+	assert.Contains(t, s, gitlabPinCIJobIdentityScriptPath)
+	debugIdx := strings.Index(s, `$CI_DEBUG_TRACE =~ /^(1|t|true)$/i`)
+	require.NotEqual(t, -1, debugIdx)
+	admitIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"`)
+	require.NotEqual(t, -1, admitIdx)
+	assert.Less(t, debugIdx, admitIdx, "poll job rules must deny debug-trace before schedule admit")
 	// Credential selection uses the shared role-token helper.
 	assert.Contains(t, s, "select-gitlab-role-token.sh")
 	assert.Contains(t, s, "FULLSEND_JOB_KIND=poller")
@@ -776,6 +819,13 @@ func TestGitLabRootPipelineContent(t *testing.T) {
 	// Auto-cancel disabled to prevent queued agent pipelines from being killed
 	assert.Contains(t, s, "auto_cancel")
 	assert.Contains(t, s, "on_new_commit: none")
+	// Deny-before-admit debug-trace guard must precede admit rules.
+	debugIdx := strings.Index(s, `$CI_DEBUG_TRACE =~ /^(1|t|true)$/i`)
+	require.NotEqual(t, -1, debugIdx, "workflow:rules must deny CI_DEBUG_TRACE before admit")
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must precede schedule admit")
+	assert.Contains(t, s, "when: never")
 	// API-triggered pipeline rule for cron-poller dispatched pipelines
 	// Requires API source + protected branch + STAGE variable
 	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`)
@@ -803,6 +853,8 @@ func TestGitLabPipelineWrapperContent(t *testing.T) {
 	assert.NotContains(t, s, "fullsend-ref:")
 	assert.Contains(t, s, "fullsend-poll.yml")
 	assert.Contains(t, s, "fullsend-agent.yml")
+	assert.Contains(t, s, `$CI_DEBUG_TRACE =~ /^(1|t|true)$/i`)
+	assert.Contains(t, s, "when: never")
 	assert.Contains(t, s, "stages:")
 	assert.NotContains(t, s, "- dispatch", "dispatch stage was removed in #7337")
 	assert.Contains(t, s, "- poll")
@@ -1124,6 +1176,8 @@ func TestGitLabJobsSourceExtractedScripts(t *testing.T) {
 	assert.Contains(t, agentYAML, gitlabRunAgentJobScriptPath)
 	assert.Contains(t, pollYAML, gitlabInstallCLIScriptPath)
 	assert.Contains(t, pollYAML, gitlabRunPollJobScriptPath)
+	assert.Contains(t, gitlabPerRepoText(t, gitlabRunAgentJobScriptPath), gitlabPinCIJobIdentityScriptPath)
+	assert.Contains(t, gitlabPerRepoText(t, gitlabRunPollJobScriptPath), gitlabPinCIJobIdentityScriptPath)
 
 	assert.NotContains(t, agentYAML, "set -euo pipefail")
 	assert.NotContains(t, pollYAML, "set -euo pipefail")
@@ -1146,6 +1200,7 @@ func TestCollectGitLabPerRepoInstallFiles_IncludesExtractedJobScripts(t *testing
 	}
 	for _, path := range []string{
 		gitlabInstallCLIScriptPath,
+		gitlabPinCIJobIdentityScriptPath,
 		gitlabRunPollJobScriptPath,
 		gitlabRunAgentJobScriptPath,
 		gitlabCheckoutMRSourceScriptPath,

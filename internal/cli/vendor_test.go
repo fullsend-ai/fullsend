@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"os"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -69,11 +67,7 @@ func TestAppendVendorTreeFiles_Disabled(t *testing.T) {
 }
 
 func TestAppendVendorTreeFiles_Enabled(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
+	exe := amd64VendorBinary(t)
 
 	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
 	var buf strings.Builder
@@ -84,11 +78,7 @@ func TestAppendVendorTreeFiles_Enabled(t *testing.T) {
 }
 
 func TestMakeVendorCollectFunc(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
+	exe := amd64VendorBinary(t)
 
 	var buf strings.Builder
 	fn := makeVendorCollectFunc(exe, "")
@@ -106,17 +96,13 @@ func TestMakeVendorCollectFunc_InvalidBinary(t *testing.T) {
 }
 
 func TestAcquireAndVendor_ExplicitPath(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
+	exe := amd64VendorBinary(t)
 
 	client := &forge.FakeClient{}
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	err = acquireAndVendor(context.Background(), client, printer, "org", "my-repo", exe, "")
+	err := acquireAndVendor(context.Background(), client, printer, "org", "my-repo", exe, "")
 	require.NoError(t, err)
 
 	key := "org/my-repo/" + layers.VendoredBinaryPathPerRepo
@@ -167,15 +153,11 @@ func TestVendorPathPrefix(t *testing.T) {
 }
 
 func TestMakeVendorFunc(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
+	exe := amd64VendorBinary(t)
 
 	fn := makeVendorFunc(exe, "")
 	require.NotNil(t, fn)
-	err = fn(context.Background(), &forge.FakeClient{}, ui.New(&strings.Builder{}), "org", "my-repo")
+	err := fn(context.Background(), &forge.FakeClient{}, ui.New(&strings.Builder{}), "org", "my-repo")
 	require.NoError(t, err)
 }
 
@@ -189,11 +171,7 @@ func TestApplyDeprecatedVendorBinaryFlag(t *testing.T) {
 }
 
 func TestPrepareVendorFiles_ExplicitBinary(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
+	exe := amd64VendorBinary(t)
 
 	bundle, cleanup, err := prepareVendorFiles(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo", exe, "")
 	require.NoError(t, err)

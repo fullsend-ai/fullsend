@@ -568,6 +568,28 @@ func TestSubmitPullRequestReview_CreateReviewError(t *testing.T) {
 	}
 }
 
+func TestListPullRequestReviews(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "abc123"
+	d := New(fc)
+
+	require.NoError(t, d.SubmitPullRequestReview(context.Background(), "owner", "repo", 1, "APPROVE"))
+
+	reviews, err := d.ListPullRequestReviews(context.Background(), "owner", "repo", 1)
+	require.NoError(t, err)
+	require.Len(t, reviews, 1)
+	assert.Equal(t, "APPROVE", reviews[0].State)
+}
+
+func TestListPullRequestReviews_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ListPullRequestReviews"] = errors.New("list failed")
+	d := New(fc)
+
+	_, err := d.ListPullRequestReviews(context.Background(), "owner", "repo", 1)
+	assert.ErrorContains(t, err, "list failed")
+}
+
 // laggingRepoClient returns ErrNotFound for the first fails GetRepo
 // calls, then delegates: GitHub's read-after-create lag (#7861).
 type laggingRepoClient struct {

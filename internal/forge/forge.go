@@ -5,6 +5,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ const (
 	VarMintURL        = "FULLSEND_MINT_URL"
 	VarGCPRegion      = "FULLSEND_GCP_REGION"
 	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
+	VarAppSet         = "FULLSEND_APP_SET"
 
 	// Retired GitLab poller state variables. Superseded by HMAC-signed
 	// state.json on fullsend-poll-state-slash / fullsend-poll-state-events.
@@ -59,11 +61,20 @@ const (
 	SecretForgeToken = "FULLSEND_FORGE_TOKEN"
 
 	// Optional GitLab role credentials (docs/contributing/gitlab-role-credentials.md).
-	// These are not required on leftover shared-token installations.
-	// Probe/converge must not treat their absence as health drift while
-	// the gate is leftover disabled or rollback. Built-in names are fixed;
-	// custom roles derive FULLSEND_GITLAB_ROLE_<NAME>_TOKEN. Provisioning
-	// is #7498; job routing is #7499 (`internal/gitlabroles.Select`).
+	// These are absent on an installation that has not yet completed role
+	// provisioning; FULLSEND_FORGE_TOKEN may still be present as leftover
+	// state from an installation predating the role-only model, but current
+	// runtime jobs require their selected role credential and fail closed
+	// when it is missing: gitlabroles.Resolve returns ErrUnconfigured, and
+	// select-gitlab-role-token.sh errors out rather than falling back to
+	// FULLSEND_FORGE_TOKEN. requiredSecretsForForge (internal/repos)
+	// deliberately omits these secrets, so probe/converge do not treat
+	// their absence as health drift; GitLab role readiness is tracked
+	// separately through the role registry/status path
+	// (gitlabroles.CheckBuiltinReadiness, `repos status`). Built-in names
+	// are fixed; custom roles derive FULLSEND_GITLAB_ROLE_<NAME>_TOKEN.
+	// Provisioning is #7498; job routing is #7499
+	// (`internal/gitlabroles.Select`).
 	SecretGitLabPollerToken  = "FULLSEND_GITLAB_POLLER_TOKEN"
 	SecretGitLabAnalystToken = "FULLSEND_GITLAB_ANALYST_TOKEN"
 	SecretGitLabCoderToken   = "FULLSEND_GITLAB_CODER_TOKEN"
@@ -109,12 +120,6 @@ const (
 	VarPollJobURL     = "FULLSEND_POLL_JOB_URL"
 	VarPollMode       = "FULLSEND_POLL_MODE"
 	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
-
-	// VarGitLabRoleMigration is leftover GitLab role-identity-gate state.
-	// Runtime, install, and status ignore it. Uninstall still deletes it
-	// so older repositories do not retain the variable. See
-	// internal/gitlabroles.
-	VarGitLabRoleMigration = "FULLSEND_GITLAB_ROLE_MIGRATION"
 
 	// VarGitLabRoleRegistry is the administrator-controlled GitLab role
 	// registry (JSON policy and credential *references*, never raw
@@ -814,6 +819,10 @@ type Client interface {
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
 	CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*IssueComment, error)
+	// GetIssueComment fetches a single comment by ID. Returns ErrNotFound if
+	// the comment does not exist (or, on GitLab, if it could not be located
+	// by the ID-scan lookup UpdateIssueComment/DeleteIssueComment also use).
+	GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*IssueComment, error)
 	UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error
 	DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error
 	MinimizeComment(ctx context.Context, nodeID, reason string) error
@@ -937,6 +946,19 @@ type Client interface {
 	// the API instead of bridge jobs and child pipelines.
 	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error)
 
+	// CreatePipelineWithInputs creates a new pipeline on the given ref using
+	// GitLab CI/CD Inputs (spec:inputs) instead of user-defined pipeline
+	// variables. It is additive to CreatePipeline, not a replacement:
+	// callers that still need the variables-map path keep using
+	// CreatePipeline unchanged. Unlike CreatePipeline, this never sends a
+	// "variables" value on the wire, so it remains usable when a project's
+	// ci_pipeline_variables_minimum_override_role is
+	// PipelineVarOverrideNoOneAllowed — GitLab's variable-override gate does
+	// not govern pipeline inputs. See PipelineInputValue for the supported
+	// value shapes. Returns ErrNotSupported on forges with no equivalent
+	// concept (e.g. GitHub Actions).
+	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]PipelineInputValue) (*Pipeline, error)
+
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
@@ -1012,6 +1034,73 @@ type Client interface {
 type Pipeline struct {
 	ID     int64
 	WebURL string
+}
+
+// pipelineInputKind identifies which of PipelineInputValue's typed fields
+// is populated.
+type pipelineInputKind int
+
+const (
+	pipelineInputString pipelineInputKind = iota
+	pipelineInputNumber
+	pipelineInputBoolean
+	pipelineInputArray
+)
+
+// PipelineInputValue is a single typed value for a GitLab CI/CD pipeline
+// input (spec:inputs in .gitlab-ci.yml). GitLab's pipeline-creation API
+// accepts string, number, boolean, and array-of-string values for inputs;
+// this type constrains callers to exactly those shapes rather than
+// accepting an untyped any that could silently serialize something GitLab
+// rejects (e.g. a nested object). Construct one with StringInput,
+// NumberInput, BoolInput, or ArrayInput. See
+// https://docs.gitlab.com/ee/ci/inputs/.
+type PipelineInputValue struct {
+	kind pipelineInputKind
+	str  string
+	num  float64
+	bl   bool
+	arr  []string
+}
+
+// StringInput constructs a string-typed pipeline input value.
+func StringInput(v string) PipelineInputValue {
+	return PipelineInputValue{kind: pipelineInputString, str: v}
+}
+
+// NumberInput constructs a number-typed pipeline input value.
+func NumberInput(v float64) PipelineInputValue {
+	return PipelineInputValue{kind: pipelineInputNumber, num: v}
+}
+
+// BoolInput constructs a boolean-typed pipeline input value.
+func BoolInput(v bool) PipelineInputValue {
+	return PipelineInputValue{kind: pipelineInputBoolean, bl: v}
+}
+
+// ArrayInput constructs an array-typed pipeline input value from a slice
+// of strings. The slice is copied so later mutation by the caller does not
+// affect the constructed value.
+func ArrayInput(v []string) PipelineInputValue {
+	cp := make([]string, len(v))
+	copy(cp, v)
+	return PipelineInputValue{kind: pipelineInputArray, arr: cp}
+}
+
+// MarshalJSON renders the value as the bare JSON primitive GitLab expects
+// for a pipeline input: a JSON string, number, boolean, or array of
+// strings — never an object wrapper.
+func (v PipelineInputValue) MarshalJSON() ([]byte, error) {
+	switch v.kind {
+	case pipelineInputNumber:
+		return json.Marshal(v.num)
+	case pipelineInputBoolean:
+		return json.Marshal(v.bl)
+	case pipelineInputArray:
+		return json.Marshal(v.arr)
+	default:
+		return json.Marshal(v.str)
+	}
 }
 
 // ProtectedBranchAccess is one grant on a protected branch.
@@ -1111,4 +1200,24 @@ type GitHubExtensions interface {
 	// Returns forge.ErrNotFound when the user is not a member and has
 	// no pending invitation.
 	GetOrgMembership(ctx context.Context, org, username string) (OrgMembership, error)
+}
+
+// GitLabExtensions provides GitLab-specific operations that are not part
+// of the cross-forge Client interface. Callers type-assert to this
+// interface when they already know a note's parent noteable (issue or
+// merge request) type and IID, and want to address it directly instead
+// of through GetIssueComment/UpdateIssueComment's ID-only scan — the
+// scan is bounded and, because it is driven by the client's own fixed
+// noteTarget, cannot find a note whose actual parent type differs from
+// how the client was constructed.
+type GitLabExtensions interface {
+	// GetNoteOnParent fetches a note by its parent noteable's IID and the
+	// note's own ID, addressing the GitLab Notes API path directly.
+	// parentType must be "issues" or "merge_requests".
+	GetNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int) (*IssueComment, error)
+
+	// UpdateNoteOnParent updates a note's body by its parent noteable's
+	// IID and the note's own ID, addressing the GitLab Notes API path
+	// directly. parentType must be "issues" or "merge_requests".
+	UpdateNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int, body string) error
 }

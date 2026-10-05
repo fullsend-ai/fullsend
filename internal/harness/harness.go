@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -739,52 +740,50 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 // environment using the provided lookup function. Variables set to an empty
 // string are allowed; only truly unset variables produce an error.
 func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) error {
-	checkVarRefs := func(source, value string) error {
+	references := make(map[string][]string)
+	checkVarRefs := func(source, value string) {
 		for _, match := range envVarRef.FindAllStringSubmatch(value, -1) {
 			varName := match[1]
 			if _, ok := lookup(varName); !ok {
-				return fmt.Errorf("%s: host variable %s is not set (referenced in %q)", source, varName, value)
+				references[varName] = append(references[varName], source)
 			}
 		}
-		return nil
 	}
 
 	for k, v := range h.RunnerEnv {
-		if err := checkVarRefs(fmt.Sprintf("runner_env[%s]", k), v); err != nil {
-			return err
-		}
+		checkVarRefs(fmt.Sprintf("runner_env[%s]", k), v)
 	}
 	for i, hf := range h.HostFiles {
 		if hf.Optional {
 			continue
 		}
-		if err := checkVarRefs(fmt.Sprintf("host_files[%d].src", i), hf.Src); err != nil {
-			return err
-		}
+		checkVarRefs(fmt.Sprintf("host_files[%d].src", i), hf.Src)
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
-		if err := checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
-			return err
-		}
+		checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema)
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
-		if err := checkVarRefs("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck); err != nil {
-			return err
-		}
+		checkVarRefs("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck)
 	}
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
-			if err := checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v); err != nil {
-				return err
-			}
+			checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v)
 		}
 		for k, v := range h.Env.Sandbox {
-			if err := checkVarRefs(fmt.Sprintf("env.sandbox[%s]", k), v); err != nil {
-				return err
-			}
+			checkVarRefs(fmt.Sprintf("env.sandbox[%s]", k), v)
 		}
 	}
-	return nil
+	if len(references) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(references))
+	for variable, refs := range references {
+		sort.Strings(refs)
+		lines = append(lines, fmt.Sprintf("%s is not set (referenced by %s)", variable, strings.Join(refs, ", ")))
+	}
+	sort.Strings(lines)
+	return fmt.Errorf("%d unresolved host variable(s):\n    %s", len(references), strings.Join(lines, "\n    "))
 }
 
 // ValidateRunnerEnv checks that all ${VAR} references in RunnerEnv and

@@ -264,11 +264,20 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	// Build expected values for all static variables using the same
 	// function as the converge path, so variable classification
 	// (static vs dynamic) cannot diverge between the two paths.
+	// Value-check FULLSEND_APP_SET only when app_set is explicitly
+	// configured; otherwise the probe falls back to presence-only (the
+	// required-variable check), which is all status can assert without
+	// reading the repo's existing value to preserve.
+	appSet := ""
+	if cfg.AppSetExplicit {
+		appSet = cfg.AppSet
+	}
 	expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
 		Forge:             cfg.Forge,
 		MintURL:           cfg.MintURL,
 		InferenceRegion:   dcfg.InferenceRegion,
 		ReviewAppClientID: dcfg.ReviewAppClientID,
+		AppSet:            appSet,
 	}, cfg.MintURL)
 	if varValErr != nil {
 		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)

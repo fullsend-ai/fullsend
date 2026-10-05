@@ -10,17 +10,19 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 )
 
-// GitLabRoleCleanupConfig controls removal of migration-era GitLab
-// identity state: the gate, registry, rotation document, built-in and
-// custom role secrets, leftover shared token, and matching project
-// access tokens.
+// GitLabRoleCleanupConfig controls removal of GitLab role-identity
+// installation state: the registry, rotation document, built-in and
+// custom role secrets, and matching role project access tokens. It
+// does not touch the legacy FULLSEND_FORGE_TOKEN shared secret or its
+// fullsend-bot project access token — a repository installed before
+// the role-only rollout may require manual cleanup of those.
 type GitLabRoleCleanupConfig struct {
 	Owner  string
 	Repo   string
 	Client forge.Client
-	// Tokens, when set, revokes active fullsend-bot and role project
-	// access tokens. Nil skips PAT revocation; CI/CD variables and
-	// secrets are still deleted.
+	// Tokens, when set, revokes active role project access tokens. Nil
+	// skips PAT revocation; CI/CD variables and secrets are still
+	// deleted.
 	Tokens ProjectAccessTokenClient
 	DryRun bool
 }
@@ -81,8 +83,10 @@ func CleanupGitLabRoleIdentity(ctx context.Context, cfg GitLabRoleCleanupConfig)
 	return result, errors.Join(errs...)
 }
 
-// revokeGitLabIdentityTokens lists and revokes active fullsend identity
-// project access tokens. Only a confirmed-gone project (404) is reported
+// revokeGitLabIdentityTokens lists and revokes active role project
+// access tokens (Poller, Analyst, Coder, and custom own-credential
+// roles). It never revokes the legacy fullsend-bot shared token — that
+// is left for manual cleanup. Only a confirmed-gone project (404) is reported
 // as a diagnostic and treated as "nothing to revoke" rather than a hard
 // failure, since deletion can never converge there. Every other listing
 // failure — including 403/Forbidden, which GitLab returns identically for
@@ -116,7 +120,7 @@ func revokeGitLabIdentityTokens(ctx context.Context, tokens ProjectAccessTokenCl
 		if !tok.Active || tok.Revoked {
 			continue
 		}
-		if tok.Name != gitlabroles.SharedTokenName && !gitlabroles.IsRoleProjectTokenName(tok.Name) {
+		if !gitlabroles.IsRoleProjectTokenName(tok.Name) {
 			continue
 		}
 		if err := tokens.RevokeProjectAccessToken(ctx, owner, repo, tok.ID); err != nil {

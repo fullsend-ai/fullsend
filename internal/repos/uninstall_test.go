@@ -20,9 +20,11 @@ func newInstalledFakeClient(repos ...string) *forge.FakeClient {
 		client.VariableValues[r+"/"+forge.PerRepoGuardVar] = "true"
 		client.VariableValues[r+"/FULLSEND_MINT_URL"] = "https://mint.example.com"
 		client.VariableValues[r+"/FULLSEND_GCP_REGION"] = "us-central1"
+		client.VariableValues[r+"/FULLSEND_APP_SET"] = "fullsend-ai"
 		client.VariablesExist[r+"/"+forge.PerRepoGuardVar] = true
 		client.VariablesExist[r+"/FULLSEND_MINT_URL"] = true
 		client.VariablesExist[r+"/FULLSEND_GCP_REGION"] = true
+		client.VariablesExist[r+"/FULLSEND_APP_SET"] = true
 		client.Secrets[r+"/FULLSEND_GCP_PROJECT_ID"] = true
 		client.Secrets[r+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 		client.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("name: fullsend\n")
@@ -99,8 +101,8 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if !r.WorkflowDeleted {
 		t.Error("WorkflowDeleted = false, want true")
 	}
-	if r.VarsDeleted != 4 {
-		t.Errorf("VarsDeleted = %d, want 4", r.VarsDeleted)
+	if r.VarsDeleted != 5 {
+		t.Errorf("VarsDeleted = %d, want 5", r.VarsDeleted)
 	}
 	// 2 required secrets plus the opt-in FULLSEND_OPENAI_API_KEY, which
 	// uninstall always attempts to delete (idempotent: a 404 for a repo
@@ -126,8 +128,8 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 			t.Errorf("thin caller %s was not in deleted files", tcPath)
 		}
 	}
-	if len(client.DeletedVariables) != 4 {
-		t.Errorf("deleted %d variables, want 4", len(client.DeletedVariables))
+	if len(client.DeletedVariables) != 5 {
+		t.Errorf("deleted %d variables, want 5", len(client.DeletedVariables))
 	}
 	if len(client.DeletedSecrets) != 3 {
 		t.Errorf("deleted %d secrets, want 3", len(client.DeletedSecrets))
@@ -649,6 +651,7 @@ func TestUninstall_GitLabExtractedJobScripts_Deleted(t *testing.T) {
 	}
 	for _, path := range []string{
 		gitlabInstallCLIScriptPath,
+		gitlabPinCIJobIdentityScriptPath,
 		gitlabPollJobScriptPath,
 		gitlabAgentJobScriptPath,
 		gitlabCheckoutMRSourceScriptPath,
@@ -945,6 +948,11 @@ func TestUninstall_GitLabPollStateBranches_DeleteError(t *testing.T) {
 	}
 }
 
+// TestUninstall_GitLabRoleIdentityRevokesTokensAndSecrets verifies
+// uninstall removes role-identity state (built-in and custom role
+// secrets, their project access tokens) but leaves the legacy shared
+// fullsend-bot secret and token alone: a repository installed before
+// the role-only rollout requires manual cleanup of those.
 func TestUninstall_GitLabRoleIdentityRevokesTokensAndSecrets(t *testing.T) {
 	client := newInstalledFakeGitLabClient("acme/api")
 	for _, name := range []string{
@@ -982,16 +990,17 @@ func TestUninstall_GitLabRoleIdentityRevokesTokensAndSecrets(t *testing.T) {
 	if !r.Success {
 		t.Fatalf("Success = false, want true; Error = %v", r.Error)
 	}
-	if r.TokensRevoked != 3 {
-		t.Errorf("TokensRevoked = %d, want 3", r.TokensRevoked)
+	// Only the Poller role token and the custom scanner token are
+	// revoked; the legacy shared fullsend-bot token (ID 2) and the
+	// unrelated token (ID 4) are not.
+	if r.TokensRevoked != 2 {
+		t.Errorf("TokensRevoked = %d, want 2", r.TokensRevoked)
 	}
 	if r.VarsDeleted != len(gitlabUninstallVars)+1 {
 		t.Errorf("VarsDeleted = %d, want %d", r.VarsDeleted, len(gitlabUninstallVars)+1)
 	}
 	for _, name := range []string{
-		forge.SecretForgeToken,
 		forge.SecretGitLabPollerToken,
-		forge.VarGitLabRoleMigration,
 		"FULLSEND_GITLAB_ROLE_SCANNER_TOKEN",
 	} {
 		if _, still := client.VariableValues["acme/api/"+name]; still {
@@ -1001,8 +1010,14 @@ func TestUninstall_GitLabRoleIdentityRevokesTokensAndSecrets(t *testing.T) {
 			t.Errorf("secret %s still present after uninstall", name)
 		}
 	}
-	if !containsInt(tokens.revoked, 1) || !containsInt(tokens.revoked, 2) || !containsInt(tokens.revoked, 3) {
-		t.Errorf("revoked = %v, want 1,2,3", tokens.revoked)
+	if !client.Secrets["acme/api/"+forge.SecretForgeToken] {
+		t.Error("legacy shared secret must not be auto-deleted by uninstall")
+	}
+	if !containsInt(tokens.revoked, 1) || !containsInt(tokens.revoked, 3) {
+		t.Errorf("revoked = %v, want 1,3", tokens.revoked)
+	}
+	if containsInt(tokens.revoked, 2) {
+		t.Errorf("legacy shared token must not be auto-revoked: revoked = %v", tokens.revoked)
 	}
 	if containsInt(tokens.revoked, 4) {
 		t.Errorf("revoked unrelated token: %v", tokens.revoked)

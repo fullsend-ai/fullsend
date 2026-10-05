@@ -14,12 +14,16 @@ on:
       - ".dockerignore"
       - ".github/workflows/runner-image.yml"
       - ".github/scripts/openshell-version.sh"
+      - go.mod
+      - go.sum
   pull_request:
     paths:
       - "images/runner/**"
       - ".dockerignore"
       - ".github/workflows/runner-image.yml"
       - ".github/scripts/openshell-version.sh"
+      - go.mod
+      - go.sum
   workflow_dispatch:
 
 # NOTE: GitHub Actions ignores `paths` filters on tag pushes, so every

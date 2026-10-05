@@ -241,7 +241,16 @@ comment=$(jq -r 'if (.comment | type) == "string" then .comment else empty end' 
 
 case "${status}" in
   ok|findings|error) ;;
-  *) echo "post-lint-docs: status must be ok, findings or error (got '${status}')" >&2; exit 1 ;;
+  *)
+    # status is model output: never echo it raw. A value carrying CR/LF would
+    # split the runner's log line (a workflow-command injection vector), so
+    # flatten it and cap it before it reaches stderr.
+    shown="${status//[$'\r\n']/ }"
+    # printf '%s' never interprets backslash escapes; echo does under xpg_echo,
+    # so a literal "\n" in the value could still forge a log line through echo.
+    printf '%s\n' "post-lint-docs: status must be ok, findings or error (got '${shown:0:40}')" >&2
+    exit 1
+    ;;
 esac
 [[ -n "${summary}" ]] || { echo "post-lint-docs: summary is required" >&2; exit 1; }
 if [[ "${summary}" == *$'\n'* || "${summary}" == *$'\r'* ]]; then
@@ -262,11 +271,6 @@ if (( ${#comment} > MAX_COMMENT_CHARS )); then
   comment="${comment:0:${keep}}${TRUNCATION_MARKER}"
 fi
 
-if [[ "${status}" == "ok" ]]; then
-  echo "post-lint-docs: status=ok, nothing to post" >&2
-  exit 0
-fi
-
 # Derive the repo and number from the work item URL rather than trusting extra
 # environment. The pattern also rejects anything that is not a github.com URL.
 url_re='^https://github[.]com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/(issues|pull)/([0-9]+)$'
@@ -277,15 +281,68 @@ fi
 REPO="${BASH_REMATCH[1]}"
 NUMBER="${BASH_REMATCH[3]}"
 
+# On ok, post nothing — unless an earlier run left a findings comment on
+# this work item. The harness trigger fires again on later pushes, so a
+# problem the author has since fixed would otherwise stay reported.
+# --only-if-exists makes fullsend replace that comment with the all-clear,
+# and post nothing when there is no earlier comment. It matches only a
+# comment carrying this marker whose author is exactly the login fullsend
+# posts as, so a comment anyone else planted with the marker is never
+# edited. When that login cannot be resolved it exits non-zero without
+# posting; under `set -e` this script, and so the run, then fails
+# visibly — rerun it.
+if [[ "${status}" == "ok" ]]; then
+  if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
+    echo "post-lint-docs: status=ok, nothing to post (dry run: did not check for an earlier findings comment to replace)" >&2
+    exit 0
+  fi
+  # The runner's fullsend may predate --only-if-exists (it is pinned by the
+  # repository's fullsend-ref, not by the CLI that generated this script).
+  # Detect the flag instead of assuming it. A fullsend that is missing or
+  # whose --help fails is a broken runner, not an older CLI: fail the run.
+  # Only a working CLI without the flag keeps the old behaviour — post
+  # nothing.
+  if ! help_text=$(fullsend issues post-comment --help 2>&1); then
+    printf '%s\n' "post-lint-docs: 'fullsend issues post-comment --help' failed; cannot replace an earlier findings comment" >&2
+    printf '%s\n' "${help_text}" >&2
+    exit 1
+  fi
+  if [[ "${help_text}" != *--only-if-exists* ]]; then
+    echo "post-lint-docs: status=ok, nothing to post (this fullsend has no --only-if-exists; an earlier findings comment, if any, stays until a later run with findings)" >&2
+    exit 0
+  fi
+  # --keep-history=false: the all-clear replaces the comment in place, so
+  # repeated clean runs do not stack identical "Previous run" blocks.
+  printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
+    | fullsend issues post-comment \
+        --tracker github \
+        --project "${REPO}" \
+        --number "${NUMBER}" \
+        --marker "${MARKER}" \
+        --only-if-exists \
+        --keep-history=false \
+        --result -
+  exit 0
+fi
+
 if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
+  # The preview prints model output. Under GitHub Actions a line starting
+  # with "::" is a workflow command (the runner even trims leading spaces
+  # first), so wrap the preview in a stop-commands block whose token the
+  # model cannot guess: nothing inside it is interpreted, whatever its line
+  # breaks.
+  stop_token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  [[ ${#stop_token} -eq 32 ]] || { echo "post-lint-docs: could not generate a stop-commands token" >&2; exit 1; }
+  printf '::stop-commands::%s\n' "${stop_token}"
   printf '**%s**\n\n%s\n' "${summary}" "${comment}"
+  printf '::%s::\n' "${stop_token}"
   echo "post-lint-docs: dry run, not posting" >&2
   exit 0
 fi
 
 # fullsend issues post-comment is the repo's sticky-comment primitive: it
-# finds this agent's previous comment by marker and edits it in place, so
-# re-runs do not flood the work item.
+# finds this agent's previous comment by marker and its own author and edits
+# it in place, so re-runs do not flood the work item.
 printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
   | fullsend issues post-comment \
       --tracker github \

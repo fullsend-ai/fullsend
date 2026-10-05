@@ -1092,3 +1092,42 @@ func EnrichGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 	}
 	return len(status.Drifts) > before
 }
+
+// applyAdministratorEnrollmentProof treats an administrator-provided
+// credential (enrolled via --gitlab-role-token, which has no GitLab
+// token ID to verify against the project-token inventory) as healthy
+// when rotation state already recorded a distributed, idle proof for
+// it. Without this, DiagnoseLifecycle would otherwise classify such a
+// credential as unverified forever, since it never has a matching
+// project access token snapshot to confirm.
+func applyAdministratorEnrollmentProof(report *gitlabroles.Report, reg gitlabroles.Registry, rotation rotationStateFile) {
+	if report == nil {
+		return
+	}
+	oldLifecycleDiagnostics := 0
+	for _, role := range report.Roles {
+		if role.Lifecycle != "" && role.Lifecycle != gitlabroles.LifecycleUnconfigured && role.Lifecycle != gitlabroles.LifecycleOK {
+			oldLifecycleDiagnostics++
+		}
+	}
+	for i := range report.Roles {
+		if report.Roles[i].Lifecycle != gitlabroles.LifecycleUnverified {
+			continue
+		}
+		proofRole := report.Roles[i].Name
+		seen := map[gitlabroles.Role]bool{}
+		for !seen[proofRole] {
+			seen[proofRole] = true
+			registration, ok := reg.Lookup(proofRole)
+			if !ok || registration.Credential.ReuseOf == "" {
+				break
+			}
+			proofRole = registration.Credential.ReuseOf
+		}
+		state, ok := rotation.Roles[string(proofRole)]
+		if ok && state.IncomingID == 0 && state.Phase == rotationPhaseIdle && state.DistributedAt != "" {
+			report.Roles[i].Lifecycle = gitlabroles.LifecycleOK
+		}
+	}
+	gitlabroles.RefreshLifecycleDiagnostics(report, oldLifecycleDiagnostics)
+}

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
@@ -1244,6 +1245,55 @@ repos:
 			mintVar := fc.VariableValues["acme/api/FULLSEND_MINT_URL"]
 			assert.Equal(t, "https://mint.fullsend.sh", mintVar,
 				"migrateRepo should always use the canonical mint URL")
+		})
+	}
+}
+
+func TestMigrateRepo_AppSet_PreservesExistingFallsBackToDefault(t *testing.T) {
+	tests := []struct {
+		name           string
+		existingAppSet string // pre-existing FULLSEND_APP_SET on the repo, if any
+		wantAppSet     string
+	}{
+		{"no existing app set falls back to built-in default", "", appsetup.DefaultAppSet},
+		{"existing custom app set is preserved", "acme-custom", "acme-custom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			setOrgConfig(fc, "acme", `version: "1"
+dispatch:
+  platform: github-actions
+repos:
+  api:
+    enabled: true`)
+			setWorkflowFile(fc, "acme", "api",
+				"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+			if tt.existingAppSet != "" {
+				fc.VariableValues = map[string]string{
+					"acme/api/" + forge.VarAppSet: tt.existingAppSet,
+				}
+			}
+
+			prov := newFakeProvisioner()
+			prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+
+			result, err := Migrate(context.Background(), MigrateConfig{
+				Org:     "acme",
+				Project: "my-project",
+			}, newTestClientFactory(fc), prov, nopScaffoldCommit, nopProgress)
+
+			require.NoError(t, err)
+			require.Len(t, result.Migrated, 1)
+
+			// Verify the repository variable Install writes for a migrated
+			// repo preserves a pre-existing custom app set rather than
+			// overwriting it with the built-in default, and only falls back
+			// to the default when no app set was already present.
+			appSetVar := fc.VariableValues["acme/api/"+forge.VarAppSet]
+			assert.Equal(t, tt.wantAppSet, appSetVar,
+				"migrateRepo should preserve an existing FULLSEND_APP_SET and only default when absent")
 		})
 	}
 }

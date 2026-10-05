@@ -68,7 +68,6 @@ func TestSelectBuiltinAndCustomRoles(t *testing.T) {
 
 func TestSelectIgnoresLegacyEnvironment(t *testing.T) {
 	env := map[string]string{
-		forge.VarGitLabRoleMigration:  "rollback",
 		forge.SecretForgeToken:        "shared-token",
 		forge.SecretGitLabPollerToken: "poller-token",
 	}

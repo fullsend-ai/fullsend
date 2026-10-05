@@ -792,6 +792,42 @@ func (c *LiveClient) CreatePipeline(ctx context.Context, owner, repo, ref string
 	return &forge.Pipeline{ID: result.ID, WebURL: result.WebURL}, nil
 }
 
+// CreatePipelineWithInputs creates a new pipeline on the given ref using
+// GitLab CI/CD Inputs (POST /projects/:id/pipeline with an "inputs" object)
+// instead of the user-defined "variables" array CreatePipeline sends. This
+// request never includes a "variables" field, so it remains usable when a
+// project's ci_pipeline_variables_minimum_override_role is set to
+// forge.PipelineVarOverrideNoOneAllowed — GitLab's variable-override gate
+// does not govern pipeline inputs. See forge.PipelineInputValue for the
+// supported value shapes.
+func (c *LiveClient) CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (*forge.Pipeline, error) {
+	path := fmt.Sprintf("/projects/%s/pipeline", projectPath(owner, repo))
+
+	in := inputs
+	if in == nil {
+		in = map[string]forge.PipelineInputValue{}
+	}
+	body := map[string]any{
+		"ref":    ref,
+		"inputs": in,
+	}
+
+	resp, err := c.post(ctx, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("create pipeline with inputs: %w", err)
+	}
+
+	var result struct {
+		ID     int64  `json:"id"`
+		WebURL string `json:"web_url"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode pipeline response: %w", err)
+	}
+
+	return &forge.Pipeline{ID: result.ID, WebURL: result.WebURL}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline schedules (GitLab-native)
 // ---------------------------------------------------------------------------

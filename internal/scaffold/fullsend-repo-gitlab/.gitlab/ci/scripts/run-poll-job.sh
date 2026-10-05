@@ -6,14 +6,42 @@
 
 set -euo pipefail
 
-# CI_DEBUG_TRACE guard — prevents PAT exposure via debug trace logging.
-if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
-  echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets" >&2
+# CI_DEBUG_TRACE guard — deny-before-admit. YAML rules also refuse to
+# start the job when debug tracing is enabled (secrets materialize at
+# job init, so a mid-script abort is too late). This script-level
+# guard is defense-in-depth and MUST run before any identity pin,
+# token select, or admit/allowlist logic. Matches the full truthy set
+# gitlab-runner accepts for this variable (Go strconv.ParseBool: "1",
+# "t"/"T", "true"/"TRUE"/"True"), not just an exact "true".
+case "${CI_DEBUG_TRACE:-}" in
+  1|[tT]|[tT][rR][uU][eE])
+    echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets" >&2
+    exit 1
+    ;;
+esac
+
+# Pin job/pipeline/project identity to the CI_JOB_TOKEN job record
+# and admit only source=schedule. Disjoint from the agent (api) and
+# the dispatcher (trigger, #7771). Runs before any PAT-bearing call
+# so a trigger-token holder who forges CI_PIPELINE_SOURCE=schedule
+# cannot reach the poller PAT.
+# shellcheck disable=SC2034  # consumed by sourced pin-ci-job-identity.sh
+FULLSEND_ADMIT_SOURCE=schedule
+. "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/pin-ci-job-identity.sh"
+
+# The PAT-bearing fullsend_gate_curl call below targets this pinned API
+# root, not the overridable CI_API_V4_URL pipeline variable — same
+# outrankable class as CI_PROJECT_ID (ADR 0125). Fail closed rather than
+# silently fall back to the overridable variable if it is ever
+# unexpectedly unset after a successful identity pin.
+if [ -z "${FULLSEND_PINNED_GITLAB_URL:-}" ]; then
+  echo "ERROR: FULLSEND_PINNED_GITLAB_URL is unset after a successful identity pin — refusing to make PAT-bearing calls without a pinned API root (fail-closed)" >&2
   exit 1
 fi
+FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 
-# Bot token from the registered Poller credential — required in
-# every gate mode; there is no shared FULLSEND_FORGE_TOKEN fallback
+# Bot token from the registered Poller credential — selected
+# unconditionally; there is no shared FULLSEND_FORGE_TOKEN fallback
 # (ADR-0067 / gitlab-role-credentials.md).
 # shellcheck disable=SC2034  # consumed by sourced select-gitlab-role-token.sh
 FULLSEND_JOB_KIND=poller
@@ -33,11 +61,10 @@ FULLSEND_JOB_KIND=poller
 # template still needs these siblings present until its own HMAC
 # reselect and the STAGE=fix analyst-identity lookup.
 #
-# Unconditional in every gate mode: select-gitlab-role-token.sh no
-# longer has a disabled/rollback shared-token path where every role
-# resolves to the same value, so a sibling secret is a real
-# higher-privileged credential in every mode now, not only
-# migrating/enforced.
+# Unconditional for every job: select-gitlab-role-token.sh has no
+# shared-token path left where every role resolved to the same
+# value, so a sibling secret is always a real, distinct
+# higher-privileged credential that must be cleared.
 for _fs_sibling in $(compgen -v | grep -E '^FULLSEND_(GITLAB_(ANALYST|CODER|POLLER|ROLE_[A-Z0-9_]+)_TOKEN|FORGE_TOKEN)$' || true); do
   if [ "${_fs_sibling}" != "${FULLSEND_JOB_TOKEN_NAME:-}" ]; then
     unset "${_fs_sibling}"
@@ -58,23 +85,40 @@ esac
 # cancelled/deleted pipelines are preempted by new jobs.
 # slash mode: newest_first (latest command wins)
 # events mode: oldest_first (complete long-running discovery)
-# Best-effort: failures don't block the job.
+# Best-effort: failures don't block the job. Routed through
+# fullsend_gate_curl (not plain curl) so a trigger-supplied
+# HTTP_PROXY/HTTPS_PROXY cannot intercept this PAT-bearing call. Uses
+# the pinned project id (from the CI_JOB_TOKEN job record), not the
+# overridable CI_PROJECT_ID pipeline variable.
 PROCESS_MODE="newest_first"
 if [ "${FULLSEND_POLL_MODE:-events}" = "events" ]; then
   PROCESS_MODE="oldest_first"
 fi
-curl -sf --retry 2 --retry-delay 1 --retry-all-errors \
-  -X PUT "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/resource_groups/fullsend-poll-${FULLSEND_POLL_MODE:-events}" \
+fullsend_gate_curl \
+  -X PUT "${FULLSEND_PINNED_API_V4_URL}/projects/${FULLSEND_PINNED_PROJECT_ID}/resource_groups/fullsend-poll-${FULLSEND_POLL_MODE:-events}" \
   -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "process_mode=${PROCESS_MODE}" > /dev/null 2>&1 || true
 
 # Run the poller — dispatches pipelines directly via the GitLab API.
 # No child pipeline generation needed: the poller creates standalone
-# pipelines for each discovered event and logs clickable URLs.
+# pipelines for each discovered event and logs clickable URLs. Uses
+# the pinned project path/API root (from the CI_JOB_TOKEN job
+# record), not the overridable CI_PROJECT_PATH / FULLSEND_GITLAB_URL /
+# CI_SERVER_URL pipeline variables — same outrankable class as
+# CI_PROJECT_ID (ADR 0125).
+#
+# `fullsend poll` has no --ref flag; internal/cli/poll.go instead reads
+# the dispatch ref from CI_COMMIT_REF_NAME, falling back to
+# CI_DEFAULT_BRANCH — both overridable pipeline variables in the same
+# outrankable class. A pipeline/schedule variable of either name could
+# retarget dispatched pipelines to a different (possibly stale,
+# pre-hardening) ref while this poller job itself stays correctly
+# pinned. Export the pinned ref so the CLI picks it up instead.
+export CI_COMMIT_REF_NAME="${FULLSEND_PINNED_REF}"
 fullsend poll \
   --forge gitlab \
-  --project "${CI_PROJECT_PATH}" \
-  --gitlab-url "${FULLSEND_GITLAB_URL:-${CI_SERVER_URL}}" \
+  --project "${FULLSEND_PINNED_PROJECT_PATH}" \
+  --gitlab-url "${FULLSEND_PINNED_GITLAB_URL}" \
   --fullsend-dir .fullsend \
   --mode "${FULLSEND_POLL_MODE:-events}"

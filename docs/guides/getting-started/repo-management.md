@@ -112,6 +112,20 @@ GitHub repos use a token mint for authentication. The
 `mint_url` is set; `private` requires an explicit `mint_url`. Both
 `mint_mode` and `mint_url` can be overridden per-repo.
 
+`github.app_set` names the GitHub App set (apps named `{app-set}-{role}`)
+and is persisted as the `FULLSEND_APP_SET` repository variable, mirroring
+`fullsend github setup --app-set`. It is GitHub-only: setting `app_set`
+under `gitlab` or on a GitLab repo entry is a validation error. The value
+must be lowercase alphanumeric with optional hyphens (max 23 characters).
+When omitted, repos get the built-in default `fullsend-ai`. Like other
+scalar fields it can be set at the platform level and overridden per-repo;
+`--app-set` on `repos install` applies to every selected GitHub repo and is
+persisted as a per-repo `app_set` override in the manifest. Reruns and
+convergence preserve an existing custom `FULLSEND_APP_SET`
+rather than reverting it to the built-in default, and repair the variable
+when it has drifted (when `app_set` is declared) or is missing (older
+installs). The implementation does not weaken exact bot-identity matching.
+
 For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 `--gitlab-token` to `fullsend repos` subcommands. Manifest-driven commands
 (`repos install` and `repos status`) require `gitlab.url` whenever GitLab
@@ -142,7 +156,9 @@ github:
 The `none` sentinel works for string fields (`fullsend_ref`,
 `mint_url`, `mint_mode`, `config_base.source`, `config_base.sha256`). List fields like
 `allowed_remote_resources` are managed at the `defaults` level and
-cannot be cleared per-repo.
+cannot be cleared per-repo. For `app_set`, `none` resets the effective
+value to the built-in default `fullsend-ai` rather than disabling the
+field (an app set is always required to resolve App slugs).
 
 ### Configuration presets
 
@@ -322,7 +338,8 @@ Install runs in two phases:
    separate upgrade PR. Repos whose workflow is already on the default
    branch are checked for component drift (workflow, thin callers,
    variables, secrets, pipeline schedules, GitLab poller protected-ref
-   pipeline access), scaffold content drift, managed `.fullsend/config.yaml`
+   pipeline access, GitLab pipeline-variable override-role inspection —
+   report-only by default), scaffold content drift, managed `.fullsend/config.yaml`
    drift, scaffold ref drift, and declared configuration-preset drift against
    `.fullsend/config.base.yaml`. Missing or drifted components are repaired
    automatically; ref updates are committed as PRs (or direct pushes with
@@ -394,7 +411,8 @@ fullsend repos status -f repos.yaml --json
 
 Run `repos install` to detect and fix component drift (workflow, thin
 callers, variables, secrets, pipeline schedules, GitLab poller
-protected-ref pipeline access), scaffold ref drift,
+protected-ref pipeline access, GitLab pipeline-variable override-role
+inspection — report-only by default), scaffold ref drift,
 scaffold content drift, declared configuration-preset drift, and managed
 `.fullsend/config.yaml` drift across all manifest repos:
 
@@ -412,7 +430,8 @@ The convergence phase checks all components (workflow, thin callers,
 variables, secrets, pipeline schedules, GitLab poller protected-ref
 pipeline access — a disabled GitLab schedule is
 reported as drift and reactivated only when `--reactivate-schedules` is
-passed), scaffold content drift (including structural rewrites of
+passed; GitLab pipeline-variable override-role inspection, report-only
+by default), scaffold content drift (including structural rewrites of
 `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and
 removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs
 predating #7707),
@@ -464,8 +483,9 @@ fullsend repos install acme/new-api --forge github --roles triage,coder,review
 ```
 
 Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
-`--allowed-remote-resources`, and `--vendor`. The `--inference-region`
-flag is install-time only and is not stored in the manifest.
+`--app-set`, `--allowed-remote-resources`, and `--vendor`. The
+`--inference-region` flag is install-time only and is not stored in the
+manifest.
 
 ### Removing repos
 

@@ -54,7 +54,8 @@ fullsend issues get \
 ## `fullsend issues post-comment`
 
 Posts a comment with a sticky marker on an issue. On re-runs, finds
-the existing comment by its marker and edits in-place. By default,
+the existing comment by its marker and its own author (see
+[Trust model](#trust-model)) and edits in-place. By default,
 old content is collapsed into `<details>` blocks to preserve history;
 set `keep_history: false` in config.yaml (or pass `--keep-history=false`)
 to replace the body with no history.
@@ -85,8 +86,9 @@ echo "Triage complete. See PR #99." | fullsend issues post-comment \
 | `--token` | No | API token (default: env var per tracker) |
 | `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
 | `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
-| `--dry-run` | No | Print what would be posted without making API calls |
+| `--dry-run` | No | Print what would be posted without posting or editing anything |
 | `--keep-history` | No | Append previous content as collapsed history blocks (default: `true`; set `false` to replace in-place) |
+| `--only-if-exists` | No | Update an existing comment with this marker but never create one. Use it for an all-clear result, so a findings comment from an earlier run is updated in place (the old findings are kept as collapsed history unless `--keep-history=false`) while a clean first run posts nothing. Only a comment whose author is exactly the identity posting matches; if that identity cannot be resolved, the command fails without posting. |
 | `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
 
 ### Jira marker storage
@@ -114,20 +116,26 @@ for how the `tracker` field resolves through the config overlay chain.
 
 ## Trust model
 
-Marker-based comment lookup does not verify the comment author. In a
-trusted CI environment (the intended deployment) this is safe because
-only the bot writes marker-bearing comments.
+An existing comment is edited only when it carries the marker **and**
+its author is exactly the identity the command posts as: the login on
+GitHub and GitLab, where markers are hidden HTML comments in the body,
+and the account ID (from `GET /myself`) on Jira, where markers are
+comment entity properties. Display names and login shapes are never
+trusted. A comment anyone else wrote with the same marker, as body text
+or as a comment property on their own comment, is ignored, never edited.
+Anyone who can edit the command's own comments (a repository maintainer,
+or a Jira user with Edit All Comments) is still trusted: their edits are
+kept as history when the comment is next updated.
 
-For GitHub and GitLab, where markers are hidden HTML comments in the
-body, an untrusted user who can post issue comments containing your
-marker string could cause the bot to edit their comment instead of
-creating its own. For Jira, markers are stored as comment entity
-properties, which require comment-edit permissions to set — body-text
-injection alone cannot spoof a marker.
+If that identity cannot be resolved after a short retry, the command
+fails with an error naming the cause and posts or edits nothing, with or
+without `--only-if-exists`. Posting a new comment instead would leave the
+earlier one behind with content no later run updates. To recover:
 
-Do not use this command in environments where untrusted users can write
-arbitrary issue comments bearing your marker (GitHub/GitLab) or have
-comment-edit permissions (Jira).
+1. Rerun the command. A transient API failure clears on its own.
+2. If it fails again, check that the token can read its own identity:
+   `GET /user` (or the GraphQL `viewer`) on GitHub, `GET /user` on
+   GitLab, `GET /myself` on Jira.
 
 ## Environment variables
 

@@ -29,8 +29,9 @@ type LiveClient struct {
 	afterFunc  func(time.Duration) <-chan time.Time
 }
 
-// Compile-time interface check.
+// Compile-time interface checks.
 var _ forge.Client = (*LiveClient)(nil)
+var _ forge.GitLabExtensions = (*LiveClient)(nil)
 
 // Option configures the GitLab client.
 type Option func(*LiveClient)

@@ -2267,6 +2267,71 @@ func TestRunPerRepoInstall_AlreadyInstalledUpgrade(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunPerRepoInstall_AppSet_PreservesExistingFallsBackToDefault(t *testing.T) {
+	tests := []struct {
+		name           string
+		existingAppSet string // pre-existing FULLSEND_APP_SET on the repo, if any
+		wantAppSet     string
+	}{
+		{"no existing app set falls back to flag default", "", appsetup.DefaultAppSet},
+		{"existing custom app set is preserved on rerun without --app-set", "acme-custom", "acme-custom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := forge.NewFakeClient()
+			client.Repos = []forge.Repository{
+				{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+			}
+			client.VariableValues = map[string]string{
+				"acme/widget/FULLSEND_MINT_URL": "https://mint.example.com/v1/token",
+			}
+			if tt.existingAppSet != "" {
+				client.VariableValues["acme/widget/"+forge.VarAppSet] = tt.existingAppSet
+			}
+
+			cfg := perRepoTestBase()
+			cfg.testClient = client
+			cfg.Direct = true
+			// --app-set was not passed explicitly: AppSet carries only the
+			// flag's default value, so a rerun must not let it clobber a
+			// custom value already on the repo.
+			cfg.AppSet = appsetup.DefaultAppSet
+			cfg.AppSetExplicit = false
+
+			err := runPerRepoInstall(context.Background(), cfg)
+			require.NoError(t, err)
+
+			gotAppSet := client.VariableValues["acme/widget/"+forge.VarAppSet]
+			assert.Equal(t, tt.wantAppSet, gotAppSet,
+				"runPerRepoInstall should preserve an existing FULLSEND_APP_SET and only default when absent")
+		})
+	}
+}
+
+func TestRunPerRepoInstall_AppSet_ExplicitRepairsExisting(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+	client.VariableValues = map[string]string{
+		"acme/widget/FULLSEND_MINT_URL":  "https://mint.example.com/v1/token",
+		"acme/widget/" + forge.VarAppSet: "acme-custom",
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+	cfg.AppSet = "acme-explicit"
+	cfg.AppSetExplicit = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+
+	gotAppSet := client.VariableValues["acme/widget/"+forge.VarAppSet]
+	assert.Equal(t, "acme-explicit", gotAppSet,
+		"an explicit --app-set should repair drift even when a different value is already on the repo")
+}
+
 func TestRunPerRepoInstall_DryRun(t *testing.T) {
 	client := forge.NewFakeClient()
 

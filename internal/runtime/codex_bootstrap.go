@@ -84,6 +84,10 @@ func (r CodexRuntime) codexAuthScriptPath() string {
 	return r.ConfigDir() + "/" + codexAuthScriptFile
 }
 
+func (r CodexRuntime) codexModelsCachePath() string {
+	return r.ConfigDir() + "/" + codexModelsCacheFile
+}
+
 // codexLastMessageFile is where --output-last-message writes the agent's final
 // message, under the runner-owned config dir.
 //

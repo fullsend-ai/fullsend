@@ -76,6 +76,7 @@ run_test() {
   local comment_json="$2"
   local expected_sha="$3"   # expected value in prior_sha= output line
   local expect_exit="$4"    # 0 = success
+  local app_set="${5:-}"    # optional FULLSEND_APP_SET override
 
   local mock_bin
   mock_bin="$(build_mock "${comment_json}")"
@@ -95,6 +96,7 @@ run_test() {
     SOURCE_REPO="test-org/test-repo" \
     GITHUB_OUTPUT="${github_output}" \
     GITHUB_WORKSPACE="${workspace}" \
+    FULLSEND_APP_SET="${app_set}" \
     bash "${SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
 
   if [[ ${exit_code} -ne ${expect_exit} ]]; then
@@ -224,6 +226,54 @@ run_test "shared-vendor-bot-wrong-app" \
   "$(make_comment_json "${BODY_MISMATCHED_APP}" "fullsend-ai-review[bot]" "Iv1.WRONG")" \
   "" \
   0
+
+# 9. Custom app-set identity (FULLSEND_APP_SET configured) is recognized
+#    even though it differs from both ORG_NAME and the shared vendor
+#    identity. This is the core fix for #5480.
+BODY_CUSTOM_APP_SET="<!-- fullsend:review-agent -->
+## Review
+
+**Head SHA:** c0ffee1
+
+Review from the configured custom app-set review bot."
+
+run_test "custom-app-set-bot-identity" \
+  "$(make_comment_json "${BODY_CUSTOM_APP_SET}" "custom-prefix-review[bot]")" \
+  "c0ffee1" \
+  0 \
+  "custom-prefix"
+
+# 10. A bot login that matches none of the org-specific, shared vendor,
+#     or configured custom app-set identities should NOT match — exact
+#     identity matching only, no wildcard bot matching.
+BODY_CUSTOM_MISMATCH="<!-- fullsend:review-agent -->
+## Review
+
+**Head SHA:** bad0999
+
+Review from a bot that doesn't match any configured identity."
+
+run_test "custom-app-set-mismatch-no-match" \
+  "$(make_comment_json "${BODY_CUSTOM_MISMATCH}" "other-prefix-review[bot]")" \
+  "" \
+  0 \
+  "custom-prefix"
+
+# 11. The org-specific identity still matches when FULLSEND_APP_SET is
+#     configured to a different custom value — the custom identity is
+#     additive, not a replacement.
+BODY_ORG_STILL_MATCHES="<!-- fullsend:review-agent -->
+## Review
+
+**Head SHA:** aaaa111
+
+Review from the org-specific bot while a custom app-set is configured."
+
+run_test "org-bot-still-matches-with-custom-app-set" \
+  "$(make_comment_json "${BODY_ORG_STILL_MATCHES}")" \
+  "aaaa111" \
+  0 \
+  "custom-prefix"
 
 # --- Summary ---
 

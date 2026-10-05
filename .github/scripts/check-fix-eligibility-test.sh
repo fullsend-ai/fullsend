@@ -84,8 +84,9 @@ MOCKEOF
 #   $5 — trigger source
 #   $6 — labels (optional, comma-separated)
 #   $7 — expected annotation substring (optional)
+#   $8 — FULLSEND_APP_SET override (optional)
 run_test() {
-  local name="$1" expected_exit="$2" is_bot="$3" login="$4" trigger="$5" labels="${6:-}" expected_annotation="${7:-}"
+  local name="$1" expected_exit="$2" is_bot="$3" login="$4" trigger="$5" labels="${6:-}" expected_annotation="${7:-}" app_set="${8:-}"
   local mock_bin
   mock_bin=$(build_mock "${is_bot}" "${login}" "${labels}")
 
@@ -95,6 +96,7 @@ run_test() {
     PR_NUM="123" \
     SOURCE_REPO="org/repo" \
     GH_TOKEN="fake" \
+    FULLSEND_APP_SET="${app_set}" \
     bash "${SCRIPT}" 2>&1) || actual_exit=$?
 
   if [[ "${actual_exit}" -ne "${expected_exit}" ]]; then
@@ -125,6 +127,12 @@ run_test "human trigger ignores both labels" 0 "false" "some-user" "human-user" 
 
 # Coder bot PR auto-fixes (exit 0)
 run_test "coder bot auto-fixes" 0 "true" "app/fullsend-ai-coder" "review-bot[bot]"
+
+# Custom app-set coder bot auto-fixes without requiring fullsend-fix.
+run_test "custom app-set coder bot auto-fixes" 0 "true" "app/custom-prefix-coder" "custom-prefix-review[bot]" "" "" "custom-prefix"
+
+# A different app-set coder remains gated by the fullsend-fix label.
+run_test "different app-set coder without label skipped" 1 "true" "app/other-prefix-coder" "custom-prefix-review[bot]" "" "lacks 'fullsend-fix' label" "custom-prefix"
 
 # Human-authored PR without label is skipped (exit 1)
 run_test "human PR without label skipped" 1 "false" "some-user" "review-bot[bot]" "" "lacks 'fullsend-fix' label"

@@ -24,6 +24,13 @@ func NewForgeClient(fc forge.Client) *ForgeClient {
 	return &ForgeClient{forge: fc}
 }
 
+// AuthenticatedUser returns the login the underlying forge client is
+// authenticated as, so a caller can tell the bot's own comments from
+// anyone else's.
+func (c *ForgeClient) AuthenticatedUser(ctx context.Context) (string, error) {
+	return c.forge.GetAuthenticatedUser(ctx)
+}
+
 // GetIssue implements Client by splitting project into owner/repo for the
 // underlying forge call.
 func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) (*Issue, error) {

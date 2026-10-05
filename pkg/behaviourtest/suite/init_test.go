@@ -80,6 +80,9 @@ func (p *panickingSCM) CommitFileToFork(context.Context, string, string, string,
 func (p *panickingSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
+func (p *panickingSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+	return nil, nil
+}
 func (p *panickingSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
 	return nil, nil
 }
@@ -229,7 +232,7 @@ func TestBeforeScenario_ClonesAndResetsWorld(t *testing.T) {
 		IssueNumber: 42, // scenario field — should be zeroed by reset
 	}
 
-	ctx, err := beforeScenario(context.Background(), nil, template)
+	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -245,7 +248,7 @@ func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
 	driver := newFakeDriver(3)
 	template := &world.World{Org: "test-org", Driver: driver}
 
-	ctx, err := beforeScenario(context.Background(), nil, template)
+	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -259,12 +262,28 @@ func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
 func TestBeforeScenario_NilDriver(t *testing.T) {
 	template := &world.World{Org: "test-org"}
 
-	ctx, err := beforeScenario(context.Background(), nil, template)
+	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
 	require.NotNil(t, w)
 	assert.Empty(t, w.LeasedRepoName, "no driver → no leased name")
+}
+
+func TestBeforeScenario_PlaybackDriverGetsRepoHint(t *testing.T) {
+	base := newFakeDriver(1)
+	pd := install.NewPlaybackDriver(base)
+	template := &world.World{Org: "test-org", Driver: pd}
+
+	// SetRepoHint on PlaybackDriver is a no-op (pool repos have stable
+	// names), so this only verifies that beforeScenario's type assertion
+	// finds the PlaybackDriver and calls it without error.
+	ctx, err := beforeScenario(context.Background(), nil, template, "A Playback Scenario")
+	require.NoError(t, err)
+
+	w := world.FromContext(ctx)
+	require.NotNil(t, w)
+	assert.True(t, w.IsPlaybackMode())
 }
 
 func TestAfterScenario_NilWorld(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -552,6 +553,72 @@ func TestValidateRunnerEnvWith_ChecksEnvSandbox(t *testing.T) {
 	err := h.ValidateRunnerEnvWith(lookup)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ALSO_MISSING")
+}
+
+func TestValidateRunnerEnvWith_ReportsAllMissingVars(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		HostFiles: []HostFile{
+			{Src: "${MISSING_VAR}", Dest: "/tmp/first"},
+		},
+		ValidationLoop: &ValidationLoop{
+			Schema: "${MISSING_DIR}/result.json",
+		},
+		Env: &EnvConfig{
+			Runner: map[string]string{
+				"KEY": "${MISSING_VAR}",
+			},
+			Sandbox: map[string]string{
+				"KEY":     "${ALSO_MISSING}",
+				"SET_KEY": "${SET_VAR}",
+			},
+		},
+	}
+
+	lookup := func(key string) (string, bool) {
+		if key == "SET_VAR" {
+			return "val", true
+		}
+		return "", false
+	}
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	message := err.Error()
+	assert.Contains(t, message, "3 unresolved host variable(s):")
+
+	assert.Contains(t, message, "env.runner[KEY]")
+	assert.Contains(t, message, "env.sandbox[KEY]")
+	assert.Contains(t, message, "host_files[0].src")
+	assert.Contains(t, message, "validation_loop.schema")
+
+	assert.Contains(t, message, "ALSO_MISSING")
+	assert.Contains(t, message, "MISSING_DIR")
+	assert.Contains(t, message, "MISSING_VAR")
+	assert.NotContains(t, message, "SET_VAR")
+
+	alsoMissing := strings.Index(message, "ALSO_MISSING")
+	missingDir := strings.Index(message, "MISSING_DIR")
+	missingVar := strings.Index(message, "MISSING_VAR")
+	assert.Less(t, alsoMissing, missingDir)
+	assert.Less(t, missingDir, missingVar)
+}
+
+func TestValidateRunnerEnvWith_DoesNotPrintFieldValues(t *testing.T) {
+	const databaseUser = "agent-user"
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner: map[string]string{
+				"DATABASE_URL": "postgres://" + databaseUser + "@${DB_HOST}/agent_state",
+			},
+		},
+	}
+
+	err := h.ValidateRunnerEnvWith(func(string) (string, bool) { return "", false })
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), databaseUser)
 }
 
 func TestValidateRunnerEnvWith_EnvAllSet(t *testing.T) {

@@ -156,6 +156,14 @@ func (w *World) Clone() *World {
 	return &clone
 }
 
+// IsPlaybackMode reports whether the world's Driver is a
+// *install.PlaybackDriver, i.e. the suite is running dummy-playback
+// scenarios rather than the standard behaviour suite.
+func (w *World) IsPlaybackMode() bool {
+	_, ok := w.Driver.(*install.PlaybackDriver)
+	return ok
+}
+
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"
 
 // BehaviourScriptPath returns the repo-relative path for the dummy agent script.

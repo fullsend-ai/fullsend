@@ -604,3 +604,25 @@ func TestNewFakeJiraClient(t *testing.T) {
 
 var _ Client = (*JiraClient)(nil)
 var _ StatusCommentClient = (*JiraClient)(nil)
+
+func TestJiraClient_AuthenticatedUser(t *testing.T) {
+	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := jc.AuthenticatedUser(context.Background())
+	if err != nil || got != FakeJiraBot.AccountID {
+		t.Fatalf("AuthenticatedUser() = %q, %v; want the account ID, not the display name", got, err)
+	}
+
+	fj.Myself = jira.User{DisplayName: "no account id"}
+	got, err = jc.AuthenticatedUser(context.Background())
+	if err != nil || got != "" {
+		t.Fatalf("AuthenticatedUser() = %q, %v; want an empty account ID passed through for the caller to reject", got, err)
+	}
+
+	fj.MyselfError = errors.New("401")
+	if _, err := jc.AuthenticatedUser(context.Background()); err == nil {
+		t.Fatal("AuthenticatedUser() must return the GetMyself error")
+	}
+}

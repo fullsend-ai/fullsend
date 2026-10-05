@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -394,3 +395,17 @@ func (staticClient) DeleteComment(_ context.Context, _ string, _ int, _ string) 
 var _ Client = staticClient{}
 var _ Client = (*ForgeClient)(nil)
 var _ Reactor = (*ForgeClient)(nil)
+
+func TestForgeClient_AuthenticatedUser(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
+	got, err := NewForgeClient(fc).AuthenticatedUser(context.Background())
+	if err != nil || got != "fullsend-ai-review[bot]" {
+		t.Fatalf("AuthenticatedUser() = %q, %v; want the forge login", got, err)
+	}
+
+	fc.Errors = map[string]error{"GetAuthenticatedUser": errors.New("401")}
+	if _, err := NewForgeClient(fc).AuthenticatedUser(context.Background()); err == nil {
+		t.Fatal("AuthenticatedUser() must return the forge error")
+	}
+}

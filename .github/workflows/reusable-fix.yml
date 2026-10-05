@@ -290,6 +290,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TRIGGER_SOURCE: ${{ inputs.trigger_source }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
           PR_NUM: ${{ steps.context.outputs.pr_number }}
           SOURCE_REPO: ${{ inputs.source_repo }}
         run: bash .defaults/.github/scripts/check-fix-eligibility.sh
@@ -320,12 +321,23 @@ jobs:
           PR_NUM: ${{ steps.context.outputs.pr_number }}
           TRIGGER_SOURCE: ${{ inputs.trigger_source }}
           ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
         run: |
           REVIEW_FILE="${GITHUB_WORKSPACE}/review-body.txt"
           REVIEW_BOT="${ORG_NAME}-review[bot]"
           SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET:-}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
           gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
-            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and (.user.login == \"${REVIEW_BOT}\" or .user.login == \"${SHARED_REVIEW_BOT}\"))] | last | .body // \"\"" \
+            | jq -r --arg review_bot "${REVIEW_BOT}" \
+              --arg shared_bot "${SHARED_REVIEW_BOT}" \
+              --arg custom_bot "${CUSTOM_REVIEW_BOT}" \
+              '[.[] | select(.state == "CHANGES_REQUESTED" and
+                (.user.login == $review_bot or .user.login == $shared_bot or
+                 ($custom_bot != "" and .user.login == $custom_bot)))]
+                | last | .body // ""' \
             > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
           BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
           echo "Pre-fetched review body: ${BYTE_COUNT} bytes"

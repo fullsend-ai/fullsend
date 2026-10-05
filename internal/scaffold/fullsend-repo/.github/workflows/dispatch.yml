@@ -63,6 +63,7 @@ jobs:
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
           ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -277,9 +278,15 @@ jobs:
 
             pull_request_review)
               if [[ "${EVENT_ACTION}" == "submitted" && "${REVIEW_STATE}" == "changes_requested" ]]; then
+                # Legacy per-org compatibility path; per-repo is the sole supported
+                # installation model under ADR 0044.
                 REVIEW_BOT="${ORG_NAME}-review[bot]"
                 SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
-                if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" || "${REVIEW_USER_LOGIN}" == "${SHARED_REVIEW_BOT}" ]]; then
+                CUSTOM_REVIEW_BOT=""
+                if [[ -n "${FULLSEND_APP_SET:-}" ]]; then
+                  CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+                fi
+                if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" || "${REVIEW_USER_LOGIN}" == "${SHARED_REVIEW_BOT}" || "${REVIEW_USER_LOGIN}" == "${CUSTOM_REVIEW_BOT}" ]]; then
                   # Block fork PRs — fail closed if we cannot determine.
                   # Human PRs need fullsend-fix + write+ author (not triage-only).
                   if [[ -n "${PR_HEAD_REPO}" && -n "${PR_BASE_REPO}" ]]; then

@@ -158,6 +158,7 @@ jobs:
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
           ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -371,7 +372,11 @@ jobs:
               if [[ "${EVENT_ACTION}" == "submitted" && "${REVIEW_STATE}" == "changes_requested" ]]; then
                 REVIEW_BOT="${ORG_NAME}-review[bot]"
                 SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
-                if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" || "${REVIEW_USER_LOGIN}" == "${SHARED_REVIEW_BOT}" ]]; then
+                CUSTOM_REVIEW_BOT=""
+                if [[ -n "${FULLSEND_APP_SET:-}" ]]; then
+                  CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+                fi
+                if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" || "${REVIEW_USER_LOGIN}" == "${SHARED_REVIEW_BOT}" || "${REVIEW_USER_LOGIN}" == "${CUSTOM_REVIEW_BOT}" ]]; then
                   # Block fork PRs — fail closed if we cannot determine.
                   # Human PRs need fullsend-fix + write+ author (not triage-only).
                   if [[ -n "${PR_HEAD_REPO}" && -n "${PR_BASE_REPO}" ]]; then
@@ -961,6 +966,7 @@ jobs:
             ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number
              || fromJSON(needs.route.outputs.event_payload).issue.number }}
           ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
           FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
         run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fetch-prior-review.sh"
@@ -1187,6 +1193,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
           PR_NUM: ${{ steps.context.outputs.pr_number }}
           SOURCE_REPO: ${{ github.repository }}
         run: bash .defaults/.github/scripts/check-fix-eligibility.sh
@@ -1217,12 +1224,23 @@ jobs:
           PR_NUM: ${{ steps.context.outputs.pr_number }}
           TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
           ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
         run: |
           REVIEW_FILE="${GITHUB_WORKSPACE}/review-body.txt"
           REVIEW_BOT="${ORG_NAME}-review[bot]"
           SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET:-}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
           gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
-            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and (.user.login == \"${REVIEW_BOT}\" or .user.login == \"${SHARED_REVIEW_BOT}\"))] | last | .body // \"\"" \
+            | jq -r --arg review_bot "${REVIEW_BOT}" \
+              --arg shared_bot "${SHARED_REVIEW_BOT}" \
+              --arg custom_bot "${CUSTOM_REVIEW_BOT}" \
+              '[.[] | select(.state == "CHANGES_REQUESTED" and
+                (.user.login == $review_bot or .user.login == $shared_bot or
+                 ($custom_bot != "" and .user.login == $custom_bot)))]
+                | last | .body // ""' \
             > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
           BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
           echo "Pre-fetched review body: ${BYTE_COUNT} bytes"

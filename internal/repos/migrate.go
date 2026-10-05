@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -376,6 +377,17 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 		perRepoCfg = config.NewPerRepoConfigFromOrg(orgCfg, dr.Repo, fullName)
 	}
 
+	// Preserve any FULLSEND_APP_SET value already on the repo (e.g. from a
+	// prior partial migration or manual setup) so this install does not
+	// silently overwrite a custom app set with the built-in default;
+	// falling back to the default only when the variable is absent or the
+	// read fails, matching the preserve-vs-repair semantics used by
+	// converge and `github setup`.
+	existingAppSet, _, appSetErr := fc.Client.GetRepoVariable(ctx, dr.Owner, dr.Repo, forge.VarAppSet)
+	if appSetErr != nil {
+		existingAppSet = ""
+	}
+
 	installCfg := InstallConfig{
 		Owner:             dr.Owner,
 		Repo:              dr.Repo,
@@ -388,6 +400,7 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 		UpstreamTag:       cfg.UpstreamTag,
 		WIFProvider:       wifProvider,
 		ReviewAppClientID: cfg.ReviewAppClientID,
+		AppSet:            appsetup.ResolvePersistedAppSet("", existingAppSet),
 		Direct:            cfg.Direct,
 		PerRepoConfig:     perRepoCfg,
 	}

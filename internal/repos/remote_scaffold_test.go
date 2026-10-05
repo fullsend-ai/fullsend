@@ -64,6 +64,33 @@ func TestFetchRemoteScaffold_GitLab(t *testing.T) {
 	}
 }
 
+func TestGitLabScaffoldListsIncludePinCIJobIdentityScript(t *testing.T) {
+	files, err := scaffold.CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
+	if err != nil {
+		t.Fatalf("CollectGitLabPerRepoInstallFiles() error: %v", err)
+	}
+	found := false
+	for _, f := range files {
+		if f.Path == gitlabPinCIJobIdentityScriptPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("embedded GitLab install files missing pin-ci-job-identity.sh")
+	}
+	remoteFound := false
+	for _, sp := range scaffoldGitLabPaths {
+		if sp.outPath == gitlabPinCIJobIdentityScriptPath {
+			remoteFound = true
+			break
+		}
+	}
+	if !remoteFound {
+		t.Error("scaffoldGitLabPaths missing pin-ci-job-identity.sh")
+	}
+}
+
 func TestGitLabScaffoldListsIncludeTrustScript(t *testing.T) {
 	files, err := scaffold.CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	if err != nil {

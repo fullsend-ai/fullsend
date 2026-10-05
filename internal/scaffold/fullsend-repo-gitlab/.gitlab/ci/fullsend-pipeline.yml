@@ -18,7 +18,13 @@
 include:
   - local: '.gitlab/ci/fullsend-poll.yml'
     rules:
-      - if: $CI_PIPELINE_SOURCE == "schedule"
+      # Deny-before-admit (ADR 0125): debug-trace must not reach the
+      # schedule include. Job-level rules repeat this guard. Matches
+      # the full truthy set gitlab-runner accepts for this variable
+      # (Go strconv.ParseBool: "1", "t"/"T", "true"/"TRUE"/"True").
+      - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
+        when: never
+      - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
   # Native merge_request_event dispatch (fullsend-dispatch.yml) was
   # removed in #7322, and the leftover stub was dropped in #7707. All
   # events route through the cron poller, which creates standalone
@@ -26,7 +32,9 @@ include:
   # include the agent template via the rule below.
   - local: '.gitlab/ci/fullsend-agent.yml'
     rules:
-      - if: $CI_PIPELINE_SOURCE == "api" && $STAGE
+      - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
+        when: never
+      - if: $CI_PIPELINE_SOURCE == "api" && $STAGE && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
 
 stages:
   # Native MR dispatch was removed in #7322. The empty 'dispatch' stage

@@ -39,6 +39,30 @@ type FakeJiraClient struct {
 	// UpdateError, when non-nil, is returned by UpdateComment to
 	// simulate update failures.
 	UpdateError error
+
+	// Myself is the account GetMyself returns and new comments are
+	// authored by; the zero value means FakeJiraBot. MyselfError, when
+	// non-nil, is returned by GetMyself.
+	Myself      jira.User
+	MyselfError error
+}
+
+// FakeJiraBot is the account a FakeJiraClient posts as by default.
+var FakeJiraBot = jira.User{AccountID: "fake-bot-account-id", DisplayName: "fullsend-bot"}
+
+func (f *FakeJiraClient) myself() jira.User {
+	if f.Myself.AccountID == "" && f.Myself.DisplayName == "" {
+		return FakeJiraBot
+	}
+	return f.Myself
+}
+
+func (f *FakeJiraClient) GetMyself(_ context.Context) (*jira.User, error) {
+	if f.MyselfError != nil {
+		return nil, f.MyselfError
+	}
+	me := f.myself()
+	return &me, nil
 }
 
 func (f *FakeJiraClient) GetIssue(_ context.Context, issueIDOrKey string) (*jira.Issue, error) {
@@ -82,7 +106,7 @@ func (f *FakeJiraClient) CreateCommentWithProperties(_ context.Context, issueIDO
 	comment := jira.Comment{
 		ID:      fmt.Sprintf("%d", len(f.Comments[issueIDOrKey])+1),
 		Body:    adf,
-		Author:  jira.User{DisplayName: "fullsend-bot"},
+		Author:  f.myself(),
 		Created: "2026-08-06T00:00:00.000+0000",
 	}
 	if f.Comments == nil {

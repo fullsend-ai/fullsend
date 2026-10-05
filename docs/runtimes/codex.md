@@ -111,7 +111,7 @@ bare — and `metrics.json` records the same (`runtime`, `runtime_source`, `requ
 ...
 runtime: selected "codex" from --runtime flag
 ...
-→ Agent: gpt-5.6-luna (v0.157.0)
+→ Agent: gpt-5.6-luna (v0.159.3)
   ✓ Agent exited with code 0
 ```
 
@@ -127,7 +127,7 @@ What a local codex run needs, beyond the guide:
 - **fullsend from the release that carries `CODEX_VERSION`** — the first one cut after the codex
   runtime lands. The release download and the container image both work as-is.
 - **A sandbox image that includes codex** — `ghcr.io/fullsend-ai/fullsend-sandbox` built with
-  `CODEX_VERSION` (0.157.0 today). A stale image fails Bootstrap's preflight before the agent
+  `CODEX_VERSION` (0.159.3 today). A stale image fails Bootstrap's preflight before the agent
   starts, with ``codex preflight: `codex --version` exited 127``; `podman pull
   ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
 - **A harness that declares the provider and a policy** — `providers: [openai]` and
@@ -185,7 +185,7 @@ What a local codex run needs, beyond the guide:
   scrubbed before they are written.
 - **Skills** work as they do on Claude Code: the harness's skills, plus your repository's own
   `.agents/skills` (codex's documented location for repository skills), both scanned for injected
-  content before the agent sees them. Codex 0.157.0 also picks up `.codex/skills` even though the
+  content before the agent sees them. Codex 0.159.3 also picks up `.codex/skills` even though the
   project is untrusted; that is not documented upstream and may change, so keep repository skills
   in `.agents/skills`. Codex's bundled skills (`skill-installer`, `imagegen` and friends) are
   switched off, so an agent sees only yours.

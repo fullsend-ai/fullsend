@@ -21,7 +21,7 @@ import (
 // enrolled test repository"), and the After hook deallocates on cleanup.
 func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
-		return beforeScenario(ctx, tagNames(scenario.Tags), template)
+		return beforeScenario(ctx, tagNames(scenario.Tags), template, scenario.Name)
 	})
 	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
 		return afterScenario(ctx, template.Driver, err)
@@ -29,15 +29,24 @@ func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	steps.Register(sc)
 }
 
-// beforeScenario clones the template World, resets scenario fields.
-// Repo allocation is handled by the step (via Driver.AllocateRepo),
-// not by the Before hook.
-func beforeScenario(ctx context.Context, tags []string, template *world.World) (context.Context, error) {
+// beforeScenario clones the template World, resets scenario fields, and
+// records the scenario name. Repo allocation is handled by the step (via
+// Driver.AllocateRepo), not by the Before hook.
+//
+// name is the godog scenario name. In playback mode it is forwarded to
+// the PlaybackDriver via SetRepoHint so the driver can correlate its
+// per-repo bookkeeping back to the scenario that is running; for the
+// standard pool-based Driver, SetRepoHint is a no-op.
+func beforeScenario(ctx context.Context, tags []string, template *world.World, name string) (context.Context, error) {
 	if err := SkipErrorForTagNames(tags, template); err != nil {
 		return ctx, err
 	}
 	w := template.Clone()
 	resetScenarioWorld(w)
+
+	if pd, ok := w.Driver.(*install.PlaybackDriver); ok {
+		pd.SetRepoHint(name)
+	}
 
 	ctx = world.WithWorld(ctx, w)
 	return ctx, nil

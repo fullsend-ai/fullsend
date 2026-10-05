@@ -18,7 +18,12 @@ import (
 
 const (
 	pollInterval = 15 * time.Second
-	dispatchWait = 12 * time.Minute
+	// dispatchWait bounds how long WaitForHarnessAgent and friends wait
+	// for a harness run to settle. Raised from 12 to 20 minutes to give
+	// longer-running playback scenarios (which replay a full dummy-agent
+	// pipeline rather than a single dispatch) room to complete without
+	// spuriously timing out.
+	dispatchWait = 20 * time.Minute
 
 	// Dispatch detection uses exponential backoff: the poll interval
 	// starts at dispatchPollInit, doubles each iteration up to
@@ -854,6 +859,8 @@ func (d *Driver) runHasAgentJob(ctx context.Context, owner, repo string, runID i
 // succeeded. A dual-dispatch race can leave an earlier sibling concluding
 // failure while a later run of the same agent goes on to succeed (#7574).
 // Sibling workflow runs that do not schedule the agent's job are ignored.
+// On a fail-fast the failed run is returned together with the error, so
+// the caller can save its logs before the scenario's repository is deleted.
 //
 // Listing failures never end the wait — the loop keeps polling — but they
 // are counted and reported on timeout so that a wait spent rate limited
@@ -951,7 +958,7 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 				if d.hasSupersedingAgentRun(ctx, owner, repo, agent, *candidate, recentRuns, lookupErrs) {
 					return nil, false, nil
 				}
-				return nil, true, fmt.Errorf("harness run for %q concluded with %q (run %d: %s)",
+				return candidate, true, fmt.Errorf("harness run for %q concluded with %q (run %d: %s)",
 					agent, candidate.Conclusion, candidate.ID, candidate.HTMLURL)
 			}
 		}
@@ -975,7 +982,8 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 		if d.hasSupersedingAgentRun(ctx, owner, repo, agent, r, recentRuns, lookupErrs) {
 			continue
 		}
-		return nil, true, fmt.Errorf("harness agent %q: workflow run %d concluded with %q before producing artifact (url=%s)",
+		failed := r
+		return &failed, true, fmt.Errorf("harness agent %q: workflow run %d concluded with %q before producing artifact (url=%s)",
 			agent, r.ID, r.Conclusion, r.HTMLURL)
 	}
 	return nil, false, nil

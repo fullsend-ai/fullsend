@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 )
 
@@ -70,7 +71,7 @@ func TestResolveMRSource_SameProjectSuccess(t *testing.T) {
 	assert.Equal(t, "group/project", result.SourceProjectPath)
 }
 
-func TestResolveMRSource_ForkRejected(t *testing.T) {
+func TestResolveMRSource_ForkReturnsSourceProject(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/projects/group%2Fproject/merge_requests/5", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -96,9 +97,44 @@ func TestResolveMRSource_ForkRejected(t *testing.T) {
 	client, err := gl.New("test-token", gl.WithBaseURL(srv.URL))
 	require.NoError(t, err)
 
-	_, err = resolveMRSource(context.Background(), client, "group/project", 5)
+	result, err := resolveMRSource(context.Background(), client, "group/project", 5)
+	require.NoError(t, err)
+	assert.Equal(t, "feature", result.SourceBranch)
+	assert.Equal(t, "abc123", result.SourceSHA)
+	assert.Equal(t, "fork/project", result.SourceProjectPath)
+}
+
+func TestResolveMRSource_CrossProjectHeadRepoPreserved(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequestInfos = map[string]forge.PullRequestInfo{
+		"group/project/5": {
+			HeadRef:  "feature",
+			HeadSHA:  "abc123",
+			HeadRepo: "other-group/other-project",
+			IsFork:   false,
+		},
+	}
+
+	result, err := resolveMRSource(context.Background(), client, "group/project", 5)
+	require.NoError(t, err)
+	assert.Equal(t, "feature", result.SourceBranch)
+	assert.Equal(t, "abc123", result.SourceSHA)
+	assert.Equal(t, "other-group/other-project", result.SourceProjectPath)
+}
+
+func TestResolveMRSource_EmptyHeadRepoFailsClosed(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequestInfos = map[string]forge.PullRequestInfo{
+		"group/project/5": {
+			HeadRef:  "feature",
+			HeadSHA:  "abc123",
+			HeadRepo: "",
+		},
+	}
+
+	_, err := resolveMRSource(context.Background(), client, "group/project", 5)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cross-project/fork MR source checkout is not supported")
+	assert.Contains(t, err.Error(), "has no source project path")
 }
 
 func TestResolveMRSource_MissingSourceBranch(t *testing.T) {
@@ -217,4 +253,42 @@ func TestResolveMRSourceCmd_PrintsJSON(t *testing.T) {
 	assert.Equal(t, "feature", decoded.SourceBranch)
 	assert.Equal(t, "abc123", decoded.SourceSHA)
 	assert.Equal(t, "group/project", decoded.SourceProjectPath)
+}
+
+func TestResolveMRSourceCmd_PrintsForkSourceProject(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/projects/group%2Fproject/merge_requests/5", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"iid":               5,
+			"sha":               "abc123",
+			"source_branch":     "feature",
+			"target_branch":     "main",
+			"source_project_id": 200,
+			"target_project_id": 10,
+			"author":            map[string]any{"id": 1, "username": "dev"},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/200", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"path_with_namespace": "fork/project",
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	t.Setenv("GITLAB_TOKEN", "test-token")
+	cmd := newResolveMRSourceCmd()
+	cmd.SetArgs([]string{"--project", "group/project", "--mr-iid", "5", "--gitlab-url", srv.URL})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	require.NoError(t, cmd.Execute())
+
+	var decoded mrSource
+	require.NoError(t, json.Unmarshal(out.Bytes(), &decoded))
+	assert.Equal(t, "feature", decoded.SourceBranch)
+	assert.Equal(t, "abc123", decoded.SourceSHA)
+	assert.Equal(t, "fork/project", decoded.SourceProjectPath)
 }

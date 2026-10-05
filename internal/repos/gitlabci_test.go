@@ -22,8 +22,15 @@ func TestMergeGitLabCI_NoExistingFile(t *testing.T) {
 	assert.Contains(t, s, "on_new_commit: none")
 	assert.NotContains(t, s, `$CI_PIPELINE_SOURCE == "merge_request_event"`,
 		"native MR dispatch was removed in #7322")
+	assert.Contains(t, s, debugTraceDenyRuleIf)
+	assert.Contains(t, s, "when: never")
 	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "schedule"`)
 	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`)
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, debugIdx)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must precede schedule admit")
 }
 
 func TestMergeGitLabCI_EmptyFile(t *testing.T) {
@@ -142,6 +149,212 @@ workflow:
 	assert.Equal(t, 1, strings.Count(s, `$CI_PIPELINE_SOURCE == "merge_request_event"`))
 	assert.Equal(t, 1, strings.Count(s, `$CI_PIPELINE_SOURCE == "schedule"`))
 	assert.Equal(t, 1, strings.Count(s, `$CI_PIPELINE_SOURCE == "api"`))
+}
+
+func TestMergeGitLabCI_PrependsDebugTraceDeny(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	require.NotEqual(t, -1, debugIdx, "merge must add the debug-trace deny rule")
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must be prepended before existing admit rules")
+	assert.Contains(t, s, "when: never")
+	assert.Equal(t, 1, strings.Count(s, debugTraceDenyRuleIf))
+}
+
+// --- MergeMissingGitLabDebugTraceRule tests ---
+
+func TestMergeMissingGitLabDebugTraceRule_AddsMissingRule(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	require.True(t, changed, "expected the missing debug-trace rule to be added")
+	s := string(result)
+
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	require.NotEqual(t, -1, debugIdx, "expected the debug-trace deny rule to be added")
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must precede existing admit rules")
+	assert.Contains(t, s, "when: never")
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`, "existing admit rules must be preserved")
+}
+
+func TestMergeMissingGitLabDebugTraceRule_AlreadyPresentNoAction(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	assert.False(t, changed, "rule already present — nothing to merge")
+	assert.Equal(t, existing, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_WrongWhenBackfilled(t *testing.T) {
+	// Same if: condition as the guard, but when: is missing (GitLab
+	// defaults an omitted when: to "always", not "never"), so the rule
+	// does nothing to deny a debug-trace pipeline. Must be replaced by a
+	// correctly-shaped when: never rule, not treated as already present.
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	require.True(t, changed, "wrong when: must be treated as missing, not already present")
+	s := string(result)
+
+	assert.Equal(t, 1, strings.Count(s, debugTraceDenyRuleIf), "must not leave a duplicate if: condition")
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, debugIdx)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must precede admit rules")
+	assert.Contains(t, s, "when: never")
+}
+
+func TestMergeMissingGitLabDebugTraceRule_WrongOrderBackfilled(t *testing.T) {
+	// Correctly-shaped if:/when: never rule, but positioned after an
+	// admit rule — first-match evaluation would let the admit rule win
+	// for a debug-trace pipeline. Must be repositioned, not treated as
+	// already present.
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	require.True(t, changed, "wrong order must be treated as missing, not already present")
+	s := string(result)
+
+	assert.Equal(t, 1, strings.Count(s, debugTraceDenyRuleIf), "must not leave a duplicate if: condition")
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, debugIdx)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must precede admit rules")
+	assert.Contains(t, s, "when: never")
+}
+
+func TestMergeMissingGitLabDebugTraceRule_NotFullsendOwnedNoAction(t *testing.T) {
+	// No workflow.name — fullsend can't prove it owns this workflow block,
+	// so a user's own configuration (missing the rule for its own reasons)
+	// must not be modified.
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, existing, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_NoWorkflowBlockNoAction(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, existing, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_EmptyFileNoAction(t *testing.T) {
+	result, changed, err := MergeMissingGitLabDebugTraceRule(nil)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Nil(t, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_InvalidYAMLReturnsError(t *testing.T) {
+	existing := []byte("workflow: [1,2\n")
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.Error(t, err)
+	assert.False(t, changed)
+	assert.Nil(t, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_CommentOnlyDocumentNoAction(t *testing.T) {
+	// A comment-only file parses without error but yields no document
+	// content node — must be treated as nothing-to-merge, not a panic on
+	// an empty doc.Content slice.
+	existing := []byte("# just a comment\n")
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, existing, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_RootNotMappingNoAction(t *testing.T) {
+	existing := []byte("- a\n- b\n")
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, existing, result)
 }
 
 func TestMergeGitLabCI_SingleIncludeScalar(t *testing.T) {
@@ -603,6 +816,8 @@ workflow:
   auto_cancel:
     on_new_commit: none
   rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
@@ -678,10 +893,28 @@ workflow:
   auto_cancel:
     on_new_commit: none
   rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
 `
 	assert.True(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_MissingDebugTraceDeny(t *testing.T) {
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`
+	assert.False(t, HasFullsendEntries([]byte(yaml)),
+		"workflow rules without the debug-trace deny are drift")
 }
 
 func TestHasFullsendEntries_MissingWorkflowRules(t *testing.T) {

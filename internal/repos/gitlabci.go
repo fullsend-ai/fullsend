@@ -73,12 +73,27 @@ var nonJobTopLevelKeys = map[string]bool{
 	"cache":         true,
 }
 
+// debugTraceDenyRuleIf is the workflow:rules if: condition that denies a
+// debug-trace pipeline before any admit rule (ADR 0125 deny-before-admit).
+// It matches the full truthy set gitlab-runner accepts for CI_DEBUG_TRACE
+// (Go strconv.ParseBool: "1", "t"/"T", "true"/"TRUE"/"True") via a
+// case-insensitive regex, not just an exact "true" — an exact-match
+// condition would miss runner-recognized truthy variants and let a
+// debug-trace pipeline reach an admit rule.
+const debugTraceDenyRuleIf = `$CI_DEBUG_TRACE =~ /^(1|t|true)$/i`
+
 // fullsendWorkflowRules are the workflow:rules entries that fullsend
 // requires in the root .gitlab-ci.yml. GitLab does not merge workflow:
 // definitions across includes, so these must be in the root file.
 // Native merge_request_event dispatch was removed in #7322; all events
 // route through the cron poller (schedule) and API-triggered agent jobs.
+// The CI_DEBUG_TRACE deny rule is first: GitLab evaluates rules
+// first-match, so a debug-trace pipeline must not reach an admit rule
+// (ADR 0125 deny-before-admit). mergeWorkflowRules prepends When=never
+// rules so already-enrolled repos pick up the guard in front of any
+// previously merged admit rules.
 var fullsendWorkflowRules = []workflowRule{
+	{If: debugTraceDenyRuleIf, When: "never"},
 	{If: `$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"`},
 	{If: `$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE`},
 }
@@ -95,14 +110,17 @@ var fullsendWorkflowRules = []workflowRule{
 // own independently-configured MR gate, so it is left in place — an
 // acceptable, one-shot leftover since uninstall is a single user action.
 var unmergeWorkflowRules = []workflowRule{
+	{If: debugTraceDenyRuleIf, When: "never"},
 	{If: `$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"`},
 	{If: `$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE`},
 }
 
 // workflowRule represents a single GitLab CI workflow:rules entry
-// identified by its if: condition.
+// identified by its if: condition. When, if set, is the rule's when:
+// value ("never" for deny-before-admit guards).
 type workflowRule struct {
-	If string
+	If   string
+	When string
 }
 
 // obsoleteGitLabWorkflowRules are workflow:rules entries that previous
@@ -243,6 +261,71 @@ func StripObsoleteGitLabWorkflowRules(existing []byte) (result []byte, changed b
 func gitlabCIWorkflowIsFullsendOwned(workflow *yaml.Node) bool {
 	nameVal := findMappingValue(workflow, "name")
 	return nameVal != nil && strings.HasPrefix(nameVal.Value, fullsendWorkflowNamePrefix)
+}
+
+// MergeMissingGitLabDebugTraceRule adds fullsend's CI_DEBUG_TRACE
+// deny-before-admit workflow rule (ADR 0125) to an existing .gitlab-ci.yml
+// when it is missing, leaving everything else — including any
+// already-present fullsend rules, the workflow name, auto_cancel
+// settings, and any user configuration — untouched.
+//
+// This backfills already-enrolled repos: MergeGitLabCI (and the debug-trace
+// rule it adds via fullsendWorkflowRules) only runs on fresh installs — the
+// install call site skips it once HasFullsendEntries is true — and the
+// periodic converge/upgrade path does not otherwise touch workflow:rules.
+// Without this, a repo enrolled before this rule existed would never pick
+// it up, leaving a debug-trace pipeline able to reach an admit rule and
+// dump secrets at job init.
+//
+// The rule is only merged when gitlabCIWorkflowIsFullsendOwned finds
+// positive evidence that fullsend, not the repo owner, installed the
+// workflow block — the same ownership gate StripObsoleteGitLabWorkflowRules
+// uses — so a user's own hand-written workflow: block is never modified.
+//
+// Returns the original content and changed=false when there is nothing to
+// merge (no workflow: block, the rule is already present, or fullsend
+// ownership of the block can't be established).
+func MergeMissingGitLabDebugTraceRule(existing []byte) (result []byte, changed bool, err error) {
+	if len(bytes.TrimSpace(existing)) == 0 {
+		return existing, false, nil
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(existing, &doc); err != nil {
+		return nil, false, fmt.Errorf("parsing .gitlab-ci.yml: %w", err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return existing, false, nil
+	}
+
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return existing, false, nil
+	}
+
+	workflowVal := findMappingValue(root, "workflow")
+	if workflowVal == nil || workflowVal.Kind != yaml.MappingNode {
+		return existing, false, nil
+	}
+
+	// Only touch a workflow: block fullsend can prove it owns — same
+	// ownership gate as StripObsoleteGitLabWorkflowRules.
+	if !gitlabCIWorkflowIsFullsendOwned(workflowVal) {
+		return existing, false, nil
+	}
+
+	rulesVal := findMappingValue(workflowVal, "rules")
+	if rulesVal != nil && rulesVal.Kind == yaml.SequenceNode && debugTraceDenyRuleSatisfied(rulesVal.Content) {
+		return existing, false, nil
+	}
+
+	mergeWorkflowRules(workflowVal)
+
+	out, marshalErr := marshalNode(&doc)
+	if marshalErr != nil {
+		return nil, false, marshalErr
+	}
+	return out, true, nil
 }
 
 // StripObsoleteGitLabStages removes obsolete fullsend stages (see
@@ -1099,7 +1182,7 @@ func UnmergeGitLabCI(existing []byte) ([]byte, error) {
 // whatever name they already have (or none). This avoids overwriting
 // user-chosen pipeline names.
 func newGitLabCI() ([]byte, error) {
-	content := `---
+	const template = `---
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
 
@@ -1108,9 +1191,12 @@ workflow:
   auto_cancel:
     on_new_commit: none
   rules:
+    - if: %s
+      when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
 `
+	content := fmt.Sprintf(template, debugTraceDenyRuleIf)
 	return []byte(content), nil
 }
 
@@ -1323,8 +1409,55 @@ func mergeAutoCancel(workflow *yaml.Node) {
 	// If on_new_commit exists, leave the user's value alone.
 }
 
-// mergeWorkflowRules appends fullsend's rules to workflow.rules,
-// deduplicating by if: condition.
+// debugTraceDenyRuleSatisfied reports whether rules already contains a
+// correctly-shaped CI_DEBUG_TRACE deny-before-admit guard: if: equal to
+// debugTraceDenyRuleIf, when: equal to "never", and positioned first in
+// the list. GitLab's default when: (when omitted) is "always", not
+// "never", and rules are evaluated first-match, so a same-if: rule with
+// the wrong when:, or one that isn't first, would let a debug-trace
+// pipeline reach whatever rule precedes it — that rule is not treated as
+// satisfying the guard.
+func debugTraceDenyRuleSatisfied(rules []*yaml.Node) bool {
+	if len(rules) == 0 {
+		return false
+	}
+	first := rules[0]
+	if first.Kind != yaml.MappingNode {
+		return false
+	}
+	ifVal := findMappingValue(first, "if")
+	whenVal := findMappingValue(first, "when")
+	return ifVal != nil && ifVal.Value == debugTraceDenyRuleIf &&
+		whenVal != nil && whenVal.Value == "never"
+}
+
+// removeRuleByIf returns rules with any mapping entry whose if: equals
+// ifCond removed. Used when backfilling a corrected deny-before-admit
+// rule to replace an existing same-if: rule that has the wrong when: or
+// the wrong position, rather than leaving a duplicate if: condition in
+// the merged rules list.
+func removeRuleByIf(rules []*yaml.Node, ifCond string) []*yaml.Node {
+	kept := make([]*yaml.Node, 0, len(rules))
+	for _, item := range rules {
+		if item.Kind == yaml.MappingNode {
+			if v := findMappingValue(item, "if"); v != nil && v.Value == ifCond {
+				continue
+			}
+		}
+		kept = append(kept, item)
+	}
+	return kept
+}
+
+// mergeWorkflowRules merges fullsend's rules into workflow.rules,
+// deduplicating by if: condition. Deny-before-admit rules (When=never)
+// are prepended so first-match evaluation sees them before any admit
+// rule that was already present on an enrolled repo — a same-if: rule
+// with the wrong when: or the wrong position does not count as already
+// present (see debugTraceDenyRuleSatisfied) and is replaced rather than
+// left in place, so the merged list never carries a duplicate if:
+// condition for the same guard. Other missing rules are appended as
+// before, deduplicated by if: alone.
 func mergeWorkflowRules(workflow *yaml.Node) {
 	rulesVal := findMappingValue(workflow, "rules")
 	if rulesVal == nil {
@@ -1342,7 +1475,8 @@ func mergeWorkflowRules(workflow *yaml.Node) {
 		return
 	}
 
-	// Collect existing if: conditions for deduplication.
+	// Collect existing if: conditions for deduplication of admit rules
+	// (When == "").
 	existing := make(map[string]bool)
 	for _, item := range rulesVal.Content {
 		if item.Kind == yaml.MappingNode {
@@ -1352,23 +1486,44 @@ func mergeWorkflowRules(workflow *yaml.Node) {
 		}
 	}
 
-	// Append missing rules.
+	var prepend []*yaml.Node
+	var appendMissing []*yaml.Node
 	for _, r := range fullsendWorkflowRules {
-		if !existing[r.If] {
-			rulesVal.Content = append(rulesVal.Content, makeRuleNode(r))
+		if r.When == "never" {
+			if debugTraceDenyRuleSatisfied(rulesVal.Content) {
+				continue
+			}
+			// A same-if: rule with the wrong when: or wrong position is
+			// superseded by the correctly-shaped rule prepended below,
+			// rather than left in place as a duplicate if: condition.
+			rulesVal.Content = removeRuleByIf(rulesVal.Content, r.If)
+			prepend = append(prepend, makeRuleNode(r))
+			continue
 		}
+		if existing[r.If] {
+			continue
+		}
+		appendMissing = append(appendMissing, makeRuleNode(r))
 	}
+	rulesVal.Content = append(prepend, append(rulesVal.Content, appendMissing...)...)
 }
 
 // makeRuleNode creates a YAML mapping node for a workflow rule.
 func makeRuleNode(r workflowRule) *yaml.Node {
+	content := []*yaml.Node{
+		{Kind: yaml.ScalarNode, Value: "if", Tag: "!!str"},
+		{Kind: yaml.ScalarNode, Value: r.If, Tag: "!!str"},
+	}
+	if r.When != "" {
+		content = append(content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "when", Tag: "!!str"},
+			&yaml.Node{Kind: yaml.ScalarNode, Value: r.When, Tag: "!!str"},
+		)
+	}
 	return &yaml.Node{
-		Kind: yaml.MappingNode,
-		Tag:  "!!map",
-		Content: []*yaml.Node{
-			{Kind: yaml.ScalarNode, Value: "if", Tag: "!!str"},
-			{Kind: yaml.ScalarNode, Value: r.If, Tag: "!!str"},
-		},
+		Kind:    yaml.MappingNode,
+		Tag:     "!!map",
+		Content: content,
 	}
 }
 

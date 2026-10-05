@@ -6,11 +6,28 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 )
+
+var gitlabRoleOperationLocks sync.Map // map[string]*sync.Mutex
+
+func gitlabRoleOperationLock(owner, repo string) *sync.Mutex {
+	key := owner + "/" + repo
+	lock := &sync.Mutex{}
+	actual, _ := gitlabRoleOperationLocks.LoadOrStore(key, lock)
+	return actual.(*sync.Mutex)
+}
+
+// LockGitLabRoleOperation serializes role credential operations for one repo.
+func LockGitLabRoleOperation(owner, repo string) func() {
+	lock := gitlabRoleOperationLock(owner, repo)
+	lock.Lock()
+	return lock.Unlock
+}
 
 // gitlabMaskablePattern matches GitLab's allowed charset for a maskable
 // CI/CD variable value. A value outside this charset, shorter than 8
@@ -98,11 +115,16 @@ func GitLabPATExpiresAt(now time.Time) string {
 
 // IsGitLabRoleManagedVar reports whether a FULLSEND_* CI/CD variable is
 // a GitLab role-credential artifact (registry, built-in or custom role
-// secret), or the legacy shared token. These are managed, not orphans, and
-// are removed on uninstall.
+// secret), or the legacy shared token. This is an orphan-detection
+// classification only: it tells drift/orphan scans that the name is
+// recognized role-identity state, not an unmanaged leftover. It does not
+// mean the variable is removed on uninstall — the legacy FULLSEND_FORGE_TOKEN
+// shared token is deliberately excluded from automatic uninstall cleanup
+// (see gitLabRoleUninstallVars and extraGitLabRoleUninstallVars) and
+// requires manual cleanup.
 func IsGitLabRoleManagedVar(name string) bool {
 	switch name {
-	case forge.SecretForgeToken, forge.VarGitLabRoleMigration, forge.VarGitLabRoleRegistry,
+	case forge.SecretForgeToken, forge.VarGitLabRoleRegistry,
 		forge.VarGitLabRoleRotation,
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken,
 		forge.SecretGitLabCoderToken:
@@ -124,7 +146,7 @@ func appendBuiltinRoleReadiness(status *RepoStatus, present map[string]bool, reg
 
 // appendRegisteredRoleReadiness adds readiness diagnostics for every role in
 // the trusted registry, including custom roles. This keeps repos status honest
-// about the same mapping checks that cutover will enforce.
+// about the same mapping checks job routing enforces.
 func appendRegisteredRoleReadiness(status *RepoStatus, present map[string]bool, reg gitlabroles.Registry, lifecycle map[gitlabroles.Role]gitlabroles.LifecycleState) gitlabroles.RegisteredReadiness {
 	if status == nil {
 		return gitlabroles.RegisteredReadiness{}
@@ -136,9 +158,12 @@ func appendRegisteredRoleReadiness(status *RepoStatus, present map[string]bool, 
 
 // gitLabRoleUninstallVars is the static role-credential variable set
 // deleted on uninstall. Custom FULLSEND_GITLAB_ROLE_*_TOKEN names are
-// discovered at uninstall time from ListRepoVariables.
+// discovered at uninstall time from ListRepoVariables. This does not
+// include the legacy FULLSEND_FORGE_TOKEN shared secret: uninstall no
+// longer removes it automatically, so a repository installed before
+// the role-only rollout may require manual cleanup of that secret and
+// its matching fullsend-bot project access token.
 var gitLabRoleUninstallVars = []string{
-	forge.VarGitLabRoleMigration,
 	forge.VarGitLabRoleRegistry,
 	forge.VarGitLabRoleRotation,
 	forge.SecretGitLabPollerToken,
@@ -149,13 +174,15 @@ var gitLabRoleUninstallVars = []string{
 // ProvisionGitLabRoleCredentials creates or enrolls credentials for
 // every registered role (built-in and custom), stores them as
 // protected masked CI/CD variables, writes the registry, and reports
-// which roles are ready. It never reads or writes the retired
-// historical migration state.
+// which roles are ready.
 //
 // It never revokes or overwrites FULLSEND_FORGE_TOKEN. Existing role
 // secrets are left in place (reinstall / retry). A failed role does
-// not roll back roles that already succeeded. Legacy shared-token
-// retirement is handled separately by the cleanup path.
+// not roll back roles that already succeeded. A repository installed
+// before the role-only rollout may still carry FULLSEND_FORGE_TOKEN;
+// provisioning does not retire it, and no automated path does — that
+// leftover secret and its matching fullsend-bot project access token
+// require manual cleanup.
 func ProvisionGitLabRoleCredentials(ctx context.Context, cfg RoleProvisionConfig) (RoleProvisionResult, error) {
 	result := RoleProvisionResult{DryRun: cfg.DryRun}
 	if cfg.Client == nil {
@@ -396,6 +423,14 @@ func extraGitLabRoleUninstallVars(ctx context.Context, client forge.Client, owne
 		if name == "" {
 			return
 		}
+		// FULLSEND_FORGE_TOKEN is the legacy shared credential, not
+		// role-identity state: uninstall no longer retires it
+		// automatically, so it must not be auto-discovered here even
+		// though IsGitLabRoleManagedVar still recognizes the name for
+		// orphan-detection purposes elsewhere.
+		if name == forge.SecretForgeToken {
+			return
+		}
 		if !IsGitLabRoleManagedVar(name) {
 			return
 		}
@@ -424,21 +459,25 @@ func extraGitLabRoleUninstallVars(ctx context.Context, client forge.Client, owne
 	return extra
 }
 
+// gitlabRoleIdentityVarNames returns the GitLab role-identity variables
+// and secrets that uninstall removes: the registry, rotation document,
+// and every built-in or custom role secret. It deliberately excludes
+// the legacy FULLSEND_FORGE_TOKEN shared credential — a repository
+// installed before the role-only rollout may require manual cleanup of
+// that secret and its matching fullsend-bot project access token.
 func gitlabRoleIdentityVarNames(ctx context.Context, client forge.Client, owner, repo string) []string {
-	already := make([]string, 0, 1+len(gitLabRoleUninstallVars))
-	already = append(already, forge.SecretForgeToken)
+	already := make([]string, 0, len(gitLabRoleUninstallVars))
 	already = append(already, gitLabRoleUninstallVars...)
 	return append(already, extraGitLabRoleUninstallVars(ctx, client, owner, repo, already)...)
 }
 
 func isGitLabIdentityUninstallVar(name string) bool {
-	return name == forge.SecretForgeToken || IsGitLabRoleManagedVar(name)
+	return IsGitLabRoleManagedVar(name)
 }
 
 func isGitLabRoleSecretName(name string) bool {
 	switch name {
-	case forge.SecretForgeToken, forge.SecretGitLabPollerToken,
-		forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
+	case forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
 		return true
 	}
 	return strings.HasPrefix(name, "FULLSEND_GITLAB_ROLE_") && strings.HasSuffix(name, "_TOKEN")

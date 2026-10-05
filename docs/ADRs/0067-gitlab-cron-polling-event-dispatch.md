@@ -26,8 +26,12 @@ Accepted
 
 The dispatch topology (native-CI two-path, then pure cron-polling after
 [#7322](https://github.com/fullsend-ai/fullsend/issues/7322)) is superseded
-by [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md). The credential
-model, poller internals, HMAC dispatch signing, and forge-interface
+by [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md). The single-bot
+credential model is superseded by the three-role decision in
+[#7424](https://github.com/fullsend-ai/fullsend/issues/7424) and
+[#7496](https://github.com/fullsend-ai/fullsend/issues/7496) (see
+[gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md));
+poller internals, HMAC dispatch signing, and forge-interface
 extensions remain current. Of this ADR's security guardrails, the
 protected/masked CI variable model, the poller reconciliation backstop, and
 the in-job dispatch gate remain current; the "no inbound attack surface / no
@@ -43,6 +47,19 @@ trigger-token threat model for the new inbound-surface controls.
      the decision itself needs to change, write a new ADR that supersedes this
      one. For evolving design narrative, use docs/architecture.md. -->
 
+> **Update (2026-09, #7502 / #7424 / #7496):** The shared-identity
+> assumption in "Credential model" below is superseded. Fullsend uses
+> three built-in GitLab responsibility identities per repository —
+> **Poller**, **Analyst**, and **Coder** — decided in
+> [#7424](https://github.com/fullsend-ai/fullsend/issues/7424) and
+> implemented under [#7496](https://github.com/fullsend-ai/fullsend/issues/7496).
+> Administrator-registered custom roles are an optional extension of
+> the same registry, not a replacement of the three built-ins. Runtime
+> never authenticates as `FULLSEND_FORGE_TOKEN`. Separate identities do
+> not grant finer GitLab API permissions: every role token remains
+> Developer (30) with the `api` scope. See
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+>
 > **Update (2026-09, #7758):** Dispatch topology is superseded by
 > [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md): a GitLab-native
 > webhook fast-path with this ADR's cron-poller as the reconciliation
@@ -153,6 +170,14 @@ trigger-token threat model for the new inbound-surface controls.
 > single-PAT model (chosen here for operational simplicity) does not, and
 > this fallback is an accepted consequence of that tradeoff rather than a
 > per-role-token gap to close.
+>
+> **Update (2026-09, #7502 / #7424):** The single-shared-PAT self-approval
+> trade-off above is superseded when Analyst and Coder are distinct GitLab
+> users: native `POST .../approve` can succeed because the Analyst token
+> is not the MR author. The pre-call identity check remains as a safety
+> net when those identities coincide (for example a Free-tier one-user
+> PAT arrangement). See
+> [configuring-gitlab.md](../guides/getting-started/configuring-gitlab.md#role-identities-and-gitlab-free).
 >
 > **Update (2026-09, #7322):** Native `merge_request_event` dispatch is
 > removed. After #7293 moved MR-open review to the poller, the only
@@ -321,7 +346,7 @@ Credentials:
   Pipeline job → protected CI/CD variable FULLSEND_FORGE_TOKEN → bot PAT
 ```
 
-> **See also (#7497, #7498):** The registered-role credential contract
+> **See also (#7424, #7496, #7497, #7498):** The registered-role credential contract
 > (built-in Poller/Analyst/Coder plus administrator-registered custom
 > roles) is specified in
 > [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
@@ -338,6 +363,11 @@ Credentials:
 > every gate mode, including leftover unset/`disabled` and explicit
 > `rollback` — there is no shared-token fallback left. See
 > [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+>
+> **Update (#7524 / #7559):** Ordinary `repos install` retires the
+> leftover shared `FULLSEND_FORGE_TOKEN` credential once all roles are
+> ready, and there is no public rollback control. See
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
 
 ### Credential model
 
@@ -347,6 +377,13 @@ updates CI/CD variables (watermark and label state persistence) via the
 API, which requires Maintainer-level access. The bot PAT is stored as a
 protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 
+> **Update (2026-09, #7502 / #7424 / #7496):** The single bot PAT
+> described here is superseded by the three built-in responsibility
+> identities (Poller, Analyst, Coder) plus optional administrator-
+> registered custom roles. Runtime never authenticates as
+> `FULLSEND_FORGE_TOKEN`. See Status and
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+>
 > **Update (2026-09, #7343 / #7362 / #7381):** Poll-state persistence
 > (watermarks, dispatched/failed-key dedup, label state) moved off
 > CI/CD variables onto two per-mode, HMAC-signed `state.json`

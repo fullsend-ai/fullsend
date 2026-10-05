@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -33,6 +34,14 @@ func (c Config) maxSize() int {
 // Post implements the sticky comment lifecycle: find an existing comment
 // bearing the marker, collapse old content into history, and create or
 // update in-place. Returns the HTML URL of the comment (empty on dry run).
+//
+// It never edits a comment it cannot verify as its own: an existing
+// comment matches only when it carries the marker and its author is
+// exactly the login this client posts as, so a comment anyone could plant
+// with the same marker is ignored. When that login cannot be resolved
+// (after a short retry) it returns an error and posts nothing — not even
+// on dry run, since dry run should not claim an edit would occur when none
+// safely could.
 func Post(ctx context.Context, client forge.Client, owner, repo string, number int, body string, cfg Config, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
@@ -41,9 +50,12 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 		return "", fmt.Errorf("marker is empty")
 	}
 
-	botUser, err := client.GetAuthenticatedUser(ctx)
+	// Without a verified identity nothing is posted at all: editing would
+	// trust an unverified comment, and creating a new one would orphan the
+	// earlier comment, whose stale content later runs would never update.
+	botUser, err := resolveBotUser(ctx, client)
 	if err != nil {
-		printer.StepInfo("Could not determine bot user, marker spoofing protection degraded")
+		return "", unverifiedBotUserError(err)
 	}
 
 	comments, err := client.ListIssueComments(ctx, owner, repo, number)
@@ -88,13 +100,17 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 	return created.HTMLURL, nil
 }
 
-// FindMarkedComment returns the first comment whose body contains the
-// given marker string, or nil if none is found. When botUser is non-empty,
-// only comments authored by that user are considered. This prevents
-// untrusted users from spoofing the marker in their own comments.
+// FindMarkedComment returns the first comment whose body contains the given
+// marker string and whose author is exactly botUser, or nil if none is
+// found. An empty botUser matches nothing: callers pass it only when
+// identity resolution failed, and matching on the marker alone would let
+// anyone's comment be treated as the bot's own and edited in-place.
 func FindMarkedComment(comments []forge.IssueComment, marker, botUser string) *forge.IssueComment {
+	if botUser == "" {
+		return nil
+	}
 	for i := range comments {
-		if botUser != "" && comments[i].Author != botUser {
+		if comments[i].Author != botUser {
 			continue
 		}
 		if strings.Contains(comments[i].Body, marker) {
@@ -102,6 +118,46 @@ func FindMarkedComment(comments []forge.IssueComment, marker, botUser string) *f
 		}
 	}
 	return nil
+}
+
+// botUserLookupBackoff is the wait before each retry of the bot identity
+// lookup; its length is the number of retries. Tests shorten it.
+var botUserLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second}
+
+// resolveBotUser returns the exact login client posts as, retrying a failed
+// or empty lookup per botUserLookupBackoff so a transient error does not
+// degrade marker spoofing protection. This mirrors resolveTrackerSelf in
+// internal/cli/issues.go, but internal/cli imports this package, so the
+// retry logic is kept local here rather than shared, to avoid an import
+// cycle.
+func resolveBotUser(ctx context.Context, client forge.Client) (string, error) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		botUser, err := client.GetAuthenticatedUser(ctx)
+		if err == nil && botUser == "" {
+			err = fmt.Errorf("the authenticated user is empty")
+		}
+		if err == nil {
+			return botUser, nil
+		}
+		lastErr = err
+		if attempt >= len(botUserLookupBackoff) {
+			return "", fmt.Errorf("after %d attempts: %w", attempt+1, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("%w (last lookup error: %v)", ctx.Err(), lastErr)
+		case <-time.After(botUserLookupBackoff[attempt]):
+		}
+	}
+}
+
+// unverifiedBotUserError reports that the posting identity could not be
+// resolved, so nothing was posted or edited.
+func unverifiedBotUserError(err error) error {
+	return fmt.Errorf("cannot verify which identity this posts as, so no comment was posted or edited; "+
+		"rerun if the failure was transient, otherwise check that the token can read its own identity "+
+		"(the authenticated user): %w", err)
 }
 
 // History blocks are wrapped with sentinel comments so extraction is safe

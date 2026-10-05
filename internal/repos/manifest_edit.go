@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -36,6 +37,107 @@ type ManifestAddResult struct {
 type ManifestRemoveResult struct {
 	Removed []string
 	Skipped []string
+}
+
+// UpdateAppSet applies a GitHub app-set override to manifest entries selected
+// by filters. A concrete filter matching a glob entry gets an explicit entry
+// so the override is limited to that repository; glob filters update the
+// matching glob entries. The manifest is written when it changed unless
+// DryRun is set.
+func UpdateAppSet(cfg ManifestEditConfig, filters []string, appSet string) ([]string, error) {
+	if cfg.Manifest == nil {
+		return nil, fmt.Errorf("manifest is required")
+	}
+	if cfg.Manifest.GitHub == nil {
+		return nil, nil
+	}
+
+	github := cfg.Manifest.GitHub
+	updated := make(map[string]bool)
+	matchedExact := make(map[string]bool)
+	for i := range github.Repos {
+		entry := &github.Repos[i]
+		selected, err := appSetEntrySelected(entry.Name, filters)
+		if err != nil {
+			return nil, err
+		}
+		if !selected {
+			continue
+		}
+		entry.AppSet = appSet
+		updated[entry.Name] = true
+		if !isGlob(entry.Name) {
+			matchedExact[strings.ToLower(entry.Name)] = true
+		}
+	}
+
+	// A concrete filter matched only through a glob needs an explicit entry;
+	// otherwise the override would affect every repository covered by that
+	// glob. Entries newly added by repos install are already exact entries and
+	// are handled by the loop above.
+	if len(filters) > 0 {
+		for _, filter := range filters {
+			if isGlob(filter) || matchedExact[strings.ToLower(filter)] {
+				continue
+			}
+			matchedGlob := false
+			for _, entry := range github.Repos {
+				if !isGlob(entry.Name) {
+					continue
+				}
+				ok, err := matchesPattern(entry.Name, filter)
+				if err != nil {
+					return nil, fmt.Errorf("invalid manifest repo pattern %q: %w", filter, err)
+				}
+				if ok {
+					matchedGlob = true
+					break
+				}
+			}
+			if matchedGlob {
+				github.Repos = append(github.Repos, RepoEntry{Name: filter, AppSet: appSet})
+				updated[filter] = true
+			}
+		}
+	}
+
+	if len(updated) == 0 {
+		return nil, nil
+	}
+	if cfg.ManifestPath != "" && !cfg.DryRun {
+		if err := writeManifest(cfg.ManifestPath, cfg.Manifest); err != nil {
+			return nil, err
+		}
+	}
+
+	result := make([]string, 0, len(updated))
+	for name := range updated {
+		result = append(result, name)
+	}
+	slices.Sort(result)
+	return result, nil
+}
+
+func appSetEntrySelected(name string, filters []string) (bool, error) {
+	if len(filters) == 0 {
+		return true, nil
+	}
+	for _, filter := range filters {
+		if ok, err := matchesPattern(filter, name); err != nil {
+			return false, fmt.Errorf("invalid repo filter %q: %w", filter, err)
+		} else if ok {
+			return true, nil
+		}
+		if isGlob(name) && isGlob(filter) {
+			return true, nil
+		}
+		if isGlob(name) && !isGlob(filter) {
+			// A concrete filter matching a glob gets a new exact entry below,
+			// rather than changing the glob's override for every repository.
+			continue
+		}
+	}
+	return false, nil
 }
 
 // AddToManifest appends repo entries to the appropriate platform section,

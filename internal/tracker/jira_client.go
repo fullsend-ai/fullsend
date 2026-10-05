@@ -62,6 +62,7 @@ type jiraClient interface {
 	UpdateComment(ctx context.Context, issueIDOrKey, commentID, body string) error
 	SetCommentProperty(ctx context.Context, issueIDOrKey, commentID, propertyKey string, value any) error
 	DeleteComment(ctx context.Context, issueIDOrKey, commentID string) error
+	GetMyself(ctx context.Context) (*jira.User, error)
 }
 
 var _ jiraClient = (*jira.LiveClient)(nil)
@@ -85,6 +86,17 @@ func NewJiraClient(jc jiraClient, baseURL string) (*JiraClient, error) {
 		return nil, err
 	}
 	return &JiraClient{jira: jc, baseURL: trimmed}, nil
+}
+
+// AuthenticatedUser returns the account ID this client is authenticated
+// as (GET /myself), so a caller can tell its own comments from anyone
+// else's by Comment.Author.AccountID. Display names are not identities.
+func (c *JiraClient) AuthenticatedUser(ctx context.Context) (string, error) {
+	me, err := c.jira.GetMyself(ctx)
+	if err != nil {
+		return "", err
+	}
+	return me.AccountID, nil
 }
 
 // issueKey builds a Jira issue key from a project key and issue number,

@@ -237,6 +237,113 @@ func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string,
 	}, nil
 }
 
+// fetchNoteDirect fetches a single note by its parent noteable's IID and
+// the note's own ID, addressing the Notes API path directly rather than
+// scanning for the parent. parentType must be "issues" or "merge_requests".
+func (c *LiveClient) fetchNoteDirect(ctx context.Context, owner, repo, parentType string, parentIID, noteID int) (*forge.IssueComment, error) {
+	proj := projectPath(owner, repo)
+	notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, parentType, parentIID, noteID)
+	resp, err := c.get(ctx, notePath)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		ID        int    `json:"id"`
+		Body      string `json:"body"`
+		CreatedAt string `json:"created_at"`
+		Author    struct {
+			Username string `json:"username"`
+		} `json:"author"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode note %d: %w", noteID, err)
+	}
+	htmlURL := fmt.Sprintf("%s/-/%s/%d#note_%d",
+		c.projectWebURL(owner, repo), parentType, parentIID, result.ID)
+	return &forge.IssueComment{
+		ID:        result.ID,
+		HTMLURL:   htmlURL,
+		Body:      result.Body,
+		Author:    result.Author.Username,
+		CreatedAt: result.CreatedAt,
+	}, nil
+}
+
+// GetNoteOnParent fetches a note directly by its parent noteable's IID
+// and the note's own ID (forge.GitLabExtensions). Unlike GetIssueComment,
+// this never scans: the caller already knows the parent, so GitLab's
+// Notes API can be addressed directly. parentType must be "issues" or
+// "merge_requests".
+func (c *LiveClient) GetNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int) (*forge.IssueComment, error) {
+	if parentType != "issues" && parentType != "merge_requests" {
+		return nil, fmt.Errorf("get note %d: invalid parent type %q", noteID, parentType)
+	}
+	return c.fetchNoteDirect(ctx, owner, repo, parentType, parentIID, noteID)
+}
+
+// GetIssueComment fetches a single note by its numeric ID. See
+// UpdateIssueComment for why this requires scanning: GitLab's Notes API
+// requires the noteable IID in the URL, but forge.Client only provides a
+// bare commentID. Returns forge.ErrNotFound (wrapped) if the note cannot
+// be located within the same open+500/closed(+merged) scan bound
+// documented on updateOrDeleteNote.
+func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*forge.IssueComment, error) {
+	proj := projectPath(owner, repo)
+
+	nonOpenStates := []string{"closed"}
+	if c.noteTarget == "merge_requests" {
+		nonOpenStates = []string{"closed", "merged"}
+	}
+
+	tryFetchNote := func(noteableIID int) (*forge.IssueComment, error) {
+		return c.fetchNoteDirect(ctx, owner, repo, c.noteTarget, noteableIID, commentID)
+	}
+
+	scanState := func(state string, maxPages int) (*forge.IssueComment, error) {
+		for page := 1; page <= maxPages; page++ {
+			path := fmt.Sprintf("/projects/%s/%s?state=%s&per_page=100&page=%d&order_by=updated_at&sort=desc", proj, c.noteTarget, state, page)
+			resp, err := c.get(ctx, path)
+			if err != nil {
+				return nil, fmt.Errorf("list %s %s to find note %d: %w", state, c.noteTarget, commentID, err)
+			}
+			var noteables []struct {
+				IID int `json:"iid"`
+			}
+			if err := decodeJSON(resp, &noteables); err != nil {
+				return nil, fmt.Errorf("decode %s %s: %w", state, c.noteTarget, err)
+			}
+			for _, n := range noteables {
+				comment, err := tryFetchNote(n.IID)
+				if err == nil {
+					return comment, nil
+				}
+				if !forge.IsNotFound(err) {
+					return nil, err
+				}
+			}
+			if len(noteables) < 100 {
+				break
+			}
+		}
+		return nil, nil
+	}
+
+	if comment, err := scanState("opened", 10); err != nil || comment != nil {
+		return comment, err
+	}
+	for _, state := range nonOpenStates {
+		if comment, err := scanState(state, 5); err != nil || comment != nil {
+			return comment, err
+		}
+	}
+
+	targetLabel := "issue"
+	if c.noteTarget == "merge_requests" {
+		targetLabel = "merge request"
+	}
+	return nil, fmt.Errorf("get note %d: could not find %s containing this note: %w", commentID, targetLabel, forge.ErrNotFound)
+}
+
 // UpdateIssueComment updates the body of an existing note on an issue.
 // GitLab's note API requires the issue IID in the URL path, but the
 // forge.Client interface only provides the note ID. Since GitLab has no
@@ -245,6 +352,18 @@ func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string,
 // shortly after ListIssueComments or CreateIssueComment on the same issue.
 func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error {
 	return c.updateOrDeleteNote(ctx, owner, repo, commentID, &body)
+}
+
+// UpdateNoteOnParent updates a note's body directly by its parent
+// noteable's IID and the note's own ID (forge.GitLabExtensions). Unlike
+// UpdateIssueComment, this never scans: the caller already knows the
+// parent, so GitLab's Notes API can be addressed directly. parentType
+// must be "issues" or "merge_requests".
+func (c *LiveClient) UpdateNoteOnParent(ctx context.Context, owner, repo, parentType string, parentIID, noteID int, body string) error {
+	if parentType != "issues" && parentType != "merge_requests" {
+		return fmt.Errorf("update note %d: invalid parent type %q", noteID, parentType)
+	}
+	return c.tryNoteOperation(ctx, projectPath(owner, repo), parentType, parentIID, noteID, &body)
 }
 
 // DeleteIssueComment deletes a note on an issue.
@@ -289,7 +408,7 @@ func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string,
 		}
 
 		for _, n := range noteables {
-			err := c.tryNoteOperation(ctx, proj, n.IID, noteID, body)
+			err := c.tryNoteOperation(ctx, proj, c.noteTarget, n.IID, noteID, body)
 			if err == nil {
 				return nil
 			}
@@ -319,7 +438,7 @@ func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string,
 			}
 
 			for _, n := range noteables {
-				err := c.tryNoteOperation(ctx, proj, n.IID, noteID, body)
+				err := c.tryNoteOperation(ctx, proj, c.noteTarget, n.IID, noteID, body)
 				if err == nil {
 					return nil
 				}
@@ -347,9 +466,12 @@ func (c *LiveClient) updateOrDeleteNote(ctx context.Context, owner, repo string,
 
 // tryNoteOperation attempts to update or delete a note on the given noteable.
 // Returns nil on success, or an error wrapping forge.ErrNotFound if the
-// note doesn't exist on this noteable.
-func (c *LiveClient) tryNoteOperation(ctx context.Context, proj string, noteableIID, noteID int, body *string) error {
-	notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, c.noteTarget, noteableIID, noteID)
+// note doesn't exist on this noteable. parentType is the noteable type
+// segment of the URL ("issues" or "merge_requests"); callers scanning
+// under c.noteTarget pass that value, while UpdateNoteOnParent passes an
+// explicit, caller-supplied type.
+func (c *LiveClient) tryNoteOperation(ctx context.Context, proj, parentType string, noteableIID, noteID int, body *string) error {
+	notePath := fmt.Sprintf("/projects/%s/%s/%d/notes/%d", proj, parentType, noteableIID, noteID)
 
 	if body == nil {
 		return c.delete_(ctx, notePath)

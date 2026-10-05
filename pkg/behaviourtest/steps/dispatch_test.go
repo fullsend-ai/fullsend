@@ -235,6 +235,9 @@ func (f *fakeDispatchSCM) CommitFileToFork(context.Context, string, string, stri
 func (f *fakeDispatchSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
+func (f *fakeDispatchSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+	return nil, nil
+}
 func (f *fakeDispatchSCM) CreateRepo(context.Context, string, string, string) error { return nil }
 func (f *fakeDispatchSCM) EnsureRepoPublic(context.Context, string, string) error   { return nil }
 func (f *fakeDispatchSCM) ListOpenChangeProposals(context.Context, string, string) ([]forge.ChangeProposal, error) {

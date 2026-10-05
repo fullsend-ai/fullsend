@@ -308,6 +308,10 @@ export default defineConfig({
                 },
               ],
             },
+            {
+              text: "OWNERS File Authorization",
+              link: "/guides/user/owners-file-authorization",
+            },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
             { text: "Jira Integration", link: "/guides/user/jira-integration" },
             { text: "How To Emit Traces", link: "/guides/user/how-to-emit-traces" },

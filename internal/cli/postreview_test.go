@@ -2031,7 +2031,6 @@ func TestNewPostReviewCmd_FullsendDirDefaultsEmptyWithoutEnvVar(t *testing.T) {
 }
 
 func TestPostReviewCmd_GitLabCoderCannotApprove(t *testing.T) {
-	t.Setenv(forge.VarGitLabRoleMigration, "enforced")
 	t.Setenv(forge.VarGitLabRoleRegistry, "")
 	t.Setenv(forge.SecretForgeToken, "shared")
 	t.Setenv(forge.SecretGitLabPollerToken, "p")

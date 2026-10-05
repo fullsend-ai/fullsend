@@ -759,6 +759,87 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
 }
 
+// TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch
+// path receives the configured app-set prefix and recognizes its exact review
+// bot identity. The scaffold dispatch workflow is a legacy, deprecated
+// per-org compatibility path retained only until ADR 0044 removal; workflow
+// parity requires it to stay aligned with the supported per-repo path.
+func TestCustomAppSetReviewBotWiring(t *testing.T) {
+	cases := []struct {
+		name         string
+		content      func(*testing.T) []byte
+		assertCustom bool
+	}{
+		{"reusable-dispatch", loadRepoFile(".github/workflows/reusable-dispatch.yml"), true},
+		{"reusable-fix", loadRepoFile(".github/workflows/reusable-fix.yml"), true},
+		{"reusable-review", loadRepoFile(".github/workflows/reusable-review.yml"), false},
+		{"scaffold-dispatch", loadScaffoldFile(".github/workflows/dispatch.yml"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := string(tc.content(t))
+			assert.Contains(t, s, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}")
+			if tc.assertCustom {
+				assert.Contains(t, s, `CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"`)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name    string
+		content func(*testing.T) []byte
+	}{
+		{"reusable-dispatch", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"scaffold-dispatch", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	} {
+		t.Run(tc.name+"-route", func(t *testing.T) {
+			s := string(tc.content(t))
+			section := extractStepSection(t, s, "Determine stage")
+			assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}")
+			assert.Contains(t, section, `CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"`)
+			assert.Regexp(t,
+				regexp.QuoteMeta(`"${REVIEW_USER_LOGIN}" == "${CUSTOM_REVIEW_BOT}"`),
+				section,
+				"custom review identity must be part of the stage-routing comparison")
+		})
+	}
+
+	for _, tc := range []struct {
+		name    string
+		content func(*testing.T) []byte
+		steps   []string
+	}{
+		{
+			"reusable-dispatch",
+			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
+			[]string{"Pre-fetch prior review context", "Check fix eligibility", "Pre-fetch review body"},
+		},
+		{
+			"reusable-fix",
+			loadRepoFile(".github/workflows/reusable-fix.yml"),
+			[]string{"Check fix eligibility", "Pre-fetch review body"},
+		},
+		{
+			"reusable-review",
+			loadRepoFile(".github/workflows/reusable-review.yml"),
+			[]string{"Pre-fetch prior review context"},
+		},
+	} {
+		t.Run(tc.name+"-consumers", func(t *testing.T) {
+			s := string(tc.content(t))
+			for _, stepName := range tc.steps {
+				section := extractStepSection(t, s, stepName)
+				assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}",
+					"%s must receive the configured app-set prefix", stepName)
+				if stepName == "Pre-fetch review body" {
+					assert.Contains(t, section, `--arg custom_bot "${CUSTOM_REVIEW_BOT}"`)
+					assert.Contains(t, section, `($custom_bot != "" and .user.login == $custom_bot)`)
+				}
+			}
+		})
+	}
+}
+
 // TestDispatchPunctuationStrip ensures both dispatch files strip trailing
 // punctuation clusters (not just a single char) from COMMAND and SECOND_WORD.
 // See #5582.

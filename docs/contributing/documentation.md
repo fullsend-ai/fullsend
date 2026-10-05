@@ -122,6 +122,6 @@ The `admin` command group's `install`/`uninstall`/`analyze`/`enable`/`disable` s
 
 The commands below have lighter documentation footprints. Apply the general `grep` rule when changing them:
 
-`dispatch`, `scan`, `lock`, `poll`, `fetch-skill`, `post-review`, `post-comment`, `reconcile-status`, `resolve-mr-source`
+`dispatch`, `scan`, `lock`, `poll`, `fetch-skill`, `post-review`, `post-comment`, `reconcile-status`, `resolve-mr-source`, `check-protected-branch`
 
 The most comprehensive single reference for all commands (including minor ones) is `docs/guides/dev/cli-internals.md`, which documents the full command tree with flags.

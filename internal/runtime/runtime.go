@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -104,6 +105,17 @@ type RunParams struct {
 	// underlying CLI. An empty or nil map means no overrides; the
 	// runtime's compiled-in alias table is used as-is.
 	ModelAliases map[string]string
+	// ForgeClient is an authenticated forge.Client for the current Forge
+	// platform, used by runtimes that need to call forge APIs from the
+	// orchestrator process itself (as opposed to the agent's own tool use
+	// inside the sandbox). Per the forge-abstraction rule (AGENTS.md,
+	// docs/contributing/forge-abstraction.md), any such call must go
+	// through this client rather than shelling out to `gh`/`glab`. May be
+	// nil when no token could be resolved; callers must treat that as
+	// "forge operations unavailable" rather than failing outright, mirroring
+	// the fail-closed-but-non-fatal handling already used for the playback
+	// tracking comment.
+	ForgeClient forge.Client
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.

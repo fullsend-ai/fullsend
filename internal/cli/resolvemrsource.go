@@ -23,17 +23,14 @@ type mrSource struct {
 }
 
 // resolveMRSource resolves a GitLab merge request's source branch,
-// source commit SHA, and source project path via forge.Client, and
-// fails closed when the source lives in a different project than the
-// one identified by projectPath.
+// source commit SHA, and source project path via forge.Client.
 //
-// fullsend does not support checking out (or pushing a fix commit back
-// to) a fork/cross-project merge request source today: doing so would
-// need push-capable credentials scoped to a project the target-project
-// token cannot write to. The GitLab scaffold's dispatch fork gate
-// already refuses the fix/code stages for fork MRs before this ever
-// runs (run-agent-job.sh); rejecting a cross-project source here too is
-// defense in depth, not the primary control.
+// The source project path is the MR head repository (info.HeadRepo),
+// which may differ from projectPath for fork and cross-project merge
+// requests. The GitLab pre-script (checkout-mr-source.sh) uses this
+// path to fetch the exact reviewed revision before the sandbox starts.
+// Missing source identity fails closed: the target project is never
+// substituted for an empty HeadRepo (for example a deleted fork).
 func resolveMRSource(ctx context.Context, client forge.Client, projectPath string, mrIID int) (*mrSource, error) {
 	owner, name, ok := splitProjectPath(projectPath)
 	if !ok {
@@ -50,14 +47,14 @@ func resolveMRSource(ctx context.Context, client forge.Client, projectPath strin
 	if info.HeadSHA == "" {
 		return nil, fmt.Errorf("merge request !%d has no source SHA", mrIID)
 	}
-	if info.IsFork || (info.HeadRepo != "" && info.HeadRepo != projectPath) {
-		return nil, fmt.Errorf("merge request !%d source project %q differs from target project %q — cross-project/fork MR source checkout is not supported", mrIID, info.HeadRepo, projectPath)
+	if info.HeadRepo == "" {
+		return nil, fmt.Errorf("merge request !%d has no source project path", mrIID)
 	}
 
 	return &mrSource{
 		SourceBranch:      info.HeadRef,
 		SourceSHA:         info.HeadSHA,
-		SourceProjectPath: projectPath,
+		SourceProjectPath: info.HeadRepo,
 	}, nil
 }
 
@@ -95,9 +92,10 @@ Prints a single JSON object to stdout on success:
   {"source_branch": "...", "source_sha": "...", "source_project_path": "..."}
 
 Fails closed (non-zero exit, no stdout output) when the source revision
-cannot be resolved, or when the merge request's source lives in a
-different project than --project — fullsend does not support checking
-out or pushing back to a fork/cross-project source today.`,
+cannot be resolved, including when the merge request has no source
+branch, SHA, or source project path. Fork and cross-project sources
+return the head repository path so the pre-script can fetch that
+project rather than the target.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if projectPath == "" {
 				projectPath = os.Getenv("CI_PROJECT_PATH")

@@ -402,6 +402,9 @@ func isConcurrencySuperseded(conclusion string) bool {
 
 // WaitForHarnessAgent waits for a successful harness-run pipeline job for
 // the named agent, using artifact-first detection with job-name fallback.
+// On a fail-fast the failed pipeline is returned together with the error,
+// so the caller can save its logs before the scenario's repository is
+// deleted.
 func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error) {
 	deadline := d.now().Add(dispatchWait)
 	interval := dispatchPollInit
@@ -452,7 +455,7 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 				if isConcurrencySuperseded(candidate.Conclusion) {
 					return nil, false, nil
 				}
-				return nil, true, fmt.Errorf("harness run for %q concluded with %q (pipeline %d: %s)",
+				return candidate, true, fmt.Errorf("harness run for %q concluded with %q (pipeline %d: %s)",
 					agent, candidate.Conclusion, candidate.ID, candidate.HTMLURL)
 			}
 		}
@@ -475,7 +478,8 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 		hasJob, _, jobErr := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
 		lookupErrs.record(ctx, jobErr)
 		if hasJob {
-			return nil, true, fmt.Errorf("harness agent %q: pipeline %d concluded with %q before producing artifact (url=%s)",
+			failed := r
+			return &failed, true, fmt.Errorf("harness agent %q: pipeline %d concluded with %q before producing artifact (url=%s)",
 				agent, r.ID, r.Conclusion, r.HTMLURL)
 		}
 	}

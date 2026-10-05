@@ -235,6 +235,15 @@ func codexHooksAdapterCheck(hooksPath, adapter string) string {
 	return fmt.Sprintf(`[ "%s" = "%s" ]`, count(`"command":`), count(adapter))
 }
 
+// codexModelsCacheRemoval is the POSIX sh fragment that deletes
+// $CODEX_HOME/models_cache.json, so every run starts from codex's bundled model
+// catalog. The runner never writes this file, so deleting it is always safe.
+// `command -p` keeps a shell function or PATH entry from .env from replacing
+// `rm`.
+func codexModelsCacheRemoval(r CodexRuntime) string {
+	return "command -p rm -f " + shellQuote(r.codexModelsCachePath())
+}
+
 func codexSHACheck(path, sum string) string {
 	return fmt.Sprintf(`[ "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s ]`,
 		shellQuote(path), shellQuote(sum))
@@ -287,7 +296,9 @@ func codexConfigGuard(r CodexRuntime, digests codexRunnerHeldDigestSet) string {
 //     repo's own .codex/ layer — including repo-owned hooks — never loads;
 //   - whether the hook adapter is required is decided from the runner's own
 //     signal (params.HooksSettingsPath, the same one ClaudeRuntime uses for
-//     --settings), never from the agent-writable manifest.
+//     --settings), never from the agent-writable manifest;
+//   - models_cache.json is removed before .env and again just before launch,
+//     so codex starts from its bundled model catalog.
 func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled bool, digests codexRunnerHeldDigestSet) string {
 	r := CodexRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
@@ -305,6 +316,7 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		"&& readonly "+codexPathVar+`="$PATH"`,
 		"&& "+codexAssetGuard(r, hooksEnabled, digests),
 		"&& "+codexConfigGuard(r, digests),
+		"&& "+codexModelsCacheRemoval(r),
 		"&& "+r.OpenAIAuthSeed(),
 		"&& . "+shellQuote(envFile),
 		// .env is agent-writable; re-pin the runner-owned config location
@@ -330,6 +342,8 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		"&& unset -f test command grep cut wc sha256sum printf codex",
 		"&& "+codexAssetGuard(r, hooksEnabled, digests),
 		"&& "+codexConfigGuard(r, digests),
+		// Again after .env, which runs in this shell and could recreate it.
+		"&& "+codexModelsCacheRemoval(r),
 	)
 	if params.Debug != "" {
 		// codex exec has no --debug flag. Its tracing goes to stderr, at

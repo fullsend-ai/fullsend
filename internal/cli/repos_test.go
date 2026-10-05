@@ -915,6 +915,203 @@ github:
 	assert.Contains(t, err.Error(), "repos failed")
 }
 
+func TestRunReposInstall_AppSetRejectedForGitLab(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	tests := []struct {
+		name string
+		cfg  *reposInstallConfig
+	}{
+		{
+			name: "forge_gitlab",
+			cfg: &reposInstallConfig{
+				manifest:    manifestPath,
+				concurrency: 4,
+				forge:       repos.ForgeGitLab,
+				appSet:      "custom-set",
+				testClient:  fc,
+			},
+		},
+		{
+			name: "gitlab_url",
+			cfg: &reposInstallConfig{
+				manifest:    manifestPath,
+				concurrency: 4,
+				gitlabURL:   "https://gitlab.example.com",
+				appSet:      "custom-set",
+				testClient:  fc,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runReposInstall(context.Background(), tt.cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--app-set is a GitHub-only option")
+		})
+	}
+}
+
+// TestRunReposInstall_AppSetRejectedForInferredGitLabTarget verifies that
+// --app-set is rejected even when the target's forge is inferred from the
+// manifest (no explicit --forge or --gitlab-url) and the inferred forge is
+// GitLab, for a repo not yet tracked in the manifest. --app-set must not be
+// silently dropped with a warning in this case.
+func TestRunReposInstall_AppSetRejectedForInferredGitLabTarget(t *testing.T) {
+	gitlabManifest := `version: 1
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+	fc := newInstallFakeClient("group/project", "group/newproject")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"group/newproject"},
+		appSet:      "custom-set",
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--app-set is a GitHub-only option")
+}
+
+func TestRunReposInstall_AppSetRejectedForTrackedGitLabTarget(t *testing.T) {
+	gitlabManifest := `version: 1
+gitlab:
+  url: https://gitlab.example.com
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+	fc := newInstallFakeClient("group/project")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		repoFilter:  []string{"group/project"},
+		appSet:      "custom-set",
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--app-set is a GitHub-only option")
+}
+
+func TestRunReposInstall_AppSetInvalidFormat(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		appSet:      "Invalid_Set!",
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--app-set")
+}
+
+func TestRunReposInstall_AppSetNoneSentinelSkipsFormatCheck(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		appSet:                 repos.NoneSentinel,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+}
+
+// TestRunReposInstall_NewEntryWritesAppSet verifies that installing a repo not
+// yet in the manifest with --app-set persists FULLSEND_APP_SET for that repo.
+func TestRunReposInstall_NewEntryWritesAppSet(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api", "acme/newrepo")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		forge:                  repos.ForgeGitHub,
+		appSet:                 "custom-set",
+		repoFilter:             []string{"acme/newrepo"},
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "custom-set", fc.VariableValues["acme/newrepo/FULLSEND_APP_SET"])
+}
+
+func TestRunReposInstall_ExistingEntryAppSetOverride(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		repoFilter:             []string{"acme/api"},
+		appSet:                 "custom-set",
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "custom-set", fc.VariableValues["acme/api/FULLSEND_APP_SET"])
+	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, "custom-set", reloaded.GitHub.Repos[0].AppSet)
+}
+
+// TestRunReposInstall_ManifestAppSetResolvesReviewApp verifies that a manifest
+// github.app_set drives the review-app client-ID lookup to the custom app set's
+// review app rather than the built-in default.
+func TestRunReposInstall_ManifestAppSetResolvesReviewApp(t *testing.T) {
+	yaml := `version: 1
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  app_set: custom-set
+  repos:
+    - name: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.AppClientIDs = map[string]string{"custom-set-review": "Iv23liCUSTOM"}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:               manifestPath,
+		concurrency:            4,
+		roles:                  []string{"triage"},
+		direct:                 true,
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "Iv23liCUSTOM", fc.VariableValues["acme/api/FULLSEND_REVIEW_CLIENT_ID"])
+	assert.Equal(t, "custom-set", fc.VariableValues["acme/api/FULLSEND_APP_SET"])
+}
+
 // --- repos uninstall ---
 
 func TestReposUninstallCmd_Flags(t *testing.T) {
@@ -2075,8 +2272,6 @@ gitlab:
 	for _, p := range repos.ScaffoldPathsForForge(repos.ForgeGitLab) {
 		fc.FileContents["group/project/"+p] = []byte("content")
 	}
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[]}`
 	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
 	for _, name := range []string{
@@ -2103,10 +2298,12 @@ gitlab:
 		testGitLabTokens: tokens,
 	}, []string{"group/project"})
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []int{1, 2}, tokens.revoked)
-	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	// Only the Poller role token (ID 1) is revoked; the legacy
+	// fullsend-bot token (ID 2) is left for manual cleanup.
+	assert.ElementsMatch(t, []int{1}, tokens.revoked)
+	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry])
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
-	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
+	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken], "legacy shared secret must not be auto-deleted by uninstall")
 }
 
 func TestRunReposInstall_GitLabPRTitleIncludesSkipCI(t *testing.T) {
@@ -2188,6 +2385,7 @@ func assertGitLabInitMRComplete(t *testing.T, fc *forge.FakeClient) {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/trust-ci-server-ca.sh",
+		".gitlab/ci/scripts/pin-ci-job-identity.sh",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",

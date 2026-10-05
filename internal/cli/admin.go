@@ -143,10 +143,15 @@ type perRepoInstallConfig struct {
 	MintSkipDeploy       bool
 	SkipMintCheck        bool
 	AppSet               string
-	Vendor               bool
-	FullsendBinary       string
-	FullsendSource       string
-	Direct               bool
+	// AppSetExplicit records whether --app-set was passed explicitly,
+	// as opposed to carrying its flag default. Only an explicit value
+	// repairs drift; otherwise a rerun preserves whatever app set is
+	// already on the repo, falling back to AppSet only when none exists.
+	AppSetExplicit bool
+	Vendor         bool
+	FullsendBinary string
+	FullsendSource string
+	Direct         bool
 	// Runtime is the --runtime value when the flag was given; empty keeps
 	// the per-repo config's code default.
 	Runtime string
@@ -331,6 +336,7 @@ Inference authentication:
 					MintSkipDeploy:       mintSkipDeploy,
 					SkipMintCheck:        skipMintCheck,
 					AppSet:               appSet,
+					AppSetExplicit:       cmd.Flags().Changed("app-set"),
 					Vendor:               vendor,
 					FullsendBinary:       fullsendBinary,
 					FullsendSource:       fullsendSource,
@@ -1049,8 +1055,30 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		return err
 	}
 
+	// Determine the effective app set to persist as FULLSEND_APP_SET. An
+	// explicit --app-set repairs drift to that value; otherwise preserve
+	// any value already on the repo so a rerun does not silently
+	// overwrite a custom app set with the flag default, falling back to
+	// that default only when the variable is genuinely absent or the
+	// read fails.
+	effectiveAppSet := c.AppSet
+	if !c.AppSetExplicit {
+		existingAppSet, _, appSetErr := client.GetRepoVariable(ctx, owner, repo, forge.VarAppSet)
+		if appSetErr != nil {
+			existingAppSet = ""
+		}
+		// existingAppSet comes straight from the repo variable, not from
+		// the validated --app-set flag. Reject a malformed value here,
+		// before it is preserved and used to build a GitHub App slug via
+		// resolveReviewAppClientID below, instead of trusting it unchecked.
+		if existingAppSet != "" && appsetup.ValidateAppSet(existingAppSet) != nil {
+			existingAppSet = ""
+		}
+		effectiveAppSet = appsetup.ResolvePersistedAppSet("", existingAppSet)
+	}
+
 	// Resolve review app client ID for provenance validation.
-	reviewAppClientID := resolveReviewAppClientID(ctx, client, c.AppSet)
+	reviewAppClientID := resolveReviewAppClientID(ctx, client, effectiveAppSet)
 
 	installCfg := repos.InstallConfig{
 		Owner:                 owner,
@@ -1066,6 +1094,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		SkipAppSetup:          true,
 		WIFProvider:           inferenceWIFProvider,
 		ReviewAppClientID:     reviewAppClientID,
+		AppSet:                effectiveAppSet,
 		VendorBinary:          vendor,
 		Direct:                c.Direct,
 		SkipScaffoldAndConfig: vendor,
@@ -1116,6 +1145,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			forge.PerRepoGuardVar: "true",
 			"FULLSEND_MINT_URL":   mintURL,
 			"FULLSEND_GCP_REGION": inferenceRegion,
+			forge.VarAppSet:       effectiveAppSet,
 		}
 		repoSecrets := map[string]string{
 			"FULLSEND_GCP_PROJECT_ID":   inferenceProject,

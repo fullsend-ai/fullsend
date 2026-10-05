@@ -3,8 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"os"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -74,11 +72,7 @@ func TestAppendStaleVendoredDeletes(t *testing.T) {
 // prepareVendorFiles is the chokepoint, exercised here through
 // appendVendorTreeFiles and the combined-commit collect func.
 func TestVendorCommitPathsPruneStaleFiles(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
+	exe := amd64VendorBinary(t)
 	ctx := context.Background()
 
 	seed := func() *forge.FakeClient {

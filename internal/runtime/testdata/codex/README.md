@@ -6,7 +6,7 @@ Inputs for `parseCodexStream` (`internal/runtime/codex_progress.go`) and its tes
 
 | Fixture | Origin |
 |---|---|
-| `basic_run.ndjson` | **Live capture**, 2026-09-25, `@openai/codex@0.157.0` (`npx`), model `gpt-5.6-luna`, API-key login (`codex login --with-api-key`). Captured by `regen.sh`; the throwaway working directory was rewritten to `/sandbox/workspace/repo`, nothing else was edited. |
+| `basic_run.ndjson` | **Live capture**, 2026-10-01, `@openai/codex@0.159.3` (`npx`), model `gpt-5.6-luna`, API-key login (`codex login --with-api-key`). Captured by `regen.sh`; the throwaway working directory was rewritten to `/sandbox/workspace/repo`, nothing else was edited. Reasoning items appear in roughly one capture in four; keep one that has it. |
 | everything else | Hand-authored to the structs below. |
 
 `regen.sh` re-captures `basic_run.ndjson` only. It reads `ARG CODEX_VERSION` from
@@ -29,9 +29,11 @@ ARG exists run `CODEX_VERSION=0.152.1 ./regen.sh`.
 
 ## Event structs
 
-Copied from `openai/codex` tag `rust-v0.152.1` and re-checked at `rust-v0.157.0`, `codex-rs/exec/src/exec_events.rs`
-(shapes) and `codex-rs/exec/src/event_processor_with_jsonl_output.rs` (when each
-event is emitted). Re-check both when `CODEX_VERSION` moves.
+Copied from `openai/codex` tag `rust-v0.152.1` and re-checked at `rust-v0.157.0` and `rust-v0.159.3`
+(both files are byte-identical between the `rust-v0.157.0` and `rust-v0.159.3` tags),
+`codex-rs/exec/src/exec_events.rs` (shapes) and
+`codex-rs/exec/src/event_processor_with_jsonl_output.rs` (when each event is
+emitted). Re-check both when `CODEX_VERSION` moves.
 
 Top-level `ThreadEvent` — serde `tag = "type"`, the variant payload flattened
 next to it:
@@ -103,7 +105,7 @@ in `parseCodexStream`:
   — is the opposite: cache and reasoning are separate from input and output.
   `codexUsage.counters()` subtracts the subsets so the five normalized
   counters sum to the tokens actually used. In `basic_run.ndjson` that is
-  41,615; passed through unchanged it would render as ~83,000.
+  43,934; passed through unchanged it would render as ~87,500.
 - **An `error` item is not a failure.** The processor emits one for config
   warnings, generic warnings, deprecation notices and model reroutes, and keeps
   the status `Running`.

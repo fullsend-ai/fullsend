@@ -3681,6 +3681,104 @@ func TestDeleteFiles_Atomic(t *testing.T) {
 	assert.True(t, treeCreated)
 }
 
+func TestGetIssueComment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org/repo/issues/comments/42", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         42,
+			"node_id":    "IC_42",
+			"html_url":   "https://github.com/org/repo/issues/1#issuecomment-42",
+			"body":       "playback-current: 3",
+			"user":       map[string]string{"login": "fullsend-bot"},
+			"created_at": "2026-01-01T00:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comment, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 42, comment.ID)
+	assert.Equal(t, "IC_42", comment.NodeID)
+	assert.Equal(t, "playback-current: 3", comment.Body)
+	assert.Equal(t, "fullsend-bot", comment.Author)
+}
+
+func TestGetIssueComment_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestGetIssueComment_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("{not valid json"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode issue comment")
+}
+
+// TestGetIssueComment_EscapesOwnerAndRepo guards against a crafted owner
+// or repo value redirecting the request to a different path or smuggling
+// query data (e.g. an unescaped "?" terminating the path early). Both
+// fields are exercised independently.
+func TestGetIssueComment_EscapesOwnerAndRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org%3Fevil/repo/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in owner must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "ok"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org?evil", "repo", 42)
+	require.NoError(t, err)
+}
+
+func TestGetIssueComment_EscapesRepoField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org/repo%3Fx=/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in repo must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "ok"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo?x=", 42)
+	require.NoError(t, err)
+}
+
+// TestUpdateIssueComment_EscapesOwnerAndRepo is UpdateIssueComment's
+// counterpart to TestGetIssueComment_EscapesOwnerAndRepo.
+func TestUpdateIssueComment_EscapesOwnerAndRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PATCH", r.Method)
+		assert.Equal(t, "/repos/org%3Fevil/repo%3Fx=/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in owner/repo must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "updated"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.UpdateIssueComment(context.Background(), "org?evil", "repo?x=", 42, "updated")
+	require.NoError(t, err)
+}
+
 func TestDeleteIssueComment(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "DELETE", r.Method)
@@ -4737,6 +4835,12 @@ func TestUnsupportedMethods(t *testing.T) {
 		_, err := client.CreatePipeline(ctx, "o", "r", "main", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("CreatePipelineWithInputs", func(t *testing.T) {
+		_, err := client.CreatePipelineWithInputs(ctx, "o", "r", "main", map[string]forge.PipelineInputValue{
+			"STAGE": forge.StringInput("triage"),
+		})
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipelineSchedule", func(t *testing.T) {
 		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
@@ -5316,7 +5420,7 @@ func TestGetCached_InvalidJSONNotCached(t *testing.T) {
 	client := newTestClient(t, srv)
 	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "decode workflow runs")
+	assert.Contains(t, err.Error(), "list workflow runs: decode /repos/org/repo/actions/workflows/fullsend.yaml/runs")
 	runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
 	require.NoError(t, err)
 	assert.Equal(t, "in_progress", runs[0].Status)
@@ -5463,6 +5567,10 @@ func TestEtagCache_ReplaceAdjustsBytes(t *testing.T) {
 // body, so mutating a fetched body cannot corrupt it.
 func TestGetCached_CachedBodyNotAliased(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		w.Header().Set("ETag", `"v1"`)
 		json.NewEncoder(w).Encode(runsBody("in_progress"))
 	}))
@@ -5479,6 +5587,18 @@ func TestGetCached_CachedBodyNotAliased(t *testing.T) {
 	cached := client.etagCache[client.baseURL+path].Value.(*etagEntry).body
 	client.etagMu.Unlock()
 	assert.True(t, json.Valid(cached), "the cached body must not alias the returned one")
+
+	// A 304 returns the cached body; mutating that result must not reach
+	// the cache either.
+	notModified, err := client.fetchConditional(context.Background(), client.baseURL+path, path)
+	require.NoError(t, err)
+	for i := range notModified.body {
+		notModified.body[i] = 'X'
+	}
+	client.etagMu.Lock()
+	cached = client.etagCache[client.baseURL+path].Value.(*etagEntry).body
+	client.etagMu.Unlock()
+	assert.True(t, json.Valid(cached), "the 304 result must not alias the cache")
 }
 
 // TestGetCached_ReadErrorNamesPath: a body read failure says which
@@ -5661,9 +5781,9 @@ func TestFetchConditional_304WithoutEntryIsAnError(t *testing.T) {
 	assert.Contains(t, err.Error(), "304 Not Modified without a cached entry")
 }
 
-// TestGetCachedJSON_CancelledCallerStartsNoFetch: a caller whose context
+// TestGetCached_CancelledCallerStartsNoFetch: a caller whose context
 // is already done returns at once without starting a request.
-func TestGetCachedJSON_CancelledCallerStartsNoFetch(t *testing.T) {
+func TestGetCached_CancelledCallerStartsNoFetch(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)

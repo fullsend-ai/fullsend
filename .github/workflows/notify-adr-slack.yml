@@ -51,7 +51,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
           FILE_SUMMARY: ${{ steps.changed.outputs.file_summary }}
         run: |
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
@@ -63,7 +63,7 @@ jobs:
             --arg title "$PR_TITLE" \
             --arg number "$PR_NUMBER" \
             --arg url "$PR_URL" \
-            --arg author "$PR_AUTHOR" \
+            --arg merged_by "$PR_MERGED_BY" \
             --arg files "$FILE_SUMMARY" \
             '{
               blocks: [
@@ -71,7 +71,7 @@ jobs:
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: ("📋 *ADR updated* — <" + $url + "|#" + $number + " " + $title + ">\nMerged by *" + $author + "*")
+                    text: ("📋 *ADR updated* — <" + $url + "|#" + $number + " " + $title + ">\nMerged by *" + $merged_by + "*")
                   }
                 },
                 {

@@ -77,6 +77,7 @@ fullsend
 │   │   ├── --inference-region <region>      #   Per-repo GCP inference region override
 │   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
+│   │   ├── --app-set <prefix>               #   GitHub App set prefix override ($FULLSEND_APP_SET); GitHub-only
 │   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
@@ -155,6 +156,7 @@ fullsend
 │       ├── --number <int>                   #     Issue number
 │       ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
 │       ├── --keep-history                   #     Append previous content as collapsed history (default true)
+│       ├── --only-if-exists                 #     Update an existing marked comment, never create one
 │       └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
 ├── post-review                              # Post sticky PR/MR review comments (formal review is best-effort)
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
@@ -180,6 +182,11 @@ fullsend
 ├── resolve-mr-source                        # Resolve a GitLab MR's source branch, SHA, and project path
 │   ├── --project <path>                     #   GitLab project path (default: $CI_PROJECT_PATH)
 │   ├── --mr-iid <int>                       #   Merge request IID (required)
+│   ├── --gitlab-url <url>                   #   GitLab instance URL (default: https://gitlab.com)
+│   └── --token <string>                     #   GitLab token (default: $GITLAB_TOKEN)
+├── check-protected-branch                   # Fail closed unless a GitLab branch is confirmed not protected
+│   ├── --project <path>                     #   GitLab project path to check (required)
+│   ├── --branch <string>                    #   Branch name to check (required)
 │   ├── --gitlab-url <url>                   #   GitLab instance URL (default: https://gitlab.com)
 │   └── --token <string>                     #   GitLab token (default: $GITLAB_TOKEN)
 └── reconcile-status                         # Finalize orphaned status comments
@@ -324,6 +331,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │              FULLSEND_GCP_REGION                           │ │
 │  │              FULLSEND_MINT_URL                             │ │
 │  │              FULLSEND_REVIEW_CLIENT_ID (best-effort)       │ │
+│  │              FULLSEND_APP_SET (GitHub only)                │ │
 │  │                                                            │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
 │  │  │ Per-org:  secrets → .fullsend config repo│              │ │

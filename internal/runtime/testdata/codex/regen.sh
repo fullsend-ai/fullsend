@@ -51,7 +51,9 @@ RAW="${WORKDIR}/raw.ndjson"
 # workspace-write + approval_policy=never keeps the capture non-interactive and
 # confined to WORKDIR. `codex exec` has no --ask-for-approval flag; the policy
 # is a -c override. model_reasoning_summary=detailed is what makes the run emit
-# `reasoning` items, which the fixture needs to cover.
+# `reasoning` items, which the fixture needs to cover. stdin is closed because
+# codex exec reads additional prompt input from a non-terminal stdin and waits
+# on it forever (0.159.3) when the caller leaves stdin open.
 npx -y --ignore-scripts "${PKG}" exec --json \
 	--skip-git-repo-check \
 	--sandbox workspace-write \
@@ -60,7 +62,8 @@ npx -y --ignore-scripts "${PKG}" exec --json \
 	-c model_reasoning_summary=detailed \
 	-C "${WORKDIR}" \
 	--model "${CODEX_MODEL:-gpt-5.6-luna}" \
-	'Run `ls .`, then create hello.txt containing hi, then say done' >"${RAW}"
+	'Run `ls .`, then create hello.txt containing hi, then say done' \
+	</dev/null >"${RAW}"
 
 # Redact the throwaway working directory so the fixture reads like a sandbox
 # run and carries nothing machine-specific. Thread ids are kept: they are

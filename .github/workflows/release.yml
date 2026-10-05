@@ -28,6 +28,29 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      # A final tag can share its commit with the release candidate it
+      # promotes (vX.Y.Z and vX.Y.Z-rc.N on one commit). GoReleaser picks
+      # the current tag from `git tag --points-at HEAD`, so without this it
+      # can choose the rc tag and fail re-uploading the rc's assets
+      # (v0.44.0, run 36944759050). Pin the current tag to the pushed ref.
+      # For a final, the previous tag is the last final, so the changelog
+      # spans the whole release instead of only the commits since the rc.
+      - name: Resolve GoReleaser tags
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "GORELEASER_CURRENT_TAG=${TAG}" >> "$GITHUB_ENV"
+          case "$TAG" in
+            *-*) exit 0 ;;
+          esac
+          TAGS=$(git tag --merged "${TAG}^{commit}" --sort=-v:refname --list 'v[0-9]*.[0-9]*.[0-9]*')
+          PREV=$(printf '%s\n' "$TAGS" | grep -v -e '-' | grep -vxF -e "$TAG" | head -n1 || true)
+          if [ -n "$PREV" ]; then
+            echo "GORELEASER_PREVIOUS_TAG=${PREV}" >> "$GITHUB_ENV"
+          fi
+          echo "current=${TAG} previous=${PREV:-<goreleaser default>}"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
@@ -74,7 +97,7 @@ jobs:
       id-token: write
       pull-requests: write
       checks: read
-    uses: fullsend-ai/agents/.github/workflows/functional-tests.yml@beed20e7e85f7f7cf9678a78fd1f440755560ca3 # main (includes agents#1010 cross-repo checkout fix)
+    uses: fullsend-ai/agents/.github/workflows/functional-tests.yml@291d391532ad223218e5594e9c3d9ecf41909d33 # main (schema v2 OpenShell gateway config + Podman socket, agents#1513)
     with:
       fullsend_ref: ${{ github.ref_name }}
     secrets:

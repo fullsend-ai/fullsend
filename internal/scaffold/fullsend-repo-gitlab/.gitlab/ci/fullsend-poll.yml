@@ -14,7 +14,14 @@ spec:
   tags: __CONTROL_RUNNER_TAGS__
   resource_group: "fullsend-poll-$FULLSEND_POLL_MODE"
   rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    # Deny-before-admit: GitLab evaluates rules first-match, so a
+    # debug-trace pipeline must not reach the schedule admit rule.
+    # Secrets materialize at job init; a script-level abort is too late.
+    # Matches the full truthy set gitlab-runner accepts for this
+    # variable (Go strconv.ParseBool: "1", "t"/"T", "true"/"TRUE"/"True").
+    - if: $CI_DEBUG_TRACE =~ /^(1|t|true)$/i
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
   variables:
     FULLSEND_FORGE: "gitlab"
     FULLSEND_POLL_MODE: "events"

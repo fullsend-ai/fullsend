@@ -22,8 +22,8 @@ roles:
 agents:
     - source: https://raw.githubusercontent.com/redhat-community-ai-tools/qualityflow-fullsend/572ba470c8d1e539516620adcc92bbee1863a3a1/harness/qualityflow.yaml#sha256=c0a51b2f75172aebd577fd38c8012a7c566a84f84812ebd9aa4cc07ad3b2220e
     - name: code
-      runtime: pi
-      model: xai/grok-4.6
+      runtime: claude
+      model: sonnet
     - name: fix
       model: sonnet
     - name: prioritize
@@ -31,14 +31,14 @@ agents:
       model: google-vertex/gemini-3.8-flash
     - name: review
       runtime: pi
-      model: sonnet
+      model: openai/gpt-6.1-sol
       subagents:
-        challenger: xai/grok-4.6
-        correctness: xai/grok-4.6
+        challenger: openai/gpt-6.1-sol
+        correctness: openai/gpt-6.1-sol
         docs-currency: google-vertex/gemini-3.8-flash
         intent-coherence: google-vertex/gemini-3.8-flash
         risk-assessment: google-vertex/gemini-3.8-flash
-        security: xai/grok-4.6
+        security: openai/gpt-6.1-sol
         style-conventions: google-vertex/gemini-3.8-flash
     # Temporarily disable automatic PR-close retro and /fs-retro while
     # duplicate findings are reduced (fullsend-ai/agents#198, #7805).

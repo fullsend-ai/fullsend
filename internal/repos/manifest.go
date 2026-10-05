@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/netutil"
 	"gopkg.in/yaml.v3"
@@ -84,6 +85,11 @@ type PlatformConfig struct {
 	MintURL     string `yaml:"mint_url,omitempty"`
 	MintMode    string `yaml:"mint_mode,omitempty"`
 	FullsendRef string `yaml:"fullsend_ref,omitempty"`
+	// AppSet is the GitHub App set prefix (apps named "{app_set}-{role}")
+	// persisted as the FULLSEND_APP_SET repo variable. GitHub-only; the
+	// sentinel "none" resets a per-repo override back to the built-in
+	// default. Rejected under the gitlab platform.
+	AppSet string `yaml:"app_set,omitempty"`
 	// AgentRunnerTags routes GitLab agent (data-plane) jobs. GitLab-only.
 	AgentRunnerTags []string `yaml:"agent_runner_tags,omitempty"`
 	// ControlRunnerTags routes GitLab control-plane jobs (poll today;
@@ -136,6 +142,10 @@ type RepoEntry struct {
 	MintURL                string   `yaml:"mint_url,omitempty"`
 	MintMode               string   `yaml:"mint_mode,omitempty"`
 	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
+	// AppSet overrides the GitHub App set prefix for this repository,
+	// persisted as the FULLSEND_APP_SET repo variable. GitHub-only; the
+	// sentinel "none" resets back to the built-in default.
+	AppSet string `yaml:"app_set,omitempty"`
 	// Runtime is the agent runtime written as the repo's `runtime:` at
 	// install time (claude, pi, codex, opencode); empty inherits defaults.runtime,
 	// and an empty resolved value keeps the code default (claude).
@@ -199,6 +209,14 @@ type ResolvedConfig struct {
 	MintMode               string
 	FullsendRef            string
 	AllowedRemoteResources []string
+	// AppSet is the resolved GitHub App set prefix persisted as the
+	// FULLSEND_APP_SET repo variable. GitHub-only; empty for GitLab.
+	AppSet string
+	// AppSetExplicit reports whether app_set was explicitly configured
+	// (per-repo override or manifest default, including the "none"
+	// sentinel). When false, convergence preserves any existing
+	// FULLSEND_APP_SET value on the repo rather than forcing the default.
+	AppSetExplicit bool
 	// Runtime is the resolved agent runtime (entry, then defaults); empty
 	// means the code default.
 	Runtime string
@@ -543,6 +561,13 @@ func (m *Manifest) Validate() error {
 		if m.GitHub.FullsendRef != "" && !IsValidRef(m.GitHub.FullsendRef) {
 			return fmt.Errorf("github.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.GitHub.FullsendRef)
 		}
+		// app_set is well-formed except for the "none" sentinel, which
+		// resets a per-repo override back to the built-in default.
+		if m.GitHub.AppSet != "" && m.GitHub.AppSet != NoneSentinel {
+			if err := appsetup.ValidateAppSet(m.GitHub.AppSet); err != nil {
+				return fmt.Errorf("github.app_set: %w", err)
+			}
+		}
 
 		if err := m.validatePlatformRepos(ForgeGitHub, m.GitHub, allSeen); err != nil {
 			return err
@@ -557,6 +582,9 @@ func (m *Manifest) Validate() error {
 		}
 		if m.GitLab.MintMode != "" {
 			return fmt.Errorf("gitlab.mint_mode is not supported; mint_mode is a GitHub-only field")
+		}
+		if m.GitLab.AppSet != "" {
+			return fmt.Errorf("gitlab.app_set is not supported; app_set is a GitHub-only field")
 		}
 
 		if len(m.GitLab.Repos) > 0 && m.GitLab.URL == "" {
@@ -621,6 +649,17 @@ func (m *Manifest) validatePlatformRepos(forgeName string, platform *PlatformCon
 			}
 			if entry.MintURL != "" {
 				return fmt.Errorf("%s.repos[%d]: mint_url is only supported for GitHub repos", forgeName, i)
+			}
+			if entry.AppSet != "" {
+				return fmt.Errorf("%s.repos[%d]: app_set is only supported for GitHub repos", forgeName, i)
+			}
+		}
+
+		// Validate per-repo app_set override (GitHub). The "none" sentinel
+		// resets to the built-in default and skips format validation.
+		if forgeName == ForgeGitHub && entry.AppSet != "" && entry.AppSet != NoneSentinel {
+			if err := appsetup.ValidateAppSet(entry.AppSet); err != nil {
+				return fmt.Errorf("%s.repos[%d]: per-repo app_set: %w", forgeName, i, err)
 			}
 		}
 
@@ -980,6 +1019,16 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 		}
 		cfg.MintURL = resolveField(entry.MintURL, platform.MintURL, mintURLDefault)
 		cfg.FullsendRef = resolveField(entry.FullsendRef, platform.FullsendRef, "")
+		// AppSet: per-repo override, then manifest default, then the
+		// built-in default. The "none" sentinel resolves to empty, which
+		// we then map back to the built-in default (a reset, not a disable).
+		// AppSetExplicit records whether app_set was configured at all so
+		// convergence can preserve an existing custom value when it is not.
+		cfg.AppSet = resolveField(entry.AppSet, platform.AppSet, appsetup.DefaultAppSet)
+		if cfg.AppSet == "" {
+			cfg.AppSet = appsetup.DefaultAppSet
+		}
+		cfg.AppSetExplicit = entry.AppSet != "" || platform.AppSet != ""
 	case ForgeGitLab:
 		cfg.FullsendRef = resolveField(entry.FullsendRef, platform.FullsendRef, "")
 	}

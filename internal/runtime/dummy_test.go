@@ -598,6 +598,23 @@ func runCheckoutBranchForReal(t *testing.T, repoDir, branch string) error {
 	})
 }
 
+// runGit runs git in dir without inheriting host signing or editor config.
+// Seed commits and tags must not depend on the caller's git configuration.
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.invalid",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.invalid",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_EDITOR=true")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %v: %s", args, out)
+	return strings.TrimSpace(string(out))
+}
+
 // initCheckoutBranchRepos creates a bare "origin" with an initial commit
 // on main plus a clone, and returns the clone path and origin path.
 func initCheckoutBranchRepos(t *testing.T) (clone, origin string) {
@@ -607,31 +624,19 @@ func initCheckoutBranchRepos(t *testing.T) (clone, origin string) {
 	clone = filepath.Join(base, "clone")
 	seed := filepath.Join(base, "seed")
 
-	run := func(dir string, args ...string) string {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.invalid",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.invalid")
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "git %v: %s", args, out)
-		return strings.TrimSpace(string(out))
-	}
-
-	run(base, "init", "--bare", "-b", "main", origin)
-	run(base, "init", "-b", "main", seed)
+	runGit(t, base, "init", "--bare", "-b", "main", origin)
+	runGit(t, base, "init", "-b", "main", seed)
 	require.NoError(t, os.WriteFile(filepath.Join(seed, "README.md"), []byte("seed\n"), 0o644))
-	run(seed, "add", "README.md")
-	run(seed, "commit", "-m", "initial")
-	run(seed, "push", origin, "main")
+	runGit(t, seed, "add", "README.md")
+	runGit(t, seed, "commit", "-m", "initial")
+	runGit(t, seed, "push", origin, "main")
 	// Seed a remote-only branch with one extra commit.
-	run(seed, "checkout", "-b", "agent/7-existing")
+	runGit(t, seed, "checkout", "-b", "agent/7-existing")
 	require.NoError(t, os.WriteFile(filepath.Join(seed, "extra.txt"), []byte("extra\n"), 0o644))
-	run(seed, "add", "extra.txt")
-	run(seed, "commit", "-m", "extra")
-	run(seed, "push", origin, "agent/7-existing")
-	run(base, "clone", "-b", "main", origin, clone)
+	runGit(t, seed, "add", "extra.txt")
+	runGit(t, seed, "commit", "-m", "extra")
+	runGit(t, seed, "push", origin, "agent/7-existing")
+	runGit(t, base, "clone", "-b", "main", origin, clone)
 	return clone, origin
 }
 
@@ -689,14 +694,12 @@ func TestExecuteBehaviourOp_CheckoutBranchRealShellPrefersBranchOverSameNamedTag
 
 	// Tag the *initial* commit with the same name as the branch. Without
 	// scoping the fetch to refs/heads/, git's default ref disambiguation
-	// would resolve the tag ahead of the branch.
-	seedTagCmd := exec.Command("git", "tag", "agent/7-existing", "main")
-	seedTagCmd.Dir = filepath.Join(filepath.Dir(clone), "seed")
-	require.NoError(t, seedTagCmd.Run())
-	pushTagCmd := exec.Command("git", "push", origin, "refs/tags/agent/7-existing")
-	pushTagCmd.Dir = filepath.Join(filepath.Dir(clone), "seed")
-	out, err := pushTagCmd.CombinedOutput()
-	require.NoError(t, err, string(out))
+	// would resolve the tag ahead of the branch. Route through runGit so
+	// host tag.gpgsign / editor config cannot turn this into a signed
+	// annotated tag that requires a message.
+	seed := filepath.Join(filepath.Dir(clone), "seed")
+	runGit(t, seed, "tag", "agent/7-existing", "main")
+	runGit(t, seed, "push", origin, "refs/tags/agent/7-existing")
 
 	require.NoError(t, runCheckoutBranchForReal(t, clone, "agent/7-existing"))
 	assert.Equal(t, branchTip, gitOut(t, clone, "rev-parse", "HEAD~1"), "checkout must resolve the branch, not the same-named tag")

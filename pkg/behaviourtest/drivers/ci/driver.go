@@ -29,6 +29,11 @@ type Driver interface {
 	DownloadArtifacts(ctx context.Context, owner, repo string, runID int, destDir string) error
 	DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error
 	DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error
+	// WaitForHarnessAgent waits for the named agent's harness run to
+	// succeed. When the run concludes with a failure, the error is
+	// returned together with that run, so callers can collect its logs
+	// before the scenario's repository is torn down; on a timeout or
+	// context error the run is nil.
 	WaitForHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error)
 	// WaitForFailedHarnessAgent waits for the named agent's harness run to
 	// complete with a terminal failure conclusion (resolved artifact-first

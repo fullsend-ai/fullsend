@@ -123,7 +123,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 | Field | Purpose |
 |-------|---------|
 | `name` | Must match the filename (without `.md`) |
-| `tools` | Bash commands the agent can run. Restrict to what's needed. |
+| `tools` | The tools the agent may use, in Claude Code's names (`Read`, `Grep`, `Glob`, `LS`, `Bash(gh,jq)`, ...). Restrict to what's needed. On pi the names are translated, and two of them surprise people — see [What to write in `tools:`](../../runtimes/pi.md#what-to-write-in-tools) |
 | `model` | LLM model (`opus`, `sonnet`, etc.) |
 | `skills` | [Skill](../../glossary.md#skill) directories to mount (relative to `skills/`) |
 | `disallowedTools` | Bash patterns the agent is forbidden from running |
@@ -446,7 +446,11 @@ case "${STATUS}" in
     echo "Agent needs more information"
     ;;
   *)
-    echo "ERROR: Unknown or missing status '${STATUS}'"
+    # STATUS is model output: flatten CR/LF and cap it before logging, and
+    # use printf, which never expands backslash escapes, so a crafted value
+    # cannot start a new log line (a "::" workflow command).
+    shown="${STATUS//[$'\r\n']/ }"
+    printf '%s\n' "ERROR: Unknown or missing status '${shown:0:40}'"
     exit 1
     ;;
 esac

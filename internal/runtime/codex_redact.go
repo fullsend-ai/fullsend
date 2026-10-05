@@ -192,10 +192,11 @@ func codexReadBounded(path string) ([]byte, error) {
 
 // codexRolloutEnvelopes are the top-level `type` values a codex rollout line
 // carries: every variant of RolloutItemWire in
-// codex-rs/history/src/rollout_payload.rs, 0.152.1 through 0.157.0. Update it
-// on a CODEX_VERSION bump, since one unknown line discards the whole file.
-// They are underscored, where the tee'd `exec --json` stream uses dotted
-// names, so the two never collide.
+// codex-rs/history/src/rollout_payload.rs, 0.152.1 through 0.159.3 (the
+// variant set is unchanged since 0.157.0). Update it on a CODEX_VERSION
+// bump, since one unknown line discards the whole file. They are
+// underscored, where the tee'd `exec --json` stream uses dotted names, so
+// the two never collide.
 var codexRolloutEnvelopes = map[string]bool{
 	"session_meta": true, "response_item": true, "event_msg": true,
 	"turn_context": true, "compacted": true, "world_state": true,

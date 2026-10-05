@@ -119,18 +119,22 @@ func buildStageMintDriver(
 		return nil, fmt.Errorf("stage cfmint factory: deploying mint: %w", err)
 	}
 
-	// Non-vendored setup opts — use --fullsend-ref=main.
+	// Non-vendored setup opts — use --fullsend-ref=main. Runtime picks up
+	// PLAYBACK_RUNTIME when set, so this factory can also back a playback
+	// suite (see NewPlaybackDriver) in the stage environment.
 	setupOpts := common.GitHubSetupOpts{
 		Vendor:       false,
 		FullsendRef:  stageFullsendRef,
 		ConfigPreset: envConfigPreset(),
+		Runtime:      os.Getenv("PLAYBACK_RUNTIME"),
 	}
 
 	e2eCfg := e2etest.EnvConfig{
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens, err := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf)
+	ens, err := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf,
+		playbackInstallHooks(setupOpts, logf))
 	if err != nil {
 		return nil, fmt.Errorf("stage cfmint factory: %w", err)
 	}

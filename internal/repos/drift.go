@@ -192,6 +192,9 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 	if maxCfg.ReviewAppClientID == "" {
 		maxCfg.ReviewAppClientID = "placeholder"
 	}
+	if maxCfg.AppSet == "" {
+		maxCfg.AppSet = "placeholder"
+	}
 	managed, err := managedVarsForForge(maxCfg, mintURL)
 	if err != nil {
 		return nil, err

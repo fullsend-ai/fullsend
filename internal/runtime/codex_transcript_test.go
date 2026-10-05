@@ -400,9 +400,10 @@ func TestCodexIsRolloutFile(t *testing.T) {
 	// A leading blank line is tolerated.
 	require.NoError(t, codexIsRolloutFile(write("blank.jsonl",
 		"\n"+`{"type":"response_item","payload":{}}`+"\n")))
-	// The line order of a real codex-cli 0.157.0 rollout: world_state (from
-	// 0.152.1) and token_usage_record (0.157.0) appear in every run, and
-	// rejecting either used to discard the whole transcript.
+	// The line order of a real codex-cli 0.157.0 rollout (RolloutItemWire's
+	// variant set is unchanged through 0.159.3): world_state (from 0.152.1)
+	// and token_usage_record (0.157.0) appear in every run, and rejecting
+	// either used to discard the whole transcript.
 	require.NoError(t, codexIsRolloutFile(write("real-order.jsonl",
 		`{"type":"session_meta","payload":{}}`+"\n"+
 			`{"type":"event_msg","payload":{}}`+"\n"+

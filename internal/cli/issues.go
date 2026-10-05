@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -169,17 +170,18 @@ func runIssuesGet(ctx context.Context, cfg *issuesGetConfig) error {
 // issuesPostCommentConfig holds the flags and test overrides for
 // "fullsend issues post-comment".
 type issuesPostCommentConfig struct {
-	trackerName string
-	project     string
-	number      int
-	marker      string
-	result      string
-	token       string
-	jiraURL     string
-	jiraEmail   string
-	dryRun      bool
-	keepHistory *bool // nil = resolve from config; non-nil = explicit flag
-	fullsendDir string
+	trackerName  string
+	project      string
+	number       int
+	marker       string
+	result       string
+	token        string
+	jiraURL      string
+	jiraEmail    string
+	dryRun       bool
+	onlyIfExists bool
+	keepHistory  *bool // nil = resolve from config; non-nil = explicit flag
+	fullsendDir  string
 
 	// Test overrides — when non-nil, used instead of creating a real
 	// tracker client. Not set by CLI flag parsing.
@@ -200,8 +202,9 @@ func newIssuesPostCommentCmd() *cobra.Command {
 		Short: "Post or update a sticky comment on an issue",
 		Long: `Posts a comment with a sticky marker on an issue. On first
 run, creates a new comment. On re-runs, finds the existing comment
-by its marker and edits in-place, collapsing old content into
-<details> blocks. This prevents comment flooding on re-runs.
+by its marker and its own author and edits in-place, collapsing old
+content into <details> blocks. This prevents comment flooding on
+re-runs.
 
 Works across GitHub, GitLab, and Jira via --tracker.
 
@@ -211,14 +214,12 @@ For --tracker jira, the marker is stored as an invisible comment
 entity property rather than embedded in the visible comment body,
 so marker character restrictions do not apply.
 
-Trust model: marker-based comment lookup does not verify the comment
-author. In a trusted CI environment (the intended deployment) this
-is safe because only the bot writes marker-bearing comments. If
-untrusted users can post issue comments containing the marker
-string, they could cause the bot to edit their comment instead of
-creating its own. Do not use this command in environments where
-untrusted users can write arbitrary issue comments bearing your
-marker.
+Trust model: an existing comment is edited only when it carries the
+marker and its author is exactly the identity this command posts as
+(the login on GitHub and GitLab, the account ID on Jira). A comment
+anyone else wrote with the same marker is ignored, never edited. If
+that identity cannot be resolved after a short retry, the command fails
+without posting or editing anything; rerun it.
 
 --tracker is required unless a default is supplied via config: set
 "tracker: github|gitlab|jira" in config.yaml and pass --fullsend-dir
@@ -241,7 +242,8 @@ The --result flag accepts a file path or "-" for stdin.`,
 	cmd.Flags().StringVar(&cfg.token, "token", "", "API token (default: env var per tracker)")
 	cmd.Flags().StringVar(&cfg.jiraURL, "jira-url", "", "Jira instance URL (default: $JIRA_BASE_URL)")
 	cmd.Flags().StringVar(&cfg.jiraEmail, "jira-email", "", "Jira user email for Basic auth (default: $JIRA_USER_EMAIL)")
-	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print what would be posted without making API calls")
+	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print what would be posted without posting or editing anything")
+	cmd.Flags().BoolVar(&cfg.onlyIfExists, "only-if-exists", false, "update an existing comment with this marker but never create one (for an all-clear that should replace earlier findings)")
 	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
 	cmd.Flags().StringVar(&cfg.fullsendDir, "fullsend-dir", "", "path to .fullsend config directory (sources defaults from its config.yaml when flags are omitted)")
 	_ = cmd.MarkFlagRequired("project")
@@ -316,9 +318,9 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 	// path; otherwise fall back to the body-embedded path used by
 	// GitHub/GitLab.
 	if jc, ok := tc.(*tracker.JiraClient); ok {
-		_, err = postJiraStickyComment(ctx, jc, cfg.project, cfg.number, body, stickyCfg, printer)
+		_, err = postJiraStickyComment(ctx, jc, cfg.project, cfg.number, body, stickyCfg, cfg.onlyIfExists, printer)
 	} else {
-		_, err = postTrackerStickyComment(ctx, tc, cfg.project, cfg.number, body, stickyCfg, printer)
+		_, err = postTrackerStickyComment(ctx, tc, cfg.project, cfg.number, body, stickyCfg, cfg.onlyIfExists, printer)
 	}
 	return err
 }
@@ -333,7 +335,7 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 // with ?expand=properties and matched by property value. On update, the
 // property is (re)set to handle legacy migration from body-embedded
 // markers.
-func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project string, number int, body string, cfg sticky.Config, printer *ui.Printer) (string, error) {
+func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project string, number int, body string, cfg sticky.Config, onlyIfExists bool, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
 	}
@@ -341,12 +343,21 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 		return "", fmt.Errorf("marker is empty")
 	}
 
+	// Same rule as the GitHub/GitLab path: only the poster's own comments
+	// are candidates, matched by exact account ID. Filtering before the
+	// lookup covers both the marker property and the legacy body-text
+	// fallback, either of which another account can plant.
+	self, err := resolveTrackerSelf(ctx, jc)
+	if err != nil {
+		return "", unverifiedSelfError(err)
+	}
+
 	jiraComments, err := jc.ListJiraComments(ctx, project, number)
 	if err != nil {
 		return "", fmt.Errorf("listing comments: %w", err)
 	}
 
-	existing := jc.FindCommentByMarkerProperty(jiraComments, cfg.Marker)
+	existing := jc.FindCommentByMarkerProperty(ownJiraComments(jiraComments, self), cfg.Marker)
 
 	if existing != nil {
 		printer.StepStart("Found existing comment, updating in-place")
@@ -374,6 +385,11 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 		return "", nil // Jira has no stable comment permalink
 	}
 
+	if onlyIfExists {
+		printer.StepInfo("No existing comment with this marker; nothing to post (--only-if-exists)")
+		return "", nil
+	}
+
 	printer.StepStart("No existing comment found, creating new one")
 
 	if cfg.DryRun {
@@ -395,12 +411,14 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 // sticky.Post: find an existing comment bearing the marker, collapse
 // old content into history, and create or update in-place.
 //
-// Unlike sticky.Post, this function does not perform bot-user
-// verification for marker spoofing protection (tracker.Client has no
-// GetAuthenticatedUser method). This is acceptable because the new
-// command is used by agents in trusted CI environments, not by
-// untrusted external callers.
-func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project string, number int, body string, cfg sticky.Config, printer *ui.Printer) (string, error) {
+// It never edits a comment it cannot verify as its own: an existing
+// comment matches only when it carries the marker and its author is
+// exactly the login this client posts as, so a comment anyone could plant
+// with the same marker is ignored. When that login cannot be resolved
+// (after a short retry) it returns an error and posts nothing, with or
+// without onlyIfExists, which updates an existing comment but never
+// creates one.
+func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project string, number int, body string, cfg sticky.Config, onlyIfExists bool, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
 	}
@@ -408,12 +426,20 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 		return "", fmt.Errorf("marker is empty")
 	}
 
+	// Without a verified identity nothing is posted at all: editing would
+	// trust an unverified comment, and creating a new one would orphan the
+	// earlier comment, whose stale content later runs would never update.
+	self, err := resolveTrackerSelf(ctx, tc)
+	if err != nil {
+		return "", unverifiedSelfError(err)
+	}
+
 	comments, err := tc.ListComments(ctx, project, number)
 	if err != nil {
 		return "", fmt.Errorf("listing comments: %w", err)
 	}
 
-	existing := findMarkedTrackerComment(comments, cfg.Marker)
+	existing := findMarkedTrackerComment(comments, cfg.Marker, self)
 	markedBody := cfg.Marker + "\n" + body
 
 	if existing != nil {
@@ -432,6 +458,11 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 		}
 		printer.StepDone("Comment updated")
 		return existing.HTMLURL, nil
+	}
+
+	if onlyIfExists {
+		printer.StepInfo("No existing comment with this marker; nothing to post (--only-if-exists)")
+		return "", nil
 	}
 
 	printer.StepStart("No existing comment found, creating new one")
@@ -515,11 +546,83 @@ func resolveKeepHistory(flag *bool, fullsendDir string, testConfigReader config.
 	return true, nil
 }
 
+// ownJiraComments returns the comments whose author account ID is exactly
+// self. An empty self returns none.
+func ownJiraComments(comments []jira.Comment, self string) []jira.Comment {
+	if self == "" {
+		return nil
+	}
+	var own []jira.Comment
+	for _, c := range comments {
+		if c.Author.AccountID == self {
+			own = append(own, c)
+		}
+	}
+	return own
+}
+
+// authenticatedUserResolver is implemented by tracker clients that can
+// report who they are authenticated as (tracker.ForgeClient by login,
+// tracker.JiraClient by account ID).
+type authenticatedUserResolver interface {
+	AuthenticatedUser(ctx context.Context) (string, error)
+}
+
+// unverifiedSelfError reports that the posting identity could not be
+// resolved, so nothing was posted or edited.
+func unverifiedSelfError(err error) error {
+	return fmt.Errorf("cannot verify which identity this command posts as, so no comment was posted or edited; "+
+		"rerun if the failure was transient, otherwise check that the token can read its own identity "+
+		"(GitHub/GitLab: the authenticated user; Jira: GET /myself): %w", err)
+}
+
+// selfLookupBackoff is the wait before each retry of the identity lookup;
+// its length is the number of retries. Tests shorten it.
+var selfLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second}
+
+// resolveTrackerSelf returns the exact login tc posts as, retrying a failed
+// lookup per selfLookupBackoff so a transient error does not fail the run.
+// For GitHub this goes through forge.Client.GetAuthenticatedUser, which
+// also resolves an App installation token (GraphQL viewer) where GET /user
+// is refused.
+func resolveTrackerSelf(ctx context.Context, tc tracker.Client) (string, error) {
+	ar, ok := tc.(authenticatedUserResolver)
+	if !ok {
+		return "", fmt.Errorf("this tracker cannot report the authenticated user")
+	}
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		self, err := ar.AuthenticatedUser(ctx)
+		if err == nil && self == "" {
+			err = fmt.Errorf("the authenticated user is empty")
+		}
+		if err == nil {
+			return self, nil
+		}
+		lastErr = err
+		if attempt >= len(selfLookupBackoff) {
+			return "", fmt.Errorf("after %d attempts: %w", attempt+1, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("%w (last lookup error: %v)", ctx.Err(), lastErr)
+		case <-time.After(selfLookupBackoff[attempt]):
+		}
+	}
+}
+
 // findMarkedTrackerComment returns the first tracker comment whose body
-// contains the given marker string, or nil if none is found. This is
-// the tracker.Comment equivalent of sticky.FindMarkedComment.
-func findMarkedTrackerComment(comments []tracker.Comment, marker string) *tracker.Comment {
+// contains the given marker string and whose author is exactly self, or nil
+// if none is found. An empty self matches nothing: a comment whose author
+// cannot be verified is never returned for editing.
+func findMarkedTrackerComment(comments []tracker.Comment, marker, self string) *tracker.Comment {
+	if self == "" {
+		return nil
+	}
 	for i := range comments {
+		if comments[i].Author != self {
+			continue
+		}
 		if strings.Contains(string(comments[i].Body), marker) {
 			return &comments[i]
 		}

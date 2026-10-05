@@ -471,6 +471,7 @@ type reposInstallConfig struct {
 	// Per-repo overrides
 	fullsendRef            string
 	mintURL                string
+	appSet                 string
 	allowedRemoteResources []string
 	runtime                string
 
@@ -539,6 +540,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.inferenceRegion, "inference-region", "", "GCP region for inference (default: global)")
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
+	cmd.Flags().StringVar(&opts.appSet, "app-set", "", "GitHub App set prefix (apps named {app-set}-{role}) persisted as FULLSEND_APP_SET for selected repos; GitHub-only")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex, opencode); repos already in the manifest keep their entry/defaults.runtime")
 	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
@@ -573,6 +575,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		mu, muErr := url.Parse(opts.mintURL)
 		if muErr != nil || mu.Scheme != "https" || mu.Host == "" {
 			return fmt.Errorf("--mint-url must be a valid HTTPS URL, got %q", opts.mintURL)
+		}
+	}
+	if opts.appSet != "" {
+		if opts.forge == repos.ForgeGitLab || opts.gitlabURL != "" {
+			return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
+		}
+		if opts.appSet != repos.NoneSentinel {
+			if err := appsetup.ValidateAppSet(opts.appSet); err != nil {
+				return fmt.Errorf("--app-set: %w", err)
+			}
 		}
 	}
 	if opts.gitlabURL != "" {
@@ -664,8 +676,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	// Phase 0: add repos not yet in the manifest.
 	var newlyAdded []string
+	var notInManifest []string
 	if len(opts.repoFilter) > 0 {
-		var notInManifest []string
 		for _, r := range opts.repoFilter {
 			if strings.ContainsAny(r, "*?[") {
 				continue
@@ -712,6 +724,15 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			if forgeName != repos.ForgeGitHub && opts.mintURL != "" {
 				printer.StepWarn(fmt.Sprintf("--mint-url is only used with GitHub repos; ignored for %s", forgeName))
 			}
+			if forgeName != repos.ForgeGitHub && opts.appSet != "" {
+				// Unlike --mint-url, --app-set is rejected outright rather
+				// than silently ignored: the explicit-forge/--gitlab-url
+				// path above (line ~580) already rejects --app-set for
+				// GitLab, and a forge inferred from the manifest's
+				// existing GitLab repos must reject it the same way
+				// instead of warning and dropping the flag.
+				return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
+			}
 			if forgeName != repos.ForgeGitHub && opts.vendorChanged && opts.vendor {
 				printer.StepWarn("--vendor only fully supported for GitHub repos; GitLab CI templates do not yet reference the vendored binary")
 			}
@@ -736,6 +757,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				if forgeName == repos.ForgeGitHub {
 					if opts.mintURL != "" && (manifest.GitHub == nil || opts.mintURL != manifest.GitHub.MintURL) {
 						entry.MintURL = opts.mintURL
+					}
+					// Record a per-repo app_set only when it differs from the
+					// manifest default, so the entry stays minimal. The "none"
+					// sentinel is written when it overrides a non-empty default.
+					if opts.appSet != "" && (manifest.GitHub == nil || opts.appSet != manifest.GitHub.AppSet) {
+						entry.AppSet = opts.appSet
 					}
 				}
 				if len(opts.allowedRemoteResources) > 0 {
@@ -795,6 +822,34 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					return nil
 				}
 			}
+		}
+	}
+
+	// Apply --app-set to every selected GitHub manifest entry, including
+	// entries that were already tracked before this invocation. This makes
+	// the flag a real per-repo override rather than a silent no-op on reruns.
+	// Reject a selection containing GitLab before changing the manifest: the
+	// app-set variable is meaningful only for GitHub installations.
+	if opts.appSet != "" {
+		targetedForges, forgeErr := manifest.DistinctForgesFor(opts.repoFilter)
+		if forgeErr != nil {
+			return fmt.Errorf("determining targeted forges for --app-set: %w", forgeErr)
+		}
+		for _, forgeName := range targetedForges {
+			if forgeName == repos.ForgeGitLab {
+				return fmt.Errorf("--app-set is a GitHub-only option and cannot be combined with GitLab installs")
+			}
+		}
+		updated, updateErr := repos.UpdateAppSet(repos.ManifestEditConfig{
+			Manifest:     manifest,
+			ManifestPath: opts.manifest,
+			DryRun:       opts.dryRun,
+		}, opts.repoFilter, opts.appSet)
+		if updateErr != nil {
+			return fmt.Errorf("updating app-set overrides: %w", updateErr)
+		}
+		if len(updated) > 0 && !opts.dryRun {
+			printer.StepDone(fmt.Sprintf("Updated app-set override for %d manifest entr%s", len(updated), map[bool]string{true: "y", false: "ies"}[len(updated) == 1]))
 		}
 	}
 
@@ -878,31 +933,43 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// Resolve the review app client ID for provenance validation.
 	// Best-effort: a missing client ID does not block installation.
 	// Skip the GitHub lookup when this run does not target any GitHub repo.
+	//
+	// reviewAppSet is the app set this ID was resolved for; it seeds the
+	// converge cache so repos on that app set skip a second lookup, and
+	// repos whose effective app set differs resolve their own.
+	reviewAppSet := appsetup.DefaultAppSet
+	if manifest.GitHub != nil && manifest.GitHub.AppSet != "" && manifest.GitHub.AppSet != repos.NoneSentinel {
+		reviewAppSet = manifest.GitHub.AppSet
+	}
 	var reviewAppClientID string
 	if forgeListIncludesGitHub(targetedForges) {
 		if fc, fcErr := clients.ConfigFor(repos.ForgeGitHub); fcErr == nil {
-			reviewAppClientID = resolveReviewAppClientID(ctx, fc.Client, appsetup.DefaultAppSet)
+			// Resolve the review app by its {app_set}-review slug. Prefer
+			// the manifest's GitHub app_set so a custom app set resolves
+			// its own review app rather than the built-in default.
+			reviewAppClientID = resolveReviewAppClientID(ctx, fc.Client, reviewAppSet)
 		}
 	}
 
 	convergeCfg := repos.ConvergeConfig{
-		Manifest:               manifest,
-		DryRun:                 opts.dryRun,
-		RepoFilter:             opts.repoFilter,
-		MaxConcurrency:         opts.concurrency,
-		Roles:                  opts.roles,
-		RolesExplicit:          opts.rolesChanged,
-		UpstreamRef:            upstreamRef,
-		UpstreamTag:            upstreamTag,
-		Direct:                 opts.direct,
-		Force:                  opts.force,
-		ReactivateSchedules:    opts.reactivateSchedules,
-		InferenceProject:       opts.inferenceProject,
-		InferenceProjectNumber: opts.inferenceProjectNumber,
-		InferenceRegion:        opts.inferenceRegion,
-		WIFProvider:            opts.inferenceWIFProvider,
-		ReviewAppClientID:      reviewAppClientID,
-		VendorOverride:         vendorOverride,
+		Manifest:                manifest,
+		DryRun:                  opts.dryRun,
+		RepoFilter:              opts.repoFilter,
+		MaxConcurrency:          opts.concurrency,
+		Roles:                   opts.roles,
+		RolesExplicit:           opts.rolesChanged,
+		UpstreamRef:             upstreamRef,
+		UpstreamTag:             upstreamTag,
+		Direct:                  opts.direct,
+		Force:                   opts.force,
+		ReactivateSchedules:     opts.reactivateSchedules,
+		InferenceProject:        opts.inferenceProject,
+		InferenceProjectNumber:  opts.inferenceProjectNumber,
+		InferenceRegion:         opts.inferenceRegion,
+		WIFProvider:             opts.inferenceWIFProvider,
+		ReviewAppClientID:       reviewAppClientID,
+		ReviewAppClientIDAppSet: reviewAppSet,
+		VendorOverride:          vendorOverride,
 	}
 
 	progressFn := func(repo, phase, msg string) {
@@ -1160,8 +1227,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
-			if err := maybeRetireGitLabSharedCredential(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
-				printer.StepWarn(fmt.Sprintf("[%s/%s] Legacy GitLab shared credential retirement failed: %v", item.r.Owner, item.r.Repo, err))
+			if item.r.Error != nil {
+				continue
+			}
+			if err := ensureGitLabPollerPipelineAccess(ctx, fc.Client, gitLabTokenInventory(opts, fc.Client), printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab poller protected-ref pipeline access failed: %v", item.r.Owner, item.r.Repo, err))
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1170,11 +1240,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
-			if item.r.Error != nil {
-				continue
-			}
-			if err := ensureGitLabPollerPipelineAccess(ctx, fc.Client, gitLabTokenInventory(opts, fc.Client), printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
-				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab poller protected-ref pipeline access failed: %v", item.r.Owner, item.r.Repo, err))
+			if err := ensureGitLabPipelineVariableOverrideRole(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab pipeline-variable override role failed: %v", item.r.Owner, item.r.Repo, err))
 				roleFail++
 				item.r.Error = err
 				if item.fresh {

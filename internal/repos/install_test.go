@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
@@ -215,6 +216,7 @@ func markFullyInstalled(fc *forge.FakeClient, owner, repo string) {
 	fullName := owner + "/" + repo
 	fc.VariableValues[fullName+"/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues[fullName+"/FULLSEND_GCP_REGION"] = "us-central1"
+	fc.VariableValues[fullName+"/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	fc.FileContents[fullName+"/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, owner, repo)
 	fc.Secrets[fullName+"/FULLSEND_GCP_PROJECT_ID"] = true
@@ -863,6 +865,7 @@ func TestCheckInstallComponents_GitHub_NoGCPSecrets(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 
 	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
 	if err != nil {
@@ -878,6 +881,7 @@ func TestCheckInstallComponents_GitHub_WithSecrets(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
@@ -1006,6 +1010,65 @@ func TestInstall_FreshInstall_WritesReviewClientID(t *testing.T) {
 	}
 	if v, ok := varMap["FULLSEND_REVIEW_CLIENT_ID"]; !ok || v != "Iv23li1nIorNLIQy6NWK" {
 		t.Errorf("FULLSEND_REVIEW_CLIENT_ID = %q, want %q", v, "Iv23li1nIorNLIQy6NWK")
+	}
+}
+
+func TestInstallVarsForForge_GitHub_IncludesAppSet(t *testing.T) {
+	cfg := InstallConfig{
+		Forge:  ForgeGitHub,
+		AppSet: "custom-set",
+	}
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
+	}
+	if v, ok := vars["FULLSEND_APP_SET"]; !ok || v != "custom-set" {
+		t.Errorf("FULLSEND_APP_SET = %q, want %q", v, "custom-set")
+	}
+}
+
+func TestInstallVarsForForge_GitHub_OmitsEmptyAppSet(t *testing.T) {
+	cfg := InstallConfig{Forge: ForgeGitHub}
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
+	}
+	if _, ok := vars["FULLSEND_APP_SET"]; ok {
+		t.Error("FULLSEND_APP_SET should not be set when AppSet is empty")
+	}
+}
+
+func TestInstallVarsForForge_GitLab_NeverIncludesAppSet(t *testing.T) {
+	cfg := InstallConfig{Forge: ForgeGitLab, AppSet: "custom-set"}
+	vars, err := installVarsForForge(cfg, "")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitLab) error = %v", err)
+	}
+	if _, ok := vars["FULLSEND_APP_SET"]; ok {
+		t.Error("FULLSEND_APP_SET must never be written for GitLab")
+	}
+}
+
+func TestInstall_FreshInstall_WritesAppSet(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := baseCfg()
+	cfg.AppSet = "custom-set"
+	sc := &fakeScaffoldCommit{}
+
+	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Install() returned error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+
+	varMap := make(map[string]string)
+	for _, v := range fc.Variables {
+		varMap[v.Name] = v.Value
+	}
+	if v, ok := varMap["FULLSEND_APP_SET"]; !ok || v != "custom-set" {
+		t.Errorf("FULLSEND_APP_SET = %q, want %q", v, "custom-set")
 	}
 }
 
@@ -1353,6 +1416,7 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		".gitlab/ci/scripts/pin-ci-job-identity.sh",
 		".gitlab/ci/scripts/install-fullsend-cli.sh",
 		".gitlab/ci/scripts/run-poll-job.sh",
 		".gitlab/ci/scripts/run-agent-job.sh",

@@ -45,6 +45,16 @@ func TestDispatchDetectionWindow_AtLeast4Minutes(t *testing.T) {
 		"dispatch detection window (%v) should be at least 4 minutes", dispatchTimeout)
 }
 
+func TestDispatchWait_AtLeast20Minutes(t *testing.T) {
+	t.Parallel()
+
+	// Raised from 12 to 20 minutes so longer-running playback scenarios
+	// (which replay a full dummy-agent pipeline rather than a single
+	// dispatch) have enough budget to complete without timing out.
+	assert.GreaterOrEqual(t, dispatchWait, 20*time.Minute,
+		"harness wait budget (%v) should be at least 20 minutes", dispatchWait)
+}
+
 func TestNextBackoff(t *testing.T) {
 	t.Parallel()
 
@@ -434,7 +444,8 @@ func TestWaitForHarnessAgent_FailFastOnFailure(t *testing.T) {
 	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
-	assert.Nil(t, run)
+	require.NotNil(t, run, "the failed run is returned with the error so its logs can be saved")
+	assert.Equal(t, 42, run.ID)
 	assert.Contains(t, err.Error(), "workflow run 42")
 	assert.Contains(t, err.Error(), `"failure"`)
 	assert.Contains(t, err.Error(), "https://github.com/org/repo/actions/runs/42")
@@ -461,7 +472,8 @@ func TestWaitForHarnessAgent_FailFastOnTimedOut(t *testing.T) {
 	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
-	assert.Nil(t, run)
+	require.NotNil(t, run, "the failed run is returned with the error so its logs can be saved")
+	assert.Equal(t, 50, run.ID)
 	assert.Contains(t, err.Error(), `"timed_out"`)
 }
 
@@ -486,7 +498,8 @@ func TestWaitForHarnessAgent_FailFastOnStartupFailure(t *testing.T) {
 	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
-	assert.Nil(t, run)
+	require.NotNil(t, run, "the failed run is returned with the error so its logs can be saved")
+	assert.Equal(t, 60, run.ID)
 	assert.Contains(t, err.Error(), `"startup_failure"`)
 }
 
@@ -1010,7 +1023,8 @@ func TestWaitForHarnessAgent_BothRunsScheduleAgent_OneFailsIsFatal(t *testing.T)
 	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
-	assert.Nil(t, run)
+	require.NotNil(t, run, "the failed run is returned with the error so its logs can be saved")
+	assert.Equal(t, 100, run.ID)
 	assert.Contains(t, err.Error(), "concluded with \"failure\" before producing artifact")
 }
 
@@ -1050,7 +1064,8 @@ func TestWaitForHarnessAgent_NewerSiblingSucceededOverallButSkippedAgentJobDoesN
 	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
-	assert.Nil(t, run)
+	require.NotNil(t, run, "the failed run is returned with the error so its logs can be saved")
+	assert.Equal(t, 100, run.ID)
 	assert.Contains(t, err.Error(), "concluded with \"failure\" before producing artifact")
 }
 
@@ -1427,7 +1442,8 @@ func TestWaitForHarnessAgent_NewerSiblingWithoutAgentJobDoesNotSuppressFailFast(
 	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
-	assert.Nil(t, run)
+	require.NotNil(t, run, "the failed run is returned with the error so its logs can be saved")
+	assert.Equal(t, 100, run.ID)
 	assert.Contains(t, err.Error(), "workflow run 100")
 	assert.Contains(t, err.Error(), `"failure"`)
 }
@@ -2509,4 +2525,36 @@ func TestFormatRunDiagnosticsWithJobs(t *testing.T) {
 	assert.Equal(t, "recent workflow runs (2):"+
 		"\n  run 1: status=completed conclusion=failure url=https://github.com/org/repo/actions/runs/1; agent job \"dispatch / Harness run (triage)\" status=completed conclusion=failure"+
 		"\n  run 2: status=in_progress conclusion= url=https://github.com/org/repo/actions/runs/2", got)
+}
+
+// TestWaitForHarnessAgent_ArtifactFirstFailureReturnsRun covers the
+// common failure path: the harness uploads fullsend-{agent} with
+// if: always(), so a failed run's artifact is found first. The failed
+// run must come back with the error so the step can save its logs.
+func TestWaitForHarnessAgent_ArtifactFirstFailureReturnsRun(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 10, Name: "fullsend-pi-smoke", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 88},
+		},
+	}
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 88, Status: "completed", Conclusion: "failure", CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL: "https://github.com/org/repo/actions/runs/88",
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		88: {{ID: 1, Name: "dispatch / Harness run (pi-smoke)", Status: "completed", Conclusion: "failure"}},
+	}
+
+	d := newTestDriver(client)
+	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "pi-smoke", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `harness run for "pi-smoke" concluded with "failure"`)
+	require.NotNil(t, run, "the failed run is returned with the error so its logs can be saved")
+	assert.Equal(t, 88, run.ID)
 }

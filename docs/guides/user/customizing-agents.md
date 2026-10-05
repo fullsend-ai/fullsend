@@ -454,7 +454,7 @@ a custom role, see [Custom Agent Identity](custom-agent-identity.md).
 
 > **Note:** The "fix" role reuses the "coder" app and PEM — no separate GitHub App or secret is created for it.
 >
-> **Note:** The default deployment uses a shared vendor App (`fullsend-ai-review[bot]`). Code that gates on a review bot's identity must match both the org-specific and shared vendor forms — see [Bot Identities](../../contributing/bot-identities.md) for details.
+> **Note:** The default deployment uses a shared vendor App (`fullsend-ai-review[bot]`). Code that gates on a review bot's identity must match the org-specific and shared vendor forms, plus `${FULLSEND_APP_SET}-review[bot]` when a custom app set is configured — see [Bot Identities](../../contributing/bot-identities.md) for details.
 
 > **Note:** Mint-only dogfood roles such as `scribe` can be registered with
 > `fullsend mint add-role` (and used via remote harness registration) but are
@@ -553,8 +553,27 @@ role name. The built-in agent names are: `code`, `triage`, `review`,
 agent named `code` — writing `name: coder` passes validation but
 disables nothing because no agent has that harness name.
 
+## Agent dispatch authorization
+
+By default, fullsend checks the forge's permission API to decide who can
+trigger agents. Users with `write` or above can trigger all agents; users
+with `triage` can trigger observation agents (`/fs-triage`, `/fs-review`)
+only. This triage-level access applies to **GitHub webhook dispatch** (slash
+commands, label-triggered dispatch, and event-triggered dispatch). The Go
+poll path used for GitLab and Jira currently requires `write` for all
+non-exception transitions — it does not yet distinguish observation from
+mutation thresholds.
+See the
+[Authorization Contract](../../normative/authorization/v1/README.md) for the
+full role hierarchy, exception rules, and implementation notes.
+
+To extend trigger access beyond forge collaborators using Prow-style
+OWNERS files, see the
+[OWNERS file authorization guide](owners-file-authorization.md).
+
 ## See also
 
+- [OWNERS file authorization](owners-file-authorization.md) — using Prow-style OWNERS files to authorize agent dispatch
 - [Customizing Agents](customizing-overview.md) — overview of all customization approaches
 - [Harness Field Reference](../../reference/harness-reference.md) — complete harness YAML field reference, merge rules, and resource referencing
 - [Bring Your Own Agent](bring-your-own-agent.md) — building and registering custom agents from scratch
@@ -562,6 +581,7 @@ disables nothing because no agent has that harness name.
 - [Configuring with Skills](customizing-with-skills.md) — extending agents with skills
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when does configuration cross into derived or custom agent territory?
 - [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
+- [Authorization Contract](../../normative/authorization/v1/README.md) — role hierarchy, thresholds, and exceptions
 - [Getting Started](../getting-started/) — initial setup
 - [Bugfix Workflow](bugfix-workflow.md) — how agents work together
 - [Standalone Mint](../infrastructure/standalone-mint.md) — running your own mint with custom agent roles

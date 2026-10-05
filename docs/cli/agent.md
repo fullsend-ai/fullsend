@@ -146,6 +146,8 @@ command refuses an unknown one up front. The hosted mint serves these:
 | `retro` | `actions:read`, `contents:read`, `pull_requests:write`, `issues:write`, `metadata:read` | vertex-ai, github-ro, github-artifacts |
 | `prioritize` | `contents:read`, `issues:write`, `organization_projects:write`, `metadata:read` | vertex-ai, github-ro |
 
+A `review` agent also gets `readonly_repo: true`: the checked-out repository is made read-only in the sandbox, so a reviewer cannot modify the code it reviews. That matches `harness/review.yaml` in fullsend-ai/agents.
+
 Pick the role whose permissions fit what the agent does. An unknown role fails
 immediately with this table, rather than returning `403` from the mint the
 first time the agent runs. To use a role the hosted mint does not serve, you
@@ -317,15 +319,22 @@ The tail of a successful run:
   • Cleaning up sandbox
   ✓ Sandbox deleted (45.7s)
   • Running post-script: .fullsend/scripts/post-lint-docs.sh
+::stop-commands::0e3a20110bf83ae618cd260cbd0e67e4
 **2 broken links added in docs/**
 
 ### Broken links
 
 - `docs/a.md:14` -> `../missing.md`
 - `docs/b.md:3` -> `/docs/gone.md`
+::0e3a20110bf83ae618cd260cbd0e67e4::
 post-lint-docs: dry run, not posting
   ✓ Post-script completed (0.1s)
 ```
+
+The `::stop-commands::` lines around the preview stop GitHub Actions from
+reading anything the model wrote as a workflow command. The token is
+random on every run, so the model cannot predict the line that closes the
+block.
 
 With `--runtime claude`, the same agent against a real pull request — the
 model does the work, the schema gate runs, and the post-script still only
@@ -383,7 +392,7 @@ request.
 | `fullsend dir ... does not exist; run ` + "`fullsend github setup`" + ` first` | `--fullsend-dir` points at nothing | Scaffold the repo first |
 | `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that is not committed next to it. Neither `fullsend github setup` nor CI creates one | Commit a copy of the fleet policy in [fullsend-ai/agents](https://github.com/fullsend-ai/agents) at the path the error shows, or set `policy:` to its URL with a `#sha256=` hash, under a prefix listed in `allowed_remote_resources`. Re-running `agent new` on this agent name does not help — it refuses (registered name or existing files, see the rows above) rather than adding the missing policy |
 | Agent crashes at 0s in CI | A profile file is missing (locally, a provider file can be missing too) | Commit `profiles/` next to the harness. CI layers `providers/` for you, but never `profiles/` |
-| `runner env ... is not set` at `fullsend run` | A `${VAR}` in the harness `env` block is unset | `agent new` does not check host variables at generation time; supply them via `--env-file` locally or the workflow `env:` block in CI |
+| `validating env:` followed by unresolved host variables at `fullsend run` | A `${VAR}` in an environment-aware harness field is unset | `agent new` does not check host variables at generation time; supply them via `--env-file` locally or the workflow `env:` block in CI |
 
 ## `agent add`
 

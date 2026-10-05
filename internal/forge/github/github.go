@@ -585,7 +585,7 @@ func (c *LiveClient) getConditional(ctx context.Context, path, etag string) (res
 // etagMaxBodyBytes. If v cannot decode a cached body, the entry is
 // dropped so the next request is a plain GET rather than a replay of the
 // same failure.
-func (c *LiveClient) getCachedJSON(ctx context.Context, path, decodeLabel string, v any) error {
+func (c *LiveClient) getCachedJSON(ctx context.Context, path string, v any) error {
 	key := c.baseURL + path
 	// Don't start a detached fetch for a caller that has already given up.
 	if err := ctx.Err(); err != nil {
@@ -618,7 +618,7 @@ func (c *LiveClient) getCachedJSON(ctx context.Context, path, decodeLabel string
 	// straight from the shared body is safe; the cache holds its own copy.
 	if err := json.Unmarshal(fetched.body, v); err != nil {
 		c.dropCachedETag(key, fetched.etag)
-		return fmt.Errorf("%s: %w", decodeLabel, err)
+		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	return nil
 }
@@ -646,7 +646,8 @@ func (c *LiveClient) fetchConditional(ctx context.Context, key, path string) (co
 		if !ok {
 			return conditionalBody{}, fmt.Errorf("GET %s: 304 Not Modified without a cached entry", path)
 		}
-		return conditionalBody{etag: prev.etag, body: prev.body}, nil
+		// Return a copy: prev.body is the cached backing array.
+		return conditionalBody{etag: prev.etag, body: slices.Clone(prev.body)}, nil
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
@@ -3081,6 +3082,41 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 	return result, nil
 }
 
+// GetIssueComment fetches a single comment by its numeric ID. GitHub
+// addresses comments globally (no issue number needed in the path).
+// owner and repo are percent-escaped into the request path: callers are
+// expected to pass validated identifiers, but escaping keeps a stray
+// delimiter in either field from being interpreted as a path or query
+// separator instead of literal owner/repo data.
+// Returns forge.ErrNotFound (wrapped) if the comment does not exist.
+func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*forge.IssueComment, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", url.PathEscape(owner), url.PathEscape(repo), commentID))
+	if err != nil {
+		return nil, fmt.Errorf("get issue comment %d: %w", commentID, err)
+	}
+	var result struct {
+		ID      int    `json:"id"`
+		NodeID  string `json:"node_id"`
+		HTMLURL string `json:"html_url"`
+		Body    string `json:"body"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode issue comment %d: %w", commentID, err)
+	}
+	return &forge.IssueComment{
+		ID:        result.ID,
+		NodeID:    result.NodeID,
+		HTMLURL:   result.HTMLURL,
+		Body:      result.Body,
+		Author:    result.User.Login,
+		CreatedAt: result.CreatedAt,
+	}, nil
+}
+
 // CreateIssueComment creates a new comment on an issue or pull request.
 func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
 	payload := map[string]string{"body": body}
@@ -3111,10 +3147,11 @@ func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string,
 	}, nil
 }
 
-// UpdateIssueComment updates the body of an existing issue comment.
+// UpdateIssueComment updates the body of an existing issue comment. See
+// GetIssueComment for why owner and repo are percent-escaped.
 func (c *LiveClient) UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error {
 	payload := map[string]string{"body": body}
-	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", owner, repo, commentID), payload)
+	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d", url.PathEscape(owner), url.PathEscape(repo), commentID), payload)
 	if err != nil {
 		return fmt.Errorf("update issue comment %d: %w", commentID, err)
 	}
@@ -3578,7 +3615,7 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 			CreatedAt  string `json:"created_at"`
 		} `json:"workflow_runs"`
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=10", owner, repo, workflowFile), "decode workflow runs", &result); err != nil {
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?per_page=10", owner, repo, workflowFile), &result); err != nil {
 		return nil, fmt.Errorf("list workflow runs: %w", err)
 	}
 	runs := make([]forge.WorkflowRun, len(result.WorkflowRuns))
@@ -3615,7 +3652,7 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 			CreatedAt  string `json:"created_at"`
 		} `json:"workflow_runs"`
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage), "decode recent workflow runs", &result); err != nil {
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage), &result); err != nil {
 		return nil, fmt.Errorf("list recent workflow runs: %w", err)
 	}
 	runs := make([]forge.WorkflowRun, len(result.WorkflowRuns))
@@ -3643,7 +3680,7 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 			Conclusion string `json:"conclusion"`
 		} `json:"jobs"`
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID), "decode workflow run jobs", &result); err != nil {
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=100", owner, repo, runID), &result); err != nil {
 		return nil, fmt.Errorf("list workflow run jobs: %w", err)
 	}
 	jobs := make([]forge.WorkflowJob, len(result.Jobs))
@@ -3666,7 +3703,7 @@ func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo s
 			Name string `json:"name"`
 		} `json:"artifacts"`
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID), "decode workflow run artifacts", &result); err != nil {
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID), &result); err != nil {
 		return nil, fmt.Errorf("list workflow run artifacts: %w", err)
 	}
 	artifacts := make([]forge.WorkflowArtifact, len(result.Artifacts))
@@ -3723,7 +3760,7 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 			} `json:"workflow_run"`
 		} `json:"artifacts"`
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/artifacts?per_page=%d", owner, repo, perPage), "decode repository artifacts", &result); err != nil {
+	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/artifacts?per_page=%d", owner, repo, perPage), &result); err != nil {
 		return nil, fmt.Errorf("list repository artifacts: %w", err)
 	}
 	artifacts := make([]forge.RepositoryArtifact, 0, len(result.Artifacts))
@@ -4292,6 +4329,12 @@ func (c *LiveClient) GrantProtectedBranchMergeUser(_ context.Context, _, _, _ st
 
 // CreatePipeline is not supported on GitHub.
 func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[string]string) (*forge.Pipeline, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// CreatePipelineWithInputs is not supported on GitHub. GitHub Actions has
+// no equivalent to GitLab CI/CD Inputs for API-triggered workflow runs.
+func (c *LiveClient) CreatePipelineWithInputs(_ context.Context, _, _, _ string, _ map[string]forge.PipelineInputValue) (*forge.Pipeline, error) {
 	return nil, forge.ErrNotSupported
 }
 

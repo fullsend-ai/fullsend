@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// BuiltinRoleCheck is the cutover-readiness result for one built-in
+// BuiltinRoleCheck is the readiness result for one built-in
 // GitLab role. Reasons carry secret *names* only.
 type BuiltinRoleCheck struct {
 	Name         Role
@@ -32,7 +32,7 @@ type BuiltinReadiness struct {
 	Diagnostics []string
 }
 
-// RegisteredRoleReadiness is the cutover-readiness result for one registered
+// RegisteredRoleReadiness is the readiness result for one registered
 // role. Unlike BuiltinRoleCheck, it does not assume a fixed capability
 // contract: administrator-registered roles are verified against the policy
 // they declared in the trusted registry and against every agent they claim.
@@ -46,9 +46,9 @@ type RegisteredRoleReadiness struct {
 }
 
 // RegisteredReadiness verifies every role in the registry, including custom
-// roles. It is the final authorization check used before cutover. A custom
-// role with no agent mapping is not cutover-ready, and every mapped agent must
-// resolve to that role's own credential in enforced mode.
+// roles. It is the authorization check role routing enforces. A custom
+// role with no agent mapping is not ready, and every mapped agent must
+// resolve to that role's own credential.
 type RegisteredReadiness struct {
 	Roles       []RegisteredRoleReadiness
 	Ready       bool
@@ -307,7 +307,7 @@ func finishBuiltinCheck(c BuiltinRoleCheck) BuiltinRoleCheck {
 
 // WithLifecycle downgrades a role's readiness to not-ready when its
 // credential lifecycle is expired, revoked, or unverified. A present secret
-// is not sufficient for cutover if its project access token is unusable.
+// is not sufficient for readiness if its project access token is unusable.
 func (br BuiltinReadiness) WithLifecycle(lifecycle map[Role]LifecycleState) BuiltinReadiness {
 	if len(lifecycle) == 0 {
 		return br

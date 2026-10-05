@@ -1617,6 +1617,150 @@ func TestEnsurer_ConfigPreset_ForwardsConfigFlag(t *testing.T) {
 	assert.Contains(t, cliCalls[0], "--vendor")
 }
 
+// --- InstallHooks tests ---
+
+func TestDoEnsure_RunsBeforeAndAfterInstallHooksInOrder(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	var order []string
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:    &stubClient{installed: true},
+		binary:    "/usr/bin/fullsend",
+		token:     "tok",
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		runCLI: func(_, _ string, _ ...string) (string, error) {
+			order = append(order, "install")
+			return "", nil
+		},
+		hooks: InstallHooks{
+			BeforeInstall: func(context.Context, forge.Client, string, string) (any, error) {
+				order = append(order, "before")
+				return "hook-state", nil
+			},
+			AfterInstall: func(_ context.Context, _ forge.Client, _, _ string, state any) error {
+				order = append(order, fmt.Sprintf("after:%v", state))
+				return nil
+			},
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-hooks")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"before", "install", "after:hook-state"}, order,
+		"BeforeInstall must run before github setup, AfterInstall after validation, threading hook state through")
+}
+
+func TestDoEnsure_BeforeInstallHookError_SkipsInstall(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	installCalled := false
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:    &stubClient{installed: true},
+		binary:    "/usr/bin/fullsend",
+		token:     "tok",
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		runCLI: func(_, _ string, _ ...string) (string, error) {
+			installCalled = true
+			return "", nil
+		},
+		hooks: InstallHooks{
+			BeforeInstall: func(context.Context, forge.Client, string, string) (any, error) {
+				return nil, fmt.Errorf("pre-install check failed")
+			},
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-hooks")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pre-install check failed")
+	assert.False(t, installCalled, "github setup must not run when BeforeInstall fails")
+}
+
+func TestDoEnsure_AfterInstallHookError_Propagated(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:    &stubClient{installed: true},
+		binary:    "/usr/bin/fullsend",
+		token:     "tok",
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		runCLI:    noopCLI,
+		hooks: InstallHooks{
+			AfterInstall: func(context.Context, forge.Client, string, string, any) error {
+				return fmt.Errorf("tracking issue setup failed")
+			},
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-hooks")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tracking issue setup failed")
+}
+
+func TestDoEnsure_PlaybackRuntime_ValidatesAgainstInstalledRuntime(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	playbackFiles := map[string][]byte{
+		".github/workflows/fullsend.yaml": []byte("# shim"),
+		".fullsend/config.yaml":           []byte("version: \"1\"\nruntime: dummy-playback\n"),
+		scaffold.VendoredMarkerPath():     []byte("marker"),
+		vendoredBinaryPathPerRepo:         []byte("binary"),
+	}
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: &stubClientWithCustomFiles{
+			stubClient: stubClient{},
+			files:      playbackFiles,
+		},
+		binary:    "/usr/bin/fullsend",
+		token:     "tok",
+		setupOpts: common.GitHubSetupOpts{Vendor: true, Runtime: "dummy-playback"},
+		runCLI:    noopCLI,
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-playback")
+	require.NoError(t, err)
+}
+
+func TestDoEnsure_PlaybackRuntime_DummyInstallFailsPlaybackValidation(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	// Installed config still says "dummy" (e.g. a stale/incomplete
+	// playback install), but the ensurer expects "dummy-playback" —
+	// validation must catch the mismatch rather than silently pass.
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:    &stubClient{installed: true},
+		binary:    "/usr/bin/fullsend",
+		token:     "tok",
+		setupOpts: common.GitHubSetupOpts{Vendor: true, Runtime: "dummy-playback"},
+		runCLI:    noopCLI,
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-playback-mismatch")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "want dummy-playback")
+}
+
 // stubClientWithCustomFiles is a test double that returns custom file
 // contents instead of using the global installedStubFiles map.
 type stubClientWithCustomFiles struct {

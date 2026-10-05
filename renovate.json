@@ -116,6 +116,19 @@
     },
     {
       "customType": "regex",
+      "description": "Track the Go toolchain version pin baked into the code and runner sandbox images (images/code/Containerfile and images/runner/Containerfile, which must stay in sync per their own comments). GO_SHA256_{AMD64,ARM64} in both files must be refreshed manually from https://go.dev/dl/?mode=json — the image build fails on checksum mismatch until they are.",
+      "managerFilePatterns": [
+        "/^images/code/Containerfile$/",
+        "/^images/runner/Containerfile$/"
+      ],
+      "matchStrings": [
+        "ARG GO_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "golang",
+      "datasourceTemplate": "golang-version"
+    },
+    {
+      "customType": "regex",
       "description": "Track wranglerVersion pins in site-deploy.yml so they bump with the cloudflare-workers group",
       "managerFilePatterns": ["/^\\.github/workflows/site-deploy\\.yml$/"],
       "matchStrings": [

@@ -300,6 +300,10 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 	ctx := context.Background()
 	run, err := w.CI.WaitForHarnessAgent(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 	if err != nil {
+		// A failed harness run is the one whose logs matter most, and the
+		// pool repository (with its run logs) is deleted when the lease
+		// ends, so save them before returning.
+		saveWorkflowRunLogs(ctx, w, agent, run)
 		return err
 	}
 	w.WorkflowRun = run

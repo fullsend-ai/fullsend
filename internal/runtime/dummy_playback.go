@@ -6,15 +6,17 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -43,23 +45,20 @@ type PlaybackEntry struct {
 // gitCommitFunc is the function signature for committing playlist advances.
 type gitCommitFunc func(playlistPath string, playlist *Playlist) error
 
-// forgeAPIFunc executes a forge CLI API call and returns stdout.
-// The default implementation shells out to the CLI binary (gh or glab).
-type forgeAPIFunc func(ctx context.Context, cli string, args ...string) ([]byte, error)
-
 // DummyPlaybackRuntime replays canned agent results from an ordered playlist.
 // Each invocation serves the result at the current index, writes result.json to
 // output/agent-result.json, copies any companion files into the workspace, and
 // advances the index via a git commit+push.
 //
-// ExecFn, UploadFn, GitCommitFn, and ForgeAPIFn are optional test overrides;
-// production uses sandbox.Exec, sandbox.Upload, a real git commit+push, and
-// exec.CommandContext for forge API calls.
+// ExecFn, UploadFn, and GitCommitFn are optional test overrides; production
+// uses sandbox.Exec, sandbox.Upload, and a real git commit+push. Forge API
+// calls (reading/updating the tracking comment) go through
+// RunParams.ForgeClient — per the forge-abstraction rule, this runtime must
+// not shell out to `gh`/`glab` itself.
 type DummyPlaybackRuntime struct {
 	ExecFn      sandboxExecFunc
 	UploadFn    sandboxUploadFunc
 	GitCommitFn gitCommitFunc
-	ForgeAPIFn  forgeAPIFunc
 }
 
 func (r DummyPlaybackRuntime) execFn() sandboxExecFunc {
@@ -74,19 +73,6 @@ func (r DummyPlaybackRuntime) uploadFn() sandboxUploadFunc {
 		return r.UploadFn
 	}
 	return sandbox.Upload
-}
-
-func (r DummyPlaybackRuntime) forgeAPIFn() forgeAPIFunc {
-	if r.ForgeAPIFn != nil {
-		return r.ForgeAPIFn
-	}
-	return defaultForgeAPI
-}
-
-// defaultForgeAPI shells out to the forge CLI binary.
-func defaultForgeAPI(ctx context.Context, cli string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, cli, args...)
-	return cmd.Output()
 }
 
 func (DummyPlaybackRuntime) Name() string { return "dummy-playback" }
@@ -127,7 +113,7 @@ func (r DummyPlaybackRuntime) Run(ctx context.Context, params RunParams, printer
 	}
 
 	var commentRef playbackCommentRef
-	if current, ref, ok := readPlaybackComment(ctx, params.FullsendDir, r.forgeAPIFn()); ok {
+	if current, ref, ok := readPlaybackComment(ctx, params.FullsendDir, params.ForgeClient); ok {
 		playlist.Current = current
 		commentRef = ref
 	} else if _, statErr := os.Stat(filepath.Join(params.FullsendDir, playbackCommentFile)); statErr == nil {
@@ -140,7 +126,7 @@ func (r DummyPlaybackRuntime) Run(ctx context.Context, params RunParams, printer
 
 	idx := playlist.Current - 1
 	if idx < 0 || idx >= len(playlist.Results) {
-		if commentRef.path != "" {
+		if !commentRef.isZero() {
 			return 1, fmt.Errorf("tracking comment returned invalid position: current=%d, results=%d", playlist.Current, len(playlist.Results))
 		}
 		return 1, fmt.Errorf("playlist exhausted: current=%d, results=%d", playlist.Current, len(playlist.Results))
@@ -198,8 +184,8 @@ func (r DummyPlaybackRuntime) Run(ctx context.Context, params RunParams, printer
 	if err := r.advancePlaylist(playlistPath, playlist); err != nil {
 		printer.StepWarn(fmt.Sprintf("dummy-playback: failed to advance playlist: %v", err))
 	}
-	if commentRef.path != "" {
-		if err := updatePlaybackComment(ctx, commentRef, playlist.Current, r.forgeAPIFn()); err != nil {
+	if !commentRef.isZero() {
+		if err := updatePlaybackComment(ctx, params.ForgeClient, commentRef, playlist.Current); err != nil {
 			printer.StepWarn(fmt.Sprintf("dummy-playback: failed to update tracking comment: %v", err))
 		}
 	}
@@ -381,13 +367,57 @@ func (r DummyPlaybackRuntime) advancePlaylist(playlistPath string, playlist *Pla
 	return localAdvancePlaylist(playlistPath, playlist)
 }
 
-// playbackCommentRef holds the CLI tool and API path for tracking comment
-// operations. The file format is "<cli>\n<path>" (e.g. "gh\n/repos/…" or
-// "glab\n/projects/…"). Legacy single-line files default to gh.
+// githubCommentPathRe and gitlabCommentPathRe recognize the REST API path
+// shapes playback_driver.go commits into the tracking-comment file, and
+// extract the owner, repo, and comment/note ID (plus, for GitLab, the
+// noteable type and IID) so the runtime can address the comment through
+// forge.Client instead of replaying the path against the forge CLI. The
+// GitLab project segment is percent-encoded ("org%2Frepo").
+//
+// Owner and repo segments are restricted to the charset GitHub/GitLab
+// actually allow in identifiers (alphanumerics, hyphens, underscores,
+// dots): a wider class such as `[^/]+` would also accept URL delimiters
+// (`?`, `#`) or encoded separators, letting a crafted path redirect the
+// request to a different endpoint or smuggle query data once owner/repo
+// are interpolated back into a request path (see decodeCommentPath and
+// the GitHub client's GetIssueComment/UpdateIssueComment).
+//
+// The GitLab project segment's capture group only restricts the overall
+// charset (still excluding URL delimiters); it does not anchor the first
+// and last characters, because those rules differ per decoded path
+// component (and GitLab allows a leading underscore on a namespace and a
+// trailing underscore/hyphen on a project name). decodeCommentPath
+// validates each decoded namespace/project component individually against
+// GitLab's own identifier rules.
+var (
+	githubCommentPathRe = regexp.MustCompile(`^/repos/([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/([A-Za-z0-9._-]+)/issues/comments/(\d+)$`)
+	gitlabCommentPathRe = regexp.MustCompile(`^/projects/([A-Za-z0-9._%-]+)/(issues|merge_requests)/(\d+)/notes/(\d+)$`)
+)
+
+// playbackCommentRef identifies the forge comment the dummy-playback
+// runtime uses to track its position across sandbox invocations, resolved
+// to the fields forge.Client (and, for GitLab, forge.GitLabExtensions)
+// operate on. The committed file format is "<cli>\n<path>" (e.g.
+// "gh\n/repos/…" or "glab\n/projects/…"); legacy single-line files default
+// to gh. cli only selects which regex decodes path — the actual forge call
+// goes through whichever forge.Client the caller supplies via
+// RunParams.ForgeClient, which must already correspond to the active
+// Forge platform.
+//
+// noteableType and noteableIID are populated only for GitLab refs (empty
+// and zero for GitHub). They identify the note's parent (an issue or a
+// merge request) directly, so readPlaybackComment/updatePlaybackComment
+// can address it through forge.GitLabExtensions instead of the ID-only
+// scan GetIssueComment/UpdateIssueComment fall back to — a scan that is
+// driven by the resolved client's own fixed noteTarget and so cannot find
+// a note whose actual parent type differs from how that client was built
+// (e.g. an issue tracking reference during MR CI).
 type playbackCommentRef struct {
-	cli    string // "gh" or "glab"
-	path   string // forge-specific REST API path
-	method string // HTTP method for updates: "PATCH" (GitHub) or "PUT" (GitLab)
+	owner        string
+	repo         string
+	commentID    int
+	noteableType string
+	noteableIID  int
 }
 
 func parsePlaybackCommentRef(data string) (playbackCommentRef, bool) {
@@ -398,13 +428,8 @@ func parsePlaybackCommentRef(data string) (playbackCommentRef, bool) {
 		return playbackCommentRef{}, false
 	}
 	if !found {
-		// Legacy single-line format: the entire value is the API path.
-		// Validate it starts with "/" to prevent argument injection
-		// (e.g. "--hostname=attacker.com" interpreted as a flag by gh).
-		if !strings.HasPrefix(cli, "/") {
-			return playbackCommentRef{}, false
-		}
-		return playbackCommentRef{cli: "gh", path: cli, method: "PATCH"}, true
+		// Legacy single-line format: the entire value is the GitHub API path.
+		return decodeCommentPath("gh", cli)
 	}
 	if cli != "gh" && cli != "glab" {
 		return playbackCommentRef{}, false
@@ -413,33 +438,164 @@ func parsePlaybackCommentRef(data string) (playbackCommentRef, bool) {
 	if path == "" || strings.ContainsAny(path, "\n\r") {
 		return playbackCommentRef{}, false
 	}
-	// Validate path starts with "/" to prevent argument injection.
-	if !strings.HasPrefix(path, "/") {
-		return playbackCommentRef{}, false
-	}
-	method := "PATCH"
-	if cli == "glab" {
-		method = "PUT"
-	}
-	return playbackCommentRef{cli: cli, path: path, method: method}, true
+	return decodeCommentPath(cli, path)
 }
 
-func readPlaybackComment(ctx context.Context, fullsendDir string, apiFn forgeAPIFunc) (int, playbackCommentRef, bool) {
+// decodeCommentPath extracts owner, repo, and commentID from a GitHub or
+// GitLab REST API path. Rejecting anything that does not match one of the
+// two known shapes is deliberate: the path previously doubled as literal
+// CLI arguments (and so was validated only against argument injection);
+// now that it is parsed into structured fields instead of being replayed
+// on a command line, requiring an exact match is the natural tightening
+// of that same validation.
+func decodeCommentPath(cli, path string) (playbackCommentRef, bool) {
+	switch cli {
+	case "gh":
+		m := githubCommentPathRe.FindStringSubmatch(path)
+		if m == nil {
+			return playbackCommentRef{}, false
+		}
+		commentID, err := strconv.Atoi(m[3])
+		if err != nil {
+			return playbackCommentRef{}, false
+		}
+		return playbackCommentRef{owner: m[1], repo: m[2], commentID: commentID}, true
+	case "glab":
+		m := gitlabCommentPathRe.FindStringSubmatch(path)
+		if m == nil {
+			return playbackCommentRef{}, false
+		}
+		decoded, err := url.PathUnescape(m[1])
+		if err != nil {
+			return playbackCommentRef{}, false
+		}
+		// GitLab project paths can be nested ("group/subgroup/project"), so
+		// the repo (leaf project name) is everything after the last slash.
+		// Each namespace component and the project leaf have different
+		// GitLab-compatible identifier rules (see isGitLabNamespaceComponent
+		// and isGitLabProjectComponent), so validate them individually
+		// rather than requiring the whole decoded path to start and end
+		// alphanumeric.
+		parts := strings.Split(decoded, "/")
+		if len(parts) < 2 {
+			return playbackCommentRef{}, false
+		}
+		namespaces, repo := parts[:len(parts)-1], parts[len(parts)-1]
+		for _, ns := range namespaces {
+			if !isGitLabNamespaceComponent(ns) {
+				return playbackCommentRef{}, false
+			}
+		}
+		if !isGitLabProjectComponent(repo) {
+			return playbackCommentRef{}, false
+		}
+		owner := strings.Join(namespaces, "/")
+		noteableType := m[2]
+		noteableIID, err := strconv.Atoi(m[3])
+		if err != nil {
+			return playbackCommentRef{}, false
+		}
+		commentID, err := strconv.Atoi(m[4])
+		if err != nil {
+			return playbackCommentRef{}, false
+		}
+		return playbackCommentRef{
+			owner:        owner,
+			repo:         repo,
+			commentID:    commentID,
+			noteableType: noteableType,
+			noteableIID:  noteableIID,
+		}, true
+	default:
+		return playbackCommentRef{}, false
+	}
+}
+
+// isGitLabNamespaceComponent reports whether s is a valid single path
+// segment for a GitLab user or group name, mirroring upstream's
+// NAMESPACE_FORMAT_REGEX (see
+// https://github.com/gitlabhq/gitlabhq/blob/master/lib/gitlab/path_regex.rb):
+// a single character must be alphanumeric or an underscore; a longer
+// segment may start with an alphanumeric, underscore, or dot, may
+// contain alphanumerics, underscores, hyphens, and dots in the middle,
+// and must end with an alphanumeric, underscore, or hyphen. Notably, a
+// leading underscore is allowed (e.g. "_namespace").
+func isGitLabNamespaceComponent(s string) bool {
+	if s == "" {
+		return false
+	}
+	if len(s) == 1 {
+		c := s[0]
+		return isAlphanumByte(c) || c == '_'
+	}
+	first := s[0]
+	if !isAlphanumByte(first) && first != '_' && first != '.' {
+		return false
+	}
+	last := s[len(s)-1]
+	if !isAlphanumByte(last) && last != '_' && last != '-' {
+		return false
+	}
+	for i := 1; i < len(s)-1; i++ {
+		c := s[i]
+		if !isAlphanumByte(c) && c != '_' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// isGitLabProjectComponent reports whether s is a valid GitLab project
+// (repository) path segment, mirroring upstream's
+// PROJECT_PATH_FORMAT_REGEX: it must start with an alphanumeric,
+// underscore, or dot, and may otherwise contain alphanumerics,
+// underscores, hyphens, and dots anywhere else in the segment — including
+// as the last character, so a trailing underscore or hyphen (e.g.
+// "repo_", "repo-") is valid. A trailing ".git" or ".atom" suffix is
+// reserved by GitLab and rejected.
+func isGitLabProjectComponent(s string) bool {
+	if s == "" {
+		return false
+	}
+	first := s[0]
+	if !isAlphanumByte(first) && first != '_' && first != '.' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if !isAlphanumByte(c) && c != '_' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return !strings.HasSuffix(s, ".git") && !strings.HasSuffix(s, ".atom")
+}
+
+func isAlphanumByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// isZero reports whether ref is the zero value, i.e. parsing or resolving
+// the tracking comment failed and there is nothing to read or update.
+func (ref playbackCommentRef) isZero() bool {
+	return ref == playbackCommentRef{}
+}
+
+func readPlaybackComment(ctx context.Context, fullsendDir string, client forge.Client) (int, playbackCommentRef, bool) {
 	data, err := os.ReadFile(filepath.Join(fullsendDir, playbackCommentFile))
 	if err != nil {
 		return 0, playbackCommentRef{}, false
 	}
 	ref, ok := parsePlaybackCommentRef(string(data))
-	if !ok {
+	if !ok || client == nil {
 		return 0, playbackCommentRef{}, false
 	}
 	apiCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := apiFn(apiCtx, ref.cli, "api", ref.path, "--jq", ".body")
+	comment, err := fetchPlaybackComment(apiCtx, client, ref)
 	if err != nil {
 		return 0, playbackCommentRef{}, false
 	}
-	body := strings.TrimSpace(string(out))
+	body := strings.TrimSpace(comment.Body)
 	if !strings.HasPrefix(body, "playback-current: ") {
 		return 0, playbackCommentRef{}, false
 	}
@@ -453,16 +609,46 @@ func readPlaybackComment(ctx context.Context, fullsendDir string, apiFn forgeAPI
 	return val, ref, true
 }
 
-func updatePlaybackComment(ctx context.Context, ref playbackCommentRef, newValue int, apiFn forgeAPIFunc) error {
+func updatePlaybackComment(ctx context.Context, client forge.Client, ref playbackCommentRef, newValue int) error {
+	if client == nil {
+		return fmt.Errorf("updating playback comment: no forge client available")
+	}
 	apiCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	body := fmt.Sprintf("playback-current: %d", newValue)
-	_, err := apiFn(apiCtx, ref.cli, "api", "--method", ref.method, ref.path,
-		"-f", fmt.Sprintf("body=%s", body))
-	if err != nil {
+	if err := updatePlaybackCommentBody(apiCtx, client, ref, body); err != nil {
 		return fmt.Errorf("updating playback comment: %w", err)
 	}
 	return nil
+}
+
+// fetchPlaybackComment reads the tracking comment identified by ref. For a
+// GitLab ref (ref.noteableType set) it addresses the note directly by its
+// parent's type and IID via forge.GitLabExtensions when the resolved
+// client supports it, instead of client.GetIssueComment's ID-only scan —
+// a scan bounded by, and driven by, the client's own fixed noteTarget, so
+// it cannot find a note whose actual parent type differs from how that
+// client was built (e.g. an issue tracking reference during MR CI). A
+// GitHub ref, or a GitLab client that does not implement the extension,
+// falls back to the cross-forge GetIssueComment.
+func fetchPlaybackComment(ctx context.Context, client forge.Client, ref playbackCommentRef) (*forge.IssueComment, error) {
+	if ref.noteableType != "" {
+		if gl, ok := client.(forge.GitLabExtensions); ok {
+			return gl.GetNoteOnParent(ctx, ref.owner, ref.repo, ref.noteableType, ref.noteableIID, ref.commentID)
+		}
+	}
+	return client.GetIssueComment(ctx, ref.owner, ref.repo, ref.commentID)
+}
+
+// updatePlaybackCommentBody updates the tracking comment identified by
+// ref. See fetchPlaybackComment for the direct-addressing rationale.
+func updatePlaybackCommentBody(ctx context.Context, client forge.Client, ref playbackCommentRef, body string) error {
+	if ref.noteableType != "" {
+		if gl, ok := client.(forge.GitLabExtensions); ok {
+			return gl.UpdateNoteOnParent(ctx, ref.owner, ref.repo, ref.noteableType, ref.noteableIID, ref.commentID, body)
+		}
+	}
+	return client.UpdateIssueComment(ctx, ref.owner, ref.repo, ref.commentID, body)
 }
 
 func injectReviewMetadata(content []byte, forge string, printer *ui.Printer) []byte {

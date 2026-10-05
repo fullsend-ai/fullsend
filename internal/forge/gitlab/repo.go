@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -843,6 +844,13 @@ func withSkipCI(message string) string {
 type commitOptions struct {
 	force    bool
 	startSHA string
+	// existingBranch is true when startSHA is the observed tip of a
+	// branch already known to exist (CommitFileToBranch's CAS-update
+	// path), as opposed to a creation base used while racing to create a
+	// branch for the first time (empty expectedSHA). See the "already
+	// exists" handling in commitFilesImpl for why this distinction
+	// matters on self-hosted GitLab EE.
+	existingBranch bool
 }
 
 // CommitFileToBranch commits a single file to branch without force-re-root.
@@ -854,13 +862,19 @@ type commitOptions struct {
 // GitLab creates the branch rather than force-resetting it. If a concurrent
 // writer created the branch first, GitLab reports it as already-exists,
 // which is mapped to forge.ErrNonFastForward below so persistWithCAS reloads
-// the new tip and retries instead of overwriting it. The commit message is
-// suffixed with [skip ci] when not already present.
+// the new tip and retries instead of overwriting it. A non-empty
+// expectedSHA means the branch is already known to exist; some GitLab
+// editions (observed on self-hosted EE v19.2.7, see issue #7892)
+// unconditionally reject start_sha for an already-existing branch even
+// when it matches the current tip, so commitFilesImpl retries that case
+// once without start_sha after confirming the live tip has not moved. The
+// commit message is suffixed with [skip ci] when not already present.
 func (c *LiveClient) CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte, expectedSHA string) error {
 	if branch == "" || path == "" {
 		return fmt.Errorf("commit file: branch and path are required")
 	}
 	startSHA := expectedSHA
+	existingBranch := expectedSHA != ""
 	if startSHA == "" {
 		root, err := c.resolveRootCommitSHA(ctx, owner, repo)
 		if err != nil {
@@ -870,7 +884,7 @@ func (c *LiveClient) CommitFileToBranch(ctx context.Context, owner, repo, branch
 	}
 	_, err := c.commitFilesImpl(ctx, owner, repo, branch, withSkipCI(message), []forge.TreeFile{
 		{Path: path, Content: content, Mode: "100644"},
-	}, commitOptions{startSHA: startSHA})
+	}, commitOptions{startSHA: startSHA, existingBranch: existingBranch})
 	if err != nil {
 		// A same-named branch created between load and commit (including a
 		// concurrent first writer racing branch creation from an empty
@@ -984,8 +998,11 @@ func (c *LiveClient) CommitFilesToBranch(ctx context.Context, owner, repo, branc
 // cause a 409 Conflict (mapped to ErrNonFastForward) or a 400 Bad Request
 // with "already exists" when start_sha is a non-tip commit used to create
 // a branch that another writer just created (mapped to ErrAlreadyExists so
-// CommitFileToBranch can surface ErrNonFastForward). The GitHub client
-// shares this structural pattern.
+// CommitFileToBranch can surface ErrNonFastForward). A 400 "already exists"
+// on opts.existingBranch instead means this GitLab edition rejects
+// start_sha for a branch that was already known to exist — see
+// retryCommitWithoutStartSHA. The GitHub client shares this structural
+// pattern.
 //
 // When opts.force is set with opts.startSHA, the commit is re-rooted on
 // that SHA and the target branch is force-updated (created if absent).
@@ -1121,10 +1138,220 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 			// to ErrNonFastForward.
 			if apiErr.StatusCode == http.StatusBadRequest &&
 				strings.Contains(msg, "already exists") {
+				if opts.existingBranch {
+					// On self-hosted GitLab EE (observed on v19.2.7-ee,
+					// see issue #7892), the commits API unconditionally
+					// rejects start_sha for an already-existing branch —
+					// even when start_sha exactly matches the branch's
+					// current tip. Unlike the empty-expectedSHA create
+					// race above, opts.existingBranch means the branch
+					// was already known to exist before this POST, so
+					// "already exists" here is never a genuine create
+					// race. Re-check the live tip: if it still matches
+					// start_sha, retry once without start_sha (which
+					// GitLab accepts for existing branches); if it has
+					// moved, a concurrent writer really did get there
+					// first and this is a genuine conflict.
+					return c.retryCommitWithoutStartSHA(ctx, owner, repo, branch, opts.startSHA, payload)
+				}
 				return false, fmt.Errorf("%w: %w", forge.ErrAlreadyExists, err)
 			}
 		}
 		return false, fmt.Errorf("create commit: %w", err)
+	}
+	resp.Body.Close()
+
+	return true, nil
+}
+
+// interveningWriteActions are the actions for which GitLab's commits API
+// considers the per-action last_commit_id guard (see guardAgainstInterveningWrite).
+var interveningWriteActions = map[string]struct{}{
+	"update": {},
+	"move":   {},
+	"delete": {},
+}
+
+// guardAgainstInterveningWrite returns a copy of actions with last_commit_id
+// set, on every update/move/delete action, to the SHA of the last commit
+// that actually touched that action's file as of ref — not the branch tip —
+// so GitLab atomically rejects the retry if the target file changed since
+// then. GitLab's last_commit_id check is matched against the file's own
+// history: when other files advanced the branch past the commit that last
+// touched this path, passing the tip itself would send a value GitLab never
+// recorded for this file and incorrectly reject an uncontended update.
+// Actions for which GitLab ignores last_commit_id (e.g. create) are passed
+// through unmodified. See retryCommitWithoutStartSHA for why this guard is
+// required.
+func (c *LiveClient) guardAgainstInterveningWrite(ctx context.Context, owner, repo, ref string, actions []map[string]any) ([]map[string]any, error) {
+	guarded := make([]map[string]any, len(actions))
+	lastCommitByPath := make(map[string]string, len(actions))
+	for i, action := range actions {
+		actionType, _ := action["action"].(string)
+		if _, guardable := interveningWriteActions[actionType]; !guardable {
+			guarded[i] = action
+			continue
+		}
+		path, _ := action["file_path"].(string)
+		lastCommit, ok := lastCommitByPath[path]
+		if !ok {
+			var err error
+			lastCommit, err = c.resolveLastCommitForPath(ctx, owner, repo, ref, path)
+			if err != nil {
+				return nil, err
+			}
+			lastCommitByPath[path] = lastCommit
+		}
+		withGuard := make(map[string]any, len(action)+1)
+		maps.Copy(withGuard, action)
+		withGuard["last_commit_id"] = lastCommit
+		guarded[i] = withGuard
+	}
+	return guarded, nil
+}
+
+// resolveLastCommitForPath returns the SHA of the most recent commit that
+// touched path as of ref. It is used to build the per-file last_commit_id
+// guard in guardAgainstInterveningWrite: GitLab compares last_commit_id
+// against the file's own last-modifying commit, not the branch tip, so this
+// must be resolved from the file's commit history rather than assumed to
+// equal ref. A missing, null, or empty commit id in the response is treated
+// as a failure rather than a usable guard value: sending an empty
+// last_commit_id would not necessarily make GitLab enforce the concurrency
+// check, so an intervening write could be silently overwritten. Returning an
+// error here instead makes guardAgainstInterveningWrite fail closed, which
+// aborts the retry before any POST is sent.
+func (c *LiveClient) resolveLastCommitForPath(ctx context.Context, owner, repo, ref, path string) (string, error) {
+	proj := projectPath(owner, repo)
+	params := url.Values{}
+	params.Set("ref_name", ref)
+	params.Set("path", path)
+	params.Set("per_page", "1")
+	resp, err := c.get(ctx, fmt.Sprintf("/projects/%s/repository/commits?%s", proj, params.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("list commits for %s: %w", path, err)
+	}
+
+	var commits []struct {
+		ID string `json:"id"`
+	}
+	if err := decodeJSON(resp, &commits); err != nil {
+		return "", fmt.Errorf("decode commits for %s: %w", path, err)
+	}
+	if len(commits) == 0 {
+		return "", fmt.Errorf("%w: no commit history for %s at %s", forge.ErrNotFound, path, ref)
+	}
+	if commits[0].ID == "" {
+		return "", fmt.Errorf("commits list for %s at %s returned an empty commit id", path, ref)
+	}
+	return commits[0].ID, nil
+}
+
+// retryCommitWithoutStartSHA handles the self-hosted GitLab EE quirk
+// documented in commitFilesImpl's "already exists" branch: the commits API
+// rejects start_sha for an already-existing branch, even when it matches
+// the current tip. It re-reads the live branch tip to distinguish that
+// quirk from a genuine conflict: if the tip has moved past startSHA, a
+// concurrent writer got there first and this surfaces as
+// forge.ErrNonFastForward so persistWithCAS reloads and retries. If the
+// tip is unchanged, start_sha was never a real fast-forward guard here, so
+// the commit is retried once without it.
+//
+// The tip check above only narrows the race window; it cannot close it,
+// since a writer can still land a commit on the target file between that
+// GET and the retry POST below, and the retry carries no start_sha to let
+// GitLab's own fast-forward check catch it. To close that window, the
+// retry payload's update/move/delete actions carry last_commit_id resolved
+// per file (see guardAgainstInterveningWrite) to that file's own
+// last-touching commit as of startSHA — not startSHA itself, which is the
+// branch tip and may postdate the file's last change if other files were
+// committed in between. GitLab atomically rejects the commit with a 400
+// "file has changed" error if the file was touched since its resolved
+// last_commit_id, instead of silently overwriting the intervening writer's
+// change. That rejection is mapped to forge.ErrNonFastForward so
+// persistWithCAS reloads and retries rather than reporting a stale write as
+// success.
+//
+// guardAgainstInterveningWrite only covers update/move/delete actions;
+// GitLab ignores last_commit_id on create actions, so it has no
+// server-enforced guard there. If the target file does not yet exist on
+// the branch (a "create" action) and another writer creates it between the
+// tip GET above and the retry POST below, GitLab rejects the retry with a
+// 400 "already exists" for the file, not the "file has changed" message
+// above. That is also a genuine intervening-write conflict and must map to
+// forge.ErrNonFastForward so persistWithCAS reloads and retries instead of
+// aborting on a generic error.
+//
+// Symmetrically, if the retained action is "update" or "delete" (the file
+// existed at startSHA) and another writer deletes that file between the tip
+// GET above and the retry POST below, GitLab rejects with a "doesn't exist"
+// message instead of either message above. Deleting the file requires a
+// commit, so the branch tip must have advanced past startSHA; that is
+// confirmed with a fresh tip check before mapping the ambiguous message to
+// forge.ErrNonFastForward, so persistWithCAS reloads, sees the file is gone,
+// and rebuilds the action as a create instead of aborting on a generic
+// error. The branch itself (not just the file) can also disappear in that
+// same window — e.g. a concurrent branch deletion — in which case the
+// confirmation GET returns a confirmed forge.ErrNotFound instead of a fresh
+// tip; that is mapped to forge.ErrNonFastForward too, so persistWithCAS
+// reloads and retries branch creation instead of falling through to a
+// generic error.
+func (c *LiveClient) retryCommitWithoutStartSHA(ctx context.Context, owner, repo, branch, startSHA string, payload map[string]any) (bool, error) {
+	tip, err := c.GetBranchRef(ctx, owner, repo, branch)
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return false, fmt.Errorf("%w: branch %s no longer exists", forge.ErrNonFastForward, branch)
+		}
+		return false, fmt.Errorf("get branch ref: %w", err)
+	}
+	if tip != startSHA {
+		return false, fmt.Errorf("%w: branch %s advanced past start_sha %s", forge.ErrNonFastForward, branch, startSHA)
+	}
+
+	retryPayload := make(map[string]any, len(payload))
+	maps.Copy(retryPayload, payload)
+	delete(retryPayload, "start_sha")
+	if actions, ok := retryPayload["actions"].([]map[string]any); ok {
+		guarded, err := c.guardAgainstInterveningWrite(ctx, owner, repo, startSHA, actions)
+		if err != nil {
+			return false, fmt.Errorf("guard against intervening write: %w", err)
+		}
+		retryPayload["actions"] = guarded
+	}
+
+	proj := projectPath(owner, repo)
+	resp, err := c.post(ctx, fmt.Sprintf("/projects/%s/repository/commits", proj), retryPayload)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest {
+			msg := strings.ToLower(apiErr.Message)
+			if strings.Contains(msg, "changed since you started editing it") {
+				return false, fmt.Errorf("%w: file changed in %s since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+			}
+			if strings.Contains(msg, "already exists") {
+				return false, fmt.Errorf("%w: file created concurrently in %s since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+			}
+			if strings.Contains(msg, "doesn't exist") {
+				// Ambiguous on its own: confirm the branch actually
+				// advanced (the deletion itself must be a commit) before
+				// classifying this as a conflict rather than some other
+				// failure. The branch itself can also have been deleted
+				// between the tip lookup above and this retry POST, in
+				// which case the confirmation GET returns a confirmed
+				// forge.ErrNotFound rather than a fresh tip — that is
+				// just as much a CAS conflict as an advanced tip, and
+				// persistWithCAS must reload and retry branch creation
+				// rather than abort on a generic error.
+				liveTip, tipErr := c.GetBranchRef(ctx, owner, repo, branch)
+				if forge.IsNotFound(tipErr) {
+					return false, fmt.Errorf("%w: branch %s deleted concurrently since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+				}
+				if tipErr == nil && liveTip != startSHA {
+					return false, fmt.Errorf("%w: file deleted concurrently in %s since start_sha %s: %w", forge.ErrNonFastForward, branch, startSHA, err)
+				}
+			}
+		}
+		return false, fmt.Errorf("retry commit to %s without start_sha: %w", branch, err)
 	}
 	resp.Body.Close()
 

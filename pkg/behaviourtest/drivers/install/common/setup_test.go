@@ -33,6 +33,23 @@ func TestRunGitHubSetupWithOpts_VendoredMode(t *testing.T) {
 	assert.Contains(t, joined, "--mint-url")
 	assert.Contains(t, joined, "--direct")
 	assert.Contains(t, joined, "--runtime")
+	assert.Contains(t, joined, "--runtime dummy", "empty Runtime should default to dummy")
+}
+
+func TestRunGitHubSetupWithOpts_CustomRuntime(t *testing.T) {
+	var capturedArgs []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+
+	opts := GitHubSetupOpts{Vendor: true, Runtime: "dummy-playback"}
+	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	require.NoError(t, err)
+
+	assert.Contains(t, capturedArgs, "--runtime")
+	assert.Contains(t, capturedArgs, "dummy-playback")
+	assert.NotContains(t, capturedArgs, "dummy")
 }
 
 func TestRunGitHubSetupWithOpts_NonVendoredMode(t *testing.T) {
@@ -138,6 +155,23 @@ func TestRunGitHubSetupWithOpts_ConfigPresetOmitsRuntime(t *testing.T) {
 	joined := strings.Join(capturedArgs, " ")
 	assert.Contains(t, joined, "--config")
 	assert.NotContains(t, joined, "--runtime")
+}
+
+func TestRunGitHubSetupWithOpts_ConfigPresetWithExplicitRuntime(t *testing.T) {
+	var capturedArgs []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		capturedArgs = args
+		return "", nil
+	}
+
+	opts := GitHubSetupOpts{Vendor: true, ConfigPreset: "./presets/bt.yaml", Runtime: "dummy-playback"}
+	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	require.NoError(t, err)
+
+	joined := strings.Join(capturedArgs, " ")
+	assert.Contains(t, joined, "--config ./presets/bt.yaml")
+	assert.Contains(t, joined, "--runtime dummy-playback",
+		"an explicit Runtime must be forwarded even with a preset, so post-install validation (which checks opts.Runtime) matches what was actually installed")
 }
 
 func TestRunGitHubSetupWithOpts_ConfigPresetWithFullsendRef(t *testing.T) {

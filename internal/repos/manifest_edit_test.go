@@ -56,6 +56,79 @@ func TestAddToManifest_Basic(t *testing.T) {
 	}
 }
 
+func TestUpdateAppSet_ExistingAndGlobEntries(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+	manifest := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{Repos: []RepoEntry{
+			{Name: "acme/existing"},
+			{Name: "acme/*", AppSet: "glob-set"},
+		}},
+	}
+	data, err := MarshalWithHeader(manifest)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(manifestPath, data, 0o644))
+
+	updated, err := UpdateAppSet(ManifestEditConfig{
+		Manifest:     manifest,
+		ManifestPath: manifestPath,
+	}, []string{"acme/api"}, "custom-set")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/api"}, updated)
+	assert.Equal(t, "glob-set", manifest.GitHub.Repos[1].AppSet)
+
+	reloaded, err := LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, err)
+	var found bool
+	for _, entry := range reloaded.GitHub.Repos {
+		if entry.Name == "acme/api" {
+			found = true
+			assert.Equal(t, "custom-set", entry.AppSet)
+		}
+	}
+	assert.True(t, found)
+}
+
+func TestUpdateAppSet_ExactGlobAndAllFilters(t *testing.T) {
+	tests := []struct {
+		name       string
+		filters    []string
+		wantExact  string
+		wantGlob   string
+		wantSecond string
+	}{
+		{name: "exact", filters: []string{"acme/existing"}, wantExact: "custom-set", wantGlob: "glob-set"},
+		{name: "glob", filters: []string{"acme/*"}, wantExact: "custom-set", wantGlob: "custom-set"},
+		{name: "all", wantExact: "custom-set", wantGlob: "custom-set", wantSecond: "custom-set"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := &Manifest{
+				Version: 1,
+				GitHub: &PlatformConfig{Repos: []RepoEntry{
+					{Name: "acme/existing"},
+					{Name: "acme/*", AppSet: "glob-set"},
+					{Name: "other/repo"},
+				}},
+			}
+			updated, err := UpdateAppSet(ManifestEditConfig{Manifest: manifest}, tt.filters, "custom-set")
+			require.NoError(t, err)
+			assert.NotEmpty(t, updated)
+			assert.Equal(t, tt.wantExact, manifest.GitHub.Repos[0].AppSet)
+			assert.Equal(t, tt.wantGlob, manifest.GitHub.Repos[1].AppSet)
+			assert.Equal(t, tt.wantSecond, manifest.GitHub.Repos[2].AppSet)
+		})
+	}
+}
+
+func TestUpdateAppSet_InvalidFilter(t *testing.T) {
+	manifest := &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/repo"}}}}
+	_, err := UpdateAppSet(ManifestEditConfig{Manifest: manifest}, []string{"["}, "custom-set")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid repo filter")
+}
+
 // TestAddToManifest_LocalConfigSourceStaysRelativeOnWriteBack guards
 // against Validate's local-path resolution leaking into the manifest
 // written back to disk. AddToManifest (like RemoveFromManifest) calls

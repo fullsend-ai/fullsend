@@ -213,7 +213,8 @@ func TestWaitForHarnessAgent_FailFastOnFailure(t *testing.T) {
 	d := newTestDriver(client)
 	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
 	require.Error(t, err)
-	assert.Nil(t, run)
+	require.NotNil(t, run, "the failed run is returned with the error so its logs can be saved")
+	assert.Equal(t, 42, run.ID)
 	assert.Contains(t, err.Error(), "pipeline 42")
 	assert.Contains(t, err.Error(), `"failure"`)
 }
@@ -836,4 +837,35 @@ func TestWaitForFailedHarnessAgent_LookupErrsTracked(t *testing.T) {
 	assert.Contains(t, err.Error(), "did not complete with a failure within deadline")
 	assert.Contains(t, err.Error(), "lookups")
 	assert.Contains(t, err.Error(), "502 bad gateway")
+}
+
+// TestWaitForHarnessAgent_ArtifactFirstFailureReturnsRun: a failed
+// pipeline whose fullsend-{agent} artifact is found first comes back
+// with the error, so the step can save its logs.
+func TestWaitForHarnessAgent_ArtifactFirstFailureReturnsRun(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 10, Name: "fullsend-pi-smoke", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 88},
+		},
+	}
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/": {
+			ID: 88, Status: "completed", Conclusion: "failure", CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL: "https://gitlab.com/org/repo/-/pipelines/88",
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		88: {{ID: 1, Name: "dispatch / Harness run (pi-smoke)", Status: "completed", Conclusion: "failure"}},
+	}
+
+	d := newTestDriver(client)
+	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "pi-smoke", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `harness run for "pi-smoke" concluded with "failure"`)
+	require.NotNil(t, run, "the failed run is returned with the error so its logs can be saved")
+	assert.Equal(t, 88, run.ID)
 }
