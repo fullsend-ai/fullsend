@@ -166,13 +166,23 @@ selected runtime does not get runtime bootstrap or inference credentials. With
 `fullsend-claude` helper on `PATH`; scripts can use it to launch child Claude
 calls with the selected model, hooks settings, and validated Claude plugins.
 The Claude hook settings and scripts are kept under
-`/sandbox/claude-config/hooks`. The helper probes this directory and refuses
-to launch Claude if it is writable. OpenShell 0.0.116 applies the sandbox
-policy before Fullsend uploads the hooks: a read-only hook directory rejects
-bootstrap uploads, while a writable directory is rejected by the helper.
-This Fullsend/OpenShell version combination therefore fails closed before the
-Claude child starts; do not treat a successful hook upload as proof of a
-tamper-protected launch. A write grant on `/sandbox` also defeats nested
+`/sandbox/claude-config/hooks`. Fullsend retains SHA-256 expectations for the
+entrypoint, helper, hook settings, and installed hook scripts in the outer
+runner. It checks those files before the entrypoint and before each supported
+Claude child launch, then checks them again from the runner before accepting
+results or continuing the run. The checks reject missing files, symlinks,
+changed contents, and unexpected entries in the hook directory. The helper
+also re-exports the effective hook environment, including defaults and empty
+egress allowlists, after the entrypoint launcher sources the workspace
+environment file.
+
+These are checkpoint checks. They detect tampering present at a check, but a
+writable helper can be bypassed and a change restored before the next check
+can escape detection. They do not prevent modifications during a Claude child
+run or undo external writes. On failure, timeout, or cancellation, Fullsend
+makes a bounded best-effort copy of entrypoint output files and child
+transcripts for diagnosis; it still fails the run, skips retries, and does not
+run publication post-scripts. A write grant on `/sandbox` also defeats nested
 read-only paths.
 Codex and Pi runtime bootstrapping for entrypoints is not supported yet.
 

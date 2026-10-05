@@ -103,7 +103,31 @@ func (i *EntrypointIntegrity) Check(ctx context.Context, sandboxName string) err
 // by Fullsend's entrypoint launcher, so writable-file edits cannot silently
 // disable the configured checks.
 func EntrypointSecurityEnv(sandboxName string, hooks security.SandboxHookConfig) (map[string]string, error) {
-	env := make(map[string]string)
+	// Pin effective values even when the harness omits them. RunEntrypoint
+	// sources the writable workspace .env, so leaving a default out of the
+	// helper's re-export list would let that file (or its inherited environment)
+	// silently change the security policy.
+	failOn := hooks.TirithFailOn()
+	if failOn == "" {
+		failOn = "high"
+	}
+	required := "0"
+	if hooks.TirithRequired() {
+		required = "1"
+	}
+	allowlist := hooks.SSRFEgressAllowlist()
+	if entry := hooks.ForgeEgressEntry(); entry != "" {
+		if allowlist == "" {
+			allowlist = entry
+		} else {
+			allowlist += "," + entry
+		}
+	}
+	env := map[string]string{
+		"TIRITH_FAIL_ON":            failOn,
+		"TIRITH_REQUIRED":           required,
+		"FULLSEND_EGRESS_ALLOWLIST": allowlist,
+	}
 	for _, pair := range codexSecurityEnv(hooks) {
 		env[pair.Key] = pair.Value
 	}

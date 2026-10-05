@@ -465,6 +465,20 @@ func hasExplicitRepoRuntime(configPath string) bool {
 	return false
 }
 
+type entrypointRuntimePlan struct {
+	ProvisionRuntime bool
+	WithoutRuntime   bool
+}
+
+func resolveEntrypointRuntimePlan(isEntrypoint bool, runtimeOverride, runtimeName, agentName string, cfg runConfig) (entrypointRuntimePlan, error) {
+	provision := !isEntrypoint || runtimeOverride != "" || cfg.runtimeConfigured(agentName)
+	plan := entrypointRuntimePlan{ProvisionRuntime: provision, WithoutRuntime: isEntrypoint && !provision}
+	if isEntrypoint && provision && runtimeName != "claude" {
+		return entrypointRuntimePlan{}, fmt.Errorf("entrypoint runtime %q is not supported yet; use Claude or omit runtime", runtimeName)
+	}
+	return plan, nil
+}
+
 // agentSettings returns the effective agents: entry for agentName from the
 // loaded config, after validating every entry, so a mistyped entry (a
 // name-only entry for "coder") fails the run instead of silently running
@@ -1042,11 +1056,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		return runtimeErr
 	}
-	runtimeProvisioning := h.Entrypoint == nil || overrides.runtime != "" || runCfg.runtimeConfigured(agentName)
-	entrypointWithoutRuntime := h.Entrypoint != nil && !runtimeProvisioning
-	if h.Entrypoint != nil && runtimeProvisioning && runtimeBackend.Runtime.Name() != "claude" {
-		return fmt.Errorf("entrypoint runtime %q is not supported yet; use Claude or omit runtime", runtimeBackend.Runtime.Name())
+	runtimePlan, err := resolveEntrypointRuntimePlan(h.Entrypoint != nil, overrides.runtime, runtimeBackend.Runtime.Name(), agentName, runCfg)
+	if err != nil {
+		return err
 	}
+	runtimeProvisioning := runtimePlan.ProvisionRuntime
+	entrypointWithoutRuntime := runtimePlan.WithoutRuntime
 
 	// Apply the agents: entry's model/effort for this agent to the composed
 	// harness: flag > env > agents: entry > harness. The same loaded config
@@ -2188,41 +2203,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return err
 	}
 	if h.Entrypoint != nil && eventFile != "" {
-		const remoteEvent = sandbox.SandboxWorkspace + "/event.json"
-		if err := sandbox.UploadFile(sandboxName, eventFile, remoteEvent); err != nil {
-			return fmt.Errorf("uploading normalized event for entrypoint: %w", err)
-		}
-		if _, _, _, err := sandbox.Exec(sandboxName, "printf '\\nexport FULLSEND_EVENT_FILE=%s\\n' "+shellQuote(remoteEvent)+" >> "+sandbox.SandboxWorkspace+"/.env", 10*time.Second); err != nil {
-			return fmt.Errorf("configuring entrypoint event input: %w", err)
+		if err := configureEntrypointEvent(sandboxName, eventFile, sandbox.UploadFile, sandbox.Exec); err != nil {
+			return err
 		}
 	}
 	var claudeEntrypointIntegrity *agentruntime.EntrypointIntegrity
 	if h.Entrypoint != nil {
-		const remoteEntrypoint = sandbox.SandboxWorkspace + "/.fullsend-entrypoint/run"
 		if _, _, _, err := sandbox.Exec(sandboxName, "mkdir -p "+sandbox.SandboxWorkspace+"/.fullsend-entrypoint", 10*time.Second); err != nil {
 			return fmt.Errorf("creating entrypoint directory in sandbox: %w", err)
 		}
-		tmp, err := os.CreateTemp("", "fullsend-entrypoint-*")
-		if err != nil {
-			return fmt.Errorf("staging entrypoint executable: %w", err)
+		if err := installEntrypointFile(sandboxName, remoteEntrypointPath, entrypointBytes, sandbox.UploadFile, sandbox.Exec); err != nil {
+			return fmt.Errorf("installing entrypoint executable: %w", err)
 		}
-		if _, err = tmp.Write(entrypointBytes); err != nil {
-			tmp.Close()
-			os.Remove(tmp.Name())
-			return fmt.Errorf("staging entrypoint executable: %w", err)
-		}
-		if err = tmp.Close(); err != nil {
-			os.Remove(tmp.Name())
-			return fmt.Errorf("staging entrypoint executable: %w", err)
-		}
-		defer os.Remove(tmp.Name())
-		if err := sandbox.UploadFile(sandboxName, tmp.Name(), remoteEntrypoint); err != nil {
-			return fmt.Errorf("uploading entrypoint executable: %w", err)
-		}
-		if _, _, _, err := sandbox.Exec(sandboxName, "chmod 755 "+remoteEntrypoint, 10*time.Second); err != nil {
-			return fmt.Errorf("making entrypoint executable: %w", err)
-		}
-		entrypointArgv[0] = remoteEntrypoint
+		entrypointArgv[0] = remoteEntrypointPath
 	}
 	if runtimeProvisioning {
 		if err := rt.Bootstrap(boot); err != nil {
@@ -2237,61 +2230,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				pluginDirs = append(pluginDirs, rt.ConfigDir()+"/plugins/"+p.SandboxName())
 			}
 		}
-		hooks := ""
 		securityEnv := map[string]string{}
-		baseFiles := map[string][]byte{
-			sandbox.SandboxWorkspace + "/.fullsend-entrypoint/run": entrypointBytes,
-		}
-		exactDirs := map[string][]string{
-			sandbox.SandboxWorkspace + "/.fullsend-entrypoint": {"run"},
-		}
+		hookConfig := security.SandboxHookConfigFromHarness(h).WithForgeEgressEntry(forgeEgressEntry)
 		if h.SecurityEnabled() {
-			hooks = security.SandboxHooksSettings
-			hookConfig := security.SandboxHookConfigFromHarness(h).WithForgeEgressEntry(forgeEgressEntry)
 			securityEnv, err = agentruntime.EntrypointSecurityEnv(sandboxName, hookConfig)
 			if err != nil {
 				return fmt.Errorf("capturing trusted Claude hook environment: %w", err)
 			}
-			hookFiles := security.HookFiles(hookConfig)
-			for name, content := range hookFiles {
-				baseFiles[security.SandboxHooksDir+"/"+name] = content
-				exactDirs[security.SandboxHooksDir] = append(exactDirs[security.SandboxHooksDir], name)
-			}
-			hooksJSON, hooksErr := security.GenerateHooksConfig(hookConfig)
-			if hooksErr != nil {
-				return fmt.Errorf("generating trusted Claude hooks settings: %w", hooksErr)
-			}
-			baseFiles[security.SandboxHooksSettings] = hooksJSON
-			exactDirs[security.SandboxHooksDir] = append(exactDirs[security.SandboxHooksDir], "hooks.json")
 		}
-		baseIntegrity := agentruntime.NewEntrypointIntegrity(baseFiles, exactDirs, sandbox.SandboxWorkspace+"/bin/fullsend-claude")
-		content := agentruntime.ClaudeEntrypointHelper(h.Model, h.Effort, hooks, pluginDirs, configModelAliases, baseIntegrity.GuardCommand(false), securityEnv)
-		integrityFiles := make(map[string][]byte, len(baseFiles)+1)
-		for path, bytes := range baseFiles {
-			integrityFiles[path] = bytes
-		}
-		const remoteHelper = sandbox.SandboxWorkspace + "/bin/fullsend-claude"
-		integrityFiles[remoteHelper] = content
-		claudeEntrypointIntegrity = agentruntime.NewEntrypointIntegrity(integrityFiles, exactDirs, remoteHelper)
-		tmp, err := os.CreateTemp("", "fullsend-claude-helper-*")
+		artifacts, err := buildClaudeEntrypointArtifacts(entrypointBytes, h.Model, h.Effort, pluginDirs, configModelAliases, securityEnv, hookConfig, h.SecurityEnabled())
 		if err != nil {
-			return fmt.Errorf("creating Claude helper: %w", err)
+			return err
 		}
-		if _, err = tmp.Write(content); err != nil {
-			tmp.Close()
-			os.Remove(tmp.Name())
-			return fmt.Errorf("writing Claude helper: %w", err)
-		}
-		if err = tmp.Close(); err != nil {
-			os.Remove(tmp.Name())
-			return fmt.Errorf("closing Claude helper: %w", err)
-		}
-		defer os.Remove(tmp.Name())
-		if err := sandbox.UploadFile(sandboxName, tmp.Name(), remoteHelper); err != nil {
-			return fmt.Errorf("uploading Claude helper: %w", err)
-		}
-		if _, _, _, err := sandbox.Exec(sandboxName, "chmod 755 "+remoteHelper, 10*time.Second); err != nil {
-			return fmt.Errorf("making Claude helper executable: %w", err)
+		claudeEntrypointIntegrity = artifacts.Integrity
+		if err := installEntrypointFile(sandboxName, remoteClaudeHelperPath, artifacts.Helper, sandbox.UploadFile, sandbox.Exec); err != nil {
+			return fmt.Errorf("installing Claude helper: %w", err)
 		}
 	}
 	printer.StepDone(fmt.Sprintf("Sandbox bootstrapped (%.1fs)", time.Since(bootstrapStart).Seconds()))
@@ -2645,24 +2598,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		var exitCode int
 		var runErr error
 		if h.Entrypoint != nil {
+			var check func(context.Context) error
 			if claudeEntrypointIntegrity != nil {
-				runErr = claudeEntrypointIntegrity.Check(agentCtx, sandboxName)
-				if runErr != nil {
-					exitCode = 97
-				}
+				check = func(checkCtx context.Context) error { return claudeEntrypointIntegrity.Check(checkCtx, sandboxName) }
 			}
-			if runErr == nil {
-				exitCode, runErr = agentruntime.RunEntrypoint(agentCtx, sandboxName, remoteRepositoryDir, entrypointArgv, h.Entrypoint.StreamFormat, timeout, filepath.Join(iterDir, "output.jsonl"), printer, iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans), &metrics)
-			}
-			if claudeEntrypointIntegrity != nil {
-				if checkErr := claudeEntrypointIntegrity.Check(agentCtx, sandboxName); checkErr != nil {
-					exitCode = 97
-					runErr = fmt.Errorf("post-entrypoint integrity verification failed: %w", checkErr)
-				}
-			}
-			if runErr == nil && exitCode != 0 {
-				runErr = fmt.Errorf("entrypoint exited with status %d", exitCode)
-			}
+			exitCode, runErr = runEntrypointChecked(agentCtx, check, func(execCtx context.Context) (int, error) {
+				return agentruntime.RunEntrypoint(execCtx, sandboxName, remoteRepositoryDir, entrypointArgv, h.Entrypoint.StreamFormat, timeout, filepath.Join(iterDir, "output.jsonl"), printer, iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans), &metrics)
+			})
 		} else {
 			exitCode, runErr = rt.Run(agentCtx, agentruntime.RunParams{
 				SandboxName:       sandboxName,
@@ -2709,6 +2651,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
+
+		if shouldPreserveEntrypointDiagnostics(h.Entrypoint != nil, runErr, exitCode, ctx.Err()) {
+			preserveEntrypointDiagnostics(sandboxName, agentName, tx, iterOutputDir, iterTranscriptDir, printer)
+		}
 
 		if cancelled, cancelExitCode, cancelledErr := handleRunCancellation(
 			ctx, runErr, iteration, exitCode, genAISystem, rt.Name(),
@@ -3026,6 +2972,69 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.Blank()
 
 	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount, lastIterElapsed, timeout)
+}
+
+const maxEntrypointDiagnosticFiles = 128
+const entrypointDiagnosticTimeout = 45 * time.Second
+const entrypointIntegrityFailureExitCode = 97
+
+type boundedTranscriptExtractor interface {
+	ExtractTranscriptsContext(context.Context, string, string, string, int) error
+}
+
+func shouldPreserveEntrypointDiagnostics(isEntrypoint bool, runErr error, exitCode int, ctxErr error) bool {
+	return isEntrypoint && (runErr != nil || exitCode != 0 || ctxErr != nil)
+}
+
+// runEntrypointChecked brackets one entrypoint execution with independent
+// runner checks. The execute callback is called at most once: any failure is
+// returned to runAgent's terminal error path, which skips validation retries
+// and publication post-scripts.
+func runEntrypointChecked(ctx context.Context, check func(context.Context) error, execute func(context.Context) (int, error)) (int, error) {
+	if check != nil {
+		if err := check(ctx); err != nil {
+			return entrypointIntegrityFailureExitCode, fmt.Errorf("pre-entrypoint integrity verification failed: %w", err)
+		}
+	}
+
+	exitCode, runErr := execute(ctx)
+	if check != nil {
+		if err := check(ctx); err != nil {
+			return entrypointIntegrityFailureExitCode, fmt.Errorf("post-entrypoint integrity verification failed: %w", err)
+		}
+	}
+	if runErr != nil {
+		return exitCode, runErr
+	}
+	if exitCode != 0 {
+		return exitCode, fmt.Errorf("entrypoint exited with status %d", exitCode)
+	}
+	return exitCode, nil
+}
+
+// preserveEntrypointDiagnostics makes a bounded best-effort copy of files
+// written by a failed, timed out, or cancelled entrypoint. These files remain
+// diagnostic artifacts only: callers still return the original failure and
+// the existing post-script guard prevents publication.
+func preserveEntrypointDiagnostics(sandboxName, agentName string, transcripts agentruntime.TranscriptHandler, outputDir, transcriptDir string, printer *ui.Printer) {
+	ctx, cancel := context.WithTimeout(context.Background(), entrypointDiagnosticTimeout)
+	defer cancel()
+
+	files, outputErr := sandbox.ExtractOutputFilesContext(ctx, sandboxName, sandbox.SandboxWorkspace+"/output", outputDir, maxEntrypointDiagnosticFiles)
+	if outputErr != nil {
+		printer.StepWarn("Best-effort entrypoint output extraction was incomplete: " + outputErr.Error())
+	} else if len(files) > 0 {
+		printer.StepInfo(fmt.Sprintf("Preserved %d diagnostic output file(s)", len(files)))
+	}
+
+	extractor, ok := transcripts.(boundedTranscriptExtractor)
+	if !ok {
+		printer.StepWarn("Could not preserve entrypoint transcripts: runtime does not support bounded extraction")
+		return
+	}
+	if err := extractor.ExtractTranscriptsContext(ctx, sandboxName, agentName, transcriptDir, maxEntrypointDiagnosticFiles); err != nil {
+		printer.StepWarn("Best-effort entrypoint transcript extraction was incomplete: " + err.Error())
+	}
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {

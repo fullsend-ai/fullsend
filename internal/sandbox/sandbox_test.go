@@ -253,6 +253,28 @@ func TestExecContext_CancelledContext(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestExtractOutputFilesContextBoundsDiagnosticFiles(t *testing.T) {
+	bin := t.TempDir()
+	openshell := filepath.Join(bin, "openshell")
+	script := `#!/bin/sh
+case "$2" in
+  exec) printf '%s\n' '/sandbox/output/one.txt' '/sandbox/output/two.txt' ;;
+  download)
+    mkdir -p "$5"
+    printf 'one\n' > "$5/one.txt"
+    ;;
+  *) exit 1 ;;
+esac
+`
+	require.NoError(t, os.WriteFile(openshell, []byte(script), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	files, err := ExtractOutputFilesContext(context.Background(), "sb", "/sandbox/output", t.TempDir(), 1)
+	require.ErrorContains(t, err, "diagnostic limit of 1")
+	require.Len(t, files, 1)
+	assert.Equal(t, "one.txt", filepath.Base(files[0]))
+}
+
 func TestExecStreamReader_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 

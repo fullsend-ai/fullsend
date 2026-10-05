@@ -8469,3 +8469,34 @@ func TestRunConfig_RuntimeConfigured(t *testing.T) {
 	assert.True(t, (runConfig{orgData: []byte("version: \"1\"\ndefaults:\n  runtime: claude\n")}).runtimeConfigured("task"))
 	assert.False(t, (runConfig{orgData: []byte("version: \"1\"\n")}).runtimeConfigured("task"))
 }
+
+func TestResolveEntrypointRuntimePlan(t *testing.T) {
+	perRepo, err := config.ParsePerRepoConfig([]byte("version: \"1\"\nagents:\n  - source: harness/task.yaml\n    runtime: claude\n"))
+	require.NoError(t, err)
+	tests := []struct {
+		name            string
+		isEntrypoint    bool
+		runtimeOverride string
+		runtimeName     string
+		cfg             runConfig
+		want            entrypointRuntimePlan
+		wantErr         string
+	}{
+		{name: "agent-led path still provisions", runtimeName: "pi", want: entrypointRuntimePlan{ProvisionRuntime: true}},
+		{name: "script defaults to no runtime", isEntrypoint: true, runtimeName: "claude", want: entrypointRuntimePlan{WithoutRuntime: true}},
+		{name: "configured Claude is provisioned", isEntrypoint: true, runtimeName: "claude", cfg: runConfig{perRepo: perRepo}, want: entrypointRuntimePlan{ProvisionRuntime: true}},
+		{name: "override explicitly provisions Claude", isEntrypoint: true, runtimeOverride: "claude", runtimeName: "claude", want: entrypointRuntimePlan{ProvisionRuntime: true}},
+		{name: "unsupported explicit runtime fails", isEntrypoint: true, runtimeOverride: "pi", runtimeName: "pi", wantErr: `entrypoint runtime "pi" is not supported yet`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveEntrypointRuntimePlan(tt.isEntrypoint, tt.runtimeOverride, tt.runtimeName, "task", tt.cfg)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

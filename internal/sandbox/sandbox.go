@@ -1594,7 +1594,13 @@ func tarRootMembers(localPath string, excludes ...string) ([]string, error) {
 // The localPath is always treated as a directory by openshell — for single-file
 // downloads use DownloadFile instead.
 func Download(sandboxName, remotePath, localPath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), transferTimeout)
+	return DownloadContext(context.Background(), sandboxName, remotePath, localPath)
+}
+
+// DownloadContext copies a file or directory from a sandbox while honoring
+// both the caller's overall deadline and the per-transfer limit.
+func DownloadContext(parent context.Context, sandboxName, remotePath, localPath string) error {
+	ctx, cancel := context.WithTimeout(parent, transferTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "openshell", "sandbox", "download",
@@ -1617,11 +1623,17 @@ func Download(sandboxName, remotePath, localPath string) error {
 // this downloads to the parent directory and renames if the resulting filename
 // differs from the desired local name.
 func DownloadFile(sandboxName, remotePath, localPath string) error {
+	return DownloadFileContext(context.Background(), sandboxName, remotePath, localPath)
+}
+
+// DownloadFileContext downloads one sandbox file and honors the caller's
+// deadline across the transfer.
+func DownloadFileContext(ctx context.Context, sandboxName, remotePath, localPath string) error {
 	destDir := filepath.Dir(localPath)
 	downloadedPath := filepath.Join(destDir, filepath.Base(remotePath))
 
 	os.Remove(downloadedPath)
-	if err := Download(sandboxName, remotePath, destDir); err != nil {
+	if err := DownloadContext(ctx, sandboxName, remotePath, destDir); err != nil {
 		return err
 	}
 	if downloadedPath != localPath {
@@ -1717,6 +1729,13 @@ func collectPodmanLogs(sandboxName string) string {
 // ExtractOutputFiles copies all files under a remote directory in the sandbox
 // to a local output directory, preserving relative paths.
 func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, error) {
+	return ExtractOutputFilesContext(context.Background(), sandboxName, remoteDir, localDir, 0)
+}
+
+// ExtractOutputFilesContext copies output files while honoring a shared
+// deadline. maxFiles bounds diagnostic extraction; zero leaves the count
+// unlimited for the existing success path.
+func ExtractOutputFilesContext(ctx context.Context, sandboxName, remoteDir, localDir string, maxFiles int) ([]string, error) {
 	if err := os.MkdirAll(localDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating local output dir: %w", err)
 	}
@@ -1727,7 +1746,7 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 	}
 	defer root.Close()
 
-	stdout, _, _, err := Exec(sandboxName,
+	stdout, _, _, err := ExecContext(ctx, sandboxName,
 		fmt.Sprintf("find %s -type f 2>/dev/null || true", remoteDir),
 		10*time.Second,
 	)
@@ -1740,9 +1759,17 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 		return nil, nil
 	}
 	lines := strings.Split(trimmed, "\n")
+	var limitErr error
+	if maxFiles > 0 && len(lines) > maxFiles {
+		limitErr = fmt.Errorf("output file count exceeds diagnostic limit of %d", maxFiles)
+		lines = lines[:maxFiles]
+	}
 
 	var extracted []string
 	for _, remotePath := range lines {
+		if err := ctx.Err(); err != nil {
+			return extracted, err
+		}
 		remotePath = strings.TrimSpace(remotePath)
 		if remotePath == "" {
 			continue
@@ -1769,12 +1796,12 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 		localPath := filepath.Join(localDir, relPath)
 		os.Remove(localPath)
 
-		if dlErr := DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
+		if dlErr := DownloadFileContext(ctx, sandboxName, remotePath, localPath); dlErr != nil {
 			fmt.Fprintf(os.Stderr, "  Failed to copy %s: %v\n", relPath, dlErr)
 			continue
 		}
 		extracted = append(extracted, localPath)
 	}
 
-	return extracted, nil
+	return extracted, limitErr
 }

@@ -91,6 +91,10 @@ esac`)
 	hooks := security.SandboxHookConfigFromHarness(h).WithForgeEgressEntry("gitlab.local:443")
 	env, err := EntrypointSecurityEnv("sb", hooks)
 	require.NoError(t, err)
+	assert.Equal(t, "example.com:443,gitlab.local:443", env["FULLSEND_EGRESS_ALLOWLIST"])
+	emptyAllowlist, err := EntrypointSecurityEnv("sb", security.SandboxHookConfig{}.WithForgeEgressEntry("gitlab.local:443"))
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab.local:443", emptyAllowlist["FULLSEND_EGRESS_ALLOWLIST"])
 	assert.Equal(t, map[string]string{
 		"TIRITH_FAIL_ON":            "critical",
 		"TIRITH_REQUIRED":           "1",
@@ -98,6 +102,37 @@ esac`)
 		"FULLSEND_CANARY_TOKEN":     "canary",
 		"FULLSEND_TOOL_ALLOWLIST":   "Write",
 	}, env)
+}
+
+func TestClaudeEntrypointHelperPinsOmittedSecurityDefaults(t *testing.T) {
+	installEntrypointFakeOpenShell(t, `case "$*" in
+	  *fullsend-env-sep*) printf '|fullsend-env-sep|' ;;
+	  *) exit 1 ;;
+esac`)
+	t.Setenv("TIRITH_FAIL_ON", "critical")
+	t.Setenv("TIRITH_REQUIRED", "0")
+	t.Setenv("FULLSEND_EGRESS_ALLOWLIST", "attacker.example:443")
+
+	env, err := EntrypointSecurityEnv("sb", security.SandboxHookConfig{})
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		"TIRITH_FAIL_ON":            "high",
+		"TIRITH_REQUIRED":           "1",
+		"FULLSEND_EGRESS_ALLOWLIST": "",
+		"FULLSEND_CANARY_TOKEN":     "",
+		"FULLSEND_TOOL_ALLOWLIST":   "",
+	}, env)
+
+	binDir := t.TempDir()
+	claude := filepath.Join(binDir, "claude")
+	require.NoError(t, os.WriteFile(claude, []byte("#!/bin/sh\nprintf '%s|%s|%s\\n' \"$TIRITH_FAIL_ON\" \"$TIRITH_REQUIRED\" \"$FULLSEND_EGRESS_ALLOWLIST\"\n"), 0o755))
+	helper := filepath.Join(binDir, "fullsend-claude")
+	require.NoError(t, os.WriteFile(helper, ClaudeEntrypointHelper("", "", "", nil, nil, "", env), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	output, err := exec.Command(helper).CombinedOutput()
+	require.NoError(t, err, string(output))
+	assert.Equal(t, "high|1|\n", string(output), "inherited values must not override effective defaults")
 }
 
 func TestEntrypointIntegrityGuardAcceptsTrustedFiles(t *testing.T) {

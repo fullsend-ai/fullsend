@@ -205,6 +205,13 @@ func (r ClaudeRuntime) ClearIterationArtifacts(sandboxName string) error {
 }
 
 func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string) error {
+	return r.ExtractTranscriptsContext(context.Background(), sandboxName, agentLabel, outputDir, 0)
+}
+
+// ExtractTranscriptsContext extracts a bounded set of transcripts while
+// honoring the caller's overall diagnostic deadline. maxFiles=0 is
+// unlimited for the established success path.
+func (r ClaudeRuntime) ExtractTranscriptsContext(ctx context.Context, sandboxName, agentLabel, outputDir string, maxFiles int) error {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
@@ -216,7 +223,7 @@ func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir str
 	defer root.Close()
 
 	configDir := r.ConfigDir()
-	stdout, _, _, err := sandbox.Exec(sandboxName,
+	stdout, _, _, err := sandbox.ExecContext(ctx, sandboxName,
 		fmt.Sprintf("find %s -name '*.jsonl' 2>/dev/null || true", configDir),
 		10*time.Second,
 	)
@@ -230,7 +237,16 @@ func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir str
 		return nil
 	}
 
-	for _, remotePath := range strings.Split(trimmed, "\n") {
+	paths := strings.Split(trimmed, "\n")
+	var limitErr error
+	if maxFiles > 0 && len(paths) > maxFiles {
+		limitErr = fmt.Errorf("transcript count exceeds diagnostic limit of %d", maxFiles)
+		paths = paths[:maxFiles]
+	}
+	for _, remotePath := range paths {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		remotePath = strings.TrimSpace(remotePath)
 		if remotePath == "" {
 			continue
@@ -246,14 +262,14 @@ func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir str
 
 		localPath := filepath.Join(outputDir, localName)
 		os.Remove(localPath)
-		if dlErr := sandbox.DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
+		if dlErr := sandbox.DownloadFileContext(ctx, sandboxName, remotePath, localPath); dlErr != nil {
 			fmt.Fprintf(os.Stderr, "  [%s] Failed to copy transcript: %v\n", agentLabel, dlErr)
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "  [%s] Saved transcript: %s\n", agentLabel, localName)
 	}
 
-	return nil
+	return limitErr
 }
 
 func (r ClaudeRuntime) ExtractDebugLog(sandboxName, localPath, debug string) error {
