@@ -66,7 +66,9 @@ func TestHandleFetch_CacheHit(t *testing.T) {
 	hash := fakeSkillHash()
 
 	// Pre-populate cache.
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	uploader := &stubUploader{}
 	svc := New(ServiceConfig{
@@ -218,7 +220,9 @@ func TestHandleFetch_RateLimitExceeded(t *testing.T) {
 	hash := fakeSkillHash()
 
 	// Pre-populate cache so requests succeed until rate limit hits.
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	svc := New(ServiceConfig{
 		Harness:       testHarness("https://github.com/org/repo/"),
@@ -369,7 +373,9 @@ func TestServeHTTP_Success(t *testing.T) {
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
 
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	svc := New(ServiceConfig{
 		Harness:       testHarness("https://github.com/org/repo/"),
@@ -391,7 +397,9 @@ func TestServeHTTP_Success(t *testing.T) {
 	}
 
 	var resp FetchResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	if resp.Error != "" {
 		t.Fatalf("unexpected error in response: %s", resp.Error)
 	}
@@ -451,7 +459,9 @@ func TestServeHTTP_OversizedBody(t *testing.T) {
 		t.Fatalf("status = %d, want 413", rec.Code)
 	}
 	var resp FetchResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	if resp.Error != "request body too large" {
 		t.Fatalf("error = %q, want 'request body too large'", resp.Error)
 	}
@@ -481,7 +491,9 @@ func TestServeHTTP_RateLimit(t *testing.T) {
 	tmpDir := t.TempDir()
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	svc := New(ServiceConfig{
 		Harness:       testHarness("https://github.com/org/repo/"),
@@ -537,7 +549,9 @@ func TestHandleFetch_UploadCalled(t *testing.T) {
 	tmpDir := t.TempDir()
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/my-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/my-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	uploader := &stubUploader{}
 	svc := New(ServiceConfig{
@@ -626,7 +640,9 @@ func TestHandleFetch_SameHashDifferentBasenameBothUpload(t *testing.T) {
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
 
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	uploader := &stubUploader{}
 	svc := New(ServiceConfig{
@@ -670,7 +686,9 @@ func TestHandleFetch_StaleHashAtRemotePathTriggersReupload(t *testing.T) {
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
 
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	uploader := &stubUploader{}
 	svc := New(ServiceConfig{
@@ -719,7 +737,9 @@ func TestHandleFetch_ConcurrentStaleHashSelfHealsOnce(t *testing.T) {
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
 
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	uploader := &threadSafeUploader{}
 	svc := New(ServiceConfig{
@@ -768,7 +788,9 @@ func TestHandleFetch_DuplicateSkipsUpload(t *testing.T) {
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
 
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	uploader := &stubUploader{}
 	svc := New(ServiceConfig{
@@ -818,7 +840,9 @@ func TestHandleFetch_ConcurrentSameURLUploadsOnce(t *testing.T) {
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
 
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	uploader := &threadSafeUploader{}
 	svc := New(ServiceConfig{
@@ -866,7 +890,9 @@ func TestHandleFetch_LateArrivalAfterUploadSkips(t *testing.T) {
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
 
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -923,7 +949,9 @@ func TestHandleFetch_UploadFailureAllowsRetry(t *testing.T) {
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
 
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	callCount := 0
 	failingUploader := &callbackUploader{

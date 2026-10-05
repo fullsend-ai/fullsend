@@ -22,7 +22,7 @@ type CrossCompileOpts struct {
 func ModuleRoot() (string, error) {
 	goPath, lookErr := exec.LookPath("go")
 	if lookErr != nil {
-		return "", fmt.Errorf("Go toolchain not found: %w", lookErr)
+		return "", fmt.Errorf("go toolchain not found: %w", lookErr)
 	}
 	modRootCmd := exec.Command(goPath, "env", "GOMOD")
 	modOutput, err := modRootCmd.Output()
@@ -51,7 +51,7 @@ func resolveBuildRoot(sourceDir string) (string, error) {
 func CrossCompile(opts CrossCompileOpts) error {
 	goPath, lookErr := exec.LookPath("go")
 	if lookErr != nil {
-		return fmt.Errorf("Go toolchain not found — install Go or use a released version of fullsend: %w", lookErr)
+		return fmt.Errorf("go toolchain not found — install Go or use a released version of fullsend: %w", lookErr)
 	}
 
 	modRoot, err := resolveBuildRoot(opts.SourceDir)

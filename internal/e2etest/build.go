@@ -10,6 +10,16 @@ import (
 	"testing"
 )
 
+// upstreamRepoURL is where the rendered scaffold fetches fullsend-ai/fullsend
+// scripts and actions from.
+const upstreamRepoURL = "https://github.com/fullsend-ai/fullsend"
+
+// publishedUpstream reports whether sha can be fetched from
+// fullsend-ai/fullsend, the same fetch the rendered workflow makes.
+func publishedUpstream(sha string) bool {
+	return fetchable(upstreamRepoURL, sha)
+}
+
 // BuildCLIBinary compiles the fullsend CLI binary once per test run.
 // When the checked-out commit is published in fullsend-ai/fullsend, it is
 // stamped as the upstream ref, so the scaffold the CLI installs runs this

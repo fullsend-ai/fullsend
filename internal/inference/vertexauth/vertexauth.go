@@ -82,19 +82,19 @@ func PrepareGitHubWIF(ctx context.Context, cfg Config) (map[string]string, func(
 
 func prepareGitHubWIF(ctx context.Context, cfg Config, opts prepareOptions) (map[string]string, func(), error) {
 	if strings.TrimSpace(cfg.ProjectID) == "" {
-		return nil, nil, fmt.Errorf("Vertex inference requires FULLSEND_GCP_PROJECT_ID")
+		return nil, nil, fmt.Errorf("vertex inference requires FULLSEND_GCP_PROJECT_ID")
 	}
 	if strings.TrimSpace(cfg.WorkloadIdentityProvider) == "" {
-		return nil, nil, fmt.Errorf("Vertex inference requires FULLSEND_GCP_WIF_PROVIDER")
+		return nil, nil, fmt.Errorf("vertex inference requires FULLSEND_GCP_WIF_PROVIDER")
 	}
 	if !providerResourcePattern.MatchString(cfg.WorkloadIdentityProvider) {
 		return nil, nil, fmt.Errorf("FULLSEND_GCP_WIF_PROVIDER must be a full workload identity provider resource name")
 	}
 	if cfg.OIDCRequestURL == "" {
-		return nil, nil, fmt.Errorf("Vertex inference requires ACTIONS_ID_TOKEN_REQUEST_URL")
+		return nil, nil, fmt.Errorf("vertex inference requires ACTIONS_ID_TOKEN_REQUEST_URL")
 	}
 	if cfg.OIDCRequestToken == "" {
-		return nil, nil, fmt.Errorf("Vertex inference requires ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+		return nil, nil, fmt.Errorf("vertex inference requires ACTIONS_ID_TOKEN_REQUEST_TOKEN")
 	}
 	if err := requireGitHubOIDCURL(cfg.OIDCRequestURL); err != nil {
 		return nil, nil, err

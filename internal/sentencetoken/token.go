@@ -116,7 +116,7 @@ func tokenType(t *token) string {
 	if utf8.RuneCountInString(typ) == 1 {
 		return typ
 	}
-	return strings.Replace(typ, ",", "", -1)
+	return strings.ReplaceAll(typ, ",", "")
 }
 
 func typeNoPeriod(t *token) string {

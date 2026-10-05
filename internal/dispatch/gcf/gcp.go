@@ -262,7 +262,7 @@ func (c *LiveGCFClient) DeleteServiceAccount(ctx context.Context, projectID, saE
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/serviceAccounts/%s",
 		url.PathEscape(projectID), url.PathEscape(saEmail))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodDelete, reqURL, "")
 	if err != nil {
 		return fmt.Errorf("deleting service account: %w", err)
 	}
@@ -314,7 +314,7 @@ func (c *LiveGCFClient) DeleteWIFPool(ctx context.Context, projectNumber, poolID
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s",
 		url.PathEscape(projectNumber), url.PathEscape(poolID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodDelete, reqURL, "")
 	if err != nil {
 		return fmt.Errorf("deleting WIF pool: %w", err)
 	}
@@ -369,7 +369,7 @@ func (c *LiveGCFClient) CreateWIFProvider(ctx context.Context, projectNumber, po
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusConflict {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		if err := c.undeleteWIFProvider(ctx, projectNumber, poolID, providerID); err != nil {
 			log.Printf("undelete attempt during conflict recovery: %v", err)
 		}
@@ -394,7 +394,7 @@ func (c *LiveGCFClient) GetWIFProvider(ctx context.Context, projectNumber, poolI
 	getURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
 		url.PathEscape(projectNumber), url.PathEscape(poolID), url.PathEscape(providerID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodGet, getURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodGet, getURL, "")
 	if err != nil {
 		return nil, fmt.Errorf("getting WIF provider: %w", err)
 	}
@@ -481,7 +481,7 @@ func (c *LiveGCFClient) undeleteWIFProvider(ctx context.Context, projectNumber, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		return fmt.Errorf("undelete returned %d", resp.StatusCode)
 	}
 	return c.waitForIAMOperation(ctx, resp.Body)
@@ -492,7 +492,7 @@ func (c *LiveGCFClient) GetSecret(ctx context.Context, projectID, secretID strin
 	reqURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s",
 		url.PathEscape(projectID), url.PathEscape(secretID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodGet, reqURL, "")
 	if err != nil {
 		return fmt.Errorf("checking secret: %w", err)
 	}
@@ -514,7 +514,7 @@ func (c *LiveGCFClient) CreateSecret(ctx context.Context, projectID, secretID st
 		url.PathEscape(projectID), url.QueryEscape(secretID))
 	payload := `{"replication":{"automatic":{}}}`
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, payload)
+	resp, err := c.DoRequest(ctx, http.MethodPost, reqURL, payload)
 	if err != nil {
 		return fmt.Errorf("creating secret: %w", err)
 	}
@@ -545,7 +545,7 @@ func (c *LiveGCFClient) AddSecretVersion(ctx context.Context, projectID, secretI
 		return fmt.Errorf("marshaling secret version payload: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, string(payloadBytes))
+	resp, err := c.DoRequest(ctx, http.MethodPost, reqURL, string(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("adding secret version: %w", err)
 	}
@@ -563,7 +563,7 @@ func (c *LiveGCFClient) AccessSecretVersion(ctx context.Context, projectID, secr
 	reqURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s/versions/latest:access",
 		url.PathEscape(projectID), url.PathEscape(secretID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodGet, reqURL, "")
 	if err != nil {
 		return nil, fmt.Errorf("accessing secret version: %w", err)
 	}
@@ -606,7 +606,7 @@ func (c *LiveGCFClient) DisableSecretVersion(ctx context.Context, projectID, sec
 	getURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s/versions/latest",
 		url.PathEscape(projectID), url.PathEscape(secretID))
 
-	getResp, err := c.Client.DoRequest(ctx, http.MethodGet, getURL, "")
+	getResp, err := c.DoRequest(ctx, http.MethodGet, getURL, "")
 	if err != nil {
 		return fmt.Errorf("resolving latest secret version: %w", err)
 	}
@@ -637,7 +637,7 @@ func (c *LiveGCFClient) DisableSecretVersion(ctx context.Context, projectID, sec
 	// Disable the resolved version.
 	disableURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/%s:disable", version.Name)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, disableURL, "{}")
+	resp, err := c.DoRequest(ctx, http.MethodPost, disableURL, "{}")
 	if err != nil {
 		return fmt.Errorf("disabling secret version: %w", err)
 	}
@@ -660,7 +660,7 @@ func (c *LiveGCFClient) EnableSecretVersion(ctx context.Context, projectID, secr
 	getURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s/versions/latest",
 		url.PathEscape(projectID), url.PathEscape(secretID))
 
-	getResp, err := c.Client.DoRequest(ctx, http.MethodGet, getURL, "")
+	getResp, err := c.DoRequest(ctx, http.MethodGet, getURL, "")
 	if err != nil {
 		return fmt.Errorf("resolving latest secret version: %w", err)
 	}
@@ -693,7 +693,7 @@ func (c *LiveGCFClient) EnableSecretVersion(ctx context.Context, projectID, secr
 
 	enableURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/%s:enable", version.Name)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, enableURL, "{}")
+	resp, err := c.DoRequest(ctx, http.MethodPost, enableURL, "{}")
 	if err != nil {
 		return fmt.Errorf("enabling secret version: %w", err)
 	}
@@ -714,7 +714,7 @@ func (c *LiveGCFClient) DeleteSecret(ctx context.Context, projectID, secretID st
 	reqURL := fmt.Sprintf("https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s",
 		url.PathEscape(projectID), url.PathEscape(secretID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodDelete, reqURL, "")
 	if err != nil {
 		return fmt.Errorf("deleting secret: %w", err)
 	}
@@ -742,7 +742,7 @@ func (c *LiveGCFClient) DisableWIFProvider(ctx context.Context, projectNumber, p
 		return fmt.Errorf("marshaling disable payload: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPatch, patchURL, string(payloadBytes))
+	resp, err := c.DoRequest(ctx, http.MethodPatch, patchURL, string(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("disabling WIF provider: %w", err)
 	}
@@ -790,7 +790,7 @@ func (c *LiveGCFClient) DeleteWIFProvider(ctx context.Context, projectNumber, po
 	deleteURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
 		url.PathEscape(projectNumber), url.PathEscape(poolID), url.PathEscape(providerID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, deleteURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodDelete, deleteURL, "")
 	if err != nil {
 		return fmt.Errorf("deleting WIF provider: %w", err)
 	}
@@ -869,14 +869,14 @@ func isConflict(err error) bool {
 func (c *LiveGCFClient) doWIFRequestWithRetry(ctx context.Context, method, url, payload string) (*http.Response, error) {
 	const maxRetries = 7
 	for attempt := range maxRetries {
-		resp, err := c.Client.DoRequest(ctx, method, url, payload)
+		resp, err := c.DoRequest(ctx, method, url, payload)
 		if err != nil {
 			return nil, err
 		}
 		if resp.StatusCode != http.StatusTooManyRequests {
 			return resp, nil
 		}
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
 		if attempt == maxRetries-1 {
 			return nil, fmt.Errorf("rate limited (HTTP 429) after %d attempts", maxRetries)
@@ -945,7 +945,7 @@ func (c *LiveGCFClient) SetProjectIAMBinding(ctx context.Context, projectID, mem
 // When replace is true, all existing members for the role are replaced with
 // the specified member instead of appending.
 func (c *LiveGCFClient) trySetIAMBinding(ctx context.Context, getMethod, getBody, getURL, setURL, member, role string, replace bool) error {
-	resp, err := c.Client.DoRequest(ctx, getMethod, getURL, getBody)
+	resp, err := c.DoRequest(ctx, getMethod, getURL, getBody)
 	if err != nil {
 		return fmt.Errorf("getting IAM policy: %w", err)
 	}
@@ -1003,14 +1003,14 @@ func (c *LiveGCFClient) trySetIAMBinding(ctx context.Context, getMethod, getBody
 		return fmt.Errorf("marshaling IAM policy: %w", err)
 	}
 
-	setResp, err := c.Client.DoRequest(ctx, http.MethodPost, setURL, string(payloadBytes))
+	setResp, err := c.DoRequest(ctx, http.MethodPost, setURL, string(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("setting IAM policy: %w", err)
 	}
 	defer setResp.Body.Close()
 
 	if setResp.StatusCode == http.StatusConflict {
-		io.Copy(io.Discard, io.LimitReader(setResp.Body, 1<<20))
+		_, _ = io.Copy(io.Discard, io.LimitReader(setResp.Body, 1<<20))
 		return &conflictError{status: setResp.StatusCode}
 	}
 	if setResp.StatusCode != http.StatusOK {
@@ -1049,7 +1049,7 @@ func (c *LiveGCFClient) SetCloudRunInvoker(ctx context.Context, projectID, regio
 }
 
 func (c *LiveGCFClient) trySetCloudRunInvoker(ctx context.Context, baseURL string) (done bool, _ error) {
-	getResp, err := c.Client.DoRequest(ctx, http.MethodGet, baseURL+":getIamPolicy", "")
+	getResp, err := c.DoRequest(ctx, http.MethodGet, baseURL+":getIamPolicy", "")
 	if err != nil {
 		return true, fmt.Errorf("getting Cloud Run IAM policy: %w", err)
 	}
@@ -1099,14 +1099,14 @@ func (c *LiveGCFClient) trySetCloudRunInvoker(ctx context.Context, baseURL strin
 		return true, fmt.Errorf("marshaling Cloud Run IAM policy: %w", err)
 	}
 
-	setResp, err := c.Client.DoRequest(ctx, http.MethodPost, baseURL+":setIamPolicy", string(payloadBytes))
+	setResp, err := c.DoRequest(ctx, http.MethodPost, baseURL+":setIamPolicy", string(payloadBytes))
 	if err != nil {
 		return true, fmt.Errorf("setting Cloud Run invoker: %w", err)
 	}
 	defer setResp.Body.Close()
 
 	if setResp.StatusCode == http.StatusConflict {
-		io.Copy(io.Discard, io.LimitReader(setResp.Body, 1<<20))
+		_, _ = io.Copy(io.Discard, io.LimitReader(setResp.Body, 1<<20))
 		return false, fmt.Errorf("IAM policy conflict (will retry)")
 	}
 	if setResp.StatusCode != http.StatusOK {
@@ -1121,7 +1121,7 @@ func (c *LiveGCFClient) DeleteFunction(ctx context.Context, projectID, region, f
 	reqURL := fmt.Sprintf("https://cloudfunctions.googleapis.com/v2/projects/%s/locations/%s/functions/%s",
 		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(functionName))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodDelete, reqURL, "")
 	if err != nil {
 		return fmt.Errorf("deleting function: %w", err)
 	}
@@ -1155,7 +1155,7 @@ func (c *LiveGCFClient) GetFunction(ctx context.Context, projectID, region, func
 	reqURL := fmt.Sprintf("https://cloudfunctions.googleapis.com/v2/projects/%s/locations/%s/functions/%s",
 		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(functionName))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodGet, reqURL, "")
 	if err != nil {
 		return nil, fmt.Errorf("checking function: %w", err)
 	}
@@ -1195,7 +1195,7 @@ func (c *LiveGCFClient) GetCloudRunServiceURI(ctx context.Context, projectID, re
 	serviceURL := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/services/%s",
 		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(serviceName))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodGet, serviceURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodGet, serviceURL, "")
 	if err != nil {
 		return "", fmt.Errorf("getting Cloud Run service: %w", err)
 	}
@@ -1224,7 +1224,7 @@ func (c *LiveGCFClient) UploadFunctionSource(ctx context.Context, projectID, reg
 	reqURL := fmt.Sprintf("https://cloudfunctions.googleapis.com/v2/projects/%s/locations/%s/functions:generateUploadUrl",
 		url.PathEscape(projectID), url.PathEscape(region))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, "{}")
+	resp, err := c.DoRequest(ctx, http.MethodPost, reqURL, "{}")
 	if err != nil {
 		return nil, fmt.Errorf("generating upload URL: %w", err)
 	}
@@ -1311,7 +1311,7 @@ func (c *LiveGCFClient) CreateFunction(ctx context.Context, projectID, region, f
 		return "", fmt.Errorf("marshaling function payload: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, string(payloadBytes))
+	resp, err := c.DoRequest(ctx, http.MethodPost, reqURL, string(payloadBytes))
 	if err != nil {
 		return "", fmt.Errorf("creating function: %w", err)
 	}
@@ -1368,7 +1368,7 @@ func (c *LiveGCFClient) UpdateFunction(ctx context.Context, projectID, region, f
 		return "", fmt.Errorf("marshaling function update payload: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPatch, reqURL, string(payloadBytes))
+	resp, err := c.DoRequest(ctx, http.MethodPatch, reqURL, string(payloadBytes))
 	if err != nil {
 		return "", fmt.Errorf("updating function: %w", err)
 	}
@@ -1411,7 +1411,7 @@ func (c *LiveGCFClient) UpdateFunctionEnvVars(ctx context.Context, projectID, re
 		return "", fmt.Errorf("marshaling env vars update payload: %w", err)
 	}
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPatch, reqURL, string(payloadBytes))
+	resp, err := c.DoRequest(ctx, http.MethodPatch, reqURL, string(payloadBytes))
 	if err != nil {
 		return "", fmt.Errorf("updating function env vars: %w", err)
 	}
@@ -1454,7 +1454,7 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(serviceName))
 
 	// Step 1: GET current service to preserve container config (image, ports, etc.).
-	getResp, err := c.Client.DoRequest(ctx, http.MethodGet, serviceURL, "")
+	getResp, err := c.DoRequest(ctx, http.MethodGet, serviceURL, "")
 	if err != nil {
 		return "", fmt.Errorf("getting Cloud Run service: %w", err)
 	}
@@ -1485,18 +1485,18 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 	// Navigate to template.containers[0] and replace its env field.
 	template, _ := service["template"].(map[string]interface{})
 	if template == nil {
-		return "", fmt.Errorf("Cloud Run service has no template")
+		return "", fmt.Errorf("cloud Run service has no template")
 	}
 	// Remove revision name so Cloud Run auto-generates one; re-sending the
 	// existing name causes a 409 "revision already exists" conflict.
 	delete(template, "revision")
 	containers, _ := template["containers"].([]interface{})
 	if len(containers) == 0 {
-		return "", fmt.Errorf("Cloud Run service has no containers")
+		return "", fmt.Errorf("cloud Run service has no containers")
 	}
 	container, _ := containers[0].(map[string]interface{})
 	if container == nil {
-		return "", fmt.Errorf("Cloud Run service container is not an object")
+		return "", fmt.Errorf("cloud Run service container is not an object")
 	}
 	container["env"] = envArray
 
@@ -1512,7 +1512,7 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 	// Step 2: PATCH the template to create a new revision.
 	// updateMask covers template.revision (cleared so Cloud Run
 	// auto-generates a new name) and template.containers (env vars).
-	patchResp, err := c.Client.DoRequest(ctx, http.MethodPatch, serviceURL+"?updateMask=template.revision,template.containers", string(payloadBytes))
+	patchResp, err := c.DoRequest(ctx, http.MethodPatch, serviceURL+"?updateMask=template.revision,template.containers", string(payloadBytes))
 	if err != nil {
 		return "", fmt.Errorf("patching Cloud Run service template: %w", err)
 	}
@@ -1528,7 +1528,7 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 	}
 
 	// Step 3: GET service again to discover the new revision name.
-	getResp2, err := c.Client.DoRequest(ctx, http.MethodGet, serviceURL, "")
+	getResp2, err := c.DoRequest(ctx, http.MethodGet, serviceURL, "")
 	if err != nil {
 		return "", fmt.Errorf("getting Cloud Run service after template update: %w", err)
 	}
@@ -1547,7 +1547,7 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 	}
 	newRevision := updatedService.LatestCreatedRevision
 	if newRevision == "" {
-		return "", fmt.Errorf("Cloud Run service has no latestCreatedRevision after template update")
+		return "", fmt.Errorf("cloud Run service has no latestCreatedRevision after template update")
 	}
 
 	// The Cloud Run v2 API returns fully qualified revision names from GET
@@ -1576,7 +1576,7 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 		return "", fmt.Errorf("marshaling traffic update: %w", err)
 	}
 
-	trafficResp, err := c.Client.DoRequest(ctx, http.MethodPatch, serviceURL+"?updateMask=traffic", string(trafficPayload))
+	trafficResp, err := c.DoRequest(ctx, http.MethodPatch, serviceURL+"?updateMask=traffic", string(trafficPayload))
 	if err != nil {
 		return newRevision, fmt.Errorf("patching Cloud Run traffic: %w", err)
 	}
@@ -1610,12 +1610,12 @@ func (c *LiveGCFClient) handleCloudRunLRO(ctx context.Context, resp *http.Respon
 
 	if op.Done {
 		if op.Error != nil {
-			return fmt.Errorf("Cloud Run service update failed: %s", op.Error.Message)
+			return fmt.Errorf("cloud Run service update failed: %s", op.Error.Message)
 		}
 		return nil
 	}
 	if op.Name == "" {
-		return fmt.Errorf("Cloud Run PATCH returned incomplete response: done=false with no operation name")
+		return fmt.Errorf("cloud Run PATCH returned incomplete response: done=false with no operation name")
 	}
 
 	return c.waitForCloudRunOperation(ctx, op.Name)
@@ -1647,7 +1647,7 @@ func (c *LiveGCFClient) GetServiceTrafficEnvVars(ctx context.Context, projectID,
 	serviceURL := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/services/%s",
 		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(serviceName))
 
-	getResp, err := c.Client.DoRequest(ctx, http.MethodGet, serviceURL, "")
+	getResp, err := c.DoRequest(ctx, http.MethodGet, serviceURL, "")
 	if err != nil {
 		return nil, fmt.Errorf("getting Cloud Run service: %w", err)
 	}
@@ -1722,7 +1722,7 @@ func (c *LiveGCFClient) GetServiceTrafficEnvVars(ctx context.Context, projectID,
 
 	// GET the specific traffic-serving revision.
 	revisionURL := fmt.Sprintf("https://run.googleapis.com/v2/%s", revisionResourceName)
-	revResp, err := c.Client.DoRequest(ctx, http.MethodGet, revisionURL, "")
+	revResp, err := c.DoRequest(ctx, http.MethodGet, revisionURL, "")
 	if err != nil {
 		return nil, fmt.Errorf("getting traffic-serving revision: %w", err)
 	}
@@ -1770,7 +1770,7 @@ func (c *LiveGCFClient) waitForCloudRunOperation(ctx context.Context, operationN
 
 	delay := c.getPollDelay()
 	for {
-		resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
+		resp, err := c.DoRequest(ctx, http.MethodGet, reqURL, "")
 		if err != nil {
 			return fmt.Errorf("polling Cloud Run operation: %w", err)
 		}
@@ -1789,7 +1789,7 @@ func (c *LiveGCFClient) waitForCloudRunOperation(ctx context.Context, operationN
 
 		if op.Done {
 			if op.Error != nil {
-				return fmt.Errorf("Cloud Run operation failed: %s", op.Error.Message)
+				return fmt.Errorf("cloud Run operation failed: %s", op.Error.Message)
 			}
 			return nil
 		}
@@ -1810,7 +1810,7 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(serviceName))
 
 	// 1. GET the service.
-	getResp, err := c.Client.DoRequest(ctx, http.MethodGet, serviceURL, "")
+	getResp, err := c.DoRequest(ctx, http.MethodGet, serviceURL, "")
 	if err != nil {
 		return nil, fmt.Errorf("getting Cloud Run service: %w", err)
 	}
@@ -1886,7 +1886,7 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 
 	// 2. List recent revisions.
 	revisionsURL := fmt.Sprintf("%s/revisions?pageSize=5", serviceURL)
-	revListResp, err := c.Client.DoRequest(ctx, http.MethodGet, revisionsURL, "")
+	revListResp, err := c.DoRequest(ctx, http.MethodGet, revisionsURL, "")
 	if err != nil {
 		// Non-fatal: we can still return partial info.
 		return info, nil
@@ -1953,7 +1953,7 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 	}
 	if revResourceName != "" {
 		revisionURL := fmt.Sprintf("https://run.googleapis.com/v2/%s", revResourceName)
-		revResp, err := c.Client.DoRequest(ctx, http.MethodGet, revisionURL, "")
+		revResp, err := c.DoRequest(ctx, http.MethodGet, revisionURL, "")
 		if err == nil {
 			defer revResp.Body.Close()
 			if revResp.StatusCode == http.StatusOK {
@@ -2004,7 +2004,7 @@ func (c *LiveGCFClient) WaitForOperation(ctx context.Context, operationName stri
 
 	delay := c.getPollDelay()
 	for {
-		resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
+		resp, err := c.DoRequest(ctx, http.MethodGet, reqURL, "")
 		if err != nil {
 			return fmt.Errorf("polling operation: %w", err)
 		}
@@ -2075,7 +2075,7 @@ func (c *LiveGCFClient) waitForIAMOperation(ctx context.Context, body io.Reader)
 		case <-delay(2 * time.Second):
 		}
 
-		resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
+		resp, err := c.DoRequest(ctx, http.MethodGet, reqURL, "")
 		if err != nil {
 			return fmt.Errorf("polling IAM operation: %w", err)
 		}
@@ -2106,7 +2106,7 @@ func (c *LiveGCFClient) GetProjectNumber(ctx context.Context, projectID string) 
 	reqURL := fmt.Sprintf("https://cloudresourcemanager.googleapis.com/v1/projects/%s",
 		url.PathEscape(projectID))
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodGet, reqURL, "")
+	resp, err := c.DoRequest(ctx, http.MethodGet, reqURL, "")
 	if err != nil {
 		return "", fmt.Errorf("looking up project number: %w", err)
 	}

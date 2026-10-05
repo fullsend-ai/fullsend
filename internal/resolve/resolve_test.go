@@ -2028,9 +2028,9 @@ func TestParseProfileID(t *testing.T) {
 func TestCollectProfileIDs(t *testing.T) {
 	t.Run("returns IDs from YAML files", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "a.yaml"), []byte("id: alpha\n"), 0o644)
-		os.WriteFile(filepath.Join(dir, "b.yml"), []byte("id: beta\n"), 0o644)
-		os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("not a profile"), 0o644)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "a.yaml"), []byte("id: alpha\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "b.yml"), []byte("id: beta\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("not a profile"), 0o644))
 
 		ids, err := CollectProfileIDs(dir)
 		require.NoError(t, err)
@@ -2046,7 +2046,7 @@ func TestCollectProfileIDs(t *testing.T) {
 
 	t.Run("returns error for invalid YAML", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte(":::"), 0o644)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte(":::"), 0o644))
 
 		_, err := CollectProfileIDs(dir)
 		require.Error(t, err)
@@ -2055,8 +2055,8 @@ func TestCollectProfileIDs(t *testing.T) {
 
 	t.Run("skips subdirectories", func(t *testing.T) {
 		dir := t.TempDir()
-		os.MkdirAll(filepath.Join(dir, "subdir.yaml"), 0o755)
-		os.WriteFile(filepath.Join(dir, "valid.yaml"), []byte("id: gamma\n"), 0o644)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "subdir.yaml"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "valid.yaml"), []byte("id: gamma\n"), 0o644))
 
 		ids, err := CollectProfileIDs(dir)
 		require.NoError(t, err)

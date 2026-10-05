@@ -195,7 +195,7 @@ func lookupAppID(ctx context.Context, slug string) (int, error) {
 		return 0, fmt.Errorf("looking up app %s: %w", slug, err)
 	}
 	defer func() {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
 	}()
 
@@ -273,7 +273,7 @@ func verifyPEMMatchesApp(ctx context.Context, pemData []byte, appID int, slug st
 		return fmt.Errorf("verifying PEM against GitHub: %w", err)
 	}
 	defer func() {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
 	}()
 

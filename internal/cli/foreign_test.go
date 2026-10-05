@@ -82,7 +82,7 @@ func TestLoadForeignAllowlist(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/FULLSEND_FOREIGN_E2E_REPOS"):
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"name":  "FULLSEND_FOREIGN_E2E_REPOS",
 				"value": "fullsend-ai/fullsend, fullsend-ai",
 			})
@@ -137,7 +137,7 @@ func (s *foreignVarState) handler(t *testing.T) http.HandlerFunc {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/actions/variables/FULLSEND_FOREIGN_"):
 			name := strings.TrimPrefix(r.URL.Path, "/orgs/pool-org/actions/variables/")
 			if val, ok := s.vars[name]; ok {
-				json.NewEncoder(w).Encode(map[string]string{"name": name, "value": val})
+				_ = json.NewEncoder(w).Encode(map[string]string{"name": name, "value": val})
 				return
 			}
 			w.WriteHeader(http.StatusNotFound)
@@ -146,7 +146,7 @@ func (s *foreignVarState) handler(t *testing.T) http.HandlerFunc {
 			for name, val := range s.vars {
 				out = append(out, map[string]string{"name": name, "value": val})
 			}
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"total_count": len(out),
 				"variables":   out,
 			})
@@ -155,7 +155,7 @@ func (s *foreignVarState) handler(t *testing.T) http.HandlerFunc {
 			var body struct {
 				Value string `json:"value"`
 			}
-			json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			s.vars[name] = body.Value
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && r.URL.Path == "/orgs/pool-org/actions/variables":
@@ -163,7 +163,7 @@ func (s *foreignVarState) handler(t *testing.T) http.HandlerFunc {
 				Name  string `json:"name"`
 				Value string `json:"value"`
 			}
-			json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			s.vars[body.Name] = body.Value
 			w.WriteHeader(http.StatusCreated)
 		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/actions/variables/"):
@@ -203,7 +203,7 @@ func (s *foreignVarState) handleRepoVars(t *testing.T, w http.ResponseWriter, r 
 				out = append(out, map[string]string{"name": name, "value": val})
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"total_count": len(out),
 			"variables":   out,
 		})
@@ -211,7 +211,7 @@ func (s *foreignVarState) handleRepoVars(t *testing.T, w http.ResponseWriter, r 
 		name := strings.TrimPrefix(rest, "actions/variables/")
 		key := s.repoVarKey(owner, repo, name)
 		if val, ok := s.repoVars[key]; ok {
-			json.NewEncoder(w).Encode(map[string]string{"name": name, "value": val})
+			_ = json.NewEncoder(w).Encode(map[string]string{"name": name, "value": val})
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -221,7 +221,7 @@ func (s *foreignVarState) handleRepoVars(t *testing.T, w http.ResponseWriter, r 
 		var body struct {
 			Value string `json:"value"`
 		}
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		s.repoVars[key] = body.Value
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && rest == "actions/variables":
@@ -229,7 +229,7 @@ func (s *foreignVarState) handleRepoVars(t *testing.T, w http.ResponseWriter, r 
 			Name  string `json:"name"`
 			Value string `json:"value"`
 		}
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		key := s.repoVarKey(owner, repo, body.Name)
 		s.repoVars[key] = body.Value
 		w.WriteHeader(http.StatusCreated)

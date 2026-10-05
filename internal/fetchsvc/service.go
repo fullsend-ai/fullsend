@@ -248,8 +248,10 @@ func (s *Service) HandleFetch(ctx context.Context, req FetchRequest) (FetchRespo
 	if s.uploader != nil {
 		uploadKey := remotePath + "|" + expectedHash
 		_, err, _ := s.uploadGroup.Do(uploadKey, func() (any, error) {
-			if h, ok := s.uploaded.Load(remotePath); ok && h.(string) == expectedHash {
-				return nil, nil
+			if h, ok := s.uploaded.Load(remotePath); ok {
+				if hStr, ok := h.(string); ok && hStr == expectedHash {
+					return nil, nil
+				}
 			}
 			if uploadErr := s.uploader.UploadSkillDir(s.sandboxName, treePath, remotePath); uploadErr != nil {
 				return nil, uploadErr

@@ -44,9 +44,12 @@ func decodeOutputMessages(t *testing.T, raw string) []map[string]any {
 func partAt(t *testing.T, msgs []map[string]any, i int) map[string]any {
 	t.Helper()
 	require.NotEmpty(t, msgs)
-	parts := msgs[0]["parts"].([]any)
+	parts, ok := msgs[0]["parts"].([]any)
+	require.True(t, ok)
 	require.Greater(t, len(parts), i)
-	return parts[i].(map[string]any)
+	part, ok := parts[i].(map[string]any)
+	require.True(t, ok)
+	return part
 }
 
 func TestContentCollector_CoalescesContiguousDeltas(t *testing.T) {
@@ -180,10 +183,15 @@ func TestContentCollector_ToolResultsStayDiscrete(t *testing.T) {
 	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_b", Result: "two"})
 
 	msgs := decodeOutputMessages(t, c.Result("stop").OutputMessages)
-	parts := msgs[0]["parts"].([]any)
+	parts, ok := msgs[0]["parts"].([]any)
+	require.True(t, ok)
 	require.Len(t, parts, 2)
-	assert.Equal(t, "toolu_a", parts[0].(map[string]any)["id"])
-	assert.Equal(t, "toolu_b", parts[1].(map[string]any)["id"])
+	part0, ok0 := parts[0].(map[string]any)
+	require.True(t, ok0)
+	part1, ok1 := parts[1].(map[string]any)
+	require.True(t, ok1)
+	assert.Equal(t, "toolu_a", part0["id"])
+	assert.Equal(t, "toolu_b", part1["id"])
 }
 
 func TestContentCollector_PreservesCleanText(t *testing.T) {

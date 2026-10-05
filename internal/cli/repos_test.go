@@ -2153,14 +2153,6 @@ func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
 
 // --- forge-aware CLI integration tests ---
 
-var emptyReposManifestYAML = `version: 1
-defaults:
-  inference:
-    auth: vertex-wif
-github:
-  mint_url: https://mint.example.com
-  repos: []
-`
 
 func TestReposInstallCmd_GitLabNoToken(t *testing.T) {
 	// With zero repos, a GitLab-default manifest does not require a token.

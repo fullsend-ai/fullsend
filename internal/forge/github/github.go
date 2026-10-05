@@ -414,17 +414,17 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any, head
 // Server errors (500, 502, 503, 504) are also retried as transient failures.
 func isRetryable(resp *http.Response) (bool, []byte) {
 	if resp.StatusCode == http.StatusTooManyRequests {
-		io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return true, nil
 	}
 	// Transient server errors.
 	if resp.StatusCode >= 500 && resp.StatusCode <= 504 {
-		io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return true, nil
 	}
 	if resp.StatusCode == http.StatusForbidden {
 		if resp.Header.Get("Retry-After") != "" {
-			io.Copy(io.Discard, resp.Body)
+			_, _ = io.Copy(io.Discard, resp.Body)
 			return true, nil
 		}
 		// Check body for rate limit indicators without Retry-After header.
@@ -613,7 +613,10 @@ func (c *LiveClient) getCachedJSON(ctx context.Context, path string, v any) erro
 		}
 		return res.Err
 	}
-	fetched := res.Val.(conditionalBody)
+	fetched, ok := res.Val.(conditionalBody)
+	if !ok {
+		return fmt.Errorf("unexpected value type %T from singleflight", res.Val)
+	}
 	// json.Unmarshal neither retains nor modifies its input, so decoding
 	// straight from the shared body is safe; the cache holds its own copy.
 	if err := json.Unmarshal(fetched.body, v); err != nil {
@@ -680,7 +683,11 @@ func (c *LiveClient) lookupCachedETag(key string) (etagEntry, bool) {
 		return etagEntry{}, false
 	}
 	c.etagLRU.MoveToFront(el)
-	return *el.Value.(*etagEntry), true
+	e, ok := el.Value.(*etagEntry)
+	if !ok {
+		return etagEntry{}, false
+	}
+	return *e, true
 }
 
 // storeCachedETag stores (etag, body) under key as the most recently used
@@ -695,9 +702,10 @@ func (c *LiveClient) storeCachedETag(key, etag string, body []byte) {
 		c.etagLRU = list.New()
 	}
 	if el, ok := c.etagCache[key]; ok {
-		e := el.Value.(*etagEntry)
-		c.etagBytes += len(body) - len(e.body)
-		e.etag, e.body = etag, body
+		if e, ok := el.Value.(*etagEntry); ok {
+			c.etagBytes += len(body) - len(e.body)
+			e.etag, e.body = etag, body
+		}
 		c.etagLRU.MoveToFront(el)
 	} else {
 		c.etagCache[key] = c.etagLRU.PushFront(&etagEntry{key: key, etag: etag, body: body})
@@ -712,14 +720,19 @@ func (c *LiveClient) storeCachedETag(key, etag string, body []byte) {
 func (c *LiveClient) dropCachedETag(key, etag string) {
 	c.etagMu.Lock()
 	defer c.etagMu.Unlock()
-	if el, ok := c.etagCache[key]; ok && el.Value.(*etagEntry).etag == etag {
-		c.removeCachedETag(el)
+	if el, ok := c.etagCache[key]; ok {
+		if e, ok := el.Value.(*etagEntry); ok && e.etag == etag {
+			c.removeCachedETag(el)
+		}
 	}
 }
 
 // removeCachedETag unlinks el. The caller holds etagMu.
 func (c *LiveClient) removeCachedETag(el *list.Element) {
-	e := el.Value.(*etagEntry)
+	e, ok := el.Value.(*etagEntry)
+	if !ok {
+		return
+	}
 	c.etagLRU.Remove(el)
 	delete(c.etagCache, e.key)
 	c.etagBytes -= len(e.body)
@@ -1440,7 +1453,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		if utf8.Valid(f.Content) {
 			entry["content"] = string(f.Content)
 		} else {
-			blobSHAValue := expectedSHA
+			var blobSHAValue string
 			if exists && info.sha == expectedSHA {
 				blobSHAValue = info.sha
 			} else {
@@ -2446,10 +2459,10 @@ func ListInstallationRepositories(ctx context.Context, httpClient *http.Client, 
 		}
 		return repos, result.TotalCount, true, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return nil, 0, false, nil
 	default:
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return nil, 0, false, &APIError{StatusCode: resp.StatusCode, Message: "installation repositories request failed"}
 	}
 }
@@ -2530,7 +2543,7 @@ func (c *LiveClient) GetTokenScopes(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("checking token scopes: %w", err)
 	}
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {

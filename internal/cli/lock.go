@@ -1009,7 +1009,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		case strings.HasPrefix(m.field, "plugins["):
 			var idx int
 			// Index was validated during collection; Sscanf is safe here.
-			fmt.Sscanf(m.field, "plugins[%d]", &idx)
+			_, _ = fmt.Sscanf(m.field, "plugins[%d]", &idx)
 			// Only the path is replaced: the entry's env and pi options are
 			// the harness author's and survive resolution.
 			h.Plugins[idx].Path = m.localPath

@@ -133,7 +133,8 @@ func TestPostCompletion_EditStart_WhenAgentPostedOutput(t *testing.T) {
 	require.NoError(t, err)
 
 	// Agent posts its own output (same bot author, no status marker).
-	fc.CreateIssueComment(context.Background(), "org", "repo", 7, "<!-- fullsend:triage-agent -->\nTriage result here")
+	_, err = fc.CreateIssueComment(context.Background(), "org", "repo", 7, "<!-- fullsend:triage-agent -->\nTriage result here")
+	require.NoError(t, err)
 
 	n.now = func() time.Time { return fixedTime().Add(5 * time.Minute) }
 	err = n.PostCompletion(context.Background(), "Triaging issue", "success")
@@ -165,7 +166,8 @@ func TestPostCompletion_EditStart_WhenAgentAndHumanPosted(t *testing.T) {
 		Body:   "Human question here",
 		Author: "some-human",
 	})
-	fc.CreateIssueComment(context.Background(), "org", "repo", 7, "<!-- fullsend:review-agent -->\nReview findings")
+	_, err = fc.CreateIssueComment(context.Background(), "org", "repo", 7, "<!-- fullsend:review-agent -->\nReview findings")
+	require.NoError(t, err)
 
 	n.now = func() time.Time { return fixedTime().Add(7 * time.Minute) }
 	err = n.PostCompletion(context.Background(), "Reviewing this PR", "success")
@@ -603,7 +605,8 @@ func TestAnalyzeTimeline_UsesStartCommentAuthor(t *testing.T) {
 	err := n.PostStart(context.Background(), "Reviewing this PR")
 	require.NoError(t, err)
 
-	fc.CreateIssueComment(context.Background(), "org", "repo", 7, "Review findings here")
+	_, err = fc.CreateIssueComment(context.Background(), "org", "repo", 7, "Review findings here")
+	require.NoError(t, err)
 
 	n.now = func() time.Time { return fixedTime().Add(5 * time.Minute) }
 	err = n.PostCompletion(context.Background(), "Reviewing this PR", "success")
@@ -1455,7 +1458,7 @@ func TestClientFactory_CompletionDisabled_DeleteError(t *testing.T) {
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
 	}
-	n, fc := newTestNotifier(fc, cfg)
+	n, _ := newTestNotifier(fc, cfg)
 
 	err := n.PostStart(context.Background(), "Working")
 	require.NoError(t, err)

@@ -1514,9 +1514,7 @@ func TestBuildConfigMap_PerRepoConfig(t *testing.T) {
 	pr, ok := cfg.(config.PerRepoConfigReader)
 	require.True(t, ok)
 	// Set per-repo specific fields via the writer interface.
-	if w, ok := cfg.(config.PerRepoConfigWriter); ok {
-		w.SetRuntime("claude")
-	}
+	cfg.SetRuntime("claude")
 	_ = pr // verify type assertion works
 
 	m := BuildConfigMap(cfg)
@@ -1535,14 +1533,12 @@ func TestBuildConfigMap_AllFields(t *testing.T) {
 	cfg := config.NewPerRepoConfig([]string{"triage"}, "org/repo")
 
 	// Set fields via writer interface
-	if w, ok := cfg.(config.PerRepoConfigWriter); ok {
-		w.SetRuntime("claude")
-		w.SetKillSwitch(true)
-		w.SetAgents([]config.AgentEntry{
-			{Name: "my-agent", Source: "https://example.com/agent.yaml"},
-		})
-		w.SetAllowedRemoteResources([]string{"https://example.com/*"})
-	}
+	cfg.SetRuntime("claude")
+	cfg.SetKillSwitch(true)
+	cfg.SetAgents([]config.AgentEntry{
+		{Name: "my-agent", Source: "https://example.com/agent.yaml"},
+	})
+	cfg.SetAllowedRemoteResources([]string{"https://example.com/*"})
 
 	m := BuildConfigMap(cfg)
 	require.NotNil(t, m)

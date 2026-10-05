@@ -18,7 +18,7 @@ func TestRunFetchSkill_Success(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(fetchsvc.FetchResponse{
+		_ = json.NewEncoder(w).Encode(fetchsvc.FetchResponse{
 			LocalPath: "/sandbox/claude-config/skills/abc12345-my-skill",
 		})
 	}))
@@ -44,7 +44,7 @@ func TestRunFetchSkill_Forbidden(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(fetchsvc.FetchResponse{
+		_ = json.NewEncoder(w).Encode(fetchsvc.FetchResponse{
 			Error: "url not in allowed_remote_resources",
 		})
 	}))
@@ -70,7 +70,7 @@ func TestRunFetchSkill_RateLimited(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
-		json.NewEncoder(w).Encode(fetchsvc.FetchResponse{
+		_ = json.NewEncoder(w).Encode(fetchsvc.FetchResponse{
 			Error: "runtime fetch rate limit exceeded",
 		})
 	}))
@@ -204,9 +204,9 @@ func TestRunFetchSkill_AuthTokenSent(t *testing.T) {
 func TestRunFetchSkill_RequestBody(t *testing.T) {
 	var receivedReq fetchsvc.FetchRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedReq)
+		_ = json.NewDecoder(r.Body).Decode(&receivedReq)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(fetchsvc.FetchResponse{LocalPath: "/path"})
+		_ = json.NewEncoder(w).Encode(fetchsvc.FetchResponse{LocalPath: "/path"})
 	}))
 	defer srv.Close()
 

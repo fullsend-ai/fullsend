@@ -89,7 +89,7 @@ func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
 			st.sawPAT.Store(true)
 		}
 		path := r.URL.Path
-		status := http.StatusOK
+		var status int
 		body := ""
 		switch {
 		case strings.Contains(path, "/repository/branches/"):

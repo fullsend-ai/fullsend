@@ -80,11 +80,11 @@ finalized, this is a no-op.`,
 				if trackerSource == "jira" {
 					key := extractMapString(eventMap, "entity", "key")
 					if key == "" {
-						return fmt.Errorf("Jira event detected but entity.key is missing in normalized event")
+						return fmt.Errorf("jira event detected but entity.key is missing in normalized event")
 					}
 					proj, num, ok := parseJiraKey(key)
 					if !ok {
-						return fmt.Errorf("Jira event has unparseable entity.key %q in normalized event", key)
+						return fmt.Errorf("jira event has unparseable entity.key %q in normalized event", key)
 					}
 					project = proj
 					number = num

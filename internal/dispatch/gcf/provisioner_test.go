@@ -50,20 +50,20 @@ func newTestProvisioner(cfg Config, gcpAPI GCFClient) *Provisioner {
 func fakeFunctionSourceDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n\ngo 1.23\n\nrequire mintcore v0.0.0\n\nreplace mintcore => ../mintcore\n"), 0644)
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package function\n"), 0644)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n\ngo 1.23\n\nrequire mintcore v0.0.0\n\nreplace mintcore => ../mintcore\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte("package function\n"), 0644))
 	// bundleFunctionSource expects a sibling mintcore directory at ../mintcore.
 	mintcoreDir := filepath.Join(dir, "..", "mintcore")
-	os.MkdirAll(mintcoreDir, 0755)
-	os.WriteFile(filepath.Join(mintcoreDir, "go.mod"), []byte("module mintcore\n\ngo 1.23\n"), 0644)
-	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
+	require.NoError(t, os.MkdirAll(mintcoreDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(mintcoreDir, "go.mod"), []byte("module mintcore\n\ngo 1.23\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644))
 	// Add a version.go that should be skipped by bundleFunctionSource
 	// (it generates its own version.go with stamped values).
-	os.WriteFile(filepath.Join(mintcoreDir, "version.go"), []byte("package mintcore\n\nvar Version = \"disk\"\n"), 0644)
+	require.NoError(t, os.WriteFile(filepath.Join(mintcoreDir, "version.go"), []byte("package mintcore\n\nvar Version = \"disk\"\n"), 0644))
 	// Add status_github_stub.go and status_github.go — bundleFunctionSource
 	// selects one at bundle time based on whether GitHub status auth is enabled.
-	os.WriteFile(filepath.Join(mintcoreDir, "status_github_stub.go"), []byte("//go:build !github\n\npackage mintcore\n\nfunc statusValidators() []StatusValidator { return nil }\n"), 0644)
-	os.WriteFile(filepath.Join(mintcoreDir, "status_github.go"), []byte("//go:build github\n\npackage mintcore\n\nfunc statusValidators() []StatusValidator { return nil }\n"), 0644)
+	require.NoError(t, os.WriteFile(filepath.Join(mintcoreDir, "status_github_stub.go"), []byte("//go:build !github\n\npackage mintcore\n\nfunc statusValidators() []StatusValidator { return nil }\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mintcoreDir, "status_github.go"), []byte("//go:build github\n\npackage mintcore\n\nfunc statusValidators() []StatusValidator { return nil }\n"), 0644))
 	return dir
 }
 
@@ -1312,8 +1312,8 @@ func TestBundleFunctionSource_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	// Create sibling mintcore dir so addDirToZip doesn't fail first.
 	mintcoreDir := filepath.Join(dir, "..", "mintcore")
-	os.MkdirAll(mintcoreDir, 0755)
-	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
+	require.NoError(t, os.MkdirAll(mintcoreDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644))
 
 	_, err := bundleFunctionSource(dir, "", "", StatusGitHubAuth{})
 	require.Error(t, err)
@@ -1322,11 +1322,11 @@ func TestBundleFunctionSource_EmptyDir(t *testing.T) {
 
 func TestBundleFunctionSource_MissingGoMod(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(dir+"/main.go", []byte("package main"), 0644)
+	require.NoError(t, os.WriteFile(dir+"/main.go", []byte("package main"), 0644))
 	// Create sibling mintcore dir so addDirToZip doesn't fail first.
 	mintcoreDir := filepath.Join(dir, "..", "mintcore")
-	os.MkdirAll(mintcoreDir, 0755)
-	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
+	require.NoError(t, os.MkdirAll(mintcoreDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644))
 
 	_, err := bundleFunctionSource(dir, "", "", StatusGitHubAuth{})
 	require.Error(t, err)
@@ -1335,14 +1335,14 @@ func TestBundleFunctionSource_MissingGoMod(t *testing.T) {
 
 func TestBundleFunctionSource_SkipsTestFiles(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(dir+"/main.go", []byte("package main"), 0644)
-	os.WriteFile(dir+"/go.mod", []byte("module test\n\nreplace mintcore => ../mintcore\n"), 0644)
-	os.WriteFile(dir+"/main_test.go", []byte("package main"), 0644)
-	os.WriteFile(dir+"/.hidden", []byte("hidden"), 0644)
+	require.NoError(t, os.WriteFile(dir+"/main.go", []byte("package main"), 0644))
+	require.NoError(t, os.WriteFile(dir+"/go.mod", []byte("module test\n\nreplace mintcore => ../mintcore\n"), 0644))
+	require.NoError(t, os.WriteFile(dir+"/main_test.go", []byte("package main"), 0644))
+	require.NoError(t, os.WriteFile(dir+"/.hidden", []byte("hidden"), 0644))
 	// Create sibling mintcore dir so addDirToZip doesn't fail first.
 	mintcoreDir := filepath.Join(dir, "..", "mintcore")
-	os.MkdirAll(mintcoreDir, 0755)
-	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
+	require.NoError(t, os.MkdirAll(mintcoreDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644))
 
 	data, err := bundleFunctionSource(dir, "", "", StatusGitHubAuth{})
 	require.NoError(t, err)

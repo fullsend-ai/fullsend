@@ -175,11 +175,7 @@ func readPerRepoConfig(w *world.World, cfgPath string) (config.PerRepoConfigWrit
 	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
-	cfg, ok := parsed.(config.PerRepoConfigWriter)
-	if !ok {
-		return nil, fmt.Errorf("config at %s is not a per-repo config (%T)", cfgPath, parsed)
-	}
-	return cfg, nil
+	return parsed, nil
 }
 
 // givenRepositoryAgentSettings commits per-agent runtime/model/effort (a

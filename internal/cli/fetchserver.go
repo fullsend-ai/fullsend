@@ -55,7 +55,7 @@ func startFetchService(_ context.Context, cfg fetchsvc.ServiceConfig) (addr stri
 	shutdownFn := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		server.Shutdown(ctx)
+		_ = server.Shutdown(ctx)
 	}
 
 	return ln.Addr().String(), token, shutdownFn, nil

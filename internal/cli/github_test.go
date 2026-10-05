@@ -1547,7 +1547,7 @@ func TestRunGitHubSetupPerRepo_Rerun_ChangesOnlyTheFlaggedKey(t *testing.T) {
 	require.True(t, present, "--runtime targets config.yaml, so it is rewritten")
 	cfg, err := config.ParsePerRepoConfig(content)
 	require.NoError(t, err)
-	pr := cfg.(config.PerRepoConfigReader)
+	pr := cfg
 	assert.Equal(t, "claude", pr.ConfigRuntime(), "flagged key changed")
 	assert.Equal(t, []string{"triage", "coder"}, pr.ConfigRoles(), "roles kept (--agents not passed, despite its default)")
 	require.Len(t, pr.AgentEntries(), 3, "custom agent and per-agent settings kept")

@@ -70,5 +70,8 @@ func cloneHTTPTransport(rt http.RoundTripper) *http.Transport {
 	if t, ok := rt.(*http.Transport); ok {
 		return t.Clone()
 	}
-	return http.DefaultTransport.(*http.Transport).Clone()
+	if def, ok := http.DefaultTransport.(*http.Transport); ok {
+		return def.Clone()
+	}
+	return &http.Transport{}
 }

@@ -54,7 +54,7 @@ func newOTLPSink(t *testing.T) *otlpSink {
 		s.mu.Unlock()
 		resp, _ := proto.Marshal(&coltracepb.ExportTraceServiceResponse{})
 		w.Header().Set("Content-Type", "application/x-protobuf")
-		w.Write(resp)
+		_, _ = w.Write(resp)
 	}))
 	t.Cleanup(s.srv.Close)
 	return s

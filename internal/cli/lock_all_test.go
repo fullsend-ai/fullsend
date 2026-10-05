@@ -289,7 +289,7 @@ func TestResolveHarnessPath_StatError(t *testing.T) {
 	harnessDir := filepath.Join(dir, "harness")
 	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
 	require.NoError(t, os.Chmod(harnessDir, 0o000))
-	t.Cleanup(func() { os.Chmod(harnessDir, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(harnessDir, 0o755) })
 
 	printer := ui.New(os.Stdout)
 	_, err := resolveHarnessPath(dir, "code", printer)
@@ -564,7 +564,7 @@ func TestLockOneAgent_StatError(t *testing.T) {
 
 	// Remove execute permission so stat on any child fails with EPERM.
 	require.NoError(t, os.Chmod(harnessDir, 0o000))
-	t.Cleanup(func() { os.Chmod(harnessDir, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(harnessDir, 0o755) })
 
 	printer := ui.New(os.Stdout)
 	_, err := lockOneAgent(context.Background(), "code", dir, "", false, nil, resolveFlags{}, printer)

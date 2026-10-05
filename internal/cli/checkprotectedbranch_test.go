@@ -56,14 +56,14 @@ func protectedBranchAPIServer(t *testing.T, exactStatus int, wildcardNames ...st
 	mux.HandleFunc("/api/v4/projects/group%2Fproject/protected_branches", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls.list, 1)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("["))
+		_, _ = w.Write([]byte("["))
 		for i, name := range wildcardNames {
 			if i > 0 {
-				w.Write([]byte(","))
+				_, _ = w.Write([]byte(","))
 			}
 			_, _ = w.Write([]byte(`{"name":"` + name + `","push_access_levels":[],"merge_access_levels":[]}`))
 		}
-		w.Write([]byte("]"))
+		_, _ = w.Write([]byte("]"))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)

@@ -13,56 +13,57 @@ func TestResolve(t *testing.T) {
 
 	claude, err := Resolve("claude")
 	require.NoError(t, err)
-	assert.Equal(t, "claude", claude.Runtime.Name())
+	assert.Equal(t, "claude", claude.Name())
 
 	dummy, err := Resolve("dummy")
 	require.NoError(t, err)
-	assert.Equal(t, "dummy", dummy.Runtime.Name())
+	assert.Equal(t, "dummy", dummy.Name())
 
 	dp, err := Resolve("dummy-playback")
 	require.NoError(t, err)
-	assert.Equal(t, "dummy-playback", dp.Runtime.Name())
+	assert.Equal(t, "dummy-playback", dp.Name())
 
 	oc, err := Resolve("opencode")
 	require.NoError(t, err)
-	assert.Equal(t, "opencode", oc.Runtime.Name())
+	assert.Equal(t, "opencode", oc.Name())
 	assert.NotNil(t, oc.Transcripts)
 	_, isOC := oc.Transcripts.(OpenCodeRuntime)
 	assert.True(t, isOC, "Transcripts should be OpenCodeRuntime")
 
 	cx, err := Resolve("codex")
 	require.NoError(t, err)
-	assert.Equal(t, "codex", cx.Runtime.Name())
+	assert.Equal(t, "codex", cx.Name())
 	assert.IsType(t, CodexRuntime{}, cx.Transcripts)
 
 	pb, err := Resolve("pi")
 	require.NoError(t, err)
-	assert.Equal(t, "pi", pb.Runtime.Name())
+	assert.Equal(t, "pi", pb.Name())
 	assert.IsType(t, PiRuntime{}, pb.Transcripts)
 
 	_, err = Resolve("unknown")
 	require.Error(t, err)
 }
 
+
 func TestResolveFromPerRepoConfig(t *testing.T) {
 	t.Parallel()
 
 	defaultBackend, err := ResolveFromPerRepoConfig(nil)
 	require.NoError(t, err)
-	assert.Equal(t, "claude", defaultBackend.Runtime.Name())
+	assert.Equal(t, "claude", defaultBackend.Name())
 
 	cfg := config.NewPerRepoConfig(nil, "")
 	cfg.SetRuntime("dummy")
 	dummyBackend, err := ResolveFromPerRepoConfig(cfg)
 	require.NoError(t, err)
-	assert.Equal(t, "dummy", dummyBackend.Runtime.Name())
+	assert.Equal(t, "dummy", dummyBackend.Name())
 
 	// pi is user-selectable (#6464).
 	piCfg := config.NewPerRepoConfig(nil, "")
 	piCfg.SetRuntime("pi")
 	piBackend, err := ResolveFromPerRepoConfig(piCfg)
 	require.NoError(t, err)
-	assert.Equal(t, "pi", piBackend.Runtime.Name())
+	assert.Equal(t, "pi", piBackend.Name())
 
 	// codex is user-selectable too (#6920), and resolves its own backend
 	// rather than falling back to the default.
@@ -70,7 +71,7 @@ func TestResolveFromPerRepoConfig(t *testing.T) {
 	codexCfg.SetRuntime("codex")
 	codexBackend, err := ResolveFromPerRepoConfig(codexCfg)
 	require.NoError(t, err)
-	assert.Equal(t, "codex", codexBackend.Runtime.Name())
+	assert.Equal(t, "codex", codexBackend.Name())
 	assert.IsType(t, CodexRuntime{}, codexBackend.Transcripts)
 
 	invalidCfg := config.NewPerRepoConfig(nil, "")
@@ -96,7 +97,7 @@ func TestResolveFromPerRepoConfig_RejectsStubRuntimes(t *testing.T) {
 	for _, name := range []string{"opencode"} {
 		rt, err := Resolve(name)
 		require.NoError(t, err)
-		assert.Equal(t, name, rt.Runtime.Name())
+		assert.Equal(t, name, rt.Name())
 	}
 }
 
@@ -115,9 +116,9 @@ agents:
 	agents := cfg.AgentEntries()
 
 	// The agents: entry's runtime wins over the repo-wide key.
-	backend, perAgent, err := ResolveForAgent(agents, cfg.(config.PerRepoConfigReader).ConfigRuntime(), "code")
+	backend, perAgent, err := ResolveForAgent(agents, cfg.ConfigRuntime(), "code")
 	require.NoError(t, err)
-	assert.Equal(t, "claude", backend.Runtime.Name())
+	assert.Equal(t, "claude", backend.Name())
 	assert.True(t, perAgent)
 
 	// An entry without runtime falls back to the repo-wide key; so does a
@@ -125,14 +126,14 @@ agents:
 	for _, agent := range []string{"fix", "triage", ""} {
 		backend, perAgent, err = ResolveForAgent(agents, "pi", agent)
 		require.NoError(t, err, agent)
-		assert.Equal(t, "pi", backend.Runtime.Name(), agent)
+		assert.Equal(t, "pi", backend.Name(), agent)
 		assert.False(t, perAgent, agent)
 	}
 
 	// No entries and no repo-wide value: the code default.
 	backend, perAgent, err = ResolveForAgent(nil, "", "code")
 	require.NoError(t, err)
-	assert.Equal(t, "claude", backend.Runtime.Name())
+	assert.Equal(t, "claude", backend.Name())
 	assert.False(t, perAgent)
 }
 
@@ -149,7 +150,7 @@ func TestResolveForAgent_RejectsStubRuntimes(t *testing.T) {
 
 		backend, _, err := ResolveForAgent(agents, "pi", "triage")
 		require.NoError(t, err)
-		assert.Equal(t, "pi", backend.Runtime.Name(), "other agents unaffected")
+		assert.Equal(t, "pi", backend.Name(), "other agents unaffected")
 	}
 	for _, name := range []string{"opencode"} {
 		_, _, err := ResolveForAgent(nil, name, "code")
@@ -160,6 +161,6 @@ func TestResolveForAgent_RejectsStubRuntimes(t *testing.T) {
 	agents := []config.AgentEntry{{Name: "code", Runtime: "codex"}}
 	backend, perAgent, err := ResolveForAgent(agents, "pi", "code")
 	require.NoError(t, err)
-	assert.Equal(t, "codex", backend.Runtime.Name())
+	assert.Equal(t, "codex", backend.Name())
 	assert.True(t, perAgent)
 }

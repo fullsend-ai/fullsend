@@ -280,6 +280,7 @@ func TestPerRepoConfig_ConfigWriter_RoundTrip(t *testing.T) {
 	assert.Contains(t, string(data), "kill_switch: true")
 }
 
+
 func TestPerRepoConfig_ConfigForge(t *testing.T) {
 	t.Run("returns forge when set", func(t *testing.T) {
 		cfg := &perRepoConfig{Forge: "gitlab"}

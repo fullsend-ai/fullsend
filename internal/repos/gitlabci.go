@@ -2526,20 +2526,6 @@ func findMappingKeyIndex(mapping *yaml.Node, key string) int {
 	return -1
 }
 
-// marshalNode marshals a yaml.Node tree back to YAML bytes.
-func marshalNode(doc *yaml.Node) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(doc); err != nil {
-		return nil, fmt.Errorf("marshaling YAML: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return nil, fmt.Errorf("closing YAML encoder: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
 // unmergeGitLabRootCI fetches the existing .gitlab-ci.yml from the repo
 // and removes fullsend's entries. Returns the cleaned content, or nil
 // if the file should be deleted entirely.

@@ -470,10 +470,6 @@ func extractEmbeddedSource(dir string) error {
 	return nil
 }
 
-// wasmArtifacts lists the WASM files required in the Worker source
-// directory at deploy time.
-var wasmArtifacts = []string{"mintcore.wasm", "wasm_exec.js"}
-
 // BuildWASMFn is the function used to compile mintcore.wasm from
 // cmd/mint-wasm. Override in tests to avoid requiring a full Go
 // toolchain and the mint-wasm source tree. Version, commit, and
@@ -802,7 +798,7 @@ func parseWranglerWhoamiAccountID(output string) string {
 // isHex returns true if s consists entirely of hexadecimal characters.
 func isHex(s string) bool {
 	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return false
 		}
 	}
@@ -1146,7 +1142,7 @@ func resolveSubdomainViaAPI(ctx context.Context, accountID, token string) (strin
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Cloudflare subdomain API returned %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("cloudflare subdomain API returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
@@ -1159,7 +1155,7 @@ func resolveSubdomainViaAPI(ctx context.Context, accountID, token string) (strin
 		return "", fmt.Errorf("parsing subdomain response: %w", err)
 	}
 	if !result.Success || result.Result.Subdomain == "" {
-		return "", fmt.Errorf("Cloudflare subdomain API returned empty subdomain: %s", string(body))
+		return "", fmt.Errorf("cloudflare subdomain API returned empty subdomain: %s", string(body))
 	}
 	return result.Result.Subdomain, nil
 }

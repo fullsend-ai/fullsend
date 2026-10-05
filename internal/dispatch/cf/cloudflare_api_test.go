@@ -32,7 +32,7 @@ func TestCfAPIRequest_Success_NoBody(t *testing.T) {
 		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
 		assert.Empty(t, r.Header.Get("Content-Type"))
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer srv.Close()
 
@@ -48,10 +48,10 @@ func TestCfAPIRequest_Success_WithBody(t *testing.T) {
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		reqBody, _ := io.ReadAll(r.Body)
 		var parsed map[string]string
-		json.Unmarshal(reqBody, &parsed)
+		_ = json.Unmarshal(reqBody, &parsed)
 		assert.Equal(t, "bar", parsed["foo"])
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
 
@@ -63,14 +63,14 @@ func TestCfAPIRequest_Success_WithBody(t *testing.T) {
 func TestCfAPIRequest_NonSuccessStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error":"forbidden"}`))
+		_, _ = w.Write([]byte(`{"error":"forbidden"}`))
 	}))
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
 	_, err := client.cfAPIRequest(context.Background(), http.MethodGet, srv.URL+"/test", nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Cloudflare API returned 403")
+	assert.Contains(t, err.Error(), "cloudflare API returned 403")
 }
 
 func TestCfAPIRequest_MissingTokenAndWranglerFails(t *testing.T) {

@@ -84,7 +84,7 @@ func TestRendererToolUseEventCI(t *testing.T) {
 
 	stderrW.Close()
 	var stderrBuf bytes.Buffer
-	stderrBuf.ReadFrom(stderrR)
+	_, _ = stderrBuf.ReadFrom(stderrR)
 
 	if !strings.Contains(stderrBuf.String(), "::notice::") {
 		t.Errorf("expected ::notice:: annotation in CI mode, got: %s", stderrBuf.String())

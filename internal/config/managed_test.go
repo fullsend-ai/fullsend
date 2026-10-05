@@ -249,7 +249,7 @@ func TestMergeManaged_NilLayers(t *testing.T) {
 	var only ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte("mint_url: https://mint.example.com\n"), &only))
 
-	var nilLayers PerRepoConfigWriter = MergeManaged(nil, nil)
+	var nilLayers = MergeManaged(nil, nil)
 	assert.True(t, nilLayers == nil, "MergeManaged(nil, nil) must return an untyped nil interface, not a typed-nil pointer boxed in a non-nil interface")
 
 	fromParent := MergeManaged(only.Writer(), nil)

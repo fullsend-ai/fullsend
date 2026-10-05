@@ -34,11 +34,11 @@ func TestMergeChangeProposal_Success(t *testing.T) {
 		assert.Equal(t, "/repos/org/repo/pulls/42/merge", r.URL.Path)
 
 		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		assert.Equal(t, "squash", body["merge_method"])
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"sha": "abc123"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "abc123"})
 	}))
 	defer srv.Close()
 
@@ -61,25 +61,26 @@ func TestMergeChangeProposal_409UpdatesBranchAndRetries(t *testing.T) {
 			attempt := mergeAttempts.Add(1)
 			if attempt == 1 {
 				w.WriteHeader(http.StatusConflict)
-				json.NewEncoder(w).Encode(map[string]string{
+				_ = json.NewEncoder(w).Encode(map[string]string{
 					"message": "Head branch is out of date",
 				})
 				return
 			}
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"sha": "def456"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "def456"})
 
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/org/repo/pulls/7":
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"head": map[string]string{"sha": headSHA.Load().(string)},
+			headSHAStr, _ := headSHA.Load().(string)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"head": map[string]string{"sha": headSHAStr},
 			})
 
 		case r.Method == http.MethodPut && r.URL.Path == "/repos/org/repo/pulls/7/update-branch":
 			updateCalls.Add(1)
 			headSHA.Store("new-sha")
 			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(map[string]string{"message": "Updating pull request branch."})
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "Updating pull request branch."})
 
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -101,7 +102,7 @@ func TestMergeChangeProposal_NonConflictErrorNotRetried(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mergeAttempts.Add(1)
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"message": "Pull Request is not mergeable",
 		})
 	}))
@@ -125,7 +126,7 @@ func TestMergeChangeProposal_409PersistsAfterRetries(t *testing.T) {
 		case r.Method == http.MethodPut && r.URL.Path == "/repos/org/repo/pulls/7/merge":
 			mergeAttempts.Add(1)
 			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"message": "Head branch is out of date",
 			})
 
@@ -133,7 +134,7 @@ func TestMergeChangeProposal_409PersistsAfterRetries(t *testing.T) {
 			// Return a new SHA each time so the poll completes.
 			n := headSHACounter.Add(1)
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"head": map[string]string{"sha": fmt.Sprintf("sha-%d", n)},
 			})
 

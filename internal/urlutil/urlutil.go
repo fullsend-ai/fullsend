@@ -48,7 +48,7 @@ func ParseIntegrityHash(rawURL string) (cleanURL, hash string, hasHash bool) {
 		return rawURL, "", false
 	}
 	for _, c := range hash {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return rawURL, "", false
 		}
 	}

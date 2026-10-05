@@ -126,7 +126,7 @@ func (r *HarnessRouter) routeSlashCommand(event *NormalizedEvent, cmd string) ([
 		// Entity-author bypass: issue reporters can trigger observation
 		// stages on their own work_item entities even with read-only
 		// access. Does not apply to change_proposal entities.
-		if !(isObservationStage(stage) && event.Entity.Kind == "work_item" && event.Actor.IsEntityAuthor) {
+		if !isObservationStage(stage) || event.Entity.Kind != "work_item" || !event.Actor.IsEntityAuthor {
 			return nil, nil
 		}
 	}

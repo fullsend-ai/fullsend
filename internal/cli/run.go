@@ -558,11 +558,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		sOpts.trackerSource = string(ev.Source.System)
 		if ev.Source.System == normevent.SystemJira {
 			if ev.Entity.Key == "" {
-				return fmt.Errorf("Jira event from --event-file is missing entity.key")
+				return fmt.Errorf("jira event from --event-file is missing entity.key")
 			}
 			proj, num, ok := parseJiraKey(ev.Entity.Key)
 			if !ok {
-				return fmt.Errorf("Jira event from --event-file has unparseable entity.key %q", ev.Entity.Key)
+				return fmt.Errorf("jira event from --event-file has unparseable entity.key %q", ev.Entity.Key)
 			}
 			sOpts.trackerProject = proj
 			sOpts.statusNum = num
@@ -585,11 +585,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if sOpts.trackerSource == "jira" {
 			key := extractMapString(eventMap, "entity", "key")
 			if key == "" {
-				return fmt.Errorf("Jira event from dispatch payload is missing entity.key")
+				return fmt.Errorf("jira event from dispatch payload is missing entity.key")
 			}
 			proj, num, ok := parseJiraKey(key)
 			if !ok {
-				return fmt.Errorf("Jira event from dispatch payload has unparseable entity.key %q", key)
+				return fmt.Errorf("jira event from dispatch payload has unparseable entity.key %q", key)
 			}
 			sOpts.trackerProject = proj
 			sOpts.statusNum = num
@@ -918,7 +918,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// selects; resolve the config runtime first (including the
 		// agents: entry's runtime), then re-run.
 		if b, _, e := runCfg.backend(agentName); e == nil {
-			overrides, err = resolveRunOverrides(oFlags, os.Getenv, b.Runtime.Name())
+			overrides, err = resolveRunOverrides(oFlags, os.Getenv, b.Name())
 			if err != nil {
 				printer.StepFail(err.Error())
 				return err
@@ -991,14 +991,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// *parent's own call* needs (runInferenceProvider, just below) and must
 	// stay parent-only: a Vertex parent with an OpenAI persona still needs
 	// its own Vertex ADC validated, regardless of what its children run on.
-	parentNeedsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
-	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider)
+	parentNeedsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Name(), h.Model, agentDefModel, configModelAliases)
+	provider := runInferenceProvider(runtimeBackend.Name(), parentNeedsOpenAIProvider)
 	// openAIChildren are the configured pi children (subagents.<persona>,
 	// subagents.default, a persona's frontmatter model:) that resolve to
 	// the openai provider. They need the run-scoped OpenAI provider even
 	// when the parent does not (#7981), so they widen the provider gate
 	// below; the parent's own credential path above stays parent-only.
-	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
 	needsOpenAIProvider := parentNeedsOpenAIProvider || len(openAIChildren) > 0
 	// Prepare credentials before env validation and expansion, so harness
 	// references to GOOGLE_APPLICATION_CREDENTIALS resolve to the prepared file.
@@ -1029,7 +1029,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// no usable file, a subagents entry on Vertex fails here; the Agent
 	// extension refuses any other Vertex child at dispatch (#7980).
 	vertexGap := ""
-	if provider != runProviderVertex && provider != runProviderNone && runtimeBackend.Runtime.Name() == "pi" {
+	if provider != runProviderVertex && provider != runProviderNone && runtimeBackend.Name() == "pi" {
 		vertexGap = vertexCredentialGap(h)
 	}
 	if vertexGap != "" && vertexSetupFailed {
@@ -1147,7 +1147,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// not a closed set), so flag the likely mismatch instead of rejecting it.
 	// Check the resolved value: an alias whose entry is a provider/id spec
 	// reaches Claude Code as that spec.
-	if runtimeBackend.Runtime.Name() == "claude" && strings.Contains(resolvedModel, "/") {
+	if runtimeBackend.Name() == "claude" && strings.Contains(resolvedModel, "/") {
 		printer.StepWarn(fmt.Sprintf("model %q has a provider/id form, which is pi's; Claude Code expects an alias (opus, sonnet, ...) or an Anthropic model id", resolvedModel))
 	}
 	if overrides.effort != "" {
@@ -1194,7 +1194,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		printer.KeyValue("Fallback models", withSource(strings.Join(fallbacks, ", "), overrides.fallbackSource))
 	}
-	printer.KeyValue("Runtime", fmt.Sprintf("%s (from %s)", runtimeBackend.Runtime.Name(), runtimeConfigSource))
+	printer.KeyValue("Runtime", fmt.Sprintf("%s (from %s)", runtimeBackend.Name(), runtimeConfigSource))
 	if h.Image != "" {
 		printer.KeyValue("Image", h.Image)
 	}
@@ -1505,7 +1505,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// harness that several runtimes share is the documented way
 				// to write a portable harness, so this line is a happy path
 				// and must not bury the real warnings around it.
-				printer.StepInfo(fmt.Sprintf("Provider %q declared by the harness but not needed by runtime %s with model %s; skipped", pd.Name, runtimeBackend.Runtime.Name(), model))
+				printer.StepInfo(fmt.Sprintf("Provider %q declared by the harness but not needed by runtime %s with model %s; skipped", pd.Name, runtimeBackend.Name(), model))
 				continue
 			}
 			if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
@@ -1974,7 +1974,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// for display; reuse the result here. The stderr line stays for scripts.
 	backend := runtimeBackend
 	configSource := runtimeConfigSource
-	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Runtime.Name(), configSource)
+	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Name(), configSource)
 	if overrides.modelSource != "" {
 		fmt.Fprintf(os.Stderr, "model: requested %q from %s\n", h.Model, overrides.modelSource)
 	}
@@ -2173,7 +2173,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		)
 		if _, stderr, exitCode, err := sandbox.Exec(sandboxName, chmodCmd, 30*time.Second); err != nil {
 			printer.StepFail("Could not make repo read-only: " + err.Error())
-			return fmt.Errorf("Read-only repo enforcement failed: %w", err)
+			return fmt.Errorf("read-only repo enforcement failed: %w", err)
 		} else if exitCode != 0 {
 			printer.StepFail("Could not make repo read-only (exit " + fmt.Sprintf("%d", exitCode) + "): " + stderr)
 			return fmt.Errorf("read-only repo enforcement failed: exit code %d", exitCode)
@@ -4211,7 +4211,7 @@ func setupActionsVertexCredentials(ctx context.Context, provider string, printer
 	wifProvider := strings.TrimSpace(os.Getenv(vertexinference.SecretWIFProvider))
 	inputsSet := projectID != "" && wifProvider != ""
 	partial := !inputsSet && (projectID != "" || wifProvider != "")
-	partialErr := fmt.Errorf("Vertex inference requires both %s and %s; only one is set",
+	partialErr := fmt.Errorf("vertex inference requires both %s and %s; only one is set",
 		vertexinference.SecretProjectID, vertexinference.SecretWIFProvider)
 
 	if provider != runProviderVertex {
@@ -4240,7 +4240,7 @@ func setupActionsVertexCredentials(ctx context.Context, provider string, printer
 	if !inputsSet {
 		path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
 		if path == "" {
-			return nil, false, fmt.Errorf("Vertex inference requires %s and %s, or GOOGLE_APPLICATION_CREDENTIALS pointing to a credential file",
+			return nil, false, fmt.Errorf("vertex inference requires %s and %s, or GOOGLE_APPLICATION_CREDENTIALS pointing to a credential file",
 				vertexinference.SecretProjectID, vertexinference.SecretWIFProvider)
 		}
 		if err := validateExistingGCPCredentialFile(path); err != nil {
@@ -5140,9 +5140,7 @@ func outputDirExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
 // extra holds layout-specific patterns (e.g. host output/ when nested).
 func excludeAgentWorkingDirs(sandboxName, repoDir string, extra []string, printer *ui.Printer) error {
 	var lines []string
-	for _, pattern := range agentWorkingDirExcludes {
-		lines = append(lines, pattern)
-	}
+	lines = append(lines, agentWorkingDirExcludes...)
 	lines = append(lines, extra...)
 	if len(lines) == 0 {
 		return nil
@@ -5379,7 +5377,7 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			relPath, _ := filepath.Rel(outputDir, path)
 			for _, f := range result.Findings {
 				printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
-				security.AppendFinding(findingsPath,
+				_ = security.AppendFinding(findingsPath,
 					security.TracedFinding{
 						TraceID:   traceID,
 						Timestamp: time.Now().UTC().Format(time.RFC3339),

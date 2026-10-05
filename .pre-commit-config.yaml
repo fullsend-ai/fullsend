@@ -175,10 +175,18 @@ repos:
         files: ^internal/scaffold/fullsend-repo/(\.github/workflows/|templates/)
         pass_filenames: false
 
-
       - id: lint-staged
         name: lint-staged (web)
         entry: npx lint-staged --allow-empty
         language: system
         files: ^docs/\.vitepress/
+        pass_filenames: false
+
+      - id: golangci-lint
+        name: golangci-lint
+        entry: golangci-lint run
+        types: [go]
+        language: system
+        require_serial: true
+        files: ".*\\.go$"
         pass_filenames: false

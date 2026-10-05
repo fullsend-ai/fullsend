@@ -302,7 +302,7 @@ func TestAuthHeader(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "test-token", r.Header.Get("PRIVATE-TOKEN"))
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": 1, "name": "repo", "path_with_namespace": "owner/repo",
 			"default_branch": "main", "visibility": "public",
 		})
@@ -318,7 +318,7 @@ func TestGetRepo(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":                  42,
 			"name":                "myrepo",
 			"path_with_namespace": "mygroup/myrepo",
@@ -378,7 +378,7 @@ func TestGetRepo_CIConfigPath(t *testing.T) {
 func TestGetRepo_Fork(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/user%2Ffork", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":                  99,
 			"name":                "fork",
 			"path_with_namespace": "user/fork",
@@ -411,7 +411,7 @@ func TestGetPipelineVariablesMinimumOverrideRole(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": 42,
 			"ci_pipeline_variables_minimum_override_role": "developer",
 		})
@@ -481,7 +481,7 @@ func TestSetPipelineVariablesMinimumOverrideRole(t *testing.T) {
 		var body map[string]string
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Equal(t, forge.PipelineVarOverrideOwner, body["ci_pipeline_variables_minimum_override_role"])
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": 42,
 			"ci_pipeline_variables_minimum_override_role": forge.PipelineVarOverrideOwner,
 		})
@@ -603,7 +603,7 @@ func TestCreateRepo(t *testing.T) {
 	mux.HandleFunc("/api/v4/projects", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
 		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		assert.Equal(t, "new-repo", body["name"])
 		assert.Equal(t, float64(10), body["namespace_id"])
 		assert.Equal(t, "A new repo", body["description"])
@@ -611,7 +611,7 @@ func TestCreateRepo(t *testing.T) {
 		assert.Equal(t, true, body["initialize_with_readme"])
 
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":                  55,
 			"name":                "new-repo",
 			"path_with_namespace": "myorg/new-repo",
@@ -636,10 +636,10 @@ func TestCreateRepo_Public(t *testing.T) {
 	})
 	mux.HandleFunc("/api/v4/projects", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		assert.Equal(t, "public", body["visibility"])
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": 1, "name": "repo", "path_with_namespace": "org/repo",
 			"default_branch": "main", "visibility": "public",
 		})
@@ -777,11 +777,11 @@ func TestCreateBranch(t *testing.T) {
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
 		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		assert.Equal(t, "feature-branch", body["branch"])
 		assert.Equal(t, "main", body["ref"])
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{"name": "feature-branch"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "feature-branch"})
 	})
 
 	err := client.CreateBranch(context.Background(), "owner", "repo", "feature-branch")
@@ -1031,7 +1031,9 @@ func TestCreateFile(t *testing.T) {
 		assert.Equal(t, "add readme", body["commit_message"])
 		assert.Equal(t, "base64", body["encoding"])
 
-		decoded, err := base64.StdEncoding.DecodeString(body["content"].(string))
+		contentStr, ok := body["content"].(string)
+		require.True(t, ok)
+		decoded, err := base64.StdEncoding.DecodeString(contentStr)
 		require.NoError(t, err)
 		assert.Equal(t, "hello world", string(decoded))
 
@@ -1232,9 +1234,11 @@ func TestDeleteFiles(t *testing.T) {
 			require.NoError(t, json.Unmarshal(bodyBytes, &body))
 			assert.Equal(t, "main", body["branch"])
 			assert.Equal(t, "cleanup", body["commit_message"])
-			actions := body["actions"].([]any)
+			actions, ok := body["actions"].([]any)
+			require.True(t, ok)
 			assert.Len(t, actions, 1)
-			action := actions[0].(map[string]any)
+			action, ok := actions[0].(map[string]any)
+			require.True(t, ok)
 			assert.Equal(t, "delete", action["action"])
 			assert.Equal(t, "exists.txt", action["file_path"])
 
@@ -1699,7 +1703,7 @@ func TestCommitFilesToBranch(t *testing.T) {
 	var commitPayload map[string]any
 	mux.HandleFunc("/api/v4/projects/own%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &commitPayload)
+		_ = json.Unmarshal(body, &commitPayload)
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprint(w, `{"id":"abc123"}`)
 	})
@@ -2036,7 +2040,7 @@ func TestForceCommitFileToBranch_DecodeCommitsError(t *testing.T) {
 
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
-		w.Write([]byte("not-json"))
+		_, _ = w.Write([]byte("not-json"))
 	})
 
 	err := client.ForceCommitFileToBranch(context.Background(), "owner", "repo", "b", "f", "m", []byte("x"))

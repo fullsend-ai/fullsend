@@ -446,10 +446,10 @@ func formatStatusJSON(result *inferenceStatusResult) (string, error) {
 
 func formatStatusEnv(result *inferenceStatusResult) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("FULLSEND_INFERENCE_STATUS=%s\n", result.Status))
+	fmt.Fprintf(&sb, "FULLSEND_INFERENCE_STATUS=%s\n", result.Status)
 	if result.WIFProvider != "" {
-		sb.WriteString(fmt.Sprintf("FULLSEND_GCP_PROJECT_ID=%s\n", result.ProjectID))
-		sb.WriteString(fmt.Sprintf("FULLSEND_GCP_WIF_PROVIDER=%s\n", result.WIFProvider))
+		fmt.Fprintf(&sb, "FULLSEND_GCP_PROJECT_ID=%s\n", result.ProjectID)
+		fmt.Fprintf(&sb, "FULLSEND_GCP_WIF_PROVIDER=%s\n", result.WIFProvider)
 	}
 	return sb.String()
 }

@@ -103,7 +103,7 @@ func TestCreateRepo(t *testing.T) {
 		assert.Equal(t, "/orgs/myorg/repos", r.URL.Path)
 
 		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		assert.Equal(t, "new-repo", body["name"])
 		assert.Equal(t, "A repo", body["description"])
 		assert.Equal(t, true, body["private"])
@@ -961,13 +961,13 @@ func TestCreateCrossRepoChangeProposal(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
-				json.NewEncoder(w).Encode(map[string]any{
+				_ = json.NewEncoder(w).Encode(map[string]any{
 					"node_id": "NODE_test",
 				})
 			case r.Method == "POST" && r.URL.Path == "/graphql":
 				// Return invalid JSON body.
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("not json"))
+				_, _ = w.Write([]byte("not json"))
 			default:
 				w.WriteHeader(http.StatusNotFound)
 			}
@@ -989,7 +989,7 @@ func TestCreateCrossRepoChangeProposal(t *testing.T) {
 			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/") {
 				// Return invalid JSON for repo lookup.
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("not json"))
+				_, _ = w.Write([]byte("not json"))
 				return
 			}
 			w.WriteHeader(http.StatusNotFound)
@@ -2421,18 +2421,18 @@ func TestCreateOrUpdateFile_RetriesOn504(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callNum++
-		switch {
-		case callNum == 1:
+		switch callNum {
+		case 1:
 			// GET for existing file — return 404 (file doesn't exist)
 			assert.Equal(t, "GET", r.Method)
 			w.WriteHeader(http.StatusNotFound)
 			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
-		case callNum == 2:
+		case 2:
 			// PUT — return 504 Gateway Timeout (do() will retry)
 			assert.Equal(t, "PUT", r.Method)
 			w.WriteHeader(http.StatusGatewayTimeout)
 			json.NewEncoder(w).Encode(map[string]any{"message": "Gateway Timeout"})
-		case callNum == 3:
+		case 3:
 			// do() retry: PUT — succeeds
 			assert.Equal(t, "PUT", r.Method)
 			w.WriteHeader(http.StatusCreated)
@@ -2461,16 +2461,16 @@ func TestCreateOrUpdateFile_RetriesOnAll5xxCodes(t *testing.T) {
 			callNum := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				callNum++
-				switch {
-				case callNum == 1:
+				switch callNum {
+				case 1:
 					// GET existing file — 404
 					w.WriteHeader(http.StatusNotFound)
 					json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
-				case callNum == 2:
+				case 2:
 					// PUT — return 5xx (do() will retry)
 					w.WriteHeader(statusCode)
 					json.NewEncoder(w).Encode(map[string]any{"message": http.StatusText(statusCode)})
-				case callNum == 3:
+				case 3:
 					// do() retry: PUT — succeeds
 					w.WriteHeader(http.StatusCreated)
 					json.NewEncoder(w).Encode(map[string]any{})
@@ -2490,12 +2490,12 @@ func TestCreateOrUpdateFile_NoRetryOnNon5xx(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callNum++
-		switch {
-		case callNum == 1:
+		switch callNum {
+		case 1:
 			// GET existing file — 404
 			w.WriteHeader(http.StatusNotFound)
 			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
-		case callNum == 2:
+		case 2:
 			// PUT — return 422 Unprocessable Entity (not retryable)
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			json.NewEncoder(w).Encode(map[string]any{"message": "Validation Failed"})
@@ -3489,7 +3489,7 @@ func TestGetIssueComment_NotFound(t *testing.T) {
 func TestGetIssueComment_DecodeError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("{not valid json"))
+		_, _ = w.Write([]byte("{not valid json"))
 	}))
 	defer srv.Close()
 

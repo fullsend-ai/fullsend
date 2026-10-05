@@ -258,11 +258,6 @@ func dispatchInputs(variables map[string]string) (map[string]forge.PipelineInput
 }
 
 const (
-	// dispatchPayloadFile is the path fullsend-agent.yml's before_script
-	// reconstructs the chunked event payload into, before run-agent-job.sh
-	// reads EVENT_PAYLOAD_B64 from the environment. Keep in sync with
-	// internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml.
-	dispatchPayloadFile = "/tmp/.fs-dispatch-payload.b64"
 	// dispatchPayloadChunkSize is the max size, in base64 characters, of
 	// each event_payload_chunk_NN pipeline-input value. Kept safely under
 	// GitLab's ~1 KB per-pipeline-input-string-value limit

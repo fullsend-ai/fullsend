@@ -12,10 +12,6 @@ import (
 // workflow refs to one fullsend-ai/fullsend commit (see internal/cli/root.go).
 const upstreamRefOverrideVar = "github.com/fullsend-ai/fullsend/internal/cli.upstreamRefOverride"
 
-// upstreamRepoURL is where the rendered scaffold fetches fullsend-ai/fullsend
-// scripts and actions from.
-const upstreamRepoURL = "https://github.com/fullsend-ai/fullsend"
-
 var fullCommitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // e2eUpstreamRef returns the commit to stamp as the e2e CLI's upstream ref:
@@ -29,12 +25,6 @@ func e2eUpstreamRef(modRoot string, published func(sha string) bool) string {
 		return ""
 	}
 	return sha
-}
-
-// publishedUpstream reports whether sha can be fetched from
-// fullsend-ai/fullsend, the same fetch the rendered workflow makes.
-func publishedUpstream(sha string) bool {
-	return fetchable(upstreamRepoURL, sha)
 }
 
 // fetchable reports whether sha can be fetched from the repository at url.

@@ -26,7 +26,7 @@ func TestMintToken_HappyPath(t *testing.T) {
 		if got := r.URL.Query().Get("audience"); got != "fullsend-mint" {
 			t.Errorf("audience = %q, want %q", got, "fullsend-mint")
 		}
-		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
+		_ = json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
 	}))
 	defer oidcServer.Close()
 
@@ -42,7 +42,7 @@ func TestMintToken_HappyPath(t *testing.T) {
 		}
 
 		var body mintRequestBody
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body.Role != "triage" {
 			t.Errorf("role = %q, want %q", body.Role, "triage")
 		}
@@ -50,7 +50,7 @@ func TestMintToken_HappyPath(t *testing.T) {
 			t.Errorf("repos = %v, want [my-repo]", body.Repos)
 		}
 
-		json.NewEncoder(w).Encode(MintResult{
+		_ = json.NewEncoder(w).Encode(MintResult{
 			Token:     "ghu_test_token",
 			ExpiresAt: "2026-06-11T23:30:00Z",
 		})
@@ -88,13 +88,13 @@ func TestMintToken_HappyPath(t *testing.T) {
 
 func TestMintToken_CrossOrgTarget(t *testing.T) {
 	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
+		_ = json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
 	}))
 	defer oidcServer.Close()
 
 	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body mintRequestBody
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body.Role != "e2e" {
 			t.Errorf("role = %q, want %q", body.Role, "e2e")
 		}
@@ -105,7 +105,7 @@ func TestMintToken_CrossOrgTarget(t *testing.T) {
 			t.Errorf("repos = %v, want [\"*\"] for installation-wide e2e token", body.Repos)
 		}
 
-		json.NewEncoder(w).Encode(MintResult{
+		_ = json.NewEncoder(w).Encode(MintResult{
 			Token:     "ghu_e2e_token",
 			ExpiresAt: "2026-06-11T23:30:00Z",
 		})
@@ -349,7 +349,7 @@ func TestMintToken_OIDCNetworkError(t *testing.T) {
 
 func TestMintToken_OIDCInvalidJSON(t *testing.T) {
 	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("not json"))
+		_, _ = w.Write([]byte("not json"))
 	}))
 	defer oidcServer.Close()
 
@@ -442,7 +442,7 @@ func TestMintToken_MintServiceFailure(t *testing.T) {
 		{
 			"invalid JSON",
 			func(w http.ResponseWriter, r *http.Request) {
-				w.Write([]byte("not json"))
+				_, _ = w.Write([]byte("not json"))
 			},
 			"parsing response",
 		},
@@ -605,16 +605,16 @@ func TestMintToken_DoesNotRetryOn4xx(t *testing.T) {
 
 func TestMintToken_LevelPassedToMint(t *testing.T) {
 	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
+		_ = json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
 	}))
 	defer oidcServer.Close()
 
 	var gotLevel string
 	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body mintRequestBody
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		gotLevel = body.Level
-		json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
+		_ = json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
 	}))
 	defer mintServer.Close()
 

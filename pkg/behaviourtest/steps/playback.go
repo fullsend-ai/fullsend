@@ -618,7 +618,7 @@ func thenAgentSubmittedReview(w *world.World, agent, expectedState string) error
 	// Otherwise a DISMISSED live review paired with an "approve" artifact
 	// would pass without the round ever having submitted a live approval
 	// (#7957 review).
-	if got != want && !(want == "changes_requested" && got == "dismissed") {
+	if got != want && (want != "changes_requested" || got != "dismissed") {
 		return fmt.Errorf("expected %q agent to submit review state %q but PR #%d's review for this round is %q", agent, want, w.PRNumber, got)
 	}
 	return nil

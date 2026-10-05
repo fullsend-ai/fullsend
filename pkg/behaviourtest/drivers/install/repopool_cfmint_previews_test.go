@@ -223,7 +223,7 @@ func TestCFMintDriver_Implements_MintDriver(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var _ mintDriver = d
+	var _ = d
 }
 
 // newTestCFMintDriver creates a cfmintMintDriver with a mock CLI runner

@@ -173,11 +173,12 @@ func TestDownloadReleaseBinary_ChecksumMismatch(t *testing.T) {
 	checksumBody := fmt.Sprintf("%s  fullsend_1.0.0_linux_amd64.tar.gz\n", wrongHash)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1.0.0/checksums.txt" {
+		switch r.URL.Path {
+		case "/v1.0.0/checksums.txt":
 			fmt.Fprint(w, checksumBody)
-		} else if r.URL.Path == "/v1.0.0/fullsend_1.0.0_linux_amd64.tar.gz" {
-			w.Write(tarBuf.Bytes())
-		} else {
+		case "/v1.0.0/fullsend_1.0.0_linux_amd64.tar.gz":
+			_, _ = w.Write(tarBuf.Bytes())
+		default:
 			http.NotFound(w, r)
 		}
 	}))
@@ -215,11 +216,12 @@ func TestDownloadReleaseBinary_ChecksumMatch(t *testing.T) {
 	checksumBody := fmt.Sprintf("%s  fullsend_2.0.0_linux_amd64.tar.gz\n", correctHash)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v2.0.0/checksums.txt" {
+		switch r.URL.Path {
+		case "/v2.0.0/checksums.txt":
 			fmt.Fprint(w, checksumBody)
-		} else if r.URL.Path == "/v2.0.0/fullsend_2.0.0_linux_amd64.tar.gz" {
-			w.Write(tarBytes)
-		} else {
+		case "/v2.0.0/fullsend_2.0.0_linux_amd64.tar.gz":
+			_, _ = w.Write(tarBytes)
+		default:
 			http.NotFound(w, r)
 		}
 	}))
@@ -369,11 +371,12 @@ func TestResolveForVendor_ReleaseFallback(t *testing.T) {
 	checksumBody := fmt.Sprintf("%s  fullsend_0.4.0_linux_amd64.tar.gz\n", correctHash)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v0.4.0/checksums.txt" {
+		switch r.URL.Path {
+		case "/v0.4.0/checksums.txt":
 			fmt.Fprint(w, checksumBody)
-		} else if r.URL.Path == "/v0.4.0/fullsend_0.4.0_linux_amd64.tar.gz" {
-			w.Write(tarBytes)
-		} else {
+		case "/v0.4.0/fullsend_0.4.0_linux_amd64.tar.gz":
+			_, _ = w.Write(tarBytes)
+		default:
 			http.NotFound(w, r)
 		}
 	}))
@@ -422,11 +425,12 @@ func TestResolveForRun_PrefersReleaseBeforeCrossCompile(t *testing.T) {
 	checksumBody := fmt.Sprintf("%s  fullsend_0.4.0_linux_amd64.tar.gz\n", correctHash)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v0.4.0/checksums.txt" {
+		switch r.URL.Path {
+		case "/v0.4.0/checksums.txt":
 			fmt.Fprint(w, checksumBody)
-		} else if r.URL.Path == "/v0.4.0/fullsend_0.4.0_linux_amd64.tar.gz" {
-			w.Write(tarBytes)
-		} else {
+		case "/v0.4.0/fullsend_0.4.0_linux_amd64.tar.gz":
+			_, _ = w.Write(tarBytes)
+		default:
 			http.NotFound(w, r)
 		}
 	}))
@@ -476,11 +480,12 @@ func TestDownloadRelease_ExceedsMaxSize(t *testing.T) {
 	checksumBody := fmt.Sprintf("%s  fullsend_1.0.0_linux_amd64.tar.gz\n", hex.EncodeToString(h[:]))
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1.0.0/checksums.txt" {
+		switch r.URL.Path {
+		case "/v1.0.0/checksums.txt":
 			fmt.Fprint(w, checksumBody)
-		} else if r.URL.Path == "/v1.0.0/fullsend_1.0.0_linux_amd64.tar.gz" {
-			w.Write(tarBytes)
-		} else {
+		case "/v1.0.0/fullsend_1.0.0_linux_amd64.tar.gz":
+			_, _ = w.Write(tarBytes)
+		default:
 			http.NotFound(w, r)
 		}
 	}))
@@ -532,13 +537,14 @@ func TestResolveForRun_LatestReleaseFallback(t *testing.T) {
 	checksumBody := fmt.Sprintf("%s  fullsend_9.9.9_linux_amd64.tar.gz\n", correctHash)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/fullsend-ai/fullsend/releases/latest" {
+		switch r.URL.Path {
+		case "/repos/fullsend-ai/fullsend/releases/latest":
 			fmt.Fprint(w, `{"tag_name":"v9.9.9"}`)
-		} else if r.URL.Path == "/v9.9.9/checksums.txt" {
+		case "/v9.9.9/checksums.txt":
 			fmt.Fprint(w, checksumBody)
-		} else if r.URL.Path == "/v9.9.9/fullsend_9.9.9_linux_amd64.tar.gz" {
-			w.Write(tarBytes)
-		} else {
+		case "/v9.9.9/fullsend_9.9.9_linux_amd64.tar.gz":
+			_, _ = w.Write(tarBytes)
+		default:
 			http.NotFound(w, r)
 		}
 	}))
@@ -704,7 +710,7 @@ func TestFetchSourceTree_ExtractsArchive(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1.0.0.tar.gz" {
-			w.Write(buf.Bytes())
+			_, _ = w.Write(buf.Bytes())
 			return
 		}
 		http.NotFound(w, r)

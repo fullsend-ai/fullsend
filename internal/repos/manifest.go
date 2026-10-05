@@ -1345,7 +1345,7 @@ func IsValidGCPProjectID(s string) bool {
 		return false
 	}
 	for _, c := range s[1:] {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
 			return false
 		}
 	}
@@ -1362,7 +1362,7 @@ func IsValidGCPRegion(s string) bool {
 		return false
 	}
 	for _, c := range s[1:] {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
 			return false
 		}
 	}

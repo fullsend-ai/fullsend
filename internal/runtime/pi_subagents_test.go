@@ -113,7 +113,7 @@ func TestFoldPiSubagentUsage_ClampsNegativeAndNonFinite(t *testing.T) {
 	assert.Zero(t, nonNegativeCost(math.NaN()))
 	assert.Zero(t, nonNegativeCost(math.Inf(1)), "+Inf would poison total_cost_usd for the rest of the run")
 	assert.Zero(t, nonNegativeCost(math.Inf(-1)))
-	assert.Zero(t, nonNegativeCost(-0.0))
+	assert.Zero(t, nonNegativeCost(math.Copysign(0, -1)))
 	assert.Equal(t, 1.5, nonNegativeCost(1.5))
 	assert.Equal(t, math.MaxFloat64, nonNegativeCost(math.MaxFloat64), "a finite figure, however large, is still folded")
 	assert.Zero(t, nonNegative(-1))

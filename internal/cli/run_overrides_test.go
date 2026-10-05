@@ -162,12 +162,12 @@ func TestResolveBackend_OverrideWinsOverConfig(t *testing.T) {
 
 	backend, source, err := resolveBackend(runOverrides{}, cfg, "")
 	require.NoError(t, err)
-	assert.Equal(t, "claude", backend.Runtime.Name())
+	assert.Equal(t, "claude", backend.Name())
 	assert.Equal(t, cfg, source)
 
 	backend, source, err = resolveBackend(runOverrides{runtime: "pi", runtimeSource: sourceFlagRuntime}, cfg, "")
 	require.NoError(t, err)
-	assert.Equal(t, "pi", backend.Runtime.Name())
+	assert.Equal(t, "pi", backend.Name())
 	assert.Equal(t, sourceFlagRuntime, source)
 }
 
@@ -219,25 +219,26 @@ agents:
 	// Without agent name: repo-wide runtime applies.
 	backend, source, err := resolveBackend(runOverrides{}, cfg, "")
 	require.NoError(t, err)
-	assert.Equal(t, "pi", backend.Runtime.Name())
+	assert.Equal(t, "pi", backend.Name())
 	assert.Equal(t, cfg, source)
 
 	// The agents: entry decides for "code", and the source names it.
 	backend, source, err = resolveBackend(runOverrides{}, cfg, "code")
 	require.NoError(t, err)
-	assert.Equal(t, "claude", backend.Runtime.Name())
+	assert.Equal(t, "claude", backend.Name())
 	assert.Equal(t, cfg+" agents.code", source)
 
 	// No entry for "triage": repo-wide applies.
 	backend, _, err = resolveBackend(runOverrides{}, cfg, "triage")
 	require.NoError(t, err)
-	assert.Equal(t, "pi", backend.Runtime.Name())
+	assert.Equal(t, "pi", backend.Name())
 
 	// Flag override still wins over the entry.
 	backend, source, err = resolveBackend(runOverrides{runtime: "dummy", runtimeSource: sourceFlagRuntime}, cfg, "code")
 	require.NoError(t, err)
-	assert.Equal(t, "dummy", backend.Runtime.Name())
+	assert.Equal(t, "dummy", backend.Name())
 	assert.Equal(t, sourceFlagRuntime, source)
+
 }
 
 func TestResolveBackend_PerAgentRuntimeRejectsStub(t *testing.T) {
@@ -263,7 +264,7 @@ agents:
 
 	backend, _, err := resolveBackend(runOverrides{}, cfg, "triage")
 	require.NoError(t, err)
-	assert.Equal(t, "claude", backend.Runtime.Name(), "other agents unaffected")
+	assert.Equal(t, "claude", backend.Name(), "other agents unaffected")
 }
 
 func TestRunConfig_AgentSettings_LayeredAndValidated(t *testing.T) {
@@ -293,7 +294,7 @@ agents:
 	// effective config file.
 	backend, source, err := rc.backend("triage")
 	require.NoError(t, err)
-	assert.Equal(t, "pi", backend.Runtime.Name())
+	assert.Equal(t, "pi", backend.Name())
 	assert.Equal(t, cfg+" agents.triage", source)
 
 	// Settings merge per field across layers; lookup is case-insensitive.
@@ -377,7 +378,7 @@ agents:
 			assert.Equal(t, path, rc.source)
 			backend, source, err := rc.backend("code")
 			require.NoError(t, err)
-			assert.Equal(t, "claude", backend.Runtime.Name())
+			assert.Equal(t, "claude", backend.Name())
 			assert.Equal(t, path+" agents.code", source)
 			entry, found, err := rc.agentSettings("code")
 			require.NoError(t, err)
@@ -393,7 +394,7 @@ agents:
 	assert.False(t, found)
 	backend, source, err := none.backend("code")
 	require.NoError(t, err)
-	assert.Equal(t, "claude", backend.Runtime.Name())
+	assert.Equal(t, "claude", backend.Name())
 	assert.Equal(t, "default (config not found)", source)
 }
 

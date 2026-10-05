@@ -124,7 +124,7 @@ func TestSandboxImageExtensionPinsMatchRenovateDepNames(t *testing.T) {
 
 			var urls []string
 			for _, tk := range tokens {
-				if u := strings.Trim(tk, `"'`+"`"+`\\`); strings.HasPrefix(u, remoteScheme) {
+				if u := strings.Trim(tk, `"'`+"`\\"); strings.HasPrefix(u, remoteScheme) {
 					urls = append(urls, u)
 				}
 			}

@@ -421,12 +421,12 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 			// and Claude Code; the renderer sanitizes it for display.
 			var item codexTextItem
 			if json.Unmarshal(raw, &item) == nil && item.Text != "" {
-				onEvent(TextEvent{Text: item.Text})
+				onEvent(TextEvent(item))
 			}
 		case "reasoning":
 			var item codexTextItem
 			if json.Unmarshal(raw, &item) == nil && item.Text != "" {
-				onEvent(ThinkingEvent{Text: item.Text})
+				onEvent(ThinkingEvent(item))
 			}
 		case "command_execution":
 			var item codexCommandExecutionItem

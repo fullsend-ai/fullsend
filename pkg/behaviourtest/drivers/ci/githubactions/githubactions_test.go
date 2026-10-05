@@ -2008,7 +2008,7 @@ func (c *artifactFirstListRunsErrorClient) ListWorkflowRuns(ctx context.Context,
 		return nil, errors.New("simulated transient ListWorkflowRuns error")
 	}
 	c.mu.Unlock()
-	return c.settlingArtifactsClient.FakeClient.ListWorkflowRuns(ctx, owner, repo, workflowFile)
+	return c.ListWorkflowRuns(ctx, owner, repo, workflowFile)
 }
 
 // TestWaitForHarnessAgent_ArtifactFirstBranchListRunsErrorKeepsPolling

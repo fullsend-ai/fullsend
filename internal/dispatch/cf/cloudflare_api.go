@@ -183,7 +183,7 @@ func (c *LiveCloudflareAPIClient) cfAPIRequest(ctx context.Context, method, reqU
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("Cloudflare API returned %d: %s", resp.StatusCode, truncateErrorBody(string(respBody)))
+		return nil, fmt.Errorf("cloudflare API returned %d: %s", resp.StatusCode, truncateErrorBody(string(respBody)))
 	}
 	return respBody, nil
 }

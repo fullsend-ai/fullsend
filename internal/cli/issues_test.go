@@ -1133,7 +1133,7 @@ const testBot = "fullsend-ai-review[bot]"
 // post-comment as testBot through tc (a *flakySelfClient wrapping fc, so the
 // identity lookup can be made to fail). It returns the run's error and the
 // comments afterwards.
-func postAfterCommentBy(t *testing.T, author string, onlyIfExists bool, failures int) (error, []tracker.Comment, *flakySelfClient) {
+func postAfterCommentBy(t *testing.T, author string, onlyIfExists bool, failures int) ([]tracker.Comment, *flakySelfClient, error) {
 	t.Helper()
 	fastSelfLookup(t)
 	ctx := context.Background()
@@ -1160,13 +1160,13 @@ func postAfterCommentBy(t *testing.T, author string, onlyIfExists bool, failures
 
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
-	return runErr, comments, tc
+	return comments, tc, runErr
 }
 
 func TestRunIssuesPostComment_EditsOwnComment(t *testing.T) {
 	for _, onlyIfExists := range []bool{false, true} {
 		t.Run(fmt.Sprintf("only-if-exists=%v", onlyIfExists), func(t *testing.T) {
-			err, comments, _ := postAfterCommentBy(t, testBot, onlyIfExists, 0)
+			comments, _, err := postAfterCommentBy(t, testBot, onlyIfExists, 0)
 			require.NoError(t, err)
 			require.Len(t, comments, 1)
 			assert.Contains(t, string(comments[0].Body), "new result")
@@ -1181,14 +1181,14 @@ func TestRunIssuesPostComment_IgnoresPlantedMarker(t *testing.T) {
 	for _, author := range []string{"mallory", "evil-review[bot]", "fullsend-ai-review", "x-fullsend-ai-review[bot]"} {
 		t.Run(author, func(t *testing.T) {
 			// Normal path: the planted comment is left alone, a new one posted.
-			err, comments, _ := postAfterCommentBy(t, author, false, 0)
+			comments, _, err := postAfterCommentBy(t, author, false, 0)
 			require.NoError(t, err)
 			require.Len(t, comments, 2)
 			assert.NotContains(t, string(comments[0].Body), "new result")
 			assert.Contains(t, string(comments[1].Body), "new result")
 
 			// --only-if-exists: neither edited nor created.
-			err, comments, _ = postAfterCommentBy(t, author, true, 0)
+			comments, _, err = postAfterCommentBy(t, author, true, 0)
 			require.NoError(t, err)
 			require.Len(t, comments, 1)
 			assert.NotContains(t, string(comments[0].Body), "new result")
@@ -1197,7 +1197,7 @@ func TestRunIssuesPostComment_IgnoresPlantedMarker(t *testing.T) {
 }
 
 func TestRunIssuesPostComment_TransientSelfFailureRetriesThenEdits(t *testing.T) {
-	err, comments, tc := postAfterCommentBy(t, testBot, false, len(selfLookupBackoff))
+	comments, tc, err := postAfterCommentBy(t, testBot, false, len(selfLookupBackoff))
 	require.NoError(t, err)
 	assert.Equal(t, len(selfLookupBackoff)+1, tc.calls, "every retry is used before success")
 	require.Len(t, comments, 1, "a transient failure must not create a second comment")
@@ -1207,7 +1207,7 @@ func TestRunIssuesPostComment_TransientSelfFailureRetriesThenEdits(t *testing.T)
 func TestRunIssuesPostComment_PersistentSelfFailureErrorsAndPostsNothing(t *testing.T) {
 	for _, onlyIfExists := range []bool{false, true} {
 		t.Run(fmt.Sprintf("only-if-exists=%v", onlyIfExists), func(t *testing.T) {
-			err, comments, tc := postAfterCommentBy(t, testBot, onlyIfExists, 1000)
+			comments, tc, err := postAfterCommentBy(t, testBot, onlyIfExists, 1000)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "cannot verify which identity")
 			assert.Contains(t, err.Error(), "rerun")
@@ -1304,7 +1304,7 @@ func TestResolveTrackerSelf_StopsRetryingWhenCancelled(t *testing.T) {
 // author (with the marker as a comment property, or, when legacy is set,
 // embedded in the body the way pre-property comments stored it), then
 // runs post-comment as tracker.FakeJiraBot.
-func postJiraAfterCommentBy(t *testing.T, author jira.User, legacy bool, myselfErr error) (error, []tracker.Comment) {
+func postJiraAfterCommentBy(t *testing.T, author jira.User, legacy bool, myselfErr error) ([]tracker.Comment, error) {
 	t.Helper()
 	fastSelfLookup(t)
 	ctx := context.Background()
@@ -1335,13 +1335,13 @@ func postJiraAfterCommentBy(t *testing.T, author jira.User, legacy bool, myselfE
 
 	comments, err := tc.ListComments(ctx, "PROJ", 42)
 	require.NoError(t, err)
-	return runErr, comments
+	return comments, runErr
 }
 
 func TestRunIssuesPostComment_Jira_EditsOwnComment(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
-			err, comments := postJiraAfterCommentBy(t, tracker.FakeJiraBot, legacy, nil)
+			comments, err := postJiraAfterCommentBy(t, tracker.FakeJiraBot, legacy, nil)
 			require.NoError(t, err)
 			require.Len(t, comments, 1)
 			assert.Contains(t, string(comments[0].Body), "new result")
@@ -1355,7 +1355,7 @@ func TestRunIssuesPostComment_Jira_IgnoresPlantedMarker(t *testing.T) {
 	mallory := jira.User{AccountID: "mallory-account-id", DisplayName: tracker.FakeJiraBot.DisplayName}
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
-			err, comments := postJiraAfterCommentBy(t, mallory, legacy, nil)
+			comments, err := postJiraAfterCommentBy(t, mallory, legacy, nil)
 			require.NoError(t, err)
 			require.Len(t, comments, 2, "the planted comment is left alone and a new one posted")
 			assert.NotContains(t, string(comments[0].Body), "new result")
@@ -1365,7 +1365,7 @@ func TestRunIssuesPostComment_Jira_IgnoresPlantedMarker(t *testing.T) {
 }
 
 func TestRunIssuesPostComment_Jira_UnresolvableSelfErrorsAndPostsNothing(t *testing.T) {
-	err, comments := postJiraAfterCommentBy(t, tracker.FakeJiraBot, false, errors.New("401 Unauthorized"))
+	comments, err := postJiraAfterCommentBy(t, tracker.FakeJiraBot, false, errors.New("401 Unauthorized"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot verify which identity")
 	assert.Contains(t, err.Error(), "401 Unauthorized")

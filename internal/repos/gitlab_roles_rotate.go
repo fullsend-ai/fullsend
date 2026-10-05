@@ -610,7 +610,7 @@ func otherHoldsRotationLock(rs rotationRoleState, holder string, now time.Time) 
 func lockGitLabRoleRotation(owner, repo string, role gitlabroles.Role) func() {
 	key := owner + "/" + repo + "/" + string(role)
 	v, _ := roleRotateLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
+	mu, _ := v.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
 }

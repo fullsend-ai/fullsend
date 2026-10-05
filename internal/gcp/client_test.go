@@ -60,7 +60,7 @@ func TestDoRequest(t *testing.T) {
 			assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
 			assert.Empty(t, r.Header.Get("Content-Type"))
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 		}))
 		defer srv.Close()
 
@@ -83,7 +83,7 @@ func TestDoRequest(t *testing.T) {
 			assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
 
 			var body map[string]string
-			json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			assert.Equal(t, "value", body["key"])
 
 			w.WriteHeader(http.StatusOK)
@@ -502,7 +502,7 @@ func TestDoRequest_RetriesTransientStatusCodes(t *testing.T) {
 					return
 				}
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 			}))
 			defer srv.Close()
 
@@ -619,7 +619,7 @@ func TestDoRequest_RetryPreservesRequestBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := calls.Add(1)
 		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		lastBody = body["key"]
 		if n == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)

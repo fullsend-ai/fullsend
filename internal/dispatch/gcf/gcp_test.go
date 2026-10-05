@@ -60,7 +60,7 @@ func TestLiveGCFClient_CreateServiceAccount(t *testing.T) {
 					DisplayName string `json:"displayName"`
 				} `json:"serviceAccount"`
 			}
-			json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			assert.Equal(t, "my-sa", body.AccountID)
 			assert.Equal(t, "My SA", body.ServiceAccount.DisplayName)
 			w.WriteHeader(http.StatusOK)
@@ -141,7 +141,7 @@ func TestLiveGCFClient_CreateWIFProvider(t *testing.T) {
 			assert.Equal(t, http.MethodPost, r.Method)
 			assert.Contains(t, r.URL.RawQuery, "workloadIdentityPoolProviderId=gh-oidc")
 			var body map[string]interface{}
-			json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			oidc := body["oidc"].(map[string]interface{})
 			assert.Equal(t, "https://token.actions.githubusercontent.com", oidc["issuerUri"])
 			audiences, ok := oidc["allowedAudiences"].([]interface{})
@@ -1826,8 +1826,8 @@ func TestLiveGCFClient_UpdateServiceEnvVars(t *testing.T) {
 		callCount := 0
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			callCount++
-			switch {
-			case callCount == 1:
+			switch callCount {
+			case 1:
 				// GET service
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1837,7 +1837,7 @@ func TestLiveGCFClient_UpdateServiceEnvVars(t *testing.T) {
 						},
 					},
 				})
-			case callCount == 2:
+			case 2:
 				// PATCH template → done
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
@@ -3059,10 +3059,10 @@ func TestEncodeBase64(t *testing.T) {
 
 func TestNewLiveGCFClient_SetsQuotaProject(t *testing.T) {
 	c := NewLiveGCFClient("target-project")
-	assert.Equal(t, "target-project", c.Client.QuotaProject)
+	assert.Equal(t, "target-project", c.QuotaProject)
 }
 
 func TestNewLiveGCFClient_EmptyQuotaProject(t *testing.T) {
 	c := NewLiveGCFClient("")
-	assert.Empty(t, c.Client.QuotaProject)
+	assert.Empty(t, c.QuotaProject)
 }

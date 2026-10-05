@@ -243,7 +243,7 @@ func TestProgressParserReaderError(t *testing.T) {
 	pr, pw := io.Pipe()
 
 	go func() {
-		pw.Write([]byte(`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a.go"}}]}` + "\n"))
+		_, _ = pw.Write([]byte(`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a.go"}}]}` + "\n"))
 		pw.CloseWithError(errors.New("connection reset"))
 	}()
 
@@ -1579,7 +1579,7 @@ func TestParseClaudeStreamBrokenPipeCapturesTokens(t *testing.T) {
 			`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":2000}}}`,
 		}
 		for _, l := range lines {
-			pw.Write([]byte(l + "\n"))
+			_, _ = pw.Write([]byte(l + "\n"))
 		}
 		pw.CloseWithError(errors.New("broken pipe"))
 	}()

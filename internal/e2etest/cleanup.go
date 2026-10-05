@@ -262,11 +262,12 @@ func deleteBranch(ctx context.Context, token, org, repo, branch string, log clea
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNoContent {
+	switch resp.StatusCode {
+	case http.StatusNoContent:
 		log.Logf("[cleanup] Deleted stale branch %s", branch)
-	} else if resp.StatusCode == http.StatusNotFound {
+	case http.StatusNotFound:
 		// Branch doesn't exist, nothing to do.
-	} else {
+	default:
 		log.Logf("[cleanup] Warning: unexpected status deleting branch %s: %d", branch, resp.StatusCode)
 	}
 }

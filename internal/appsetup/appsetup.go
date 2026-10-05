@@ -747,7 +747,8 @@ func (s *Setup) runManifestFlow(ctx context.Context, org, role string) (*AppCred
 	}
 	defer listener.Close()
 
-	port := listener.Addr().(*net.TCPAddr).Port
+	addr, _ := listener.Addr().(*net.TCPAddr)
+	port := addr.Port
 	callbackURL := fmt.Sprintf("http://127.0.0.1:%d/callback", port)
 	formURL := fmt.Sprintf("http://127.0.0.1:%d/", port)
 	githubFormAction := fmt.Sprintf("https://github.com/organizations/%s/settings/apps/new", org)

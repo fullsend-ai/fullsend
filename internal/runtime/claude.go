@@ -170,7 +170,7 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 	if parseErr := parseClaudeStream(r, handler); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
-		io.Copy(io.Discard, r)
+		_, _ = io.Copy(io.Discard, r)
 	}
 
 	waitErr := execCmd.Wait()

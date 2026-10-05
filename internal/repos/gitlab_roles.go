@@ -19,7 +19,8 @@ func gitlabRoleOperationLock(owner, repo string) *sync.Mutex {
 	key := owner + "/" + repo
 	lock := &sync.Mutex{}
 	actual, _ := gitlabRoleOperationLocks.LoadOrStore(key, lock)
-	return actual.(*sync.Mutex)
+	mutex, _ := actual.(*sync.Mutex)
+	return mutex
 }
 
 // LockGitLabRoleOperation serializes role credential operations for one repo.

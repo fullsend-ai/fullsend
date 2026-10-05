@@ -53,10 +53,14 @@ type Client struct {
 
 // NewClient creates a new Client with default settings.
 func NewClient() *Client {
+	var transport http.RoundTripper
+	if t, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = t.Clone()
+	}
 	c := &Client{
 		httpClient: &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: http.DefaultTransport.(*http.Transport).Clone(),
+			Transport: transport,
 		},
 		retryDelayFn: defaultRetryDelay,
 	}
@@ -176,7 +180,7 @@ func (c *Client) DoRequest(ctx context.Context, method, url, body string) (*http
 		// duplicating side effects (e.g. AddSecretVersion POST → 500
 		// after the version was created would create a duplicate on retry).
 		if attempt < maxRetries && isIdempotentMethod(method) && isRetryableStatusCode(resp.StatusCode) {
-			io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 			resp.Body.Close()
 			select {
 			case <-ctx.Done():

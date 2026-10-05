@@ -1444,9 +1444,7 @@ func TestRoutingLabelPrefixDrift(t *testing.T) {
 				block = block[:esacIdx]
 			}
 			for _, m := range caseArm.FindAllStringSubmatch(block, -1) {
-				for _, arm := range strings.Split(m[1], "|") {
-					labels = append(labels, arm)
-				}
+				labels = append(labels, strings.Split(m[1], "|")...)
 			}
 		}
 		return labels

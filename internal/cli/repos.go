@@ -993,9 +993,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					if !ok {
 						continue
 					}
-					if rc.Forge == repos.ForgeGitHub {
+					switch rc.Forge {
+					case repos.ForgeGitHub:
 						hasGH = true
-					} else if rc.Forge == repos.ForgeGitLab {
+					case repos.ForgeGitLab:
 						hasGL = true
 					}
 				}

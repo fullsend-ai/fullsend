@@ -105,7 +105,8 @@ func TestMeasureAndExport_CancelledContext(t *testing.T) {
 }
 
 func TestWithPersistHook_NilContext(t *testing.T) {
-	ctx := WithPersistHook(nil, func() {})
+	var nilCtx context.Context
+	ctx := WithPersistHook(nilCtx, func() {})
 	require.NotNil(t, ctx)
 	_, ok := ctx.Value(persistHookKey{}).(func())
 	assert.True(t, ok)

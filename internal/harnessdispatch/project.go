@@ -108,7 +108,7 @@ func buildPullRequestPayload(event *normevent.Event) map[string]any {
 		},
 	}
 	if cp.HeadSHA != "" {
-		pr["head"].(map[string]any)["sha"] = cp.HeadSHA
+		pr["head"].(map[string]any)["sha"] = cp.HeadSHA //nolint:errcheck
 	}
 	if event.Entity.LinkedChangeProposal != nil {
 		pr["number"] = event.Entity.LinkedChangeProposal.ID

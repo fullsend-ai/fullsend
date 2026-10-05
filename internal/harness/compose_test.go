@@ -1355,7 +1355,7 @@ model: sonnet
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(baseContent)
+		_, _ = w.Write(baseContent)
 	}))
 	defer server.Close()
 
@@ -1372,8 +1372,9 @@ allowed_remote_resources:
   - `+server.URL+`/
 `)
 
+	transport, _ := server.Client().Transport.(*http.Transport)
 	policy := fetch.NewTestPolicy(
-		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		transport.TLSClientConfig,
 		[]string{"127.0.0.1"},
 		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
 	)
@@ -1417,16 +1418,16 @@ forge:
 		switch r.URL.Path {
 		case "/base.yaml":
 			w.WriteHeader(http.StatusOK)
-			w.Write(baseContent)
+			_, _ = w.Write(baseContent)
 		case "/policies/gitlab.yaml":
 			w.WriteHeader(http.StatusOK)
-			w.Write(policyContent)
+			_, _ = w.Write(policyContent)
 		case "/scripts/gl-pre.sh":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("#!/bin/sh\necho gl\n"))
+			_, _ = w.Write([]byte("#!/bin/sh\necho gl\n"))
 		case "/agents/remote.md":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("You are a test agent.\n"))
+			_, _ = w.Write([]byte("You are a test agent.\n"))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -1540,13 +1541,14 @@ role: test
 `)
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/grandparent.yaml" {
+		switch r.URL.Path {
+		case "/grandparent.yaml":
 			w.WriteHeader(http.StatusOK)
 			w.Write(grandparentContent)
-		} else if r.URL.Path == "/parent.yaml" {
+		case "/parent.yaml":
 			w.WriteHeader(http.StatusOK)
 			w.Write(parentContent)
-		} else {
+		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -5480,7 +5482,7 @@ func TestFetchBaseFile_SymlinkError(t *testing.T) {
 		hashDir, err := fetch.CachePath(cacheDir, hash)
 		require.NoError(t, err)
 		require.NoError(t, os.Chmod(hashDir, 0o555))
-		t.Cleanup(func() { os.Chmod(hashDir, 0o755) })
+		t.Cleanup(func() { _ = os.Chmod(hashDir, 0o755) })
 
 		_, _, err = fetchBaseFile(context.Background(), "test", "https://example.com/",
 			relPath, []string{"https://example.com/"}, ComposeOpts{
@@ -5493,7 +5495,7 @@ func TestFetchBaseFile_SymlinkError(t *testing.T) {
 	t.Run("fresh fetch", func(t *testing.T) {
 		content := []byte("# fresh content")
 		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write(content)
+			_, _ = w.Write(content)
 		}))
 		t.Cleanup(server.Close)
 
@@ -5556,7 +5558,7 @@ openshell:
 	require.NoError(t, err)
 	tmpDir := t.TempDir()
 	require.NoError(t, os.Chdir(tmpDir))
-	t.Cleanup(func() { os.Chdir(origDir) })
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
 	relCache := "rel-cache"
 	require.NoError(t, os.MkdirAll(relCache, 0o755))

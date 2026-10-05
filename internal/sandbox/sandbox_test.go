@@ -496,7 +496,7 @@ func TestSanitizeDownload_RemoveFailureReturnsErrSymlink(t *testing.T) {
 	// Make sub read-only so os.Remove fails.
 	require.NoError(t, os.Chmod(sub, 0o555))
 	t.Cleanup(func() {
-		os.Chmod(sub, 0o755) // restore for TempDir cleanup
+		_ = os.Chmod(sub, 0o755) // restore for TempDir cleanup
 	})
 
 	err := sanitizeDownload(dir)

@@ -255,7 +255,7 @@ func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 	formatHistory := func(ents []histEntry) string {
 		var b strings.Builder
 		for _, e := range ents {
-			b.WriteString(fmt.Sprintf("\n\n<details>\n<summary>%s</summary>\n\n", e.summary))
+			fmt.Fprintf(&b, "\n\n<details>\n<summary>%s</summary>\n\n", e.summary)
 			b.WriteString(historyStart + "\n")
 			b.WriteString(e.content)
 			b.WriteString("\n" + historyEnd)

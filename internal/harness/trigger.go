@@ -6,7 +6,6 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
-	"github.com/google/cel-go/common/types/ref"
 )
 
 // NewTriggerEnv creates a CEL environment with root variable event (dyn type).
@@ -73,10 +72,8 @@ func EvaluateTrigger(expr string, event map[string]any) (bool, error) {
 	}
 	b, ok := out.(types.Bool)
 	if !ok {
-		if br, ok := out.(ref.Val); ok {
-			if b, ok := br.Value().(bool); ok {
-				return b, nil
-			}
+		if b, ok := out.Value().(bool); ok {
+			return b, nil
 		}
 		return false, fmt.Errorf("trigger result is not bool: %T", out)
 	}
@@ -117,10 +114,8 @@ func EvaluateOverlay(expr string, event map[string]any, forgePlatform string, co
 	}
 	b, ok := out.(types.Bool)
 	if !ok {
-		if br, ok := out.(ref.Val); ok {
-			if b, ok := br.Value().(bool); ok {
-				return b, nil
-			}
+		if b, ok := out.Value().(bool); ok {
+			return b, nil
 		}
 		return false, fmt.Errorf("overlay when result is not bool: %T", out)
 	}

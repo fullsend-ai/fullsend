@@ -837,7 +837,6 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	// exists and is active with the same source hash, skip the code deploy
 	// path and use the lightweight provisionWithExistingMint for PEM + org
 	// registration. WIF infrastructure above always runs regardless.
-	needsDeploy := true
 	var earlySourceZip []byte
 
 	if existing != nil && existing.URI != "" {
@@ -846,6 +845,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		}
 
 		if existing.State == "ACTIVE" {
+			var needsDeploy bool
 			switch {
 			case p.cfg.DeployMode == DeploySkip:
 				needsDeploy = false

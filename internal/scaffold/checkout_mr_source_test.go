@@ -368,7 +368,7 @@ func assertCheckedOutReviewedSource(t *testing.T, env checkoutEnv, out string) {
 
 func runCheckoutScript(t *testing.T, env checkoutEnv, extra []string, pathPrefix string) (string, error) {
 	t.Helper()
-	serverURL := "https://gitlab.test"
+	var serverURL string
 	extraEnv := []string{}
 	if strings.HasPrefix(env.serverRoot, "https://") {
 		serverURL = env.serverRoot

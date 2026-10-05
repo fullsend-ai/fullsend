@@ -427,8 +427,7 @@ func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo st
 			}
 			// Inline comments still need posting; the body was already
 			// folded into the fallback note.
-			body = ""
-			break
+			return c.postInlineComments(ctx, proj, number, commitSHA, comments)
 		}
 
 		approvePath := fmt.Sprintf("/projects/%s/merge_requests/%d/approve", proj, number)
@@ -669,7 +668,7 @@ func (c *LiveClient) postDiffDiscussion(ctx context.Context, proj string, number
 
 func (c *LiveClient) postInlineNote(ctx context.Context, proj string, number int, rc forge.ReviewComment) error {
 	notePath := fmt.Sprintf("/projects/%s/merge_requests/%d/notes", proj, number)
-	noteBody := rc.Body
+	var noteBody string
 	if rc.Line > 0 {
 		noteBody = fmt.Sprintf("`%s:%d`\n\n%s", rc.Path, rc.Line, rc.Body)
 	} else {

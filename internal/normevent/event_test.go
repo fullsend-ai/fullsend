@@ -72,7 +72,9 @@ func TestToMap_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	m, err := ev.ToMap()
 	require.NoError(t, err)
-	assert.Equal(t, "work_item", m["entity"].(map[string]any)["kind"])
+	entity, ok := m["entity"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "work_item", entity["kind"])
 }
 
 func TestParseJSON_ConversationExample(t *testing.T) {
@@ -91,10 +93,17 @@ func TestParseJSON_ConversationExample(t *testing.T) {
 
 	m, err := ev.ToMap()
 	require.NoError(t, err)
-	conv := m["state"].(map[string]any)["conversation"].(map[string]any)
-	cat := conv["category"].(map[string]any)
+	state, ok := m["state"].(map[string]any)
+	require.True(t, ok)
+	conv, ok := state["conversation"].(map[string]any)
+	require.True(t, ok)
+	cat, ok := conv["category"].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "vouch-request", cat["slug"])
-	comment := m["transition"].(map[string]any)["comment"].(map[string]any)
+	trans, ok := m["transition"].(map[string]any)
+	require.True(t, ok)
+	comment, ok := trans["comment"].(map[string]any)
+	require.True(t, ok)
 	assert.Equal(t, "DC_kwDOExampleComment", comment["id"])
 	assert.Equal(t, "DC_kwDOExampleComment", comment["parent_id"])
 }

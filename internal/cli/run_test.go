@@ -389,7 +389,7 @@ func TestTryLoadFullsendConfig_UnreadableFile(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
 	require.NoError(t, os.Chmod(path, 0o000))
-	t.Cleanup(func() { os.Chmod(path, 0o644) })
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
 
 	printer := ui.New(io.Discard)
 	cfg := tryLoadFullsendConfig(path, printer)
@@ -419,7 +419,7 @@ func TestRequireFullsendConfig_UnreadableFile(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
 	require.NoError(t, os.Chmod(path, 0o000))
-	t.Cleanup(func() { os.Chmod(path, 0o644) })
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
 
 	printer := ui.New(io.Discard)
 	cfg, err := requireFullsendConfig(path, printer)
@@ -3030,9 +3030,9 @@ func TestBuildFeedbackPrompt_UnicodeSanitization(t *testing.T) {
 	// text) must survive. See #6502.
 	feedback := "error: " +
 		"\U000E0041" + // tag char (U+E0041)
-		"‪" + // bidi override (LRE)
+		"\u202a" + // bidi override (LRE)
 		"test" +
-		"​" + // zero-width space
+		"\u200b" + // zero-width space
 		"\x1b[31m" + // ANSI escape (red)
 		"fail" +
 		"\x1b[0m" + // ANSI escape (reset)
@@ -3040,8 +3040,8 @@ func TestBuildFeedbackPrompt_UnicodeSanitization(t *testing.T) {
 	prompt, sanitizedCount := buildFeedbackPrompt(feedback)
 
 	assert.NotContains(t, prompt, "\U000E0041")
-	assert.NotContains(t, prompt, "‪")
-	assert.NotContains(t, prompt, "​")
+	assert.NotContains(t, prompt, "\u202a")
+	assert.NotContains(t, prompt, "\u200b")
 	assert.NotContains(t, prompt, "\x1b[")
 	assert.Contains(t, prompt, "日本語")
 	assert.Contains(t, prompt, "café")
@@ -6011,7 +6011,7 @@ func TestMintAgentToken_MasksTokenInGitHubActions(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	io.Copy(&buf, r)
+	_, _ = io.Copy(&buf, r)
 	assert.Contains(t, buf.String(), "::add-mask::ghs_maskable")
 }
 
@@ -7372,13 +7372,14 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 }
 
+
 func TestBackendFromConfigFile_MissingUsesDefault(t *testing.T) {
 	t.Parallel()
 
 	backend, source, err := backendFromConfigFile(filepath.Join(t.TempDir(), "missing.yaml"), "")
 	require.NoError(t, err)
 	assert.Equal(t, "default (config not found)", source)
-	assert.Equal(t, "claude", backend.Runtime.Name())
+	assert.Equal(t, "claude", backend.Name())
 }
 
 func TestBackendFromConfigFile_PerRepoConfig(t *testing.T) {
@@ -7394,7 +7395,7 @@ func TestBackendFromConfigFile_PerRepoConfig(t *testing.T) {
 
 	backend, _, err := backendFromConfigFile(path, "")
 	require.NoError(t, err)
-	assert.Equal(t, "dummy", backend.Runtime.Name())
+	assert.Equal(t, "dummy", backend.Name())
 }
 
 func TestBackendFromConfigFile_PerRepoNestedConfig(t *testing.T) {
@@ -7411,7 +7412,7 @@ func TestBackendFromConfigFile_PerRepoNestedConfig(t *testing.T) {
 	backend, source, err := backendFromConfigFile(filepath.Join(dir, "config.yaml"), "")
 	require.NoError(t, err)
 	assert.Contains(t, source, ".fullsend")
-	assert.Equal(t, "dummy", backend.Runtime.Name())
+	assert.Equal(t, "dummy", backend.Name())
 }
 
 func TestBackendFromConfigFile_ReadError(t *testing.T) {
@@ -7501,14 +7502,14 @@ post_script: scripts/post-triage.sh
 `)
 
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/"+fakeSHA+"/harness/triage.yaml":
+		switch r.URL.Path {
+		case "/" + fakeSHA + "/harness/triage.yaml":
 			_, _ = w.Write(harnessContent)
-		case r.URL.Path == "/"+fakeSHA+"/scripts/pre-triage.sh":
+		case "/" + fakeSHA + "/scripts/pre-triage.sh":
 			_, _ = w.Write(preScript)
-		case r.URL.Path == "/"+fakeSHA+"/scripts/post-triage.sh":
+		case "/" + fakeSHA + "/scripts/post-triage.sh":
 			_, _ = w.Write(postScript)
-		case r.URL.Path == "/"+fakeSHA+"/agents/triage.md":
+		case "/" + fakeSHA + "/agents/triage.md":
 			_, _ = w.Write([]byte("# triage agent"))
 		default:
 			w.WriteHeader(http.StatusNotFound)

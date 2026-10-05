@@ -77,7 +77,7 @@ func validateOrgName(org string) error {
 		return fmt.Errorf("organization name cannot contain consecutive hyphens")
 	}
 	for _, c := range org {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
 			return fmt.Errorf("organization name contains invalid character: %c", c)
 		}
 	}

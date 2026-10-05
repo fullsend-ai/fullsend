@@ -263,7 +263,7 @@ func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
 	require.NotNil(t, e, "newRepoEnsurer should return a non-nil ensurer")
 
 	// Verify the returned value implements the interface.
-	var _ ensurer = e
+	var _ = e
 }
 
 func TestNewRepoEnsurer_ConfigPresetFromEnv(t *testing.T) {

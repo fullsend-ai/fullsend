@@ -809,9 +809,9 @@ func TestProvisioner_Provision_EmbeddedAutoStagesWASM(t *testing.T) {
 
 func TestCopyDir(t *testing.T) {
 	src := t.TempDir()
-	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
-	os.WriteFile(filepath.Join(src, "file.txt"), []byte("content"), 0o644)
-	os.WriteFile(filepath.Join(src, "sub", "nested.txt"), []byte("nested"), 0o644)
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "file.txt"), []byte("content"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "sub", "nested.txt"), []byte("nested"), 0o644))
 
 	dst := t.TempDir()
 	err := copyDir(src, dst)
@@ -1140,9 +1140,9 @@ func TestValidateSourceDir_MissingDir(t *testing.T) {
 func TestValidateSourceDir_MissingFile(t *testing.T) {
 	dir := t.TempDir()
 	// Create only some required files.
-	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
-	os.WriteFile(filepath.Join(dir, "src/index.ts"), []byte("//ts"), 0o644)
-	os.WriteFile(filepath.Join(dir, "wrangler.toml"), []byte("name = \"test\""), 0o644)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src/index.ts"), []byte("//ts"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wrangler.toml"), []byte("name = \"test\""), 0o644))
 	// Missing package.json.
 
 	err := validateSourceDir(dir)
@@ -1677,9 +1677,9 @@ func TestLiveWranglerRunner_WorkerExists_CommandError(t *testing.T) {
 
 func TestCopyDir_SkipsSymlinks(t *testing.T) {
 	src := t.TempDir()
-	os.WriteFile(filepath.Join(src, "file.txt"), []byte("content"), 0o644)
+	require.NoError(t, os.WriteFile(filepath.Join(src, "file.txt"), []byte("content"), 0o644))
 	// Create a symlink — it should be skipped.
-	os.Symlink(filepath.Join(src, "file.txt"), filepath.Join(src, "link.txt"))
+	require.NoError(t, os.Symlink(filepath.Join(src, "file.txt"), filepath.Join(src, "link.txt")))
 
 	dst := t.TempDir()
 	err := copyDir(src, dst)
@@ -2266,10 +2266,10 @@ func TestEnsureCFAPI_LazyInit(t *testing.T) {
 func createFakeWorkerSourceDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "src"), 0o755)
-	os.WriteFile(filepath.Join(dir, "src/index.ts"), []byte("export default {}"), 0o644)
-	os.WriteFile(filepath.Join(dir, "wrangler.toml"), []byte("name = \"test\""), 0o644)
-	os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src/index.ts"), []byte("export default {}"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wrangler.toml"), []byte("name = \"test\""), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
 	return dir
 }
 

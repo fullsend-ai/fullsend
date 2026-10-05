@@ -145,7 +145,9 @@ func TestVerifyChainDetectsTampering(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	lines := splitLines(data)
 	var tampered TracedFinding
-	json.Unmarshal([]byte(lines[1]), &tampered)
+	if err := json.Unmarshal([]byte(lines[1]), &tampered); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
 	tampered.Detail = "TAMPERED"
 	newLine, _ := json.Marshal(tampered)
 	lines[1] = string(newLine)
@@ -155,7 +157,9 @@ func TestVerifyChainDetectsTampering(t *testing.T) {
 	for _, l := range lines {
 		out = append(out, []byte(l+"\n")...)
 	}
-	os.WriteFile(path, out, 0o600)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	result, err := VerifyChain(path)
 	if err != nil {
@@ -195,7 +199,9 @@ func TestVerifyChainDetectsDeletion(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	lines := splitLines(data)
 	deleted := lines[0] + "\n" + lines[2] + "\n"
-	os.WriteFile(path, []byte(deleted), 0o600)
+	if err := os.WriteFile(path, []byte(deleted), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	result, err := VerifyChain(path)
 	if err != nil {
@@ -212,7 +218,9 @@ func TestVerifyChainDetectsDeletion(t *testing.T) {
 func TestVerifyChainEmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "findings.jsonl")
-	os.WriteFile(path, []byte(""), 0o600)
+	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	result, err := VerifyChain(path)
 	if err != nil {

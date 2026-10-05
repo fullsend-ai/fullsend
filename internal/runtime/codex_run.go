@@ -556,7 +556,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	if _, parseErr := parseCodexStream(reader, handler); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
-		io.Copy(io.Discard, reader)
+		_, _ = io.Copy(io.Discard, reader)
 	}
 
 	waitErr := execCmd.Wait()

@@ -55,7 +55,9 @@ func TestStartFetchService_FetchEndpoint(t *testing.T) {
 		"SKILL.md": []byte("---\nname: srv-test\n---\n# Test\n"),
 	}
 	hash := fetch.ComputeTreeHash(files)
-	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc/skills/test", files)
+	if _, err := fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc/skills/test", files); err != nil {
+		t.Fatalf("CachePutDir: %v", err)
+	}
 
 	cfg := fetchsvc.ServiceConfig{
 		Harness: &harness.Harness{
@@ -91,7 +93,9 @@ func TestStartFetchService_FetchEndpoint(t *testing.T) {
 	}
 
 	var fetchResp fetchsvc.FetchResponse
-	json.NewDecoder(resp.Body).Decode(&fetchResp)
+	if err := json.NewDecoder(resp.Body).Decode(&fetchResp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	if fetchResp.LocalPath == "" {
 		t.Fatal("expected non-empty LocalPath")
 	}

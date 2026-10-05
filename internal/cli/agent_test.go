@@ -27,7 +27,7 @@ func newAgentTestServer(t *testing.T, contents map[string][]byte) (*httptest.Ser
 	t.Helper()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if data, ok := contents[r.URL.Path]; ok {
-			w.Write(data)
+			_, _ = w.Write(data)
 			return
 		}
 		http.NotFound(w, r)

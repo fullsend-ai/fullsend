@@ -11,8 +11,8 @@ import (
 // LoadJSONEvent reads a NormalizedEvent from a JSON file or stdin ("-").
 func LoadJSONEvent(path string) (*normevent.Event, error) {
 	var r io.Reader
-	switch {
-	case path == "" || path == "-":
+	switch path {
+	case "", "-":
 		r = os.Stdin
 	default:
 		f, err := os.Open(path)

@@ -1098,7 +1098,7 @@ func parseAgentSettingsConfig(t *testing.T, doc string) PerRepoConfigReader {
 	t.Helper()
 	cfg, err := ParsePerRepoConfig([]byte("# fullsend per-repo configuration\nversion: \"1\"\n" + doc))
 	require.NoError(t, err)
-	return cfg.(PerRepoConfigReader)
+	return cfg
 }
 
 func TestAgentSettings_ParseAndValidate(t *testing.T) {
@@ -1493,7 +1493,7 @@ func TestModelsAliases_OmittedWhenEmpty(t *testing.T) {
 func TestModelsAliases_SetterAndGetter(t *testing.T) {
 	t.Parallel()
 	cfg := NewPerRepoConfig(nil, "")
-	pw := cfg.(PerRepoConfigWriter)
+	pw := cfg
 	pw.SetModelAliases(map[string]string{"opus": "claude-opus-5"})
 	pr := cfg.(PerRepoConfigReader)
 	assert.Equal(t, "claude-opus-5", pr.ConfigModelAliases()["opus"])

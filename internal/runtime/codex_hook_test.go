@@ -655,23 +655,6 @@ func TestCodexAdapterPhasesMatchHookPlan(t *testing.T) {
 	assert.Contains(t, src, `PHASE_POST = "`+string(security.HookPhasePostToolUse)+`"`)
 }
 
-func sortedKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sortStrings(keys)
-	return keys
-}
-
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
-}
-
 // pyStr renders a Go string as a Python string literal for the fake scripts.
 func pyStr(s string) string {
 	return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`

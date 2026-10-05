@@ -83,7 +83,7 @@ func TestMarkdownToADF_ResolvesBackslashEscapesAndEntities(t *testing.T) {
 	var got strings.Builder
 	for _, n := range nodes {
 		node := asMap(t, n)
-		got.WriteString(fmt.Sprint(node["text"]))
+		fmt.Fprint(&got, node["text"])
 	}
 	want := "*not em* and \u00a9 and &"
 	if got.String() != want {

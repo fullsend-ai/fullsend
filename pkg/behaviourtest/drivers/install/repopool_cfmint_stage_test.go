@@ -183,7 +183,7 @@ func TestStageMintDriver_ImplementsMintDriver(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var _ mintDriver = d
+	var _ = d
 }
 
 // --- buildStageMintDriver tests ---

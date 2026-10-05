@@ -239,7 +239,7 @@ func TestGivenRepositoryAgentSettings_WritesEntriesAndSnapshotsAgents(t *testing
 	assert.Equal(t, filepath.Join(".fullsend", "config.yaml"), scmDriver.lastPath)
 	written, err := config.ParsePerRepoConfig(scmDriver.lastContent)
 	require.NoError(t, err)
-	assert.Equal(t, "dummy", written.(config.PerRepoConfigReader).ConfigRuntime(), "repo-wide key untouched")
+	assert.Equal(t, "dummy", written.ConfigRuntime(), "repo-wide key untouched")
 	lint, ok := config.AgentSettingsFor(written.AgentEntries(), "lint")
 	require.True(t, ok)
 	assert.Equal(t, config.AgentEntry{Source: "harness/lint.yaml", Effort: "high", Model: "haiku"}, lint, "settings land on the sourced entry")

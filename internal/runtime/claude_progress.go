@@ -207,7 +207,6 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 		// per-message token tracking for throttled TokensEvent
 		totalInput       int
 		totalOutput      int
-		msgReasoning     int // per-message thinking tokens (reset on message_start)
 		totalCacheRead   int
 		totalCacheWrite  int
 		lastEmittedTotal int
@@ -390,7 +389,6 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 
 					totalInput = msg.Message.Usage.InputTokens
 					totalOutput = 0
-					msgReasoning = 0
 					totalCacheRead = msg.Message.Usage.CacheReadInputTokens
 					totalCacheWrite = msg.Message.Usage.CacheCreationInputTokens
 				}
@@ -406,7 +404,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				}
 				if err := json.Unmarshal(wrapper.Event, &md); err == nil && md.Usage.OutputTokens > 0 {
 					totalOutput = md.Usage.OutputTokens
-					msgReasoning = md.Usage.OutputTokensDetails.ThinkingTokens
+					msgReasoning := md.Usage.OutputTokensDetails.ThinkingTokens
 					totalReasoning += msgReasoning
 					total := cumulativeInput + totalInput + cumulativeOutput + totalOutput +
 						msgReasoning + cumulativeCacheRead + totalCacheRead + cumulativeCacheWrite + totalCacheWrite
