@@ -181,6 +181,10 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 		// .env is agent-writable; re-pin the runner-owned config locations
 		// after it so a rewritten .env cannot move OpenCode's config dir out
 		// from under the guards (mirrors pi_run.go:394 and codex_run.go:313).
+		// openCodeTrustedEnvRestore first unsets dangerous OPENCODE_* vars an
+		// agent could inject (OPENCODE_PERMISSION, OPENCODE_CONFIG, etc.) then
+		// restores OPENCODE_CONFIG_CONTENT and GOOGLE_APPLICATION_CREDENTIALS
+		// from the runner-pinned readonly copies.
 		"&& "+strings.Join(r.EnvExports(), " && "),
 		"&& "+openCodeTrustedEnvRestore(),
 		`&& "$`+openCodePrintfVar+`" '%s' `+shellQuote(configJSON)+" > "+shellQuote(configPath),
@@ -308,8 +312,22 @@ func openCodeTrustedEnvPin(env openCodeTrustedEnv) string {
 		openCodeCredentialsPathPinVar + "=" + shellQuote(env.CredentialsPath)
 }
 
+// openCodeDangerousEnvVars lists OpenCode environment variables the runner
+// does not own that could widen the tool-permission policy if left in the
+// process environment after sourcing the agent-writable .env. They are
+// unset as part of the trusted-env restore step (CWE-15). Keep in sync
+// with upstream config/config.ts (Flag.OPENCODE_PERMISSION, OPENCODE_CONFIG,
+// OPENCODE_TUI_CONFIG) and packages/opencode/src/plugin (OPENCODE_DISABLE_DEFAULT_PLUGINS).
+var openCodeDangerousEnvVars = []string{
+	"OPENCODE_PERMISSION",
+	"OPENCODE_CONFIG",
+	"OPENCODE_TUI_CONFIG",
+	"OPENCODE_DISABLE_DEFAULT_PLUGINS",
+}
+
 func openCodeTrustedEnvRestore() string {
-	return `export OPENCODE_CONFIG_CONTENT="$` + openCodeConfigContentPinVar +
+	return "unset " + strings.Join(openCodeDangerousEnvVars, " ") +
+		` && export OPENCODE_CONFIG_CONTENT="$` + openCodeConfigContentPinVar +
 		`" GOOGLE_APPLICATION_CREDENTIALS="$` + openCodeCredentialsPathPinVar + `"`
 }
 

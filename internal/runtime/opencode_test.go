@@ -139,6 +139,72 @@ func TestOpenCodePermissionRecord(t *testing.T) {
 		}
 	}
 	assert.Equal(t, "deny", openCodePermissionRecord([]string{"Read"})["skill"])
+
+	// Write maps to the "edit" permission key (OpenCode's write tool checks
+	// "edit", not "write"; see write.ts:55 and permission/index.ts).
+	rec = openCodePermissionRecord([]string{"Write", "Read"})
+	assert.Equal(t, "allow", rec["edit"], "Write should set edit to allow")
+	assert.Equal(t, "deny", rec["write"], "the write key stays denied — no Claude tool maps to it")
+	assert.Equal(t, []string{"edit", "read"}, openCodeToolNamesSorted(rec))
+}
+
+func TestIntersectPermissionRecord(t *testing.T) {
+	t.Parallel()
+
+	// Agent requests bash+read+edit, but trusted policy denies edit.
+	rec := openCodePermissionRecord([]string{"Bash", "Read", "Edit"})
+	assert.Equal(t, "allow", rec["bash"])
+	assert.Equal(t, "allow", rec["read"])
+	assert.Equal(t, "allow", rec["edit"])
+
+	trustedPolicy := map[string]string{
+		"bash": "allow", "read": "allow", "edit": "deny", "*": "deny",
+	}
+	capped := intersectPermissionRecord(rec, trustedPolicy)
+	assert.Equal(t, "allow", capped["bash"], "bash allowed by policy, stays allow")
+	assert.Equal(t, "allow", capped["read"], "read allowed by policy, stays allow")
+	assert.Equal(t, "deny", capped["edit"], "edit denied by policy, capped to deny")
+	// Tools already denied stay denied.
+	assert.Equal(t, "deny", capped["write"], "write was already deny")
+
+	// Wildcard fallback: policy with only "*": "deny" caps everything.
+	rec2 := openCodePermissionRecord([]string{"Bash", "Read", "Edit", "Write"})
+	wildcardPolicy := map[string]string{"*": "deny"}
+	capped2 := intersectPermissionRecord(rec2, wildcardPolicy)
+	for _, id := range openCodeAllToolIDs {
+		assert.Equal(t, "deny", capped2[id], "all tools capped to deny by wildcard")
+	}
+
+	// Empty rec (unrestricted agent) → stays empty (no intersection).
+	emptyRec := openCodePermissionRecord(nil)
+	result := intersectPermissionRecord(emptyRec, trustedPolicy)
+	assert.Empty(t, result, "unrestricted agent stays empty")
+
+	// Nil trusted policy → no-op.
+	rec3 := openCodePermissionRecord([]string{"Bash"})
+	result3 := intersectPermissionRecord(rec3, nil)
+	assert.Equal(t, "allow", result3["bash"], "nil policy means no capping")
+}
+
+func TestParseTrustedPermissionPolicy(t *testing.T) {
+	t.Parallel()
+
+	// Simple string actions.
+	policy := parseTrustedPermissionPolicy(`{"permission":{"bash":"allow","edit":"deny","*":"deny"}}`)
+	assert.Equal(t, "allow", policy["bash"])
+	assert.Equal(t, "deny", policy["edit"])
+	assert.Equal(t, "deny", policy["*"])
+
+	// Pattern map collapsed to "deny".
+	policy2 := parseTrustedPermissionPolicy(`{"permission":{"bash":{"gh *":"allow","*":"deny"}}}`)
+	assert.Equal(t, "deny", policy2["bash"], "pattern map collapsed to deny")
+
+	// Invalid JSON → nil.
+	assert.Nil(t, parseTrustedPermissionPolicy("not json"))
+
+	// Missing permission key → empty map (no-op for intersection).
+	policy3 := parseTrustedPermissionPolicy(`{"provider":{}}`)
+	assert.Empty(t, policy3)
 }
 
 func TestOpenCodeAgentMarkdown(t *testing.T) {
@@ -151,7 +217,11 @@ func TestOpenCodeAgentMarkdown(t *testing.T) {
 		Tools:       []string{"Bash", "Read"},
 		Body:        "You are the triage agent.",
 	}
-	md, err := openCodeAgentMarkdown("triage", def)
+	// Trusted policy allows bash and read but denies everything else.
+	trustedPolicy := map[string]string{
+		"bash": "allow", "read": "allow", "*": "deny",
+	}
+	md, err := openCodeAgentMarkdown("triage", def, trustedPolicy)
 	require.NoError(t, err)
 	s := string(md)
 	assert.True(t, strings.HasPrefix(s, "---\n"), "starts with frontmatter fence")
@@ -293,19 +363,29 @@ func TestOpenCodeHooksGuardUsesUnshadowableCommands(t *testing.T) {
 
 func TestOpenCodeTrustedEnvRestore(t *testing.T) {
 	envFile := filepath.Join(t.TempDir(), ".env")
-	require.NoError(t, os.WriteFile(envFile, []byte("export OPENCODE_CONFIG_CONTENT=evil\nunset GOOGLE_APPLICATION_CREDENTIALS\n"), 0o644))
+	require.NoError(t, os.WriteFile(envFile, []byte(
+		"export OPENCODE_CONFIG_CONTENT=evil\n"+
+			"unset GOOGLE_APPLICATION_CREDENTIALS\n"+
+			// An agent-written .env could inject OPENCODE_PERMISSION to widen
+			// the trusted policy (CWE-15). Verify restore clears it.
+			`export OPENCODE_PERMISSION='{"edit":"allow","bash":"allow"}'`+"\n"+
+			`export OPENCODE_CONFIG=/tmp/hostile.json`+"\n",
+	), 0o644))
 
 	trustedEnv := openCodeTrustedEnv{
 		ConfigContent:   `{"permission":{"*":"deny"}}`,
 		CredentialsPath: "/runner/adc.json",
 	}
 	command := openCodeTrustedEnvPin(trustedEnv) + " && . " + shellQuote(envFile) + " && " + openCodeTrustedEnvRestore() +
-		` && printf '%s\n%s\n' "$OPENCODE_CONFIG_CONTENT" "$GOOGLE_APPLICATION_CREDENTIALS"`
+		` && printf '%s\n%s\n%s\n%s\n' "$OPENCODE_CONFIG_CONTENT" "$GOOGLE_APPLICATION_CREDENTIALS" "$OPENCODE_PERMISSION" "$OPENCODE_CONFIG"`
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", out)
-	assert.Equal(t, "{\"permission\":{\"*\":\"deny\"}}\n/runner/adc.json", strings.TrimSpace(string(out)))
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	require.Len(t, lines, 2, "only two non-empty lines expected (pinned values); dangerous vars must be empty")
+	assert.Equal(t, `{"permission":{"*":"deny"}}`, lines[0], "OPENCODE_CONFIG_CONTENT must be restored from pin")
+	assert.Equal(t, "/runner/adc.json", lines[1], "GOOGLE_APPLICATION_CREDENTIALS must be restored from pin")
 }
 
 func TestOpenCodeReadTrustedEnvErrors(t *testing.T) {

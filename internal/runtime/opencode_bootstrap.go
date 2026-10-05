@@ -117,7 +117,22 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("creating opencode config dirs: %w", err)
 	}
 
-	agentMD, err := openCodeAgentMarkdown(agentName, def)
+	// Preflight and read the trusted environment before generating the agent
+	// definition so the trusted permission policy is available for
+	// intersection with the agent-level permission record. This ensures
+	// agent frontmatter can only narrow, never widen, the global gate
+	// (OpenCode's findLast merge means agent rules evaluated after global
+	// rules would otherwise win; see permission/index.ts:28-32).
+	if err := openCodePreflightVersion(sandboxName); err != nil {
+		return err
+	}
+	trustedEnv, err := openCodeReadTrustedEnv(sandboxName)
+	if err != nil {
+		return err
+	}
+
+	trustedPolicy := parseTrustedPermissionPolicy(trustedEnv.ConfigContent)
+	agentMD, err := openCodeAgentMarkdown(agentName, def, trustedPolicy)
 	if err != nil {
 		return err
 	}
@@ -152,13 +167,6 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 	// plugin adapter path is reserved at openCodeHooksExtensionPath(). Nothing
 	// is installed here.
 
-	if err := openCodePreflightVersion(sandboxName); err != nil {
-		return err
-	}
-	trustedEnv, err := openCodeReadTrustedEnv(sandboxName)
-	if err != nil {
-		return err
-	}
 	recordOpenCodeTrustedEnv(sandboxName, trustedEnv)
 	return nil
 }
@@ -182,12 +190,18 @@ type openCodeAgentFrontmatter struct {
 // openCodeAgentMarkdown renders the translated agent definition as a markdown
 // file with YAML-compatible JSON frontmatter (OpenCode parses frontmatter as
 // YAML; JSON is valid YAML) followed by the Claude body as the prompt.
-func openCodeAgentMarkdown(agentName string, def *piAgentDef) ([]byte, error) {
+//
+// trustedPolicy is the parsed permission section from OPENCODE_CONFIG_CONTENT.
+// The agent-level permission record is intersected with the trusted policy so
+// that agent frontmatter can only narrow, never widen, the global gate.
+func openCodeAgentMarkdown(agentName string, def *piAgentDef, trustedPolicy map[string]string) ([]byte, error) {
+	rec := openCodePermissionRecord(def.Tools)
+	rec = intersectPermissionRecord(rec, trustedPolicy)
 	fm := openCodeAgentFrontmatter{
 		Description: def.Description,
 		Mode:        "primary",
 		Model:       def.Model,
-		Permission:  openCodePermissionRecord(def.Tools),
+		Permission:  rec,
 	}
 	front, err := json.MarshalIndent(fm, "", "  ")
 	if err != nil {
@@ -222,9 +236,10 @@ var openCodeAllToolIDs = []string{
 // A nil claudeTools (no restriction in the agent frontmatter) returns an
 // empty map (serialised as `"permission": {}`). OpenCode treats an empty
 // permission record as "use defaults" — every tool is available, which is
-// the correct behaviour for unrestricted agents. The harness's
-// OPENCODE_CONFIG_CONTENT permission policy merges last and provides the
-// authoritative gate; the per-agent record is defense-in-depth.
+// the correct behaviour for unrestricted agents. The caller
+// (openCodeAgentMarkdown) intersects the returned record with the trusted
+// policy so the agent frontmatter can only narrow, never widen, the
+// global gate.
 func openCodePermissionRecord(claudeTools []string) map[string]string {
 	if claudeTools == nil {
 		return map[string]string{}
@@ -248,15 +263,18 @@ func openCodePermissionRecord(claudeTools []string) map[string]string {
 }
 
 // openCodeToolForClaude maps the Claude Code tool names an agent definition
-// may list to OpenCode's tool IDs (packages/opencode/src/tool: bash, read,
-// write, edit, grep, glob, webfetch, task). OpenCode's tool IDs are
+// may list to OpenCode's permission keys (packages/opencode/src/tool: bash,
+// read, edit, grep, glob, webfetch, task). OpenCode's tool IDs are
 // lowercase, like pi's. The shell tool's exposed ID is "bash"
-// (tool/shell/id.ts). Task maps to OpenCode's task (sub-agent) tool. Claude
-// tools without an OpenCode counterpart are reported as unsupported.
+// (tool/shell/id.ts). Task maps to OpenCode's task (sub-agent) tool.
+// Write maps to "edit" because OpenCode's write tool checks the "edit"
+// permission (write.ts:55, permission/index.ts groups edit/write/apply_patch
+// under "edit"). Claude tools without an OpenCode counterpart are reported
+// as unsupported.
 var openCodeToolForClaude = map[string]string{
 	"Bash":      "bash",
 	"Read":      "read",
-	"Write":     "write",
+	"Write":     "edit", // OpenCode's write tool checks the "edit" permission (write.ts:55)
 	"Edit":      "edit",
 	"MultiEdit": "edit",
 	"Grep":      "grep",
@@ -279,6 +297,63 @@ func openCodeToolNamesSorted(rec map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// parseTrustedPermissionPolicy extracts the flat tool→action map from the
+// trusted OPENCODE_CONFIG_CONTENT JSON. The config has already been validated
+// by validateOpenCodeTrustedEnv, so parse errors return an empty map (the
+// intersection becomes a no-op and the global policy still applies at
+// runtime). Pattern-map values (e.g. bash: {"gh *": "allow", "*": "deny"})
+// are collapsed to "deny" for intersection purposes — the agent frontmatter
+// cannot represent pattern maps, and the conservative choice is to not widen.
+func parseTrustedPermissionPolicy(configContent string) map[string]string {
+	var config struct {
+		Permission map[string]json.RawMessage `json:"permission"`
+	}
+	if err := json.Unmarshal([]byte(configContent), &config); err != nil {
+		return nil
+	}
+	result := make(map[string]string, len(config.Permission))
+	for tool, raw := range config.Permission {
+		var action string
+		if err := json.Unmarshal(raw, &action); err == nil {
+			result[tool] = action
+		} else {
+			// Pattern map — collapse to "deny" for intersection.
+			result[tool] = "deny"
+		}
+	}
+	return result
+}
+
+// intersectPermissionRecord caps the agent-level permission record so that any
+// tool the trusted policy denies stays denied in the agent frontmatter.
+// OpenCode's permission/index.ts evaluate uses findLast, so without this step
+// the agent rules (evaluated after the global policy) would win. The
+// intersection makes the global policy the ceiling:
+//   - If the trusted policy says "deny" for a tool, the agent gets "deny".
+//   - If the trusted policy says "allow" (or is absent), the agent's value
+//     is preserved (it can narrow to "deny" but not widen to "allow" if the
+//     tool isn't in its allowlist).
+//   - The wildcard "*" entry in the trusted policy applies to any tool not
+//     explicitly listed in the policy.
+//
+// An empty rec (unrestricted agent) is left empty — the global policy applies.
+func intersectPermissionRecord(rec map[string]string, trustedPolicy map[string]string) map[string]string {
+	if len(rec) == 0 || len(trustedPolicy) == 0 {
+		return rec
+	}
+	for tool, agentAction := range rec {
+		policyAction, ok := trustedPolicy[tool]
+		if !ok {
+			// Fall back to the wildcard entry.
+			policyAction = trustedPolicy["*"]
+		}
+		if policyAction == "deny" && agentAction == "allow" {
+			rec[tool] = "deny"
+		}
+	}
+	return rec
 }
 
 // openCodeInstructionsConfig returns the JSON body of a runner-owned

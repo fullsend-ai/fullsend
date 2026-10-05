@@ -32,7 +32,7 @@ if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
     "opencode --version") echo "0.1.0"; exit 0 ;;
-    *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"*":"deny"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
+    *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"bash":"allow","read":"allow","glob":"allow","grep":"allow","skill":"allow","*":"deny"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
   esac
   exit 0
 fi
@@ -91,7 +91,7 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 	assert.Contains(t, logStr, cfg+"/skills/")
 	trustedEnv, ok := lookupOpenCodeTrustedEnv("sb")
 	require.True(t, ok)
-	assert.Equal(t, `{"permission":{"*":"deny"}}`, trustedEnv.ConfigContent)
+	assert.Equal(t, `{"permission":{"bash":"allow","read":"allow","glob":"allow","grep":"allow","skill":"allow","*":"deny"}}`, trustedEnv.ConfigContent)
 	assert.Equal(t, "/runner/adc.json", trustedEnv.CredentialsPath)
 }
 

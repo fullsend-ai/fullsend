@@ -9,11 +9,12 @@ import (
 // OpenCodeRuntime drives the OpenCode agent runtime (anomalyco/opencode, CLI
 // `opencode`). Bootstrap (opencode_bootstrap.go) translates the Claude-style
 // agent definition into an OpenCode agent under the runner-owned config dir
-// and injects the Vertex provider + permission-deny config; Run
-// (opencode_run.go) executes `opencode run --format json` and normalizes the
-// ndjson stream via parseOpenCodeStream (opencode_progress.go); transcripts
-// are the interim tee'd output.jsonl (opencode_transcript.go). Selected per
-// org/repo with `runtime: opencode` (#6035, unbound-force#510).
+// and validates the harness-delivered Vertex provider + permission policy
+// (OPENCODE_CONFIG_CONTENT); Run (opencode_run.go) executes
+// `opencode run --format json` and normalizes the ndjson stream via
+// parseOpenCodeStream (opencode_progress.go); transcripts are the interim
+// tee'd output.jsonl (opencode_transcript.go). Selected per repo or per agent
+// with `runtime: opencode` (#6035, unbound-force#510).
 //
 // Unlike pi, OpenCode reads AGENTS.md natively (no CLAUDE.md bridge — it does
 // not implement ContextBridger). Its runner-owned config is pointed at by
@@ -58,8 +59,15 @@ func (OpenCodeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 //   - OPENCODE_CONFIG_DIR points config discovery at the runner-owned dir so
 //     the workspace .opencode/ is never on the search path.
 //   - OPENCODE_CONFIG_CONTENT carries the Vertex provider registration plus the
-//     tool-permission policy the harness delivers; it merges last
-//     (config/config.ts:468), so it wins over any agent-authored repo config.
+//     tool-permission policy the harness delivers. It provides the global
+//     defaults, but agent-level permission records (emitted in the agent
+//     frontmatter by Bootstrap) are evaluated after it and can override via
+//     findLast semantics (permission/index.ts:28-32). Bootstrap therefore
+//     intersects the agent record with the trusted policy so the agent
+//     frontmatter can only narrow, never widen, the global gate.
+//     Additionally, openCodeTrustedEnvRestore unsets OPENCODE_PERMISSION and
+//     other dangerous env vars after sourcing .env to prevent agent-written
+//     overrides from widening the policy at the env-var layer.
 //     IMPORTANT: a non-interactive `opencode run` (Run, below) has no TTY, so
 //     opencode auto-REJECTS every permission request that is not pre-resolved
 //     by config (run.ts:810-819). The injected policy must therefore ALLOW the
@@ -87,7 +95,7 @@ func (r OpenCodeRuntime) EnvExports() []string {
 		// opencode.json cannot widen tool permissions. The run prelude
 		// re-attaches workspace AGENTS.md via config.instructions.
 		"export OPENCODE_DISABLE_PROJECT_CONFIG=true",
-		"export OPENCODE_CONFIG_CONTENT",        // re-export: Vertex provider + permission denials (merges last)
+		"export OPENCODE_CONFIG_CONTENT",        // re-export: Vertex provider + permission policy (see note below)
 		"export GOOGLE_APPLICATION_CREDENTIALS", // re-export: WIF credential file
 	}
 }
