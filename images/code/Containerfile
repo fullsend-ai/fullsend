@@ -131,6 +131,25 @@ RUN case "$TARGETARCH" in \
 # See images/sandbox/Containerfile for the pinned versions.
 
 # ---------------------------------------------------------------------------
+# Pre-commit hook cache — pre-provision at image-build time so agents don't
+# need outbound git-clone at runtime. The sandbox egress policy blocks raw
+# git-over-HTTPS fetches (HTTP 403), causing every agent run to fall back to
+# per-hook manual reimplementation (#7298). Baking the environments eliminates
+# that recurring cost and keeps the hook list authoritative via
+# .pre-commit-config.yaml rather than agent memory.
+#
+# PRE_COMMIT_HOME is placed under /sandbox (sandbox-user-owned) so the agent
+# can extend it at runtime when new hook revs appear. The seed config covers
+# only external repos; local hooks are repo-specific (gofmt, go vet, lychee,
+# custom scripts) and are installed on first run from the workspace.
+#
+# Build-time Go (for gitleaks, actionlint) and Python (for all other hooks)
+# are both available in this image layer.
+ENV PRE_COMMIT_HOME="/sandbox/pre-commit-cache"
+RUN install -d -o sandbox -g sandbox -m 0755 "${PRE_COMMIT_HOME}"
+COPY pre-commit-seed.yaml /tmp/pre-commit-seed.yaml
+
+# ---------------------------------------------------------------------------
 # scan-secrets — gitleaks wrapper used by the code-implementation skill.
 # Baked into the image so the agent has it at /usr/local/bin without
 # needing host_files or network access. /usr is read-only in the
@@ -154,3 +173,27 @@ ENV GOPATH="/sandbox/go" \
 # allowing go build and go test to write the module cache.
 ARG GOPLS_VERSION=0.22.0
 RUN go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" && gopls version
+
+# ---------------------------------------------------------------------------
+# golangci-lint — Go linter aggregator. Baked in so agents can run
+# `golangci-lint run` without a runtime install that would time out under
+# the sandbox egress policy (#7298). Installed as sandbox user → lands in
+# /sandbox/go/bin (already on PATH after system paths, matching the gopls
+# placement above). To update: bump GOLANGCI_LINT_VERSION; add a renovate
+# customManagers entry in renovate.json mirroring the gopls pattern if
+# automated bumps are desired.
+ARG GOLANGCI_LINT_VERSION=1.64.8
+RUN go install "github.com/golangci/golangci-lint/cmd/golangci-lint@v${GOLANGCI_LINT_VERSION}" \
+    && golangci-lint --version
+
+# ---------------------------------------------------------------------------
+# Pre-populate pre-commit hook environments from the seed config.
+# pre-commit install-hooks clones each external repo and builds its Python
+# venv or Go binary into PRE_COMMIT_HOME. A throwaway git repo is required
+# because pre-commit asserts it is running inside a git working tree.
+# The seed config and temp repo are deleted after the cache is populated.
+RUN git init /tmp/pre-commit-seed-repo \
+    && cd /tmp/pre-commit-seed-repo \
+    && pre-commit install-hooks -c /tmp/pre-commit-seed.yaml \
+    && cd / \
+    && rm -rf /tmp/pre-commit-seed-repo /tmp/pre-commit-seed.yaml
