@@ -413,6 +413,58 @@ func (rc runConfig) backend(agentName string) (agentruntime.Backend, string, err
 	}
 }
 
+func (rc runConfig) runtimeConfigured(agentName string) bool {
+	if rc.perRepo != nil {
+		if hasExplicitRepoRuntime(rc.source) {
+			return true
+		}
+		for _, entry := range rc.perRepo.AgentEntries() {
+			if entry.DerivedName() == agentName && entry.Runtime != "" {
+				return true
+			}
+		}
+	}
+	if rc.orgData != nil {
+		var raw struct {
+			Defaults struct {
+				Runtime string `yaml:"runtime"`
+			} `yaml:"defaults"`
+		}
+		_ = yaml.Unmarshal(rc.orgData, &raw)
+		if raw.Defaults.Runtime != "" {
+			return true
+		}
+		if cfg, err := config.ParseOrgConfig(rc.orgData); err == nil {
+			for _, entry := range cfg.AgentEntries() {
+				if entry.DerivedName() == agentName && entry.Runtime != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasExplicitRepoRuntime(configPath string) bool {
+	if configPath == "" {
+		return false
+	}
+	paths := []string{configPath, filepath.Join(filepath.Dir(configPath), config.BaseConfigFile)}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var raw struct {
+			Runtime string `yaml:"runtime"`
+		}
+		if yaml.Unmarshal(data, &raw) == nil && strings.TrimSpace(raw.Runtime) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // agentSettings returns the effective agents: entry for agentName from the
 // loaded config, after validating every entry, so a mistyped entry (a
 // name-only entry for "coder") fails the run instead of silently running
@@ -990,6 +1042,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		return runtimeErr
 	}
+	runtimeProvisioning := h.Entrypoint == nil || overrides.runtime != "" || runCfg.runtimeConfigured(agentName)
+	entrypointWithoutRuntime := h.Entrypoint != nil && !runtimeProvisioning
+	if h.Entrypoint != nil && runtimeProvisioning && runtimeBackend.Runtime.Name() != "claude" {
+		return fmt.Errorf("entrypoint runtime %q is not supported yet; use Claude or omit runtime", runtimeBackend.Runtime.Name())
+	}
 
 	// Apply the agents: entry's model/effort for this agent to the composed
 	// harness: flag > env > agents: entry > harness. The same loaded config
@@ -1044,14 +1101,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// *parent's own call* needs (runInferenceProvider, just below) and must
 	// stay parent-only: a Vertex parent with an OpenAI persona still needs
 	// its own Vertex ADC validated, regardless of what its children run on.
-	parentNeedsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
-	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider)
+	parentNeedsOpenAIProvider := !entrypointWithoutRuntime && agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
+	provider := runProviderNone
+	if !entrypointWithoutRuntime {
+		provider = runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider)
+	}
 	// openAIChildren are the configured pi children (subagents.<persona>,
 	// subagents.default, a persona's frontmatter model:) that resolve to
 	// the openai provider. They need the run-scoped OpenAI provider even
 	// when the parent does not (#7981), so they widen the provider gate
 	// below; the parent's own credential path above stays parent-only.
-	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	var openAIChildren []agentruntime.OpenAIChild
+	if !entrypointWithoutRuntime {
+		openAIChildren = agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	}
 	needsOpenAIProvider := parentNeedsOpenAIProvider || len(openAIChildren) > 0
 	// Prepare credentials before env validation and expansion, so harness
 	// references to GOOGLE_APPLICATION_CREDENTIALS resolve to the prepared file.
@@ -1068,9 +1131,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Inference credential validation failed")
 			return err
 		}
-	} else if err := validateRequiredGCPHostFile(h); err != nil {
-		printer.StepFail("Inference credential validation failed")
-		return err
+	} else if provider != runProviderNone {
+		if err := validateRequiredGCPHostFile(h); err != nil {
+			printer.StepFail("Inference credential validation failed")
+			return err
+		}
 	}
 
 	// Expand env vars in runner_env values. FULLSEND_DIR is injected so
@@ -1125,6 +1190,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
 		return fmt.Errorf("validating files: %w", err)
+	}
+	var entrypointArgv []string
+	var entrypointBytes []byte
+	if h.Entrypoint != nil {
+		var sandboxEnv map[string]string
+		if h.Env != nil {
+			sandboxEnv = h.Env.Sandbox
+		}
+		entrypointArgv, err = h.ResolveEntrypointCommand(sandboxEnv)
+		if err != nil {
+			return err
+		}
+		entrypointBytes, err = os.ReadFile(h.Entrypoint.Command[0])
+		if err != nil {
+			return fmt.Errorf("reading entrypoint executable: %w", err)
+		}
 	}
 	// Ensure scripts are executable. The GitHub Contents API does not
 	// preserve file permissions, so scripts written via admin install
@@ -1212,7 +1293,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		printer.KeyValue("Fallback models", withSource(strings.Join(fallbacks, ", "), overrides.fallbackSource))
 	}
-	printer.KeyValue("Runtime", fmt.Sprintf("%s (from %s)", runtimeBackend.Runtime.Name(), runtimeConfigSource))
+	if entrypointWithoutRuntime {
+		printer.KeyValue("Runtime", "none (script entrypoint)")
+	} else {
+		printer.KeyValue("Runtime", fmt.Sprintf("%s (from %s)", runtimeBackend.Runtime.Name(), runtimeConfigSource))
+	}
 	if h.Image != "" {
 		printer.KeyValue("Image", h.Image)
 	}
@@ -2079,22 +2164,135 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.SecurityEnabled() {
 		// Scan all runtime content before upload so warnings surface together.
 		// Host files could change between scan and upload; the runner owns the host FS here.
-		if err := scanRuntimeContent(boot, h.FailModeClosed()); err != nil {
+		var scanErr error
+		if h.Entrypoint != nil {
+			scanErr = scanEntrypointContent(boot, h.Entrypoint.Command[0], h.FailModeClosed())
+		} else {
+			scanErr = scanRuntimeContent(boot, h.FailModeClosed())
+		}
+		if scanErr != nil {
 			printer.StepFail("Failed to bootstrap sandbox")
-			return err
+			return scanErr
 		}
 	}
 	if err := bootstrapCommon(sandboxName, fullsendBinary, h); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
-	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(), fetchEnvVal); err != nil {
+	var runtimeEnvExports []string
+	if runtimeProvisioning {
+		runtimeEnvExports = rt.EnvExports()
+	}
+	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, runtimeEnvExports, fetchEnvVal); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
-	if err := rt.Bootstrap(boot); err != nil {
-		printer.StepFail("Failed to bootstrap sandbox")
-		return err
+	if h.Entrypoint != nil && eventFile != "" {
+		const remoteEvent = sandbox.SandboxWorkspace + "/event.json"
+		if err := sandbox.UploadFile(sandboxName, eventFile, remoteEvent); err != nil {
+			return fmt.Errorf("uploading normalized event for entrypoint: %w", err)
+		}
+		if _, _, _, err := sandbox.Exec(sandboxName, "printf '\\nexport FULLSEND_EVENT_FILE=%s\\n' "+shellQuote(remoteEvent)+" >> "+sandbox.SandboxWorkspace+"/.env", 10*time.Second); err != nil {
+			return fmt.Errorf("configuring entrypoint event input: %w", err)
+		}
+	}
+	var claudeEntrypointIntegrity *agentruntime.EntrypointIntegrity
+	if h.Entrypoint != nil {
+		const remoteEntrypoint = sandbox.SandboxWorkspace + "/.fullsend-entrypoint/run"
+		if _, _, _, err := sandbox.Exec(sandboxName, "mkdir -p "+sandbox.SandboxWorkspace+"/.fullsend-entrypoint", 10*time.Second); err != nil {
+			return fmt.Errorf("creating entrypoint directory in sandbox: %w", err)
+		}
+		tmp, err := os.CreateTemp("", "fullsend-entrypoint-*")
+		if err != nil {
+			return fmt.Errorf("staging entrypoint executable: %w", err)
+		}
+		if _, err = tmp.Write(entrypointBytes); err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+			return fmt.Errorf("staging entrypoint executable: %w", err)
+		}
+		if err = tmp.Close(); err != nil {
+			os.Remove(tmp.Name())
+			return fmt.Errorf("staging entrypoint executable: %w", err)
+		}
+		defer os.Remove(tmp.Name())
+		if err := sandbox.UploadFile(sandboxName, tmp.Name(), remoteEntrypoint); err != nil {
+			return fmt.Errorf("uploading entrypoint executable: %w", err)
+		}
+		if _, _, _, err := sandbox.Exec(sandboxName, "chmod 755 "+remoteEntrypoint, 10*time.Second); err != nil {
+			return fmt.Errorf("making entrypoint executable: %w", err)
+		}
+		entrypointArgv[0] = remoteEntrypoint
+	}
+	if runtimeProvisioning {
+		if err := rt.Bootstrap(boot); err != nil {
+			printer.StepFail("Failed to bootstrap sandbox")
+			return err
+		}
+	}
+	if h.Entrypoint != nil && runtimeProvisioning {
+		var pluginDirs []string
+		for _, p := range boot.Plugins() {
+			if p.Kind == pluginformat.KindClaude {
+				pluginDirs = append(pluginDirs, rt.ConfigDir()+"/plugins/"+p.SandboxName())
+			}
+		}
+		hooks := ""
+		securityEnv := map[string]string{}
+		baseFiles := map[string][]byte{
+			sandbox.SandboxWorkspace + "/.fullsend-entrypoint/run": entrypointBytes,
+		}
+		exactDirs := map[string][]string{
+			sandbox.SandboxWorkspace + "/.fullsend-entrypoint": {"run"},
+		}
+		if h.SecurityEnabled() {
+			hooks = security.SandboxHooksSettings
+			hookConfig := security.SandboxHookConfigFromHarness(h).WithForgeEgressEntry(forgeEgressEntry)
+			securityEnv, err = agentruntime.EntrypointSecurityEnv(sandboxName, hookConfig)
+			if err != nil {
+				return fmt.Errorf("capturing trusted Claude hook environment: %w", err)
+			}
+			hookFiles := security.HookFiles(hookConfig)
+			for name, content := range hookFiles {
+				baseFiles[security.SandboxHooksDir+"/"+name] = content
+				exactDirs[security.SandboxHooksDir] = append(exactDirs[security.SandboxHooksDir], name)
+			}
+			hooksJSON, hooksErr := security.GenerateHooksConfig(hookConfig)
+			if hooksErr != nil {
+				return fmt.Errorf("generating trusted Claude hooks settings: %w", hooksErr)
+			}
+			baseFiles[security.SandboxHooksSettings] = hooksJSON
+			exactDirs[security.SandboxHooksDir] = append(exactDirs[security.SandboxHooksDir], "hooks.json")
+		}
+		baseIntegrity := agentruntime.NewEntrypointIntegrity(baseFiles, exactDirs, sandbox.SandboxWorkspace+"/bin/fullsend-claude")
+		content := agentruntime.ClaudeEntrypointHelper(h.Model, h.Effort, hooks, pluginDirs, configModelAliases, baseIntegrity.GuardCommand(false), securityEnv)
+		integrityFiles := make(map[string][]byte, len(baseFiles)+1)
+		for path, bytes := range baseFiles {
+			integrityFiles[path] = bytes
+		}
+		const remoteHelper = sandbox.SandboxWorkspace + "/bin/fullsend-claude"
+		integrityFiles[remoteHelper] = content
+		claudeEntrypointIntegrity = agentruntime.NewEntrypointIntegrity(integrityFiles, exactDirs, remoteHelper)
+		tmp, err := os.CreateTemp("", "fullsend-claude-helper-*")
+		if err != nil {
+			return fmt.Errorf("creating Claude helper: %w", err)
+		}
+		if _, err = tmp.Write(content); err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+			return fmt.Errorf("writing Claude helper: %w", err)
+		}
+		if err = tmp.Close(); err != nil {
+			os.Remove(tmp.Name())
+			return fmt.Errorf("closing Claude helper: %w", err)
+		}
+		defer os.Remove(tmp.Name())
+		if err := sandbox.UploadFile(sandboxName, tmp.Name(), remoteHelper); err != nil {
+			return fmt.Errorf("uploading Claude helper: %w", err)
+		}
+		if _, _, _, err := sandbox.Exec(sandboxName, "chmod 755 "+remoteHelper, 10*time.Second); err != nil {
+			return fmt.Errorf("making Claude helper executable: %w", err)
+		}
 	}
 	printer.StepDone(fmt.Sprintf("Sandbox bootstrapped (%.1fs)", time.Since(bootstrapStart).Seconds()))
 
@@ -2444,26 +2642,49 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if h.SecurityEnabled() {
 			hooksSettings = security.SandboxHooksSettings
 		}
-		exitCode, runErr := rt.Run(agentCtx, agentruntime.RunParams{
-			SandboxName:       sandboxName,
-			AgentBaseName:     agentBaseName,
-			Model:             h.Model,
-			Effort:            h.Effort,
-			FallbackModels:    overrides.fallbackModels,
-			RepoDir:           remoteRepositoryDir,
-			FullsendDir:       absFullsendDir,
-			PluginDirs:        pluginDirs,
-			Plugins:           boot.Plugins(),
-			Debug:             debug,
-			HooksSettingsPath: hooksSettings,
-			Timeout:           timeout,
-			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
-			Prompt:            agentPrompt,
-			Forge:             forgePlatform,
-			ModelAliases:      configModelAliases,
-			ForgeClient:       playbackForgeClient,
-			OnEvent:           iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans),
-		}, printer, agentStart, &metrics)
+		var exitCode int
+		var runErr error
+		if h.Entrypoint != nil {
+			if claudeEntrypointIntegrity != nil {
+				runErr = claudeEntrypointIntegrity.Check(agentCtx, sandboxName)
+				if runErr != nil {
+					exitCode = 97
+				}
+			}
+			if runErr == nil {
+				exitCode, runErr = agentruntime.RunEntrypoint(agentCtx, sandboxName, remoteRepositoryDir, entrypointArgv, h.Entrypoint.StreamFormat, timeout, filepath.Join(iterDir, "output.jsonl"), printer, iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans), &metrics)
+			}
+			if claudeEntrypointIntegrity != nil {
+				if checkErr := claudeEntrypointIntegrity.Check(agentCtx, sandboxName); checkErr != nil {
+					exitCode = 97
+					runErr = fmt.Errorf("post-entrypoint integrity verification failed: %w", checkErr)
+				}
+			}
+			if runErr == nil && exitCode != 0 {
+				runErr = fmt.Errorf("entrypoint exited with status %d", exitCode)
+			}
+		} else {
+			exitCode, runErr = rt.Run(agentCtx, agentruntime.RunParams{
+				SandboxName:       sandboxName,
+				AgentBaseName:     agentBaseName,
+				Model:             h.Model,
+				Effort:            h.Effort,
+				FallbackModels:    overrides.fallbackModels,
+				RepoDir:           remoteRepositoryDir,
+				FullsendDir:       absFullsendDir,
+				PluginDirs:        pluginDirs,
+				Plugins:           boot.Plugins(),
+				Debug:             debug,
+				HooksSettingsPath: hooksSettings,
+				Timeout:           timeout,
+				OutputPath:        filepath.Join(iterDir, "output.jsonl"),
+				Prompt:            agentPrompt,
+				Forge:             forgePlatform,
+				ModelAliases:      configModelAliases,
+				ForgeClient:       playbackForgeClient,
+				OnEvent:           iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans),
+			}, printer, agentStart, &metrics)
+		}
 		close(heartbeatDone)
 		lastIterElapsed = time.Since(agentStart)
 

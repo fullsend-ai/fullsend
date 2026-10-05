@@ -481,6 +481,7 @@ func writeOpenAIFullsendDirWithAgentModel(t *testing.T, pathForm bool, runtimeNa
 // the sandbox. Before this, one `providers: [openai]` entry made every run
 // on that harness require an OpenAI credential whatever the runtime.
 func TestRunAgent_OpenAIProviderSkippedWhenRuntimeDoesNotNeedIt(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	for _, tc := range []struct {
 		name        string
 		runtimeName string
@@ -507,7 +508,10 @@ func TestRunAgent_OpenAIProviderSkippedWhenRuntimeDoesNotNeedIt(t *testing.T) {
 
 			var out strings.Builder
 			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+			// A small Linux ELF avoids tar-gzipping the large race/coverage test
+			// executable while this fixture advances to the expected OpenShell
+			// stub failure after sandbox bootstrap.
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "/bin/true", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
 			// The stub cannot bootstrap an agent, so the run still fails
 			// later; what matters is that it got past the provider block.
 			require.Error(t, err)

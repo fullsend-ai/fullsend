@@ -8449,3 +8449,23 @@ func TestDoBridgeAgentsMDToHome_ReportsExitAndStderr(t *testing.T) {
 	assert.Contains(t, buf.String(), "exit 1: head: write error: No space left on device")
 	assert.NotContains(t, buf.String(), "<nil>")
 }
+
+func TestHasExplicitRepoRuntime(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("# default runtime only\n"), 0o644))
+	assert.False(t, hasExplicitRepoRuntime(configPath))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, config.BaseConfigFile), []byte("runtime: claude\n"), 0o644))
+	assert.True(t, hasExplicitRepoRuntime(configPath), "a base layer's explicit runtime is maintained")
+}
+
+func TestRunConfig_RuntimeConfigured(t *testing.T) {
+	assert.False(t, (runConfig{}).runtimeConfigured("task"))
+	perRepo, err := config.ParsePerRepoConfig([]byte("version: \"1\"\nagents:\n  - source: harness/task.yaml\n    runtime: claude\n"))
+	require.NoError(t, err)
+	rc := runConfig{perRepo: perRepo}
+	assert.True(t, rc.runtimeConfigured("task"))
+	assert.False(t, rc.runtimeConfigured("other"))
+	assert.True(t, (runConfig{orgData: []byte("version: \"1\"\ndefaults:\n  runtime: claude\n")}).runtimeConfigured("task"))
+	assert.False(t, (runConfig{orgData: []byte("version: \"1\"\n")}).runtimeConfigured("task"))
+}

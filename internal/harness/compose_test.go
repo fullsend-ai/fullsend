@@ -10033,3 +10033,22 @@ plugins:
 	require.NoError(t, h.ResolveRelativeTo(fullsendDir))
 	require.NoError(t, h.ValidateFilesExist())
 }
+
+func TestMergeBaseIntoChild_EntrypointOverridesLaunchChoice(t *testing.T) {
+	base := &Harness{Agent: "base.md"}
+	child := &Harness{Entrypoint: &Entrypoint{Command: []string{"scripts/child.sh"}}}
+	mergeBaseIntoChild(base, child)
+	assert.Empty(t, child.Agent)
+	assert.Equal(t, []string{"scripts/child.sh"}, child.Entrypoint.Command)
+
+	base = &Harness{Entrypoint: &Entrypoint{Command: []string{"scripts/base.sh"}}}
+	child = &Harness{Agent: "child.md"}
+	mergeBaseIntoChild(base, child)
+	assert.Equal(t, "child.md", child.Agent)
+	assert.Nil(t, child.Entrypoint)
+
+	base = &Harness{Entrypoint: &Entrypoint{Command: []string{"scripts/base.sh"}}}
+	child = &Harness{}
+	mergeBaseIntoChild(base, child)
+	assert.Equal(t, []string{"scripts/base.sh"}, child.Entrypoint.Command)
+}

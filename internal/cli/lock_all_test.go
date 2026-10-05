@@ -17,6 +17,14 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+func neutralizeGitHubTokenLookup(t *testing.T) {
+	t.Helper()
+	neutralizeAgentsRepoFallback(t)
+	original := ghAuthTokenFn
+	ghAuthTokenFn = func() ([]byte, error) { return nil, errGitHubTokenMissing }
+	t.Cleanup(func() { ghAuthTokenFn = original })
+}
+
 func TestLockAll_MutuallyExclusiveWithPositionalArg(t *testing.T) {
 	cmd := newLockCmd()
 	cmd.SetArgs([]string{"--fullsend-dir", t.TempDir(), "--all", "code"})
@@ -34,6 +42,7 @@ func TestLockAll_RequiresAllOrPositionalArg(t *testing.T) {
 }
 
 func TestLockAll_EmptyDirectory(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -46,6 +55,7 @@ func TestLockAll_EmptyDirectory(t *testing.T) {
 }
 
 func TestLockAll_MultipleHarnesses(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 	policyContent := []byte("sandbox: strict")
@@ -110,6 +120,7 @@ allowed_remote_resources:
 }
 
 func TestLockAll_MixedURLAndLocalHarnesses(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -162,6 +173,7 @@ allowed_remote_resources:
 }
 
 func TestLockAll_ParseFailure(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -184,6 +196,7 @@ func TestLockAll_ParseFailure(t *testing.T) {
 }
 
 func TestLockAll_YMLExtension(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -298,6 +311,7 @@ func TestResolveHarnessPath_StatError(t *testing.T) {
 }
 
 func TestLockAll_PartialProgressOnFailure(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -350,6 +364,7 @@ allowed_remote_resources:
 }
 
 func TestLockAll_InvalidForgeFlag(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(
@@ -380,6 +395,7 @@ func TestRunLock_InvalidForgeFlag(t *testing.T) {
 }
 
 func TestLockOneAgent_YMLFallback(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -398,6 +414,7 @@ func TestLockOneAgent_YMLFallback(t *testing.T) {
 }
 
 func TestLockOneAgent_StalenessCheck(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -430,6 +447,7 @@ func TestLockOneAgent_StalenessCheck(t *testing.T) {
 }
 
 func TestLockOneAgent_DualExtensionWarning(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -454,6 +472,7 @@ func TestLockOneAgent_DualExtensionWarning(t *testing.T) {
 }
 
 func TestLockAll_CorruptLockFile(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -509,6 +528,7 @@ func TestLockCmd_SingleAgentCobraDispatch(t *testing.T) {
 }
 
 func TestLockOneAgent_AllowlistViolation(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -544,6 +564,7 @@ allowed_remote_resources:
 }
 
 func TestLockOneAgent_NonexistentHarness(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -554,6 +575,7 @@ func TestLockOneAgent_NonexistentHarness(t *testing.T) {
 }
 
 func TestLockOneAgent_StatError(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	if os.Getuid() == 0 {
 		t.Skip("test requires non-root to trigger permission errors")
 	}
@@ -610,6 +632,7 @@ allowed_remote_resources:
 }
 
 func TestLockAll_SaveError(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -647,6 +670,7 @@ allowed_remote_resources:
 }
 
 func TestLockAll_WithUpdateFlag(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -694,6 +718,7 @@ allowed_remote_resources:
 }
 
 func TestLockAll_AllUpToDateMessage(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -733,6 +758,7 @@ allowed_remote_resources:
 }
 
 func TestLockAll_PrunesStaleEntry(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -787,6 +813,7 @@ allowed_remote_resources:
 }
 
 func TestLockAll_PrunesRemovedHarness(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -960,6 +987,7 @@ func TestResolveHarnessForLock_DisabledAgent(t *testing.T) {
 }
 
 func TestLockOneAgent_ConfigFallback(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// Agent only exists in config (no local harness file).
 	// lockOneAgent should resolve it from config and lock its deps.
 	agentContent := []byte("You are a coding agent.")
@@ -1013,6 +1041,7 @@ func TestLockOneAgent_ConfigFallback(t *testing.T) {
 }
 
 func TestLockAll_IncludesConfigAgents(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// Local harness directory has "local" agent.
 	// Config has "configonly" agent (local path).
 	// --all should discover both.
@@ -1045,6 +1074,7 @@ func TestLockAll_IncludesConfigAgents(t *testing.T) {
 }
 
 func TestLockAll_NoLocalHarnessesButHasConfigAgents(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// No harness/ directory at all, but config has agents.
 	// --all should still discover and process config agents.
 	dir := t.TempDir()

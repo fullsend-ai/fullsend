@@ -47,20 +47,24 @@ func (r ClaudeRuntime) EnvExports() []string {
 
 func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 	agentPath := input.AgentPath()
-	if agentPath == "" {
+	entrypointMode, ok := input.(interface{ EntrypointMode() bool })
+	if agentPath == "" && (!ok || !entrypointMode.EntrypointMode()) {
 		return fmt.Errorf("agent path is required")
 	}
-
-	agentData, err := os.ReadFile(agentPath)
-	if err != nil {
-		return fmt.Errorf("reading agent definition: %w", err)
+	var agentData []byte
+	if agentPath != "" {
+		var err error
+		agentData, err = os.ReadFile(agentPath)
+		if err != nil {
+			return fmt.Errorf("reading agent definition: %w", err)
+		}
 	}
 
 	// Validate the frontmatter name: field against the requested agent name.
 	// Claude Code resolves --agent by frontmatter name, not filename, so a
 	// mismatch means the runtime silently falls back to the default agent,
 	// producing an unconstrained run (#6764).
-	if agentName := input.AgentName(); agentName != "" {
+	if agentName := input.AgentName(); agentName != "" && len(agentData) > 0 {
 		if def, parseErr := parsePiAgent(agentData); parseErr != nil {
 			fmt.Fprintf(os.Stderr, "Agent name validation: skipped for %s: %v\n", agentPath, parseErr)
 		} else if err := validateAgentNameMatch(agentName, def.Name); err != nil {
@@ -72,9 +76,12 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 	// the runtime can load them alongside explicitly invoked skills
 	// (#6681). Whether injection alone triggers activation is pending
 	// empirical validation.
-	agentData, err = injectFrontmatterSkills(agentData, input.SkillDirs())
-	if err != nil {
-		return fmt.Errorf("injecting frontmatter skills: %w", err)
+	if len(agentData) > 0 {
+		var err error
+		agentData, err = injectFrontmatterSkills(agentData, input.SkillDirs())
+		if err != nil {
+			return fmt.Errorf("injecting frontmatter skills: %w", err)
+		}
 	}
 
 	sandboxName := input.SandboxName()
@@ -86,10 +93,11 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("creating runtime config dirs: %w", err)
 	}
 
-	agentDest := agentDestName(input.AgentName(), agentPath)
-
-	if err := uploadBytes(sandboxName, fmt.Sprintf("%s/agents/%s", configDir, agentDest), agentData); err != nil {
-		return fmt.Errorf("copying agent definition: %w", err)
+	if len(agentData) > 0 {
+		agentDest := agentDestName(input.AgentName(), agentPath)
+		if err := uploadBytes(sandboxName, fmt.Sprintf("%s/agents/%s", configDir, agentDest), agentData); err != nil {
+			return fmt.Errorf("copying agent definition: %w", err)
+		}
 	}
 
 	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {

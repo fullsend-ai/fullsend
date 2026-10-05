@@ -22,6 +22,7 @@ type harnessBootstrap struct {
 	// openAIProviderAttached is whether the run-scoped OpenAI provider was
 	// created for this run; see runtime.BootstrapInput.OpenAIProviderAttached.
 	openAIProviderAttached bool
+	entrypointMode         bool
 }
 
 type harnessBootstrapWithHooks struct {
@@ -39,6 +40,7 @@ func (b *harnessBootstrap) AgentSubagents() map[string]*string { return b.agentS
 func (b *harnessBootstrap) ParentModel() string                { return b.parentModel }
 func (b *harnessBootstrap) RepoDir() string                    { return b.repoDir }
 func (b *harnessBootstrap) OpenAIProviderAttached() bool       { return b.openAIProviderAttached }
+func (b *harnessBootstrap) EntrypointMode() bool               { return b.entrypointMode }
 
 func (b *harnessBootstrapWithHooks) SandboxHookConfig() security.SandboxHookConfig {
 	return b.hooks
@@ -80,6 +82,9 @@ func pluginInputs(specs []harness.PluginSpec) ([]runtime.PluginInput, error) {
 }
 
 func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName, forgeEgressEntry string, modelAliases map[string]string, agentSubagents map[string]*string, parentModel, repoDir string, openAIProviderAttached bool) (runtime.BootstrapInput, error) {
+	if h.Entrypoint != nil {
+		agentName = ""
+	}
 	plugins, err := pluginInputs(h.Plugins)
 	if err != nil {
 		return nil, err
@@ -95,6 +100,7 @@ func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName, forgeEgress
 		parentModel:            parentModel,
 		repoDir:                repoDir,
 		openAIProviderAttached: openAIProviderAttached,
+		entrypointMode:         h.Entrypoint != nil,
 	}
 	if !h.SecurityEnabled() {
 		return base, nil

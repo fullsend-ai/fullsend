@@ -50,6 +50,17 @@ func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 	assert.Nil(t, boot.ModelAliases(), "no per-repo overrides means no alias map")
 }
 
+func TestNewHarnessBootstrap_EntrypointModeIsAgentless(t *testing.T) {
+	h := &harness.Harness{Entrypoint: &harness.Entrypoint{Command: []string{"scripts/run.sh"}}}
+	boot, err := newHarnessBootstrap(h, "sandbox-1", "script-task", "", nil, nil, "", "/sandbox/workspace/repo", false)
+	require.NoError(t, err)
+	assert.Empty(t, boot.AgentName())
+	assert.Empty(t, boot.AgentPath())
+	mode, ok := boot.(interface{ EntrypointMode() bool })
+	require.True(t, ok)
+	assert.True(t, mode.EntrypointMode())
+}
+
 // The per-repo models.aliases map reaches the runtime through
 // BootstrapInput, which is how it lands in pi's sub-agent model table
 // (#7020); a run with overrides must carry them here, not just on

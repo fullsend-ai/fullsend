@@ -65,7 +65,92 @@ skills:
 
 	_, err := Load(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agent field is required")
+	assert.Contains(t, err.Error(), "exactly one of agent or entrypoint is required")
+}
+
+func TestEntrypointValidationAndArgumentResolution(t *testing.T) {
+	h := &Harness{Role: "triage", Entrypoint: &Entrypoint{Command: []string{"scripts/run.py", "--value", "${VALUE}", "${EMPTY}"}}}
+	require.NoError(t, h.Validate())
+	got, err := h.ResolveEntrypointCommand(map[string]string{"VALUE": "two words", "EMPTY": ""})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"scripts/run.py", "--value", "two words", ""}, got)
+	_, err = h.ResolveEntrypointCommand(map[string]string{"VALUE": "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `undefined env.sandbox variable "EMPTY"`)
+}
+
+func TestEntrypointRejectsUnsupportedParserAndLaunchCombinations(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		h    Harness
+		want string
+	}{
+		{"both choices", Harness{Agent: "agents/a.md", Entrypoint: &Entrypoint{Command: []string{"run.sh"}}, Role: "triage"}, "exactly one"},
+		{"no choice", Harness{Role: "triage"}, "exactly one"},
+		{"unsupported parser", Harness{Entrypoint: &Entrypoint{Command: []string{"run.sh"}, StreamFormat: "codex"}, Role: "triage"}, "not supported"},
+		{"empty argv", Harness{Entrypoint: &Entrypoint{}, Role: "triage"}, "non-empty executable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.h.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestLoad_RejectsTopLevelStreamFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.yaml")
+	content := "agent: agents/test.md\nrole: triage\nstream_format: claude\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "top-level stream_format")
+}
+
+func TestLoad_EntrypointRejectsUnknownFieldsAndScalarShorthand(t *testing.T) {
+	for _, content := range []string{
+		"role: triage\nentrypoint: scripts/run.sh\n",
+		"role: triage\nentrypoint:\n  command: [scripts/run.sh]\n  streamformat: claude\n",
+	} {
+		t.Run(strings.TrimSpace(content), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "bad.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+			_, err := Load(path)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestEntrypointResolveAndValidateFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.sh")
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755))
+	h := &Harness{Role: "triage", Entrypoint: &Entrypoint{Command: []string{"run.sh"}}}
+	require.NoError(t, h.Validate())
+	require.NoError(t, h.ResolveRelativeTo(dir))
+	require.NoError(t, h.ValidateFilesExist())
+	assert.Equal(t, path, h.Entrypoint.Command[0])
+
+	outside := filepath.Join(t.TempDir(), "outside")
+	require.NoError(t, os.WriteFile(outside, []byte("x"), 0o644))
+	link := filepath.Join(dir, "escape")
+	require.NoError(t, os.Symlink(outside, link))
+	bad := &Harness{Role: "triage", Entrypoint: &Entrypoint{Command: []string{"escape"}}}
+	require.NoError(t, bad.ResolveRelativeTo(dir))
+	require.ErrorContains(t, bad.ValidateFilesExist(), "symlink resolves outside")
+
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "subdir"), 0o755))
+	nonFile := &Harness{Role: "triage", Entrypoint: &Entrypoint{Command: []string{"subdir"}}}
+	require.NoError(t, nonFile.ResolveRelativeTo(dir))
+	require.ErrorContains(t, nonFile.ValidateFilesExist(), "regular file")
+
+	for _, path := range []string{"/absolute/run.sh", "https://example.com/run.sh", "${SCRIPT}"} {
+		t.Run("reject "+path, func(t *testing.T) {
+			invalid := &Harness{Entrypoint: &Entrypoint{Command: []string{path}}}
+			require.ErrorContains(t, invalid.ResolveRelativeTo(dir), "literal relative local path")
+		})
+	}
 }
 
 func TestLoad_ValidationLoopMissingScript(t *testing.T) {

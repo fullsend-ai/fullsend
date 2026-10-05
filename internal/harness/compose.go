@@ -677,8 +677,17 @@ func mergeBaseIntoChild(base, child *Harness) {
 	}
 
 	// Scalars: child overrides if non-zero
-	if child.Agent == "" {
+	// agent and entrypoint are a single launch choice. An explicit child
+	// choice clears the inherited alternative; otherwise inherit both and
+	// let Validate reject a malformed base that declares both.
+	switch {
+	case child.Entrypoint != nil && child.Agent == "":
+		// Child script replaces inherited agent.
+	case child.Agent != "" && child.Entrypoint == nil:
+		// Child agent replaces inherited script.
+	case child.Agent == "" && child.Entrypoint == nil:
 		child.Agent = base.Agent
+		child.Entrypoint = base.Entrypoint
 	}
 	if child.Doc == "" {
 		child.Doc = base.Doc

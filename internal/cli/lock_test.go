@@ -74,6 +74,7 @@ allowed_remote_resources:
 }
 
 func TestRunLock_GeneratesLockFile(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 	policyContent := []byte("sandbox: strict")
@@ -114,6 +115,7 @@ func TestRunLock_GeneratesLockFile(t *testing.T) {
 }
 
 func TestRunLock_SkillDirectoryType(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -198,6 +200,7 @@ allowed_remote_resources:
 }
 
 func TestRunLock_SkillDirectoryRoundTrip(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -294,6 +297,7 @@ allowed_remote_resources:
 }
 
 func TestRunLock_NoURLReferences(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -317,6 +321,7 @@ skills:
 }
 
 func TestRunLock_AlreadyUpToDate(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 	policyContent := []byte("sandbox: strict")
@@ -347,6 +352,7 @@ func TestRunLock_AlreadyUpToDate(t *testing.T) {
 }
 
 func TestRunLock_UpdateForceReResolve(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 	policyContent := []byte("sandbox: strict")
@@ -381,6 +387,7 @@ func TestRunLock_UpdateForceReResolve(t *testing.T) {
 }
 
 func TestRunLock_MultiForgeLockAllVariants(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 	policyContent := []byte("sandbox: strict")
@@ -442,6 +449,7 @@ forge:
 }
 
 func TestRunLock_ForgeSelectsSingleVariant(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 	policyContent := []byte("sandbox: strict")
@@ -495,6 +503,7 @@ forge:
 }
 
 func TestRunLock_ForgeDeduplicatesAcrossVariants(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 	policyContent := []byte("sandbox: strict")
@@ -989,6 +998,7 @@ func TestResolveFromLock_NoPartialMutation(t *testing.T) {
 }
 
 func TestRunLock_WithLocalBase(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// A child harness with a local base field should succeed with no lock file
 	// created when neither base nor child has URL references.
 	dir := t.TempDir()
@@ -1168,6 +1178,7 @@ func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
 }
 
 func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// A child harness with a URL base and no other URL references.
 	// The baseDeps conversion loop runs and the base-only-deps path is taken
 	// (skip ResolveHarness, still record deps in lock file).
@@ -1220,6 +1231,7 @@ func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 }
 
 func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// Same as above but with a forge platform set, exercising the platform != "" branch
 	// in the base-only-deps logging path.
 	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
@@ -1262,6 +1274,7 @@ func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
 }
 
 func TestRunLock_URLRefsNoOrgConfigError(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// A harness with URL references but no config.yaml should fail
 	// with a clear error about the missing org config.
 	agentContent := []byte("You are a coding agent.")
@@ -1294,6 +1307,7 @@ func TestRunLock_URLRefsNoOrgConfigError(t *testing.T) {
 }
 
 func TestRunLock_MalformedOrgConfig(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// A malformed config.yaml should produce a warning but not prevent
 	// local-only harnesses from locking.
 	dir := t.TempDir()
@@ -1316,6 +1330,7 @@ func TestRunLock_MalformedOrgConfig(t *testing.T) {
 }
 
 func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// A malformed config.yaml with URL-referenced resources should fail
 	// with a parse error on the re-attempt.
 	agentContent := []byte("You are a coding agent.")
@@ -1350,6 +1365,7 @@ func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {
 }
 
 func TestRunLock_NoOrgConfigNoURLRefs(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// When there's no config.yaml and the harness has no URL references,
 	// runLock should succeed via the best-effort org config loading path.
 	dir := t.TempDir()
@@ -1376,6 +1392,7 @@ role: test
 }
 
 func TestRunLock_OrgAllowlistSyncedAfterReAttempt(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// Verifies that after the re-attempt successfully parses org config,
 	// orgAllowlist is updated so subsequent loop iterations use the
 	// correct allowlist for LoadWithBase.
@@ -1416,6 +1433,7 @@ func TestRunLock_OrgAllowlistSyncedAfterReAttempt(t *testing.T) {
 }
 
 func TestRunLock_URLBaseAndURLRefsNoOrgConfig(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// Harness with both a URL base and other URL references but no config.yaml.
 	// LoadWithBase should fail at the URL base fetch (not at HasURLReferences).
 	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
@@ -1452,6 +1470,7 @@ func TestRunLock_URLBaseAndURLRefsNoOrgConfig(t *testing.T) {
 }
 
 func TestRunLock_ErrorOnMissingRole(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	// Verifies that runLock fails with a hard error when harness has no role.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))

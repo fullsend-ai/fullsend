@@ -215,6 +215,7 @@ func setActionsGCPEnv(t *testing.T, runtimeName, projectID, wifProvider string) 
 
 func runSkipHarnessAgent(t *testing.T, dir string, printer *ui.Printer) error {
 	t.Helper()
+	neutralizeGitHubTokenLookup(t)
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	return runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
 		statusOpts{}, printer, false, runOverrideFlags{})

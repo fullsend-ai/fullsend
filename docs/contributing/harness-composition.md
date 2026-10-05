@@ -65,6 +65,13 @@ For example, if `mergeBaseIntoChild` gains handling for a new
 `foo_script` scalar field, then `mergeForgeConfig` must also
 handle `foo_script` if it appears inside `ForgeConfig`.
 
+`agent` and `entrypoint` are a paired launch choice handled only by
+`mergeBaseIntoChild`: a child setting either clears the inherited other
+choice, and an explicit `entrypoint` mapping replaces the full mapping. They
+are deliberately not `ForgeConfig` fields, so forge blocks and overlays
+cannot change the launch path. Keep tests for both replacement directions
+and inheritance in `compose_test.go`.
+
 > **Note — resolve before merge.** Each base layer's forge and overlay
 > blocks are resolved (flattened into top-level fields) by
 > `resolveBaseForgeAndOverlays` in `loadBaseChain` **before** the base

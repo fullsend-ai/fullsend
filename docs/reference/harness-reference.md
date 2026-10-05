@@ -3,8 +3,11 @@
 Complete reference for all fields available in a fullsend harness YAML file. For a guide-oriented introduction to harnesses, see [Bring Your Own Agent](../guides/user/bring-your-own-agent.md).
 
 ```yaml
-# ── Required ──────────────────────────────────────────────────
-agent: agents/my-agent.md           # Path to agent definition
+# ── Launch choice: set exactly one ────────────────────────────
+agent: agents/my-agent.md           # Path to agent definition; runtime selects the agent
+# entrypoint:
+#   command: [scripts/classify.py, --mode, "${MODE}"] # argv; first item is a local executable
+#   stream_format: none               # none or claude (default: none)
 role: triage                        # A role the mint serves (built-in on the hosted mint); not the agent's name. Format: lowercase letter first, then a-z, 0-9, _, -; no double hyphens
 
 # ── Identity & metadata ──────────────────────────────────────
@@ -45,6 +48,14 @@ openshell:                           # OpenShell sandbox profiles
 pre_script: scripts/pre-my-agent.sh
 post_script: scripts/post-my-agent.sh
 agent_input: inputs/my-agent/        # Local directory of files passed as agent input
+
+# Entrypoint-specific inputs are available in the same sandbox:
+env:
+  sandbox:
+    MODE: "two words"                # ${MODE} is one argv element; no splitting/eval
+host_files:
+  - src: inputs/context.json         # Copied from the host
+    dest: /sandbox/workspace/context.json
 
 # ── Mint privilege per run-stage (ADR 0073) ───────────────────
 privilege_levels:
@@ -128,6 +139,46 @@ overlays:
 security:
   fail_mode: closed                  # "closed" (default) or "open"
 ```
+
+## Script-led entrypoints
+
+Set exactly one of `agent` or `entrypoint`. The entrypoint form is a mapping
+with a non-empty `command` argv array. `command[0]` must be a local relative
+file under the Fullsend directory; URLs, absolute paths, and symlinks escaping
+that directory are rejected. The runner uploads it to
+`/sandbox/workspace/.fullsend-entrypoint/run` and executes it from the target
+repository directory. Additional files can use `host_files`; `agent_input`
+is copied to `/sandbox/workspace/agent-input`; outputs belong under
+`FULLSEND_OUTPUT_DIR` (`/sandbox/workspace/output`).
+The command's remaining argv elements carry task inputs; when Fullsend receives
+`--event-file`, it also uploads that normalized event to
+`/sandbox/workspace/event.json` and sets `FULLSEND_EVENT_FILE` to that path.
+
+Only command arguments after the executable support `${NAME}` expansion, from
+resolved `env.sandbox` values. Each expanded value remains one argv element;
+missing names fail before launch. No shell evaluation, word splitting, or
+recursive substitution is performed.
+
+`stream_format` supports `none` (default) and `claude`. Claude format expects
+one clean Claude stream-json output stream. A script without an explicitly
+selected runtime does not get runtime bootstrap or inference credentials. With
+`runtime: claude`, Fullsend bootstraps Claude's hooks/plugins and installs the
+`fullsend-claude` helper on `PATH`; scripts can use it to launch child Claude
+calls with the selected model, hooks settings, and validated Claude plugins.
+The Claude hook settings and scripts are kept under
+`/sandbox/claude-config/hooks`. The helper probes this directory and refuses
+to launch Claude if it is writable. OpenShell 0.0.116 applies the sandbox
+policy before Fullsend uploads the hooks: a read-only hook directory rejects
+bootstrap uploads, while a writable directory is rejected by the helper.
+This Fullsend/OpenShell version combination therefore fails closed before the
+Claude child starts; do not treat a successful hook upload as proof of a
+tamper-protected launch. A write grant on `/sandbox` also defeats nested
+read-only paths.
+Codex and Pi runtime bootstrapping for entrypoints is not supported yet.
+
+Entrypoints run once by default. A resolved `validation_loop.max_iterations`
+greater than one explicitly opts into another run after validation failure.
+Launch errors, timeouts, and non-zero exits fail without automatic replay.
 
 > **Naming convention:** Prefix settings that tune one agent's behavior with
 > that agent's role in caps, e.g. `REVIEW_SEVERITY_THRESHOLD` — this avoids

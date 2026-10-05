@@ -73,7 +73,7 @@ const SandboxHooksDir = sandbox.SandboxClaudeConfig + "/hooks"
 // SandboxHooksSettings is the path where the hook wiring hooks.json is
 // written inside the sandbox. buildRunCommand passes this via --settings so
 // Claude Code loads the hooks regardless of its working directory.
-const SandboxHooksSettings = sandbox.SandboxClaudeConfig + "/hooks.json"
+const SandboxHooksSettings = SandboxHooksDir + "/hooks.json"
 
 // HookPhase identifies when a sandbox hook group runs relative to a tool call.
 // The names match Claude Code's settings.json event names; other runtimes map
@@ -194,7 +194,7 @@ func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
 		entries := make([]hookEntry, 0, len(g.Scripts))
 		for _, script := range g.Scripts {
 			entries = append(entries, hookEntry{
-				Type: "command", Command: "python3 " + SandboxHooksDir + "/" + script,
+				Type: "command", Command: "python3 -B " + SandboxHooksDir + "/" + script,
 				Timeout: HookTimeoutSeconds,
 			})
 		}

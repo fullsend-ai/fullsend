@@ -29,6 +29,45 @@ func scanRuntimeContent(input runtime.BootstrapInput, failClosed bool) error {
 		return err
 	}
 
+	return scanRuntimeResources(input, pipeline, failClosed)
+}
+
+// scanEntrypointContent scans the executable script in place of an agent
+// definition, then scans any runtime skills and plugins used by a Claude
+// child. Entrypoint scripts are trusted runner inputs too, so they remain
+// subject to the same injection pipeline as agent definitions.
+func scanEntrypointContent(input runtime.BootstrapInput, entrypointPath string, failClosed bool) error {
+	if entrypointPath == "" {
+		return fmt.Errorf("entrypoint path is required for runtime content scan")
+	}
+
+	pipeline := security.InputPipeline()
+	content, err := os.ReadFile(entrypointPath)
+	if err != nil {
+		if failClosed {
+			return fmt.Errorf("cannot scan entrypoint %q: %w", entrypointPath, err)
+		}
+		fmt.Fprintf(os.Stderr, "WARNING: could not read entrypoint %q for scan: %v\n", entrypointPath, err)
+	} else {
+		result := pipeline.Scan(string(content))
+		if security.HasCriticalFindings(result.Findings) {
+			if failClosed {
+				return fmt.Errorf("entrypoint %q blocked: critical injection findings", entrypointPath)
+			}
+			fmt.Fprintf(os.Stderr, "WARNING: entrypoint %q has critical injection findings (fail_mode: open)\n", entrypointPath)
+			for _, finding := range result.Findings {
+				fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", finding.Severity, finding.Name, finding.Detail)
+			}
+		} else if len(result.Findings) > 0 {
+			fmt.Fprintf(os.Stderr, "WARNING: entrypoint %q has %d injection finding(s)\n", entrypointPath, len(result.Findings))
+		}
+	}
+
+	return scanRuntimeResources(input, pipeline, failClosed)
+}
+
+func scanRuntimeResources(input runtime.BootstrapInput, pipeline *security.Pipeline, failClosed bool) error {
+
 	for _, skillPath := range input.SkillDirs() {
 		if skillPath == "" {
 			continue

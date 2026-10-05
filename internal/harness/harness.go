@@ -88,6 +88,31 @@ type HostFile struct {
 	Optional bool   `yaml:"optional,omitempty"` // skip if src path is missing or expands to empty
 }
 
+// Entrypoint selects a local executable and optional stdout parser.
+type Entrypoint struct {
+	Command      []string `yaml:"command"`
+	StreamFormat string   `yaml:"stream_format,omitempty"`
+}
+
+func (e *Entrypoint) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("entrypoint must be a mapping")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if key != "command" && key != "stream_format" {
+			return fmt.Errorf("entrypoint has unknown field %q", key)
+		}
+	}
+	type plain Entrypoint
+	var decoded plain
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*e = Entrypoint(decoded)
+	return nil
+}
+
 // ProviderDef is a declarative definition of an OpenShell provider. Files in
 // the experiment's providers/ directory are loaded as ProviderDefs and
 // reconciled against the gateway before sandbox creation.
@@ -361,42 +386,62 @@ func (dst *EnvConfig) mergeEnvFrom(src *EnvConfig, srcWins bool) {
 // Harness is the per-agent configuration that the runner reads to provision
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
-	Agent                  string                  `yaml:"agent"`
-	Doc                    string                  `yaml:"doc,omitempty"`
-	Description            string                  `yaml:"description,omitempty"`
-	Role                   string                  `yaml:"role,omitempty"`
-	Slug                   string                  `yaml:"slug,omitempty"`
-	Base                   string                  `yaml:"base,omitempty"`
-	Image                  string                  `yaml:"image,omitempty"`
-	Policy                 string                  `yaml:"policy,omitempty"`
-	Skills                 []SkillEntry            `yaml:"skills,omitempty"`
-	Plugins                []PluginSpec            `yaml:"plugins,omitempty"` // runtime-scoped plugin directories (ADR 0094)
-	Providers              []string                `yaml:"providers,omitempty"`
-	OpenShell              *OpenShellConfig        `yaml:"openshell,omitempty"`
-	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
-	APIServers             []APIServer             `yaml:"api_servers,omitempty"`
-	Model                  string                  `yaml:"model,omitempty"`
-	Effort                 string                  `yaml:"effort,omitempty"`
-	PreScript              string                  `yaml:"pre_script,omitempty"`
-	PostScript             string                  `yaml:"post_script,omitempty"`
-	PrivilegeLevels        map[string]string       `yaml:"privilege_levels,omitempty"` // run-stage → mint privilege level (ADR 0073)
-	AgentInput             string                  `yaml:"agent_input,omitempty"`
-	ValidationLoop         *ValidationLoop         `yaml:"validation_loop,omitempty"`
-	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
-	Env                    *EnvConfig              `yaml:"env,omitempty"`
-	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
-	ReadonlyRepo           bool                    `yaml:"readonly_repo,omitempty"`
-	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
-	Security               *SecurityConfig         `yaml:"security,omitempty"`
-	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
-	AllowRuntimeFetch      bool                    `yaml:"allow_runtime_fetch,omitempty"` // opt-in to runtime skill fetching (default: false)
-	MaxRuntimeFetches      *int                    `yaml:"max_runtime_fetches,omitempty"` // per-run fetch cap; nil = default (10), valid range 1-1000
-	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
-	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
-	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
+	Agent                   string                  `yaml:"agent"`
+	Entrypoint              *Entrypoint             `yaml:"entrypoint,omitempty"`
+	Doc                     string                  `yaml:"doc,omitempty"`
+	Description             string                  `yaml:"description,omitempty"`
+	Role                    string                  `yaml:"role,omitempty"`
+	Slug                    string                  `yaml:"slug,omitempty"`
+	Base                    string                  `yaml:"base,omitempty"`
+	Image                   string                  `yaml:"image,omitempty"`
+	Policy                  string                  `yaml:"policy,omitempty"`
+	Skills                  []SkillEntry            `yaml:"skills,omitempty"`
+	Plugins                 []PluginSpec            `yaml:"plugins,omitempty"` // runtime-scoped plugin directories (ADR 0094)
+	Providers               []string                `yaml:"providers,omitempty"`
+	OpenShell               *OpenShellConfig        `yaml:"openshell,omitempty"`
+	HostFiles               []HostFile              `yaml:"host_files,omitempty"`
+	APIServers              []APIServer             `yaml:"api_servers,omitempty"`
+	Model                   string                  `yaml:"model,omitempty"`
+	Effort                  string                  `yaml:"effort,omitempty"`
+	PreScript               string                  `yaml:"pre_script,omitempty"`
+	PostScript              string                  `yaml:"post_script,omitempty"`
+	PrivilegeLevels         map[string]string       `yaml:"privilege_levels,omitempty"` // run-stage → mint privilege level (ADR 0073)
+	AgentInput              string                  `yaml:"agent_input,omitempty"`
+	ValidationLoop          *ValidationLoop         `yaml:"validation_loop,omitempty"`
+	RunnerEnv               map[string]string       `yaml:"runner_env,omitempty"`
+	Env                     *EnvConfig              `yaml:"env,omitempty"`
+	TimeoutMinutes          int                     `yaml:"timeout_minutes,omitempty"`
+	ReadonlyRepo            bool                    `yaml:"readonly_repo,omitempty"`
+	SandboxTimeoutSeconds   int                     `yaml:"sandbox_timeout_seconds,omitempty"`
+	Security                *SecurityConfig         `yaml:"security,omitempty"`
+	AllowedRemoteResources  []string                `yaml:"allowed_remote_resources,omitempty"`
+	AllowRuntimeFetch       bool                    `yaml:"allow_runtime_fetch,omitempty"` // opt-in to runtime skill fetching (default: false)
+	MaxRuntimeFetches       *int                    `yaml:"max_runtime_fetches,omitempty"` // per-run fetch cap; nil = default (10), valid range 1-1000
+	Forge                   map[string]*ForgeConfig `yaml:"forge,omitempty"`
+	Overlays                []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
+	Trigger                 string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
+	hasTopLevelStreamFormat bool                    `yaml:"-"`
 
 	// Runtime-only fields (not serialized to YAML)
-	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
+	hadForgeBeforeResolve bool   `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
+	entrypointRoot        string `yaml:"-"`
+}
+
+// UnmarshalYAML remembers the explicitly forbidden legacy top-level
+// stream_format key while retaining yaml.v3's existing unknown-key behavior.
+func (h *Harness) UnmarshalYAML(node *yaml.Node) error {
+	type plain Harness
+	var decoded plain
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "stream_format" {
+			decoded.hasTopLevelStreamFormat = true
+		}
+	}
+	*h = Harness(decoded)
+	return nil
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -489,19 +534,42 @@ func LoadRaw(path string) (*Harness, error) {
 
 // Validate checks that required fields are present.
 func (h *Harness) Validate() error {
+	if h.hasTopLevelStreamFormat {
+		return fmt.Errorf("top-level stream_format is not supported; set entrypoint.stream_format")
+	}
 	// Base field must be consumed by LoadWithBase before validation.
 	// If it's still set, the harness was loaded via Load/LoadWithOpts which
 	// don't process base composition — a silent misconfiguration.
 	if h.Base != "" {
 		return fmt.Errorf("base field is set but harness was not loaded with LoadWithBase; use LoadWithBase to enable base composition")
 	}
-	if h.Agent == "" {
-		return fmt.Errorf("agent field is required")
+	if (h.Agent == "") == (h.Entrypoint == nil) {
+		return fmt.Errorf("exactly one of agent or entrypoint is required")
+	}
+	if h.Entrypoint != nil {
+		if len(h.Entrypoint.Command) == 0 || strings.TrimSpace(h.Entrypoint.Command[0]) == "" {
+			return fmt.Errorf("entrypoint.command must contain a non-empty executable path")
+		}
+		for i, arg := range h.Entrypoint.Command {
+			if strings.ContainsRune(arg, 0) {
+				return fmt.Errorf("entrypoint.command[%d] contains a NUL byte", i)
+			}
+		}
+		if filepath.IsAbs(h.Entrypoint.Command[0]) || IsURL(h.Entrypoint.Command[0]) || strings.Contains(h.Entrypoint.Command[0], "${") {
+			return fmt.Errorf("entrypoint.command[0] must be a literal relative local path")
+		}
+		switch h.Entrypoint.StreamFormat {
+		case "", "none", "claude":
+		case "codex", "pi":
+			return fmt.Errorf("entrypoint.stream_format %q is not supported; supported values are \"none\" and \"claude\"", h.Entrypoint.StreamFormat)
+		default:
+			return fmt.Errorf("entrypoint.stream_format must be \"none\" or \"claude\", got %q", h.Entrypoint.StreamFormat)
+		}
 	}
 	// Agent name (filename without .md) must be safe for shell interpolation.
 	// Skip name validation when agent is a URL — the resolver will replace it
 	// with a local cache path before it reaches the shell.
-	if !IsURL(h.Agent) {
+	if h.Agent != "" && !IsURL(h.Agent) {
 		agentBase := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
 		if !validAgentName.MatchString(agentBase) {
 			return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", agentBase)
@@ -595,6 +663,31 @@ func (h *Harness) Validate() error {
 	return nil
 }
 
+// ResolveEntrypointCommand substitutes ${NAME} references in argv elements
+// after the executable path using only resolved env.sandbox values.
+func (h *Harness) ResolveEntrypointCommand(env map[string]string) ([]string, error) {
+	if h.Entrypoint == nil {
+		return nil, fmt.Errorf("entrypoint is not configured")
+	}
+	command := append([]string(nil), h.Entrypoint.Command...)
+	for i := 1; i < len(command); i++ {
+		var missing string
+		command[i] = envVarRef.ReplaceAllStringFunc(command[i], func(ref string) string {
+			name := strings.TrimSuffix(strings.TrimPrefix(ref, "${"), "}")
+			value, ok := env[name]
+			if !ok {
+				missing = name
+				return ref
+			}
+			return value
+		})
+		if missing != "" {
+			return nil, fmt.Errorf("entrypoint.command[%d] references undefined env.sandbox variable %q", i, missing)
+		}
+	}
+	return command, nil
+}
+
 // validateSecurity checks that security config fields use valid values.
 func (h *Harness) validateSecurity() error {
 	if h.Security == nil {
@@ -659,6 +752,18 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 	var err error
 	if h.Agent, err = resolve("agent", h.Agent); err != nil {
 		return err
+	}
+	if h.Entrypoint != nil && len(h.Entrypoint.Command) > 0 {
+		path := h.Entrypoint.Command[0]
+		if filepath.IsAbs(path) || IsURL(path) || strings.Contains(path, "${") {
+			return fmt.Errorf("entrypoint.command[0] must be a literal relative local path")
+		}
+		resolved, resolveErr := resolve("entrypoint.command[0]", path)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		h.Entrypoint.Command[0] = resolved
+		h.entrypointRoot = filepath.Clean(baseDir)
 	}
 	if h.Policy, err = resolve("policy", h.Policy); err != nil {
 		return err
@@ -846,6 +951,33 @@ func (h *Harness) ValidateFilesExist() error {
 
 	if err := check("agent", h.Agent); err != nil {
 		return err
+	}
+	if h.Entrypoint != nil && len(h.Entrypoint.Command) > 0 {
+		path := h.Entrypoint.Command[0]
+		if IsURL(path) || !filepath.IsAbs(path) {
+			return fmt.Errorf("entrypoint.command[0] must resolve to a local file")
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("entrypoint.command[0]: %w", err)
+		}
+		if h.entrypointRoot != "" {
+			root, rootErr := filepath.EvalSymlinks(h.entrypointRoot)
+			if rootErr != nil {
+				return fmt.Errorf("entrypoint root: %w", rootErr)
+			}
+			rel, relErr := filepath.Rel(root, resolved)
+			if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("entrypoint.command[0] symlink resolves outside fullsend directory")
+			}
+		}
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return fmt.Errorf("entrypoint.command[0]: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("entrypoint.command[0] must be a regular file")
+		}
 	}
 	if err := check("policy", h.Policy); err != nil {
 		// CI layers no policy, so a relative path resolves only if the file is

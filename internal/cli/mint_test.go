@@ -666,6 +666,7 @@ func withFakeWASMBuild(t *testing.T) {
 // after the test.
 func withCFEnvVars(t *testing.T) {
 	t.Helper()
+	neutralizeGitHubTokenLookup(t)
 	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
 	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
 	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
@@ -1960,6 +1961,7 @@ func TestMintDeployCmd_CloudflareRolesOmittedUsesDefaults(t *testing.T) {
 }
 
 func TestMintDeployCmd_CloudflareRolesWithE2E(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	withCFEnvVars(t)
 	sourceDir := createMinimalWorkerSourceDir(t)
 
@@ -2614,6 +2616,7 @@ func TestListPEMFiles_NonexistentDir(t *testing.T) {
 // --- loadAppSetPEMs tests ---
 
 func TestLoadAppSetPEMs_Success(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	roles := defaultMintRoles()
 	testPEM := generateTestPEM(t)
 
@@ -2655,6 +2658,7 @@ func TestLoadAppSetPEMs_Success(t *testing.T) {
 }
 
 func TestLoadAppSetPEMs_MissingPEM(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	pemDir := t.TempDir()
 	// Only write one PEM — the rest will be missing.
 	err := os.WriteFile(filepath.Join(pemDir, "fullsend.pem"), []byte("fake"), 0o600)
@@ -2666,12 +2670,14 @@ func TestLoadAppSetPEMs_MissingPEM(t *testing.T) {
 }
 
 func TestLoadAppSetPEMs_InvalidAppSet(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	_, _, err := loadAppSetPEMs(context.Background(), t.TempDir(), "INVALID CHARS", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid app set")
 }
 
 func TestLoadAppSetPEMs_InvalidPEM(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	pemDir := t.TempDir()
 	testPEM := generateTestPEM(t)
 	roles := defaultMintRoles()
@@ -2701,12 +2707,14 @@ func TestLoadAppSetPEMs_InvalidPEM(t *testing.T) {
 }
 
 func TestLoadAppSetPEMs_BadDir(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	_, _, err := loadAppSetPEMs(context.Background(), "/nonexistent/path", "fullsend-ai", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--pem-dir")
 }
 
 func TestLoadAppSetPEMs_FileNotDir(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	tmpFile := filepath.Join(t.TempDir(), "notadir.txt")
 	require.NoError(t, os.WriteFile(tmpFile, []byte("dummy"), 0o600))
 
@@ -2720,6 +2728,7 @@ func TestGitHubHTTPClient_HasTimeout(t *testing.T) {
 }
 
 func TestLoadAppSetPEMs_AppNotFound(t *testing.T) {
+	neutralizeGitHubTokenLookup(t)
 	roles := defaultMintRoles()
 	testPEM := generateTestPEM(t)
 	pemDir := t.TempDir()

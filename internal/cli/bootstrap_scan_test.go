@@ -196,6 +196,44 @@ func TestScanRuntimeContent_EmptyAgentPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "agent path is required")
 }
 
+func TestScanEntrypointContent_ScansScriptAndRuntimeResources(t *testing.T) {
+	dir := t.TempDir()
+	entrypoint := filepath.Join(dir, "entrypoint.sh")
+	require.NoError(t, os.WriteFile(entrypoint, []byte(criticalInjectionSnippet), 0o755))
+
+	err := scanEntrypointContent(scanBootstrap{}, entrypoint, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "entrypoint")
+	assert.Contains(t, err.Error(), "blocked")
+}
+
+func TestScanEntrypointContent_EmptyPath(t *testing.T) {
+	err := scanEntrypointContent(scanBootstrap{}, "", true)
+	require.ErrorContains(t, err, "entrypoint path is required")
+}
+
+func TestScanEntrypointContent_ReadFailureFailClosed(t *testing.T) {
+	err := scanEntrypointContent(scanBootstrap{}, filepath.Join(t.TempDir(), "missing.sh"), true)
+	require.ErrorContains(t, err, "cannot scan entrypoint")
+}
+
+func TestScanEntrypointContent_ReadFailureFailOpen(t *testing.T) {
+	err := scanEntrypointContent(scanBootstrap{}, filepath.Join(t.TempDir(), "missing.sh"), false)
+	require.NoError(t, err)
+}
+
+func TestScanEntrypointContent_CriticalFailOpen(t *testing.T) {
+	entrypoint := filepath.Join(t.TempDir(), "entrypoint.sh")
+	require.NoError(t, os.WriteFile(entrypoint, []byte(criticalInjectionSnippet), 0o755))
+	require.NoError(t, scanEntrypointContent(scanBootstrap{}, entrypoint, false))
+}
+
+func TestScanEntrypointContent_CleanScript(t *testing.T) {
+	entrypoint := filepath.Join(t.TempDir(), "entrypoint.sh")
+	require.NoError(t, os.WriteFile(entrypoint, []byte("#!/bin/sh\nprintf 'hello\\n'\n"), 0o755))
+	require.NoError(t, scanEntrypointContent(scanBootstrap{}, entrypoint, true))
+}
+
 func TestScanRuntimeContent_AgentCriticalFailClosed(t *testing.T) {
 	dir := t.TempDir()
 	agentPath := filepath.Join(dir, "agent.md")
