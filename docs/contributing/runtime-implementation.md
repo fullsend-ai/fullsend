@@ -114,7 +114,7 @@ flowchart TB
   end
   subgraph SB["Sandbox boundary — OpenShell + L7 egress policy (containment)"]
     direction TB
-    EG["egress allowlist: *.googleapis.com · api.anthropic.com\n(+ api.openai.com POST /v1/responses with the openai provider)\nbinaries: **/claude · **/claude.exe · **/node (pi runs via node) · **/pi (fleet-profile parity) · **/codex · **/opencode · **/opencode.exe"]
+    EG["egress allowlist: *.googleapis.com · api.anthropic.com\n(+ api.openai.com POST /v1/responses with the openai provider)\nbinaries: **/claude · **/claude.exe · **/node (pi runs via node) · **/pi (fleet-profile parity) · **/codex · **/opencode"]
     subgraph PROC["Runtime process — steering, defense in depth"]
       direction LR
       PRE["PreToolUse\nTirith · SSRF\ncanary · allowlist"]
@@ -426,7 +426,7 @@ The inference profiles (`profiles/fullsend-vertex-ai.yaml` in this repo and in f
 | Claude Code | `bin/claude.exe` in the npm package — 2.1.2xx's `install.cjs` places the native binary there ("Always write to bin/claude.exe"); the Containerfile installs it *with* scripts so that runs | `**/claude`, `**/claude.exe` | gateway deny log in #6971; `npm view @anthropic-ai/claude-code@<pin> bin` |
 | pi | `node` (`bin = dist/bundle/cli.js`; no native network path in the package) | `**/node` | `images/sandbox/Containerfile`, `npm view @earendil-works/pi-coding-agent@<pin> bin` |
 | Codex | `vendor/<triple>/bin/codex`, spawned by the npm launcher `bin/codex.js` under node; codex also spawns `codex-code-mode-host` (default-enabled in 0.152.1), covered by ancestor matching, not by name | `**/node` (ancestor), `**/codex` (the process) | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
-| OpenCode | `/usr/local/bin/opencode`, the per-architecture glibc release binary installed directly by the Containerfile | `**/opencode`, `**/opencode.exe` | `images/sandbox/Containerfile`; `internal/cli/runtime_binaries_test.go` |
+| OpenCode | `/usr/local/bin/opencode`, the per-architecture glibc release binary installed directly by the Containerfile | `**/opencode` | `images/sandbox/Containerfile`; `internal/cli/runtime_binaries_test.go` |
 
 ## Sandbox workspace layout
 

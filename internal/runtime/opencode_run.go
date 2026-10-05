@@ -298,13 +298,13 @@ func openCodeUtilityPin() string {
 		{openCodeCatVar, "cat"},
 	}
 	assignments := make([]string, 0, len(utilities))
-	checks := make([]string, 0, len(utilities))
+	individualChecks := make([]string, 0, len(utilities))
 	for _, utility := range utilities {
 		assignments = append(assignments, utility.variable+`=$(for d in /usr/local/bin /usr/bin /bin; do if test -x "$d/`+utility.name+`"; then printf '%s' "$d/`+utility.name+`"; break; fi; done)`)
-		checks = append(checks, `test -n "$`+utility.variable+`"`)
+		individualChecks = append(individualChecks,
+			`if ! test -n "$`+utility.variable+`"; then echo 'fullsend: required opencode utility not found: `+utility.name+`' >&2; exit 127; fi`)
 	}
-	return "readonly " + strings.Join(assignments, " ") + " && if " + strings.Join(checks, " && ") +
-		"; then :; else echo 'fullsend: required opencode utility not found' >&2; exit 127; fi"
+	return "readonly " + strings.Join(assignments, " ") + " && " + strings.Join(individualChecks, " && ")
 }
 
 func openCodeTrustedEnvPin(env openCodeTrustedEnv) string {

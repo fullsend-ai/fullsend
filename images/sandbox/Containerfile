@@ -322,8 +322,10 @@ RUN case "$TARGETARCH" in \
     && chmod 0755 /usr/local/bin/opencode \
     && rm -f /tmp/opencode.tar.gz \
     && GOT_VER="$(opencode --version)" \
-    && echo "${GOT_VER}" | grep -q "${OPENCODE_VERSION}" \
-    || { echo "opencode version mismatch: got '${GOT_VER}', expected version ${OPENCODE_VERSION}" >&2; exit 1; }
+    && if [ "${GOT_VER}" != "${OPENCODE_VERSION}" ]; then \
+         echo "opencode version mismatch: got '${GOT_VER}', expected version ${OPENCODE_VERSION}" >&2; \
+         exit 1; \
+       fi
 
 # OpenCode hygiene defaults. OPENCODE_CONFIG_DIR must match
 # sandbox.SandboxOpenCodeConfig (internal/sandbox/sandbox.go).

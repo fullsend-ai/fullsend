@@ -23,5 +23,4 @@ binaries:
   - "**/claude.exe"
   - "**/node"
   - "**/opencode"
-  - "**/opencode.exe"
   - "**/pi"

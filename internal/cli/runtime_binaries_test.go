@@ -47,7 +47,7 @@ var runtimeEgressBinaries = map[string]map[string][]string{
 		"fullsend-openai": {"**/node", "**/codex"},
 	},
 	"opencode": {
-		"fullsend-vertex-ai": {"**/opencode", "**/opencode.exe"},
+		"fullsend-vertex-ai": {"**/opencode"},
 	},
 }
 
