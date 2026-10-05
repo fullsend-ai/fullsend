@@ -50,7 +50,14 @@ same Vertex WIF credentials cover the Anthropic-on-Vertex provider the injected 
 OpenCode's config directory is **runner-owned**, off the agent-writable workspace, and pointed at
 OpenCode with `OPENCODE_CONFIG_DIR` (`/sandbox/opencode-config`). The target repo cannot pre-seed it
 and a workspace reset does not clear it. The injected `OPENCODE_CONFIG_CONTENT` (Vertex provider +
-tool-permission policy) merges last in OpenCode's config stack, so it wins over any repo config.
+tool-permission policy) provides the global defaults in OpenCode's config stack.
+
+Agent-level permission records (emitted in the agent frontmatter by Bootstrap) are evaluated after
+the global policy and would otherwise override it via findLast semantics. Bootstrap therefore
+intersects the agent record with the trusted policy so the agent frontmatter can only narrow, never
+widen, the global gate. Additionally, the run prelude unsets `OPENCODE_PERMISSION` and other
+dangerous env vars after sourcing the agent-writable `.env` to prevent agent-written overrides from
+widening the policy at the env-var layer.
 
 During Bootstrap, before an agent iteration can modify `.env`, the runner records the effective
 `OPENCODE_CONFIG_CONTENT` and `GOOGLE_APPLICATION_CREDENTIALS` values outside the sandbox. Run fails
@@ -91,15 +98,27 @@ What a local OpenCode run needs, beyond the guide:
   fast if the pinned binary is missing or broken, rather than producing an empty transcript.
 - **Read-only agents** — pilot `triage`/`prioritize`; `code`/`fix` are gated on #515.
 - **`OPENCODE_CONFIG_CONTENT`** — Bootstrap validates this env var and fails closed when it is
-  missing or has no `permission` policy. Supply it via `--env-file`. A minimal example:
+  missing or has no `permission` policy. The value must reach the sandbox `.env`; `--env-file`
+  alone only sets the host process env. To bridge the value into the sandbox, add an
+  `env.sandbox` mapping to the harness entry for the agent:
+
+  ```yaml
+  # In .fullsend/config.yaml, under the agent's harness entry:
+  env:
+    sandbox:
+      OPENCODE_CONFIG_CONTENT: ${OPENCODE_CONFIG_CONTENT}
+  ```
+
+  Then supply the value on the host via `--env-file`:
 
   ```bash
   # fullsend-opencode.env
   OPENCODE_CONFIG_CONTENT='{"provider":{"google-vertex-anthropic":{"id":"google-vertex-anthropic"}},"permission":{"read":"allow","glob":"allow","grep":"allow","list":"allow","bash":"allow","write":"deny","edit":"deny","skill":"deny","agent":"deny","sourcegraph":"deny","mcp":"deny","task":"deny"}}'
   ```
 
-  Adjust the `permission` record to match the agent's `tools:` frontmatter. The injected config
-  merges last in OpenCode's config stack (see [Config discovery](#config-discovery)).
+  Adjust the `permission` record to match the agent's `tools:` frontmatter. The `env.sandbox`
+  mapping expands `${OPENCODE_CONFIG_CONTENT}` from the host env (populated by `--env-file`)
+  into the sandbox `.env`, where Bootstrap reads it.
 - **`security.enabled: false`** — required on the harness entry until #515 lands. Without it the
   run exits 97 (hook adapter missing). See the warning at the top of this page for the full
   implications — it also suppresses all scan pipelines and secret redaction.
