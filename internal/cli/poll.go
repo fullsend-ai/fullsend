@@ -213,12 +213,17 @@ func runGitLabWebhook(cmd *cobra.Command, projectPath, gitlabURL, fullsendDir st
 		return fmt.Errorf("build event router: %w", err)
 	}
 
+	dispatchSecret := os.Getenv("FULLSEND_DISPATCH_SECRET")
+	if dispatchSecret == "" {
+		return fmt.Errorf("FULLSEND_DISPATCH_SECRET is required for --input-driver gitlab-webhook")
+	}
+
 	opts := poll.Options{
 		BotUserID:      botUserID,
 		GitLabURL:      gitlabURL,
 		PipelineRef:    pipelineRef,
 		PollJobURL:     os.Getenv("CI_JOB_URL"),
-		DispatchSecret: os.Getenv("FULLSEND_DISPATCH_SECRET"),
+		DispatchSecret: dispatchSecret,
 	}
 
 	poller := poll.New(pollClient, router, projectPath, opts)
