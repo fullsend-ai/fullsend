@@ -608,7 +608,7 @@ runs:
         # reconciliation path working, but retain built-in-review retry
         # guidance whenever the installed CLI supports it.
         if [[ "${AGENT}" == "review" ]] \
-          && fullsend reconcile-status --help 2>&1 | grep -q -- '--review-run'; then
+          && fullsend reconcile-status --help 2>&1 | grep -F -- '--review-run' >/dev/null; then
           RECONCILE_FLAGS+=(--review-run)
         fi
         fullsend reconcile-status "${RECONCILE_FLAGS[@]+"${RECONCILE_FLAGS[@]}"}" || {

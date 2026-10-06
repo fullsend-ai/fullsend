@@ -1115,12 +1115,72 @@ func TestActionReconcileStatusUsesSuppliedRoleFallback(t *testing.T) {
 func TestActionReconcileStatusSupportsOlderCLIs(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
 	require.NoError(t, err)
-	s := string(content)
+	var action struct {
+		Runs struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &action))
 
-	assert.Contains(t, s, "fullsend reconcile-status --help 2>&1 | grep -q -- '--review-run'",
-		"review reconciliation must detect whether the installed CLI supports --review-run")
-	assert.Contains(t, s, "RECONCILE_FLAGS+=(--review-run)",
-		"supported CLIs must retain GitHub-specific review reconciliation guidance")
+	var script string
+	for _, step := range action.Runs.Steps {
+		if step.Name == "Finalize orphaned status comment" {
+			script = step.Run
+			break
+		}
+	}
+	require.NotEmpty(t, script)
+
+	run := func(t *testing.T, supportsReviewRun bool) []string {
+		t.Helper()
+		dir := t.TempDir()
+		bin := filepath.Join(dir, "bin")
+		require.NoError(t, os.Mkdir(bin, 0o755))
+		outputPath := filepath.Join(dir, "reconcile-args")
+
+		help := ":"
+		if supportsReviewRun {
+			// Keep writing after the matching flag: grep -q closes its input
+			// early, which would make this producer fail with SIGPIPE.
+			help = "printf '%s\\n' --review-run; for _ in $(seq 1 100000); do printf 'more help output\\n'; done"
+		}
+		fake := "#!/usr/bin/env bash\nset -euo pipefail\n" +
+			"if [[ \"${1:-}\" == reconcile-status && \"${2:-}\" == --help ]]; then " + help + "; exit 0; fi\n" +
+			"printf '%s\\n' \"$@\" > \"${RECONCILE_ARGS:?}\"\n"
+		require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(fake), 0o755))
+
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Env = append(os.Environ(),
+			"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"RECONCILE_ARGS="+outputPath,
+			"MINT_URL=https://mint.example.com",
+			"AGENT=review",
+			"STATUS_REPO=org/repo",
+			"STATUS_NUMBER=7",
+			"RUN_ID=run-1",
+			"RUN_URL=",
+			"JOB_STATUS=cancelled",
+			"HARNESS_ROLE=",
+			"SUPPLIED_ROLE=",
+			"WAS_SKIPPED=false",
+			"PR_HEAD_SHA_INPUT=deadbeef",
+			"FULLSEND_DIR="+dir,
+			"GITHUB_WORKSPACE="+dir,
+			"GITHUB_SHA=deadbeef",
+			"GITHUB_EVENT_PATH="+filepath.Join(dir, "event.json"),
+		)
+		result, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s", result)
+		args, err := os.ReadFile(outputPath)
+		require.NoError(t, err)
+		return strings.Fields(string(args))
+	}
+
+	assert.Contains(t, run(t, true), "--review-run", "a supporting CLI must receive --review-run even when help continues after the flag")
+	assert.NotContains(t, run(t, false), "--review-run", "older CLIs must still reconcile without the unknown flag")
 }
 
 func TestActionRunPreservesPreMintWorkflowTokenButBlocksInjectedToken(t *testing.T) {
