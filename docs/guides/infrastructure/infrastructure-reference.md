@@ -233,7 +233,7 @@ A single mint instance can serve multiple orgs:
 
 `GET /v1/status` returns the configured roles and version information.
 
-- **Authentication:** Bearer token. OIDC is always tried first. When optional status validators are compiled in (e.g. GitHub user token via the `github` build tag), they are tried if OIDC fails. First successful auth wins.
+- **Authentication:** Bearer token. OIDC is always tried first. Two additional validators are tried if OIDC fails: GitHub user token (selected by `--status-auth=github`) and Cloudflare Access authentication (selected by `--status-auth=cfaccess`). Each non-oidc mode is build-time selected via Go build tags; disabled validators are absent from the deployed binary. First successful auth wins.
 - **Authorization:** Any valid credential from the auth pipeline — no role restriction.
 - **OIDC response:** Scoped to the authenticating workflow's org.
   ```json
@@ -245,7 +245,7 @@ A single mint instance can serve multiple orgs:
   ```
 - **Use case:** Workflow diagnostics — discover which roles are available before requesting a token. Non-OIDC auth enables status checks from outside GitHub Actions (e.g. `gh` CLI, OAuth login).
 - **Security:** OIDC returns only the requesting org. Non-OIDC returns allowed orgs (not individual role app IDs).
-- **Enabling optional validators:** Pass `--status-auth=github` to `mint deploy` along with `--status-github-group=ORG/TEAM`. This compiles the GitHub validator via the `github` build tag. Without these flags, OIDC is the only auth path.
+- **Enabling optional validators:** Pass `--status-auth=github` to `mint deploy` along with `--status-github-group=ORG/TEAM` to enable GitHub user token auth. Pass `--status-auth=cfaccess` with `--status-cfaccess-aud` and `--status-cfaccess-team` to enable Cloudflare Access authentication (Managed OAuth). Multiple modes can be combined: `--status-auth=github,cfaccess`. Without any optional validators, OIDC is the only auth path. Optional drivers are build-time selected: build tags for Workers, equivalent source selection for GCF.
 
 ---
 
