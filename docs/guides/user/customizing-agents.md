@@ -178,6 +178,10 @@ workflow token as `GH_WORKFLOW_TOKEN`, a *provider-only* credential:
   `validation_loop.schema`, and pre/post/validation scripts never see it.
 - `gh` and the post-script keep using the minted token (`GH_TOKEN`,
   `PUSH_TOKEN`).
+- On GitHub Actions, harness scripts cannot use `GITHUB_TOKEN`; Fullsend
+  clears it before `fullsend run` and rejects it from harness-controlled
+  expansion. Use the minted `GH_TOKEN` for GitHub API work, or declare a
+  provider credential when a supported provider needs a distinct token.
 - Outside GitHub Actions the variable is left alone; a local PAT is never
   copied into it. Set it yourself only for a local run against GitHub Packages.
 - Any provider definition in `.fullsend` may reference it, the same way one

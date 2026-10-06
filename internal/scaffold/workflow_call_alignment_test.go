@@ -1112,6 +1112,17 @@ func TestActionReconcileStatusUsesSuppliedRoleFallback(t *testing.T) {
 		"reconciliation must use the supplied role when an early failure prevents the harness from reporting one")
 }
 
+func TestActionReconcileStatusSupportsOlderCLIs(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+	s := string(content)
+
+	assert.Contains(t, s, "fullsend reconcile-status --help 2>&1 | grep -q -- '--review-run'",
+		"review reconciliation must detect whether the installed CLI supports --review-run")
+	assert.Contains(t, s, "RECONCILE_FLAGS+=(--review-run)",
+		"supported CLIs must retain GitHub-specific review reconciliation guidance")
+}
+
 func TestActionRunPreservesPreMintWorkflowTokenButBlocksInjectedToken(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
 	require.NoError(t, err)
