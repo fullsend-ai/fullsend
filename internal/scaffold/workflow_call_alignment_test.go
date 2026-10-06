@@ -1099,6 +1099,19 @@ func TestActionPRHeadSHAInput(t *testing.T) {
 		"reconcile step must pass PR_HEAD_SHA_INPUT env from input")
 }
 
+func TestActionReconcileStatusUsesSuppliedRoleFallback(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+	s := string(content)
+
+	assert.Contains(t, s, "  role:\n    description:",
+		"action.yml must declare the optional role supplied by matrix dispatch")
+	assert.Contains(t, s, "SUPPLIED_ROLE: ${{ inputs.role }}",
+		"reconcile step must receive the supplied role")
+	assert.Contains(t, s, "RESOLVED_ROLE=\"${HARNESS_ROLE:-${SUPPLIED_ROLE:-${AGENT}}}\"",
+		"reconciliation must use the supplied role when an early failure prevents the harness from reporting one")
+}
+
 func TestActionRunPreservesPreMintWorkflowTokenButBlocksInjectedToken(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
 	require.NoError(t, err)

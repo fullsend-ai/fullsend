@@ -12,6 +12,11 @@ inputs:
   agent:
     description: Agent name passed to fullsend run (e.g. triage, code, review).
     required: true
+  role:
+    description: >-
+      Mint role selected by dispatch. Used to reconcile an interrupted run
+      before fullsend can report its resolved harness role.
+    default: ""
   version:
     description: >-
       Release tag, version or long-form SHA: use latest, v0.0.1, 0.0.1 or a 40-char commit SHA.
@@ -547,6 +552,7 @@ runs:
         RUN_URL: ${{ inputs.run-url }}
         JOB_STATUS: ${{ job.status }}
         HARNESS_ROLE: ${{ steps.run.outputs.role }}
+        SUPPLIED_ROLE: ${{ inputs.role }}
         WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
@@ -582,7 +588,7 @@ runs:
 
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
-        RESOLVED_ROLE="${HARNESS_ROLE:-${AGENT}}"
+        RESOLVED_ROLE="${HARNESS_ROLE:-${SUPPLIED_ROLE:-${AGENT}}}"
         RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${RESOLVED_ROLE}")
         RECONCILE_FLAGS+=(--fullsend-dir "${FULLSEND_DIR}")
         RECONCILE_FLAGS+=(--job-status "${JOB_STATUS}")
