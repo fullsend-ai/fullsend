@@ -546,75 +546,6 @@ func TestFakeClient_OrgSecretExists(t *testing.T) {
 	})
 }
 
-func TestFakeClient_CreateOrgSecret(t *testing.T) {
-	ctx := context.Background()
-	fc := &FakeClient{}
-
-	err := fc.CreateOrgSecret(ctx, "myorg", "DISPATCH_TOKEN", "secret-value", []int64{100, 200})
-	require.NoError(t, err)
-
-	// Should be recorded.
-	require.Len(t, fc.CreatedOrgSecrets, 1)
-	assert.Equal(t, "myorg", fc.CreatedOrgSecrets[0].Org)
-	assert.Equal(t, "DISPATCH_TOKEN", fc.CreatedOrgSecrets[0].Name)
-	assert.Equal(t, "secret-value", fc.CreatedOrgSecrets[0].Value)
-	assert.Equal(t, []int64{100, 200}, fc.CreatedOrgSecrets[0].RepoIDs)
-
-	// Should be queryable.
-	exists, err := fc.OrgSecretExists(ctx, "myorg", "DISPATCH_TOKEN")
-	require.NoError(t, err)
-	assert.True(t, exists)
-}
-
-func TestFakeClient_OrgVariableExists(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("exists", func(t *testing.T) {
-		fc := &FakeClient{
-			OrgVariables: map[string]bool{"myorg/DISPATCH_URL": true},
-		}
-		exists, err := fc.OrgVariableExists(ctx, "myorg", "DISPATCH_URL")
-		require.NoError(t, err)
-		assert.True(t, exists)
-	})
-
-	t.Run("not exists", func(t *testing.T) {
-		fc := &FakeClient{
-			OrgVariables: map[string]bool{},
-		}
-		exists, err := fc.OrgVariableExists(ctx, "myorg", "MISSING")
-		require.NoError(t, err)
-		assert.False(t, exists)
-	})
-
-	t.Run("nil map", func(t *testing.T) {
-		fc := &FakeClient{}
-		exists, err := fc.OrgVariableExists(ctx, "myorg", "VAR")
-		require.NoError(t, err)
-		assert.False(t, exists)
-	})
-}
-
-func TestFakeClient_CreateOrUpdateOrgVariable(t *testing.T) {
-	ctx := context.Background()
-	fc := &FakeClient{}
-
-	err := fc.CreateOrUpdateOrgVariable(ctx, "myorg", "DISPATCH_URL", "https://func.example.com", []int64{100, 200})
-	require.NoError(t, err)
-
-	// Should be recorded.
-	require.Len(t, fc.CreatedOrgVariables, 1)
-	assert.Equal(t, "myorg", fc.CreatedOrgVariables[0].Org)
-	assert.Equal(t, "DISPATCH_URL", fc.CreatedOrgVariables[0].Name)
-	assert.Equal(t, "https://func.example.com", fc.CreatedOrgVariables[0].Value)
-	assert.Equal(t, []int64{100, 200}, fc.CreatedOrgVariables[0].RepoIDs)
-
-	// Should be queryable.
-	exists, err := fc.OrgVariableExists(ctx, "myorg", "DISPATCH_URL")
-	require.NoError(t, err)
-	assert.True(t, exists)
-}
-
 func TestFakeClient_GetOrgVariable(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{
@@ -661,9 +592,18 @@ func TestFakeClient_CreateOrUpdateOrgVariableAll(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{}
 	require.NoError(t, fc.CreateOrUpdateOrgVariableAll(ctx, "myorg", "FOREIGN", "caller"))
-	exists, err := fc.OrgVariableExists(ctx, "myorg", "FOREIGN")
+
+	// Should be recorded.
+	require.Len(t, fc.CreatedOrgVariables, 1)
+	assert.Equal(t, "myorg", fc.CreatedOrgVariables[0].Org)
+	assert.Equal(t, "FOREIGN", fc.CreatedOrgVariables[0].Name)
+	assert.Equal(t, "caller", fc.CreatedOrgVariables[0].Value)
+
+	// Should be queryable.
+	value, exists, err := fc.GetOrgVariable(ctx, "myorg", "FOREIGN")
 	require.NoError(t, err)
 	assert.True(t, exists)
+	assert.Equal(t, "caller", value)
 }
 
 func TestFakeClient_DeleteOrgVariable(t *testing.T) {
@@ -869,17 +809,11 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.ListOrgInstallations(ctx, "org")
 			return err
 		}},
-		{"CreateOrgSecret", func(fc *FakeClient) error {
-			return fc.CreateOrgSecret(ctx, "o", "n", "v", nil)
-		}},
 		{"OrgSecretExists", func(fc *FakeClient) error {
 			_, err := fc.OrgSecretExists(ctx, "o", "n")
 			return err
 		}},
 		{"DeleteOrgSecret", func(fc *FakeClient) error { return fc.DeleteOrgSecret(ctx, "o", "n") }},
-		{"SetOrgSecretRepos", func(fc *FakeClient) error {
-			return fc.SetOrgSecretRepos(ctx, "o", "n", nil)
-		}},
 		{"CommitFiles", func(fc *FakeClient) error {
 			_, err := fc.CommitFiles(ctx, "o", "r", "m", nil)
 			return err
@@ -894,28 +828,18 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"SetPipelineVariablesMinimumOverrideRole", func(fc *FakeClient) error {
 			return fc.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", PipelineVarOverrideOwner)
 		}},
-		{"CreateOrUpdateOrgVariable", func(fc *FakeClient) error {
-			return fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", nil)
-		}},
-		{"OrgVariableExists", func(fc *FakeClient) error {
-			_, err := fc.OrgVariableExists(ctx, "o", "n")
-			return err
+		{"CreateOrUpdateOrgVariableAll", func(fc *FakeClient) error {
+			return fc.CreateOrUpdateOrgVariableAll(ctx, "o", "n", "v")
 		}},
 		{"GetOrgVariable", func(fc *FakeClient) error { _, _, err := fc.GetOrgVariable(ctx, "o", "n"); return err }},
 		{"ListOrgVariables", func(fc *FakeClient) error { _, err := fc.ListOrgVariables(ctx, "o"); return err }},
+		{"ListInstanceVariables", func(fc *FakeClient) error { _, err := fc.ListInstanceVariables(ctx); return err }},
 		{"IsInstallationToken", func(fc *FakeClient) error { _, err := fc.IsInstallationToken(ctx); return err }},
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
 			return fc.DeleteOrgVariable(ctx, "o", "n")
 		}},
 		{"DeleteRepoVariable", func(fc *FakeClient) error {
 			return fc.DeleteRepoVariable(ctx, "o", "r", "n")
-		}},
-		{"SetOrgVariableRepos", func(fc *FakeClient) error {
-			return fc.SetOrgVariableRepos(ctx, "o", "n", nil)
-		}},
-		{"GetOrgVariableRepos", func(fc *FakeClient) error {
-			_, err := fc.GetOrgVariableRepos(ctx, "o", "n")
-			return err
 		}},
 		{"DeleteIssueComment", func(fc *FakeClient) error {
 			return fc.DeleteIssueComment(ctx, "o", "r", 1)
@@ -1036,17 +960,13 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.GetLatestWorkflowRun(ctx, "o", "r", "ci.yml")
 			_, _ = fc.GetWorkflowRun(ctx, "o", "r", 1)
 			_, _ = fc.ListOrgInstallations(ctx, "org")
-			_ = fc.CreateOrgSecret(ctx, "o", "n", "v", []int64{1})
 			_, _ = fc.OrgSecretExists(ctx, "o", "secret")
 			_ = fc.DeleteOrgSecret(ctx, "o", "n")
-			_ = fc.SetOrgSecretRepos(ctx, "o", "n", []int64{1, 2})
 			_, _ = fc.CommitFiles(ctx, "o", "r", "m", []TreeFile{{Path: "p", Content: []byte("c"), Mode: "100644"}})
 			_ = fc.ForceCommitFileToBranch(ctx, "o", "r", "state-branch", "state.json", "m", []byte("data"))
-			_ = fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", []int64{1})
-			_, _ = fc.OrgVariableExists(ctx, "o", "var")
+			_ = fc.CreateOrUpdateOrgVariableAll(ctx, "o", "n", "v")
+			_, _, _ = fc.GetOrgVariable(ctx, "o", "var")
 			_ = fc.DeleteOrgVariable(ctx, "o", "n")
-			_ = fc.SetOrgVariableRepos(ctx, "o", "n", []int64{1, 2})
-			_, _ = fc.GetOrgVariableRepos(ctx, "o", "n")
 			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
 			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
 			_, _ = fc.ListRepositoryFiles(ctx, "o", "r")

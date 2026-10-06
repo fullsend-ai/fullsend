@@ -44,27 +44,6 @@ func TestResolve(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestResolveFromConfig(t *testing.T) {
-	t.Parallel()
-
-	defaultBackend, err := ResolveFromConfig(nil)
-	require.NoError(t, err)
-	assert.Equal(t, "claude", defaultBackend.Runtime.Name())
-
-	cfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
-dispatch:
-  platform: github-actions
-defaults:
-  roles: [triage]
-  runtime: dummy
-repos: {}
-`))
-	require.NoError(t, parseErr)
-	dummyBackend, err := ResolveFromConfig(cfg)
-	require.NoError(t, err)
-	assert.Equal(t, "dummy", dummyBackend.Runtime.Name())
-}
-
 func TestResolveFromPerRepoConfig(t *testing.T) {
 	t.Parallel()
 
@@ -110,6 +89,13 @@ func TestResolveFromPerRepoConfig_OpenCodeSelectable(t *testing.T) {
 	b, err := ResolveFromPerRepoConfig(ocCfg)
 	require.NoError(t, err)
 	assert.Equal(t, "opencode", b.Runtime.Name())
+
+	// Direct Resolve() still works for dev/testing.
+	for _, name := range []string{"opencode"} {
+		rt, err := Resolve(name)
+		require.NoError(t, err)
+		assert.Equal(t, name, rt.Runtime.Name())
+	}
 
 	// An unknown runtime is still rejected via config.
 	badCfg := config.NewPerRepoConfig(nil, "")

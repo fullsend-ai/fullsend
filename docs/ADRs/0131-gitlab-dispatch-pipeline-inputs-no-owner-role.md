@@ -85,6 +85,16 @@ and compatibility details belong in the
   and job identity remains required before fleet-wide rollout; this ADR
   does not enable the unimplemented webhook fast path.
 
+> **Update (#7772):** `repos install` now provisions the ADR 0125 webhook
+> fast path (trigger token, webhook secret, project webhook) once the
+> dispatcher is on the protected default branch and `no_one_allowed` is
+> verified; see [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md).
+> Install-time Maintainer access is used only transiently to provision and
+> revoke; the trigger token acts as its owner at runtime, so install
+> rejects and revokes a token owned by a Maintainer or Owner (or whose
+> owner cannot be verified) and leaves the fast path disabled rather than
+> raise any runtime credential above Developer.
+
 ## References
 
 - [ADR 0125 — Hybrid GitLab dispatch](0125-gitlab-hybrid-webhook-poller-dispatch.md)

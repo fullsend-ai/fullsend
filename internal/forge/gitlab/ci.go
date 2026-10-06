@@ -172,7 +172,11 @@ func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, va
 // must never be stored unmasked, so a server-side masking rejection is an
 // error rather than a reason to retry with masked=false.
 func maskingRequired(name string) bool {
-	return name == forge.SecretOpenAIAPIKey
+	switch name {
+	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret:
+		return true
+	}
+	return false
 }
 
 func isMaskingError(err *APIError) bool {
@@ -368,11 +372,15 @@ func (c *LiveClient) GetRepoVariable(ctx context.Context, owner, repo, name stri
 
 // ListRepoVariables returns all CI/CD variables for a project as a
 // key-to-value map. Results are paginated; the method follows pagination
-// until all variables are fetched.
+// until all variables are fetched. When a key exists for several
+// environment scopes, the wildcard-scoped value wins regardless of list
+// order, so the value always belongs to the same variable that the
+// wildcard-scoped GetRepoSecretProtection and DeleteRepoSecret address.
 func (c *LiveClient) ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error) {
 	const perPage = 100
 	const maxPages = 100
 	result := make(map[string]string)
+	wildcard := make(map[string]bool)
 
 	for page := 1; page <= maxPages; page++ {
 		path := fmt.Sprintf("/projects/%s/variables?per_page=%d&page=%d", projectPath(owner, repo), perPage, page)
@@ -384,13 +392,23 @@ func (c *LiveClient) ListRepoVariables(ctx context.Context, owner, repo string) 
 		var vars []struct {
 			Key   string `json:"key"`
 			Value string `json:"value"`
+			// Absent on very old GitLab versions, which only had the
+			// wildcard scope.
+			EnvironmentScope string `json:"environment_scope"`
 		}
 		if err := decodeJSON(resp, &vars); err != nil {
 			return nil, fmt.Errorf("decode repo variables page %d: %w", page, err)
 		}
 
 		for _, v := range vars {
+			isWildcard := v.EnvironmentScope == "" || v.EnvironmentScope == "*"
+			if wildcard[v.Key] && !isWildcard {
+				continue
+			}
 			result[v.Key] = v.Value
+			if isWildcard {
+				wildcard[v.Key] = true
+			}
 		}
 
 		if len(vars) < perPage {
@@ -421,11 +439,6 @@ func (c *LiveClient) DeleteRepoVariable(ctx context.Context, owner, repo, name s
 // Org-level secrets — not supported (GitLab per-repo mode)
 // ---------------------------------------------------------------------------
 
-// CreateOrgSecret is not supported on GitLab (per-repo mode).
-func (c *LiveClient) CreateOrgSecret(_ context.Context, _, _, _ string, _ []int64) error {
-	return forge.ErrNotSupported
-}
-
 // OrgSecretExists is not supported on GitLab (per-repo mode).
 func (c *LiveClient) OrgSecretExists(_ context.Context, _, _ string) (bool, error) {
 	return false, forge.ErrNotSupported
@@ -436,33 +449,13 @@ func (c *LiveClient) DeleteOrgSecret(_ context.Context, _, _ string) error {
 	return forge.ErrNotSupported
 }
 
-// SetOrgSecretRepos is not supported on GitLab (per-repo mode).
-func (c *LiveClient) SetOrgSecretRepos(_ context.Context, _, _ string, _ []int64) error {
-	return forge.ErrNotSupported
-}
-
-// GetOrgSecretRepos is not supported on GitLab (per-repo mode).
-func (c *LiveClient) GetOrgSecretRepos(_ context.Context, _, _ string) ([]int64, error) {
-	return nil, forge.ErrNotSupported
-}
-
 // ---------------------------------------------------------------------------
 // Org-level variables — not supported (GitLab per-repo mode)
 // ---------------------------------------------------------------------------
 
-// CreateOrUpdateOrgVariable is not supported on GitLab (per-repo mode).
-func (c *LiveClient) CreateOrUpdateOrgVariable(_ context.Context, _, _, _ string, _ []int64) error {
-	return forge.ErrNotSupported
-}
-
 // CreateOrUpdateOrgVariableAll is not supported on GitLab (per-repo mode).
 func (c *LiveClient) CreateOrUpdateOrgVariableAll(_ context.Context, _, _, _ string) error {
 	return forge.ErrNotSupported
-}
-
-// OrgVariableExists is not supported on GitLab (per-repo mode).
-func (c *LiveClient) OrgVariableExists(_ context.Context, _, _ string) (bool, error) {
-	return false, forge.ErrNotSupported
 }
 
 // GetOrgVariable is not supported on GitLab (per-repo mode).
@@ -470,24 +463,53 @@ func (c *LiveClient) GetOrgVariable(_ context.Context, _, _ string) (string, boo
 	return "", false, forge.ErrNotSupported
 }
 
-// ListOrgVariables is not supported on GitLab (per-repo mode).
-func (c *LiveClient) ListOrgVariables(_ context.Context, _ string) ([]forge.OrgVariable, error) {
-	return nil, forge.ErrNotSupported
+// ListOrgVariables inspects group variables inherited by a project.
+func (c *LiveClient) ListOrgVariables(ctx context.Context, org string) ([]forge.OrgVariable, error) {
+	return c.listVariableNames(ctx, "/groups/"+url.PathEscape(org)+"/variables", "group")
+}
+
+// ListInstanceVariables lists the names of instance-level CI/CD variables,
+// which self-managed GitLab administrators can set and which every project
+// inherits. The endpoint needs administrator access, so a caller without it
+// receives forge.ErrForbidden. GitLab.com has no user-managed instance-level
+// variables, so no overrides exist there and the list is empty.
+func (c *LiveClient) ListInstanceVariables(ctx context.Context) ([]forge.OrgVariable, error) {
+	if u, err := url.Parse(c.baseURL); err == nil && strings.EqualFold(u.Hostname(), "gitlab.com") {
+		return nil, nil
+	}
+	return c.listVariableNames(ctx, "/admin/ci/variables", "instance")
+}
+
+// listVariableNames pages through a CI/CD variables endpoint and returns the
+// variable names. scope names the variable level in error messages.
+func (c *LiveClient) listVariableNames(ctx context.Context, path, scope string) ([]forge.OrgVariable, error) {
+	const perPage = 100
+	const maxPages = 100
+	var result []forge.OrgVariable
+	for page := 1; page <= maxPages; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("%s?per_page=%d&page=%d", path, perPage, page))
+		if err != nil {
+			return nil, fmt.Errorf("list %s variables page %d: %w", scope, page, err)
+		}
+		var vars []struct {
+			Key string `json:"key"`
+		}
+		if err := decodeJSON(resp, &vars); err != nil {
+			return nil, fmt.Errorf("decode %s variables page %d: %w", scope, page, err)
+		}
+		for _, v := range vars {
+			result = append(result, forge.OrgVariable{Name: v.Key})
+		}
+		if len(vars) < perPage {
+			return result, nil
+		}
+	}
+	return nil, fmt.Errorf("list %s variables: pagination exceeded %d pages", scope, maxPages)
 }
 
 // DeleteOrgVariable is not supported on GitLab (per-repo mode).
 func (c *LiveClient) DeleteOrgVariable(_ context.Context, _, _ string) error {
 	return forge.ErrNotSupported
-}
-
-// SetOrgVariableRepos is not supported on GitLab (per-repo mode).
-func (c *LiveClient) SetOrgVariableRepos(_ context.Context, _, _ string, _ []int64) error {
-	return forge.ErrNotSupported
-}
-
-// GetOrgVariableRepos is not supported on GitLab (per-repo mode).
-func (c *LiveClient) GetOrgVariableRepos(_ context.Context, _, _ string) ([]int64, error) {
-	return nil, forge.ErrNotSupported
 }
 
 // ---------------------------------------------------------------------------
@@ -1349,6 +1371,62 @@ func (c *LiveClient) getProtectedBranchExact(ctx context.Context, owner, repo, b
 		return nil, fmt.Errorf("decode protected branch: %w", err)
 	}
 	return raw.toRule(), nil
+}
+
+// ListProtectedBranches returns every protected-branch rule on the project,
+// including wildcard patterns.
+func (c *LiveClient) ListProtectedBranches(ctx context.Context, owner, repo string) ([]forge.ProtectedBranchRule, error) {
+	const perPage = 100
+	const maxPages = 100
+	proj := projectPath(owner, repo)
+	var rules []forge.ProtectedBranchRule
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/projects/%s/protected_branches?per_page=%d&page=%d", proj, perPage, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list protected branches page %d: %w", page, err)
+		}
+		var raws []gitlabProtectedBranchRaw
+		if err := decodeJSON(resp, &raws); err != nil {
+			return nil, fmt.Errorf("decode protected branches page %d: %w", page, err)
+		}
+		for _, raw := range raws {
+			rules = append(rules, *raw.toRule())
+		}
+		if len(raws) < perPage {
+			return rules, nil
+		}
+	}
+	return nil, fmt.Errorf("list protected branches: pagination exceeded %d pages", maxPages)
+}
+
+// ListProtectedTags returns the name or wildcard pattern of every
+// protected-tag rule on the project.
+func (c *LiveClient) ListProtectedTags(ctx context.Context, owner, repo string) ([]string, error) {
+	const perPage = 100
+	const maxPages = 100
+	proj := projectPath(owner, repo)
+	var names []string
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/projects/%s/protected_tags?per_page=%d&page=%d", proj, perPage, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list protected tags page %d: %w", page, err)
+		}
+		var raws []struct {
+			Name string `json:"name"`
+		}
+		if err := decodeJSON(resp, &raws); err != nil {
+			return nil, fmt.Errorf("decode protected tags page %d: %w", page, err)
+		}
+		for _, raw := range raws {
+			names = append(names, raw.Name)
+		}
+		if len(raws) < perPage {
+			return names, nil
+		}
+	}
+	return nil, fmt.Errorf("list protected tags: pagination exceeded %d pages", maxPages)
 }
 
 // listMatchingWildcardProtectedBranches lists the project's protected-branch

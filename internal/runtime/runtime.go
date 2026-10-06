@@ -171,7 +171,7 @@ type Backend struct {
 	Transcripts TranscriptHandler
 }
 
-// Default returns the Claude Code backend. Prefer ResolveFromConfig for org-aware selection.
+// Default returns the Claude Code backend. Prefer ResolveFromPerRepoConfig for config-aware selection.
 func Default() Backend {
 	r := ClaudeRuntime{}
 	return Backend{Runtime: r, Transcripts: r}

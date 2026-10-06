@@ -340,6 +340,41 @@ func TestGetRepo(t *testing.T) {
 	assert.False(t, repo.Fork)
 }
 
+// The project's selected CI configuration path (possibly in another project)
+// is exposed so safety checks can tell when .gitlab-ci.yml is not the
+// pipeline GitLab runs.
+func TestGetRepo_CIConfigPath(t *testing.T) {
+	for name, path := range map[string]any{
+		"custom path": "ci/main.yml@other/group",
+		"unset":       nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			called := false
+			mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				json.NewEncoder(w).Encode(map[string]any{
+					"id":                  42,
+					"name":                "myrepo",
+					"path_with_namespace": "mygroup/myrepo",
+					"default_branch":      "main",
+					"ci_config_path":      path,
+				})
+			})
+
+			repo, err := client.GetRepo(context.Background(), "mygroup", "myrepo")
+
+			require.NoError(t, err)
+			require.True(t, called)
+			if path == nil {
+				assert.Empty(t, repo.CIConfigPath)
+			} else {
+				assert.Equal(t, path, repo.CIConfigPath)
+			}
+		})
+	}
+}
+
 func TestGetRepo_Fork(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/user%2Ffork", func(w http.ResponseWriter, r *http.Request) {

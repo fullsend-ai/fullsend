@@ -1778,6 +1778,156 @@ func TestListRepoVariables(t *testing.T) {
 	assert.Equal(t, map[string]string{"VAR1": "val1", "VAR2": "val2"}, vars)
 }
 
+func TestListGroupVariablesForTriggerSafety(t *testing.T) {
+	client, mux := setupTest(t)
+	calls := 0
+	mux.HandleFunc("/api/v4/groups/myorg%2Fsubgroup/variables", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "CI_PIPELINE_SOURCE", "value": "push"}})
+	})
+	vars, err := client.ListOrgVariables(context.Background(), "myorg/subgroup")
+	require.NoError(t, err)
+	require.Equal(t, []forge.OrgVariable{{Name: "CI_PIPELINE_SOURCE"}}, vars)
+	require.Equal(t, 1, calls)
+}
+
+func TestListGroupVariablesErrors(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusOK} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			client, mux := setupTest(t)
+			calls := 0
+			mux.HandleFunc("/api/v4/groups/myorg/variables", func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("invalid JSON"))
+			})
+			_, err := client.ListOrgVariables(context.Background(), "myorg")
+			require.Error(t, err)
+			require.Equal(t, 1, calls)
+		})
+	}
+}
+
+func TestListInstanceVariables(t *testing.T) {
+	t.Run("lists names from the admin endpoint", func(t *testing.T) {
+		client, mux := setupTest(t)
+		calls := 0
+		mux.HandleFunc("/api/v4/admin/ci/variables", func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			assert.Equal(t, http.MethodGet, r.Method)
+			writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "CI_PIPELINE_SOURCE", "value": "push"}})
+		})
+		vars, err := client.ListInstanceVariables(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, []forge.OrgVariable{{Name: "CI_PIPELINE_SOURCE"}}, vars)
+		require.Equal(t, 1, calls)
+	})
+
+	t.Run("forbidden without administrator access", func(t *testing.T) {
+		client, mux := setupTest(t)
+		calls := 0
+		mux.HandleFunc("/api/v4/admin/ci/variables", func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.WriteHeader(http.StatusForbidden)
+		})
+		_, err := client.ListInstanceVariables(context.Background())
+		require.ErrorIs(t, err, forge.ErrForbidden)
+		require.Equal(t, 1, calls)
+	})
+
+	t.Run("gitlab.com has no instance variables to inspect", func(t *testing.T) {
+		client, err := New("tok")
+		require.NoError(t, err)
+		vars, err := client.ListInstanceVariables(context.Background())
+		require.NoError(t, err)
+		require.Empty(t, vars)
+	})
+}
+
+func TestListRepoVariables_WildcardScopeWinsOverEnvironmentScope(t *testing.T) {
+	for name, order := range map[string][]string{
+		"wildcard first": {"*", "production"},
+		"scoped first":   {"production", "*"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			ctx := context.Background()
+
+			handlerCalls := 0
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+				handlerCalls++
+				vars := make([]map[string]string, 0, len(order))
+				for _, scope := range order {
+					vars = append(vars, map[string]string{
+						"key":               forge.SecretTriggerToken,
+						"value":             "value-for-" + scope,
+						"environment_scope": scope,
+					})
+				}
+				writeJSON(t, w, http.StatusOK, vars)
+			})
+
+			got, err := client.ListRepoVariables(ctx, "myorg", "myrepo")
+			require.NoError(t, err)
+			assert.Equal(t, 1, handlerCalls)
+			assert.Equal(t, map[string]string{forge.SecretTriggerToken: "value-for-*"}, got)
+		})
+	}
+}
+
+func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			ctx := context.Background()
+
+			handlerCalls := 0
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+				handlerCalls++
+				var body map[string]any
+				readJSONBody(t, r, &body)
+				assert.Equal(t, true, body["masked"], "must never send masked:false")
+				writeJSON(t, w, http.StatusBadRequest, map[string]string{"message": "This variable can not be masked"})
+			})
+
+			err := client.CreateRepoSecret(ctx, "myorg", "myrepo", name, "abcdef0123456789")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must not be stored unmasked")
+			assert.Equal(t, 1, handlerCalls, "must not retry with masked:false")
+		})
+	}
+}
+
+func TestUpdateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			ctx := context.Background()
+
+			postCalls := 0
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+				postCalls++
+				writeJSON(t, w, http.StatusConflict, map[string]string{"message": name + " has already been taken"})
+			})
+			putCalls := 0
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/"+name, func(w http.ResponseWriter, r *http.Request) {
+				putCalls++
+				var body map[string]any
+				readJSONBody(t, r, &body)
+				assert.Equal(t, true, body["masked"], "must never send masked:false")
+				writeJSON(t, w, http.StatusBadRequest, map[string]string{"message": "This variable can not be masked"})
+			})
+
+			err := client.CreateRepoSecret(ctx, "myorg", "myrepo", name, "abcdef0123456789")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must not be stored unmasked")
+			assert.Equal(t, 1, postCalls, "the initial create conflicts exactly once")
+			assert.Equal(t, 1, putCalls, "must not retry with masked:false")
+		})
+	}
+}
+
 func TestListRepoVariables_Pagination(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -2735,11 +2885,6 @@ func TestErrNotSupported_OrgMethods(t *testing.T) {
 	client, _ := setupTest(t)
 	ctx := context.Background()
 
-	t.Run("CreateOrgSecret", func(t *testing.T) {
-		err := client.CreateOrgSecret(ctx, "org", "secret", "val", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
 	t.Run("OrgSecretExists", func(t *testing.T) {
 		_, err := client.OrgSecretExists(ctx, "org", "secret")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
@@ -2750,28 +2895,8 @@ func TestErrNotSupported_OrgMethods(t *testing.T) {
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 
-	t.Run("SetOrgSecretRepos", func(t *testing.T) {
-		err := client.SetOrgSecretRepos(ctx, "org", "secret", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("GetOrgSecretRepos", func(t *testing.T) {
-		_, err := client.GetOrgSecretRepos(ctx, "org", "secret")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("CreateOrUpdateOrgVariable", func(t *testing.T) {
-		err := client.CreateOrUpdateOrgVariable(ctx, "org", "var", "val", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
 	t.Run("CreateOrUpdateOrgVariableAll", func(t *testing.T) {
 		err := client.CreateOrUpdateOrgVariableAll(ctx, "org", "var", "val")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("OrgVariableExists", func(t *testing.T) {
-		_, err := client.OrgVariableExists(ctx, "org", "var")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 
@@ -2780,23 +2905,8 @@ func TestErrNotSupported_OrgMethods(t *testing.T) {
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 
-	t.Run("ListOrgVariables", func(t *testing.T) {
-		_, err := client.ListOrgVariables(ctx, "org")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
 	t.Run("DeleteOrgVariable", func(t *testing.T) {
 		err := client.DeleteOrgVariable(ctx, "org", "var")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("SetOrgVariableRepos", func(t *testing.T) {
-		err := client.SetOrgVariableRepos(ctx, "org", "var", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("GetOrgVariableRepos", func(t *testing.T) {
-		_, err := client.GetOrgVariableRepos(ctx, "org", "var")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 }
@@ -4662,4 +4772,77 @@ func TestGetRepoSecretProtection(t *testing.T) {
 		_, err := client.GetRepoSecretProtection(ctx, "myorg", "myrepo", "K")
 		require.Error(t, err)
 	})
+}
+
+func TestListProtectedBranches_IncludesWildcardRules(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalls := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalls++
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"name": "main", "push_access_levels": []map[string]int{{"access_level": 40}}, "merge_access_levels": []map[string]int{{"access_level": 30}}},
+			{"name": "release/*", "push_access_levels": []map[string]int{{"access_level": 0}}, "merge_access_levels": []map[string]int{{"access_level": 40}}},
+		})
+	})
+
+	rules, err := client.ListProtectedBranches(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	assert.Equal(t, 1, handlerCalls)
+	require.Len(t, rules, 2)
+	assert.Equal(t, "main", rules[0].Name)
+	assert.Equal(t, "release/*", rules[1].Name)
+	assert.Equal(t, 40, rules[1].MergeAccessLevels[0].AccessLevel)
+}
+
+func TestListProtectedBranches_ErrorStatus(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalls := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalls++
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	_, err := client.ListProtectedBranches(ctx, "myorg", "myrepo")
+	require.Error(t, err)
+	assert.Equal(t, 1, handlerCalls)
+}
+
+func TestListProtectedTags(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalls := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_tags", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalls++
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"name": "v1.0.0"},
+			{"name": "release-*"},
+		})
+	})
+
+	tags, err := client.ListProtectedTags(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	assert.Equal(t, 1, handlerCalls)
+	assert.Equal(t, []string{"v1.0.0", "release-*"}, tags)
+}
+
+func TestListProtectedTags_ErrorStatus(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalls := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_tags", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalls++
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	_, err := client.ListProtectedTags(ctx, "myorg", "myrepo")
+	require.Error(t, err)
+	assert.Equal(t, 1, handlerCalls)
 }

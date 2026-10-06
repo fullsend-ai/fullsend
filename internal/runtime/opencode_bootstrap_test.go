@@ -25,12 +25,17 @@ func fakeOpenshellOpenCode(t *testing.T, logPath, storeDir string) {
 	script := `#!/bin/sh
 echo "$@" >> '` + logPath + `'
 if [ "$2" = "upload" ]; then
+  case "$5" in /tmp/fs-upload-*/) cp -- "$4" "$5/"; exit $? ;; esac
   cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
   exit 0
 fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
+    "mkdir -m 700 -- /tmp/"*|"mkdir -m 700 -- '/tmp/"*|"rm -f -- '/tmp/fs-upload-"*) sh -c "$last"; exit $? ;;
+    "test -f '/tmp/fs-upload-"*)
+      sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
+      exit $? ;;
     "opencode --version") echo "0.1.0"; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"bash":"allow","read":"allow","glob":"allow","grep":"allow","skill":"allow","*":"deny"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
   esac

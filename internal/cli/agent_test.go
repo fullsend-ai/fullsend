@@ -43,23 +43,6 @@ func newAgentTestServer(t *testing.T, contents map[string][]byte) (*httptest.Ser
 	return srv, fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
 }
 
-func writeOrgConfig(t *testing.T, dir string, extraYAML string) {
-	t.Helper()
-	cfg := `version: "1"
-dispatch:
-  platform: github-actions
-defaults:
-  roles:
-    - fullsend
-  max_implementation_retries: 2
-repos: {}
-`
-	if extraYAML != "" {
-		cfg += extraYAML
-	}
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
-}
-
 func writePerRepoConfig(t *testing.T, dir string, extraYAML string) {
 	t.Helper()
 	cfg := `version: "1"
@@ -75,13 +58,14 @@ roles:
 
 // --- loadAgentConfig tests ---
 
-func TestLoadAgentConfig_OrgConfig(t *testing.T) {
+func TestLoadAgentConfig_PerOrgConfigRejected(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	cfg := "version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles:\n    - fullsend\nrepos: {}\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
 
-	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
-	require.NoError(t, err)
-	assert.True(t, cfg.IsOrgMode())
+	_, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-org configuration format")
 }
 
 func TestLoadAgentConfig_PerRepoConfig(t *testing.T) {
@@ -90,7 +74,8 @@ func TestLoadAgentConfig_PerRepoConfig(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	assert.False(t, cfg.IsOrgMode())
+	_, ok := cfg.(config.PerRepoConfigWriter)
+	assert.True(t, ok)
 }
 
 func TestLoadAgentConfig_MissingFile(t *testing.T) {
@@ -103,7 +88,7 @@ func TestLoadAgentConfig_MissingFile(t *testing.T) {
 
 func TestRunAgentAdd_LocalPath(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(
@@ -127,7 +112,7 @@ func TestRunAgentAdd_LocalPath(t *testing.T) {
 
 func TestRunAgentAdd_LocalPathWithName(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(
@@ -150,7 +135,7 @@ func TestRunAgentAdd_LocalPathWithName(t *testing.T) {
 
 func TestRunAgentAdd_DuplicateNameRejected(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - harness/lint.yaml
 `)
 
@@ -169,7 +154,7 @@ func TestRunAgentAdd_DuplicateNameRejected(t *testing.T) {
 
 func TestRunAgentAdd_DuplicateNameCaseInsensitive(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - name: Lint
     source: harness/lint.yaml
 `)
@@ -190,7 +175,7 @@ func TestRunAgentAdd_DuplicateNameCaseInsensitive(t *testing.T) {
 
 func TestRunAgentAdd_PathTraversalRejected(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	printer := ui.New(os.Stdout)
 	err := runAgentAdd(context.Background(), "../../../etc/passwd", "", dir, nil, printer)
@@ -200,7 +185,7 @@ func TestRunAgentAdd_PathTraversalRejected(t *testing.T) {
 
 func TestRunAgentAdd_AbsolutePathRejected(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	printer := ui.New(os.Stdout)
 	err := runAgentAdd(context.Background(), "/etc/passwd", "", dir, nil, printer)
@@ -210,7 +195,7 @@ func TestRunAgentAdd_AbsolutePathRejected(t *testing.T) {
 
 func TestRunAgentAdd_NonGitHubURLRequiresSHA(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	printer := ui.New(os.Stdout)
 	err := runAgentAdd(context.Background(), "https://example.com/org/repo/main/harness/lint.yaml", "", dir, nil, printer)
@@ -220,7 +205,7 @@ func TestRunAgentAdd_NonGitHubURLRequiresSHA(t *testing.T) {
 
 func TestRunAgentAdd_LocalPathNotExist(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	printer := ui.New(os.Stdout)
 	err := runAgentAdd(context.Background(), "harness/nonexistent.yaml", "", dir, nil, printer)
@@ -241,7 +226,7 @@ func TestRunAgentAdd_URLWithPinnedSHA(t *testing.T) {
 	defer func() { fetch.DefaultPolicy = origPolicy }()
 
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	source := srv.URL + "/my-org/my-agents/" + testCommitSHA + "/harness/triage.yaml#sha256=" + harnessHash
 
@@ -270,7 +255,7 @@ func TestRunAgentAdd_URLHashMismatch(t *testing.T) {
 	defer func() { fetch.DefaultPolicy = origPolicy }()
 
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	wrongHash := "0000000000000000000000000000000000000000000000000000000000000000"
 	source := srv.URL + "/my-org/my-agents/" + testCommitSHA + "/harness/triage.yaml#sha256=" + wrongHash
@@ -294,7 +279,7 @@ func TestRunAgentAdd_URLAddsAllowlistPrefix(t *testing.T) {
 	defer func() { fetch.DefaultPolicy = origPolicy }()
 
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	source := srv.URL + "/my-org/my-agents/" + testCommitSHA + "/harness/triage.yaml"
 
@@ -333,7 +318,6 @@ func TestRunAgentAdd_PerRepoConfig(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	assert.False(t, cfg.IsOrgMode())
 	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Equal(t, "lint", agents[0].DerivedName())
@@ -343,7 +327,7 @@ func TestRunAgentAdd_PerRepoConfig(t *testing.T) {
 
 func TestRunAgentList_Empty(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	var buf strings.Builder
 	printer := ui.New(&buf)
@@ -354,7 +338,7 @@ func TestRunAgentList_Empty(t *testing.T) {
 
 func TestRunAgentList_WithAgents(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - harness/lint.yaml
   - name: custom
     source: harness/custom.yaml
@@ -377,7 +361,7 @@ allowed_remote_resources:
 func TestRunAgentList_StripsHashFromDisplay(t *testing.T) {
 	dir := t.TempDir()
 	hash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+hash+`"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/org/repo/"
@@ -411,7 +395,7 @@ func TestRunAgentUpdate_RepinsSHA(t *testing.T) {
 	defer func() { fetch.DefaultPolicy = origPolicy }()
 
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - "`+srv.URL+`/org/repo/`+oldSHA+`/harness/triage.yaml#sha256=`+oldHash+`"
 allowed_remote_resources:
   - "`+srv.URL+`/org/repo/"
@@ -445,7 +429,7 @@ func TestRunAgentUpdate_ExplicitSHA(t *testing.T) {
 
 	dir := t.TempDir()
 	oldHash := "2222222222222222222222222222222222222222222222222222222222222222"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - "`+srv.URL+`/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+oldHash+`"
 allowed_remote_resources:
   - "`+srv.URL+`/org/repo/"
@@ -465,7 +449,7 @@ allowed_remote_resources:
 
 func TestRunAgentUpdate_LocalPathRejected(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - harness/lint.yaml
 `)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -803,7 +787,7 @@ func TestRewriteHarnessBaseURL_WrongOccurrenceDetected(t *testing.T) {
 
 func TestRunAgentUpdate_NotFound(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	printer := ui.New(os.Stdout)
 	err := runAgentUpdate(context.Background(), "nonexistent", "", dir, nil, printer)
@@ -814,7 +798,7 @@ func TestRunAgentUpdate_NotFound(t *testing.T) {
 func TestRunAgentUpdate_InvalidSHA(t *testing.T) {
 	dir := t.TempDir()
 	hash := "3333333333333333333333333333333333333333333333333333333333333333"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+hash+`"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/org/repo/"
@@ -830,7 +814,7 @@ allowed_remote_resources:
 
 func TestRunAgentRemove_Success(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - harness/lint.yaml
   - harness/review.yaml
 `)
@@ -849,7 +833,7 @@ func TestRunAgentRemove_Success(t *testing.T) {
 func TestRunAgentRemove_CleansUpAllowlist(t *testing.T) {
 	dir := t.TempDir()
 	hash := "4444444444444444444444444444444444444444444444444444444444444444"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+hash+`"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/org/repo/"
@@ -874,7 +858,7 @@ func TestRunAgentRemove_KeepsAllowlistWhenOtherAgentsUseIt(t *testing.T) {
 	dir := t.TempDir()
 	hash1 := "5555555555555555555555555555555555555555555555555555555555555555"
 	hash2 := "6666666666666666666666666666666666666666666666666666666666666666"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+hash1+`"
   - "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/code.yaml#sha256=`+hash2+`"
 allowed_remote_resources:
@@ -893,7 +877,7 @@ allowed_remote_resources:
 
 func TestRunAgentRemove_NotFound(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	printer := ui.New(os.Stdout)
 	err := runAgentRemove(dir, "nonexistent", printer)
@@ -971,7 +955,7 @@ func TestRunAgentAdd_NonGitHubUpdateRequiresExplicitSHA(t *testing.T) {
 	hash := "7777777777777777777777777777777777777777777777777777777777777777"
 	srv, _ := newAgentTestServer(t, nil)
 
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - "`+srv.URL+`/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+hash+`"
 allowed_remote_resources:
   - "`+srv.URL+`/org/repo/"
@@ -1118,7 +1102,7 @@ func TestRunAgentUpdate_GitHubURLUsesRawURL(t *testing.T) {
 	dir := t.TempDir()
 	oldHash := "8888888888888888888888888888888888888888888888888888888888888888"
 	// Use a test-server URL (non-GitHub) with explicit SHA for the update
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - "`+srv.URL+`/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+oldHash+`"
 allowed_remote_resources:
   - "`+srv.URL+`/org/repo/"
@@ -1140,7 +1124,7 @@ func TestAgentEntryRefRoundtrip(t *testing.T) {
 	// Verify the Ref field survives a YAML write-read roundtrip.
 	dir := t.TempDir()
 	hash := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+hash+`"
     ref: release-1.0
 allowed_remote_resources:
@@ -1164,7 +1148,7 @@ func TestRunAgentUpdate_UsesStoredRef(t *testing.T) {
 
 	dir := t.TempDir()
 	oldHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+oldHash+`"
     ref: release-1.0
 allowed_remote_resources:
@@ -1192,7 +1176,7 @@ func TestRunAgentUpdate_FallsBackToDefaultBranchWhenNoRef(t *testing.T) {
 	dir := t.TempDir()
 	oldHash := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	// No ref field — simulates a pre-existing config entry without Ref.
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+oldHash+`"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/org/repo/"
@@ -1229,7 +1213,7 @@ func TestRunAgentUpdate_ForgeResolvesDefaultBranch(t *testing.T) {
 
 	dir := t.TempDir()
 	oldHash := "9999999999999999999999999999999999999999999999999999999999999999"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+oldHash+`"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/org/repo/"
@@ -1266,7 +1250,7 @@ func TestRunAgentAdd_URLWithBranchRef(t *testing.T) {
 	client.BranchRefs["my-org/agents/main"] = resolvedSHA
 
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	writePerRepoConfig(t, dir, "")
 
 	// Non-GitHub URL with already-pinned SHA works
 	source := srv.URL + "/my-org/agents/" + resolvedSHA + "/harness/triage.yaml"
@@ -1337,7 +1321,6 @@ func TestRunAgentAdd_PerRepoURLAddsAllowlist(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	assert.False(t, cfg.IsOrgMode())
 	resources := cfg.AllowedResources()
 	found := false
 	for _, r := range resources {
@@ -1369,7 +1352,7 @@ func TestRunAgentRemove_PerRepoConfig(t *testing.T) {
 func TestRunAgentUpdate_NonGitHubURLNoExplicitSHA(t *testing.T) {
 	dir := t.TempDir()
 	oldSHA := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "https://example.com/org/repo/`+oldSHA+`/harness/lint.yaml#sha256=abcd"
 allowed_remote_resources:
   - "https://example.com/org/repo/"
@@ -1383,7 +1366,7 @@ allowed_remote_resources:
 func TestRunAgentUpdate_NilForgeClientUpdate(t *testing.T) {
 	dir := t.TempDir()
 	oldSHA := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "https://raw.githubusercontent.com/org/repo/`+oldSHA+`/harness/lint.yaml#sha256=abcd"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/org/repo/"
@@ -1397,7 +1380,7 @@ allowed_remote_resources:
 func TestRunAgentUpdate_ForgeGetRepoError(t *testing.T) {
 	dir := t.TempDir()
 	oldSHA := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "https://raw.githubusercontent.com/org/repo/`+oldSHA+`/harness/lint.yaml#sha256=abcd"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/org/repo/"
@@ -1414,7 +1397,7 @@ allowed_remote_resources:
 func TestRunAgentUpdate_ForgeGetBranchRefError(t *testing.T) {
 	dir := t.TempDir()
 	oldSHA := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "https://raw.githubusercontent.com/org/repo/`+oldSHA+`/harness/lint.yaml#sha256=abcd"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/org/repo/"
@@ -1432,7 +1415,7 @@ allowed_remote_resources:
 func TestRunAgentUpdate_InvalidResolvedSHAUpdate(t *testing.T) {
 	dir := t.TempDir()
 	oldSHA := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "https://raw.githubusercontent.com/org/repo/`+oldSHA+`/harness/lint.yaml#sha256=abcd"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/org/repo/"
@@ -1449,7 +1432,7 @@ allowed_remote_resources:
 
 func TestRunAgentUpdate_NoSHAInExistingURL(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "https://example.com/org/repo/main/harness/lint.yaml#sha256=abcd"
 allowed_remote_resources:
   - "https://example.com/org/repo/"
@@ -1472,12 +1455,13 @@ func TestLoadAgentConfig_InvalidYAML(t *testing.T) {
 
 func TestLoadAgentConfig_AmbiguousConfig(t *testing.T) {
 	dir := t.TempDir()
-	// Valid YAML with no org-only keys parses as per-repo config.
+	// Valid YAML with no per-org keys parses as per-repo config.
 	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("unknown_field_only: true\n"), 0o644)
 	require.NoError(t, err)
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	assert.False(t, cfg.IsOrgMode())
+	_, ok := cfg.(config.PerRepoConfigWriter)
+	assert.True(t, ok)
 }
 
 func TestParseGenericURL_NotURL(t *testing.T) {
@@ -1499,7 +1483,7 @@ func TestAllowlistPrefixForURL_UnparseableURL(t *testing.T) {
 
 func TestRunAgentUpdate_ParseSourceURLError(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "https://example.com/x"
 `)
 	printer := ui.New(os.Stdout)
@@ -1524,7 +1508,7 @@ func TestRunAgentList_LoadError(t *testing.T) {
 
 func TestRunAgentList_InvalidConfig(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - name: Ping
     source: harness/a.yaml
   - name: ping
@@ -1573,7 +1557,7 @@ func TestPinAgentURL_GetRepoErrorWrapsRepoErr(t *testing.T) {
 
 func TestNewAgentListCmd_Execute(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - harness/triage.yaml
 `)
 	cmd := newAgentListCmd()
@@ -1584,7 +1568,7 @@ func TestNewAgentListCmd_Execute(t *testing.T) {
 
 func TestNewAgentRemoveCmd_Execute(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - harness/triage.yaml
 `)
 	cmd := newAgentRemoveCmd()
@@ -1595,7 +1579,7 @@ func TestNewAgentRemoveCmd_Execute(t *testing.T) {
 
 func TestNewAgentAddCmd_LocalPath(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "agents: []\n")
+	writePerRepoConfig(t, dir, "agents: []\n")
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "lint.yaml"), []byte("role: coder\n"), 0o644))
 
@@ -1621,7 +1605,7 @@ func TestNewAgentUpdateCmd_ExplicitSHA(t *testing.T) {
 	dir := t.TempDir()
 	oldSHA := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 	_ = newHash
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - source: "`+srv.URL+`/org/agents/`+oldSHA+`/harness/triage.yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000"
 allowed_remote_resources:
   - "`+srv.URL+`/org/agents/"
@@ -1784,19 +1768,27 @@ func TestRunAgentSet_PreserveSubagentTombstones(t *testing.T) {
 	assert.Nil(t, val, "tombstone value should remain nil")
 }
 
-func TestRunAgentSet_RejectsOrgConfig(t *testing.T) {
+func TestRunAgentSet_RejectsPerOrgConfig(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, "")
+	cfg := "version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles:\n    - fullsend\nrepos: {}\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
 	err := runAgentSet(dir, "triage", agentSetFlags{model: "sonnet", modelSet: true}, ui.New(os.Stdout))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "per-repo configs")
+	assert.Contains(t, err.Error(), "per-org configuration format")
 }
+
+// agentEntriesOnlyReader is a ConfigReader without a LocalAgentEntries view.
+type agentEntriesOnlyReader struct {
+	config.ConfigReader
+	entries []config.AgentEntry
+}
+
+func (r agentEntriesOnlyReader) AgentEntries() []config.AgentEntry { return r.entries }
 
 func TestLocalAgentEntries_FallsBackToMergedForOtherReaders(t *testing.T) {
 	t.Parallel()
-	org, err := config.ParseOrgConfig([]byte("version: \"1\"\ndispatch:\n  platform: github\ndefaults:\n  roles: [triage]\nrepos: {}\nagents:\n  - source: harness/lint.yaml\n"))
-	require.NoError(t, err)
-	assert.Len(t, localAgentEntries(org), 1, "readers without a local view return their entries")
+	r := agentEntriesOnlyReader{entries: []config.AgentEntry{{Source: "harness/lint.yaml"}}}
+	assert.Len(t, localAgentEntries(r), 1, "readers without a local view return their entries")
 }
 
 func stubMissingGitHubToken(t *testing.T) {
@@ -2183,7 +2175,7 @@ func TestRunAgentUpdate_WriteError(t *testing.T) {
 	defer func() { fetch.DefaultPolicy = origPolicy }()
 
 	dir := t.TempDir()
-	writeOrgConfig(t, dir, `agents:
+	writePerRepoConfig(t, dir, `agents:
   - "`+srv.URL+`/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=1111111111111111111111111111111111111111111111111111111111111111"
 allowed_remote_resources:
   - "`+srv.URL+`/org/repo/"

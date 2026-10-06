@@ -1174,7 +1174,9 @@ func TestUninstallSecretsForForge_GitLab_DeletesPrefixedOpenAIKeyOnly(t *testing
 	// Assert the exact list so an unrelated future addition can't silently
 	// widen what GitLab uninstall deletes.
 	got := UninstallSecretsForForge(ForgeGitLab)
-	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey}
+	// The webhook fast-path credentials (#7772) are provisioned by install
+	// and must be deleted with the webhook and trigger token.
+	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret}
 	if !slices.Equal(got, want) {
 		t.Errorf("UninstallSecretsForForge(GitLab) = %v, want %v", got, want)
 	}

@@ -329,6 +329,10 @@ type Repository struct {
 	Private       bool
 	Archived      bool
 	Fork          bool
+	// CIConfigPath is the project's configured CI configuration path, as
+	// reported by GitLab (ci_config_path). Empty means the default
+	// .gitlab-ci.yml at the repository root. Other forges leave it empty.
+	CIConfigPath string
 }
 
 // ChangeProposal represents a pull request or merge request.
@@ -513,7 +517,7 @@ type Installation struct {
 	Permissions   map[string]string
 }
 
-// OrgVariable is an org-level GitHub Actions variable.
+// OrgVariable is a GitHub organization variable or an inherited GitLab group variable.
 type OrgVariable struct {
 	Name  string
 	Value string
@@ -795,7 +799,8 @@ type Client interface {
 	// On GitLab, RepoSecretExists, GetRepoSecretProtection, and
 	// DeleteRepoSecret address only the wildcard-scoped (environment_scope
 	// "*") variable; an environment-specific variable with the same key is
-	// ignored and left untouched.
+	// ignored and left untouched. ListRepoVariables returns the
+	// wildcard-scoped value when a key exists for several scopes.
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
 	// GetRepoSecretProtection reports whether a repo secret exists and the
@@ -808,28 +813,22 @@ type Client interface {
 	ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error)
 	DeleteRepoVariable(ctx context.Context, owner, repo, name string) error
 
-	// Org-level secrets (for cross-repo dispatch tokens)
-	CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// Org-level secrets (cleanup of legacy dispatch tokens)
 	OrgSecretExists(ctx context.Context, org, name string) (bool, error)
 	DeleteOrgSecret(ctx context.Context, org, name string) error
-	SetOrgSecretRepos(ctx context.Context, org, name string, repoIDs []int64) error
-	// GetOrgSecretRepos returns the list of repository IDs that have access
-	// to the given org-level secret.
-	GetOrgSecretRepos(ctx context.Context, org, name string) ([]int64, error)
 
-	// Org-level variables (for dispatch function URL)
-	CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// Org-level variables (foreign-mint authorization and mint discovery)
 	// CreateOrUpdateOrgVariableAll creates or updates an org-wide Actions variable
 	// (visibility all). Used for mint FOREIGN policy variables read via the org API.
 	CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error
-	OrgVariableExists(ctx context.Context, org, name string) (bool, error)
 	GetOrgVariable(ctx context.Context, org, name string) (value string, exists bool, err error)
 	ListOrgVariables(ctx context.Context, org string) ([]OrgVariable, error)
+	// ListInstanceVariables lists the names of instance-level CI/CD variables
+	// (self-managed GitLab). Forges without instance-level variables, or
+	// where the caller cannot inspect them, return an error; ErrForbidden
+	// means the caller lacks the access to inspect them.
+	ListInstanceVariables(ctx context.Context) ([]OrgVariable, error)
 	DeleteOrgVariable(ctx context.Context, org, name string) error
-	SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) error
-	// GetOrgVariableRepos returns the list of repository IDs that have access
-	// to the given org-level variable.
-	GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error)
 
 	// CI/Workflow operations
 	GetWorkflow(ctx context.Context, owner, repo, workflowFile string) (*Workflow, error)
@@ -963,6 +962,20 @@ type Client interface {
 	// for the ref. GitHub returns ErrNotSupported.
 	GetProtectedBranch(ctx context.Context, owner, repo, branch string) (*ProtectedBranchRule, error)
 
+	// ListProtectedBranches returns every protected-branch rule on the
+	// project, including wildcard patterns (Name is the rule's pattern).
+	// GitLab webhook readiness uses it to see which refs a project-wide
+	// pipeline trigger token could start pipelines on. GitHub returns
+	// ErrNotSupported.
+	ListProtectedBranches(ctx context.Context, owner, repo string) ([]ProtectedBranchRule, error)
+
+	// ListProtectedTags returns the name or wildcard pattern of every
+	// protected-tag rule on the project. GitLab pipeline trigger tokens can
+	// target tag refs as well as branches, so webhook readiness uses it to
+	// see which tag refs the token could start pipelines on. GitHub returns
+	// ErrNotSupported.
+	ListProtectedTags(ctx context.Context, owner, repo string) ([]string, error)
+
 	// GrantProtectedBranchMergeUser grants userID merge access on a
 	// protected branch. Idempotent if the user already has merge or push
 	// access. Used on GitLab so a Developer-level poller can create
@@ -1032,6 +1045,12 @@ type Client interface {
 	// RevokePipelineTriggerToken deletes a trigger token by ID.
 	// Returns ErrNotFound if the token does not exist.
 	RevokePipelineTriggerToken(ctx context.Context, owner, repo string, tokenID int64) error
+	// GetProjectMemberAccessLevel returns userID's effective access level
+	// on owner/repo, including membership inherited from groups (GitLab
+	// /projects/:id/members/all/:user_id). Returns ErrNotFound when the
+	// user has no access. Used to verify a trigger token owner's runtime
+	// privilege; see the GitLabAccessLevel constants.
+	GetProjectMemberAccessLevel(ctx context.Context, owner, repo string, userID int64) (int, error)
 
 	// CreateProjectHook creates a project webhook with the given URL,
 	// secret token, and event filters.
@@ -1182,11 +1201,23 @@ type PipelineSchedule struct {
 // PipelineTriggerToken is a GitLab pipeline trigger token.
 // Token is populated only in the CreatePipelineTriggerToken response;
 // list responses omit it.
+//
+// OwnerID is the numeric ID of the user the token acts as (GitLab runs
+// trigger pipelines with the owner's permissions); 0 means the owner is
+// unknown, which callers must treat as unverifiable.
 type PipelineTriggerToken struct {
 	ID          int64
 	Description string
 	Token       string
+	OwnerID     int64
 }
+
+// GitLab project access levels (members API access_level).
+const (
+	GitLabAccessLevelDeveloper  = 30
+	GitLabAccessLevelMaintainer = 40
+	GitLabAccessLevelOwner      = 50
+)
 
 // ProjectHook is a GitLab project webhook. Token is write-only:
 // GitLab never returns the secret on list or update responses.
@@ -1214,6 +1245,20 @@ type ProjectHook struct {
 	// On write, the GitLab client always enforces true regardless of
 	// this field's value: Fullsend never disables TLS verification.
 	EnableSSLVerification bool
+	// AlertStatus is GitLab's reported delivery state on read ("executable",
+	// "temporarily_disabled", or "disabled"); "" when the server does not
+	// report it. It is never sent on write.
+	AlertStatus string
+	// DisabledUntil is the RFC 3339 time a temporarily disabled hook is
+	// retried, or "" when the hook is not temporarily disabled. Read only.
+	DisabledUntil string
+}
+
+// HookDeliveryDisabled reports whether GitLab has permanently disabled
+// delivery for the hook after repeated failures. Such a hook stays
+// configured but never fires until it is re-enabled or recreated.
+func (h ProjectHook) HookDeliveryDisabled() bool {
+	return h.AlertStatus == "disabled"
 }
 
 // OrgMembership is a user's membership in a GitHub organization.

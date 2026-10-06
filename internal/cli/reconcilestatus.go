@@ -148,10 +148,8 @@ finalized, this is a no-op.`,
 					fmt.Fprintf(os.Stderr, "WARNING: could not load config from %s: %v; using default completion mode\n", fullsendDir, err)
 				default:
 					// ConfigWriter embeds StatusNotificationsReader (via
-					// ConfigReader) directly, so this works for both org
-					// and per-repo configs — no need to type-assert to
-					// OrgConfigReader, which per-repo configs don't
-					// implement.
+					// ConfigReader) directly, so no type assertion is
+					// needed.
 					if sn := writer.StatusNotifications(); sn != nil {
 						completionMode = sn.Comment.Completion
 					} else {

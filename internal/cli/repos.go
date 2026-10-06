@@ -286,6 +286,9 @@ type reposInstallConfig struct {
 	rotateGitLabRoles      bool
 	rotateGitLabRoleNames  []string
 	rotateGitLabRoleFilter []gitlabroles.Role
+	// rotateGitLabTriggerToken force-rotates the webhook fast-path
+	// pipeline trigger token (FULLSEND_TRIGGER_TOKEN, ADR 0125).
+	rotateGitLabTriggerToken bool
 
 	// Per-repo overrides
 	fullsendRef            string
@@ -387,6 +390,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
 	cmd.Flags().StringArrayVar(&opts.rotateGitLabRoleNames, "rotate-gitlab-role", nil, "rotate a specific GitLab role (repeatable); default is all own-credential roles that are due")
+	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerToken, "rotate-gitlab-trigger-token", false, "force-rotate the GitLab webhook fast-path pipeline trigger token (FULLSEND_TRIGGER_TOKEN); the previous token is revoked after the webhook is updated")
 	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
 
 	return cmd
@@ -1139,6 +1143,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 	}
 
+	webhookSafetyDone := make(map[string]bool)
+
 	var roleFail int
 	var roleFailedRepos []repos.ConvergeResult
 	var roleFailInstalledCount int
@@ -1214,15 +1220,46 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 			if err := ensureGitLabPipelineVariableOverrideRole(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab pipeline-variable override role failed: %v", item.r.Owner, item.r.Repo, err))
+				// The restriction is weakened or could not be verified; the
+				// safety reconciliation after this loop (roleFailedRepos)
+				// revokes any live trigger credential and keeps this role
+				// failure as the repo's recorded error.
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
 					roleFailInstalledCount++
 				}
 				roleFailedRepos = append(roleFailedRepos, item.r)
+				continue
+			}
+			// Webhook fast-path (ADR 0125): runs after the override-role
+			// step because it requires no_one_allowed before a live
+			// webhook may start trigger pipelines.
+			if item.r.NeedsGitLabWebhook || opts.rotateGitLabTriggerToken {
+				if err := setupGitLabWebhookFastPath(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.rotateGitLabTriggerToken, opts.dryRun); err != nil {
+					printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab webhook fast-path provisioning failed: %v", item.r.Owner, item.r.Repo, err))
+					roleFail++
+					item.r.Error = err
+					if item.fresh {
+						roleFailInstalledCount++
+					}
+					roleFailedRepos = append(roleFailedRepos, item.r)
+				}
 			}
 		}
 	}
+
+	// Safety reconciliation for repos that failed before the webhook step
+	// (convergence, post-install setup, poll-state provisioning, or any
+	// role-stage step: provisioning, rotation, protected-ref access, or the
+	// override-role check). A
+	// weakened restriction can make convergence fail, which skips the
+	// success-only loop above, so an existing managed trigger credential
+	// would otherwise stay live. This only revokes; it never provisions.
+	// Cleanup errors are reported alongside the original failure, which is
+	// preserved.
+	reconcileFailedGitLabWebhookSafety(ctx, clients, manifest, printer, opts.dryRun, webhookSafetyDone,
+		failed, postInstallFailedRepos, pollStateFailedRepos, roleFailedRepos)
 
 	printer.Blank()
 	installedCount := len(installed) - installedPostFail - roleFailInstalledCount
@@ -1248,6 +1285,37 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("%d repos failed", failedCount)
 	}
 	return nil
+}
+
+// reconcileFailedGitLabWebhookSafety runs the revocation-only webhook safety
+// reconciliation for every GitLab repo in groups, once per repo (done tracks
+// repos already reconciled). Each group holds failed results — convergence,
+// post-install, poll-state, and role-stage failures — whose entries are
+// updated in place: a cleanup error is joined onto the original failure,
+// which is preserved.
+func reconcileFailedGitLabWebhookSafety(ctx context.Context, clients repos.ForgeClientFactory, manifest *repos.Manifest, printer *ui.Printer, dryRun bool, done map[string]bool, groups ...[]repos.ConvergeResult) {
+	for _, group := range groups {
+		for i := range group {
+			r := &group[i]
+			key := r.Owner + "/" + r.Repo
+			if done[key] {
+				continue
+			}
+			rc, ok := manifest.ResolveConfigWithGlobs(r.Owner, r.Repo)
+			if !ok || rc.Forge != repos.ForgeGitLab {
+				continue
+			}
+			done[key] = true
+			fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+			if fcErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client for webhook safety reconciliation: %v", key, fcErr))
+				continue
+			}
+			if err := reconcileGitLabWebhookSafety(ctx, fc.Client, printer, r.Owner, r.Repo, dryRun); err != nil {
+				r.Error = errors.Join(r.Error, fmt.Errorf("webhook safety reconciliation: %w", err))
+			}
+		}
+	}
 }
 
 type reposUninstallConfig struct {

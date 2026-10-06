@@ -107,7 +107,7 @@ func (l *VendorBinaryLayer) Install(ctx context.Context) error {
 }
 
 // Uninstall is a no-op. Vendored assets are removed when the config repo is
-// deleted by ConfigRepoLayer, or when install runs without --vendor.
+// deleted, or when install runs without --vendor.
 func (l *VendorBinaryLayer) Uninstall(_ context.Context) error { return nil }
 
 // Analyze reports vendored asset presence, manifest alignment, and optional

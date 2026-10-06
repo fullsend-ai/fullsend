@@ -25,8 +25,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/binary"
@@ -248,26 +246,6 @@ var (
 	errResolvingRuntime     = errors.New("resolving runtime")
 )
 
-// resolveBackendFromConfigData selects the runtime for agentName from raw
-// config.yaml bytes (org or per-repo). Only the single file is consulted;
-// backendFromConfigFile is the layered (config.base.yaml-aware) entry point.
-func resolveBackendFromConfigData(configData []byte, agentName string) (agentruntime.Backend, error) {
-	if isOrgConfigData(configData) {
-		orgCfg, orgErr := config.ParseOrgConfig(configData)
-		if orgErr != nil {
-			return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, orgErr)
-		}
-		backend, _, err := resolveBackendForAgent(orgCfg.AgentEntries(), orgCfg.OrgRepoDefaults().Runtime, agentName)
-		return backend, err
-	}
-	perRepoCfg, perRepoErr := config.ParsePerRepoConfig(configData)
-	if perRepoErr != nil {
-		return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, perRepoErr)
-	}
-	backend, _, err := resolveBackendForAgent(perRepoCfg.AgentEntries(), perRepoCfg.ConfigRuntime(), agentName)
-	return backend, err
-}
-
 // resolveBackendForAgent applies the agents: entry's runtime for agentName
 // (validated like the repo-wide key) before falling back to repoRuntime.
 // The boolean reports whether the per-agent entry was the source.
@@ -288,53 +266,26 @@ func agentSettingsSource(configPath, agentName string) string {
 	return fmt.Sprintf("%s agents.%s", configPath, agentName)
 }
 
-func isOrgConfigData(data []byte) bool {
-	text := string(data)
-	if strings.Contains(text, "fullsend per-repo configuration") {
-		return false
-	}
-	if strings.Contains(text, "fullsend organization configuration") {
-		return true
-	}
-	var probe struct {
-		Dispatch *struct {
-			Platform string `yaml:"platform"`
-		} `yaml:"dispatch"`
-		Defaults *struct {
-			Roles []string `yaml:"roles"`
-		} `yaml:"defaults"`
-		Repos map[string]any `yaml:"repos"`
-	}
-	if err := yaml.Unmarshal(data, &probe); err != nil {
-		return false
-	}
-	return probe.Dispatch != nil || probe.Defaults != nil || len(probe.Repos) > 0
-}
-
 // runConfig is the config file consulted by `fullsend run` for runtime
 // selection and per-agent settings: the file at the requested path, or the
-// sibling .fullsend/config.yaml when that is absent. Per-repo configs are
-// loaded layered (config.yaml over config.base.yaml, ADR 0069) so a preset
-// base can carry runtime: or agents: entries; org configs keep their raw
-// bytes and are parsed by resolveBackendFromConfigData.
+// sibling .fullsend/config.yaml when that is absent. Configs are loaded
+// layered (config.yaml over config.base.yaml, ADR 0069) so a preset base
+// can carry runtime: or agents: entries.
 type runConfig struct {
 	// source is the file the values came from, or "" when none exists.
 	source string
-	// perRepo is the layered per-repo config; nil for org configs and
-	// when no file exists.
+	// perRepo is the layered per-repo config; nil when no file exists.
 	perRepo config.PerRepoConfigReader
-	// orgData holds the raw bytes of an org-mode config; nil otherwise.
-	orgData []byte
 }
 
 // loadRunConfig reads the config for `fullsend run` (see runConfig). A
 // missing file is not an error: the zero runConfig means "use defaults".
 func loadRunConfig(path string) (runConfig, error) {
-	data, readErr := os.ReadFile(path)
+	_, readErr := os.ReadFile(path)
 	source := path
 	if readErr != nil && os.IsNotExist(readErr) {
 		alt := filepath.Join(filepath.Dir(path), ".fullsend", config.OverlayConfigFile)
-		data, readErr = os.ReadFile(alt)
+		_, readErr = os.ReadFile(alt)
 		if readErr == nil {
 			source = alt
 		}
@@ -361,17 +312,13 @@ func loadRunConfig(path string) (runConfig, error) {
 		}
 		return runConfig{}, nil
 	}
-	if isOrgConfigData(data) {
-		return runConfig{source: source, orgData: data}, nil
-	}
 	cfg, loadErr := config.LoadConfig(filepath.Dir(source), config.LoadOpts{MissingOK: false})
 	if loadErr != nil {
 		return runConfig{source: source}, fmt.Errorf("%w: %w", errParsingConfigRuntime, loadErr)
 	}
 	perRepoCfg, ok := cfg.(config.PerRepoConfigReader)
 	if !ok {
-		// Header said per-repo but the keys say org: parse as org.
-		return runConfig{source: source, orgData: data}, nil
+		return runConfig{source: source}, fmt.Errorf("%w: unexpected config type %T", errParsingConfigRuntime, cfg)
 	}
 	return runConfig{source: source, perRepo: perRepoCfg}, nil
 }
@@ -392,12 +339,6 @@ func backendFromConfigFile(path, agentName string) (agentruntime.Backend, string
 // backend resolves the runtime for agentName from the loaded config.
 func (rc runConfig) backend(agentName string) (agentruntime.Backend, string, error) {
 	switch {
-	case rc.orgData != nil:
-		backend, resolveErr := resolveBackendFromConfigData(rc.orgData, agentName)
-		if resolveErr != nil {
-			return agentruntime.Backend{}, rc.source, resolveErr
-		}
-		return backend, rc.source, nil
 	case rc.perRepo != nil:
 		backend, perAgent, resolveErr := resolveBackendForAgent(rc.perRepo.AgentEntries(), rc.perRepo.ConfigRuntime(), agentName)
 		if resolveErr != nil {
@@ -427,12 +368,6 @@ func (rc runConfig) agentSettings(agentName string) (config.AgentEntry, bool, er
 	switch {
 	case rc.perRepo != nil:
 		agents, allowlist = rc.perRepo.AgentEntries(), rc.perRepo.AllowedResources()
-	case rc.orgData != nil:
-		orgCfg, err := config.ParseOrgConfig(rc.orgData)
-		if err != nil {
-			return config.AgentEntry{}, false, fmt.Errorf("%w: %w", errParsingConfigRuntime, err)
-		}
-		agents, allowlist = orgCfg.AgentEntries(), orgCfg.AllowedResources()
 	default:
 		return config.AgentEntry{}, false, nil
 	}
@@ -562,7 +497,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// to agents-repo resolution; a malformed file is warned by
 	// tryLoadOrgConfig but not surfaced as a distinct error here.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
-	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+	//
+	// The layered config (config.yaml over config.base.yaml) is loaded
+	// strictly: a layer that exists but cannot be loaded (malformed,
+	// unreadable, or a rejected per-org format) must not be treated as
+	// absent, and a base-only config must be honored. Substituting the
+	// default allowlist for an explicit allowed_remote_resources
+	// (including a deny-all) would allow remote fetching before the load
+	// error surfaces. The config is absent only when neither layer exists.
+	orgCfg, err := loadLockConfig(orgConfigPath)
+	if err != nil {
+		printer.StepFail("Failed to load fullsend config")
+		return err
+	}
 
 	// Detect forge platform after config is loaded so config.forge can be consulted (ADR 0088).
 	forgePlatform, err := detectForgePlatform(forgeFlag, orgCfg)
@@ -3042,6 +2989,15 @@ var oidcDenyKeys = map[string]bool{
 	// script maps it to OPENAI_API_KEY and unsets it; if it is ever still
 	// present it holds the real key and must stay runner-only too.
 	"FULLSEND_OPENAI_API_KEY": true,
+	// The GitLab webhook fast-path credentials `fullsend repos install`
+	// provisions as protected, wildcard-scoped CI/CD variables. The trigger
+	// token is a bearer credential that starts pipelines on the protected
+	// default branch; no run needs either value. The job scripts unset both,
+	// and listing them here is defense in depth so a harness cannot expand
+	// them into sandbox-visible values and host-side scripts never inherit
+	// them.
+	"FULLSEND_TRIGGER_TOKEN":  true,
+	"FULLSEND_WEBHOOK_SECRET": true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting

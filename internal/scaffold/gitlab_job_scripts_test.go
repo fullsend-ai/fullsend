@@ -180,7 +180,7 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	}
 	writeStub("fullsend", "echo POLL_RAN\nexit 0\n")
 
-	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"`)
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"`)
 	cmd.Env = append([]string{
 		"SCRIPT=" + script,
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
@@ -192,6 +192,8 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
 		"FULLSEND_GITLAB_CODER_TOKEN=coder-pat",
 		"FULLSEND_FORGE_TOKEN=shared-pat",
+		"FULLSEND_TRIGGER_TOKEN=trigger-bearer",
+		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
 		"FULLSEND_POLL_MODE=events",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=group/project",
@@ -205,6 +207,27 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	assert.Contains(t, got, "CODER=unset")
 	assert.Contains(t, got, "SHARED=unset")
 	assert.Contains(t, got, "JOB=poll-pat")
+	assert.Contains(t, got, "TRIGGER=unset", "the webhook trigger bearer must not outlive the job preamble")
+	assert.Contains(t, got, "WEBHOOK_SECRET=unset", "the webhook secret must not outlive the job preamble")
+}
+
+// TestGitLabJobScripts_UnsetWebhookCredentialsBeforePin guards the poller,
+// dispatcher and agent job scripts clearing the webhook fast-path
+// credentials before the identity pin or any credential selection runs, so
+// no later step or host-side script can read the trigger bearer or webhook
+// secret. The agent script is checked structurally: its full behavior needs
+// a signed dispatch fixture that is irrelevant to this guard.
+func TestGitLabJobScripts_UnsetWebhookCredentialsBeforePin(t *testing.T) {
+	for _, path := range []string{gitlabRunPollJobScriptPath, gitlabRunDispatcherJobScriptPath, gitlabRunAgentJobScriptPath} {
+		t.Run(path, func(t *testing.T) {
+			s := gitlabPerRepoText(t, path)
+			unsetIdx := strings.Index(s, "unset FULLSEND_TRIGGER_TOKEN FULLSEND_WEBHOOK_SECRET\n")
+			require.NotEqual(t, -1, unsetIdx, "expected the webhook credential unset")
+			pinIdx := strings.Index(s, ". \"${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/pin-ci-job-identity.sh\"")
+			require.NotEqual(t, -1, pinIdx, "expected the identity pin to be sourced")
+			assert.Less(t, unsetIdx, pinIdx, "webhook credentials must be cleared before the identity pin")
+		})
+	}
 }
 
 func TestRunAgentJobScript_DebugTraceAborts(t *testing.T) {

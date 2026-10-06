@@ -296,6 +296,51 @@ func ensureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.
 	return nil
 }
 
+// setupGitLabWebhookFastPath provisions or repairs the GitLab webhook
+// fast-path (ADR 0125): the pipeline trigger token stored as
+// FULLSEND_TRIGGER_TOKEN, the webhook secret stored as
+// FULLSEND_WEBHOOK_SECRET, and the project webhook that fires the native
+// pipeline trigger pinned to the protected default branch. It is an
+// always-managed component (no opt-in flag), idempotent and probe-first
+// like setupGitLabPipelineSchedules' callers: an already-provisioned repo
+// is a no-op. rotate force-rotates the trigger token. Output names
+// variables and numeric IDs only — never the trigger token, webhook
+// secret, or webhook URL.
+func setupGitLabWebhookFastPath(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, rotate, dryRun bool) error {
+	repoFullName := owner + "/" + repo
+	res, err := repos.EnsureGitLabWebhookFastPath(ctx, client, repos.GitLabBaseURL(client), owner, repo, rotate, dryRun)
+	for _, d := range res.Details {
+		if res.Action == "deferred" {
+			printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
+		} else {
+			printer.StepDone(fmt.Sprintf("[%s] %s", repoFullName, d))
+		}
+	}
+	if err != nil {
+		printer.StepFail(fmt.Sprintf("[%s] GitLab webhook fast-path: %v", repoFullName, err))
+		return err
+	}
+	return nil
+}
+
+// reconcileGitLabWebhookSafety revokes the managed webhook and trigger
+// credential when the trigger-token safety invariants no longer hold, and
+// never provisions. It runs for repositories whose installation or
+// convergence failed, where setupGitLabWebhookFastPath is not reached but
+// an existing credential must still not outlive a weakened restriction.
+func reconcileGitLabWebhookSafety(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool) error {
+	repoFullName := owner + "/" + repo
+	res, err := repos.ReconcileGitLabWebhookSafety(ctx, client, owner, repo, dryRun)
+	for _, d := range res.Details {
+		printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
+	}
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("[%s] GitLab webhook safety reconciliation: %v", repoFullName, err))
+		return err
+	}
+	return nil
+}
+
 type gitlabTokenAdapter struct {
 	c *gitlab.LiveClient
 }

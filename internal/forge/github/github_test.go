@@ -2215,128 +2215,6 @@ func TestWithBaseURL(t *testing.T) {
 	assert.Equal(t, "https://custom.api.com", client.baseURL)
 }
 
-func TestCreateOrgSecret(t *testing.T) {
-	callNum := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callNum++
-		switch callNum {
-		case 1:
-			// GET org public key
-			assert.Equal(t, "GET", r.Method)
-			assert.Equal(t, "/orgs/myorg/actions/secrets/public-key", r.URL.Path)
-
-			pubKey := make([]byte, 32)
-			for i := range pubKey {
-				pubKey[i] = byte(i + 1)
-			}
-
-			json.NewEncoder(w).Encode(map[string]any{
-				"key_id": "org-key-123",
-				"key":    base64.StdEncoding.EncodeToString(pubKey),
-			})
-		case 2:
-			// PUT org secret
-			assert.Equal(t, "PUT", r.Method)
-			assert.Equal(t, "/orgs/myorg/actions/secrets/DISPATCH_TOKEN", r.URL.Path)
-
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			assert.Equal(t, "org-key-123", body["key_id"])
-			assert.NotEmpty(t, body["encrypted_value"])
-			assert.Equal(t, "selected", body["visibility"])
-
-			repoIDs, ok := body["selected_repository_ids"].([]any)
-			require.True(t, ok)
-			assert.Len(t, repoIDs, 2)
-			assert.Equal(t, float64(100), repoIDs[0])
-			assert.Equal(t, float64(200), repoIDs[1])
-
-			w.WriteHeader(http.StatusCreated)
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrgSecret(context.Background(), "myorg", "DISPATCH_TOKEN", "token-value", []int64{100, 200})
-	require.NoError(t, err)
-}
-
-func TestCreateOrgSecret_NilRepoIDs_VisibilitySelected(t *testing.T) {
-	callNum := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callNum++
-		switch callNum {
-		case 1:
-			// GET org public key
-			pubKey := make([]byte, 32)
-			for i := range pubKey {
-				pubKey[i] = byte(i + 1)
-			}
-			json.NewEncoder(w).Encode(map[string]any{
-				"key_id": "org-key-123",
-				"key":    base64.StdEncoding.EncodeToString(pubKey),
-			})
-		case 2:
-			// PUT org secret — should use visibility "selected" with empty repo IDs
-			// so that SetOrgSecretRepos can later update access without a 409 Conflict.
-			assert.Equal(t, "PUT", r.Method)
-
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			assert.Equal(t, "selected", body["visibility"],
-				"visibility should be 'selected' even when no repo IDs are specified")
-			repoIDs, ok := body["selected_repository_ids"].([]any)
-			require.True(t, ok, "selected_repository_ids should be an empty array, not nil")
-			assert.Empty(t, repoIDs, "selected_repository_ids should be empty")
-
-			w.WriteHeader(http.StatusCreated)
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrgSecret(context.Background(), "myorg", "TOKEN", "value", nil)
-	require.NoError(t, err)
-}
-
-func TestCreateOrgSecret_EmptySliceRepoIDs_VisibilitySelected(t *testing.T) {
-	callNum := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callNum++
-		switch callNum {
-		case 1:
-			// GET org public key
-			pubKey := make([]byte, 32)
-			for i := range pubKey {
-				pubKey[i] = byte(i + 1)
-			}
-			json.NewEncoder(w).Encode(map[string]any{
-				"key_id": "org-key-123",
-				"key":    base64.StdEncoding.EncodeToString(pubKey),
-			})
-		case 2:
-			// PUT org secret — empty slice should behave the same as nil:
-			// visibility "selected" with an empty repo ID array.
-			assert.Equal(t, "PUT", r.Method)
-
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			assert.Equal(t, "selected", body["visibility"],
-				"visibility should be 'selected' even with an empty slice")
-			repoIDs, ok := body["selected_repository_ids"].([]any)
-			require.True(t, ok, "selected_repository_ids should be an empty array, not nil")
-			assert.Empty(t, repoIDs, "selected_repository_ids should be empty")
-
-			w.WriteHeader(http.StatusCreated)
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrgSecret(context.Background(), "myorg", "TOKEN", "value", []int64{})
-	require.NoError(t, err)
-}
-
 func TestOrgSecretExists(t *testing.T) {
 	t.Run("exists", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2394,118 +2272,6 @@ func TestDeleteOrgSecret(t *testing.T) {
 	})
 }
 
-func TestSetOrgSecretRepos(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "PUT", r.Method)
-		assert.Equal(t, "/orgs/myorg/actions/secrets/TOKEN/repositories", r.URL.Path)
-
-		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
-
-		repoIDs, ok := body["selected_repository_ids"].([]any)
-		require.True(t, ok)
-		assert.Len(t, repoIDs, 3)
-		assert.Equal(t, float64(10), repoIDs[0])
-		assert.Equal(t, float64(20), repoIDs[1])
-		assert.Equal(t, float64(30), repoIDs[2])
-
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.SetOrgSecretRepos(context.Background(), "myorg", "TOKEN", []int64{10, 20, 30})
-	require.NoError(t, err)
-}
-
-func TestCreateOrUpdateOrgVariable_Create(t *testing.T) {
-	callNum := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callNum++
-		switch callNum {
-		case 1:
-			// PATCH (update) → 404 (variable doesn't exist yet)
-			assert.Equal(t, "PATCH", r.Method)
-			assert.Equal(t, "/orgs/myorg/actions/variables/DISPATCH_URL", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
-		case 2:
-			// POST (create)
-			assert.Equal(t, "POST", r.Method)
-			assert.Equal(t, "/orgs/myorg/actions/variables", r.URL.Path)
-
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			assert.Equal(t, "DISPATCH_URL", body["name"])
-			assert.Equal(t, "https://func.example.com", body["value"])
-			assert.Equal(t, "selected", body["visibility"])
-
-			repoIDs, ok := body["selected_repository_ids"].([]any)
-			require.True(t, ok)
-			assert.Len(t, repoIDs, 2)
-			assert.Equal(t, float64(100), repoIDs[0])
-			assert.Equal(t, float64(200), repoIDs[1])
-
-			w.WriteHeader(http.StatusCreated)
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrUpdateOrgVariable(context.Background(), "myorg", "DISPATCH_URL", "https://func.example.com", []int64{100, 200})
-	require.NoError(t, err)
-}
-
-func TestCreateOrUpdateOrgVariable_Update(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// PATCH (update) → 200 (variable exists)
-		assert.Equal(t, "PATCH", r.Method)
-		assert.Equal(t, "/orgs/myorg/actions/variables/DISPATCH_URL", r.URL.Path)
-
-		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
-		assert.Equal(t, "https://new-url.example.com", body["value"])
-		assert.Equal(t, "selected", body["visibility"])
-
-		repoIDs, ok := body["selected_repository_ids"].([]any)
-		require.True(t, ok)
-		assert.Len(t, repoIDs, 1)
-
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrUpdateOrgVariable(context.Background(), "myorg", "DISPATCH_URL", "https://new-url.example.com", []int64{300})
-	require.NoError(t, err)
-}
-
-func TestCreateOrUpdateOrgVariable_NilRepoIDs(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// PATCH → 404 → POST
-		if r.Method == "PATCH" {
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
-			return
-		}
-		assert.Equal(t, "POST", r.Method)
-
-		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
-		assert.Equal(t, "selected", body["visibility"])
-		repoIDs, ok := body["selected_repository_ids"].([]any)
-		require.True(t, ok, "selected_repository_ids should be an empty array, not nil")
-		assert.Empty(t, repoIDs)
-
-		w.WriteHeader(http.StatusCreated)
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrUpdateOrgVariable(context.Background(), "myorg", "VAR", "value", nil)
-	require.NoError(t, err)
-}
-
 func TestCreateOrUpdateOrgVariableAll_Create(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2552,19 +2318,20 @@ func TestCreateOrUpdateOrgVariableAll_Update(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestOrgVariableExists(t *testing.T) {
+func TestGetOrgVariable(t *testing.T) {
 	t.Run("exists", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "GET", r.Method)
 			assert.Equal(t, "/orgs/myorg/actions/variables/DISPATCH_URL", r.URL.Path)
-			json.NewEncoder(w).Encode(map[string]any{"name": "DISPATCH_URL"})
+			json.NewEncoder(w).Encode(map[string]any{"name": "DISPATCH_URL", "value": "https://func.example.com"})
 		}))
 		defer srv.Close()
 
 		client := newTestClient(t, srv)
-		exists, err := client.OrgVariableExists(context.Background(), "myorg", "DISPATCH_URL")
+		value, exists, err := client.GetOrgVariable(context.Background(), "myorg", "DISPATCH_URL")
 		require.NoError(t, err)
 		assert.True(t, exists)
+		assert.Equal(t, "https://func.example.com", value)
 	})
 
 	t.Run("not exists", func(t *testing.T) {
@@ -2575,9 +2342,10 @@ func TestOrgVariableExists(t *testing.T) {
 		defer srv.Close()
 
 		client := newTestClient(t, srv)
-		exists, err := client.OrgVariableExists(context.Background(), "myorg", "MISSING")
+		value, exists, err := client.GetOrgVariable(context.Background(), "myorg", "MISSING")
 		require.NoError(t, err)
 		assert.False(t, exists)
+		assert.Empty(t, value)
 	})
 }
 

@@ -400,12 +400,9 @@ func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus 
 func TestNewReconcileStatusCmd_FullsendDir_OnFailureConfig(t *testing.T) {
 	dir := t.TempDir()
 	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
-dispatch:
-  platform: github-actions
-defaults:
-  status_notifications:
-    comment:
-      completion: on_failure
+status_notifications:
+  comment:
+    completion: on_failure
 `), 0o644)
 	require.NoError(t, err)
 

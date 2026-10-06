@@ -61,7 +61,11 @@ var gitlabUninstallVars = []string{
 // unrelated jobs in the same project depend on. Like uninstallSecrets it
 // is derived from managedInferenceSecrets so both forges and orphan
 // detection share one classification.
-var gitlabUninstallSecrets = managedInferenceSecrets()
+//
+// It also includes the webhook fast-path credentials (FULLSEND_TRIGGER_TOKEN
+// and FULLSEND_WEBHOOK_SECRET). Secret deletion addresses only the
+// wildcard-scoped variable, which is the one Fullsend creates.
+var gitlabUninstallSecrets = append(managedInferenceSecrets(), forge.SecretTriggerToken, forge.SecretWebhookSecret)
 
 // gitlabScaffoldPaths is the full set of files uninstall removes. It is
 // a superset of the current install set: fullsend-dispatch.yml is no
@@ -344,6 +348,24 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		}
 	}
 
+	// Tear down the webhook fast-path before the scaffold goes: it stops
+	// the webhook from requesting pipelines against a repository whose
+	// dispatcher is being removed, and revokes the separately minted
+	// trigger token. A failure stops uninstall here so the manifest entry
+	// is retained and a retry repeats the (idempotent) teardown.
+	var triggersRevoked int
+	if cfg.Forge == ForgeGitLab {
+		progress(fullName, "cleanup", "Removing GitLab webhook fast-path")
+		teardown, teardownErr := TeardownGitLabWebhookFastPath(ctx, client, owner, repo)
+		triggersRevoked = teardown.TriggersRevoked
+		if teardownErr != nil {
+			result.TokensRevoked = triggersRevoked
+			result.Error = fmt.Errorf("removing webhook fast-path: %w", teardownErr)
+			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", teardownErr))
+			return result
+		}
+	}
+
 	progress(fullName, "workflow", "Removing scaffold files")
 	if err := commitScaffold(ctx, owner, repo, files, direct, true); err != nil {
 		result.Error = fmt.Errorf("removing scaffold files: %w", err)
@@ -360,7 +382,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		cleanup, cleanupErr := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
 			Owner: owner, Repo: repo, Client: client, Tokens: tokens,
 		})
-		result.TokensRevoked = cleanup.TokensRevoked
+		result.TokensRevoked = cleanup.TokensRevoked + triggersRevoked
 		result.VarsDeleted += cleanup.VarsDeleted
 		for _, d := range cleanup.Diagnostics {
 			progress(fullName, "cleanup", d)
@@ -396,7 +418,14 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		defer innerWg.Done()
 		for _, name := range forgeSecrets {
 			if delErr := client.DeleteRepoSecret(ctx, owner, repo, name); delErr != nil {
-				secretErr = fmt.Errorf("deleting secret %s: %w", name, delErr)
+				if name == forge.SecretTriggerToken || name == forge.SecretWebhookSecret {
+					// The webhook credentials are not known to any redactor
+					// at this point, so an error echoing one must not reach
+					// uninstall output; withhold the server text.
+					secretErr = safeAPIError("deleting secret "+name, delErr)
+				} else {
+					secretErr = fmt.Errorf("deleting secret %s: %w", name, delErr)
+				}
 				return
 			}
 			secretsDeleted++

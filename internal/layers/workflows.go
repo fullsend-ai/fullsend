@@ -10,7 +10,10 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-const codeownersPath = "CODEOWNERS"
+const (
+	codeownersPath = "CODEOWNERS"
+	configFilePath = "config.yaml"
+)
 
 // WorkflowsLayer manages workflow files and CODEOWNERS in the .fullsend
 // config repo.

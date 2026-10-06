@@ -199,6 +199,39 @@ then converges the project:
   re-enable it. Leave that flag unset on repos using [Off-system
   polling](#off-system-polling), where the schedules are disabled on
   purpose.
+* Provisions the webhook fast path ([ADR 0125](../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)):
+  a pipeline trigger token stored as the protected, masked
+  `FULLSEND_TRIGGER_TOKEN` variable, a generated `FULLSEND_WEBHOOK_SECRET`,
+  and a project webhook (issues, merge requests, comments) that triggers a
+  pipeline on the protected default branch. Existing credential variables
+  are reused only when masked, protected, and wildcard-scoped; otherwise they
+  are regenerated. Only webhooks Fullsend owns are updated or deleted. This
+  step is deferred until the dispatcher and its scripts are on the default
+  branch, the default branch is protected, and
+  `no_one_allowed` is verified, so on a merge-request install re-run
+  `repos install` after the scaffold merges. Re-runs are no-ops and repair a
+  missing or drifted webhook or token; `--rotate-gitlab-trigger-token`
+  rotates the token and revokes the old one after the webhook is updated.
+  The polling schedules stay in place as the backstop. Token and secret
+  values are never printed.
+  The install-time Maintainer access is used only to create and revoke
+  these resources; it is not a runtime credential. A trigger token runs
+  pipelines as its owner, so install verifies the owner's effective
+  project role when it mints a token and whenever it reuses one, and
+  rejects an owner with Maintainer or Owner access (or one it cannot look
+  up): it revokes the token, removes the managed webhook, and leaves the
+  fast path disabled. A rejected owner is reported as a deferral rather
+  than an installation failure once cleanup succeeded; owner-lookup and
+  cleanup failures are still reported as errors. A Developer-owned token
+  also needs push or merge access to the protected default branch; an
+  owner without it defers the fast path with remediation guidance. The
+  webhook is enabled only after the committed wrapper, root, and
+  agent/poll templates carry the typed pipeline-input contract, and the
+  default branch must stay protected. Because GitLab ties a trigger
+  token to the Maintainer who creates it, the fast path stays disabled
+  when the only available creator is a Maintainer or Owner; the polling
+  schedules keep working, and the poller, dispatcher, and agent
+  credentials stay Developer-level.
 * Writes inference CI/CD variables when `--vertex-project` is set.
 
 By default the scaffold lands as a merge request. Pass `--direct` to push
@@ -853,7 +886,14 @@ Confirm:
   and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected.
   When the webhook fast-path is enabled, `FULLSEND_TRIGGER_TOKEN` and
   `FULLSEND_WEBHOOK_SECRET` are also stored as masked, protected variables
-  and must never appear in logs.
+  and must never appear in logs. The poller, dispatcher, and agent jobs unset
+  both variables before doing any work, and the runner never exposes them to
+  harness scripts or the sandbox. If the stored trigger token's privilege
+  cannot be bounded (an unmanaged pipeline trigger owned at or above
+  Maintainer, or one whose owner cannot be verified, could be that token),
+  `repos install` deletes the `FULLSEND_TRIGGER_TOKEN` variable and the
+  Fullsend-managed webhook and trigger tokens instead of leaving the bearer
+  in storage; unmanaged trigger tokens are never revoked.
   `FULLSEND_FORGE_TOKEN` may remain only as a legacy artifact; no automated
   path retires it, so an administrator must manually remove it (see
   above). Role-aware installs also provision

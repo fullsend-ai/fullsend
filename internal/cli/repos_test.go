@@ -3143,3 +3143,123 @@ func TestRunReposUninstall_GitLabFilterDoesNotRequestGitHub(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, factory.requested(repos.ForgeGitHub))
 }
+
+// A repo whose install or convergence fails must still have its managed
+// webhook and trigger token revoked when the pipeline-variable override
+// restriction is weakened: the success-only webhook step never runs for it.
+func TestRunReposInstall_GitLabFailedRepoRevokesWebhookWhenRestrictionWeakened(t *testing.T) {
+	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v0.43.0
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+
+	fc := forge.NewFakeClient()
+	seedGitLabInputPrerequisites(fc, "group/project", "v0.43.0")
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{
+		FullName:      "group/project",
+		Name:          "project",
+		DefaultBranch: "main",
+	}}
+	fc.ProtectedBranches["group/project/main"] = true
+	fc.PipelineVarOverrideRoles["group/project"] = forge.PipelineVarOverrideDeveloper
+	fc.PipelineTriggerTokens["group/project"] = []forge.PipelineTriggerToken{
+		{ID: 7, Description: repos.GitLabWebhookTriggerDescription, Token: "managed-trigger"},
+	}
+	fc.ProjectHooks["group/project"] = []forge.ProjectHook{
+		{ID: 11, Name: repos.GitLabWebhookName},
+	}
+	fc.Errors = map[string]error{"CommitFilesToBranch": errors.New("convergence boom")}
+
+	var installErr error
+	out := captureStdout(t, func() {
+		installErr = runReposInstall(context.Background(), gitlabInstallOpts(manifestPath, fc))
+	})
+
+	require.Error(t, installErr, "the installation failure is preserved")
+	assert.Contains(t, out, "FAILED: group/project")
+	assert.Empty(t, fc.PipelineTriggerTokens["group/project"], "managed trigger token is revoked")
+	assert.Empty(t, fc.ProjectHooks["group/project"], "managed webhook is deleted")
+	assert.Empty(t, fc.CreatedTriggerTokens, "nothing is provisioned for a failed repo")
+}
+
+// Role-stage failures (role provisioning, rotation, protected-ref access, the
+// override-role check) skip the webhook step, so they are reconciled with the
+// other failed repos: the managed webhook and trigger token are revoked when
+// a safety invariant drifts (an extra protected branch here) and the original
+// failure is preserved with any cleanup error joined onto it.
+func TestReconcileFailedGitLabWebhookSafety_CoversRoleStageFailures(t *testing.T) {
+	m := &repos.Manifest{
+		Version: 1,
+		GitLab: &repos.PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []repos.RepoEntry{{Name: "group/project"}},
+		},
+	}
+	newFake := func() *forge.FakeClient {
+		fc := forge.NewFakeClient()
+		fc.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+		fc.ProtectedBranches["group/project/main"] = true
+		fc.ProtectedBranches["group/project/release/1.0"] = true
+		fc.PipelineVarOverrideRoles["group/project"] = forge.PipelineVarOverrideNoOneAllowed
+		fc.PipelineTriggerTokens["group/project"] = []forge.PipelineTriggerToken{
+			{ID: 7, Description: repos.GitLabWebhookTriggerDescription, OwnerID: 1001},
+		}
+		fc.ProjectHooks["group/project"] = []forge.ProjectHook{{ID: 11, Name: repos.GitLabWebhookName}}
+		return fc
+	}
+	roleErr := errors.New("role provisioning boom")
+
+	t.Run("revokes and preserves the role failure", func(t *testing.T) {
+		fc := newFake()
+		roleFailed := []repos.ConvergeResult{{Owner: "group", Repo: "project", Error: roleErr}}
+
+		captureStdout(t, func() {
+			reconcileFailedGitLabWebhookSafety(context.Background(), newSingleClientFactory(fc), m,
+				ui.New(os.Stdout), false, map[string]bool{}, nil, roleFailed)
+		})
+
+		assert.Empty(t, fc.PipelineTriggerTokens["group/project"], "managed trigger token is revoked")
+		assert.Empty(t, fc.ProjectHooks["group/project"], "managed webhook is deleted")
+		assert.ErrorIs(t, roleFailed[0].Error, roleErr)
+	})
+
+	t.Run("cleanup errors are joined onto the role failure", func(t *testing.T) {
+		fc := newFake()
+		fc.Errors = map[string]error{"RevokePipelineTriggerToken": errors.New("revoke boom")}
+		roleFailed := []repos.ConvergeResult{{Owner: "group", Repo: "project", Error: roleErr}}
+
+		captureStdout(t, func() {
+			reconcileFailedGitLabWebhookSafety(context.Background(), newSingleClientFactory(fc), m,
+				ui.New(os.Stdout), false, map[string]bool{}, roleFailed)
+		})
+
+		require.Error(t, roleFailed[0].Error)
+		assert.ErrorIs(t, roleFailed[0].Error, roleErr)
+		assert.ErrorContains(t, roleFailed[0].Error, "revoke boom")
+	})
+
+	t.Run("a repo reconciled once is not reconciled again", func(t *testing.T) {
+		fc := newFake()
+		done := map[string]bool{"group/project": true}
+		roleFailed := []repos.ConvergeResult{{Owner: "group", Repo: "project", Error: roleErr}}
+
+		captureStdout(t, func() {
+			reconcileFailedGitLabWebhookSafety(context.Background(), newSingleClientFactory(fc), m,
+				ui.New(os.Stdout), false, done, roleFailed)
+		})
+
+		assert.Len(t, fc.PipelineTriggerTokens["group/project"], 1)
+	})
+}

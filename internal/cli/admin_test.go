@@ -427,20 +427,17 @@ func TestCheckInstallScopes_GetTokenScopesError(t *testing.T) {
 }
 
 func TestCheckInstallScopes_SyncWithLayers(t *testing.T) {
-	emptyCfg := config.NewOrgConfig(nil, nil, nil, "", "")
 	stack := layers.NewStack(
-		layers.NewConfigRepoLayer("test-org", nil, emptyCfg, ui.New(&discardWriter{}), false),
 		layers.NewWorkflowsLayer("test-org", nil, ui.New(&discardWriter{}), "", "test-version", false),
 		layers.NewSecretsLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewInferenceLayer("test-org", nil, nil, ui.New(&discardWriter{})),
-		layers.NewOIDCDispatchLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),
-		layers.NewEnrollmentLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),
 		layers.NewVendorBinaryLayer("test-org", ".fullsend", nil, ui.New(&discardWriter{}), false, nil),
 	)
-	layerScopes := stack.CollectRequiredScopes(layers.OpInstall)
+	// App creation needs admin:org on top of the layer scopes.
+	want := append(stack.CollectRequiredScopes(layers.OpInstall), "admin:org")
 
-	assert.ElementsMatch(t, installRequiredScopes, layerScopes,
-		"installRequiredScopes must match the union of RequiredScopes(OpInstall) from all layers; update the variable if a layer's scopes change")
+	assert.ElementsMatch(t, installRequiredScopes, want,
+		"installRequiredScopes must match the union of RequiredScopes(OpInstall) from all layers plus admin:org; update the variable if a layer's scopes change")
 }
 
 func TestCheckPerRepoScopes_AllPresent(t *testing.T) {

@@ -82,6 +82,7 @@ fullsend
 │   │   ├── --gitlab-role-token role=token   #   Administrator-provided GitLab role PAT (repeatable)
 │   │   ├── --rotate-gitlab-roles            #   Force-rotate GitLab role credentials
 │   │   ├── --rotate-gitlab-role <name>      #   Rotate a specific GitLab role (repeatable)
+│   │   ├── --rotate-gitlab-trigger-token    #   Force-rotate the GitLab webhook fast-path trigger token
 │   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
@@ -354,7 +355,7 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 
 ### Install orchestration
 
-`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation; the `Layer` types under `internal/layers` that remain (for example `EnrollmentLayer`) are not used by CLI orchestration. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
+`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation; the `Layer` types under `internal/layers` that remain (for example `WorkflowsLayer` or `VendorBinaryLayer`) are not used by CLI orchestration. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -735,13 +736,12 @@ var executableFiles = map[string]struct{}{
 | `internal/layers/layers.go` | ~159 | Layer interface and stack |
 | `internal/layers/secrets.go` | ~200 | PEM key deployment layer |
 | `internal/layers/inference.go` | ~150 | Inference credential layer |
-| `internal/layers/dispatch.go` | ~364 | Mint URL deployment layer |
 | `internal/scaffold/scaffold.go` | ~146 | Embedded template system |
 | `internal/inference/inference.go` | ~26 | Provider interface |
 | `internal/inference/vertex/vertex.go` | ~80 | Agent Platform (Vertex AI) implementation |
 | `internal/inference/openaiwif/openaiwif.go` | ~330 | OpenAI Workload Identity Federation token exchange (runner-side) |
 | `internal/cli/run_openai.go` | ~550 | OpenAI credential resolution, run-scoped provider lifecycle and refresh |
-| `internal/config/config.go` | ~264 | Org/repo config structures |
+| `internal/config/config.go` | ~264 | Per-repo config structures |
 
 ## See Also
 

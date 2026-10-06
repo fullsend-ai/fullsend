@@ -12,6 +12,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestManifest() *Manifest {
@@ -1953,4 +1955,45 @@ func TestStatus_GitLab_ConfigPresetDrift(t *testing.T) {
 	if !found {
 		t.Errorf("GitLab status must report config.base.yaml drift, got %v", result.Repos[0].Drifts)
 	}
+}
+
+func setWorkflowFile(fc *forge.FakeClient, owner, repo, content string) {
+	fc.FileContents[owner+"/"+repo+"/.github/workflows/fullsend.yml"] = []byte(content)
+}
+
+func TestReadWorkflowRef_YmlExtension(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.3.0")
+
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
+	require.NoError(t, err)
+	assert.Equal(t, "v2.3.0", ref)
+}
+
+func TestReadWorkflowRef_YamlExtension(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte(
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0")
+
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
+	require.NoError(t, err)
+	assert.Equal(t, "v1.0.0", ref)
+}
+
+func TestReadWorkflowRef_NoWorkflowFile(t *testing.T) {
+	fc := forge.NewFakeClient()
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
+	require.NoError(t, err)
+	assert.Empty(t, ref)
+}
+
+func TestReadWorkflowRef_NonNotFoundError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["GetFileContent"] = fmt.Errorf("network timeout")
+
+	ref, err := readWorkflowRef(context.Background(), fc, "acme", "api", defaultForgeConfig)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "network timeout")
+	assert.Empty(t, ref)
 }

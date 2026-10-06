@@ -531,7 +531,7 @@ agents:
 ```
 
 This prevents the agent from dispatching and from resolving via
-`fullsend run`. The role can stay in `defaults.roles` — only the agent
+`fullsend run`. The role can stay in `roles` — only the agent
 is suppressed. Omitting `enabled` (or setting it to `true`) keeps the
 agent active (backward compatible).
 

@@ -36,21 +36,6 @@ func Resolve(name string) (Backend, error) {
 	}
 }
 
-// ResolveFromConfig selects the runtime backend from org config defaults.
-// The runtime name is validated against [config.ValidRuntimes] before
-// resolution so that stub runtimes registered in [Resolve] for dev/testing
-// cannot be activated through config files.
-func ResolveFromConfig(cfg config.OrgConfigReader) (Backend, error) {
-	rt := "claude"
-	if cfg != nil && cfg.OrgRepoDefaults().Runtime != "" {
-		rt = cfg.OrgRepoDefaults().Runtime
-	}
-	if err := validateConfigRuntime(rt); err != nil {
-		return Backend{}, err
-	}
-	return Resolve(rt)
-}
-
 // ResolveFromPerRepoConfig selects the runtime backend from per-repo config.
 // The runtime name is validated against [config.ValidRuntimes] before
 // resolution so that stub runtimes registered in [Resolve] for dev/testing

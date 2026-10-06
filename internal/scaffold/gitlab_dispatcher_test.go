@@ -352,6 +352,8 @@ echo "JOB_TOKEN=${FULLSEND_JOB_TOKEN:-}"
 echo "CODER=${FULLSEND_GITLAB_CODER_TOKEN:-<unset>}"
 echo "ANALYST=${FULLSEND_GITLAB_ANALYST_TOKEN:-<unset>}"
 echo "FORGE=${FULLSEND_FORGE_TOKEN:-<unset>}"
+echo "TRIGGER=${FULLSEND_TRIGGER_TOKEN:-<unset>}"
+echo "WEBHOOK_SECRET=${FULLSEND_WEBHOOK_SECRET:-<unset>}"
 `), 0o755))
 
 	cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"")
@@ -368,6 +370,8 @@ echo "FORGE=${FULLSEND_FORGE_TOKEN:-<unset>}"
 		"FULLSEND_GITLAB_CODER_TOKEN=coder-pat",
 		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
 		"FULLSEND_FORGE_TOKEN=shared-pat",
+		"FULLSEND_TRIGGER_TOKEN=trigger-bearer",
+		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
 		// Deliberately distinct from the pinned identity so passing
 		// assertions prove the driver gets the pinned values.
 		"CI_PROJECT_ID=1",
@@ -388,6 +392,10 @@ echo "FORGE=${FULLSEND_FORGE_TOKEN:-<unset>}"
 	assert.Contains(t, got, "CODER=<unset>")
 	assert.Contains(t, got, "ANALYST=<unset>")
 	assert.Contains(t, got, "FORGE=<unset>")
+	assert.Contains(t, got, "TRIGGER=<unset>", "the webhook trigger bearer must not reach the driver")
+	assert.Contains(t, got, "WEBHOOK_SECRET=<unset>", "the webhook secret must not reach the driver")
+	assert.NotContains(t, got, "trigger-bearer")
+	assert.NotContains(t, got, "webhook-secret")
 	assert.NotContains(t, got, "unpinned")
 	assert.NotContains(t, got, "attacker-ref")
 }

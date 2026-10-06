@@ -5,7 +5,6 @@ import (
 	"path"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
@@ -168,19 +167,6 @@ const (
 	DefaultCodeImage    = "ghcr.io/fullsend-ai/fullsend-code@sha256:ea2a31f38ee80e2a9a898a898a289fe432aa882fa5a4046c3236ab8e2627d7e7"
 )
 
-// DispatchConfig configures how agent work is dispatched.
-type DispatchConfig struct {
-	Platform string `yaml:"platform"`
-	Mode     string `yaml:"mode,omitempty"`     // "oidc-mint"
-	MintURL  string `yaml:"mint_url,omitempty"` // informational, set when mode=oidc-mint
-}
-
-// InferenceConfig configures the inference provider used by agents
-// (org-mode config).
-type InferenceConfig struct {
-	Provider string `yaml:"provider"`
-}
-
 // PerRepoInferenceConfig groups inference backend settings for
 // per-repo configs. The Provider field identifies the inference
 // backend (currently only "vertex"); Project, Region, and WIFProvider
@@ -263,24 +249,6 @@ type ReactionNotificationConfig struct {
 	Completion string `yaml:"completion,omitempty"`
 }
 
-// RepoDefaults holds default settings applied to all repos.
-type RepoDefaults struct {
-	Roles                    []string                  `yaml:"roles"`
-	Runtime                  string                    `yaml:"runtime,omitempty"`
-	MaxImplementationRetries int                       `yaml:"max_implementation_retries"`
-	AutoMerge                bool                      `yaml:"auto_merge"`
-	StatusNotifications      *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
-}
-
-// RepoConfig holds per-repo configuration.
-// StatusNotifications is intentionally absent here — notification style is an
-// org-wide UX decision (consistent appearance across all repos), unlike roles
-// and auto_merge which are operationally per-repo.
-type RepoConfig struct {
-	Roles   []string `yaml:"roles,omitempty"`
-	Enabled bool     `yaml:"enabled"`
-}
-
 // AllowTargets defines which orgs and repos agents may create issues in.
 type AllowTargets struct {
 	Orgs  []string `yaml:"orgs,omitempty"`
@@ -298,26 +266,6 @@ type AuthorizationProvider struct {
 	Provider string `yaml:"provider"`
 }
 
-// orgConfig is the top-level configuration for a fullsend organization.
-// Consumer packages should use the OrgConfigReader or OrgConfigWriter
-// interfaces rather than referencing this type directly.
-type orgConfig struct {
-	Version                string                `yaml:"version"`
-	KillSwitch             bool                  `yaml:"kill_switch,omitempty"`
-	Dispatch               DispatchConfig        `yaml:"dispatch"`
-	Inference              InferenceConfig       `yaml:"inference,omitempty"`
-	Defaults               RepoDefaults          `yaml:"defaults"`
-	Repos                  map[string]RepoConfig `yaml:"repos"`
-	Agents                 []AgentEntry          `yaml:"agents,omitempty"`
-	AllowedRemoteResources []string              `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig   `yaml:"create_issues,omitempty"`
-}
-
-// ValidRoles returns the set of agent roles accepted in `.fullsend`
-// `roles:` / `defaults.roles` config. This is intentionally narrower than
-// mintcore's canonical roles: mint-only dogfood roles (e.g. scribe) can be
-// registered with `fullsend mint add-role` before scaffold/workflow wiring
-// lands, and must not silently pass config validation.
 // ValidConfigAgentName reports whether name is acceptable as an agents:
 // entry name. Exported so a caller that generates an agent can apply the
 // same rule before writing anything, rather than discovering the mismatch
@@ -326,6 +274,11 @@ func ValidConfigAgentName(name string) bool {
 	return validConfigAgentName.MatchString(name)
 }
 
+// ValidRoles returns the set of agent roles accepted in `.fullsend`
+// `roles:` config. This is intentionally narrower than
+// mintcore's canonical roles: mint-only dogfood roles (e.g. scribe) can be
+// registered with `fullsend mint add-role` before scaffold/workflow wiring
+// lands, and must not silently pass config validation.
 func ValidRoles() []string {
 	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"}
 }
@@ -493,132 +446,6 @@ func EnsureDefaultAllowedRemoteResources(existing []string) []string {
 	return result
 }
 
-// NewOrgConfig creates a new orgConfig with sensible defaults.
-// The returned OrgConfigWriter provides full read-write access.
-func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) OrgConfigWriter {
-	repos := make(map[string]RepoConfig, len(allRepos))
-	for _, r := range allRepos {
-		repos[r] = RepoConfig{
-			Enabled: slices.Contains(enabledRepos, r),
-		}
-	}
-
-	cfg := &orgConfig{
-		Version: "1",
-		Dispatch: DispatchConfig{
-			Platform: "github-actions",
-		},
-		Defaults: RepoDefaults{
-			Roles:                    roles,
-			Runtime:                  "claude",
-			MaxImplementationRetries: 2,
-			AutoMerge:                false,
-		},
-		Repos:                  repos,
-		AllowedRemoteResources: DefaultAllowedRemoteResources(),
-	}
-	if inferenceProvider != "" {
-		cfg.Inference = InferenceConfig{Provider: inferenceProvider}
-	}
-	if org != "" {
-		cfg.CreateIssues = &CreateIssuesConfig{
-			AllowTargets: AllowTargets{
-				Orgs:  []string{org},
-				Repos: []string{"fullsend-ai/fullsend"},
-			},
-		}
-	}
-	return cfg
-}
-
-// ParseOrgConfig parses YAML bytes into an OrgConfigReader.
-func ParseOrgConfig(data []byte) (OrgConfigReader, error) {
-	var cfg orgConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing org config: %w", err)
-	}
-	return &cfg, nil
-}
-
-// ParseOrgConfigWriter parses YAML bytes into an OrgConfigWriter
-// for callers that need to modify the config after parsing.
-func ParseOrgConfigWriter(data []byte) (OrgConfigWriter, error) {
-	var cfg orgConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing org config: %w", err)
-	}
-	return &cfg, nil
-}
-
-const configHeader = `# fullsend organization configuration
-# https://github.com/fullsend-ai/fullsend
-#
-# This file is managed by fullsend. Manual edits may be overwritten.
-`
-
-// Marshal serializes the orgConfig to YAML with a descriptive header comment.
-func (c *orgConfig) Marshal() ([]byte, error) {
-	body, err := yaml.Marshal(c)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling org config: %w", err)
-	}
-	return []byte(configHeader + string(body)), nil
-}
-
-// Validate checks the orgConfig for structural correctness.
-func (c *orgConfig) Validate() error {
-	if c.Version != "1" {
-		return fmt.Errorf("unsupported version %q: must be \"1\"", c.Version)
-	}
-	if c.Dispatch.Platform != "github-actions" {
-		return fmt.Errorf("unsupported platform %q: must be \"github-actions\"", c.Dispatch.Platform)
-	}
-	if c.Dispatch.Mode != "" && c.Dispatch.Mode != "oidc-mint" {
-		return fmt.Errorf("unsupported dispatch mode %q: must be \"oidc-mint\"", c.Dispatch.Mode)
-	}
-	if c.Defaults.MaxImplementationRetries < 0 {
-		return fmt.Errorf("max_implementation_retries must be >= 0, got %d", c.Defaults.MaxImplementationRetries)
-	}
-	valid := ValidRoles()
-	seen := make(map[string]bool, len(c.Defaults.Roles))
-	for _, role := range c.Defaults.Roles {
-		if !slices.Contains(valid, role) {
-			return fmt.Errorf("invalid role %q: must be one of %s", role, strings.Join(valid, ", "))
-		}
-		if seen[role] {
-			return fmt.Errorf("duplicate role %q in defaults.roles", role)
-		}
-		seen[role] = true
-	}
-	if c.Inference.Provider != "" {
-		validProviders := ValidProviders()
-		if !slices.Contains(validProviders, c.Inference.Provider) {
-			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
-		}
-	}
-	if rt := c.Defaults.Runtime; rt != "" {
-		validRuntimes := ValidRuntimes()
-		if !slices.Contains(validRuntimes, rt) {
-			return fmt.Errorf("invalid runtime %q: must be one of %s", rt, strings.Join(validRuntimes, ", "))
-		}
-	}
-	if err := validateStatusNotifications(c.Defaults.StatusNotifications); err != nil {
-		return err
-	}
-	if err := ValidateAgentEntries(c.Agents, c.AllowedRemoteResources); err != nil {
-		return err
-	}
-	if err := validateCreateIssues(c.CreateIssues); err != nil {
-		return err
-	}
-	return nil
-}
-
-// ValidateAgentEntries checks agent entries for structural correctness.
-// Uses urlutil.IsURL, urlutil.ParseIntegrityHash, and
-// urlutil.MatchingAllowedPrefixInList for consistency with runtime
-// resolution (case-insensitive scheme, percent-decoding, dot-segment
-// cleaning).
 // validateAgentSettings checks an entry's runtime, model, effort and
 // subagents values.
 func validateAgentSettings(i int, entry AgentEntry) error {
@@ -824,35 +651,6 @@ func validateNotificationValue(field, val string, allowed []string, description 
 	return nil
 }
 
-// EnabledRepos returns a sorted list of repo names where Enabled is true.
-func (c *orgConfig) EnabledRepos() []string {
-	var enabled []string
-	for name, rc := range c.Repos {
-		if rc.Enabled {
-			enabled = append(enabled, name)
-		}
-	}
-	sort.Strings(enabled)
-	return enabled
-}
-
-// DisabledRepos returns a sorted list of repo names where Enabled is false.
-func (c *orgConfig) DisabledRepos() []string {
-	var disabled []string
-	for name, rc := range c.Repos {
-		if !rc.Enabled {
-			disabled = append(disabled, name)
-		}
-	}
-	sort.Strings(disabled)
-	return disabled
-}
-
-// DefaultRoles returns the default roles configured for the organization.
-func (c *orgConfig) DefaultRoles() []string {
-	return c.Defaults.Roles
-}
-
 // perRepoConfig holds configuration for per-repo installation mode.
 // Stored in .fullsend/config.yaml within the target repository.
 // Consumer packages should use the PerRepoConfigReader or ConfigWriter
@@ -863,9 +661,8 @@ func (c *orgConfig) DefaultRoles() []string {
 // when the local value is unset. The terminal parent is perRepoDefaults,
 // which returns compiled-in code defaults.
 type perRepoConfig struct {
-	// omitempty so unset version is not marshaled (unlike orgConfig,
-	// where version is always required). This allows the fallback
-	// chain to inherit version from the parent layer.
+	// omitempty so unset version is not marshaled. This allows the
+	// fallback chain to inherit version from the parent layer.
 	Version string `yaml:"version,omitempty"`
 	Forge   string `yaml:"forge,omitempty"`
 	// Tracker is the default issue tracker backend (github, gitlab, or
@@ -894,9 +691,9 @@ type perRepoConfig struct {
 	Authorization          []AuthorizationProvider `yaml:"authorization,omitempty"`
 	// Notifications backs the StatusNotifications() accessor. Named
 	// distinctly from the method (unlike CreateIssues/IssueCreationConfig)
-	// because "StatusNotifications" is the established accessor name
-	// shared with orgConfig via ConfigReader, and Go forbids a field and
-	// method sharing a name on the same type.
+	// because "StatusNotifications" is the established ConfigReader
+	// accessor name, and Go forbids a field and method sharing a name on
+	// the same type.
 	Notifications *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 
 	// Mint URL for token minting (ADR 0069 Decision 1).
@@ -909,7 +706,6 @@ type perRepoConfig struct {
 
 	// Models groups model configuration. Currently only aliases — per-key
 	// overrides of fullsend's pinned alias table (#6882, #6527 item 2).
-	// Per-repo only (ADR 0044); not added to org-mode config.
 	Models *ModelsConfig `yaml:"models,omitempty"`
 
 	// parent is the next layer in the fallback chain. Getters consult
@@ -957,89 +753,6 @@ func NewEmptyPerRepoOverlay() PerRepoConfigWriter {
 	return &perRepoConfig{
 		parent: &perRepoDefaults{},
 	}
-}
-
-// NewPerRepoConfigFromOrg creates a per-repo config by mapping portable
-// fields from an org config. Per-repo role overrides (repos.<name>.roles)
-// take precedence over defaults.roles. Non-portable fields
-// (max_implementation_retries, auto_merge) are not carried over —
-// callers should warn separately.
-func NewPerRepoConfigFromOrg(orgCfg OrgConfigReader, repoName, targetRepo string) PerRepoConfigWriter {
-	// Determine roles: per-repo overrides take precedence over defaults.
-	roles := orgCfg.OrgRepoDefaults().Roles
-	if repoMap := orgCfg.RepoMap(); repoMap != nil {
-		if rc, ok := repoMap[repoName]; ok && len(rc.Roles) > 0 {
-			roles = rc.Roles
-		}
-	}
-	if roles == nil {
-		roles = PerRepoDefaultRoles()
-	} else {
-		rolesCopy := make([]string, len(roles))
-		copy(rolesCopy, roles)
-		roles = rolesCopy
-	}
-
-	cfg := &perRepoConfig{
-		Version: "1",
-		Roles:   roles,
-		parent:  &perRepoDefaults{},
-	}
-
-	// Agents: deep-copy org agent entries (AgentEntry.Enabled is *bool).
-	if agents := orgCfg.AgentEntries(); len(agents) > 0 {
-		copied := make([]AgentEntry, len(agents))
-		copy(copied, agents)
-		for i, a := range copied {
-			if a.Enabled != nil {
-				e := *a.Enabled
-				copied[i].Enabled = &e
-			}
-		}
-		cfg.Agents = copied
-	}
-
-	// AllowedRemoteResources: copy from org config with defaults ensured.
-	if arr := orgCfg.AllowedResources(); len(arr) > 0 {
-		cfg.AllowedRemoteResources = EnsureDefaultAllowedRemoteResources(arr)
-	} else {
-		cfg.AllowedRemoteResources = DefaultAllowedRemoteResources()
-	}
-
-	// CreateIssues: deep-copy from org config to avoid pointer aliasing.
-	if ci := orgCfg.IssueCreationConfig(); ci != nil {
-		ciCopy := *ci
-		ciCopy.AllowTargets = AllowTargets{
-			Orgs:  append([]string(nil), ci.AllowTargets.Orgs...),
-			Repos: append([]string(nil), ci.AllowTargets.Repos...),
-		}
-		cfg.CreateIssues = &ciCopy
-	} else if targetRepo != "" {
-		cfg.CreateIssues = &CreateIssuesConfig{
-			AllowTargets: AllowTargets{
-				Repos: []string{targetRepo, "fullsend-ai/fullsend"},
-			},
-		}
-	}
-
-	// KillSwitch: only set when active (false is the default).
-	if orgCfg.IsKillSwitchActive() {
-		ks := true
-		cfg.KillSwitch = &ks
-	}
-
-	// Runtime: copy when explicitly set.
-	if rt := orgCfg.OrgRepoDefaults().Runtime; rt != "" {
-		cfg.Runtime = rt
-	}
-
-	// StatusNotifications: deep-copy from org config to avoid pointer aliasing.
-	if sn := orgCfg.StatusNotifications(); sn != nil {
-		snCopy := *sn
-		cfg.Notifications = &snCopy
-	}
-
-	return cfg
 }
 
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfigReader.

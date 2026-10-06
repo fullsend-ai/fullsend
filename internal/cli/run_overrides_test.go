@@ -238,26 +238,6 @@ agents:
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 	assert.Equal(t, sourceFlagRuntime, source)
-
-	// Org configs honour agents: entries too.
-	orgData := []byte(`# fullsend organization configuration
-version: "1"
-dispatch:
-  platform: github
-defaults:
-  roles: [triage]
-  runtime: dummy
-repos: {}
-agents:
-  - name: triage
-    runtime: claude
-`)
-	backend, err = resolveBackendFromConfigData(orgData, "triage")
-	require.NoError(t, err)
-	assert.Equal(t, "claude", backend.Runtime.Name())
-	backend, err = resolveBackendFromConfigData(orgData, "code")
-	require.NoError(t, err)
-	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
 
 func TestResolveBackend_PerAgentRuntimeRejectsUnknown(t *testing.T) {

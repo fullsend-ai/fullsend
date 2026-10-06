@@ -38,9 +38,12 @@ write or higher.
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
 synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
 On GitLab, automatic review fires when the cron poller sees an MR whose `created_at` is newer than the watermark
-(up to one poll interval of delay). Native `merge_request_event` dispatch was removed; all GitLab events route
-through the poller. A native webhook fast-path is planned ([ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md))
-to cut this latency once shipped; until then, automatic review dispatch on GitLab is via the ADR 0067 poller.
+(up to one poll interval of delay). Native `merge_request_event` dispatch was removed. `fullsend repos install`
+provisions a project webhook with merge-request events enabled ([ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md))
+as a fast path that cuts this latency. Provisioning is deferred until the dispatcher and its scripts are on the
+default branch, the default branch is protected, and `no_one_allowed` is verified, so a repository whose scaffold
+merge request is still open dispatches via the ADR 0067 poller until then. The poller stays in place as the
+reconciliation backstop for missed events.
 Push-to-open-MR (GitHub `synchronize`) is not auto-detected;
 comment `/fs-review` to re-review after new commits.
 

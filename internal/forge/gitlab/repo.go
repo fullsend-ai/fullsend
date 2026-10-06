@@ -148,6 +148,7 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 		Visibility        string `json:"visibility"`
 		Archived          bool   `json:"archived"`
 		ForkedFromProject any    `json:"forked_from_project"`
+		CIConfigPath      string `json:"ci_config_path"`
 	}
 	if err := decodeJSON(resp, &p); err != nil {
 		return nil, fmt.Errorf("decode repo: %w", err)
@@ -161,6 +162,7 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 		Private:       p.Visibility != "public",
 		Archived:      p.Archived,
 		Fork:          p.ForkedFromProject != nil,
+		CIConfigPath:  p.CIConfigPath,
 	}, nil
 }
 

@@ -149,6 +149,26 @@ func printResolvedDeps(printer *ui.Printer, deps []resolve.Dependency) {
 	}
 }
 
+// loadLockConfig loads the layered fullsend config (config.yaml over
+// config.base.yaml) from the directory containing path for locking, running,
+// and eval measurement. Unlike
+// tryLoadOrgConfig it distinguishes an absent config (nil, nil — neither
+// layer exists) from an existing config that cannot be loaded (nil, error),
+// so a rejected configuration is never mistaken for the removal of its
+// registered agents, and a base-only configuration (including an inherited
+// empty allowed_remote_resources) is honored.
+func loadLockConfig(path string) (config.ConfigWriter, error) {
+	writer, err := config.LoadConfigWriter(filepath.Dir(path), config.LoadOpts{MissingOK: false})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("loading fullsend config: %w", err)
+	}
+	writer.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(writer.AllowedResources()))
+	return writer, nil
+}
+
 // lockOneAgent resolves dependencies for a single harness and returns the
 // lock entry without writing to disk. Returns nil (no error) when the harness
 // has no remote dependencies or the lock entry is already up to date.
@@ -156,7 +176,10 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	// Load org config early — needed for config-driven agent resolution
 	// fallback and later for allowlist validation.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
-	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+	orgCfg, err := loadLockConfig(orgConfigPath)
+	if err != nil {
+		return nil, err
+	}
 
 	policy := fetch.DefaultPolicy
 	policy.Offline = rFlags.offline
@@ -439,7 +462,10 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 	// Merge config-registered agent names so --all covers agents
 	// resolved from config entries (not just local harness files).
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
-	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+	orgCfg, err := loadLockConfig(orgConfigPath)
+	if err != nil {
+		return err
+	}
 	if orgCfg != nil {
 		registered, regErr := harness.RegisteredAgents(orgCfg)
 		if regErr != nil {

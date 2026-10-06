@@ -15,14 +15,23 @@ type gitlabTrigger struct {
 	ID          int64  `json:"id"`
 	Description string `json:"description"`
 	Token       string `json:"token"`
+	// Owner is the user the token acts as. GitLab omits it (null) for
+	// some legacy tokens.
+	Owner *struct {
+		ID int64 `json:"id"`
+	} `json:"owner"`
 }
 
 func (t gitlabTrigger) toForge() forge.PipelineTriggerToken {
-	return forge.PipelineTriggerToken{
+	tok := forge.PipelineTriggerToken{
 		ID:          t.ID,
 		Description: t.Description,
 		Token:       t.Token,
 	}
+	if t.Owner != nil {
+		tok.OwnerID = t.Owner.ID
+	}
+	return tok
 }
 
 // CreatePipelineTriggerToken mints a pipeline trigger token via
@@ -82,6 +91,25 @@ func (c *LiveClient) RevokePipelineTriggerToken(ctx context.Context, owner, repo
 	return nil
 }
 
+// GetProjectMemberAccessLevel returns userID's effective access level on
+// the project via GET /projects/:id/members/all/:user_id, which includes
+// membership inherited from groups. A 404 (no membership) is returned as
+// forge.ErrNotFound (wrapped).
+func (c *LiveClient) GetProjectMemberAccessLevel(ctx context.Context, owner, repo string, userID int64) (int, error) {
+	path := fmt.Sprintf("/projects/%s/members/all/%d", projectPath(owner, repo), userID)
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return 0, fmt.Errorf("get member access level for user %d: %w", userID, err)
+	}
+	var member struct {
+		AccessLevel int `json:"access_level"`
+	}
+	if err := decodeJSON(resp, &member); err != nil {
+		return 0, fmt.Errorf("decode member access level for user %d: %w", userID, err)
+	}
+	return member.AccessLevel, nil
+}
+
 // ---------------------------------------------------------------------------
 // Project webhooks
 // ---------------------------------------------------------------------------
@@ -104,6 +132,8 @@ type gitlabHook struct {
 	DeploymentEvents         bool   `json:"deployment_events"`
 	ReleasesEvents           bool   `json:"releases_events"`
 	EnableSSLVerification    bool   `json:"enable_ssl_verification"`
+	AlertStatus              string `json:"alert_status"`
+	DisabledUntil            string `json:"disabled_until"`
 }
 
 func (h gitlabHook) toForge() forge.ProjectHook {
@@ -125,6 +155,8 @@ func (h gitlabHook) toForge() forge.ProjectHook {
 		DeploymentEvents:         h.DeploymentEvents,
 		ReleasesEvents:           h.ReleasesEvents,
 		EnableSSLVerification:    h.EnableSSLVerification,
+		AlertStatus:              h.AlertStatus,
+		DisabledUntil:            h.DisabledUntil,
 	}
 }
 

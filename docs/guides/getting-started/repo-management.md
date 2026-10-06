@@ -462,7 +462,11 @@ fullsend repos status -f repos.yaml --json
 
 Run `repos install` to detect and fix component drift (workflow, thin
 callers, variables, secrets, pipeline schedules, GitLab poller
-protected-ref pipeline access, GitLab pipeline-variable override-role
+protected-ref pipeline access, the GitLab webhook fast path — a pipeline
+trigger token, webhook secret, and project webhook, deferred until the
+dispatcher and the scripts it sources, transitively, are on the default branch, the
+default branch is protected, and `no_one_allowed` is verified —
+GitLab pipeline-variable override-role
 inspection — typed dispatch activation fails closed without
 `no_one_allowed` before runnable template delivery, even when enforcement
 is requested; legacy upgrades need maintenance-window preparation and legacy variable-based wrappers are
@@ -482,7 +486,13 @@ fullsend repos install -f repos.yaml --dry-run
 
 The convergence phase checks all components (workflow, thin callers,
 variables, secrets, pipeline schedules, GitLab poller protected-ref
-pipeline access — a disabled GitLab schedule is
+pipeline access, GitLab webhook fast-path provisioning and repair (the
+trigger token, webhook secret, and project webhook are created or repaired
+only once the readiness gates are met, otherwise deferred without changes;
+a trigger token owned above Developer, or whose owner cannot be verified, is
+revoked with its webhook and the fast path stays disabled — install-time
+Maintainer access is never kept as a runtime credential; hooks Fullsend
+does not own are left untouched) — a disabled GitLab schedule is
 reported as drift and reactivated only when `--reactivate-schedules` is
 passed; GitLab pipeline-variable override-role inspection — typed
 dispatch activation fails closed without `no_one_allowed`;
@@ -554,7 +564,7 @@ manifest.
 
 ### Removing repos
 
-Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches. Pass `--direct` to push file deletions to the default branch:
+Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches, deletes the Fullsend-owned webhook fast-path project webhook, revokes its managed pipeline trigger token, and deletes the `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables; if that cleanup fails, the scaffold is not removed and the manifest entry is kept for retry. Pass `--direct` to push file deletions to the default branch:
 
 ```bash
 fullsend repos uninstall acme/old-api

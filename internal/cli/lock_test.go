@@ -1294,8 +1294,8 @@ func TestRunLock_URLRefsNoOrgConfigError(t *testing.T) {
 }
 
 func TestRunLock_MalformedOrgConfig(t *testing.T) {
-	// A malformed config.yaml should produce a warning but not prevent
-	// local-only harnesses from locking.
+	// An existing config.yaml that fails to load must be reported rather
+	// than treated as absent, even for a local-only harness.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -1312,7 +1312,8 @@ func TestRunLock_MalformedOrgConfig(t *testing.T) {
 
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "simple", dir, "", false, resolveFlags{}, printer)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {

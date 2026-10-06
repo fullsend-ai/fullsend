@@ -129,7 +129,7 @@ The code agent:
 2. **Branches and implements.** Creates a branch, writes the fix following repo conventions.
 3. **Tests iteratively.** Runs the test suite, incorporates triage-provided tests if present, writes new tests if needed. Iterates until tests pass.
 4. **Opens a PR.** Links the issue, describes the changes.
-5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a configurable cap, default defined in `config.yaml` as `defaults.max_implementation_retries`).
+5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a fixed retry cap).
 6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request_target`.
 
 ### Stage 3: Review

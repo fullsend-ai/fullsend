@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -30,11 +31,16 @@ func NewFakeClient() *FakeClient {
 		Refs:                     make(map[string]string),
 		ProtectedBranches:        make(map[string]bool),
 		ProtectedBranchRules:     make(map[string]*ProtectedBranchRule),
+		ProtectedTags:            make(map[string]bool),
 		PipelineSchedules:        make(map[string][]PipelineSchedule),
 		ForceReachableCommits:    make(map[string]int),
 		PipelineTriggerTokens:    make(map[string][]PipelineTriggerToken),
 		ProjectHooks:             make(map[string][]ProjectHook),
 		PipelineVarOverrideRoles: make(map[string]string),
+		// New trigger tokens are owned by a Developer-level user unless a
+		// test says otherwise.
+		TriggerTokenOwnerID: 1001,
+		ProjectMemberAccess: map[int64]int{1001: GitLabAccessLevelDeveloper},
 	}
 }
 
@@ -49,16 +55,9 @@ type SecretRecord struct {
 	Owner, Repo, Name, Value string
 }
 
-// OrgSecretRecord records an org-level secret creation call.
-type OrgSecretRecord struct {
-	Org, Name, Value string
-	RepoIDs          []int64
-}
-
 // OrgVariableRecord records an org-level variable creation/update call.
 type OrgVariableRecord struct {
 	Org, Name, Value string
-	RepoIDs          []int64
 }
 
 // VariableRecord records a variable creation/update call.
@@ -233,13 +232,12 @@ type FakeClient struct {
 	OrgMemberships map[string]OrgMembership
 
 	// Org-level secret state
-	OrgSecrets       map[string]bool    // key: "org/name"
-	OrgSecretRepoIDs map[string][]int64 // key: "org/name" → repo IDs
+	OrgSecrets map[string]bool // key: "org/name"
 
 	// Org-level variable state
-	OrgVariables       map[string]bool    // key: "org/name"
-	OrgVariableValues  map[string]string  // key: "org/name" → value
-	OrgVariableRepoIDs map[string][]int64 // key: "org/name" → repo IDs
+	OrgVariables      map[string]bool   // key: "org/name"
+	InstanceVariables []string          // instance-level CI/CD variable names
+	OrgVariableValues map[string]string // key: "org/name" → value
 
 	// Protected branches for IsProtectedBranch.
 	ProtectedBranches map[string]bool // key: "owner/repo/branch"
@@ -249,6 +247,9 @@ type FakeClient struct {
 	// protected even if ProtectedBranches is false.
 	ProtectedBranchRules map[string]*ProtectedBranchRule
 
+	// ProtectedTags lists protected-tag rules for ListProtectedTags.
+	ProtectedTags map[string]bool // key: "owner/repo/tag-pattern"
+
 	// GrantedProtectedBranchMergeUsers records GrantProtectedBranchMergeUser calls.
 	GrantedProtectedBranchMergeUsers []ProtectedBranchMergeGrantRecord
 
@@ -257,6 +258,12 @@ type FakeClient struct {
 
 	// PipelineTriggerTokens stores trigger tokens keyed by "owner/repo".
 	PipelineTriggerTokens map[string][]PipelineTriggerToken
+	// TriggerTokenOwnerID is the owner recorded on tokens minted by
+	// CreatePipelineTriggerToken (GitLab binds a token to its creator).
+	TriggerTokenOwnerID int64
+	// ProjectMemberAccess maps a user ID to its effective project access
+	// level for GetProjectMemberAccessLevel; absent users are not members.
+	ProjectMemberAccess map[int64]int
 
 	// ProjectHooks stores project webhooks keyed by "owner/repo".
 	ProjectHooks map[string][]ProjectHook
@@ -368,7 +375,6 @@ type FakeClient struct {
 	Variables               []VariableRecord
 	DeletedVariables        []VariableRecord
 	DeletedOrgSecrets       []string // "org/name"
-	CreatedOrgSecrets       []OrgSecretRecord
 	CreatedOrgVariables     []OrgVariableRecord
 	DeletedOrgVariables     []string // "org/name"
 	CreatedIssues           []CreatedIssueRecord
@@ -2172,28 +2178,6 @@ func (f *FakeClient) GetOrgMembership(_ context.Context, org, username string) (
 	return OrgMembership{}, ErrNotFound
 }
 
-func (f *FakeClient) CreateOrgSecret(_ context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("CreateOrgSecret"); e != nil {
-		return e
-	}
-
-	f.CreatedOrgSecrets = append(f.CreatedOrgSecrets, OrgSecretRecord{
-		Org:     org,
-		Name:    name,
-		Value:   value,
-		RepoIDs: selectedRepoIDs,
-	})
-
-	if f.OrgSecrets == nil {
-		f.OrgSecrets = make(map[string]bool)
-	}
-	f.OrgSecrets[org+"/"+name] = true
-	return nil
-}
-
 func (f *FakeClient) OrgSecretExists(_ context.Context, org, name string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2220,48 +2204,18 @@ func (f *FakeClient) DeleteOrgSecret(_ context.Context, org, name string) error 
 	return nil
 }
 
-func (f *FakeClient) SetOrgSecretRepos(_ context.Context, org, name string, repoIDs []int64) error {
+func (f *FakeClient) CreateOrUpdateOrgVariableAll(_ context.Context, org, name, value string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if e := f.err("SetOrgSecretRepos"); e != nil {
-		return e
-	}
-
-	if f.OrgSecretRepoIDs == nil {
-		f.OrgSecretRepoIDs = make(map[string][]int64)
-	}
-	f.OrgSecretRepoIDs[org+"/"+name] = repoIDs
-	return nil
-}
-
-func (f *FakeClient) GetOrgSecretRepos(_ context.Context, org, name string) ([]int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("GetOrgSecretRepos"); e != nil {
-		return nil, e
-	}
-
-	if f.OrgSecretRepoIDs == nil {
-		return nil, nil
-	}
-	return f.OrgSecretRepoIDs[org+"/"+name], nil
-}
-
-func (f *FakeClient) CreateOrUpdateOrgVariable(_ context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("CreateOrUpdateOrgVariable"); e != nil {
+	if e := f.err("CreateOrUpdateOrgVariableAll"); e != nil {
 		return e
 	}
 
 	f.CreatedOrgVariables = append(f.CreatedOrgVariables, OrgVariableRecord{
-		Org:     org,
-		Name:    name,
-		Value:   value,
-		RepoIDs: selectedRepoIDs,
+		Org:   org,
+		Name:  name,
+		Value: value,
 	})
 
 	if f.OrgVariables == nil {
@@ -2273,27 +2227,7 @@ func (f *FakeClient) CreateOrUpdateOrgVariable(_ context.Context, org, name, val
 		f.OrgVariableValues = make(map[string]string)
 	}
 	f.OrgVariableValues[org+"/"+name] = value
-
-	if f.OrgVariableRepoIDs == nil {
-		f.OrgVariableRepoIDs = make(map[string][]int64)
-	}
-	f.OrgVariableRepoIDs[org+"/"+name] = selectedRepoIDs
 	return nil
-}
-
-func (f *FakeClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
-	return f.CreateOrUpdateOrgVariable(ctx, org, name, value, nil)
-}
-
-func (f *FakeClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
-	f.mu.Lock()
-	e := f.err("OrgVariableExists")
-	f.mu.Unlock()
-	if e != nil {
-		return false, e
-	}
-	_, exists, err := f.GetOrgVariable(ctx, org, name)
-	return exists, err
 }
 
 func (f *FakeClient) GetOrgVariable(_ context.Context, org, name string) (string, bool, error) {
@@ -2312,6 +2246,22 @@ func (f *FakeClient) GetOrgVariable(_ context.Context, org, name string) (string
 		return "", true, nil
 	}
 	return f.OrgVariableValues[key], true, nil
+}
+
+// ListInstanceVariables returns the instance-level CI/CD variable names
+// configured in InstanceVariables.
+func (f *FakeClient) ListInstanceVariables(_ context.Context) ([]OrgVariable, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListInstanceVariables"); e != nil {
+		return nil, e
+	}
+	out := make([]OrgVariable, 0, len(f.InstanceVariables))
+	for _, name := range f.InstanceVariables {
+		out = append(out, OrgVariable{Name: name})
+	}
+	return out, nil
 }
 
 func (f *FakeClient) ListOrgVariables(_ context.Context, org string) ([]OrgVariable, error) {
@@ -2336,35 +2286,6 @@ func (f *FakeClient) ListOrgVariables(_ context.Context, org string) ([]OrgVaria
 		out = append(out, OrgVariable{Name: name, Value: val})
 	}
 	return out, nil
-}
-
-func (f *FakeClient) SetOrgVariableRepos(_ context.Context, org, name string, repoIDs []int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("SetOrgVariableRepos"); e != nil {
-		return e
-	}
-
-	if f.OrgVariableRepoIDs == nil {
-		f.OrgVariableRepoIDs = make(map[string][]int64)
-	}
-	f.OrgVariableRepoIDs[org+"/"+name] = repoIDs
-	return nil
-}
-
-func (f *FakeClient) GetOrgVariableRepos(_ context.Context, org, name string) ([]int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if e := f.err("GetOrgVariableRepos"); e != nil {
-		return nil, e
-	}
-
-	if f.OrgVariableRepoIDs == nil {
-		return nil, nil
-	}
-	return f.OrgVariableRepoIDs[org+"/"+name], nil
 }
 
 func (f *FakeClient) DeleteOrgVariable(_ context.Context, org, name string) error {
@@ -2426,10 +2347,66 @@ func (f *FakeClient) GetProtectedBranch(_ context.Context, owner, repo, branch s
 		// Developers can merge, so a Developer-level poller can create pipelines.
 		return &ProtectedBranchRule{
 			Name:              branch,
-			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 30}},
+			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: GitLabAccessLevelDeveloper}},
 		}, nil
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListProtectedBranches(_ context.Context, owner, repo string) ([]ProtectedBranchRule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListProtectedBranches"); e != nil {
+		return nil, e
+	}
+
+	prefix := owner + "/" + repo + "/"
+	seen := map[string]bool{}
+	var out []ProtectedBranchRule
+	for key, rule := range f.ProtectedBranchRules {
+		name, ok := strings.CutPrefix(key, prefix)
+		if !ok || rule == nil {
+			continue
+		}
+		seen[name] = true
+		r := *cloneProtectedBranchRule(rule)
+		r.Name = name
+		out = append(out, r)
+	}
+	for key, protected := range f.ProtectedBranches {
+		name, ok := strings.CutPrefix(key, prefix)
+		if !ok || !protected || seen[name] {
+			continue
+		}
+		out = append(out, ProtectedBranchRule{
+			Name:              name,
+			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: GitLabAccessLevelDeveloper}},
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (f *FakeClient) ListProtectedTags(_ context.Context, owner, repo string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListProtectedTags"); e != nil {
+		return nil, e
+	}
+
+	prefix := owner + "/" + repo + "/"
+	var out []string
+	for key, protected := range f.ProtectedTags {
+		name, ok := strings.CutPrefix(key, prefix)
+		if !ok || !protected {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func (f *FakeClient) GrantProtectedBranchMergeUser(_ context.Context, owner, repo, branch string, userID int) error {
@@ -2452,7 +2429,7 @@ func (f *FakeClient) GrantProtectedBranchMergeUser(_ context.Context, owner, rep
 	if rule == nil && f.ProtectedBranches[key] {
 		rule = &ProtectedBranchRule{
 			Name:              branch,
-			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 30}},
+			MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: GitLabAccessLevelDeveloper}},
 		}
 	}
 	if rule == nil {
@@ -2762,6 +2739,7 @@ func (f *FakeClient) CreatePipelineTriggerToken(_ context.Context, owner, repo, 
 		ID:          f.triggerTokenSeq,
 		Description: description,
 		Token:       fmt.Sprintf("glptt-fake-%d", f.triggerTokenSeq),
+		OwnerID:     f.TriggerTokenOwnerID,
 	}
 	f.CreatedTriggerTokens = append(f.CreatedTriggerTokens, tok)
 	key := owner + "/" + repo
@@ -2788,6 +2766,20 @@ func (f *FakeClient) ListPipelineTriggerTokens(_ context.Context, owner, repo st
 	out := make([]PipelineTriggerToken, len(src))
 	copy(out, src)
 	return out, nil
+}
+
+func (f *FakeClient) GetProjectMemberAccessLevel(_ context.Context, _, _ string, userID int64) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetProjectMemberAccessLevel"); e != nil {
+		return 0, e
+	}
+	level, ok := f.ProjectMemberAccess[userID]
+	if !ok {
+		return 0, fmt.Errorf("%w: project member %d", ErrNotFound, userID)
+	}
+	return level, nil
 }
 
 func (f *FakeClient) RevokePipelineTriggerToken(_ context.Context, owner, repo string, tokenID int64) error {

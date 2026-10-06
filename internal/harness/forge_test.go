@@ -1528,15 +1528,6 @@ func TestBuildConfigMap_PerRepoConfig(t *testing.T) {
 	assert.Contains(t, roles, "code")
 }
 
-func TestBuildConfigMap_OrgConfig(t *testing.T) {
-	t.Parallel()
-	// Org configs don't implement PerRepoConfigReader, so the map
-	// should be nil (no per-repo fields to expose).
-	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
-	m := BuildConfigMap(orgCfg)
-	assert.Nil(t, m)
-}
-
 func TestBuildConfigMap_AllFields(t *testing.T) {
 	t.Parallel()
 	// Test that BuildConfigMap exposes all non-sensitive per-repo config

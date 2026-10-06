@@ -27,7 +27,6 @@ func TestPerRepoDefaults_CodeDefaults(t *testing.T) {
 	assert.Nil(t, d.AgentEntries())
 	assert.Equal(t, DefaultAllowedRemoteResources(), d.AllowedResources())
 	assert.Nil(t, d.IssueCreationConfig())
-	assert.False(t, d.IsOrgMode())
 	assert.Equal(t, "", d.ConfigForge())
 
 	// Mint/inference operational defaults.
@@ -52,7 +51,6 @@ func TestPerRepoConfig_EmptyConfigResolvesDefaults(t *testing.T) {
 	assert.Nil(t, cfg.AgentEntries())
 	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
 	assert.Nil(t, cfg.IssueCreationConfig())
-	assert.False(t, cfg.IsOrgMode())
 
 	// Mint/inference fields fall through to code defaults.
 	assert.Equal(t, DefaultPerRepoMintURL, cfg.ConfigMintURL())
@@ -749,7 +747,6 @@ func TestPerRepoConfig_ExistingSingleFileBehavior(t *testing.T) {
 
 	assert.Equal(t, "1", cfg.ConfigVersion())
 	assert.False(t, cfg.IsKillSwitchActive())
-	assert.False(t, cfg.IsOrgMode())
 	assert.Equal(t, []string{"triage", "coder", "review"}, cfg.ConfigRoles())
 	assert.Empty(t, cfg.AgentEntries())
 	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())

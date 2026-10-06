@@ -262,7 +262,8 @@ func TestManagedInferenceSecrets_SharedByUninstallAndOrphanDetection(t *testing.
 	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey}
 	assert.Equal(t, want, managedInferenceSecrets())
 	assert.Equal(t, want, UninstallSecretsForForge(ForgeGitHub))
-	assert.Equal(t, want, UninstallSecretsForForge(ForgeGitLab))
+	// GitLab uninstall also removes the webhook fast-path credentials.
+	assert.Equal(t, append(append([]string{}, want...), forge.SecretTriggerToken, forge.SecretWebhookSecret), UninstallSecretsForForge(ForgeGitLab))
 	for _, auth := range ValidInferenceAuths() {
 		for _, name := range append(inferenceSecretsForAuth(auth), obsoleteInferenceSecrets(auth)...) {
 			assert.Contains(t, want, name, "every selected or obsolete secret must be removed by uninstall")

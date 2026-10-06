@@ -57,8 +57,8 @@ content that must be updated whenever a runtime is added or renamed.
 **Tests:**
 
 - [x] `internal/runtime/registry_test.go` — add a `Resolve("<name>")`
-  assertion block to `TestResolve` (and to `TestResolveFromConfig` /
-  `TestResolveFromPerRepoConfig` if the runtime is user-selectable).
+  assertion block to `TestResolve` (and to `TestResolveFromPerRepoConfig`
+  if the runtime is user-selectable).
 - [x] `internal/config/config_test.go` — update any assertion on
   `ValidRuntimes()` to include the new name.
 

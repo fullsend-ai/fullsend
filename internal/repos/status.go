@@ -531,8 +531,8 @@ func extractWorkflowRef(content []byte, fc ForgeConfig) string {
 // can surface a non-zero exit code.
 //
 // Callers surface unmatched-pattern warnings through two mechanisms:
-// Status collects them into a result struct field; Converge and
-// migrateRepo emit them via progress callbacks.
+// Status collects them into a result struct field; Converge emits
+// them via progress callbacks.
 func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []string, error) {
 	matched := make(map[string]bool)
 	var result []ResolvedRepo

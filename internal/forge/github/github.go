@@ -4107,62 +4107,6 @@ func (c *LiveClient) GetOrgMembership(ctx context.Context, org, username string)
 	return forge.OrgMembership{State: body.State, Role: body.Role}, nil
 }
 
-// CreateOrgSecret creates or updates an encrypted organization-level secret
-// scoped to the given repository IDs.
-// The value is trimmed of whitespace before encryption to prevent corruption
-// from stray newlines or carriage returns in pasted input.
-func (c *LiveClient) CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	value = strings.TrimSpace(value)
-	// Step 1: Get the org's public key for secret encryption.
-	keyResp, err := c.get(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/public-key", org))
-	if err != nil {
-		return fmt.Errorf("get org public key: %w", err)
-	}
-
-	var pubKey struct {
-		KeyID string `json:"key_id"`
-		Key   string `json:"key"`
-	}
-	if err := decodeJSON(keyResp, &pubKey); err != nil {
-		return fmt.Errorf("decode org public key: %w", err)
-	}
-
-	// Step 2: Decode the public key and encrypt the secret value.
-	keyBytes, err := base64.StdEncoding.DecodeString(pubKey.Key)
-	if err != nil {
-		return fmt.Errorf("decode org public key base64: %w", err)
-	}
-
-	var recipientKey [32]byte
-	copy(recipientKey[:], keyBytes)
-
-	encrypted, err := box.SealAnonymous(nil, []byte(value), &recipientKey, nil)
-	if err != nil {
-		return fmt.Errorf("encrypt org secret: %w", err)
-	}
-
-	// Step 3: Upload the encrypted secret.
-	// Always use visibility "selected" so that SetOrgSecretRepos can later
-	// update the repo access list without a 409 Conflict (which GitHub
-	// returns when trying to set selected repos on a visibility "all" secret).
-	if selectedRepoIDs == nil {
-		selectedRepoIDs = []int64{}
-	}
-	payload := map[string]any{
-		"encrypted_value":         base64.StdEncoding.EncodeToString(encrypted),
-		"key_id":                  pubKey.KeyID,
-		"visibility":              "selected",
-		"selected_repository_ids": selectedRepoIDs,
-	}
-
-	resp, err := c.put(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/%s", org, name), payload)
-	if err != nil {
-		return fmt.Errorf("create org secret %s: %w", name, err)
-	}
-	resp.Body.Close()
-	return nil
-}
-
 // OrgSecretExists checks if an org-level secret exists.
 func (c *LiveClient) OrgSecretExists(ctx context.Context, org, name string) (bool, error) {
 	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/orgs/%s/actions/secrets/%s", org, name), nil)
@@ -4201,61 +4145,10 @@ func (c *LiveClient) DeleteOrgSecret(ctx context.Context, org, name string) erro
 	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting org secret"}
 }
 
-// GetOrgSecretRepos returns the repository IDs that have access to an org secret.
-func (c *LiveClient) GetOrgSecretRepos(ctx context.Context, org, name string) ([]int64, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/%s/repositories", org, name))
-	if err != nil {
-		return nil, fmt.Errorf("get org secret repos for %s: %w", name, err)
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Repositories []struct {
-			ID int64 `json:"id"`
-		} `json:"repositories"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode org secret repos for %s: %w", name, err)
-	}
-
-	ids := make([]int64, len(result.Repositories))
-	for i, r := range result.Repositories {
-		ids[i] = r.ID
-	}
-	return ids, nil
-}
-
-// SetOrgSecretRepos sets the list of repositories that can access an org secret.
-func (c *LiveClient) SetOrgSecretRepos(ctx context.Context, org, name string, repoIDs []int64) error {
-	if repoIDs == nil {
-		repoIDs = []int64{}
-	}
-	payload := map[string]any{
-		"selected_repository_ids": repoIDs,
-	}
-
-	resp, err := c.put(ctx, fmt.Sprintf("/orgs/%s/actions/secrets/%s/repositories", org, name), payload)
-	if err != nil {
-		return fmt.Errorf("set org secret repos for %s: %w", name, err)
-	}
-	resp.Body.Close()
-	return nil
-}
-
-// CreateOrUpdateOrgVariable creates or updates an org-level Actions variable
-// scoped to the given repository IDs.
-func (c *LiveClient) CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	return c.createOrUpdateOrgVariable(ctx, org, name, value, "selected", selectedRepoIDs)
-}
-
 // CreateOrUpdateOrgVariableAll creates or updates an org-level Actions variable
 // visible to all repositories in the org (visibility all).
 func (c *LiveClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
-	return c.createOrUpdateOrgVariable(ctx, org, name, value, "all", nil)
-}
-
-func (c *LiveClient) createOrUpdateOrgVariable(ctx context.Context, org, name, value, visibility string, selectedRepoIDs []int64) error {
-	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), orgVariableBody("", value, visibility, selectedRepoIDs))
+	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), orgVariableBody("", value))
 	if err == nil {
 		resp.Body.Close()
 		return nil
@@ -4265,7 +4158,7 @@ func (c *LiveClient) createOrUpdateOrgVariable(ctx context.Context, org, name, v
 		return fmt.Errorf("update org variable %s: %w", name, err)
 	}
 
-	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), orgVariableBody(name, value, visibility, selectedRepoIDs))
+	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), orgVariableBody(name, value))
 	if err != nil {
 		return fmt.Errorf("create org variable %s: %w", name, err)
 	}
@@ -4273,29 +4166,17 @@ func (c *LiveClient) createOrUpdateOrgVariable(ctx context.Context, org, name, v
 	return nil
 }
 
-// orgVariableBody builds a GitHub org Actions variable request body.
-// name is included only for create (POST) requests.
-func orgVariableBody(name, value, visibility string, selectedRepoIDs []int64) map[string]any {
+// orgVariableBody builds a GitHub org Actions variable request body with
+// visibility "all". name is included only for create (POST) requests.
+func orgVariableBody(name, value string) map[string]any {
 	body := map[string]any{
 		"value":      value,
-		"visibility": visibility,
+		"visibility": "all",
 	}
 	if name != "" {
 		body["name"] = name
 	}
-	if visibility == "selected" {
-		if selectedRepoIDs == nil {
-			selectedRepoIDs = []int64{}
-		}
-		body["selected_repository_ids"] = selectedRepoIDs
-	}
 	return body
-}
-
-// OrgVariableExists checks if an org-level variable exists.
-func (c *LiveClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
-	_, exists, err := c.GetOrgVariable(ctx, org, name)
-	return exists, err
 }
 
 // GetOrgVariable reads an org-level Actions variable value.
@@ -4323,6 +4204,11 @@ func (c *LiveClient) GetOrgVariable(ctx context.Context, org, name string) (stri
 	default:
 		return "", false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status reading org variable"}
 	}
+}
+
+// ListInstanceVariables is not supported on GitHub.
+func (c *LiveClient) ListInstanceVariables(_ context.Context) ([]forge.OrgVariable, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // ListOrgVariables lists org-level Actions variables (paginated).
@@ -4368,47 +4254,6 @@ func (c *LiveClient) DeleteOrgVariable(ctx context.Context, org, name string) er
 		return nil
 	}
 	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting org variable"}
-}
-
-// SetOrgVariableRepos sets the list of repositories that can access an org variable.
-func (c *LiveClient) SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) error {
-	if repoIDs == nil {
-		repoIDs = []int64{}
-	}
-	payload := map[string]any{
-		"selected_repository_ids": repoIDs,
-	}
-
-	resp, err := c.put(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s/repositories", org, name), payload)
-	if err != nil {
-		return fmt.Errorf("set org variable repos for %s: %w", name, err)
-	}
-	resp.Body.Close()
-	return nil
-}
-
-// GetOrgVariableRepos returns the repository IDs that have access to an org variable.
-func (c *LiveClient) GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s/repositories", org, name))
-	if err != nil {
-		return nil, fmt.Errorf("get org variable repos for %s: %w", name, err)
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Repositories []struct {
-			ID int64 `json:"id"`
-		} `json:"repositories"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode org variable repos for %s: %w", name, err)
-	}
-
-	ids := make([]int64, len(result.Repositories))
-	for i, r := range result.Repositories {
-		ids[i] = r.ID
-	}
-	return ids, nil
 }
 
 // IsProtectedBranch checks whether the given branch has protection rules
@@ -4511,6 +4356,11 @@ func (c *LiveClient) RevokePipelineTriggerToken(_ context.Context, _, _ string, 
 	return forge.ErrNotSupported
 }
 
+// GetProjectMemberAccessLevel is not supported on GitHub.
+func (c *LiveClient) GetProjectMemberAccessLevel(_ context.Context, _, _ string, _ int64) (int, error) {
+	return 0, forge.ErrNotSupported
+}
+
 // CreateProjectHook is not supported on GitHub.
 func (c *LiveClient) CreateProjectHook(_ context.Context, _, _ string, _ forge.ProjectHook) (*forge.ProjectHook, error) {
 	return nil, forge.ErrNotSupported
@@ -4529,6 +4379,16 @@ func (c *LiveClient) UpdateProjectHook(_ context.Context, _, _ string, _ int64, 
 // DeleteProjectHook is not supported on GitHub.
 func (c *LiveClient) DeleteProjectHook(_ context.Context, _, _ string, _ int64) error {
 	return forge.ErrNotSupported
+}
+
+// ListProtectedBranches is not supported on GitHub.
+func (c *LiveClient) ListProtectedBranches(_ context.Context, _, _ string) ([]forge.ProtectedBranchRule, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// ListProtectedTags is not supported on GitHub.
+func (c *LiveClient) ListProtectedTags(_ context.Context, _, _ string) ([]string, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // GetPipelineVariablesMinimumOverrideRole is not supported on GitHub.

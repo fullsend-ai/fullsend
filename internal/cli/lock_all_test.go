@@ -1067,3 +1067,162 @@ func TestLockAll_NoLocalHarnessesButHasConfigAgents(t *testing.T) {
 	output := buf.String()
 	assert.Contains(t, output, "remote", "should discover config-only agent when no local harness dir exists")
 }
+
+func TestLockAll_RejectedConfigDoesNotPruneConfigOnlyEntry(t *testing.T) {
+	// An org-shaped (rejected) config.yaml must fail the run instead of being
+	// treated as absent, which would prune the lock entry of an agent that is
+	// registered only through that config.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "local.yaml"),
+		[]byte("agent: agents/local.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("defaults:\n  roles:\n    - coder\nrepos: {}\n"),
+		0o644,
+	))
+
+	lockPath := filepath.Join(dir, "lock.yaml")
+	require.NoError(t, lock.Save(lockPath, &lock.LockFile{
+		Harnesses: map[string]lock.HarnessLock{
+			"configonly": {Source: "custom/configonly.yaml", SHA256: "abc123"},
+		},
+	}))
+	before, err := os.ReadFile(lockPath)
+	require.NoError(t, err)
+
+	printer := ui.New(os.Stdout)
+	err = runLockAll(context.Background(), dir, "", false, resolveFlags{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-org configuration format")
+
+	after, err := os.ReadFile(lockPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "lock file must be unchanged when config is rejected")
+}
+
+func TestRunLock_RejectedConfigFails(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "local.yaml"),
+		[]byte("agent: agents/local.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("defaults:\n  roles:\n    - coder\nrepos: {}\n"),
+		0o644,
+	))
+
+	printer := ui.New(os.Stdout)
+	err := runLock(context.Background(), "local", dir, "", false, resolveFlags{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-org configuration format")
+}
+
+func TestLoadLockConfig_BaseLayer(t *testing.T) {
+	t.Run("neither layer is absent", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg, err := loadLockConfig(filepath.Join(dir, "config.yaml"))
+		require.NoError(t, err)
+		assert.Nil(t, cfg)
+	})
+
+	t.Run("base-only deny-all allowlist is preserved", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "config.base.yaml"),
+			[]byte("allowed_remote_resources: []\n"),
+			0o644,
+		))
+		cfg, err := loadLockConfig(filepath.Join(dir, "config.yaml"))
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.AllowedResources())
+	})
+
+	t.Run("malformed base-only config fails", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "config.base.yaml"),
+			[]byte("{{invalid yaml"),
+			0o644,
+		))
+		cfg, err := loadLockConfig(filepath.Join(dir, "config.yaml"))
+		require.Error(t, err)
+		assert.Nil(t, cfg)
+		assert.Contains(t, err.Error(), "parsing base config")
+	})
+
+	t.Run("malformed base with valid overlay fails", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("roles: [coder]\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte("{{invalid yaml"), 0o644))
+		_, err := loadLockConfig(filepath.Join(dir, "config.yaml"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "parsing base config")
+	})
+}
+
+func TestRunLock_BaseOnlyAllowlistGovernsRemoteAncestor(t *testing.T) {
+	// A local base that inherits a remote ancestor is governed by the
+	// allowlist of a base-only config.base.yaml: the ancestor is fetched
+	// when the base layer allows it and rejected once the base layer is
+	// deny-all.
+	ancestor := []byte("role: test\n")
+	ancestorHash := fetch.ComputeSHA256(ancestor)
+	srv, policy := newLockTestServer(t, map[string][]byte{"/ancestor.yaml": ancestor})
+
+	setup := func(t *testing.T, baseCfg string) string {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "harness", "mid.yaml"),
+			[]byte(fmt.Sprintf("base: \"%s/ancestor.yaml#sha256=%s\"\nrole: test\n", srv.URL, ancestorHash)),
+			0o644,
+		))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "harness", "leaf.yaml"),
+			[]byte("base: mid.yaml\nrole: test\nagent: agents/leaf.md\n"),
+			0o644,
+		))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "leaf.md"), []byte("leaf agent"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(baseCfg), 0o644))
+		return dir
+	}
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	t.Run("base layer allows ancestor", func(t *testing.T) {
+		dir := setup(t, fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL))
+		err := runLock(context.Background(), "leaf", dir, "", false, resolveFlags{}, ui.New(os.Stdout))
+		require.NoError(t, err)
+	})
+
+	t.Run("base layer deny-all rejects ancestor", func(t *testing.T) {
+		dir := setup(t, "allowed_remote_resources: []\n")
+		err := runLock(context.Background(), "leaf", dir, "", false, resolveFlags{}, ui.New(os.Stdout))
+		require.Error(t, err)
+	})
+}
+
+func TestRunLock_MalformedBaseOnlyConfigFails(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "local.yaml"),
+		[]byte("agent: agents/local.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte("{{invalid yaml"), 0o644))
+
+	err := runLock(context.Background(), "local", dir, "", false, resolveFlags{}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing base config")
+}
