@@ -1055,7 +1055,7 @@ func TestReconcileOrphaned_CancelledReviewIdentifiesCancelledCommit(t *testing.T
 		}},
 	}
 
-	err := ReconcileOrphaned(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Review", true)
+	err := ReconcileOrphanedWithCancellationGuidance(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Review", "**Automated review did not complete for this commit. Review the current pull request HEAD before merging. Comment `/fs-review` to retry.**")
 	require.NoError(t, err)
 	require.Len(t, fc.UpdatedComments, 1)
 	body := fc.UpdatedComments[0].Body
@@ -1541,7 +1541,7 @@ func TestPostCompletionWithDetail_CancelledBuiltInReviewShowsRetryGuidance(t *te
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
 	}
 	n, fc := newTestNotifier(fc, cfg)
-	n.SetReviewRun(true)
+	n.SetCancellationGuidance("**Automated review did not complete for this commit. Review the current pull request HEAD before merging. Comment `/fs-review` to retry.**")
 	require.NoError(t, n.PostStart(context.Background(), "Reviewing this PR"))
 
 	err := n.PostCompletionWithDetail(context.Background(), "Reviewing this PR", "cancelled", "")
@@ -1550,6 +1550,22 @@ func TestPostCompletionWithDetail_CancelledBuiltInReviewShowsRetryGuidance(t *te
 	require.Len(t, fc.UpdatedComments, 1)
 	assert.Contains(t, fc.UpdatedComments[0].Body, "Automated review did not complete for this commit")
 	assert.Contains(t, fc.UpdatedComments[0].Body, "Comment `/fs-review` to retry")
+}
+
+func TestPostCompletionWithDetail_CancelledShowsCallerSuppliedGuidance(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+	n.SetCancellationGuidance("**Retry with the caller's command.**")
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+
+	require.NoError(t, n.PostCompletionWithDetail(context.Background(), "Working", "cancelled", ""))
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "**Retry with the caller's command.**")
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "/fs-review")
 }
 
 func TestPostCompletionWithDetail_CancelledNonReviewDoesNotShowRetryGuidance(t *testing.T) {

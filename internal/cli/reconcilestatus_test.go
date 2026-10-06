@@ -308,9 +308,9 @@ func TestNewReconcileStatusCmd_ReviewRunDoesNotEnableGitHubGuidanceOnGitLab(t *t
 	defer srv.Close()
 
 	origReconcile := reconcileOrphaned
-	var capturedReviewRun bool
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, reviewRun bool) error {
-		capturedReviewRun = reviewRun
+	var capturedGuidance string
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, guidance string) error {
+		capturedGuidance = guidance
 		return nil
 	}
 	defer func() { reconcileOrphaned = origReconcile }()
@@ -330,7 +330,7 @@ func TestNewReconcileStatusCmd_ReviewRunDoesNotEnableGitHubGuidanceOnGitLab(t *t
 	})
 
 	require.NoError(t, cmd.Execute())
-	assert.False(t, capturedReviewRun, "GitHub-specific /fs-review guidance must not be rendered for GitLab")
+	assert.Empty(t, capturedGuidance, "GitHub-specific /fs-review guidance must not be rendered for GitLab")
 }
 
 func TestNewReconcileStatusCmd_ReviewRunEnablesGitHubGuidance(t *testing.T) {
@@ -341,9 +341,9 @@ func TestNewReconcileStatusCmd_ReviewRunEnablesGitHubGuidance(t *testing.T) {
 	defer func() { reconcileMintToken = origMint }()
 
 	origReconcile := reconcileOrphaned
-	var capturedReviewRun bool
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, reviewRun bool) error {
-		capturedReviewRun = reviewRun
+	var capturedGuidance string
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, guidance string) error {
+		capturedGuidance = guidance
 		return nil
 	}
 	defer func() { reconcileOrphaned = origReconcile }()
@@ -360,7 +360,7 @@ func TestNewReconcileStatusCmd_ReviewRunEnablesGitHubGuidance(t *testing.T) {
 	})
 
 	require.NoError(t, cmd.Execute())
-	assert.True(t, capturedReviewRun)
+	assert.Equal(t, builtInGitHubReviewRetryGuidance, capturedGuidance)
 }
 
 func TestNewReconcileStatusCmd_GitLabNoToken(t *testing.T) {
@@ -445,7 +445,7 @@ func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus 
 	reconcileNewTrackerClient = func(fc forge.Client) tracker.Client {
 		return tracker.NewForgeClient(fc)
 	}
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, _ bool) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, _ string) error {
 		onReconcile(completionMode, jobStatus, wasSkipped, agentDescription)
 		return nil
 	}
@@ -692,7 +692,7 @@ func TestNewReconcileStatusCmd_Jira(t *testing.T) {
 	var gotNumber int
 	origReconcile := reconcileOrphaned
 	origJira := reconcileNewJiraTrackerClient
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ bool) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ string) error {
 		gotProject = project
 		gotNumber = number
 		return nil
@@ -779,7 +779,7 @@ func TestNewReconcileStatusCmd_Jira_ViaGitHubEventPath(t *testing.T) {
 	var gotNumber int
 	origReconcile := reconcileOrphaned
 	origJira := reconcileNewJiraTrackerClient
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ bool) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ string) error {
 		gotProject = project
 		gotNumber = number
 		return nil

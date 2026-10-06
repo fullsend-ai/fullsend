@@ -8429,7 +8429,7 @@ func TestBuiltInGitHubReview(t *testing.T) {
 			fc := forge.NewFakeClient()
 			n := statuscomment.New(tracker.NewForgeClient(fc), config.StatusNotificationConfig{},
 				"org/repo", 7, "", "", "run-42")
-			n.SetReviewRun(builtInGitHubReview(tt.agent, tt.forge, tt.source))
+			n.SetCancellationGuidance(builtInGitHubReviewCancellationGuidance(tt.agent, tt.forge, tt.source))
 			require.NoError(t, n.PostStart(context.Background(), "Review"))
 			require.NoError(t, n.PostCompletion(context.Background(), "Review", "cancelled"))
 			require.Len(t, fc.UpdatedComments, 1)

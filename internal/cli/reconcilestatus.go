@@ -21,7 +21,7 @@ var reconcileMintToken = mintclient.MintToken
 var reconcileNewForgeClient = func(token string) forge.Client {
 	return gh.New(token)
 }
-var reconcileOrphaned = statuscomment.ReconcileOrphaned
+var reconcileOrphaned = statuscomment.ReconcileOrphanedWithCancellationGuidance
 
 // reconcileNewTrackerClient wraps a forge.Client in a tracker.ForgeClient
 // for use by ReconcileOrphaned.
@@ -162,8 +162,11 @@ finalized, this is a no-op.`,
 			}
 
 			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
-			reviewRun = reviewRun && forgePlatform == "github"
-			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription, reviewRun)
+			guidance := ""
+			if reviewRun && forgePlatform == "github" && trackerSource != "jira" {
+				guidance = builtInGitHubReviewRetryGuidance
+			}
+			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription, guidance)
 		},
 	}
 

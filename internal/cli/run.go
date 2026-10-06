@@ -1262,7 +1262,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if notifyErr != nil {
 			printer.StepWarn("Status notifications disabled: " + notifyErr.Error())
 		} else {
-			notifier.SetReviewRun(builtInGitHubReview(agentName, forgePlatform, sOpts.trackerSource))
+			notifier.SetCancellationGuidance(builtInGitHubReviewCancellationGuidance(agentName, forgePlatform, sOpts.trackerSource))
 			description := titleCase(strings.ReplaceAll(agentName, "-", " "))
 			if err := notifier.PostStart(ctx, description); err != nil {
 				printer.StepWarn("Failed to post start status: " + err.Error())
@@ -5717,6 +5717,15 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 // even when the code-hosting forge is GitHub.
 func builtInGitHubReview(agentName, forgePlatform, trackerSource string) bool {
 	return agentName == "review" && forgePlatform == "github" && trackerSource != "jira"
+}
+
+const builtInGitHubReviewRetryGuidance = "**Automated review did not complete for this commit. Review the current pull request HEAD before merging. Comment `/fs-review` to retry.**"
+
+func builtInGitHubReviewCancellationGuidance(agentName, forgePlatform, trackerSource string) string {
+	if builtInGitHubReview(agentName, forgePlatform, trackerSource) {
+		return builtInGitHubReviewRetryGuidance
+	}
+	return ""
 }
 
 // setupStatusNotifierGitHub creates a status notifier for GitHub. It mints
