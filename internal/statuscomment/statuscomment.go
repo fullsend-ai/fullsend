@@ -755,7 +755,6 @@ func statusEmoji(status string) string {
 // agentDescription is used as the heading for a synthesized "Interrupted"
 // comment (e.g. "Code" for the code agent), so operators can tell which
 // agent failed when multiple agents run against the same issue/PR.
-// agentDescription is used as the heading for synthesized comments.
 //
 // This function is designed to be called from an out-of-process cleanup
 // mechanism (e.g., a GitHub Actions post-job step) that runs even when the
@@ -768,7 +767,7 @@ func statusEmoji(status string) string {
 // hard-killed run can leave a stray 👀 reaction behind indefinitely.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, _ ...bool) error {
+func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
 	return ReconcileOrphanedWithCancellationGuidance(ctx, client, project, number, runID, runURL, sha, reason, completionMode, jobStatus, wasSkipped, agentDescription, "")
 }
 
