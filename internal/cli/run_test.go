@@ -2512,6 +2512,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		// The GitLab webhook fast-path credentials must stay runner-only.
 		"FULLSEND_TRIGGER_TOKEN",
 		"FULLSEND_WEBHOOK_SECRET",
+		// The runner secrets bundle must never be expandable as a whole (ADR 0136).
+		"FULLSEND_RUNNER_SECRETS",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)

@@ -61,6 +61,14 @@ inputs:
     description: GCP project ID, used only when the selected agent resolves to Vertex inference.
     required: false
     default: ""
+  runner_secrets:
+    description: >-
+      JSON object of name → value (the FULLSEND_RUNNER_SECRETS secret).
+      fullsend run resolves ${NAME} in the harness's env.runner from it,
+      so the values reach host-side scripts only, never the sandbox.
+      Set only on the Run fullsend step (ADR 0136).
+    required: false
+    default: ""
 
 outputs:
   skipped:
@@ -437,6 +445,7 @@ runs:
         PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
         FULLSEND_GCP_WIF_PROVIDER: ${{ inputs.gcp_wif_provider }}
         FULLSEND_GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+        FULLSEND_RUNNER_SECRETS: ${{ inputs.runner_secrets }}
       run: |
         set -euo pipefail
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"

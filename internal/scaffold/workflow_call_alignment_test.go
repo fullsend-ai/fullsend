@@ -532,6 +532,31 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 	})
 }
 
+// TestRunnerSecretsThreading validates the in-repo half of the
+// FULLSEND_RUNNER_SECRETS channel (ADR 0136): the scaffold shim forwards
+// the secret with its one fixed line, and the composite action hands its
+// runner_secrets input to the Run fullsend step only.
+func TestRunnerSecretsThreading(t *testing.T) {
+	shim := string(loadScaffoldFile("templates/shim-per-repo.yaml")(t))
+	assert.Contains(t, shim, "FULLSEND_RUNNER_SECRETS: ${{ secrets.FULLSEND_RUNNER_SECRETS }}",
+		"scaffold shim must forward FULLSEND_RUNNER_SECRETS")
+
+	action := string(loadRepoFile("action.yml")(t))
+	assert.Contains(t, action, "  runner_secrets:\n", "action.yml must declare the runner_secrets input")
+	// action.yml steps sit at four-space indent, so extractStepSection's
+	// workflow-job pattern does not apply; slice the step by hand.
+	start := strings.Index(action, "\n    - name: Run fullsend\n")
+	require.GreaterOrEqual(t, start, 0, "action.yml must have a Run fullsend step")
+	step := action[start+1:]
+	if next := strings.Index(step[1:], "\n    - name: "); next >= 0 {
+		step = step[:next+1]
+	}
+	assert.Contains(t, step, "FULLSEND_RUNNER_SECRETS: ${{ inputs.runner_secrets }}",
+		"Run fullsend step must receive runner_secrets")
+	assert.Equal(t, 1, strings.Count(action, "inputs.runner_secrets"),
+		"runner_secrets must reach no composite step other than Run fullsend")
+}
+
 // TestOTELVariableForwarding validates that OTEL variables (#5886) are
 // injected into the env: block of every agent run step. Variables are
 // auto-visible via vars. context so they don't need secrets: threading,

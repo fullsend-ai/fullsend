@@ -474,6 +474,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Unpack the runner secrets bundle (ADR 0136) before any child process
+	// starts: loadRunnerSecrets removes it from the environment.
+	runnerSecrets, err := loadRunnerSecrets()
+	if err != nil {
+		printer.StepFail("Invalid " + runnerSecretsEnv)
+		return err
+	}
+
 	absFullsendDir, err := filepath.Abs(fullsendDir)
 	if err != nil {
 		return fmt.Errorf("resolving fullsend dir: %w", err)
@@ -606,6 +614,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		GitToken:      composeGitToken,
 		Event:         eventMap,
 		Config:        harness.BuildConfigMap(orgCfg),
+
+		RunnerSecretNames: runnerSecretNameSet(runnerSecrets),
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
@@ -1077,7 +1087,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// the reference as an unresolvable variable and fails validation.
 		return harnessEnvLookup(key)
 	}
-	if err := h.ValidateRunnerEnvWith(lookup); err != nil {
+	// Runner secrets (ADR 0136) may be referenced only from env.runner.
+	// Refuse every other reference first, so the secret-aware lookup below
+	// can only ever resolve an env.runner reference.
+	if err := validateRunnerSecretRefs(h, runnerSecrets); err != nil {
+		printer.StepFail("Runner secret validation failed")
+		return err
+	}
+	if err := h.ValidateRunnerEnvWith(withRunnerSecretLookup(runnerSecrets, lookup)); err != nil {
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
@@ -1086,9 +1103,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// Expand ${VAR} references in env.runner and env.sandbox (ADR 0055).
+	// Only env.runner resolves runner secrets; keys of the bundle that the
+	// harness does not reference reach nothing.
 	if h.Env != nil {
+		runnerExpander := withRunnerSecretExpander(runnerSecrets, expander)
 		for k, v := range h.Env.Runner {
-			h.Env.Runner[k] = os.Expand(v, expander)
+			h.Env.Runner[k] = os.Expand(v, runnerExpander)
 		}
 		for k, v := range h.Env.Sandbox {
 			h.Env.Sandbox[k] = os.Expand(v, expander)
@@ -1107,6 +1127,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
 		return fmt.Errorf("validating files: %w", err)
+	}
+	if err := validateRunnerSecretHostFiles(h, runnerSecrets); err != nil {
+		printer.StepFail("Runner secret validation failed")
+		return err
 	}
 	// Ensure scripts are executable. The GitHub Contents API does not
 	// preserve file permissions, so scripts written via admin install
@@ -1212,6 +1236,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	if h.PreScript != "" {
 		printer.KeyValue("Pre-script", h.PreScript)
+	}
+	if len(runnerSecrets) > 0 {
+		printer.KeyValue("Runner secrets", strings.Join(sortedRunnerSecretNames(runnerSecrets), ", "))
 	}
 	if h.PostScript != "" {
 		if noPostScript {
@@ -1436,6 +1463,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// in CI, but a local per-repo checkout carries only a .gitkeep.
 		localDefs = appendEmbeddedProviderDefs(localDefs, result.Providers, h.Providers, printer)
 		allDefs, shadowedProviders := mergeProviderDefs(localDefs, result.Providers)
+		if err := validateRunnerSecretProviders(allDefs, runnerSecrets); err != nil {
+			printer.StepFail("Runner secret validation failed")
+			return err
+		}
 		for _, name := range shadowedProviders {
 			printer.StepWarn(fmt.Sprintf("Local provider %q shadows URL-resolved provider of the same name", name))
 		}
@@ -2998,6 +3029,10 @@ var oidcDenyKeys = map[string]bool{
 	// them.
 	"FULLSEND_TRIGGER_TOKEN":  true,
 	"FULLSEND_WEBHOOK_SECRET": true,
+	// The runner secrets bundle (ADR 0136). loadRunnerSecrets unsets it at
+	// start-up; listing it here keeps a harness from expanding the whole
+	// bundle and strips it from child scripts if it is ever still present.
+	runnerSecretsEnv: true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting

@@ -619,7 +619,60 @@ reusable workflow that invokes the agent.
 
 5. **`ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION`** — must be in the workflow `env` block so the `gcp-vertex.env` file (copied into the sandbox with `expand: true`) resolves correctly.
 
-6. **All `env.runner` variables** must appear in the workflow `env` block. If your harness references `MY_VAR: "${MY_VAR}"`, the workflow must set `MY_VAR`.
+6. **All `env.runner` variables** must appear in the workflow `env` block. If your harness references `MY_VAR: "${MY_VAR}"`, the workflow must set `MY_VAR`. For a secret, use the stored `FULLSEND_RUNNER_SECRETS` object instead (next section).
+
+### Pass secrets to host-side scripts (GitHub)
+
+A pre-script that calls Jira, CodeRabbit or another service needs a token. On GitHub, store all such tokens in one secret, `FULLSEND_RUNNER_SECRETS`, as a JSON object of name → value. The installed shim forwards it, and the reusable workflow passes it only to each stage's `fullsend run` step. `fullsend run` gives a host-side script only the names its harness references in `env.runner`. The values never enter the sandbox ([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)).
+
+1. Store the object on the repository, or on the organization for every repository the agent serves:
+
+   ```bash
+   gh secret set FULLSEND_RUNNER_SECRETS --repo OWNER/REPO \
+     --body '{"JIRA_API_TOKEN":"…","CODERABBIT_API_KEY":"…"}'
+
+   gh secret set FULLSEND_RUNNER_SECRETS --org OWNER --visibility selected \
+     --repos REPO_A,REPO_B --body '{"JIRA_API_TOKEN":"…"}'
+   ```
+
+   A secret holds one value, so adding or rotating a key means setting the whole object again. Keep the JSON in a file outside the repository and run `gh secret set FULLSEND_RUNNER_SECRETS --repo OWNER/REPO < runner-secrets.json`.
+
+2. Reference each name from `env.runner` in `.fullsend/harness/my-agent.yaml`:
+
+   ```yaml
+   env:
+     runner:
+       JIRA_API_TOKEN: "${JIRA_API_TOKEN}"
+       JIRA_BASE_URL: "https://example.atlassian.net"
+   ```
+
+   A name the harness does not reference is dropped. The name may not be runner-owned (`GH_TOKEN`, `GITHUB_*`, `FULLSEND_*`, `PATH`, …), and it may appear only in `env.runner`. A reference from `env.sandbox`, a provider credential, an expanded `host_files` entry, or an overlay guarded by anything other than `runtime.forge` or `config` fails the run. The full rules are in the [harness reference](../../reference/harness-reference.md#field-details).
+
+3. Read the variable in the pre-script as usual:
+
+   ```bash
+   curl --fail-with-body --silent \
+     --user "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+     "${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}" > "$WORKSPACE/jira.json"
+   ```
+
+4. Trigger the agent and check the run log. The `Run fullsend` step prints `Runner secrets` followed by the names it unpacked, and GitHub shows each value as `***`:
+
+   ```bash
+   gh run list --repo OWNER/REPO --workflow fullsend.yaml --limit 1
+   gh run view RUN_ID --repo OWNER/REPO --log | grep -E 'Runner secrets|Pre-script'
+   ```
+
+If you run `fullsend run` from your own workflow instead of the installed shim, pass the secret on that step only: `env: FULLSEND_RUNNER_SECRETS: ${{ secrets.FULLSEND_RUNNER_SECRETS }}`. With the composite action, use `with: runner_secrets: ${{ secrets.FULLSEND_RUNNER_SECRETS }}`.
+
+On GitLab, skip the object. Add each secret as its own masked CI/CD variable (for example `JIRA_API_TOKEN`) and reference it from `env.runner` the same way.
+
+**Pre-script context is a snapshot.** The pre-script sees the work item as it was when the run started. Changes made after that (a new push, an edited title or body) arrive only through a later run ([ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)). Read the head SHA, title and body from the forge API (for example `gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json headRefOid,title,body`), not from the event payload, which can be older still. Stamp any head-dependent context with the SHA it describes, so the agent and the post-script can tell when it is stale:
+
+```bash
+HEAD_SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json headRefOid --jq .headRefOid)
+jq --arg sha "$HEAD_SHA" '{head_sha: $sha, review: .}' coderabbit.json > "$WORKSPACE/coderabbit.json"
+```
 
 ### Bringing your own identity
 
