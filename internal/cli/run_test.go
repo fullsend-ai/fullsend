@@ -2512,6 +2512,10 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		// The GitLab webhook fast-path credentials must stay runner-only.
 		"FULLSEND_TRIGGER_TOKEN",
 		"FULLSEND_WEBHOOK_SECRET",
+		// The GitLab agent job's OIDC token must stay runner-only (#8146).
+		"FULLSEND_ID_TOKEN",
+		// The GitLab dispatch HMAC secret must stay runner-only (#8146).
+		forge.SecretDispatch,
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
@@ -2521,11 +2525,12 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 }
 
 // TestGitLabWebhookCredentials_RunnerOnly checks each webhook fast-path
-// credential independently: neither may reach host-side scripts, validation
-// commands, harness ${VAR} expansion, or sandbox injection, even if GitLab
-// injected the protected variable into the runner process.
+// credential and the dispatch HMAC secret independently: none may reach
+// host-side scripts, validation commands, harness ${VAR} expansion, or sandbox
+// injection, even if GitLab injected the protected variable into the runner
+// process.
 func TestGitLabWebhookCredentials_RunnerOnly(t *testing.T) {
-	for _, key := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret} {
+	for _, key := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretDispatch} {
 		t.Run(key, func(t *testing.T) {
 			const value = "webhook-credential-value"
 			t.Setenv(key, value)

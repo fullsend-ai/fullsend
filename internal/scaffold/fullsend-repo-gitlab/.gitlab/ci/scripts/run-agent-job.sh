@@ -215,6 +215,10 @@ if [ "${PIPELINE_SOURCE}" = "api" ]; then
   fi
 fi
 
+# The HMAC check above is the only consumer of the dispatch secret in this
+# job. Clear it so the agent's host-side scripts cannot read it (#8146).
+unset FULLSEND_DISPATCH_SECRET
+
 # Fail closed for the rest of the job when STAGE has not actually
 # been authenticated. Do not treat a skipped or impossible check as
 # a pass: a missing dispatch secret (already fail-closed above)

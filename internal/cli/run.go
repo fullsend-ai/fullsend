@@ -1081,14 +1081,30 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
+	// Sites whose expanded value reaches host-side scripts additionally
+	// refuse the keys childScriptEnvDenied strips (GCP_OIDC_TOKEN_FILE on
+	// GitLab), so an aliased reference cannot smuggle them past the strip
+	// (#8146). host_files and env.sandbox keep the plain expander.
+	// validation_loop.schema reaches scripts as FULLSEND_OUTPUT_SCHEMA, so it
+	// uses scriptExpander too.
+	scriptExpander := func(key string) string {
+		if childScriptEnvDenied(key) {
+			return ""
+		}
+		return expander(key)
+	}
+	if err := validateScriptEnvRefs(h); err != nil {
+		printer.StepFail("Environment validation failed")
+		return fmt.Errorf("validating env: %w", err)
+	}
 	for k, v := range h.RunnerEnv {
-		h.RunnerEnv[k] = os.Expand(v, expander)
+		h.RunnerEnv[k] = os.Expand(v, scriptExpander)
 	}
 
 	// Expand ${VAR} references in env.runner and env.sandbox (ADR 0055).
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
-			h.Env.Runner[k] = os.Expand(v, expander)
+			h.Env.Runner[k] = os.Expand(v, scriptExpander)
 		}
 		for k, v := range h.Env.Sandbox {
 			h.Env.Sandbox[k] = os.Expand(v, expander)
@@ -1098,10 +1114,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Expand ${VAR} references in validation_loop.schema so the path
 	// resolves before ValidateFilesExist stat-checks it.
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
-		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, scriptExpander)
 	}
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
-		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
+		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, scriptExpander)
 	}
 
 	if err := h.ValidateFilesExist(); err != nil {
@@ -2998,6 +3014,47 @@ var oidcDenyKeys = map[string]bool{
 	// them.
 	"FULLSEND_TRIGGER_TOKEN":  true,
 	"FULLSEND_WEBHOOK_SECRET": true,
+	// The GitLab agent job's OIDC token (`id_tokens:` with aud: fullsend),
+	// which the mint accepts. Runner-only, like the GitHub OIDC request
+	// credentials above (#8146).
+	"FULLSEND_ID_TOKEN": true,
+	// The GitLab dispatch HMAC secret. The agent job script uses it once to
+	// verify the dispatch signature and then unsets it; no run needs it, so
+	// if it is ever still present it stays runner-only too (#8146).
+	// `fullsend poll` reads it with os.Getenv and is unaffected.
+	forge.SecretDispatch: true,
+}
+
+// gitlabCredentialDenyKeys are fullsend's own GitLab credentials that the
+// agent job exports: the role-selected bot PAT (select-gitlab-role-token.sh)
+// and the legacy shared forge token. Like every FULLSEND_GITLAB_*_TOKEN role
+// secret (isGitLabRoleSecretKey), they are refused at every harness ${VAR}
+// expansion site and stripped from host-side child scripts. The selected
+// role's credential still reaches scripts as GITLAB_TOKEN / PUSH_TOKEN
+// (#8146).
+var gitlabCredentialDenyKeys = map[string]bool{
+	"FULLSEND_JOB_TOKEN":   true,
+	forge.SecretForgeToken: true,
+}
+
+// isGitLabRoleSecretKey reports whether key names a GitLab role credential:
+// the built-in FULLSEND_GITLAB_{POLLER,ANALYST,CODER}_TOKEN, a custom
+// FULLSEND_GITLAB_ROLE_<NAME>_TOKEN, or any future role secret in the same
+// family. The family rule covers new roles without a list to maintain.
+// Non-secret routing vars (FULLSEND_GITLAB_ROLE, _ROLE_SECRET, _ROLE_SOURCE,
+// _ROLE_REGISTRY) do not end in _TOKEN and still reach scripts (#8146).
+func isGitLabRoleSecretKey(key string) bool {
+	return strings.HasPrefix(key, gitlabRoleRoutingKeyPrefix) && strings.HasSuffix(key, "_TOKEN")
+}
+
+// gitlabChildScriptOnlyDenyKeys are stripped from host-side child scripts on
+// GitLab runs but stay expandable: harness host_files use
+// ${GCP_OIDC_TOKEN_FILE} to copy the OIDC token into the sandbox, so refusing
+// it at expansion would break that path. On GitLab the file holds the
+// FULLSEND_ID_TOKEN that run-agent-job.sh wrote out. GitHub runs keep
+// passing it to pre-scripts (#7689 tracks the GitHub side) (#8146).
+var gitlabChildScriptOnlyDenyKeys = map[string]bool{
+	"GCP_OIDC_TOKEN_FILE": true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting
@@ -3017,7 +3074,20 @@ var providerOnlyKeys = map[string]bool{
 // env.sandbox, host_files, validation_loop.schema) and stripped from
 // pre/post/validation child environments.
 func harnessExpansionDenied(key string) bool {
-	return oidcDenyKeys[key] || providerOnlyKeys[key]
+	return oidcDenyKeys[key] || providerOnlyKeys[key] ||
+		gitlabCredentialDenyKeys[key] || isGitLabRoleSecretKey(key)
+}
+
+// childScriptEnvDenied reports whether key must be stripped from a host-side
+// child script (pre-script, post-script, preflight or validation command).
+// It is harnessExpansionDenied plus gitlabChildScriptOnlyDenyKeys once GitLab
+// role selection has run in this process (applyGitLabRoleSelection sets
+// FULLSEND_GITLAB_ROLE only on the GitLab path) (#8146).
+func childScriptEnvDenied(key string) bool {
+	if harnessExpansionDenied(key) {
+		return true
+	}
+	return gitlabChildScriptOnlyDenyKeys[key] && os.Getenv(envGitLabRole) != ""
 }
 
 // harnessEnvExpand is the expander used for harness YAML ${VAR} sites.
@@ -3036,6 +3106,44 @@ func harnessEnvLookup(key string) (string, bool) {
 		return "", false
 	}
 	return os.LookupEnv(key)
+}
+
+// harnessVarRefRe matches a ${VAR} reference in harness YAML values.
+var harnessVarRefRe = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// validateScriptEnvRefs rejects ${VAR} references that childScriptEnvDenied
+// strips from host-side scripts but harnessExpansionDenied still allows
+// (GCP_OIDC_TOKEN_FILE on GitLab), at the sites whose expanded value reaches
+// those scripts: runner_env, env.runner, validation_loop.schema (published to
+// scripts as FULLSEND_OUTPUT_SCHEMA) and validation_loop.preflight_check.
+// ValidateRunnerEnvWith's shared lookup cannot do this: host_files.src and
+// env.sandbox must keep expanding the key (#8146).
+func validateScriptEnvRefs(h *harness.Harness) error {
+	var problems []string
+	check := func(source, value string) {
+		for _, m := range harnessVarRefRe.FindAllStringSubmatch(value, -1) {
+			if key := m[1]; childScriptEnvDenied(key) && !harnessExpansionDenied(key) {
+				problems = append(problems, fmt.Sprintf("%s is not available to host-side scripts (referenced by %s)", key, source))
+			}
+		}
+	}
+	for k, v := range h.RunnerEnv {
+		check(fmt.Sprintf("runner_env[%s]", k), v)
+	}
+	if h.Env != nil {
+		for k, v := range h.Env.Runner {
+			check(fmt.Sprintf("env.runner[%s]", k), v)
+		}
+	}
+	if h.ValidationLoop != nil {
+		check("validation_loop.schema", h.ValidationLoop.Schema)
+		check("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck)
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	sort.Strings(problems)
+	return fmt.Errorf("%d host variable reference(s) refused:\n    %s", len(problems), strings.Join(problems, "\n    "))
 }
 
 // reservedSandboxKeys are infrastructure env vars that env.sandbox must not
@@ -3736,7 +3844,7 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 func stripOIDCEnv(env []string) []string {
 	result := make([]string, 0, len(env))
 	for _, e := range env {
-		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
+		if i := strings.IndexByte(e, '='); i > 0 && childScriptEnvDenied(e[:i]) {
 			continue
 		}
 		result = append(result, e)
@@ -4667,6 +4775,12 @@ func stripControlChars(s string) string {
 // retains them for mintAgentToken and provider credential expansion.
 // See #5832, #6649.
 //
+// On GitLab, fullsend's own credentials are stripped too: the job's OIDC
+// token (FULLSEND_ID_TOKEN, and GCP_OIDC_TOKEN_FILE pointing at it), the
+// role-selected FULLSEND_JOB_TOKEN, FULLSEND_FORGE_TOKEN and every
+// FULLSEND_GITLAB_*_TOKEN role secret. The selected role's credential stays
+// available as GITLAB_TOKEN / PUSH_TOKEN; see childScriptEnvDenied (#8146).
+//
 // GitLab role-routing vars (isPinnedGitLabRoleRoutingKey) are pinned to the
 // process environment: a runnerEnv entry for one of those keys is dropped
 // rather than allowed to shadow the value applyGitLabRoleSelection already
@@ -4687,8 +4801,9 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 		if strings.HasPrefix(e, "TRACEPARENT=") {
 			continue
 		}
-		// Strip OIDC credential vars and provider-only keys (#5832, #6649).
-		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
+		// Strip OIDC credential vars, provider-only keys and fullsend's
+		// GitLab credentials (#5832, #6649, #8146).
+		if i := strings.IndexByte(e, '='); i > 0 && childScriptEnvDenied(e[:i]) {
 			continue
 		}
 		env = append(env, e)
@@ -4750,8 +4865,19 @@ func agentTimedOut(elapsed, timeout time.Duration) bool {
 // script. It includes RunnerEnv, TARGET_REPO_DIR, FULLSEND_RUN_DIR, and —
 // when the harness specifies a validation_loop.schema — FULLSEND_OUTPUT_SCHEMA
 // pointing to the host-side cached schema path.
+//
+// Like childScriptEnv, it drops RunnerEnv entries for GitLab role-routing
+// keys (isPinnedGitLabRoleRoutingKey) so the process environment's role
+// selection cannot be shadowed by harness runner_env (#8146).
 func validationEnv(h *harness.Harness, hostRepoDir, runDir string) []string {
-	env := append(envToList(h.RunnerEnv),
+	env := make([]string, 0, len(h.RunnerEnv)+3)
+	for _, e := range envToList(h.RunnerEnv) {
+		if i := strings.IndexByte(e, '='); i > 0 && isPinnedGitLabRoleRoutingKey(e[:i]) {
+			continue
+		}
+		env = append(env, e)
+	}
+	env = append(env,
 		fmt.Sprintf("TARGET_REPO_DIR=%s", hostRepoDir),
 		fmt.Sprintf("FULLSEND_RUN_DIR=%s", runDir),
 	)

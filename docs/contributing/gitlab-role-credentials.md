@@ -618,6 +618,12 @@ trusting `gitlabroles.Require`. A mismatch fails closed with
 `gitlabroles.ErrIdentityMismatch`. See `checkGitLabApprovalCapability`
 in `internal/cli/gitlab_role.go`.
 
+Inside a host-side script the role secret is stripped (see below), so
+`withPinnedSelectedRoleCredential` answers the secret named by
+`FULLSEND_GITLAB_ROLE_SECRET` with the pinned `GITLAB_TOKEN`, and only
+when that secret is absent. Both vars are pinned against `runner_env`
+override, so they carry the same guarantee the raw secret did.
+
 - [ ] New capability checks compare the authenticating token to the
       selected role's own secret value.
 - [ ] A label/token mismatch fails closed; it does not check the wrong
@@ -634,7 +640,34 @@ authenticate as Analyst and bypass in-process checks such as
 `checkGitLabApprovalCapability`. See `clearSiblingGitLabRoleSecrets` /
 `applyGitLabRoleSelection`.
 
+`childScriptEnv` and `stripOIDCEnv` also strip fullsend's own GitLab
+credentials from every host-side script (#8146): `FULLSEND_ID_TOKEN`,
+`FULLSEND_JOB_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_DISPATCH_SECRET`
+(also unset by `run-agent-job.sh` once the dispatch HMAC is verified), every
+`FULLSEND_GITLAB_*_TOKEN` role secret (`isGitLabRoleSecretKey`, a family
+rule that covers new roles), and on GitLab runs `GCP_OIDC_TOKEN_FILE`.
+All but `GCP_OIDC_TOKEN_FILE` are refused at every harness YAML `${VAR}`
+expansion site (`harnessExpansionDenied`): `runner_env`, `env.runner`,
+`env.sandbox`, `host_files[].src`, `validation_loop.schema` and
+`preflight_check`. Inside `expand: true` host-file contents a denied
+reference expands to an empty string rather than failing validation, and
+provider definitions (trusted config) resolve through
+`sandbox.DenyExpansionKeys`, which only carries `oidcDenyKeys`.
+`GCP_OIDC_TOKEN_FILE` stays expandable in `host_files[].src` and
+`env.sandbox` because `host_files` copies the token file into the sandbox;
+`validateScriptEnvRefs` rejects it in `runner_env`, `env.runner`,
+`validation_loop.schema` and `preflight_check` on GitLab runs, so no
+script-visible value can alias it.
+`validationEnv` drops `runner_env` entries for role-routing keys
+(`isPinnedGitLabRoleRoutingKey`), as `childScriptEnv` does, so the pinning
+holds on the validation path too.
+The selected credential stays available as `GITLAB_TOKEN` /
+`PUSH_TOKEN`.
+
 - [ ] Selection blanks sibling role secrets and the unused shared token.
+- [ ] New fullsend-owned GitLab credential env vars are stripped from
+      host-side scripts (`gitlabCredentialDenyKeys`, or a
+      `FULLSEND_GITLAB_*_TOKEN` name).
 - [ ] New rotation or recovery paths that write a replacement secret do
       not leave the previous or sibling raw value in the process
       environment of a subsequent child.
