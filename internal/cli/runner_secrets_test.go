@@ -252,6 +252,9 @@ func TestLoadRunnerSecrets_InvalidValues(t *testing.T) {
 		"number value":  {`{"X":42}`, "X: value must be a string"},
 		"object value":  {`{"X":{"a":"b"}}`, "X: value must be a string"},
 		"duplicate key": {`{"X":"first-secret-value","X":"second-secret-value"}`, "X: duplicate key"},
+		// A key that is not a variable name is quoted, so a newline in it
+		// cannot start a workflow command line in the log.
+		"injected key": {`{"BAD\n::warning::x":null}`, `"BAD\n::warning::x": value must be a string, not null`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(runnerSecretsEnv, tc.raw)
@@ -413,6 +416,15 @@ func TestValidateRunnerSecretRefs(t *testing.T) {
 			assert.Contains(t, err.Error(), source+" references runner secret X")
 		})
 	}
+
+	// A destination key with '=' would let the child read a different
+	// variable name than the one the reserved-name check saw.
+	t.Run("env.runner key with equals", func(t *testing.T) {
+		h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"GH_TOKEN=x": "${X}"}}}
+		err := validateRunnerSecretRefs(h, secrets)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"GH_TOKEN=x" is not a valid environment variable name`)
+	})
 
 	t.Run("refused env.runner key", func(t *testing.T) {
 		h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"PUSH_TOKEN": "${X}"}}}

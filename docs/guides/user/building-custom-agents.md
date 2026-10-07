@@ -687,8 +687,12 @@ On GitLab, skip the object. Add each secret as its own masked CI/CD variable (fo
 **Pre-script context is a snapshot.** The pre-script sees the work item as it was when the run started. Changes made after that (a new push, an edited title or body) arrive only through a later run ([ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)). Read the head SHA, title and body from the forge API (for example `gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json headRefOid,title,body`), not from the event payload, which can be older still. Stamp any head-dependent context with the SHA it describes, so the agent and the post-script can tell when it is stale. For example, to hand the agent the pull request diff:
 
 ```bash
-HEAD_SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json headRefOid --jq .headRefOid)
-gh pr diff "$PR_NUMBER" --repo "$REPO_FULL_NAME" > "$WORKSPACE/pr.diff"
+# One call reads both commits, and the diff is pinned to them, so a push
+# landing mid-script cannot pair a newer diff with an older SHA.
+read -r BASE_SHA HEAD_SHA < <(gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" \
+  --json baseRefOid,headRefOid --jq '"\(.baseRefOid) \(.headRefOid)"')
+gh api -H "Accept: application/vnd.github.diff" \
+  "repos/$REPO_FULL_NAME/compare/$BASE_SHA...$HEAD_SHA" > "$WORKSPACE/pr.diff"
 jq --null-input --arg sha "$HEAD_SHA" --rawfile diff "$WORKSPACE/pr.diff" \
   '{head_sha: $sha, diff: $diff}' > "$WORKSPACE/pr-context.json"
 ```

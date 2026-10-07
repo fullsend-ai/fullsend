@@ -86,6 +86,16 @@ var runnerSecretRefusedNames = func() map[string]bool {
 	return names
 }()
 
+// runnerSecretDisplayName quotes a bundle key for an error message unless
+// it is a valid variable name, so a key holding a newline or a workflow
+// command cannot inject a line into the log.
+func runnerSecretDisplayName(name string) string {
+	if validEnvKeyRe.MatchString(name) {
+		return name
+	}
+	return fmt.Sprintf("%q", name)
+}
+
 // runnerSecretNameRefused reports whether name is runner-owned and so may
 // neither be a key in FULLSEND_RUNNER_SECRETS nor receive a runner secret
 // value as an env.runner key.
@@ -157,13 +167,13 @@ func loadRunnerSecrets() (map[string]string, error) {
 		redactable := registerRunnerSecretValue(e.value)
 		switch {
 		case e.duplicate:
-			problems = append(problems, fmt.Sprintf("%s: duplicate key", e.name))
+			problems = append(problems, fmt.Sprintf("%s: duplicate key", runnerSecretDisplayName(e.name)))
 		case !validEnvKeyRe.MatchString(e.name):
 			problems = append(problems, fmt.Sprintf("%q: not a valid environment variable name", e.name))
 		case runnerSecretNameRefused(e.name):
-			problems = append(problems, fmt.Sprintf("%s: name is reserved for the runner or set by the reusable workflow", e.name))
+			problems = append(problems, fmt.Sprintf("%s: name is reserved for the runner or set by the reusable workflow", runnerSecretDisplayName(e.name)))
 		case !redactable:
-			problems = append(problems, fmt.Sprintf("%s: value is too short to redact from logs", e.name))
+			problems = append(problems, fmt.Sprintf("%s: value is too short to redact from logs", runnerSecretDisplayName(e.name)))
 		default:
 			secrets[e.name] = e.value
 		}
@@ -215,9 +225,9 @@ func parseRunnerSecretsBundle(raw []byte) ([]runnerSecretEntry, []string, error)
 		var value string
 		switch {
 		case string(rawValue) == "null":
-			problems = append(problems, fmt.Sprintf("%s: value must be a string, not null", name))
+			problems = append(problems, fmt.Sprintf("%s: value must be a string, not null", runnerSecretDisplayName(name)))
 		case json.Unmarshal(rawValue, &value) != nil:
-			problems = append(problems, fmt.Sprintf("%s: value must be a string", name))
+			problems = append(problems, fmt.Sprintf("%s: value must be a string", runnerSecretDisplayName(name)))
 		default:
 			entries = append(entries, runnerSecretEntry{name: name, value: value, duplicate: seen[name]})
 		}
@@ -345,7 +355,12 @@ func validateRunnerSecretRefs(h *harness.Harness, secrets map[string]string) err
 			errs.refuse(fmt.Sprintf("env.sandbox[%s]", k), runnerSecretRefs(v, secrets))
 		}
 		for k, v := range h.Env.Runner {
-			if refs := runnerSecretRefs(v, secrets); len(refs) > 0 && runnerSecretNameRefused(k) {
+			refs := runnerSecretRefs(v, secrets)
+			switch {
+			case len(refs) == 0:
+			case !validEnvKeyRe.MatchString(k):
+				errs = append(errs, fmt.Sprintf("env.runner[%q] receives runner secret %s, but %q is not a valid environment variable name", k, strings.Join(refs, ", "), k))
+			case runnerSecretNameRefused(k):
 				errs = append(errs, fmt.Sprintf("env.runner[%s] receives runner secret %s, but %s is reserved for the runner or set by the reusable workflow", k, strings.Join(refs, ", "), k))
 			}
 		}

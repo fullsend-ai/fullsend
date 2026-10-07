@@ -1,8 +1,10 @@
 package security
 
 import (
+	"cmp"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -39,10 +41,14 @@ func RegisterRuntimeSecret(value string) bool {
 	return true
 }
 
+// runtimeSecretSnapshot returns the registered values, longest first, so
+// a value that is a substring of another never breaks the longer match.
 func runtimeSecretSnapshot() []string {
 	runtimeSecretsMu.RLock()
-	defer runtimeSecretsMu.RUnlock()
-	return append([]string(nil), runtimeSecrets...)
+	snapshot := append([]string(nil), runtimeSecrets...)
+	runtimeSecretsMu.RUnlock()
+	slices.SortStableFunc(snapshot, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
+	return snapshot
 }
 
 // resetRuntimeSecrets clears the registry; tests only.
