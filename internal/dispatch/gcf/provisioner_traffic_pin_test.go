@@ -511,6 +511,37 @@ func TestEnsureTrafficOnLatestRevision_RestrictiveRevisionServingDuringWaitIsNot
 	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
 }
 
+// A traffic-only rollback during the readiness wait that removes a role this
+// deploy configures (latest-created revision unchanged) must not be undone:
+// reconciliation would re-add the role from the configured AgentAppIDs and so
+// report no drift, and the fresh-etag pin would restore the revoked role.
+func TestEnsureTrafficOnLatestRevision_ConfiguredRoleRevokedDuringWaitIsNotRestored(t *testing.T) {
+	servingBefore := map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"1","triage":"2"}`, "ALLOWED_ROLES": "coder,triage"}
+	servingAfter := map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"1"}`, "ALLOWED_ROLES": "coder"}
+
+	fake := newFakeGCFClient()
+	before := divergedRevisionInfo("etag-1", servingBefore)
+	// Same traffic revision and latest-created revision as before: only the
+	// serving environment changed (traffic-only rollback to an older revision
+	// that lacks triage).
+	after := readyRevisionInfo(before, "etag-2", before.TrafficRevisionShort, servingAfter)
+	fake.revisionInfoSequence = []*ServiceRevisionInfo{before, after}
+	p := newTestProvisioner(Config{
+		ProjectID:   "my-project",
+		Region:      "us-central1",
+		AgentAppIDs: map[string]string{"coder": "1", "triage": "2"},
+	}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "triage")
+	assert.Contains(t, err.Error(), "revoked")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.Empty(t, fake.pinEtags)
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+}
+
 func TestEnsureTrafficOnLatestRevision_LatestRevisionChangedDuringWaitIsNotPinned(t *testing.T) {
 	env := map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"1","triage":"2"}`, "ALLOWED_ROLES": "coder,triage"}
 	fake := newFakeGCFClient()

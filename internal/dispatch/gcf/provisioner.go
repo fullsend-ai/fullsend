@@ -2229,7 +2229,7 @@ func (p *Provisioner) ensureTrafficOnLatestRevisionAfterSourceDeploy(ctx context
 		// example a role removal that published a more restrictive revision)
 		// may have altered what is serving. The pre-wait snapshot is no longer
 		// authoritative, so re-verify against the fresh read.
-		if err := p.reverifyPinAfterWait(fresh, target); err != nil {
+		if err := p.reverifyPinAfterWait(seedServing, info, fresh, target); err != nil {
 			return err
 		}
 		verified = fresh
@@ -2392,7 +2392,13 @@ func checkRevisionNames(info *ServiceRevisionInfo) error {
 // unchanged, the serving revision is known, and the serving authorization
 // state still matches what target carries. Any drift fails the deploy rather
 // than pinning on stale verification.
-func (p *Provisioner) reverifyPinAfterWait(fresh *ServiceRevisionInfo, target string) error {
+//
+// seed (the pre-build snapshot, possibly nil) and pre (the read taken before
+// the wait) are compared with fresh for configured-role revocation: a
+// traffic-only rollback during the wait can drop a role this deploy configures
+// while the latest-created revision stays unchanged, and reconciliation below
+// would re-add that role from p.cfg.AgentAppIDs and so report nothing changed.
+func (p *Provisioner) reverifyPinAfterWait(seed, pre, fresh *ServiceRevisionInfo, target string) error {
 	if fresh != nil {
 		if err := checkRevisionNames(fresh); err != nil {
 			return err
@@ -2412,6 +2418,13 @@ func (p *Provisioner) reverifyPinAfterWait(fresh *ServiceRevisionInfo, target st
 	}
 	if target == fresh.TrafficRevisionShort && fresh.TrafficPercent >= 100 {
 		return nil
+	}
+	// Run before reconcileTargetEnvVars re-applies the configured roles.
+	if err := p.checkNoRoleRevokedSinceSeed(seed, fresh); err != nil {
+		return err
+	}
+	if err := p.checkNoRoleRevokedSinceSeed(pre, fresh); err != nil {
+		return err
 	}
 	reconciled, err := reconcileTargetEnvVars(fresh.TrafficEnvVars, fresh.TemplateEnvVars, fresh.TrafficEnvVarsUnreliable, p.cfg.AgentAppIDs)
 	if err != nil {
