@@ -4632,7 +4632,10 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 		var exitErr *exec.ExitError
 		if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != prescript.ExitCodeNeutral {
 			printer.StepFail("Pre-script failed")
-			detail := preScriptFailureDetail(stdoutBuf.String(), stderrBuf.String())
+			// Redact the whole capture before the last line is cut, stripped
+			// of control characters or capped, so a secret split by the cap
+			// or altered by the stripping is still caught.
+			detail := preScriptFailureDetail(redactFeedback(stdoutBuf.String(), h.RunnerEnv), redactFeedback(stderrBuf.String(), h.RunnerEnv))
 			if detail != "" {
 				// detail flows into the sticky status comment, the OTLP span,
 				// and CLI stderr (via runErr.Error()) — the same redaction
@@ -4657,7 +4660,7 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 			// Same redaction as the hard-failure detail below: this reason is
 			// derived from incidental stdout, not a value the script author
 			// chose to put in a reason= line, so it gets the same scrub.
-			result.Reason = redactFeedback(lastNonEmptyLine(stdoutBuf.String()), h.RunnerEnv)
+			result.Reason = redactFeedback(lastNonEmptyLine(redactFeedback(stdoutBuf.String(), h.RunnerEnv)), h.RunnerEnv)
 		}
 		if result.Reason != "" {
 			result.Outputs["reason"] = result.Reason

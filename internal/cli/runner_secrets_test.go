@@ -804,3 +804,24 @@ func TestRunAgent_RunnerSecretPreScriptParseErrorRedacted(t *testing.T) {
 	assert.Contains(t, err.Error(), "skipped")
 	assert.NotContains(t, err.Error(), "x-secret-value-parse")
 }
+
+// A runner secret that straddles the 1024-byte cap on the failure line is
+// redacted before the line is cut, so no prefix of it survives.
+func TestRunAgent_RunnerSecretAcrossFailureDetailCap(t *testing.T) {
+	usePreScriptStub(t)
+	writeRunnerSecretsFile(t, `{"X":"x-secret-value-straddle"}`)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "code.md"), []byte("You are a coding agent."), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("agents:\n  - harness/code.yaml\n"), 0o644))
+	filler := strings.Repeat("a", 1015)
+	script := writePreScript(t, `echo "`+filler+`${X}" >&2`+"\nexit 1\n")
+	harnessYAML := "agent: agents/code.md\nrole: test\npre_script: " + script + "\nenv:\n  runner:\n    X: \"${X}\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(harnessYAML), 0o644))
+
+	err := runRunnerSecretAgent(t, dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "running pre-script")
+	assert.NotContains(t, err.Error(), "x-secret")
+}
