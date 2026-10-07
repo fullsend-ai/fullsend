@@ -103,26 +103,51 @@ const (
 	openCodeCatVar                = "FULLSEND_OPENCODE_CAT_BIN"
 	openCodeConfigContentPinVar   = "FULLSEND_OPENCODE_CONFIG_CONTENT"
 	openCodeCredentialsPathPinVar = "FULLSEND_OPENCODE_GOOGLE_APPLICATION_CREDENTIALS"
+	openCodeHomePinVar            = "FULLSEND_OPENCODE_HOME"
+	openCodePathPinVar            = "FULLSEND_OPENCODE_PATH"
 )
 
-// Sandbox-side transcript layout. Run tees opencode's --format json stream
-// into a file under openCodeOutputSubdir (inside WorkspaceDir);
-// ExtractTranscripts downloads it after the run. openCodeRunRCFile holds
-// opencode's exit code so the tee pipeline can re-raise it (see
-// buildOpenCodeRunCommand). It lives under openCodeOutputSubdir so
-// ClearIterationArtifacts wipes it between iterations, preventing a stale rc
-// from masking prelude failures.
+// Sandbox-side layout. Run tees opencode's --format json stream into a file
+// under openCodeRunnerSubdir (inside WorkspaceDir); ExtractTranscripts
+// downloads it after the run. openCodeRunRCFile holds opencode's exit code so
+// the tee pipeline can re-raise it (see buildOpenCodeRunCommand). Both live
+// under openCodeRunnerSubdir, not openCodeOutputSubdir, so
+// ExtractOutputFiles does not collect them as agent output files and
+// ClearIterationArtifacts wipes them between iterations, preventing a stale
+// rc from masking prelude failures.
 const (
 	openCodeOutputSubdir = "output"
-	openCodeRunRCFile    = "output/opencode-run-rc"
+	openCodeRunnerSubdir = "runner-state"
+	openCodeRunRCFile    = "runner-state/opencode-run-rc"
 )
 
 // openCodeSandboxTranscriptPath is the sandbox file Run tees the --format json
-// stream into and ExtractTranscripts downloads from. It is under the
-// runner-cleared WorkspaceDir/output dir so ClearIterationArtifacts wipes it
-// between iterations.
+// stream into and ExtractTranscripts downloads from. It lives under the
+// runner-owned runner-state dir (not output/) so ExtractOutputFiles does not
+// collect it as an agent output file.
 func openCodeSandboxTranscriptPath() string {
-	return sandbox.SandboxWorkspace + "/" + openCodeOutputSubdir + "/" + openCodeOutputFile
+	return sandbox.SandboxWorkspace + "/" + openCodeRunnerSubdir + "/" + openCodeOutputFile
+}
+
+// openCodeEffortVariants maps fullsend effort levels to OpenCode's --variant
+// values. OpenCode's variant names are provider-specific; the Vertex-backed
+// Anthropic provider on opus/sonnet 4-6 accepts "low", "medium", "high", and
+// "max". Values not in this map are dropped with a warning rather than passed
+// through, because an unrecognized --variant silently has no effect.
+var openCodeEffortVariants = map[string]string{
+	"low":    "low",
+	"medium": "medium",
+	"high":   "high",
+	"xhigh":  "max", // fullsend's xhigh maps to OpenCode's max
+	"max":    "max",
+}
+
+// openCodeEffortFor maps a fullsend effort level to an OpenCode --variant
+// value. Returns ("", false) when the effort has no variant equivalent (e.g.
+// "off", "minimal") — the caller should omit --variant entirely.
+func openCodeEffortFor(effort string) (string, bool) {
+	v, ok := openCodeEffortVariants[effort]
+	return v, ok
 }
 
 // buildOpenCodeRunCommand renders the in-sandbox command line for one
@@ -148,7 +173,7 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 	// left-hand subshell and be masked. Joined by && so a failed guard or a
 	// missing .env short-circuits before opencode runs.
 	sandboxTranscript := openCodeSandboxTranscriptPath()
-	sandboxTranscriptDir := sandbox.SandboxWorkspace + "/" + openCodeOutputSubdir
+	sandboxTranscriptDir := sandbox.SandboxWorkspace + "/" + openCodeRunnerSubdir
 	rcFile := sandbox.SandboxWorkspace + "/" + openCodeRunRCFile
 
 	// Write the runner-owned opencode.json that re-attaches workspace
@@ -187,6 +212,12 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 		// from the runner-pinned readonly copies.
 		"&& "+strings.Join(r.EnvExports(), " && "),
 		"&& "+openCodeTrustedEnvRestore(),
+		// Map CLOUD_ML_REGION → GOOGLE_CLOUD_LOCATION for Vertex region parity
+		// with pi (pi_run.go:464). The fleet exports CLOUD_ML_REGION; OpenCode's
+		// google-vertex-anthropic provider reads GOOGLE_CLOUD_LOCATION and falls
+		// back to "global" when it is unset, breaking region and data-residency
+		// parity across runtimes on the same fleet.
+		`&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`,
 		`&& "$`+openCodePrintfVar+`" '%s' `+shellQuote(configJSON)+" > "+shellQuote(configPath),
 		"&& export "+openCodeRuntimeEnv+"=opencode",
 	)
@@ -226,8 +257,15 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 	if params.Effort != "" {
 		// OpenCode maps reasoning effort onto the model variant (`opencode run
 		// --help`: --variant "model variant (provider-specific reasoning
-		// effort, e.g., high, max, minimal)"). Verified against opencode CLI.
-		invocation = append(invocation, "--variant "+shellQuote(openCodeValidatedArg(params.Effort)))
+		// effort, e.g., high, max, minimal)"). openCodeEffortFor maps fullsend
+		// effort levels to their OpenCode equivalents; unmapped values are
+		// dropped with a warning rather than passed through, because an
+		// unrecognized --variant silently has no effect.
+		if variant, ok := openCodeEffortFor(params.Effort); ok {
+			invocation = append(invocation, "--variant "+shellQuote(openCodeValidatedArg(variant)))
+		} else {
+			fmt.Fprintf(os.Stderr, "Effort %q has no OpenCode --variant equivalent and is ignored\n", params.Effort)
+		}
 	}
 	invocation = append(invocation, "--agent "+shellQuote(openCodeValidatedArg(agentName)))
 
@@ -309,26 +347,53 @@ func openCodeUtilityPin() string {
 
 func openCodeTrustedEnvPin(env openCodeTrustedEnv) string {
 	return "readonly " + openCodeConfigContentPinVar + "=" + shellQuote(env.ConfigContent) + " " +
-		openCodeCredentialsPathPinVar + "=" + shellQuote(env.CredentialsPath)
+		openCodeCredentialsPathPinVar + "=" + shellQuote(env.CredentialsPath) + " " +
+		openCodeHomePinVar + `="$HOME" ` +
+		openCodePathPinVar + `="$PATH"`
 }
 
-// openCodeDangerousEnvVars lists OpenCode environment variables the runner
-// does not own that could widen the tool-permission policy if left in the
-// process environment after sourcing the agent-writable .env. They are
-// unset as part of the trusted-env restore step (CWE-15). Keep in sync
-// with upstream config/config.ts (Flag.OPENCODE_PERMISSION, OPENCODE_CONFIG,
-// OPENCODE_TUI_CONFIG) and packages/opencode/src/plugin (OPENCODE_DISABLE_DEFAULT_PLUGINS).
+// openCodeDangerousEnvVars lists environment variables the runner does not own
+// that could widen the tool-permission policy, redirect config/auth/db paths,
+// or inject code via loader/linker vectors if left in the process environment
+// after sourcing the agent-writable .env. They are unset as part of the
+// trusted-env restore step (CWE-15, CWE-426). HOME and PATH are re-pinned
+// rather than unset (see openCodeTrustedEnvRestore). XDG vars are included
+// because they relocate auth.json and other OpenCode state. Keep in sync with
+// upstream config/config.ts (Flag.OPENCODE_PERMISSION, OPENCODE_CONFIG,
+// OPENCODE_TUI_CONFIG) and packages/opencode/src/plugin
+// (OPENCODE_DISABLE_DEFAULT_PLUGINS). Loader/linker vectors mirror the unset
+// list in codex_run.go:348 and pi_run.go:685-691.
 var openCodeDangerousEnvVars = []string{
 	"OPENCODE_PERMISSION",
 	"OPENCODE_CONFIG",
 	"OPENCODE_TUI_CONFIG",
 	"OPENCODE_DISABLE_DEFAULT_PLUGINS",
+	"OPENCODE_AUTH_CONTENT",
+	"OPENCODE_MODELS_URL",
+	"OPENCODE_MODELS_PATH",
+	"OPENCODE_DB",
+	"OPENCODE_TEST_HOME",
+	// XDG vars relocate auth.json and other OpenCode state directories.
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+	"XDG_STATE_HOME",
+	"XDG_CACHE_HOME",
+	// Loader/linker injection vectors (CWE-426). Codex (codex_run.go:348)
+	// and pi (pi_run.go:685-691) unset these after .env.
+	"LD_PRELOAD",
+	"LD_LIBRARY_PATH",
+	"LD_AUDIT",
+	"NODE_OPTIONS",
+	"NODE_PATH",
+	"BUN_OPTIONS",
 }
 
 func openCodeTrustedEnvRestore() string {
 	return "unset " + strings.Join(openCodeDangerousEnvVars, " ") +
 		` && export OPENCODE_CONFIG_CONTENT="$` + openCodeConfigContentPinVar +
-		`" GOOGLE_APPLICATION_CREDENTIALS="$` + openCodeCredentialsPathPinVar + `"`
+		`" GOOGLE_APPLICATION_CREDENTIALS="$` + openCodeCredentialsPathPinVar +
+		`" HOME="$` + openCodeHomePinVar +
+		`" PATH="$` + openCodePathPinVar + `"`
 }
 
 // openCodeValidatedArg constrains model/effort/agent-name values to a safe
@@ -504,8 +569,10 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 // output files are per-iteration (mirrors PiRuntime.ClearIterationArtifacts).
 func (r OpenCodeRuntime) ClearIterationArtifacts(sandboxName string) error {
 	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr, "the previous iteration")
-	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s",
-		shellQuote(r.WorkspaceDir()), shellQuote(r.WorkspaceDir()+"/"+openCodeDebugLogFile))
+	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/%s/* %s",
+		shellQuote(r.WorkspaceDir()),
+		shellQuote(r.WorkspaceDir()), openCodeRunnerSubdir,
+		shellQuote(r.WorkspaceDir()+"/"+openCodeDebugLogFile))
 	_, stderr, exitCode, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
 	if err != nil {
 		return err

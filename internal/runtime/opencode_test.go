@@ -42,6 +42,7 @@ func TestOpenCodeRuntimeEnvExports(t *testing.T) {
 	env := rt.EnvExports()
 	assert.Contains(t, env, "export OPENCODE_CONFIG_DIR="+rt.ConfigDir())
 	assert.Contains(t, env, "export OPENCODE_DISABLE_PROJECT_CONFIG=true")
+	assert.Contains(t, env, "export OPENCODE_DISABLE_EXTERNAL_SKILLS=true")
 	assert.Contains(t, env, "export OPENCODE_CONFIG_CONTENT")
 	assert.Contains(t, env, "export GOOGLE_APPLICATION_CREDENTIALS")
 }
@@ -184,6 +185,13 @@ func TestIntersectPermissionRecord(t *testing.T) {
 	rec3 := openCodePermissionRecord([]string{"Bash"})
 	result3 := intersectPermissionRecord(rec3, nil)
 	assert.Equal(t, "allow", result3["bash"], "nil policy means no capping")
+
+	// "ask" in trusted policy caps agent "allow" to "ask".
+	askPolicy := map[string]string{"bash": "ask", "*": "deny"}
+	rec4 := openCodePermissionRecord([]string{"Bash", "Read"})
+	capped4 := intersectPermissionRecord(rec4, askPolicy)
+	assert.Equal(t, "ask", capped4["bash"], "ask policy must cap allow to ask")
+	assert.Equal(t, "deny", capped4["read"], "wildcard deny still applies")
 }
 
 func TestParseTrustedPermissionPolicy(t *testing.T) {
@@ -195,9 +203,10 @@ func TestParseTrustedPermissionPolicy(t *testing.T) {
 	assert.Equal(t, "deny", policy["edit"])
 	assert.Equal(t, "deny", policy["*"])
 
-	// Pattern map collapsed to "deny".
+	// Pattern map omitted — not collapsed to "deny".
 	policy2 := parseTrustedPermissionPolicy(`{"permission":{"bash":{"gh *":"allow","*":"deny"}}}`)
-	assert.Equal(t, "deny", policy2["bash"], "pattern map collapsed to deny")
+	_, hasBash := policy2["bash"]
+	assert.False(t, hasBash, "pattern map should be omitted so global rule applies")
 
 	// Invalid JSON → nil.
 	assert.Nil(t, parseTrustedPermissionPolicy("not json"))
@@ -292,7 +301,7 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	assert.Contains(t, cmd, "</dev/null")
 	// The stream is tee'd to the sandbox transcript path and the transcript
 	// dir is created first.
-	assert.Contains(t, cmd, "mkdir -p "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeOutputSubdir))
+	assert.Contains(t, cmd, "mkdir -p "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunnerSubdir))
 	assert.Contains(t, cmd, `| "$`+openCodeTeeVar+`" `+shellQuote(openCodeSandboxTranscriptPath()))
 	// opencode's real exit code is re-raised past tee (which always exits 0).
 	assert.Contains(t, cmd, `"$`+openCodePrintfVar+`" '%s\n' "$?" > `+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeRunRCFile))
@@ -300,6 +309,8 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	assert.Contains(t, cmd, `case "$FULLSEND_OPENCODE_RC" in ''|*[!0-9]*) FULLSEND_OPENCODE_RC=1`)
 	// No hooks signal → no integrity guard.
 	assert.NotContains(t, cmd, "refusing to run unhooked")
+	// CLOUD_ML_REGION is mapped to GOOGLE_CLOUD_LOCATION for Vertex region parity.
+	assert.Contains(t, cmd, `export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`)
 
 	// Runner-owned opencode.json with instructions pointing at workspace
 	// AGENTS.md is rewritten after .env is sourced.
@@ -316,6 +327,10 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	assert.Contains(t, cmd, `"$`+openCodePrintfVar+`" '%s' `+shellQuote(expectedJSON))
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeBinaryPin()), envIdx, "opencode binary must be pinned before .env")
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeTrustedEnvPin(trustedEnv)), envIdx, "trusted values must be pinned before .env")
+	// HOME and PATH pins are embedded inside openCodeTrustedEnvPin; verify the
+	// pin variables appear before .env so a hostile .env cannot redirect them.
+	assert.Less(t, strings.Index(cmd, openCodeHomePinVar+`="$HOME"`), envIdx, "HOME pin must appear before .env")
+	assert.Less(t, strings.Index(cmd, openCodePathPinVar+`="$PATH"`), envIdx, "PATH pin must appear before .env")
 	assert.Greater(t, strings.Index(cmd, "&& "+openCodeTrustedEnvRestore()), envIdx, "trusted values must be restored after .env")
 	// EnvExports re-pin (OPENCODE_CONFIG_DIR, OPENCODE_DISABLE_PROJECT_CONFIG) must
 	// appear after .env sourcing — a hostile .env could otherwise redirect config
@@ -377,23 +392,40 @@ func TestOpenCodeTrustedEnvRestore(t *testing.T) {
 			// An agent-written .env could inject OPENCODE_PERMISSION to widen
 			// the trusted policy (CWE-15). Verify restore clears it.
 			`export OPENCODE_PERMISSION='{"edit":"allow","bash":"allow"}'`+"\n"+
-			`export OPENCODE_CONFIG=/tmp/hostile.json`+"\n",
+			`export OPENCODE_CONFIG=/tmp/hostile.json`+"\n"+
+			// Loader/linker injection vectors (CWE-426). Verify restore clears them.
+			`export LD_PRELOAD=/tmp/evil.so`+"\n"+
+			`export OPENCODE_TEST_HOME=/tmp/fake-home`+"\n"+
+			// HOME and PATH hijack attempt — restore must re-pin them.
+			`export HOME=/tmp/agent-home`+"\n"+
+			`export PATH=/tmp/agent-bin:/usr/bin:/bin`+"\n",
 	), 0o644))
 
 	trustedEnv := openCodeTrustedEnv{
 		ConfigContent:   `{"permission":{"*":"deny"}}`,
 		CredentialsPath: "/runner/adc.json",
 	}
-	command := openCodeTrustedEnvPin(trustedEnv) + " && . " + shellQuote(envFile) + " && " + openCodeTrustedEnvRestore() +
-		` && printf '%s\n%s\n%s\n%s\n' "$OPENCODE_CONFIG_CONTENT" "$GOOGLE_APPLICATION_CREDENTIALS" "$OPENCODE_PERMISSION" "$OPENCODE_CONFIG"`
+	origHome := "/sandbox/runner-home"
+	origPath := "/usr/local/bin:/usr/bin:/bin"
+	// Set a known HOME and PATH so the pin captures them.
+	command := "HOME=" + shellQuote(origHome) + " PATH=" + shellQuote(origPath) +
+		" sh -c " + shellQuote(
+		openCodeTrustedEnvPin(trustedEnv)+" && . "+shellQuote(envFile)+" && "+openCodeTrustedEnvRestore()+
+			` && printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$OPENCODE_CONFIG_CONTENT" "$GOOGLE_APPLICATION_CREDENTIALS" "$HOME" "$PATH" "$OPENCODE_PERMISSION" "$OPENCODE_CONFIG" "$LD_PRELOAD"`,
+	)
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", out)
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	require.Len(t, lines, 2, "only two non-empty lines expected (pinned values); dangerous vars must be empty")
+	// Expect exactly 4 non-empty lines: CONFIG_CONTENT, GOOGLE_APPLICATION_CREDENTIALS,
+	// HOME, PATH. Dangerous vars (OPENCODE_PERMISSION, OPENCODE_CONFIG, LD_PRELOAD)
+	// must be empty and therefore collapse to blank lines that TrimSpace removes.
+	require.Len(t, lines, 4, "only four non-empty lines expected (pinned values); dangerous vars must be empty: %s", strings.Join(lines, "|"))
 	assert.Equal(t, `{"permission":{"*":"deny"}}`, lines[0], "OPENCODE_CONFIG_CONTENT must be restored from pin")
 	assert.Equal(t, "/runner/adc.json", lines[1], "GOOGLE_APPLICATION_CREDENTIALS must be restored from pin")
+	assert.Equal(t, origHome, lines[2], "HOME must be restored to the pre-.env value")
+	assert.Equal(t, origPath, lines[3], "PATH must be restored to the pre-.env value")
 }
 
 func TestOpenCodeReadTrustedEnvErrors(t *testing.T) {
@@ -574,6 +606,43 @@ func TestBuildOpenCodeRunCommand_FallbackModelsIgnored(t *testing.T) {
 	}
 	cmd := buildOpenCodeRunCommand(params, "triage", openCodeTrustedEnv{})
 	assert.Contains(t, cmd, `"$`+openCodeBinaryVar+`" run`)
+}
+
+func TestOpenCodeEffortFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		effort string
+		want   string
+		ok     bool
+	}{
+		{"low", "low", true},
+		{"medium", "medium", true},
+		{"high", "high", true},
+		{"xhigh", "max", true},
+		{"max", "max", true},
+		{"off", "", false},
+		{"minimal", "", false},
+		{"", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.effort, func(t *testing.T) {
+			got, ok := openCodeEffortFor(tt.effort)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestBuildOpenCodeRunCommand_UnmappedEffortOmitsVariant(t *testing.T) {
+	t.Setenv(openCodeProviderEnv, "")
+	params := RunParams{
+		AgentBaseName: "triage",
+		RepoDir:       "/repo",
+		Effort:        "off",
+	}
+	cmd := buildOpenCodeRunCommand(params, "triage", openCodeTrustedEnv{})
+	assert.NotContains(t, cmd, "--variant", "unmapped effort should not produce --variant")
 }
 
 func TestOpenCodeRuntimeRunRequiresBootstrapState(t *testing.T) {

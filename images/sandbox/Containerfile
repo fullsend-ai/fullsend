@@ -329,7 +329,7 @@ RUN case "$TARGETARCH" in \
 
 # OpenCode hygiene defaults. OPENCODE_CONFIG_DIR must match
 # sandbox.SandboxOpenCodeConfig (internal/sandbox/sandbox.go).
-RUN install -d -o sandbox -g sandbox -m 0755 /sandbox/opencode-config
+RUN install -d -o root -g sandbox -m 0750 /sandbox/opencode-config
 ENV OPENCODE_CONFIG_DIR="/sandbox/opencode-config" \
     OPENCODE_DISABLE_PROJECT_CONFIG="true"
 
