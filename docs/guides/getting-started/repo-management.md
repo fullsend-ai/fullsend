@@ -524,7 +524,9 @@ updates are committed as PRs (or direct pushes with `--direct`).
 Use `repos status` for a read-only drift report (no changes applied). For
 GitLab repos, status also reports `protected-ref-pipeline` drift when the
 poller loses merge access to create pipelines on the protected default
-branch:
+branch. It also reports managed service-account IDs, names and effective
+access (`gitlab_service_accounts` in JSON); a managed account not exactly at
+Developer is drift:
 
 ```bash
 fullsend repos status -f repos.yaml --json
@@ -572,6 +574,12 @@ Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
 manifest.
 
 ### Removing repos
+
+GitLab uninstall also revokes role credentials and deletes verified
+Fullsend-managed project service accounts, preserving administrator-supplied
+accounts and contributions. The project installation lease serializes cleanup;
+unsafe or unavailable account cleanup retains ownership records for retry.
+See the [uninstall reference](../../cli/repos.md#repos-uninstall).
 
 Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches, deletes the Fullsend-owned webhook fast-path project webhook, revokes its managed pipeline trigger token, and deletes the `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables; if that cleanup fails, the scaffold is not removed and the manifest entry is kept for retry. Pass `--direct` to push file deletions to the default branch:
 

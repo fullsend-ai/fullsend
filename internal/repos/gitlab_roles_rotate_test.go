@@ -19,11 +19,43 @@ type selectiveSecretClient struct {
 	fail map[string]error
 }
 
+func TestRotationStateSchemaVersion(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	key := "g/p/" + forge.VarGitLabRoleRotation
+	for _, raw := range []string{`{"roles":{"coder":{"managed_user_id":77}}}`, `{"version":1,"roles":{"coder":{"managed_user_id":77}}}`} {
+		fc.VariableValues[key] = raw
+		state, _, err := loadRotationState(ctx, fc, "g", "p")
+		require.NoError(t, err)
+		assert.Equal(t, 77, state.Roles["coder"].ManagedUserID)
+		require.NoError(t, writeRotationState(ctx, fc, "g", "p", state))
+		assert.Contains(t, fc.VariableValues[key], `"version":1`)
+	}
+	for _, raw := range []string{`{"version":2,"roles":{}}`, `{"version":-1,"roles":{}}`, `{"version":"1","roles":{}}`} {
+		fc.VariableValues[key] = raw
+		before := len(fc.UpdatedVariables)
+		_, _, err := loadRotationState(ctx, fc, "g", "p")
+		require.Error(t, err)
+		assert.Equal(t, raw, fc.VariableValues[key])
+		assert.Len(t, fc.UpdatedVariables, before)
+	}
+}
+
 func (c *selectiveSecretClient) CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
 	if err, ok := c.fail[name]; ok {
 		return err
 	}
 	return c.Client.CreateRepoSecret(ctx, owner, repo, name, value)
+}
+
+// The embedded interface hides the optional project lease capability, so it is
+// forwarded explicitly.
+func (c *selectiveSecretClient) AcquireProjectLease(ctx context.Context, owner, repo, name, holder string) (bool, error) {
+	return c.Client.(forge.ProjectLeaser).AcquireProjectLease(ctx, owner, repo, name, holder)
+}
+
+func (c *selectiveSecretClient) ReleaseProjectLease(ctx context.Context, owner, repo, name, holder string) error {
+	return c.Client.(forge.ProjectLeaser).ReleaseProjectLease(ctx, owner, repo, name, holder)
 }
 
 func seededRoleClient(t *testing.T, roles ...gitlabroles.Role) *forge.FakeClient {
@@ -176,7 +208,7 @@ func TestRotateGitLabRoleCredentials_ConcurrentSerializedAndIdempotent(t *testin
 	assert.Equal(t, 1, rotated)
 }
 
-func TestRotateGitLabRoleCredentials_FailedDistributionRollsBack(t *testing.T) {
+func TestRotateGitLabRoleCredentials_FailedDistributionRetainsRecovery(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	inner := seededRoleClient(t, gitlabroles.RolePoller, gitlabroles.RoleAnalyst, gitlabroles.RoleCoder)
@@ -197,11 +229,15 @@ func TestRotateGitLabRoleCredentials_FailedDistributionRollsBack(t *testing.T) {
 		Now:      now,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, []gitlabroles.Role{gitlabroles.RolePoller}, result.RolledBack)
+	assert.Empty(t, result.RolledBack)
 	require.Len(t, result.Failed, 1)
-	assert.Contains(t, result.Failed[0].Reason, "previous credential left in place")
+	assert.Contains(t, result.Failed[0].Reason, "incoming credential and recovery state retained")
 	require.Len(t, tokens.created, 1)
-	assert.Equal(t, []int{tokens.created[0].ID}, tokens.revoked)
+	assert.Empty(t, tokens.revoked)
+	state, _, stateErr := loadRotationState(context.Background(), inner, "group", "project")
+	require.NoError(t, stateErr)
+	assert.Equal(t, rotationPhaseDistributing, state.Roles["poller"].Phase)
+	assert.Equal(t, tokens.created[0].ID, state.Roles["poller"].IncomingID)
 	assert.True(t, inner.Secrets["group/project/"+forge.SecretGitLabPollerToken])
 	assert.True(t, inner.Secrets["group/project/"+forge.SecretForgeToken])
 	// The last successful write for the poller secret is still the seed.
@@ -352,8 +388,8 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacement(t *testing.T) {
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Force:    true,
 		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
-		ProvidedTokens: map[gitlabroles.Role]string{
-			gitlabroles.RolePoller: "enrolledXXXX",
+		ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{
+			gitlabroles.RolePoller: {Token: "enrolledXXXX"},
 		},
 	})
 	require.NoError(t, err)
@@ -388,8 +424,8 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacementDoesNotScheduleSelfForRe
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Force:    true,
 		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
-		ProvidedTokens: map[gitlabroles.Role]string{
-			gitlabroles.RolePoller: "enrolledXXXX",
+		ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{
+			gitlabroles.RolePoller: {Token: "enrolledXXXX"},
 		},
 	})
 	require.NoError(t, err)
@@ -412,7 +448,7 @@ func TestRotateGitLabRoleCredentials_ProvidedUnmaskableAndStoreFailure(t *testin
 			Owner: "group", Repo: "project", Client: fc, Tokens: &fakeTokens{},
 			Registry: gitlabroles.BuiltinRegistry(),
 			Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now,
-			ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RolePoller: "short"},
+			ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{gitlabroles.RolePoller: {Token: "short"}},
 		})
 		require.NoError(t, err)
 		require.Len(t, result.Failed, 1)
@@ -426,7 +462,7 @@ func TestRotateGitLabRoleCredentials_ProvidedUnmaskableAndStoreFailure(t *testin
 			Owner: "group", Repo: "project", Client: fc, Tokens: &fakeTokens{},
 			Registry: gitlabroles.BuiltinRegistry(),
 			Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now,
-			ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RolePoller: "enrolledXXXX"},
+			ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{gitlabroles.RolePoller: {Token: "enrolledXXXX"}},
 		})
 		require.NoError(t, err)
 		require.Len(t, result.Failed, 1)
@@ -440,7 +476,7 @@ func TestRotateGitLabRoleCredentials_ProvidedUnmaskableAndStoreFailure(t *testin
 			Owner: "group", Repo: "project", Client: fc, Tokens: &fakeTokens{},
 			Registry: gitlabroles.BuiltinRegistry(),
 			Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now, DryRun: true,
-			ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RolePoller: "enrolledXXXX"},
+			ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{gitlabroles.RolePoller: {Token: "enrolledXXXX"}},
 		})
 		require.NoError(t, err)
 		assert.Equal(t, []gitlabroles.Role{gitlabroles.RolePoller}, result.Rotated)
@@ -885,6 +921,154 @@ func TestEnrichGitLabRoleStatusAcceptsAdministratorEnrollment(t *testing.T) {
 	assert.NotContains(t, strings.Join(status.GitLabRoleDiagnostics, "\n"), "secret present but no matching project access token")
 }
 
+// An idle, distributed enrollment proves distribution, not continuing validity:
+// when the enrolled token ID is recorded and a successful inventory no longer
+// lists it, the role stays unverified instead of being reported healthy.
+func TestEnrichGitLabRoleStatusEnrolledTokenMissingFromInventoryStaysUnverified(t *testing.T) {
+	t.Parallel()
+	fc := provisionClient(t)
+	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+		require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
+	}
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{
+"poller":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_user_id":10,"supplied_token_id":7},
+"analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
+"coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
+}}`
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRotation] = true
+	now := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+
+	status := &RepoStatus{}
+	EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", []ProjectAccessToken{}, now, status)
+	assert.False(t, status.GitLabRolesReady)
+	assert.Contains(t, strings.Join(status.GitLabRoleDiagnostics, "\n"), "secret present but no matching project access token")
+
+	// Once the inventory lists the recorded token, the enrollment proof applies.
+	status = &RepoStatus{}
+	EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", []ProjectAccessToken{
+		{ID: 7, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2030-01-01"},
+	}, now, status)
+	assert.True(t, status.GitLabRolesReady)
+}
+
+// An ordinary user's enrolled PAT is outside the project inventory, so no
+// supplied_token_id is recorded. Its recorded successful publication proves
+// distribution even when a surviving managed entry still carries an incoming ID
+// and a non-idle phase for cleanup, as the rotation path already recognizes.
+func TestEnrichGitLabRoleStatusSuppliedDistributionProofOverSurvivingManagedState(t *testing.T) {
+	t.Parallel()
+	fc := provisionClient(t)
+	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+		require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
+	}
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{
+"poller":{"phase":"overlapping","incoming_id":8,"outgoing_ids":[6],"distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_distributed":true,"supplied_user_id":70},
+"analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
+"coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
+}}`
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRotation] = true
+
+	status := &RepoStatus{}
+	EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", []ProjectAccessToken{}, time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC), status)
+	assert.True(t, status.GitLabRolesReady)
+	assert.NotContains(t, strings.Join(status.GitLabRoleDiagnostics, "\n"), "secret present but no matching project access token")
+}
+
+// A recorded enrolled token that the inventory lists under another name
+// determines the lifecycle itself: a revoked, expired, or expiring token is
+// never reported healthy because enrollment recorded a distributed, idle proof.
+func TestEnrichGitLabRoleStatusEnrolledTokenLifecycleComesFromThatToken(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		tok       ProjectAccessToken
+		wantReady bool
+		wantDrift string
+		wantDiag  string
+	}{
+		{"revoked", ProjectAccessToken{ID: 7, Name: "automation", Revoked: true, ExpiresAt: "2030-01-01"}, false, "gitlab-role:poller=revoked", "poller: revoked or inactive"},
+		{"inactive", ProjectAccessToken{ID: 7, Name: "automation", ExpiresAt: "2030-01-01"}, false, "gitlab-role:poller=revoked", "poller: revoked or inactive"},
+		{"expired", ProjectAccessToken{ID: 7, Name: "automation", Active: true, ExpiresAt: "2026-01-01"}, false, "gitlab-role:poller=expired", "poller: expired"},
+		{"expiring", ProjectAccessToken{ID: 7, Name: "automation", Active: true, ExpiresAt: "2026-09-22"}, true, "", "poller: expiring"},
+		{"healthy", ProjectAccessToken{ID: 7, Name: "automation", Active: true, ExpiresAt: "2030-01-01"}, true, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := provisionClient(t)
+			for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+				require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
+			}
+			fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{
+"poller":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_user_id":10,"supplied_token_id":7},
+"analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
+"coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
+}}`
+			fc.VariablesExist["group/project/"+forge.VarGitLabRoleRotation] = true
+
+			status := &RepoStatus{}
+			EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", []ProjectAccessToken{tc.tok}, now, status)
+			assert.Equal(t, tc.wantReady, status.GitLabRolesReady)
+			diags := strings.Join(status.GitLabRoleDiagnostics, "\n")
+			if tc.wantDiag != "" {
+				assert.Contains(t, diags, tc.wantDiag)
+			}
+			if tc.wantDrift != "" {
+				var actuals []string
+				for _, d := range status.Drifts {
+					actuals = append(actuals, d.Field+"="+d.Actual)
+				}
+				assert.Contains(t, strings.Join(actuals, ","), tc.wantDrift)
+			}
+		})
+	}
+}
+
+// An unrelated healthy token that merely carries the role's token name must not
+// mask a revoked, expired, or missing recorded enrolled token.
+func TestEnrichGitLabRoleStatusEnrolledTokenNotMaskedByRoleNamedToken(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	healthy := ProjectAccessToken{ID: 8, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2030-01-01"}
+	for _, tc := range []struct {
+		name      string
+		enrolled  []ProjectAccessToken
+		wantDrift string
+		wantDiag  string
+	}{
+		{"revoked", []ProjectAccessToken{{ID: 7, Name: "automation", Revoked: true, ExpiresAt: "2030-01-01"}}, "gitlab-role:poller=revoked", "poller: revoked or inactive"},
+		{"expired", []ProjectAccessToken{{ID: 7, Name: "automation", Active: true, ExpiresAt: "2026-01-01"}}, "gitlab-role:poller=expired", "poller: expired"},
+		{"missing", nil, "", "secret present but no matching project access token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := provisionClient(t)
+			for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+				require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
+			}
+			fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{
+"poller":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_user_id":10,"supplied_token_id":7},
+"analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
+"coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
+}}`
+			fc.VariablesExist["group/project/"+forge.VarGitLabRoleRotation] = true
+
+			status := &RepoStatus{}
+			tokens := append([]ProjectAccessToken{healthy}, tc.enrolled...)
+			EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", tokens, now, status)
+			assert.False(t, status.GitLabRolesReady)
+			assert.Contains(t, strings.Join(status.GitLabRoleDiagnostics, "\n"), tc.wantDiag)
+			if tc.wantDrift != "" {
+				var actuals []string
+				for _, d := range status.Drifts {
+					actuals = append(actuals, d.Field+"="+d.Actual)
+				}
+				assert.Contains(t, strings.Join(actuals, ","), tc.wantDrift)
+			}
+		})
+	}
+}
+
 func TestEnrichGitLabRoleStatusIncludesRegisteredReadiness(t *testing.T) {
 	t.Parallel()
 	fc := provisionClient(t)
@@ -1163,7 +1347,7 @@ func TestRecordInitialDistribution_CreateIfAbsent(t *testing.T) {
 		fc := provisionClient(t)
 		require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
 			`{"roles":{"poller":{"phase":"overlapping","incoming_id":9,"outgoing_ids":[5]}}}`, true))
-		require.NoError(t, recordInitialDistribution(ctx, fc, "group", "project", gitlabroles.RolePoller, 12, "2027-09-21", now))
+		require.NoError(t, recordInitialDistribution(ctx, fc, "group", "project", gitlabroles.RolePoller, 12, "2027-09-21", now, false))
 		state, _, err := loadRotationState(ctx, fc, "group", "project")
 		require.NoError(t, err)
 		assert.Equal(t, rotationPhaseOverlapping, state.Roles["poller"].Phase)
@@ -1174,7 +1358,7 @@ func TestRecordInitialDistribution_CreateIfAbsent(t *testing.T) {
 	t.Run("fails closed on read error", func(t *testing.T) {
 		fc := provisionClient(t)
 		fc.Errors["GetRepoVariable"] = fmt.Errorf("temporary read failure")
-		err := recordInitialDistribution(ctx, fc, "group", "project", gitlabroles.RolePoller, 12, "2027-09-21", now)
+		err := recordInitialDistribution(ctx, fc, "group", "project", gitlabroles.RolePoller, 12, "2027-09-21", now, false)
 		require.Error(t, err)
 		assert.Empty(t, fc.UpdatedVariables)
 	})
@@ -1204,8 +1388,8 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacementWarnsAboutLeftoverPATs(t
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Force:    true,
 		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
-		ProvidedTokens: map[gitlabroles.Role]string{
-			gitlabroles.RolePoller: "enrolledXXXX",
+		ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{
+			gitlabroles.RolePoller: {Token: "enrolledXXXX"},
 		},
 	})
 	require.NoError(t, err)
@@ -1220,4 +1404,96 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacementWarnsAboutLeftoverPATs(t
 			"the diagnostic must not imply automatic grace cleanup when outgoing_ids cannot be filled")
 	}
 	assert.True(t, warned, "a leftover same-named PAT must surface an explicit manual-revocation warning")
+}
+
+// Enrolling a supplied credential over an existing managed rotation entry keeps
+// that entry's incoming ID and phase for cleanup. They must not decide the
+// enrolled token's lifecycle: a revoked, expired, or missing enrolled token is
+// not masked by the healthy managed token the entry still tracks.
+func TestEnrichGitLabRoleStatusSuppliedEnrollmentOverManagedRotationEntry(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	healthy := ProjectAccessToken{ID: 8, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2030-01-01"}
+	for _, tc := range []struct {
+		name      string
+		enrolled  []ProjectAccessToken
+		wantDrift string
+		wantDiag  string
+	}{
+		{"revoked", []ProjectAccessToken{{ID: 7, Name: "automation", Revoked: true, ExpiresAt: "2030-01-01"}}, "gitlab-role:poller=revoked", "poller: revoked or inactive"},
+		{"expired", []ProjectAccessToken{{ID: 7, Name: "automation", Active: true, ExpiresAt: "2026-01-01"}}, "gitlab-role:poller=expired", "poller: expired"},
+		{"missing", nil, "", "secret present but no matching project access token"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := provisionClient(t)
+			for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+				require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
+			}
+			fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{
+"poller":{"phase":"overlapping","incoming_id":8,"outgoing_ids":[6],"distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_user_id":10,"supplied_token_id":7,"excluded_user_ids":[10]},
+"analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
+"coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
+}}`
+			fc.VariablesExist["group/project/"+forge.VarGitLabRoleRotation] = true
+
+			status := &RepoStatus{}
+			tokens := append([]ProjectAccessToken{healthy}, tc.enrolled...)
+			EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", tokens, now, status)
+			assert.False(t, status.GitLabRolesReady)
+			assert.Contains(t, strings.Join(status.GitLabRoleDiagnostics, "\n"), tc.wantDiag)
+			if tc.wantDrift != "" {
+				var actuals []string
+				for _, d := range status.Drifts {
+					actuals = append(actuals, d.Field+"="+d.Actual)
+				}
+				assert.Contains(t, strings.Join(actuals, ","), tc.wantDrift)
+			}
+		})
+	}
+}
+
+// A second rotation must retain legacy outgoing IDs even while the operational
+// inventory cannot read the legacy source. Once access returns, grace cleanup
+// must still revoke every old distributed credential.
+func TestRotationRetainsOutgoingAcrossUnavailableLegacyInventory(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
+	fc := seededRoleClient(t, gitlabroles.RolePoller)
+	legacy := &fakeTokens{}
+	legacy.seed(ProjectAccessToken{ID: 7, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: GitLabPATExpiresAt(now), UserID: 107})
+	sa := newFakeSAAPI()
+	c := ServiceAccountTokenClient{SA: sa, Legacy: legacy}
+	c.AccountCreated = func(ctx context.Context, owner, repo string, account GitLabServiceAccount) error {
+		return RecordManagedServiceAccount(ctx, fc, owner, repo, account)
+	}
+	require.NoError(t, writeRotationState(ctx, fc, "group", "project", rotationStateFile{Roles: map[string]rotationRoleState{"poller": {Phase: rotationPhaseIdle, IncomingID: 7, DistributedAt: now.Add(-time.Hour).Format(time.RFC3339)}}}))
+	cfg := RoleRotateConfig{Owner: "group", Repo: "project", Client: fc, Tokens: c, Registry: gitlabroles.BuiltinRegistry(), Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Now: now, Force: true}
+	first, err := RotateGitLabRoleCredentials(ctx, cfg)
+	require.NoError(t, err)
+	require.Empty(t, first.Failed)
+	require.Contains(t, first.Rotated, gitlabroles.RolePoller)
+	before, _, err := loadRotationState(ctx, fc, "group", "project")
+	require.NoError(t, err)
+	require.Contains(t, before.Roles["poller"].OutgoingIDs, 7)
+	legacy.failList = forge.ErrForbidden
+	cfg.Now = now.Add(time.Hour)
+	second, err := RotateGitLabRoleCredentials(ctx, cfg)
+	require.NoError(t, err)
+	require.Empty(t, second.Failed)
+	require.Contains(t, second.Rotated, gitlabroles.RolePoller)
+	state, _, err := loadRotationState(ctx, fc, "group", "project")
+	require.NoError(t, err)
+	assert.Contains(t, state.Roles["poller"].OutgoingIDs, 7)
+	assert.Contains(t, state.Roles["poller"].OutgoingIDs, before.Roles["poller"].IncomingID)
+	legacy.failList = nil
+	cfg.Force = false
+	cfg.Now = now.Add(26 * time.Hour)
+	cleaned, err := RotateGitLabRoleCredentials(ctx, cfg)
+	require.NoError(t, err)
+	require.Empty(t, cleaned.Failed)
+	assert.Contains(t, legacy.revoked, 7)
+	state, _, err = loadRotationState(ctx, fc, "group", "project")
+	require.NoError(t, err)
+	assert.Empty(t, state.Roles["poller"].OutgoingIDs)
 }

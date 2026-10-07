@@ -53,35 +53,39 @@ func PollerPipelineUserIDs(tokens []ProjectAccessToken) []int {
 	return ids
 }
 
-// PollerCanCreatePipeline reports whether a Developer-level poller can
-// create pipelines on the given protected ref. A nil rule means the
-// branch is not protected and CreatePipeline does not need merge/push
+// PollerCanCreatePipeline reports whether every given Developer-level poller
+// identity can create pipelines on the given protected ref. A nil rule means
+// the branch is not protected and CreatePipeline does not need merge/push
 // access. GitLab allows pipeline creation when the caller may merge or
 // push; Developer (30) is included by any role-based grant at 30 or
-// below (except 0, "No one"), or when a poller user ID is listed.
+// below (except 0, "No one"), which covers every identity. Otherwise each
+// poller user ID must be listed individually: a grant for one identity (for
+// example an outgoing project-token bot that stays active during a rotation
+// grace) does not cover another (the replacement service account).
 func PollerCanCreatePipeline(rule *forge.ProtectedBranchRule, userIDs []int) bool {
 	if rule == nil {
 		return true
 	}
-	return accessAllowsPoller(rule.MergeAccessLevels, userIDs) ||
-		accessAllowsPoller(rule.PushAccessLevels, userIDs)
+	if roleAllowsPoller(rule.MergeAccessLevels) || roleAllowsPoller(rule.PushAccessLevels) {
+		return true
+	}
+	return len(pollerIDsMissingAccess(rule, userIDs)) == 0 && hasPositiveID(userIDs)
 }
 
-func accessAllowsPoller(levels []forge.ProtectedBranchAccess, userIDs []int) bool {
-	users := make(map[int]struct{}, len(userIDs))
+func hasPositiveID(userIDs []int) bool {
 	for _, id := range userIDs {
 		if id > 0 {
-			users[id] = struct{}{}
+			return true
 		}
 	}
+	return false
+}
+
+// roleAllowsPoller reports whether a role-based grant at Developer level or
+// below covers every Developer-level identity.
+func roleAllowsPoller(levels []forge.ProtectedBranchAccess) bool {
 	for _, l := range levels {
-		if l.UserID > 0 {
-			if _, ok := users[l.UserID]; ok {
-				return true
-			}
-			continue
-		}
-		if l.GroupID > 0 {
+		if l.UserID > 0 || l.GroupID > 0 {
 			continue
 		}
 		if l.AccessLevel > 0 && l.AccessLevel <= gitlabroles.DeveloperAccessLevel {
@@ -89,6 +93,29 @@ func accessAllowsPoller(levels []forge.ProtectedBranchAccess, userIDs []int) boo
 		}
 	}
 	return false
+}
+
+// pollerIDsMissingAccess returns the positive user IDs that are not
+// individually listed in the rule's merge or push grants.
+func pollerIDsMissingAccess(rule *forge.ProtectedBranchRule, userIDs []int) []int {
+	granted := make(map[int]struct{})
+	for _, levels := range [][]forge.ProtectedBranchAccess{rule.MergeAccessLevels, rule.PushAccessLevels} {
+		for _, l := range levels {
+			if l.UserID > 0 {
+				granted[l.UserID] = struct{}{}
+			}
+		}
+	}
+	var missing []int
+	for _, id := range userIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := granted[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	return missing
 }
 
 func describePipelineAccess(rule *forge.ProtectedBranchRule) string {
@@ -193,7 +220,13 @@ func EnsureGitLabPollerPipelineAccess(ctx context.Context, client forge.Client, 
 		return result, nil
 	}
 
-	for _, id := range userIDs {
+	// Grant only the identities the rule does not already list, so an existing
+	// grant for one identity is not re-added and never stands in for another.
+	toGrant := userIDs
+	if missing := pollerIDsMissingAccess(rule, userIDs); len(missing) > 0 {
+		toGrant = missing
+	}
+	for _, id := range toGrant {
 		if err := client.GrantProtectedBranchMergeUser(ctx, owner, repo, branch, id); err != nil {
 			return result, fmt.Errorf("granting poller user %d merge access on %q: %w", id, branch, err)
 		}

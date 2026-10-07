@@ -640,6 +640,9 @@ func TestAnnotateGitLabRoleLifecycleDoesNotDoubleCountDrifted(t *testing.T) {
 		serveVariable(project, forge.VarGitLabRoleRegistry, registryJSON)
 		serveVariable(project, forge.SecretForgeToken, "present")
 		serveVariable(project, scannerSecret, "present")
+		// Recorded managed provenance lets the supplied-owner exclusions resolve,
+		// which the legacy token inventory now consults.
+		serveVariable(project, forge.VarGitLabRoleRotation, `{"roles":{"scanner":{"phase":"idle","incoming_id":1}}}`)
 		project := project
 		mux.HandleFunc(fmt.Sprintf("/api/v4/projects/%s/access_tokens", project), func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -753,7 +756,9 @@ func TestGitLabUninstallTokens(t *testing.T) {
 		require.NoError(t, err)
 		got := gitLabUninstallTokens(&reposUninstallConfig{}, newSingleClientFactory(glClient), printer, manifest, []string{"group/project"})
 		require.NotNil(t, got)
-		_, ok := got.(gitlabTokenAdapter)
+		_, ok := got.(gitlabUninstallTokenClient)
+		assert.True(t, ok, "uninstall sees service-account and legacy tokens and reconciles the Poller")
+		_, ok = got.(repos.GitLabPollerUninstallReconciler)
 		assert.True(t, ok)
 	})
 }
@@ -870,7 +875,7 @@ func TestGitLabTokenInventory(t *testing.T) {
 	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL("http://127.0.0.1:1"))
 	require.NoError(t, err)
 	inv := gitLabTokenInventory(&reposInstallConfig{}, glClient)
-	_, ok := inv.(gitlabTokenAdapter)
+	_, ok := inv.(repos.ServiceAccountTokenClient)
 	assert.True(t, ok)
 }
 

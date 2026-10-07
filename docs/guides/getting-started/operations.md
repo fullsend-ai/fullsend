@@ -74,14 +74,34 @@ region there remains an alternative.
 | `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name for inference | `projects/123456789/locations/global/...` |
 | `FULLSEND_DISPATCH_SECRET` | CI/CD secret | HMAC secret for dispatch variables and poll-state documents; auto-provisioned by `repos install` | (generated) |
+| `FULLSEND_GITLAB_INSTALL_LEASE` | CI/CD variable | Transient lease that serializes `repos install`, role rotation, Poller reconciliation, and `repos uninstall` for one project. It is removed when the operation finishes; if an installer is killed it remains and blocks later operations until you delete it manually in Settings → CI/CD → Variables | (installer-generated holder ID) |
 | `FULLSEND_TRIGGER_TOKEN` | CI/CD secret | GitLab pipeline trigger token for the webhook fast-path dispatcher. Masked and protected; never logged. Provisioned when the fast-path is enabled. | (masked) |
 | `FULLSEND_WEBHOOK_SECRET` | CI/CD secret | GitLab project-webhook secret (`X-Gitlab-Token`) for the webhook fast-path. Masked and protected; never logged. Provisioned when the fast-path is enabled. | (masked) |
 | `FULLSEND_GITLAB_ROLE_REGISTRY` | CI/CD variable (protected, unmasked) | Administrator role registry (JSON references and policy, not secret values); empty means built-in roles only. Written by `repos install --gitlab-role-registry`. | `{"roles":[]}` |
-| `FULLSEND_GITLAB_ROLE_ROTATION` | CI/CD variable (protected, unmasked) | Per-role rotation state (lock, token IDs, expiry dates, phase). Never stores token values. Written by `repos install` during rotation. | `{"roles":{}}` |
+| `FULLSEND_GITLAB_ROLE_ROTATION` | CI/CD variable (protected, unmasked) | Version 1 per-role rotation state (lock, token IDs, expiry dates, phase, managed service-account IDs and supplied-account ownership/exclusions: `managed_user_id`, `supplied_user_id`, `excluded_user_ids`). Never stores token values. Written by `repos install` during rotation. | `{"version":1,"roles":{}}` |
 | `FULLSEND_GITLAB_POLLER_TOKEN` / `FULLSEND_GITLAB_ANALYST_TOKEN` / `FULLSEND_GITLAB_CODER_TOKEN` | CI/CD secret | Built-in role PATs provisioned by `repos install`; the selected role secret is required for every runtime job | (masked) |
 | `FULLSEND_OPENAI_API_KEY` | CI/CD variable (masked) | OpenAI API key for projects whose `inference.auth` is `openai-api-key`, written by `repos install --openai-api-key`. The job maps it to `OPENAI_API_KEY`; an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used (see [upgrade steps](../../cli/repos.md#gitlab-fullsend_openai_api_key-replaces-openai_api_key-breaking)) | `sk-...` |
 
 `repos install` provisions and rotates the registered role credentials directly. There is no migration gate and no shared-token runtime path. Neither install nor uninstall removes a leftover `FULLSEND_FORGE_TOKEN` from a repository installed before the role-only rollout — clean that up manually.
+
+### GitLab installer lease and version compatibility
+
+Run install, rotation, reconciliation, and uninstall with the same upgraded
+fullsend CLI version. Older versions do not honor `FULLSEND_GITLAB_INSTALL_LEASE`
+and can modify credentials while a newer installer holds the lease. The lease
+does not protect against those older clients; do not run them concurrently.
+
+If an installer is killed and leaves the lease behind:
+
+1. Stop all installers for the project, including older CLI versions.
+2. Confirm the Poller service account has effective Developer access. If it is
+   still elevated, restore Developer access before continuing.
+3. Delete `FULLSEND_GITLAB_INSTALL_LEASE` in **Settings → CI/CD → Variables**.
+4. Re-run `repos install` with the upgraded CLI to reconcile interrupted
+   credential changes and remove orphaned bootstrap credentials.
+
+Never delete a live installer's lease. Fullsend does not automatically reclaim
+leases based on age, since a slow installer may still be active.
 
 ## Syncing workflow templates
 
@@ -103,6 +123,13 @@ This is idempotent — it provisions new repos, repairs missing or drifted compo
 
 ## Uninstalling
 
+For GitLab, uninstall also deletes project service accounts whose IDs are
+durably recorded as Fullsend-managed, after revoking their credentials. It
+preserves contributions and supplied or unverified identities. Remaining SSH
+credentials, unfinished jobs, schedules or triggers block account deletion;
+resolve the reported resources and retry. See
+[GitLab role cleanup](configuring-gitlab.md#readiness-drift-reinstall-and-uninstall).
+
 ### Per-repo teardown
 
 To remove fullsend from a single repository:
@@ -120,7 +147,7 @@ To remove fullsend from a single repository:
 > **Note:** During install, fullsend sets `workflow.auto_cancel.on_new_commit: none` when an existing, non-empty `.gitlab-ci.yml` already has a `workflow:` block and that key is missing; it does not overwrite an existing value. If that existing block has no `rules:` key, fullsend also adds a `CI_DEBUG_TRACE` deny-before-admit rule (`when: never`) followed by the protected-ref `schedule`/`api` rules, which can stop ordinary push pipelines unless the block already has a matching rule; add a catch-all/push rule (or an explicit `when: always` rule) before installing, or remove the name-only block so fullsend can leave `workflow:` absent. If an existing, non-empty file has no `workflow:` block, fullsend leaves it absent so push-triggered pipelines are not disrupted. For a missing or empty `.gitlab-ci.yml`, fullsend writes a fullsend-owned `workflow:` block with the `CI_DEBUG_TRACE` deny rule and protected-ref `schedule`/`api` rules; later push jobs added to that file likewise need additional `workflow.rules` or an explicit `when: always` rule, or GitLab will skip them. Repos with `on_new_commit: interruptible` (or other non-`none` values) may experience agent pipeline cancellations because fullsend requires `on_new_commit: none` for reliable agent runs. If you see unexpected pipeline cancellations, set `on_new_commit: none` in your `.gitlab-ci.yml` workflow block.
 
 2. Delete all CI/CD variables prefixed with `FULLSEND_` (including `FULLSEND_OPENAI_API_KEY`). `repos uninstall` already removes every Fullsend-managed inference variable (`FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_GCP_REGION`, and `FULLSEND_OPENAI_API_KEY`) whatever the project's `inference.auth` is, including leftovers from an earlier method, so this step only matters for manual teardown or variables it did not manage. If you still have a legacy unprefixed `OPENAI_API_KEY` from the old static-key route, delete it yourself too if you want it gone — fullsend never created it (it is a plain CI/CD variable, not `FULLSEND_`-prefixed) and does not delete it as part of uninstall
-3. Confirm that this repo's role project access tokens — `fullsend-poller`, `fullsend-analyst`, `fullsend-coder`, and any `fullsend-role-*` tokens — were revoked. `repos uninstall` revokes them automatically when it can list project access tokens; if uninstall failed on token revocation, retry it, then revoke any that remain from Settings → Access Tokens. A 403 from the token-list API fails uninstall closed rather than being treated as "nothing to revoke" — GitLab returns the identical error for plan-tier feature gating, group-level PAT disablement, and insufficient token permissions, so silently continuing risks leaving tokens live after a reported-successful uninstall. Only a confirmed-gone project (404) is treated as an empty inventory. If the project access token API is genuinely and permanently unavailable for this project (for example, a plan tier that doesn't offer it), retrying will not converge — finish the teardown by revoking any remaining tokens by hand from Settings → Access Tokens, then run `fullsend repos uninstall "$PROJECT_PATH" --manifest-only` to drop the manifest entry once cleanup is confirmed. If this repo was installed before the role-only rollout and still has a `fullsend-bot` token, `repos uninstall` does **not** revoke it — revoke it by hand from Settings → Access Tokens
+3. Confirm that this repo's role credentials — the `fullsend-poller`, `fullsend-analyst`, `fullsend-coder`, and any `fullsend-role-*` tokens — were revoked. Fullsend issues them as personal access tokens of per-role project service accounts, or as legacy project access tokens on instances without project service accounts or on installs that predate them. `repos uninstall` revokes both kinds automatically when it can list them; if uninstall failed on token revocation, retry it. To revoke leftovers by hand, use Settings → Access Tokens for legacy project access tokens. For service-account tokens, list them with `GET /projects/:id/service_accounts` and `GET /projects/:id/service_accounts/:user_id/personal_access_tokens`, then revoke each with `DELETE /projects/:id/service_accounts/:user_id/personal_access_tokens/:token_id`. `repos uninstall` also deletes verified Fullsend-managed project service accounts after checking credentials and remaining resources. Administrator-supplied accounts stay in place. If account deletion is blocked by SSH keys, unfinished jobs, schedules, or triggers, remove those resources and retry uninstall; remove unmanaged or supplied accounts manually only when you no longer need them. A 403 from either token-list API fails uninstall closed rather than being treated as "nothing to revoke" — GitLab returns the identical error for plan-tier feature gating, group-level PAT disablement, and insufficient token permissions, so silently continuing risks leaving tokens live after a reported-successful uninstall. Only a confirmed-gone project (404) is treated as an empty inventory. If a token API is genuinely and permanently unavailable for this project (for example, a plan tier that doesn't offer it), retrying will not converge — finish the teardown by revoking any remaining tokens by hand as above, then run `fullsend repos uninstall "$PROJECT_PATH" --manifest-only` to drop the manifest entry once cleanup is confirmed. If this repo was installed before the role-only rollout and still has a `fullsend-bot` token, `repos uninstall` does **not** revoke it — revoke it by hand from Settings → Access Tokens
 4. If you enrolled role credentials with personal PATs (`--gitlab-role-token` — see [Configuring GitLab § Free-tier role-token enrollment](configuring-gitlab.md#free-tier-role-token-enrollment) and [Role identities and GitLab Free](configuring-gitlab.md#role-identities-and-gitlab-free)), also revoke those PATs on the accounts that issued them. Deleting the CI/CD variables in step 2 does not revoke the underlying PATs.
 5. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
 6. If you provisioned the shared `gitlab-oidc` WIF provider (see [Configuring GitLab § Inference Setup](configuring-gitlab.md#inference-setup)), revoke this repo's trust — `fullsend inference deprovision` does **not** cover `gitlab-oidc`; it only removes GitHub-style per-repo providers. Deleting the `FULLSEND_GCP_WIF_PROVIDER` CI/CD variable in step 2 does not revoke the underlying GCP IAM trust. What to do next depends on which install recipe you used:

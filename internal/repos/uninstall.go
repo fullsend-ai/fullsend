@@ -353,14 +353,65 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	// dispatcher is being removed, and revokes the separately minted
 	// trigger token. A failure stops uninstall here so the manifest entry
 	// is retained and a retry repeats the (idempotent) teardown.
+	//
+	// The project lease serializes this whole resource transaction (webhook
+	// teardown through role-credential cleanup) against concurrent installers,
+	// so none can publish a replacement hook and trigger between discovery and
+	// deletion and leave them behind after a successful uninstall. The
+	// lease is not reentrant, so the steps below call the already-locked
+	// helpers.
 	var triggersRevoked int
+	// pollerErr is the outcome of reconciling an interrupted Poller elevation.
+	// It runs right after the lease is held, before any step that can return
+	// early, so a webhook or scaffold failure never leaves an elevated Poller or
+	// an orphaned bootstrap credential unaddressed.
+	var pollerErr error
+	unlockProject := func() error { return nil }
 	if cfg.Forge == ForgeGitLab {
+		release, lockErr := LockGitLabProject(ctx, client, owner, repo, false)
+		if lockErr != nil {
+			result.Error = fmt.Errorf("serializing uninstall with other installers: %w", lockErr)
+			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", lockErr))
+			return result
+		}
+		var leaseErr error
+		held := true
+		unlockProject = func() error {
+			if held {
+				held = false
+				release(&leaseErr)
+			}
+			return leaseErr
+		}
+		defer func() { _ = unlockProject() }()
+
+		// An interrupted trigger-creation transaction can leave the Poller
+		// elevated or holding its bootstrap credential; restore and revoke
+		// those before anything below can fail and return. The bounded,
+		// cancellation-detached context lets a canceled uninstall still demote.
+		if reconciler, ok := tokens.(GitLabPollerUninstallReconciler); ok {
+			progress(fullName, "cleanup", "Reconciling the GitLab Poller identity")
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 3*gitlabCleanupTimeout)
+			pollerErr = reconciler.ReconcileGitLabPollersForUninstall(rctx, client, owner, repo)
+			rcancel()
+		}
+
 		progress(fullName, "cleanup", "Removing GitLab webhook fast-path")
-		teardown, teardownErr := TeardownGitLabWebhookFastPath(ctx, client, owner, repo)
+		// When reconciliation failed, the Poller may still be elevated and own a
+		// managed trigger. Tear the hook and trigger down on a bounded context
+		// detached from cancellation so a canceled uninstall cannot leave them
+		// usable with the elevated account's permissions.
+		teardownCtx := ctx
+		if pollerErr != nil {
+			var tcancel context.CancelFunc
+			teardownCtx, tcancel = context.WithTimeout(context.WithoutCancel(ctx), 3*gitlabCleanupTimeout)
+			defer tcancel()
+		}
+		teardown, teardownErr := TeardownGitLabWebhookFastPathLocked(teardownCtx, client, owner, repo)
 		triggersRevoked = teardown.TriggersRevoked
 		if teardownErr != nil {
 			result.TokensRevoked = triggersRevoked
-			result.Error = fmt.Errorf("removing webhook fast-path: %w", teardownErr)
+			result.Error = errors.Join(fmt.Errorf("removing webhook fast-path: %w", teardownErr), pollerErr, unlockProject())
 			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", teardownErr))
 			return result
 		}
@@ -368,7 +419,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 
 	progress(fullName, "workflow", "Removing scaffold files")
 	if err := commitScaffold(ctx, owner, repo, files, direct, true); err != nil {
-		result.Error = fmt.Errorf("removing scaffold files: %w", err)
+		result.Error = errors.Join(fmt.Errorf("removing scaffold files: %w", err), pollerErr, unlockProject())
 		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
 		return result
 	}
@@ -379,9 +430,33 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	var identityErr error
 	if cfg.Forge == ForgeGitLab {
 		progress(fullName, "cleanup", "Removing GitLab role identity state")
-		cleanup, cleanupErr := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
-			Owner: owner, Repo: repo, Client: client, Tokens: tokens,
-		})
+		// The Poller was already reconciled (pollerErr) right after the lease was
+		// acquired, before the credentials are cleaned up below.
+		var cleanup GitLabRoleCleanupResult
+		cleanupErr := pollerErr
+		if pollerErr != nil {
+			// Reconciliation failed. When the supplied credential's owner is
+			// unknown, cleanup could revoke an administrator's same-named
+			// account credentials. For any other failure the managed Poller's
+			// Developer membership was not restored or verified, and cleanup
+			// would revoke its tokens and retire the rotation state a retry
+			// reconciles from. Either way, leave the installation state in
+			// place so a retried uninstall can complete the reconciliation.
+			if errors.Is(pollerErr, ErrPollerSuppliedUnresolved) {
+				progress(fullName, "cleanup", "Skipping GitLab role identity cleanup: the owner of a supplied GitLab role credential is unresolved")
+			} else {
+				progress(fullName, "cleanup", "Skipping GitLab role identity cleanup: the Poller identity could not be reconciled; retry the uninstall")
+			}
+		} else {
+			var roleErr error
+			cleanup, roleErr = CleanupGitLabRoleIdentityLocked(ctx, GitLabRoleCleanupConfig{
+				Owner: owner, Repo: repo, Client: client, Tokens: tokens,
+			})
+			cleanupErr = errors.Join(pollerErr, roleErr)
+		}
+		// The lease stays held through the remaining variable, webhook
+		// credential secret, and poll-state branch deletions below, so no
+		// installer can republish resources that are about to be deleted.
 		result.TokensRevoked = cleanup.TokensRevoked + triggersRevoked
 		result.VarsDeleted += cleanup.VarsDeleted
 		for _, d := range cleanup.Diagnostics {
@@ -441,7 +516,9 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		branchErr = deleteGitLabPollStateBranches(ctx, client, owner, repo)
 	}
 
-	if joined := errors.Join(identityErr, varErr, secretErr, branchErr); joined != nil {
+	// Release the project lease only after every GitLab resource deletion;
+	// a failed release is reported with the cleanup result.
+	if joined := errors.Join(identityErr, varErr, secretErr, branchErr, unlockProject()); joined != nil {
 		result.Error = joined
 		progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", joined))
 		return result

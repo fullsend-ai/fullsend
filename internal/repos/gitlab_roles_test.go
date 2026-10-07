@@ -333,12 +333,12 @@ func TestProvisionGitLabRoleCredentials_BackfillsIdleProofWithoutTokenClient(t *
 	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 
 	result, err := ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{
-		Owner:          "group",
-		Repo:           "project",
-		Client:         fc,
-		Registry:       gitlabroles.BuiltinRegistry(),
-		ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RoleAnalyst: "administrator-analyst-token"},
-		Now:            now,
+		Owner:               "group",
+		Repo:                "project",
+		Client:              fc,
+		Registry:            gitlabroles.BuiltinRegistry(),
+		ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{gitlabroles.RoleAnalyst: {Token: "administrator-analyst-token"}},
+		Now:                 now,
 	})
 	require.NoError(t, err)
 	assert.Contains(t, result.Skipped, gitlabroles.RolePoller)
@@ -480,8 +480,8 @@ func TestProvisionGitLabRoleCredentials_ProvidedTokenEnrolled(t *testing.T) {
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		ProvidedTokens: map[gitlabroles.Role]string{
-			gitlabroles.RolePoller: provided,
+		ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{
+			gitlabroles.RolePoller: {Token: provided},
 		},
 	})
 	require.NoError(t, err)
@@ -524,8 +524,8 @@ func TestProvisionGitLabRoleCredentials_ProvidedTokenUnregisteredRole(t *testing
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		ProvidedTokens: map[gitlabroles.Role]string{
-			gitlabroles.Role("typo-role"): "irrelevant-value",
+		ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{
+			gitlabroles.Role("typo-role"): {Token: "irrelevant-value"},
 		},
 	})
 	require.NoError(t, err)
@@ -554,8 +554,8 @@ func TestProvisionGitLabRoleCredentials_ProvidedTokenUnmaskable(t *testing.T) {
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		ProvidedTokens: map[gitlabroles.Role]string{
-			gitlabroles.RolePoller: "short", // < 8 chars, cannot be masked
+		ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{
+			gitlabroles.RolePoller: {Token: "short"}, // < 8 chars, cannot be masked
 		},
 	})
 	require.NoError(t, err)
@@ -891,8 +891,8 @@ func TestProvisionGitLabRoleCredentials_ErrorPaths(t *testing.T) {
 		fc.Errors["CreateRepoSecret"] = fmt.Errorf("denied")
 		result, err := ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{
 			Owner: "group", Repo: "project", Client: fc, Tokens: &fakeTokens{},
-			Registry:       gitlabroles.BuiltinRegistry(),
-			ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RolePoller: "provided"},
+			Registry:            gitlabroles.BuiltinRegistry(),
+			ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{gitlabroles.RolePoller: {Token: "provided"}},
 		})
 		require.NoError(t, err)
 		var found bool

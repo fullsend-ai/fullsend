@@ -308,6 +308,7 @@ type reposInstallConfig struct {
 	testClient               forge.Client
 	testFactory              repos.ForgeClientFactory
 	testGitLabTokenInventory repos.ProjectAccessTokenClient
+	testGitLabTriggerOwner   repos.GitLabTriggerOwner
 	testProjectNumberFn      func(ctx context.Context, projectID string) (string, error)
 }
 
@@ -401,7 +402,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
 	cmd.Flags().StringArrayVar(&opts.rotateGitLabRoleNames, "rotate-gitlab-role", nil, "rotate a specific GitLab role (repeatable); default is all own-credential roles that are due")
-	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerToken, "rotate-gitlab-trigger-token", false, "force-rotate the GitLab webhook fast-path pipeline trigger token (FULLSEND_TRIGGER_TOKEN); the previous token is revoked after the webhook is updated")
+	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerToken, "rotate-gitlab-trigger-token", false, "force-rotate the GitLab webhook fast-path pipeline trigger token (FULLSEND_TRIGGER_TOKEN); existing Poller-owned managed trigger tokens are revoked before the Poller is temporarily elevated to Maintainer and the replacement is minted")
 	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
 
 	return cmd
@@ -1213,6 +1214,29 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				}
 				continue
 			}
+			// A Poller left elevated by an interrupted rotation is restored,
+			// or its credential contained, on every install, before any role
+			// lifecycle operation and whether or not webhook work is pending.
+			if err := recoverGitLabSuppliedRoleProvenance(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab supplied role credential recovery failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
+				continue
+			}
+			if err := reconcileGitLabPollerElevation(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab Poller membership reconciliation failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
+				continue
+			}
 			if err := maybeProvisionGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role provisioning failed: %v", item.r.Owner, item.r.Repo, err))
 				roleFail++
@@ -1263,16 +1287,17 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			// Webhook fast-path (ADR 0125): runs after the override-role
 			// step because it requires no_one_allowed before a live
 			// webhook may start trigger pipelines.
-			if item.r.NeedsGitLabWebhook || opts.rotateGitLabTriggerToken {
-				if err := setupGitLabWebhookFastPath(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.rotateGitLabTriggerToken, opts.dryRun); err != nil {
-					printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab webhook fast-path provisioning failed: %v", item.r.Owner, item.r.Repo, err))
-					roleFail++
-					item.r.Error = err
-					if item.fresh {
-						roleFailInstalledCount++
-					}
-					roleFailedRepos = append(roleFailedRepos, item.r)
+			// The earlier probe precedes role convergence. Even a compliant
+			// webhook may still belong to the outgoing Poller identity, so
+			// always run the idempotent ownership-aware reconciliation.
+			if err := setupGitLabWebhookFastPath(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.rotateGitLabTriggerToken, opts.dryRun); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab webhook fast-path provisioning failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
 				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
 			}
 		}
 	}

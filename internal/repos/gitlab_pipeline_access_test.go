@@ -78,6 +78,20 @@ func TestPollerCanCreatePipeline(t *testing.T) {
 		}
 		assert.True(t, PollerCanCreatePipeline(rule, poller))
 	})
+	t.Run("every poller identity needs a grant", func(t *testing.T) {
+		rule := &forge.ProtectedBranchRule{
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}, {UserID: 99}},
+		}
+		assert.False(t, PollerCanCreatePipeline(rule, []int{99, 100}))
+		assert.True(t, PollerCanCreatePipeline(rule, []int{99}))
+	})
+	t.Run("grants across merge and push cover both identities", func(t *testing.T) {
+		rule := &forge.ProtectedBranchRule{
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{UserID: 99}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{UserID: 100}},
+		}
+		assert.True(t, PollerCanCreatePipeline(rule, []int{99, 100}))
+	})
 	t.Run("other user does not count", func(t *testing.T) {
 		rule := &forge.ProtectedBranchRule{
 			MergeAccessLevels: []forge.ProtectedBranchAccess{{UserID: 7}},
@@ -145,6 +159,27 @@ func TestEnsureGitLabPollerPipelineAccess_GrantsPollerUser(t *testing.T) {
 	rule, err := fc.GetProtectedBranch(context.Background(), "group", "project", "release")
 	require.NoError(t, err)
 	assert.True(t, PollerCanCreatePipeline(rule, []int{99}))
+}
+
+// During a Poller migration the outgoing project-token bot keeps an active token
+// through the rotation grace, so both identities are in the inventory. A grant
+// held only by the old bot must not stand in for the new service account.
+func TestEnsureGitLabPollerPipelineAccess_MigrationGrantsNewIdentity(t *testing.T) {
+	fc := forge.NewFakeClient()
+	seedRepo(fc, "group", "project", "release")
+	rule := maintainerOnlyRule("release")
+	rule.MergeAccessLevels = append(rule.MergeAccessLevels, forge.ProtectedBranchAccess{UserID: 99})
+	fc.ProtectedBranchRules["group/project/release"] = rule
+
+	res, err := EnsureGitLabPollerPipelineAccess(context.Background(), fc, "group", "project", []int{99, 100}, false)
+	require.NoError(t, err)
+	assert.Equal(t, pipelineAccessGrant, res.Action)
+	require.Len(t, fc.GrantedProtectedBranchMergeUsers, 1)
+	assert.Equal(t, 100, fc.GrantedProtectedBranchMergeUsers[0].UserID)
+
+	got, err := fc.GetProtectedBranch(context.Background(), "group", "project", "release")
+	require.NoError(t, err)
+	assert.True(t, PollerCanCreatePipeline(got, []int{99, 100}))
 }
 
 func TestEnsureGitLabPollerPipelineAccess_DryRun(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 var _ Client = (*FakeClient)(nil)
 var _ GitHubExtensions = (*FakeClient)(nil)
 var _ GitLabExtensions = (*FakeClient)(nil)
+var _ ProjectLeaser = (*FakeClient)(nil)
 
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
@@ -38,6 +39,7 @@ func NewFakeClient() *FakeClient {
 		PipelineTriggerTokens:    make(map[string][]PipelineTriggerToken),
 		ProjectHooks:             make(map[string][]ProjectHook),
 		PipelineVarOverrideRoles: make(map[string]string),
+		ProjectLeases:            make(map[string]string),
 		// New trigger tokens are owned by a Developer-level user unless a
 		// test says otherwise.
 		TriggerTokenOwnerID: 1001,
@@ -270,6 +272,10 @@ type FakeClient struct {
 	// ProjectHooks stores project webhooks keyed by "owner/repo".
 	ProjectHooks map[string][]ProjectHook
 
+	// ProjectLeases holds the leases taken through AcquireProjectLease; see
+	// the method for the key format.
+	ProjectLeases map[string]string
+
 	// PipelineVarOverrideRoles stores the GitLab
 	// ci_pipeline_variables_minimum_override_role setting per project.
 	// Key: "owner/repo". Missing keys round-trip as empty string.
@@ -366,6 +372,8 @@ type FakeClient struct {
 	Annotations []Annotation
 
 	// Call recorders
+	DeletedProjectServiceAccounts []int
+
 	CreatedRepos            []Repository
 	CreatedFiles            []FileRecord
 	CreatedBranches         []string // "owner/repo/branch"
@@ -2884,6 +2892,17 @@ func (f *FakeClient) RevokePipelineTriggerToken(_ context.Context, owner, repo s
 	return nil
 }
 
+// DeleteProjectServiceAccount records a project service-account deletion.
+func (f *FakeClient) DeleteProjectServiceAccount(_ context.Context, owner, repo string, userID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.err("DeleteProjectServiceAccount"); err != nil {
+		return err
+	}
+	f.DeletedProjectServiceAccounts = append(f.DeletedProjectServiceAccounts, userID)
+	return nil
+}
+
 func (f *FakeClient) CreateProjectHook(_ context.Context, owner, repo string, hook ProjectHook) (*ProjectHook, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2972,5 +2991,41 @@ func (f *FakeClient) DeleteProjectHook(_ context.Context, owner, repo string, ho
 		return fmt.Errorf("%w: project hook %d", ErrNotFound, hookID)
 	}
 	f.ProjectHooks[key] = filtered
+	return nil
+}
+
+// AcquireProjectLease implements ProjectLeaser. Leases are keyed
+// "owner/repo/name" in ProjectLeases with the holder as value; a test seeds an
+// entry to model another installer process holding the lease.
+func (f *FakeClient) AcquireProjectLease(_ context.Context, owner, repo, name, holder string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("AcquireProjectLease"); e != nil {
+		return false, e
+	}
+	key := owner + "/" + repo + "/" + name
+	if _, held := f.ProjectLeases[key]; held {
+		return false, nil
+	}
+	if f.ProjectLeases == nil {
+		f.ProjectLeases = make(map[string]string)
+	}
+	f.ProjectLeases[key] = holder
+	return true, nil
+}
+
+// ReleaseProjectLease implements ProjectLeaser.
+func (f *FakeClient) ReleaseProjectLease(_ context.Context, owner, repo, name, holder string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ReleaseProjectLease"); e != nil {
+		return e
+	}
+	key := owner + "/" + repo + "/" + name
+	if f.ProjectLeases[key] == holder {
+		delete(f.ProjectLeases, key)
+	}
 	return nil
 }

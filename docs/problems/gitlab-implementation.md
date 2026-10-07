@@ -386,13 +386,14 @@ This keeps the dispatch scanning logic identical across GitHub and GitLab.
 
 ### Proposed Forge-Neutral Interface Additions
 
-These methods follow ADR-0005's forge-neutral vocabulary convention (e.g., `ChangeProposal` instead of "pull request" or "merge request"). The term `RoleCredential` is the forge-neutral abstraction for GitHub Apps (GitHub) and Project Access Tokens (GitLab).
+These methods follow ADR-0005's forge-neutral vocabulary convention (e.g., `ChangeProposal` instead of "pull request" or "merge request"). The term `RoleCredential` is the forge-neutral abstraction for GitHub Apps (GitHub) and project service-account personal access tokens (GitLab), with project access tokens as the GitLab capability fallback.
 
 ```go
 // Credential management (replaces GitHub App-specific methods)
 // CreateRoleCredential creates a scoped credential for a specific role
 // (triage, code, review, fix). For GitHub, this would create/configure
-// a GitHub App. For GitLab, this would create a Project Access Token.
+// a GitHub App. For GitLab, this would create a service-account PAT
+// (falling back to a Project Access Token where unavailable).
 // The forge-neutral term "RoleCredential" abstracts over forge-specific
 // authentication mechanisms.
 CreateRoleCredential(ctx context.Context, role, owner, repo string, permissions []string) (credentialID string, err error)
