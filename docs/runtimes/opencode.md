@@ -15,9 +15,11 @@ page is what changes once you are on it.
 > in [unbound-force#515](https://github.com/unbound-force/unbound-force/issues/515): OpenCode has no
 > native PreToolUse/PostToolUse hooks, so until the runner-owned, sha256-gated plugin adapter lands,
 > no sandbox tool hooks are installed. Harnesses using the default `security.enabled: true` will
-> exit 97 (hook adapter missing); set `security.enabled: false` on the harness entry until #515
-> lands. This is not a role-aware gate: disabling security also removes the exit-97 guard, including
-> for write-capable agents. Select OpenCode only for read-only agents and pilot on a disposable repo.
+> fail with a Go-level error (`hooks adapter not yet available`) before the sandbox command is
+> built; set `security.enabled: false` on the harness entry until #515 lands. The exit-97 guard
+> shape is reserved for #515's in-sandbox integrity check and cannot run today. This is not a
+> role-aware gate: disabling security also removes the hook guard, including for write-capable
+> agents. Select OpenCode only for read-only agents and pilot on a disposable repo.
 >
 > **What `security.enabled: false` turns off.** The flag gates more than the exit-97 hook guard.
 > Setting it to `false` also suppresses:
@@ -120,8 +122,9 @@ What a local OpenCode run needs, beyond the guide:
   mapping expands `${OPENCODE_CONFIG_CONTENT}` from the host env (populated by `--env-file`)
   into the sandbox `.env`, where Bootstrap reads it.
 - **`security.enabled: false`** — required on the harness entry until #515 lands. Without it the
-  run exits 97 (hook adapter missing). See the warning at the top of this page for the full
-  implications — it also suppresses all scan pipelines and secret redaction.
+  run fails with a Go-level error before the sandbox command is built (the exit-97 guard shape is
+  reserved for #515). See the warning at the top of this page for the full implications — it also
+  suppresses all scan pipelines and secret redaction.
 - **Knobs** — `FULLSEND_OPENCODE_PROVIDER` sets the provider for bare model ids (default
   `google-vertex-anthropic`).
 - **Debugging** — `--debug='*'` (the `=` is required); sandbox-side failures land in
@@ -146,6 +149,10 @@ fullsend run triage \
   `CLAUDE.md` bridge is injected (like pi). `OPENCODE_DISABLE_PROJECT_CONFIG=true` suppresses
   OpenCode's own project-level config walk; the runner re-injects `AGENTS.md` through
   `config.instructions` in the runner-owned `opencode.json`.
+  `OPENCODE_DISABLE_EXTERNAL_SKILLS=true` suppresses skill discovery from the workspace
+  directory and `$HOME`, preventing a hostile repo from injecting custom skills.
+  Runner-owned skills placed under `OPENCODE_CONFIG_DIR/skills/` by Bootstrap are still
+  loaded because `OPENCODE_CONFIG_DIR` is on OpenCode's explicit config search path.
 - **The Claude-style agent definition is translated** into OpenCode's `agent/<name>.md` layout with
   JSON frontmatter (`mode: primary`, `permission:` as a `{toolID: "allow"|"deny"}` record). Claude
   tool names are mapped to OpenCode tool ids; names without an OpenCode equivalent are dropped with
@@ -155,8 +162,9 @@ fullsend run triage \
 - **Effort maps to `--variant`** — the harness `effort` value selects OpenCode's model reasoning
   variant.
 - **No sandbox tool hooks yet** — the plugin-adapter path is reserved at
-  `OPENCODE_CONFIG_DIR/plugins/fullsend-hooks.ts` with a fail-closed sha256 integrity guard (exit
-  97), but the adapter itself lands in #515.
+  `OPENCODE_CONFIG_DIR/plugins/fullsend-hooks.ts` with a fail-closed SHA-256 integrity guard. The
+  guard exits 97 when the adapter file is missing or modified; until #515 lands, `Run` returns a
+  Go-level error before the guard can execute, and the exit-97 code is reserved but not observable.
 
 ## Transcripts
 
