@@ -447,8 +447,10 @@ runs:
         bundle="${FULLSEND_RUNNER_SECRETS}"
         unset FULLSEND_RUNNER_SECRETS
         path="$(mktemp "${RUNNER_TEMP}/fullsend-runner-secrets.XXXXXXXX")"
-        printf '%s' "${bundle}" > "${path}"
+        # Emit the path first so the cleanup step finds the file even if
+        # the write below fails.
         echo "path=${path}" >> "${GITHUB_OUTPUT}"
+        printf '%s' "${bundle}" > "${path}"
 
     - name: Run fullsend
       id: run
