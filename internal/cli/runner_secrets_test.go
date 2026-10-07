@@ -784,3 +784,23 @@ func TestRunAgent_RunnerSecretPreflightFailureRedacted(t *testing.T) {
 	assert.Contains(t, err.Error(), "preflight_check failed")
 	assert.NotContains(t, err.Error(), "x-secret-value-pre")
 }
+
+// A pre-script output line that fails to parse is quoted in the error;
+// a runner secret in it must not reach the run error.
+func TestRunAgent_RunnerSecretPreScriptParseErrorRedacted(t *testing.T) {
+	usePreScriptStub(t)
+	writeRunnerSecretsFile(t, `{"X":"x-secret-value-parse"}`)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "code.md"), []byte("You are a coding agent."), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("agents:\n  - harness/code.yaml\n"), 0o644))
+	script := writePreScript(t, `echo "skipped=${X}" >> "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n")
+	harnessYAML := "agent: agents/code.md\nrole: test\npre_script: " + script + "\nenv:\n  runner:\n    X: \"${X}\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(harnessYAML), 0o644))
+
+	err := runRunnerSecretAgent(t, dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "skipped")
+	assert.NotContains(t, err.Error(), "x-secret-value-parse")
+}

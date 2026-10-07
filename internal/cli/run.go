@@ -1755,7 +1755,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			defer stop()
 		}
 		if err != nil {
-			return err
+			// A parse error can quote the script's own output, such as an
+			// invalid skipped=<value> line, and the run error reaches the
+			// trace and the completion comment.
+			return redactedError{msg: redactFeedback(err.Error(), h.RunnerEnv), err: err}
 		}
 		redactPreScriptResult(&preResult, h.RunnerEnv)
 		// Log the outputs so non-GitHub CIs and local runs still see what
@@ -3700,6 +3703,16 @@ func redactPreScriptResult(res *prescript.Result, runnerEnv map[string]string) {
 		res.Outputs["reason"] = res.Reason
 	}
 }
+
+// redactedError reports a redacted message while keeping the original
+// error in the chain for errors.Is and errors.As.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e redactedError) Error() string { return e.msg }
+func (e redactedError) Unwrap() error { return e.err }
 
 // preScriptLogResult returns a copy of res for the log line, with every
 // output value given the full redaction pass. The log is read by people,
