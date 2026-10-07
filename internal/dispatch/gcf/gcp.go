@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -87,8 +88,26 @@ type ServiceRevisionInfo struct {
 	TrafficPercent int
 	// TemplateRevision is the revision name from the service template (latest created).
 	TemplateRevision string
-	// TemplateMatchesTraffic is true when the template's latest revision matches
-	// the traffic-serving revision.
+	// LatestReadyRevisionShort is the short name of latestReadyRevision
+	// (e.g., "fullsend-mint-00115-qp5"). This can lag behind
+	// LatestCreatedRevisionShort until Cloud Run finishes bringing the
+	// newly created revision up.
+	LatestReadyRevisionShort string
+	// LatestCreatedRevisionShort is the short name of latestCreatedRevision —
+	// the revision a template update (source deploy or env var patch) most
+	// recently created, whether or not it has become Ready yet.
+	LatestCreatedRevisionShort string
+	// TemplateMatchesTraffic is true when the template's latest revision
+	// (LatestCreatedRevisionShort, falling back to TemplateRevision) matches
+	// the traffic-serving revision AND that revision receives 100% of
+	// traffic — a split (e.g. 60% latest / 40% older revision) is not a
+	// match, because the older revision's code is still serving. This is
+	// deliberately compared against
+	// the latest *created* revision rather than LatestReadyRevisionShort:
+	// right after a deploy, latestReadyRevision (and traffic) can still lag
+	// on the previous revision while a newer, not-yet-ready revision already
+	// exists — comparing against latestReadyRevision would report a false
+	// match and skip re-pinning traffic onto that newer revision once ready.
 	TemplateMatchesTraffic bool
 	// RecentRevisions lists the most recent revisions (up to 5), newest first.
 	RecentRevisions []RevisionSummary
@@ -98,6 +117,37 @@ type ServiceRevisionInfo struct {
 	// the service template because the traffic-serving revision could not be
 	// read. Such values may not reflect what the mint is actually serving.
 	TrafficEnvVarsFromTemplate bool
+	// TemplateEnvVars holds the env vars from the service template — i.e.
+	// what the latest-ready revision was (or will be) created with. This can
+	// diverge from TrafficEnvVars when the template was built from a stale
+	// snapshot (e.g. a Cloud Functions code deploy seeded from the Cloud
+	// Functions API's cached env vars) while direct Cloud Run patches
+	// (org/role/per-repo-WIF registration) advanced the traffic-serving
+	// revision's env independently.
+	TemplateEnvVars map[string]string
+	// TrafficEnvVarsUnreliable is true when TrafficEnvVars was not read
+	// directly from the traffic-serving revision (transport error, non-200,
+	// unmarshal failure, or an unresolvable revision name) and was instead
+	// filled in from the service template as a display-only fallback.
+	// Callers that use TrafficEnvVars as the source of truth for
+	// reconciling accumulative registration data (ALLOWED_ORGS,
+	// ROLE_APP_IDS, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS) must treat this
+	// as "traffic env unknown", not "traffic env matches template" — the
+	// fallback value is the template's own data, so comparing it against
+	// the template always looks reconciled even when it is not.
+	TrafficEnvVarsUnreliable bool
+	// Etag is the Cloud Run service's etag at the time of the read. It is
+	// the precondition for PinServiceTrafficIfMatch.
+	Etag string
+	// RoutingUnsettled is true when the observed routing (trafficStatuses)
+	// may not yet reflect the service's accepted configuration: the service
+	// reports it is still reconciling, its observed generation lags its
+	// generation, or the desired explicit-revision traffic split differs from
+	// the observed split. The observed TrafficEnvVars of an unsettled service
+	// may belong to a revision that a pending (for example restrictive
+	// rollback) change is about to replace, so callers must not treat this
+	// read as a settled snapshot of serving authorization.
+	RoutingUnsettled bool
 }
 
 // RevisionSummary is a brief snapshot of a Cloud Run revision.
@@ -173,10 +223,33 @@ type GCFClient interface {
 	// reusing the existing container image. Uses a multi-step approach:
 	// GETs the current service, PATCHes the template to create a new
 	// revision, GETs the service again to discover the revision name,
-	// then PATCHes traffic to pin 100% to that revision (REVISION-pinned,
-	// matching Cloud Functions deploy behavior). Returns the new revision
-	// name.
+	// then PATCHes traffic to pin 100% to that revision (REVISION-pinned).
+	// Returns the new revision name.
 	UpdateServiceEnvVars(ctx context.Context, projectID, region, serviceName string, envVars map[string]string) (string, error)
+
+	// UpdateServiceEnvVarsIfMatch is UpdateServiceEnvVars for callers that
+	// computed envVars from a verified service read (ServiceRevisionInfo.Etag).
+	// The template PATCH is conditioned on etag, so Cloud Run rejects it when
+	// the service changed since that read (e.g. a revocation published a more
+	// restrictive revision), and the final traffic pin is conditioned on the
+	// etag of the post-update read. An empty etag is an error.
+	UpdateServiceEnvVarsIfMatch(ctx context.Context, projectID, region, serviceName string, envVars map[string]string, etag string) (string, error)
+
+	// PinServiceTraffic pins 100% of Cloud Run traffic to revisionShort using
+	// TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION. revisionShort is the short
+	// revision name (e.g. "fullsend-mint-00115-qp5"), not the fully-qualified
+	// resource name. A Cloud Functions source deploy does not move traffic
+	// when it is already pinned to a named revision, so callers must pin
+	// after creating a new revision.
+	PinServiceTraffic(ctx context.Context, projectID, region, serviceName, revisionShort string) error
+
+	// PinServiceTrafficIfMatch is PinServiceTraffic conditioned on the
+	// service's etag (ServiceRevisionInfo.Etag): Cloud Run rejects the PATCH
+	// when the service changed since etag was read, so a concurrent update
+	// (e.g. a role removal that published a more restrictive revision)
+	// cannot be silently overwritten by a pin based on stale verification.
+	// An empty etag is an error.
+	PinServiceTrafficIfMatch(ctx context.Context, projectID, region, serviceName, revisionShort, etag string) error
 
 	// GetServiceRevisionInfo returns Cloud Run service details including the
 	// traffic-serving revision, template revision, allocation type, and recent
@@ -189,11 +262,20 @@ type GCFClient interface {
 	// revision have diverged.
 	GetServiceTrafficEnvVars(ctx context.Context, projectID, region, serviceName string) (map[string]string, error)
 
+	// GetServiceServingEnvVars is the strict variant of
+	// GetServiceTrafficEnvVars: it errors when no traffic-serving revision
+	// can be resolved rather than falling back to the service template. Use
+	// it for verified serving-state output (status, post-write verification).
+	GetServiceServingEnvVars(ctx context.Context, projectID, region, serviceName string) (map[string]string, error)
+
 	WaitForOperation(ctx context.Context, operationName string) error
 
 	// Project number lookup
 	GetProjectNumber(ctx context.Context, projectID string) (string, error)
 }
+
+// Compile-time check that LiveGCFClient implements GCFClient.
+var _ GCFClient = (*LiveGCFClient)(nil)
 
 // LiveGCFClient implements GCFClient using GCP REST APIs.
 // It embeds *gcp.Client for shared ADC auth.
@@ -1454,6 +1536,27 @@ func (c *LiveGCFClient) UpdateFunctionEnvVars(ctx context.Context, projectID, re
 //
 // See https://github.com/fullsend-ai/fullsend/issues/1844.
 func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, region, serviceName string, envVars map[string]string) (string, error) {
+	return c.updateServiceEnvVars(ctx, projectID, region, serviceName, envVars, "")
+}
+
+// UpdateServiceEnvVarsIfMatch is UpdateServiceEnvVars with the template PATCH
+// conditioned on etag (the etag of the service read the env vars were derived
+// from) and the final traffic pin conditioned on the etag of the post-update
+// read, so neither step can overwrite a concurrent change. The created
+// revision is given an explicit name and the post-update read must show that
+// revision as the latest created one with an unchanged traffic configuration
+// before its etag is adopted; otherwise a change made between the template
+// operation and that read would be absorbed into the pin's precondition.
+func (c *LiveGCFClient) UpdateServiceEnvVarsIfMatch(ctx context.Context, projectID, region, serviceName string, envVars map[string]string, etag string) (string, error) {
+	if etag == "" {
+		return "", fmt.Errorf("a service etag is required for a conditional env var update")
+	}
+	return c.updateServiceEnvVars(ctx, projectID, region, serviceName, envVars, etag)
+}
+
+// updateServiceEnvVars implements UpdateServiceEnvVars; a non-empty etag makes
+// the template and traffic PATCHes conditional (see UpdateServiceEnvVarsIfMatch).
+func (c *LiveGCFClient) updateServiceEnvVars(ctx context.Context, projectID, region, serviceName string, envVars map[string]string, etag string) (string, error) {
 	serviceURL := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/services/%s",
 		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(serviceName))
 
@@ -1494,6 +1597,20 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 	// Remove revision name so Cloud Run auto-generates one; re-sending the
 	// existing name causes a 409 "revision already exists" conflict.
 	delete(template, "revision")
+	// A conditional update names the revision it creates, so the post-update
+	// read can tell this operation's revision from one created by a competing
+	// writer, and captures the traffic configuration the (etag-conditioned)
+	// template PATCH applied on top of, so a traffic-only change made after
+	// the PATCH can be detected.
+	ownedRevision := ""
+	if etag != "" {
+		ownedRevision = fmt.Sprintf("%s-r%08x", serviceName, rand.Uint32())
+		if !revisionShortNamePattern.MatchString(ownedRevision) {
+			return "", fmt.Errorf("cannot derive a valid revision name for service %q", serviceName)
+		}
+		template["revision"] = ownedRevision
+	}
+	priorTraffic := service["traffic"]
 	containers, _ := template["containers"].([]interface{})
 	if len(containers) == 0 {
 		return "", fmt.Errorf("Cloud Run service has no containers")
@@ -1503,6 +1620,13 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 		return "", fmt.Errorf("Cloud Run service container is not an object")
 	}
 	container["env"] = envArray
+
+	// A conditional update replaces the fresh GET's etag with the verified
+	// one, so Cloud Run rejects the PATCH if the service changed since the
+	// env vars were computed.
+	if etag != "" {
+		service["etag"] = etag
+	}
 
 	// Remove traffic from the payload — we handle it in a separate PATCH
 	// below to ensure explicit revision-pinned routing.
@@ -1544,7 +1668,9 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 	}
 
 	var updatedService struct {
-		LatestCreatedRevision string `json:"latestCreatedRevision"`
+		LatestCreatedRevision string      `json:"latestCreatedRevision"`
+		Etag                  string      `json:"etag"`
+		Traffic               interface{} `json:"traffic"`
 	}
 	if err := json.NewDecoder(io.LimitReader(getResp2.Body, 10<<20)).Decode(&updatedService); err != nil {
 		return "", fmt.Errorf("decoding Cloud Run service after update: %w", err)
@@ -1553,21 +1679,71 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 	if newRevision == "" {
 		return "", fmt.Errorf("Cloud Run service has no latestCreatedRevision after template update")
 	}
+	if etag != "" {
+		// The etag adopted below only protects changes after this read, so
+		// first prove nothing slipped in between the template operation and
+		// it: the latest created revision must be the one this operation
+		// named (no competing template update), and the traffic configuration
+		// must be what the conditional PATCH applied on top of (no concurrent
+		// traffic-only change such as a restrictive rollback).
+		if shortRevisionName(newRevision) != ownedRevision {
+			return "", fmt.Errorf("Cloud Run service changed after the template update: latest created revision is %q, expected the revision %q created by this update; refusing to pin traffic", newRevision, ownedRevision)
+		}
+		if !reflect.DeepEqual(priorTraffic, updatedService.Traffic) {
+			return newRevision, fmt.Errorf("Cloud Run traffic configuration changed after the template update; refusing to pin traffic over a concurrent change")
+		}
+	}
 
 	// The Cloud Run v2 API returns fully qualified revision names from GET
 	// (projects/P/locations/L/services/S/revisions/R) but the traffic PATCH
-	// expects short names (e.g., "fullsend-mint-00115-qp5"). Extract the
-	// short name for the traffic payload.
-	revisionShort := newRevision
-	if parts := strings.Split(newRevision, "/"); len(parts) > 1 {
-		revisionShort = parts[len(parts)-1]
-	}
+	// expects short names (e.g., "fullsend-mint-00115-qp5").
+	revisionShort := shortRevisionName(newRevision)
 	if !revisionShortNamePattern.MatchString(revisionShort) {
 		return "", fmt.Errorf("unexpected revision name format in latestCreatedRevision: %q", newRevision)
 	}
 
-	// Step 4: PATCH traffic to pin 100% to the new revision.
-	trafficPayload, err := json.Marshal(map[string]interface{}{
+	// Step 4: PATCH traffic to pin 100% to the new revision. A conditional
+	// update pins only if the service is unchanged since the post-update read.
+	postUpdateEtag := ""
+	if etag != "" {
+		postUpdateEtag = updatedService.Etag
+		if postUpdateEtag == "" {
+			return newRevision, fmt.Errorf("Cloud Run service has no etag after template update; refusing an unconditional traffic pin")
+		}
+	}
+	if err := c.pinServiceTraffic(ctx, projectID, region, serviceName, revisionShort, postUpdateEtag); err != nil {
+		return newRevision, err
+	}
+
+	return newRevision, nil
+}
+
+// PinServiceTraffic pins 100% of Cloud Run traffic to revisionShort using
+// TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION. revisionShort must be a short
+// revision name (e.g. "fullsend-mint-00115-qp5").
+func (c *LiveGCFClient) PinServiceTraffic(ctx context.Context, projectID, region, serviceName, revisionShort string) error {
+	return c.pinServiceTraffic(ctx, projectID, region, serviceName, revisionShort, "")
+}
+
+// PinServiceTrafficIfMatch pins 100% of traffic to revisionShort only if the
+// service's etag still equals etag; Cloud Run rejects the PATCH otherwise.
+func (c *LiveGCFClient) PinServiceTrafficIfMatch(ctx context.Context, projectID, region, serviceName, revisionShort, etag string) error {
+	if etag == "" {
+		return fmt.Errorf("a service etag is required for a conditional traffic pin")
+	}
+	return c.pinServiceTraffic(ctx, projectID, region, serviceName, revisionShort, etag)
+}
+
+// pinServiceTraffic implements PinServiceTraffic; a non-empty etag makes the
+// PATCH conditional on the service not having changed since it was read.
+func (c *LiveGCFClient) pinServiceTraffic(ctx context.Context, projectID, region, serviceName, revisionShort, etag string) error {
+	if !revisionShortNamePattern.MatchString(revisionShort) {
+		return fmt.Errorf("unexpected revision name format: %q", revisionShort)
+	}
+	serviceURL := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/services/%s",
+		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(serviceName))
+
+	payload := map[string]interface{}{
 		"traffic": []map[string]interface{}{
 			{
 				"type":     "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
@@ -1575,27 +1751,30 @@ func (c *LiveGCFClient) UpdateServiceEnvVars(ctx context.Context, projectID, reg
 				"percent":  100,
 			},
 		},
-	})
+	}
+	if etag != "" {
+		payload["etag"] = etag
+	}
+	trafficPayload, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("marshaling traffic update: %w", err)
+		return fmt.Errorf("marshaling traffic update: %w", err)
 	}
 
 	trafficResp, err := c.Client.DoRequest(ctx, http.MethodPatch, serviceURL+"?updateMask=traffic", string(trafficPayload))
 	if err != nil {
-		return newRevision, fmt.Errorf("patching Cloud Run traffic: %w", err)
+		return fmt.Errorf("patching Cloud Run traffic: %w", err)
 	}
 	defer trafficResp.Body.Close()
 
 	if trafficResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(trafficResp.Body, 1<<20))
-		return newRevision, fmt.Errorf("unexpected status %d patching Cloud Run traffic: %s", trafficResp.StatusCode, gcp.ExtractErrorMessage(body))
+		return fmt.Errorf("unexpected status %d patching Cloud Run traffic: %s", trafficResp.StatusCode, gcp.ExtractErrorMessage(body))
 	}
 
 	if err := c.handleCloudRunLRO(ctx, trafficResp); err != nil {
-		return newRevision, fmt.Errorf("waiting for traffic update: %w", err)
+		return fmt.Errorf("waiting for traffic update: %w", err)
 	}
-
-	return newRevision, nil
+	return nil
 }
 
 // handleCloudRunLRO reads the LRO response from a Cloud Run PATCH and
@@ -1635,6 +1814,26 @@ var revisionNamePattern = regexp.MustCompile(`^projects/[^/]+/locations/[^/]+/se
 // from list responses before displaying in terminal output.
 var revisionShortNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
+// SafeRevisionName returns name when it is a well-formed short Cloud Run
+// revision name and a fixed placeholder otherwise, so API-derived values
+// (which could carry ANSI or other control characters) are never written to
+// the terminal verbatim.
+func SafeRevisionName(name string) string {
+	if revisionShortNamePattern.MatchString(name) {
+		return name
+	}
+	return "(invalid revision name)"
+}
+
+// shortRevisionName returns the last path element of a Cloud Run revision
+// resource name, or the input unchanged if it is already a short name.
+func shortRevisionName(name string) string {
+	if parts := strings.Split(name, "/"); len(parts) > 1 {
+		return parts[len(parts)-1]
+	}
+	return name
+}
+
 // GetServiceTrafficEnvVars reads environment variables from the Cloud Run
 // revision that is currently serving traffic, rather than from the service
 // template. Although UpdateServiceEnvVars now pins traffic to the new
@@ -1648,6 +1847,22 @@ var revisionShortNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z
 // for TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST entries — and the data reflects
 // actual serving state rather than desired configuration.
 func (c *LiveGCFClient) GetServiceTrafficEnvVars(ctx context.Context, projectID, region, serviceName string) (map[string]string, error) {
+	return c.readTrafficEnvVars(ctx, projectID, region, serviceName, false)
+}
+
+// GetServiceServingEnvVars is the strict variant of GetServiceTrafficEnvVars:
+// it returns an error when no traffic-serving revision can be resolved from
+// trafficStatuses instead of falling back to the service template. Use it
+// wherever the result is presented or relied on as verified serving state
+// (mint status, post-enrollment verification) — template env vars can carry
+// grants that the serving revision no longer has.
+func (c *LiveGCFClient) GetServiceServingEnvVars(ctx context.Context, projectID, region, serviceName string) (map[string]string, error) {
+	return c.readTrafficEnvVars(ctx, projectID, region, serviceName, true)
+}
+
+// readTrafficEnvVars implements GetServiceTrafficEnvVars (strict=false) and
+// GetServiceServingEnvVars (strict=true).
+func (c *LiveGCFClient) readTrafficEnvVars(ctx context.Context, projectID, region, serviceName string, strict bool) (map[string]string, error) {
 	serviceURL := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/services/%s",
 		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(serviceName))
 
@@ -1699,8 +1914,12 @@ func (c *LiveGCFClient) GetServiceTrafficEnvVars(ctx context.Context, projectID,
 	// If no traffic statuses are reported (e.g., service is still
 	// reconciling after initial create, or the API returned an empty list),
 	// fall back to reading from the service template. This covers the
-	// common case where template and traffic are aligned.
+	// common case where template and traffic are aligned. The strict variant
+	// refuses instead: the template is not serving state.
 	if trafficRevision == "" {
+		if strict {
+			return nil, fmt.Errorf("no traffic-serving revision could be resolved for Cloud Run service %s; refusing to report template env vars as serving state", serviceName)
+		}
 		envVars := make(map[string]string)
 		if len(service.Template.Containers) > 0 {
 			for _, e := range service.Template.Containers[0].Env {
@@ -1843,7 +2062,18 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 			Revision string `json:"revision"`
 			Percent  int    `json:"percent"`
 		} `json:"trafficStatuses"`
-		LatestReadyRevision string `json:"latestReadyRevision"`
+		// traffic is the desired (accepted) routing configuration.
+		Traffic []struct {
+			Type     string `json:"type"`
+			Revision string `json:"revision"`
+			Percent  int    `json:"percent"`
+		} `json:"traffic"`
+		Generation            json.Number `json:"generation"`
+		ObservedGeneration    json.Number `json:"observedGeneration"`
+		Reconciling           bool        `json:"reconciling"`
+		LatestReadyRevision   string      `json:"latestReadyRevision"`
+		LatestCreatedRevision string      `json:"latestCreatedRevision"`
+		Etag                  string      `json:"etag"`
 	}
 	svcBody, _ := io.ReadAll(io.LimitReader(getResp.Body, 10<<20))
 	if err := json.Unmarshal(svcBody, &service); err != nil {
@@ -1852,6 +2082,45 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 
 	info := &ServiceRevisionInfo{
 		TemplateRevision: service.Template.Revision,
+		Etag:             service.Etag,
+	}
+
+	// Detect routing that has not settled: observed trafficStatuses can still
+	// show the previous routing while an accepted change is pending.
+	observedSplit := map[string]int{}
+	for _, t := range service.TrafficStatuses {
+		if t.Percent > 0 {
+			observedSplit[shortRevisionName(t.Revision)] += t.Percent
+		}
+	}
+	desiredSplit := map[string]int{}
+	desiredExplicit := len(service.Traffic) > 0
+	for _, t := range service.Traffic {
+		if t.Percent <= 0 {
+			continue
+		}
+		if t.Revision == "" {
+			// LATEST-type entries resolve to a revision at runtime; they
+			// cannot be compared by name.
+			desiredExplicit = false
+			break
+		}
+		desiredSplit[shortRevisionName(t.Revision)] += t.Percent
+	}
+	if service.Reconciling ||
+		(service.Generation != "" && service.ObservedGeneration != "" && service.Generation != service.ObservedGeneration) ||
+		(desiredExplicit && !equalSplits(desiredSplit, observedSplit)) {
+		info.RoutingUnsettled = true
+	}
+
+	// The template's env vars reflect what the latest-ready revision was (or
+	// will be) built from — read here since we already have the service body.
+	if len(service.Template.Containers) > 0 {
+		templateEnvVars := make(map[string]string, len(service.Template.Containers[0].Env))
+		for _, e := range service.Template.Containers[0].Env {
+			templateEnvVars[e.Name] = e.Value
+		}
+		info.TemplateEnvVars = templateEnvVars
 	}
 
 	// Find the revision currently serving the most traffic. Uses
@@ -1870,72 +2139,84 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 	info.TrafficPercent = maxPercent
 
 	// Extract short revision name from the full resource name.
-	if info.TrafficRevision != "" {
-		parts := strings.Split(info.TrafficRevision, "/")
-		info.TrafficRevisionShort = parts[len(parts)-1]
-	}
+	info.TrafficRevisionShort = shortRevisionName(info.TrafficRevision)
 
 	// Determine if template matches traffic.
-	latestReadyShort := ""
-	if service.LatestReadyRevision != "" {
-		lParts := strings.Split(service.LatestReadyRevision, "/")
-		latestReadyShort = lParts[len(lParts)-1]
+	info.LatestReadyRevisionShort = shortRevisionName(service.LatestReadyRevision)
+	info.LatestCreatedRevisionShort = shortRevisionName(service.LatestCreatedRevision)
+	// Compare traffic against the latest *created* revision (falling back to
+	// the template's own revision field when the API didn't return
+	// latestCreatedRevision), not latestReadyRevision. Right after a code
+	// deploy or env var patch, Cloud Run can report latestReadyRevision (and
+	// traffic) still on the previous revision while a newer revision has
+	// already been created and is simply not Ready yet; comparing against
+	// latestReadyRevision would treat that as "matches" and skip pinning
+	// traffic onto the new revision once it becomes ready.
+	latestCreatedOrTemplate := info.LatestCreatedRevisionShort
+	if latestCreatedOrTemplate == "" {
+		latestCreatedOrTemplate = shortRevisionName(service.Template.Revision)
 	}
-	if info.TrafficRevisionShort == "" {
+	if info.TrafficRevisionShort == "" || latestCreatedOrTemplate == "" {
 		// Cannot determine traffic state — treat as not matching to avoid false confidence.
 		info.TemplateMatchesTraffic = false
 	} else {
-		info.TemplateMatchesTraffic = info.TrafficRevisionShort == latestReadyShort
+		// Require confirmed 100% routing: when traffic is split, the
+		// highest-percent revision can equal the latest one while an older
+		// revision still serves the remainder.
+		info.TemplateMatchesTraffic = info.TrafficRevisionShort == latestCreatedOrTemplate &&
+			info.TrafficPercent >= 100
 	}
 
-	// 2. List recent revisions.
+	// 2. List recent revisions. Non-fatal: on transport error, skip this
+	// step (RecentRevisions stays empty) but fall through to step 3 below —
+	// returning early here previously skipped the traffic-revision env var
+	// read entirely, leaving TrafficEnvVarsUnreliable false even though
+	// TrafficEnvVars was never actually read from the traffic revision.
 	revisionsURL := fmt.Sprintf("%s/revisions?pageSize=5", serviceURL)
-	revListResp, err := c.Client.DoRequest(ctx, http.MethodGet, revisionsURL, "")
-	if err != nil {
-		// Non-fatal: we can still return partial info.
-		return info, nil
-	}
-	defer revListResp.Body.Close()
+	revListResp, revListErr := c.Client.DoRequest(ctx, http.MethodGet, revisionsURL, "")
+	if revListErr == nil {
+		defer revListResp.Body.Close()
 
-	if revListResp.StatusCode == http.StatusOK {
-		var revList struct {
-			Revisions []struct {
-				Name       string `json:"name"`
-				CreateTime string `json:"createTime"`
-				Conditions []struct {
-					Type   string `json:"type"`
-					State  string `json:"state"`
-					Status string `json:"status"`
-				} `json:"conditions"`
-			} `json:"revisions"`
-		}
-		revBody, _ := io.ReadAll(io.LimitReader(revListResp.Body, 10<<20))
-		if err := json.Unmarshal(revBody, &revList); err == nil {
-			for _, rev := range revList.Revisions {
-				parts := strings.Split(rev.Name, "/")
-				shortName := parts[len(parts)-1]
-				// Validate revision short name to prevent terminal injection from
-				// malformed API responses. Skip entries that don't match the expected
-				// Cloud Run revision name format.
-				if !revisionShortNamePattern.MatchString(shortName) {
-					continue
-				}
-				active := false
-				for _, cond := range rev.Conditions {
-					if cond.Type == "Ready" && (cond.State == "CONDITION_SUCCEEDED" || cond.Status == "True") {
-						active = true
-						break
+		if revListResp.StatusCode == http.StatusOK {
+			var revList struct {
+				Revisions []struct {
+					Name       string `json:"name"`
+					CreateTime string `json:"createTime"`
+					Conditions []struct {
+						Type   string `json:"type"`
+						State  string `json:"state"`
+						Status string `json:"status"`
+					} `json:"conditions"`
+				} `json:"revisions"`
+			}
+			revBody, _ := io.ReadAll(io.LimitReader(revListResp.Body, 10<<20))
+			if err := json.Unmarshal(revBody, &revList); err == nil {
+				for _, rev := range revList.Revisions {
+					parts := strings.Split(rev.Name, "/")
+					shortName := parts[len(parts)-1]
+					// Validate revision short name to prevent terminal injection from
+					// malformed API responses. Skip entries that don't match the expected
+					// Cloud Run revision name format.
+					if !revisionShortNamePattern.MatchString(shortName) {
+						continue
 					}
+					active := false
+					for _, cond := range rev.Conditions {
+						if cond.Type == "Ready" && (cond.State == "CONDITION_SUCCEEDED" || cond.Status == "True") {
+							active = true
+							break
+						}
+					}
+					// Mark the traffic-serving revision as active regardless.
+					if shortName == info.TrafficRevisionShort {
+						active = true
+					}
+					info.RecentRevisions = append(info.RecentRevisions, RevisionSummary{
+						Name:       shortName,
+						CreateTime: rev.CreateTime,
+						Active:     active,
+					})
 				}
-				// Mark the traffic-serving revision as active regardless.
-				if shortName == info.TrafficRevisionShort {
-					active = true
-				}
-				info.RecentRevisions = append(info.RecentRevisions, RevisionSummary{
-					Name:       shortName,
-					CreateTime: rev.CreateTime,
-					Active:     active,
-				})
 			}
 		}
 	}
@@ -1955,6 +2236,7 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 		// GetServiceRevisionInfo returns partial data on non-fatal errors,
 		// matching the pattern at the revision list step above.
 	}
+	trafficEnvVarsRead := false
 	if revResourceName != "" {
 		revisionURL := fmt.Sprintf("https://run.googleapis.com/v2/%s", revResourceName)
 		revResp, err := c.Client.DoRequest(ctx, http.MethodGet, revisionURL, "")
@@ -1971,25 +2253,45 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 				}
 				revBody, _ := io.ReadAll(io.LimitReader(revResp.Body, 10<<20))
 				if err := json.Unmarshal(revBody, &revision); err == nil {
-					envVars := make(map[string]string)
-					if len(revision.Containers) > 0 {
+					// A traffic-serving revision with no containers, or a
+					// container reporting zero env vars, is not a reliable
+					// "nothing to report" read -- mirror
+					// GetServiceTrafficEnvVars's hard-error handling of the
+					// no-containers condition, and extend it to an empty Env
+					// list: mint's init() fatals on missing required env
+					// vars, so a revision that is actually serving /health
+					// must already have a non-empty Env list in normal
+					// operation. Leaving trafficEnvVarsRead false here causes
+					// the fallback below to mark TrafficEnvVarsUnreliable, so
+					// callers like reconcileTargetEnvVars refuse to treat
+					// this as a verified empty traffic env.
+					if len(revision.Containers) > 0 && len(revision.Containers[0].Env) > 0 {
+						envVars := make(map[string]string)
 						for _, e := range revision.Containers[0].Env {
 							envVars[e.Name] = e.Value
 						}
+						info.TrafficEnvVars = envVars
+						trafficEnvVarsRead = true
 					}
-					info.TrafficEnvVars = envVars
 				}
 			}
 		}
 	}
 
 	// Fall back to template env vars if we couldn't read traffic revision.
-	if info.TrafficEnvVars == nil && len(service.Template.Containers) > 0 {
-		envVars := make(map[string]string)
-		for _, e := range service.Template.Containers[0].Env {
-			envVars[e.Name] = e.Value
+	// This is a display-only fallback: mark it unreliable so callers that
+	// need to know the traffic-serving revision's actual env (rather than
+	// an approximation) don't mistake "couldn't read it" for "it matches
+	// the template".
+	if !trafficEnvVarsRead {
+		info.TrafficEnvVarsUnreliable = true
+		if len(service.Template.Containers) > 0 {
+			envVars := make(map[string]string)
+			for _, e := range service.Template.Containers[0].Env {
+				envVars[e.Name] = e.Value
+			}
+			info.TrafficEnvVars = envVars
 		}
-		info.TrafficEnvVars = envVars
 		info.TrafficEnvVarsFromTemplate = true
 	}
 
@@ -2146,4 +2448,18 @@ func iamAudience(projectNumber, poolID, providerID string) string {
 // encodeBase64 encodes data as standard base64.
 func encodeBase64(data []byte) string {
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+// equalSplits reports whether two revision-to-percent traffic splits are
+// identical.
+func equalSplits(a, b map[string]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }

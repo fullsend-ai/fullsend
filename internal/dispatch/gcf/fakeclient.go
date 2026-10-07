@@ -6,6 +6,9 @@ import (
 	"fmt"
 )
 
+// Compile-time check that fakeGCFClient implements GCFClient.
+var _ GCFClient = (*fakeGCFClient)(nil)
+
 // fakeGCFClient records calls and returns preset responses.
 type fakeGCFClient struct {
 	calls []string
@@ -43,6 +46,17 @@ type fakeGCFClient struct {
 	// Captured env vars from the last UpdateServiceEnvVars call.
 	lastUpdateServiceEnvVars map[string]string
 
+	// updateServiceEnvVarsHistory records a copy of the env vars passed to
+	// every UpdateServiceEnvVars call, in order.
+	updateServiceEnvVarsHistory []map[string]string
+
+	// applyEnvUpdatesToTraffic, when true, makes a successful
+	// UpdateServiceEnvVars call (or a successful PinServiceTraffic, which
+	// serves revisionInfo.TemplateEnvVars) replace the env returned by later
+	// GetServiceTrafficEnvVars calls (the new revision is pinned and serving),
+	// so tests can exercise multi-step flows statefully.
+	applyEnvUpdatesToTraffic bool
+
 	// updateServiceRevision is returned alongside the error from
 	// UpdateServiceEnvVars. Non-empty simulates a partial failure where
 	// the template PATCH succeeded (creating a revision) but the traffic
@@ -55,6 +69,24 @@ type fakeGCFClient struct {
 
 	// Track revision info for GetServiceRevisionInfo.
 	revisionInfo *ServiceRevisionInfo
+
+	// revisionInfoSequence, when non-empty, is consumed FIFO by successive
+	// GetServiceRevisionInfo calls (one entry per call) to simulate a
+	// revision transitioning across polls (e.g. not-ready then ready).
+	// Once exhausted, GetServiceRevisionInfo falls back to revisionInfo.
+	revisionInfoSequence []*ServiceRevisionInfo
+
+	// lastPinnedRevision is the short revision name passed to PinServiceTraffic.
+	lastPinnedRevision string
+
+	// updateEtags records the etag passed to every
+	// UpdateServiceEnvVarsIfMatch call, in order.
+	updateEtags []string
+
+	// lastPinEtag and pinEtags record the etag passed to
+	// PinServiceTrafficIfMatch (latest, and every call in order).
+	lastPinEtag string
+	pinEtags    []string
 
 	// Captured project IAM binding arguments.
 	projectIAMBindings []projectIAMBinding
@@ -236,7 +268,62 @@ func (f *fakeGCFClient) UpdateFunctionEnvVars(_ context.Context, _, _, _ string,
 func (f *fakeGCFClient) UpdateServiceEnvVars(_ context.Context, _, _, _ string, envVars map[string]string) (string, error) {
 	f.calls = append(f.calls, "UpdateServiceEnvVars")
 	f.lastUpdateServiceEnvVars = envVars
-	return f.updateServiceRevision, f.errs["UpdateServiceEnvVars"]
+	snapshot := make(map[string]string, len(envVars))
+	for k, v := range envVars {
+		snapshot[k] = v
+	}
+	f.updateServiceEnvVarsHistory = append(f.updateServiceEnvVarsHistory, snapshot)
+	err := f.errs["UpdateServiceEnvVars"]
+	if err == nil && f.applyEnvUpdatesToTraffic {
+		// UpdateServiceEnvVars creates a revision from these env vars and
+		// pins traffic to it, so later traffic-serving reads see them.
+		f.trafficEnvVars = snapshot
+	}
+	return f.updateServiceRevision, err
+}
+
+// UpdateServiceEnvVarsIfMatch records the etag precondition and then behaves
+// like UpdateServiceEnvVars (same call name and error key).
+// errs["UpdateServiceEnvVarsIfMatch"] simulates a precondition (etag) failure
+// before any revision is created. Like the pin variant it accepts an empty
+// etag; tests assert on updateEtags instead.
+func (f *fakeGCFClient) UpdateServiceEnvVarsIfMatch(ctx context.Context, p, r, s string, envVars map[string]string, etag string) (string, error) {
+	f.updateEtags = append(f.updateEtags, etag)
+	if err := f.errs["UpdateServiceEnvVarsIfMatch"]; err != nil {
+		f.calls = append(f.calls, "UpdateServiceEnvVars")
+		return "", err
+	}
+	return f.UpdateServiceEnvVars(ctx, p, r, s, envVars)
+}
+func (f *fakeGCFClient) PinServiceTraffic(_ context.Context, _, _, _, revision string) error {
+	f.calls = append(f.calls, "PinServiceTraffic")
+	f.lastPinnedRevision = revision
+	err := f.errs["PinServiceTraffic"]
+	if err == nil && f.applyEnvUpdatesToTraffic && f.revisionInfo != nil && f.revisionInfo.TemplateEnvVars != nil {
+		// The pinned revision was built from the service template, so it now
+		// serves the template's env vars.
+		serving := make(map[string]string, len(f.revisionInfo.TemplateEnvVars))
+		for k, v := range f.revisionInfo.TemplateEnvVars {
+			serving[k] = v
+		}
+		f.trafficEnvVars = serving
+	}
+	return err
+}
+
+// PinServiceTrafficIfMatch records the etag precondition and then behaves like
+// PinServiceTraffic (same call name and error key), so tests that assert on
+// "PinServiceTraffic" cover both. errs["PinServiceTrafficIfMatch"] simulates a
+// precondition (etag) failure. Unlike the live client it accepts an empty
+// etag (fixtures that predate Etag); tests assert on lastPinEtag instead.
+func (f *fakeGCFClient) PinServiceTrafficIfMatch(ctx context.Context, p, r, s, revision, etag string) error {
+	f.lastPinEtag = etag
+	f.pinEtags = append(f.pinEtags, etag)
+	if err := f.errs["PinServiceTrafficIfMatch"]; err != nil {
+		f.calls = append(f.calls, "PinServiceTraffic")
+		return err
+	}
+	return f.PinServiceTraffic(ctx, p, r, s, revision)
 }
 func (f *fakeGCFClient) GetServiceTrafficEnvVars(_ context.Context, _, _, _ string) (map[string]string, error) {
 	f.calls = append(f.calls, "GetServiceTrafficEnvVars")
@@ -258,18 +345,51 @@ func (f *fakeGCFClient) GetServiceTrafficEnvVars(_ context.Context, _, _, _ stri
 	}
 	return nil, nil
 }
+
+// GetServiceServingEnvVars mirrors the live strict read: it returns the same
+// data as GetServiceTrafficEnvVars, but errors when the configured revision
+// info reports no resolvable traffic-serving revision (the live client would
+// otherwise have fallen back to the template).
+func (f *fakeGCFClient) GetServiceServingEnvVars(ctx context.Context, p, r, s string) (map[string]string, error) {
+	f.calls = append(f.calls, "GetServiceServingEnvVars")
+	if err := f.errs["GetServiceServingEnvVars"]; err != nil {
+		return nil, err
+	}
+	if f.revisionInfo != nil && f.revisionInfo.TrafficRevisionShort == "" {
+		return nil, fmt.Errorf("no traffic-serving revision could be resolved")
+	}
+	calls := f.calls
+	envVars, err := f.GetServiceTrafficEnvVars(ctx, p, r, s)
+	f.calls = calls
+	return envVars, err
+}
 func (f *fakeGCFClient) GetServiceRevisionInfo(_ context.Context, _, _, _ string) (*ServiceRevisionInfo, error) {
 	f.calls = append(f.calls, "GetServiceRevisionInfo")
 	if err := f.errs["GetServiceRevisionInfo"]; err != nil {
 		return nil, err
 	}
+	if len(f.revisionInfoSequence) > 0 {
+		next := f.revisionInfoSequence[0]
+		f.revisionInfoSequence = f.revisionInfoSequence[1:]
+		return next, nil
+	}
 	if f.revisionInfo != nil {
 		return f.revisionInfo, nil
+	}
+	// By default the serving revision carries the function's env (serving
+	// matches Cloud Functions metadata), plus a project-number marker so the
+	// read is never an unverified empty one.
+	trafficEnv := map[string]string{"GCP_PROJECT_NUMBER": f.projectNumber}
+	if f.functionInfo != nil {
+		for k, v := range f.functionInfo.EnvVars {
+			trafficEnv[k] = v
+		}
 	}
 	return &ServiceRevisionInfo{
 		TrafficRevisionShort:   "fullsend-mint-00001-abc",
 		TrafficAllocType:       "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST",
 		TemplateMatchesTraffic: true,
+		TrafficEnvVars:         trafficEnv,
 	}, nil
 }
 func (f *fakeGCFClient) WaitForOperation(_ context.Context, _ string) error {

