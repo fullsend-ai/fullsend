@@ -2460,9 +2460,569 @@ func TestLiveGCFClient_GetServiceRevisionInfo_ShortRevisionName(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, info)
 		assert.Equal(t, "my-svc-00042-abc", info.TrafficRevisionShort)
+		assert.Equal(t, "my-svc-00042-abc", info.LatestReadyRevisionShort)
 		assert.Equal(t, "org-x", info.TrafficEnvVars["ALLOWED_ORGS"])
 		assert.Equal(t, 3, callCount)
 	})
+}
+
+// failingRevisionsListTransport simulates a transport-level error (e.g. a
+// connection reset) specifically on the recent-revisions list GET
+// (identified by its distinctive pageSize query param), while routing every
+// other request through to the test server normally. Used to reproduce the
+// non-fatal revisions-list failure path in GetServiceRevisionInfo without
+// also failing the traffic-revision env var read that follows it.
+type failingRevisionsListTransport struct {
+	base *url.URL
+}
+
+func (t *failingRevisionsListTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.RawQuery, "pageSize") {
+		return nil, fmt.Errorf("connection reset by peer")
+	}
+	req.URL.Scheme = t.base.Scheme
+	req.URL.Host = t.base.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// TestLiveGCFClient_GetServiceRevisionInfo_RevisionsListTransportErrorStillReadsTrafficEnv
+// guards against a regression where a transport error on the non-fatal
+// revisions-list GET (step 2) returned early and skipped the traffic
+// revision's env var read (step 3) entirely. That early return left
+// TrafficEnvVars nil and TrafficEnvVarsUnreliable false — looking exactly
+// like "no accumulative data to contribute" to reconcileTargetEnvVars
+// instead of "couldn't verify it" — even though the read was never
+// attempted. The revisions-list failure must not prevent the traffic env
+// read that follows it.
+func TestLiveGCFClient_GetServiceRevisionInfo_RevisionsListTransportErrorStillReadsTrafficEnv(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/revisions/my-svc-00042-abc"):
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"containers": []interface{}{
+					map[string]interface{}{
+						"env": []interface{}{
+							map[string]string{"name": "ALLOWED_ORGS", "value": "org-x"},
+						},
+					},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"template": map[string]interface{}{
+					"revision":   "my-svc-00042-abc",
+					"containers": []interface{}{map[string]interface{}{}},
+				},
+				"trafficStatuses": []interface{}{
+					map[string]interface{}{
+						"type":     "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+						"revision": "my-svc-00042-abc",
+						"percent":  100,
+					},
+				},
+				"latestReadyRevision": "my-svc-00042-abc",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	target, _ := url.Parse(srv.URL)
+	httpClient := &http.Client{Transport: &failingRevisionsListTransport{base: target}}
+	client := &LiveGCFClient{Client: gcp.NewClientWithHTTP(httpClient), skipUploadURLCheck: true}
+
+	info, err := client.GetServiceRevisionInfo(context.Background(), "proj", "us-central1", "my-svc")
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.Empty(t, info.RecentRevisions, "revisions list failed at the transport level, so no recent revisions")
+	assert.Equal(t, "org-x", info.TrafficEnvVars["ALLOWED_ORGS"], "traffic env must still be read after the non-fatal revisions-list failure")
+	assert.False(t, info.TrafficEnvVarsUnreliable, "traffic env was read directly from the traffic-serving revision, so it is reliable")
+}
+
+// TestLiveGCFClient_GetServiceRevisionInfo_RevisionsListAndTrafficEnvBothFail
+// covers the case the prior early return also masked: when the
+// revisions-list GET fails AND the traffic-revision env read that follows it
+// also can't complete, TrafficEnvVarsUnreliable must end up true so
+// reconcileTargetEnvVars refuses to pin on unverified data. Before the fix,
+// the early return after the revisions-list failure meant this flag was
+// never set at all.
+func TestLiveGCFClient_GetServiceRevisionInfo_RevisionsListAndTrafficEnvBothFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/revisions/my-svc-00042-abc"):
+			// Traffic revision env read also fails.
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"template": map[string]interface{}{
+					"revision":   "my-svc-00042-abc",
+					"containers": []interface{}{map[string]interface{}{}},
+				},
+				"trafficStatuses": []interface{}{
+					map[string]interface{}{
+						"type":     "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+						"revision": "my-svc-00042-abc",
+						"percent":  100,
+					},
+				},
+				"latestReadyRevision": "my-svc-00043-def",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	target, _ := url.Parse(srv.URL)
+	httpClient := &http.Client{Transport: &failingRevisionsListTransport{base: target}}
+	client := &LiveGCFClient{Client: gcp.NewClientWithHTTP(httpClient), skipUploadURLCheck: true}
+
+	info, err := client.GetServiceRevisionInfo(context.Background(), "proj", "us-central1", "my-svc")
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.True(t, info.TrafficEnvVarsUnreliable,
+		"traffic env could not be read after either failure, so it must be marked unreliable rather than silently false")
+}
+
+// TestLiveGCFClient_GetServiceRevisionInfo_TrafficRevisionNoContainers guards
+// against treating a 200 OK response with zero containers on the
+// traffic-serving revision as a reliable "nothing to report" read. Unlike a
+// transport/HTTP failure, this response decodes successfully, so without an
+// explicit check the code would mark TrafficEnvVarsUnreliable false and
+// TrafficEnvVars as an empty (but "verified") map — mirroring the hard-error
+// handling GetServiceTrafficEnvVars already applies to the identical
+// no-containers condition. reconcileTargetEnvVars must see this as unreliable
+// rather than as legitimately having nothing accumulative to contribute, or a
+// revoked template allow-list entry could survive a pin.
+func TestLiveGCFClient_GetServiceRevisionInfo_TrafficRevisionNoContainers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/revisions/my-svc-00042-abc"):
+			// Traffic-serving revision GET succeeds but reports no containers.
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"containers": []interface{}{},
+			})
+		case strings.Contains(r.URL.Path, "/revisions"):
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"revisions": []interface{}{},
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"template": map[string]interface{}{
+					"revision": "my-svc-00042-abc",
+					"containers": []interface{}{
+						map[string]interface{}{
+							"env": []interface{}{
+								map[string]string{"name": "ALLOWED_ORGS", "value": "revoked-org"},
+							},
+						},
+					},
+				},
+				"trafficStatuses": []interface{}{
+					map[string]interface{}{
+						"type":     "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+						"revision": "my-svc-00042-abc",
+						"percent":  100,
+					},
+				},
+				"latestReadyRevision": "my-svc-00042-abc",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	info, err := newTestClient(srv).GetServiceRevisionInfo(context.Background(), "proj", "us-central1", "my-svc")
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.True(t, info.TrafficEnvVarsUnreliable,
+		"traffic-serving revision reported zero containers; the read must not be treated as a verified empty env")
+}
+
+// TestLiveGCFClient_GetServiceRevisionInfo_TemplateAheadOfLatestReady pins down
+// the intended behavior when the service's latestCreatedRevision (what a
+// just-completed create/update deploy produced) is ahead of
+// latestReadyRevision — i.e. the newly created revision has not become Ready
+// yet, while traffic and latestReadyRevision both still point at the old
+// revision. TemplateMatchesTraffic must be derived from the latest *created*
+// revision (falling back to the template's own revision field), not from
+// latestReadyRevision: comparing against latestReadyRevision alone would
+// report a false match and let callers like ensureTrafficOnLatestRevision
+// skip re-pinning traffic once the new revision becomes ready.
+func TestLiveGCFClient_GetServiceRevisionInfo_TemplateAheadOfLatestReady(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/revisions/my-svc-00042-abc"):
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"containers": []interface{}{map[string]interface{}{}},
+			})
+		case strings.Contains(r.URL.Path, "/revisions"):
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"revisions": []interface{}{}})
+		default:
+			// GET service: latestCreatedRevision is ahead of
+			// latestReadyRevision — the new revision from a just-finished
+			// deploy has not become Ready yet, while traffic and
+			// latestReadyRevision both still point at the old revision.
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"template": map[string]interface{}{
+					"revision":   "my-svc-00043-def",
+					"containers": []interface{}{map[string]interface{}{}},
+				},
+				"trafficStatuses": []interface{}{
+					map[string]interface{}{
+						"type":     "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+						"revision": "my-svc-00042-abc",
+						"percent":  100,
+					},
+				},
+				"latestReadyRevision":   "my-svc-00042-abc",
+				"latestCreatedRevision": "my-svc-00043-def",
+			})
+		}
+	}))
+	defer srv.Close()
+
+	info, err := newTestClient(srv).GetServiceRevisionInfo(context.Background(), "proj", "us-central1", "my-svc")
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.Equal(t, "my-svc-00042-abc", info.TrafficRevisionShort)
+	assert.Equal(t, "my-svc-00042-abc", info.LatestReadyRevisionShort)
+	assert.Equal(t, "my-svc-00043-def", info.LatestCreatedRevisionShort)
+	assert.Equal(t, "my-svc-00043-def", shortRevisionName(info.TemplateRevision),
+		"TemplateRevision reflects the not-yet-ready revision independently of LatestReadyRevisionShort")
+	assert.False(t, info.TemplateMatchesTraffic,
+		"TemplateMatchesTraffic must compare against the latest created revision, not the stale latestReadyRevision")
+}
+
+func TestLiveGCFClient_PinServiceTraffic(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPatch, r.Method)
+			assert.Contains(t, r.URL.RawQuery, "updateMask=traffic")
+
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			traffic := body["traffic"].([]interface{})
+			require.Len(t, traffic, 1)
+			entry := traffic[0].(map[string]interface{})
+			assert.Equal(t, "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", entry["type"])
+			assert.Equal(t, "fullsend-mint-00115-qp5", entry["revision"])
+			assert.Equal(t, float64(100), entry["percent"])
+
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTraffic(context.Background(), "proj", "us-central1", "fullsend-mint", "fullsend-mint-00115-qp5")
+		require.NoError(t, err)
+	})
+
+	t.Run("rejects_invalid_revision", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("should not call API for invalid revision")
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTraffic(context.Background(), "proj", "us-central1", "fullsend-mint", "projects/p/locations/r/services/s/revisions/fullsend-mint-00115-qp5")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected revision name format")
+	})
+
+	t.Run("http_error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"permission denied"}}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTraffic(context.Background(), "proj", "us-central1", "fullsend-mint", "fullsend-mint-00115-qp5")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status 403")
+	})
+}
+
+func TestLiveGCFClient_PinServiceTrafficIfMatch(t *testing.T) {
+	t.Run("sends_etag_precondition", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPatch, r.Method)
+			assert.Contains(t, r.URL.RawQuery, "updateMask=traffic")
+
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "etag-123", body["etag"])
+			traffic := body["traffic"].([]interface{})
+			require.Len(t, traffic, 1)
+			assert.Equal(t, "fullsend-mint-00115-qp5", traffic[0].(map[string]interface{})["revision"])
+
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTrafficIfMatch(context.Background(), "proj", "us-central1", "fullsend-mint", "fullsend-mint-00115-qp5", "etag-123")
+		require.NoError(t, err)
+	})
+
+	t.Run("unconditional_pin_sends_no_etag", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]interface{}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.NotContains(t, body, "etag")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+		}))
+		defer srv.Close()
+
+		require.NoError(t, newTestClient(srv).PinServiceTraffic(context.Background(), "proj", "us-central1", "fullsend-mint", "fullsend-mint-00115-qp5"))
+	})
+
+	t.Run("requires_etag", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("should not call API without an etag")
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTrafficIfMatch(context.Background(), "proj", "us-central1", "fullsend-mint", "fullsend-mint-00115-qp5", "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "etag is required")
+	})
+
+	t.Run("etag_mismatch_is_an_error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprintln(w, `{"error":{"message":"the service was modified"}}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).PinServiceTrafficIfMatch(context.Background(), "proj", "us-central1", "fullsend-mint", "fullsend-mint-00115-qp5", "stale")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status 409")
+	})
+}
+
+func TestLiveGCFClient_UpdateServiceEnvVarsIfMatch(t *testing.T) {
+	service := func(extra map[string]interface{}) map[string]interface{} {
+		svc := map[string]interface{}{
+			"etag": "etag-fresh-get",
+			"template": map[string]interface{}{
+				"revision": "my-svc-00042-abc",
+				"containers": []interface{}{
+					map[string]interface{}{"image": "gcr.io/proj/mint:latest", "env": []interface{}{}},
+				},
+			},
+		}
+		for k, v := range extra {
+			svc[k] = v
+		}
+		return svc
+	}
+
+	// patchedRevision extracts the revision name the template PATCH asked Cloud
+	// Run to create, so the fake post-update read can report it back.
+	patchedRevision := func(t *testing.T, r *http.Request) (string, map[string]interface{}) {
+		t.Helper()
+		var body map[string]interface{}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		tmpl, _ := body["template"].(map[string]interface{})
+		rev, _ := tmpl["revision"].(string)
+		return rev, body
+	}
+
+	// A competing template update between the template operation and the
+	// post-update read makes latestCreatedRevision someone else's revision;
+	// its etag must not be adopted for the traffic pin.
+	t.Run("competing_template_update_before_post_read_refuses_pin", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusOK)
+			switch callCount {
+			case 1:
+				json.NewEncoder(w).Encode(service(nil))
+			case 2:
+				json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+			case 3:
+				json.NewEncoder(w).Encode(service(map[string]interface{}{
+					"etag":                  "etag-competitor",
+					"latestCreatedRevision": "my-svc-00044-other",
+				}))
+			default:
+				t.Error("traffic must not be pinned after a competing template update")
+			}
+		}))
+		defer srv.Close()
+
+		rev, err := newTestClient(srv).UpdateServiceEnvVarsIfMatch(context.Background(), "proj", "us-central1", "my-svc",
+			map[string]string{"ALLOWED_ORGS": "org1"}, "etag-verified")
+		require.Error(t, err)
+		assert.Empty(t, rev)
+		assert.Contains(t, err.Error(), "expected the revision")
+		assert.Equal(t, 3, callCount)
+	})
+
+	// A traffic-only change (e.g. a restrictive rollback) between the template
+	// operation and the post-update read leaves latestCreatedRevision intact
+	// but changes the traffic configuration and etag.
+	t.Run("concurrent_traffic_change_before_post_read_refuses_pin", func(t *testing.T) {
+		callCount := 0
+		owned := ""
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusOK)
+			switch callCount {
+			case 1:
+				json.NewEncoder(w).Encode(service(map[string]interface{}{
+					"traffic": []interface{}{map[string]interface{}{
+						"type": "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", "revision": "my-svc-00042-abc", "percent": 100,
+					}},
+				}))
+			case 2:
+				owned, _ = patchedRevision(t, r)
+				json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+			case 3:
+				json.NewEncoder(w).Encode(service(map[string]interface{}{
+					"etag":                  "etag-after-rollback",
+					"latestCreatedRevision": owned,
+					"traffic": []interface{}{map[string]interface{}{
+						"type": "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION", "revision": "my-svc-00040-old", "percent": 100,
+					}},
+				}))
+			default:
+				t.Error("traffic must not be pinned over a concurrent traffic change")
+			}
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).UpdateServiceEnvVarsIfMatch(context.Background(), "proj", "us-central1", "my-svc",
+			map[string]string{"ALLOWED_ORGS": "org1"}, "etag-verified")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "traffic configuration changed")
+		assert.Equal(t, 3, callCount)
+	})
+
+	t.Run("conditions_template_and_traffic_patches_on_etags", func(t *testing.T) {
+		callCount := 0
+		owned := ""
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			switch callCount {
+			case 1:
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(service(nil))
+			case 2:
+				// The template PATCH carries the verified etag, not the fresh GET's,
+				// and names the revision it creates.
+				var body map[string]interface{}
+				owned, body = patchedRevision(t, r)
+				assert.Equal(t, "etag-verified", body["etag"])
+				assert.Regexp(t, `^my-svc-r[0-9a-f]{8}$`, owned)
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+			case 3:
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(service(map[string]interface{}{
+					"etag":                  "etag-post-update",
+					"latestCreatedRevision": "projects/proj/locations/us-central1/services/my-svc/revisions/" + owned,
+				}))
+			case 4:
+				// The traffic pin is conditioned on the post-update read.
+				var body map[string]interface{}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				assert.Equal(t, "etag-post-update", body["etag"])
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+			}
+		}))
+		defer srv.Close()
+
+		rev, err := newTestClient(srv).UpdateServiceEnvVarsIfMatch(context.Background(), "proj", "us-central1", "my-svc",
+			map[string]string{"ALLOWED_ORGS": "org1"}, "etag-verified")
+		require.NoError(t, err)
+		assert.Equal(t, "projects/proj/locations/us-central1/services/my-svc/revisions/"+owned, rev)
+		assert.Equal(t, 4, callCount)
+	})
+
+	t.Run("requires_etag", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("should not call API without an etag")
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).UpdateServiceEnvVarsIfMatch(context.Background(), "proj", "us-central1", "my-svc", map[string]string{}, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "etag is required")
+	})
+
+	t.Run("template_etag_mismatch_creates_no_revision", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount == 1 {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(service(nil))
+				return
+			}
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprintln(w, `{"error":{"message":"the service was modified"}}`)
+		}))
+		defer srv.Close()
+
+		rev, err := newTestClient(srv).UpdateServiceEnvVarsIfMatch(context.Background(), "proj", "us-central1", "my-svc",
+			map[string]string{"ALLOWED_ORGS": "org1"}, "stale")
+		require.Error(t, err)
+		assert.Empty(t, rev)
+		assert.Contains(t, err.Error(), "unexpected status 409")
+		assert.Equal(t, 2, callCount)
+	})
+
+	t.Run("missing_post_update_etag_refuses_unconditional_pin", func(t *testing.T) {
+		callCount := 0
+		owned := ""
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusOK)
+			switch callCount {
+			case 1:
+				json.NewEncoder(w).Encode(service(nil))
+			case 2:
+				owned, _ = patchedRevision(t, r)
+				json.NewEncoder(w).Encode(map[string]interface{}{"done": true})
+			case 3:
+				json.NewEncoder(w).Encode(map[string]interface{}{"latestCreatedRevision": owned})
+			default:
+				t.Error("traffic must not be pinned without a post-update etag")
+			}
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).UpdateServiceEnvVarsIfMatch(context.Background(), "proj", "us-central1", "my-svc",
+			map[string]string{"ALLOWED_ORGS": "org1"}, "etag-verified")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no etag after template update")
+		assert.Equal(t, 3, callCount)
+	})
+}
+
+func TestLiveGCFClient_GetServiceRevisionInfo_ReportsEtag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if strings.Contains(r.URL.Path, "/revisions") {
+			fmt.Fprint(w, `{}`)
+			return
+		}
+		fmt.Fprint(w, `{"etag":"etag-xyz","template":{"containers":[{"env":[{"name":"ALLOWED_ORGS","value":"o"}]}]}}`)
+	}))
+	defer srv.Close()
+
+	info, err := newTestClient(srv).GetServiceRevisionInfo(context.Background(), "proj", "us-central1", "fullsend-mint")
+	require.NoError(t, err)
+	assert.Equal(t, "etag-xyz", info.Etag)
 }
 
 // --- waitForIAMOperation ---

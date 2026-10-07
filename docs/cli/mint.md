@@ -36,7 +36,7 @@ fullsend mint deploy \
   --region "us-central1"
 ```
 
-The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and org registration.
+The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and org registration. After a source deploy (and on a hash-skip when traffic is still pinned to an older revision), the CLI pins Cloud Run traffic to the latest created revision (once it is ready) before registering orgs, and also when traffic is split across revisions. If reconciliation fails — including when its revision was created but the conditional traffic pin was rejected because the service changed meanwhile — deploy fails and the error asks you to re-run `mint deploy`. If revision discovery fails or the target revision cannot be identified, the error likewise asks you to re-run `mint deploy` — do not shift traffic manually (including with `--to-latest`), because that can restore access that was revoked. Reconciliation preserves the serving revision's `ALLOWED_ROLES`, `ALLOWED_WORKFLOW_FILES`, and `CUSTOM_ROLE_PERMISSIONS`, and never turns a nonempty `ALLOWED_ROLES` that lists no roles (deny-all) into an all-roles grant. Registering an org on an existing mint never defaults an absent or empty `ALLOWED_WORKFLOW_FILES` to `*` (the `*` default applies only when the mint is first created), and the deploy-time placeholder org is not registered on an existing mint. Role PEM secrets are stored and verified before any reconciliation publishes role app IDs. Before a source deploy on an existing mint, the CLI pins traffic to the verified serving revision (conditioned on the service etag of that read) so the newly built revision cannot serve until the serving state has been re-read and reconciled after the build; if the service changed in between, deploy fails and asks you to re-run `mint deploy`. If the revision being pinned must first become ready, the serving state is re-verified after the wait, and the final traffic update is conditioned on the verified service etag; if the service changed meanwhile, deploy fails and asks you to re-run `mint deploy` rather than overwriting the change.
 
 Use `--public` to deploy a **public mint** (`PER_REPO_WIF_REPOS=*` with permissive WIF). Public mints accept any org that calls upstream reusable workflows in `fullsend-ai/fullsend`; org enrollment is not required. Unlike standalone JWKS mints, GCF-hosted public mints still need permissive WIF for the STS exchange path.
 
@@ -314,8 +314,15 @@ the API-based mode is used automatically.
 
 ### GCP-based mode (`--project`)
 
-Reads mint state directly from GCP infrastructure (Cloud Function metadata,
-Secret Manager). Requires GCP viewer IAM roles.
+Reads mint state directly from GCP infrastructure: Cloud Function metadata,
+Cloud Run revision/traffic routing, registered roles, enrolled orgs, and
+Secret Manager PEM health. Requires GCP viewer IAM roles. When a newer Cloud
+Run revision exists but is not serving, status reports health as degraded
+and warns "Newer revision exists but is not serving". Enrolled orgs, role app
+IDs, per-repo WIF repos, workflow host repos, and PEM health are read from the
+verified serving revision only; when that read is unavailable, those sections
+report "unknown" (and health degraded) instead of falling back to Cloud
+Functions discovery data.
 
 ```bash
 fullsend mint status \

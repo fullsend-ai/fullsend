@@ -3664,6 +3664,46 @@ func TestRunMintStatus_Healthy(t *testing.T) {
 	assert.Contains(t, out.String(), "existing-org")
 }
 
+func TestTerminalSafe(t *testing.T) {
+	assert.Equal(t, "acme/widget role-1", terminalSafe("acme/widget role-1"))
+	assert.Equal(t, "a?[31mb?c?d", terminalSafe("a\x1b[31mb\nc\rd"))
+	assert.Equal(t, "boom?[2J", terminalSafeErr(errors.New("boom\x1b[2J")))
+}
+
+func TestRunMintStatus_SanitizesExternalValues(t *testing.T) {
+	const esc = "\x1b"
+	env := map[string]string{
+		"ROLE_APP_IDS":        `{"coder":"100` + esc + `[31m","evil` + esc + `]0;x":"2"}`,
+		"ALLOWED_ORGS":        "org" + esc + "[2J",
+		"PER_REPO_WIF_REPOS":  "acme/repo" + esc + "[1m",
+		"WORKFLOW_HOST_REPOS": "host/repo" + esc + "[1m",
+	}
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{URI: "https://mint.example.com", EnvVars: env}),
+		gcf.WithFakeTrafficEnvVars(env),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:   "fullsend-mint-00001",
+			TrafficPercent:         100,
+			TrafficAllocType:       "ALLOC" + esc + "[31m",
+			TemplateMatchesTraffic: true,
+			TrafficEnvVars:         env,
+			RecentRevisions: []gcf.RevisionSummary{{
+				Name:       "rev" + esc + "[31m",
+				CreateTime: "2026-06-16T12:00:00Z",
+				Active:     true,
+			}},
+		}),
+		gcf.WithFakeSecrets(map[string]bool{}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	require.NoError(t, runMintStatus(context.Background(), ui.New(out), "my-project", "us-central1", ""))
+	assert.NotContains(t, out.String(), esc+"[31m")
+	assert.NotContains(t, out.String(), esc+"[2J")
+	assert.NotContains(t, out.String(), esc+"[1m")
+	assert.NotContains(t, out.String(), esc+"]0;")
+}
+
 func TestRunMintStatus_WithHealthVersion(t *testing.T) {
 	// Spin up a health server that returns version metadata.
 	healthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3835,9 +3875,10 @@ func TestRunMintStatus_TemplateDivergence(t *testing.T) {
 			"ALLOWED_ORGS": "acme",
 		}),
 		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
-			TrafficRevisionShort:   "fullsend-mint-00001",
-			TemplateRevision:       "projects/p/locations/r/services/s/revisions/fullsend-mint-00002",
-			TemplateMatchesTraffic: false,
+			TrafficRevisionShort:     "fullsend-mint-00001",
+			LatestReadyRevisionShort: "fullsend-mint-00002",
+			TemplateRevision:         "projects/p/locations/r/services/s/revisions/fullsend-mint-00002",
+			TemplateMatchesTraffic:   false,
 		}),
 	)
 	withMintGCFClient(t, client)
@@ -3846,6 +3887,132 @@ func TestRunMintStatus_TemplateDivergence(t *testing.T) {
 	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "")
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "diverges")
+	assert.Contains(t, out.String(), "Newer revision exists but is not serving")
+	assert.Contains(t, out.String(), "Latest created:")
+	assert.NotContains(t, out.String(), "Latest ready:")
+	assert.Contains(t, out.String(), "fullsend-mint-00002")
+}
+
+// TestRunMintStatus_TrafficRevisionUnknown ensures that when the
+// traffic-serving revision can't be resolved at all (TrafficRevisionShort
+// empty), runMintStatus does not claim "Newer revision exists but is not
+// serving" — that's a more specific claim than the underlying signal
+// supports. It should report that the traffic-serving revision could not
+// be determined instead.
+func TestRunMintStatus_TrafficRevisionUnknown(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "https://mint.example.com",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100"}`,
+				"ALLOWED_ORGS": "acme",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+			"ALLOWED_ORGS": "acme",
+		}),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:     "",
+			LatestReadyRevisionShort: "fullsend-mint-00002",
+			TemplateMatchesTraffic:   false,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Traffic-serving revision could not be determined")
+	assert.NotContains(t, out.String(), "Newer revision exists but is not serving")
+}
+
+// TestRunMintStatus_TrafficEnvUnreliableFallsBackToLiveRead ensures
+// runMintStatus does not trust revInfo.TrafficEnvVars when
+// TrafficEnvVarsUnreliable is set — it must fall through to the strict
+// GetServiceServingEnvVars read rather than displaying template data (which can
+// still list a revoked org) as the serving access-control state.
+func TestRunMintStatus_TrafficEnvUnreliableFallsBackToLiveRead(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "https://mint.example.com",
+			EnvVars: map[string]string{
+				"ALLOWED_ORGS": "acme",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ALLOWED_ORGS": "acme",
+		}),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:     "fullsend-mint-00001",
+			TrafficPercent:           100,
+			TemplateMatchesTraffic:   true,
+			TrafficEnvVars:           map[string]string{"ALLOWED_ORGS": "acme,revoked-org"},
+			TrafficEnvVarsUnreliable: true,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "revoked-org")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "revoked-org is not in ALLOWED_ORGS")
+}
+
+// TestRunMintStatus_SplitTrafficWarns ensures a 60/40 split — where the latest
+// revision is the majority target but an older revision still serves traffic —
+// is reported as split rather than silently treated as matching.
+func TestRunMintStatus_SplitTrafficWarns(t *testing.T) {
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ALLOWED_ORGS": "acme"},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{"ALLOWED_ORGS": "acme"}),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:       "fullsend-mint-00002",
+			TrafficPercent:             60,
+			LatestCreatedRevisionShort: "fullsend-mint-00002",
+			TemplateMatchesTraffic:     false,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	err := runMintStatus(context.Background(), ui.New(out), "my-project", "us-central1", "")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Traffic is split across revisions")
+	assert.NotContains(t, out.String(), "(matches traffic)")
+}
+
+// TestRunMintStatus_UnresolvedTrafficDoesNotReportTemplateAsServing ensures
+// that when no traffic-serving revision can be resolved (empty
+// trafficStatuses), stale template data — which can still list a revoked org
+// or a stale wildcard — is not presented as verified serving state.
+func TestRunMintStatus_UnresolvedTrafficDoesNotReportTemplateAsServing(t *testing.T) {
+	staleTemplate := map[string]string{
+		"ALLOWED_ORGS":       "acme,revoked-org",
+		"PER_REPO_WIF_REPOS": "*",
+	}
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: staleTemplate,
+		}),
+		gcf.WithFakeTrafficEnvVars(staleTemplate),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:     "",
+			TrafficEnvVars:           staleTemplate,
+			TrafficEnvVarsUnreliable: true,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "revoked-org")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Could not verify serving allow-lists")
+	assert.NotContains(t, out.String(), "Public (PER_REPO_WIF_REPOS=*)")
+	assert.NotContains(t, out.String(), "  revoked-org\n")
 }
 
 func perRepoStatusClient(discoveryRepos, trafficRepos string) gcf.GCFClient {
@@ -5740,4 +5907,70 @@ func TestMintDeployCmd_CloudflarePemDirLoadFailure(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "loading app set PEMs")
+}
+
+// TestRunMintStatus_ServingRegistrationsOverrideStaleDiscovery ensures the
+// role, org, and per-repo WIF sections reflect the verified serving env rather
+// than stale Cloud Functions discovery data.
+func TestRunMintStatus_ServingRegistrationsOverrideStaleDiscovery(t *testing.T) {
+	stale := map[string]string{
+		"ROLE_APP_IDS":       `{"coder":"100","stale-role":"999"}`,
+		"ALLOWED_ORGS":       "acme,stale-org",
+		"PER_REPO_WIF_REPOS": "stale-org/stale-repo",
+	}
+	serving := map[string]string{
+		"ROLE_APP_IDS":       `{"coder":"100"}`,
+		"ALLOWED_ORGS":       "acme",
+		"PER_REPO_WIF_REPOS": "acme/live-repo",
+	}
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{URI: "https://mint.example.com", EnvVars: stale}),
+		gcf.WithFakeTrafficEnvVars(serving),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:   "fullsend-mint-00001",
+			TrafficPercent:         100,
+			TemplateMatchesTraffic: true,
+			TrafficEnvVars:         serving,
+		}),
+		gcf.WithFakeSecrets(map[string]bool{"fullsend-coder-app-pem": true}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	require.NoError(t, runMintStatus(context.Background(), ui.New(out), "my-project", "us-central1", ""))
+	assert.Contains(t, out.String(), "coder = 100")
+	assert.Contains(t, out.String(), "acme/live-repo")
+	assert.NotContains(t, out.String(), "stale-role")
+	assert.NotContains(t, out.String(), "stale-org")
+}
+
+// TestRunMintStatus_UnverifiedServingStateReportsUnknown ensures that when
+// the serving env cannot be verified, registration sections render as unknown
+// instead of discovery registrations, absent enrollment, or default hosts.
+func TestRunMintStatus_UnverifiedServingStateReportsUnknown(t *testing.T) {
+	stale := map[string]string{
+		"ROLE_APP_IDS":       `{"stale-role":"999"}`,
+		"ALLOWED_ORGS":       "stale-org",
+		"PER_REPO_WIF_REPOS": "stale-org/stale-repo",
+	}
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{URI: "https://mint.example.com", EnvVars: stale}),
+		gcf.WithFakeTrafficEnvVars(stale),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:     "",
+			TrafficEnvVars:           stale,
+			TrafficEnvVarsUnreliable: true,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	require.NoError(t, runMintStatus(context.Background(), ui.New(out), "my-project", "us-central1", "stale-org"))
+	got := out.String()
+	assert.Contains(t, got, "Could not verify serving allow-lists")
+	assert.Contains(t, got, "unknown")
+	assert.NotContains(t, got, "stale-role")
+	assert.NotContains(t, got, "stale-repo")
+	assert.NotContains(t, got, "(none)")
+	assert.NotContains(t, got, "(default: fullsend-ai/fullsend)")
+	assert.NotContains(t, got, "is not in ALLOWED_ORGS")
+	assert.NotContains(t, got, "no enrolled orgs")
 }

@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -1684,6 +1685,41 @@ Required IAM roles on the mint project (--project mode only):
 	return cmd
 }
 
+// latestCreatedOrTemplateRevisionShort returns the short name of the most
+// recently created revision, mirroring how gcf.GetServiceRevisionInfo
+// derives TemplateMatchesTraffic: prefer LatestCreatedRevisionShort (it
+// reflects a just-finished deploy immediately), falling back to the
+// template's own revision field, then to LatestReadyRevisionShort (which can
+// lag behind both until Cloud Run finishes bringing a new revision up).
+func latestCreatedOrTemplateRevisionShort(revInfo *gcf.ServiceRevisionInfo) string {
+	if revInfo.LatestCreatedRevisionShort != "" {
+		return revInfo.LatestCreatedRevisionShort
+	}
+	if revInfo.TemplateRevision != "" {
+		parts := strings.Split(revInfo.TemplateRevision, "/")
+		return parts[len(parts)-1]
+	}
+	return revInfo.LatestReadyRevisionShort
+}
+
+// terminalSafe replaces control and other non-printable characters (including
+// ANSI escape introducers and newlines) in an externally sourced value with
+// '?', so values read from the GCP project or the mint API can never inject
+// terminal control sequences into status output.
+func terminalSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ' ' || unicode.IsPrint(r) {
+			return r
+		}
+		return '?'
+	}, s)
+}
+
+// terminalSafeErr is terminalSafe applied to an error's message.
+func terminalSafeErr(err error) string {
+	return terminalSafe(err.Error())
+}
+
 func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, org string) error {
 	printer.Banner(Version())
 	printer.Blank()
@@ -1718,19 +1754,19 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 
 	// Step 2: Print function info.
 	printer.Blank()
-	printer.KeyValue("URL", discovery.URL)
+	printer.KeyValue("URL", terminalSafe(discovery.URL))
 	printer.KeyValue("Project", project)
 	printer.KeyValue("Region", region)
 
 	// Query /health for version metadata.
 	if mintVersion, mintCommit, healthErr := queryMintHealth(ctx, discovery.URL); healthErr != nil {
-		printer.StepWarn(fmt.Sprintf("Could not query mint version: %v", healthErr))
+		printer.StepWarn(fmt.Sprintf("Could not query mint version: %s", terminalSafeErr(healthErr)))
 	} else {
 		if mintVersion != "" {
-			printer.KeyValue("Version", mintVersion)
+			printer.KeyValue("Version", terminalSafe(mintVersion))
 		}
 		if mintCommit != "" {
-			printer.KeyValue("Commit", mintCommit)
+			printer.KeyValue("Commit", terminalSafe(mintCommit))
 		}
 	}
 
@@ -1738,16 +1774,16 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	printer.StepStart("Querying Cloud Run revision state")
 	revInfo, revErr := provisioner.GetServiceRevisionInfo(ctx)
 	if revErr != nil {
-		printer.StepWarn(fmt.Sprintf("Could not query Cloud Run revisions: %v", revErr))
+		printer.StepWarn(fmt.Sprintf("Could not query Cloud Run revisions: %s", terminalSafeErr(revErr)))
 	} else {
 		printer.StepDone("Revision info retrieved")
 		printer.Blank()
 		printer.Header("Cloud Run Revision")
 		if revInfo.TrafficRevisionShort != "" {
 			if revInfo.TrafficPercent > 0 {
-				printer.KeyValue("Traffic", fmt.Sprintf("%s (%d%%)", revInfo.TrafficRevisionShort, revInfo.TrafficPercent))
+				printer.KeyValue("Traffic", fmt.Sprintf("%s (%d%%)", gcf.SafeRevisionName(revInfo.TrafficRevisionShort), revInfo.TrafficPercent))
 			} else {
-				printer.KeyValue("Traffic", revInfo.TrafficRevisionShort)
+				printer.KeyValue("Traffic", gcf.SafeRevisionName(revInfo.TrafficRevisionShort))
 			}
 		} else {
 			printer.KeyValue("Traffic", "unknown")
@@ -1757,22 +1793,50 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		if allocType == "" {
 			allocType = "unknown"
 		}
-		printer.KeyValue("Alloc type", allocType)
+		printer.KeyValue("Alloc type", terminalSafe(allocType))
 
 		if revInfo.TemplateMatchesTraffic {
-			printer.KeyValue("Template", fmt.Sprintf("%s (matches traffic)", revInfo.TrafficRevisionShort))
-		} else {
-			// Show a divergence warning.
+			printer.KeyValue("Template", fmt.Sprintf("%s (matches traffic)", gcf.SafeRevisionName(revInfo.TrafficRevisionShort)))
+		} else if revInfo.TrafficRevisionShort == "" {
+			// TemplateMatchesTraffic is also false when the traffic-serving
+			// revision itself couldn't be resolved — that's a weaker claim
+			// than "a newer revision exists and isn't serving," so say so
+			// explicitly instead of implying a confirmed divergence.
 			printer.Blank()
-			printer.StepWarn("Service template diverges from traffic-serving revision")
-			printer.StepInfo("Template env vars may not match what the mint is actually serving.")
-			printer.StepInfo(fmt.Sprintf("Traffic revision: %s", revInfo.TrafficRevisionShort))
-			latestShort := revInfo.TemplateRevision
-			if latestShort != "" {
-				parts := strings.Split(latestShort, "/")
-				latestShort = parts[len(parts)-1]
+			printer.StepWarn("Traffic-serving revision could not be determined")
+			printer.StepInfo("Unable to confirm which revision is currently serving traffic.")
+		} else if latestKnown := latestCreatedOrTemplateRevisionShort(revInfo); latestKnown != "" && latestKnown != revInfo.TrafficRevisionShort {
+			// Show a divergence warning. A source deploy can create a newer
+			// revision while traffic remains pinned to an older one. Prefer
+			// the latest *created* revision (falling back to the template's
+			// own revision, then to LatestReadyRevisionShort) over
+			// LatestReadyRevisionShort alone: right after a deploy,
+			// LatestReadyRevisionShort can still lag on the old revision
+			// while a newer, not-yet-ready revision already exists — using
+			// only LatestReadyRevisionShort here would miss that case.
+			printer.Blank()
+			printer.StepWarn("Newer revision exists but is not serving")
+			printer.StepInfo("Service template diverges from the traffic-serving revision.")
+			printer.StepInfo(fmt.Sprintf("Traffic revision: %s", gcf.SafeRevisionName(revInfo.TrafficRevisionShort)))
+			printer.StepInfo(fmt.Sprintf("Latest created:   %s", gcf.SafeRevisionName(latestKnown)))
+		} else if revInfo.TrafficPercent > 0 && revInfo.TrafficPercent < 100 {
+			// The latest revision is the highest-percent traffic target but
+			// an older revision still serves the remainder.
+			printer.Blank()
+			printer.StepWarn("Traffic is split across revisions")
+			printer.StepInfo(fmt.Sprintf("Traffic revision: %s (%d%%)", gcf.SafeRevisionName(revInfo.TrafficRevisionShort), revInfo.TrafficPercent))
+			printer.StepInfo("An older revision still serves the remaining traffic.")
+		} else {
+			// Traffic revision is known but the latest created/template
+			// revision could not be determined confidently — avoid asserting
+			// a newer revision exists when that isn't confirmed.
+			printer.Blank()
+			printer.StepWarn("Latest created/template revision could not be determined")
+			printer.StepInfo(fmt.Sprintf("Traffic revision: %s", gcf.SafeRevisionName(revInfo.TrafficRevisionShort)))
+			if templateShort := revInfo.TemplateRevision; templateShort != "" {
+				parts := strings.Split(templateShort, "/")
+				printer.StepInfo(fmt.Sprintf("Template revision: %s", gcf.SafeRevisionName(parts[len(parts)-1])))
 			}
-			printer.StepInfo(fmt.Sprintf("Template latest:  %s", latestShort))
 		}
 
 		if len(revInfo.RecentRevisions) > 0 {
@@ -1796,7 +1860,7 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 				} else {
 					createTime = "(unknown)"
 				}
-				printer.StepInfo(fmt.Sprintf("  %s  %s  %-8s%s", rev.Name, createTime, status, suffix))
+				printer.StepInfo(fmt.Sprintf("  %s  %s  %-8s%s", gcf.SafeRevisionName(rev.Name), createTime, status, suffix))
 			}
 		}
 	}
@@ -1813,38 +1877,56 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	// When the revision query itself failed, the direct read cannot tell
 	// whether it resolved a serving revision or fell back to the service
 	// template (with a nil error), so leave enrollment unverified.
-	if revErr == nil && revInfo != nil && revInfo.TrafficEnvVars != nil && !revInfo.TrafficEnvVarsFromTemplate {
+	if revErr == nil && revInfo != nil && revInfo.TrafficEnvVars != nil && !revInfo.TrafficEnvVarsFromTemplate && !revInfo.TrafficEnvVarsUnreliable {
 		trafficEnv = revInfo.TrafficEnvVars
 	} else if revErr == nil && !noServingRevision {
 		var envErr error
-		trafficEnv, envErr = provisioner.GetServiceTrafficEnvVars(ctx)
+		trafficEnv, envErr = provisioner.GetServiceServingEnvVars(ctx)
 		if envErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not verify serving allow-lists: %s", terminalSafeErr(envErr)))
 			trafficEnv = nil
 		}
+	} else if noServingRevision {
+		printer.StepWarn("Could not verify serving allow-lists: no traffic-serving revision could be resolved")
 	}
 
+	// Registration sections come only from the verified serving env
+	// (trafficEnv). When it is unavailable, discovery data (which can reflect
+	// a stale Cloud Functions template) is not substituted: the sections
+	// report unknown instead.
+	servingVerified := trafficEnv != nil
+
 	enrolledOrgs := parseAllowedOrgs("")
-	if trafficEnv != nil {
+	if servingVerified {
 		enrolledOrgs = parseAllowedOrgs(trafficEnv["ALLOWED_ORGS"])
 	}
 
-	roleAppIDs := discovery.RoleAppIDs
-	if trafficEnv != nil && trafficEnv["ROLE_APP_IDS"] != "" {
-		var m map[string]string
-		if err := json.Unmarshal([]byte(trafficEnv["ROLE_APP_IDS"]), &m); err == nil {
-			roleAppIDs = m
+	// roleAppIDs feeds the Role App IDs display and the PEM health check
+	// below; roleAppIDsKnown gates both.
+	var roleAppIDs map[string]string
+	roleAppIDsKnown := false
+	if servingVerified {
+		servingRoleIDs := map[string]string{}
+		roleAppIDsKnown = true
+		if raw := trafficEnv["ROLE_APP_IDS"]; raw != "" {
+			if err := json.Unmarshal([]byte(raw), &servingRoleIDs); err != nil {
+				roleAppIDsKnown = false
+			}
+		}
+		if roleAppIDsKnown {
+			roleAppIDs = servingRoleIDs
 		}
 	}
 	roleOnlyIDs := mintcore.RoleOnlyAppIDs(roleAppIDs)
 
-	publicMint := trafficEnv != nil && isPublicMintRepos(trafficEnv["PER_REPO_WIF_REPOS"])
+	publicMint := servingVerified && isPublicMintRepos(trafficEnv["PER_REPO_WIF_REPOS"])
 	if publicMint {
 		printer.Blank()
 		printer.Header("Mint Mode")
 		printer.StepInfo("  Public (PER_REPO_WIF_REPOS=*)")
 	}
 
-	if org != "" && !publicMint {
+	if org != "" && !publicMint && servingVerified {
 		found := false
 		for _, o := range enrolledOrgs {
 			if o == org {
@@ -1858,15 +1940,19 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		}
 	}
 
+	const servingUnknown = "  (unknown — serving state could not be verified)"
+
 	printer.Blank()
 	printer.Header("Enrolled Organizations")
-	if publicMint {
+	if !servingVerified {
+		printer.StepInfo(servingUnknown)
+	} else if publicMint {
 		printer.StepInfo("  * (public mode — all orgs)")
 	} else if len(enrolledOrgs) == 0 {
 		printer.StepInfo("  (none)")
 	} else {
 		for _, o := range enrolledOrgs {
-			printer.StepInfo("  " + o)
+			printer.StepInfo("  " + terminalSafe(o))
 		}
 	}
 
@@ -1877,32 +1963,34 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		roleKeys = append(roleKeys, k)
 	}
 	sort.Strings(roleKeys)
-	if len(roleKeys) == 0 {
+	if !roleAppIDsKnown {
+		printer.StepInfo(servingUnknown)
+	} else if len(roleKeys) == 0 {
 		printer.StepInfo("  (none)")
 	} else {
 		for _, k := range roleKeys {
-			printer.StepInfo(fmt.Sprintf("  %s = %s", k, roleOnlyIDs[k]))
+			printer.StepInfo(fmt.Sprintf("  %s = %s", terminalSafe(k), terminalSafe(roleOnlyIDs[k])))
 		}
 	}
 
-	// Prefer the traffic-serving revision's PER_REPO_WIF_REPOS: enrollment
-	// updates Cloud Run directly, so Cloud Functions metadata can be stale.
-	perRepoWIFRepos := discovery.PerRepoWIFRepos
-	if trafficEnv != nil {
+	// Use only the verified traffic-serving revision's PER_REPO_WIF_REPOS:
+	// enrollment updates Cloud Run directly, so Cloud Functions metadata can
+	// be stale.
+	var perRepoWIFRepos []string
+	if servingVerified {
 		perRepoWIFRepos = mintcore.SplitCSV(trafficEnv["PER_REPO_WIF_REPOS"])
 		sort.Strings(perRepoWIFRepos)
 	}
 
 	printer.Blank()
 	printer.Header("Per-Repo WIF Repos")
-	if trafficEnv == nil {
-		printer.StepWarn("Could not read the traffic-serving revision; enrollment is unverified (Cloud Functions metadata shown)")
-	}
-	if len(perRepoWIFRepos) == 0 {
+	if !servingVerified {
+		printer.StepInfo(servingUnknown)
+	} else if len(perRepoWIFRepos) == 0 {
 		printer.StepInfo("  (none)")
 	} else {
 		for _, r := range perRepoWIFRepos {
-			printer.StepInfo("  " + r)
+			printer.StepInfo("  " + terminalSafe(r))
 		}
 	}
 
@@ -1910,15 +1998,17 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	printer.Blank()
 	printer.Header("Workflow Host Repos")
 	var workflowHostRepos []string
-	if trafficEnv != nil {
+	if servingVerified {
 		workflowHostRepos = mintcore.SplitCSV(trafficEnv["WORKFLOW_HOST_REPOS"])
 	}
-	if len(workflowHostRepos) == 0 {
+	if !servingVerified {
+		printer.StepInfo(servingUnknown)
+	} else if len(workflowHostRepos) == 0 {
 		printer.StepInfo("  (default: fullsend-ai/fullsend)")
 	} else {
 		sort.Strings(workflowHostRepos)
 		for _, r := range workflowHostRepos {
-			printer.StepInfo("  " + r)
+			printer.StepInfo("  " + terminalSafe(r))
 		}
 	}
 
@@ -1926,18 +2016,20 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	rolesToCheck := rolesFromAppIDs(roleAppIDs)
 	printer.Blank()
 	printer.Header("Role PEM Secrets")
-	if len(rolesToCheck) == 0 {
+	if !roleAppIDsKnown {
+		printer.StepInfo(servingUnknown)
+	} else if len(rolesToCheck) == 0 {
 		printer.StepInfo("  (none)")
 	} else {
 		pemRoles := pemSecretRoles(rolesToCheck)
 		for _, role := range pemRoles {
 			exists, existsErr := provisioner.SecretExists(ctx, role)
 			if existsErr != nil {
-				printer.StepWarn(fmt.Sprintf("  %s: error checking (%v)", role, existsErr))
+				printer.StepWarn(fmt.Sprintf("  %s: error checking (%s)", terminalSafe(role), terminalSafeErr(existsErr)))
 			} else if exists {
-				printer.StepDone(fmt.Sprintf("  %s: present", role))
+				printer.StepDone(fmt.Sprintf("  %s: present", terminalSafe(role)))
 			} else {
-				printer.StepFail(fmt.Sprintf("  %s: missing", role))
+				printer.StepFail(fmt.Sprintf("  %s: missing", terminalSafe(role)))
 			}
 		}
 	}
@@ -1947,7 +2039,7 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	var healthReasons []string
 	// Callers are authorized by PER_REPO_WIF_REPOS (or public mode), not
 	// ALLOWED_ORGS, so enrollment health keys off the repository list.
-	if trafficEnv == nil {
+	if !servingVerified {
 		health = "degraded"
 		healthReasons = append(healthReasons, "enrollment unverified: traffic-serving revision unreadable")
 	} else if len(perRepoWIFRepos) == 0 {
@@ -1961,7 +2053,7 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 
 	// The "*" wildcard means unrestricted public mode, not one enrolled repo.
 	enrolledSummary := fmt.Sprintf("Enrolled repos: %d", len(perRepoWIFRepos))
-	if trafficEnv == nil {
+	if !servingVerified {
 		enrolledSummary = "Enrolled repos: unverified"
 	} else if isPublicMintRepos(strings.Join(perRepoWIFRepos, ",")) {
 		enrolledSummary = "Enrolled repos: unrestricted (public mode)"
