@@ -64,7 +64,15 @@ func ValidateSlotClean(w *world.World) error {
 	if err != nil {
 		return nil
 	}
-	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	// config.base.yaml is not part of the standard scaffold and is
+	// absent on most slots; a missing-file error just means there is
+	// no base layer to check, not a validation failure.
+	baseData, err := w.SCM.GetFileContent(context.Background(),
+		w.Org, w.RepoName, filepath.Join(".fullsend", "config.base.yaml"))
+	if err != nil {
+		baseData = nil
+	}
+	cfg, err := config.ParsePerRepoConfigWriterLayered(cfgData, baseData)
 	if err != nil {
 		return nil
 	}
@@ -254,6 +262,13 @@ func CleanupScenario(w *world.World) {
 			return DeactivateKillSwitch(w)
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: deactivate kill switch: %v", err)
+		}
+	}
+	if w.KillSwitchBaseActivated {
+		if err := cleanupRetry(w.Logf, "deactivate kill switch in config.base.yaml", func() error {
+			return DeactivateKillSwitchBase(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: deactivate kill switch in config.base.yaml: %v", err)
 		}
 	}
 

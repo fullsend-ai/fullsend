@@ -305,16 +305,38 @@ if ! git fetch origin "${FULLSEND_PINNED_REF}" --depth=1; then
 fi
 DEFAULT_BRANCH_SHA=$(git rev-parse FETCH_HEAD)
 CONFIG_YAML=$(git show "${DEFAULT_BRANCH_SHA}:.fullsend/config.yaml" 2>/dev/null || echo "")
+CONFIG_BASE_YAML=$(git show "${DEFAULT_BRANCH_SHA}:.fullsend/config.base.yaml" 2>/dev/null || echo "")
 
-# Kill switch — halt all agent dispatch when active
-if [ -n "${CONFIG_YAML}" ]; then
-  if ! KILL_SWITCH=$(echo "${CONFIG_YAML}" | python3 -c "import sys,yaml; print('true' if str((yaml.safe_load(sys.stdin) or {}).get('kill_switch', False)).lower() in ('true','yes','1','on') else 'false')"); then
-    echo "WARNING: invalid .fullsend/config.yaml — treating as unconfigured (no kill-switch)"
+# Kill switch — halt all agent dispatch when active. Mirrors
+# internal/config's IsKillSwitchActive(): if config.yaml sets
+# kill_switch at all, that value is final and config.base.yaml is
+# ignored; config.base.yaml is only consulted when config.yaml is
+# silent on the key.
+if [ -n "${CONFIG_YAML}" ] || [ -n "${CONFIG_BASE_YAML}" ]; then
+  if ! KILL_SWITCH=$(OVERLAY_YAML="${CONFIG_YAML}" BASE_YAML="${CONFIG_BASE_YAML}" python3 -c "
+import os, sys, yaml
+
+def load(text):
+    return (yaml.safe_load(text) or {}) if text else {}
+
+overlay = load(os.environ.get('OVERLAY_YAML', ''))
+base = load(os.environ.get('BASE_YAML', ''))
+
+if 'kill_switch' in overlay:
+    active = overlay.get('kill_switch')
+elif 'kill_switch' in base:
+    active = base.get('kill_switch')
+else:
+    active = False
+
+print('true' if str(active).lower() in ('true', 'yes', '1', 'on') else 'false')
+"); then
+    echo "WARNING: invalid .fullsend/config.yaml or .fullsend/config.base.yaml — treating as unconfigured (no kill-switch)"
     KILL_SWITCH="false"
   fi
   if [ "${KILL_SWITCH}" = "true" ]; then
     echo "ERROR: Kill switch is active — all agent dispatch halted" >&2
-    echo "Set kill_switch: false in .fullsend/config.yaml to resume" >&2
+    echo "Set kill_switch: false in .fullsend/config.yaml or .fullsend/config.base.yaml to resume" >&2
     exit 1
   fi
 fi
