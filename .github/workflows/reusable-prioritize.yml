@@ -58,6 +58,13 @@ on:
         required: false
       OTEL_EXPORTER_OTLP_HEADERS:
         required: false
+      FULLSEND_RUNNER_SECRETS:
+        description: >-
+          JSON object of name to value for host-side scripts (pre_script,
+          post_script, validation_loop). fullsend run resolves the names the
+          harness references in env.runner; the values reach host-side
+          scripts, never the sandbox (ADR 0136).
+        required: false
 
 concurrency:
   group: fullsend-prioritize-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
@@ -165,6 +172,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
         with:
           agent: prioritize
+          runner_secrets: ${{ secrets.FULLSEND_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: .fullsend
           mint-url: ${{ inputs.mint_url }}

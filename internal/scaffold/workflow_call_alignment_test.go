@@ -555,6 +555,21 @@ func TestRunnerSecretsThreading(t *testing.T) {
 		"Run fullsend step must receive runner_secrets")
 	assert.Equal(t, 1, strings.Count(action, "inputs.runner_secrets"),
 		"runner_secrets must reach no composite step other than Run fullsend")
+
+	prioritize := string(loadScaffoldFile(".github/workflows/prioritize.yml")(t))
+	assert.Contains(t, prioritize, "FULLSEND_RUNNER_SECRETS: ${{ secrets.FULLSEND_RUNNER_SECRETS }}",
+		"scaffold prioritize caller must forward FULLSEND_RUNNER_SECRETS")
+
+	// Every fullsend run step in the reusable workflows passes the secret,
+	// and each workflow declares it, so no stage silently drops it.
+	for _, wf := range []string{".github/workflows/reusable-dispatch.yml", ".github/workflows/reusable-prioritize.yml"} {
+		body := string(loadRepoFile(wf)(t))
+		assert.Contains(t, body, "\n      FULLSEND_RUNNER_SECRETS:\n", "%s must declare FULLSEND_RUNNER_SECRETS", wf)
+		runSteps := strings.Count(body, "\n          agent: ")
+		require.Positive(t, runSteps, "%s must have fullsend run steps", wf)
+		assert.Equal(t, runSteps, strings.Count(body, "runner_secrets: ${{ secrets.FULLSEND_RUNNER_SECRETS }}"),
+			"%s: every fullsend run step must pass runner_secrets", wf)
+	}
 }
 
 // TestOTELVariableForwarding validates that OTEL variables (#5886) are
