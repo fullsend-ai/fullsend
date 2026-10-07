@@ -111,7 +111,7 @@ skills:
 }
 
 // TestLoadWithBase_ChildSkillOverridesBaseByBasename verifies that a child
-// skill whose directory basename matches a base skill replaces the base entry
+// skill whose identity matches a base skill replaces the base entry
 // instead of producing a duplicate that trips duplicateDestinationNameError
 // at bootstrap time (see #5408).
 func TestLoadWithBase_ChildSkillOverridesBaseByBasename(t *testing.T) {
@@ -228,10 +228,16 @@ func TestMergeSkills(t *testing.T) {
 			want:  []string{"skills/code-implementation"},
 		},
 		{
-			name:  "duplicate child basename deduplicates",
+			name:  "sibling child basename collision keeps both",
 			base:  se("/base/skill-a"),
+			child: se("skills/issue-labels/github", "skills/pr-review/github"),
+			want:  []string{"/base/skill-a", "skills/issue-labels/github", "skills/pr-review/github"},
+		},
+		{
+			name:  "last child wins when replacing a matching base skill",
+			base:  se("/base/skill-b"),
 			child: se("/child1/skill-b", "/child2/skill-b"),
-			want:  []string{"/base/skill-a", "/child2/skill-b"},
+			want:  []string{"/child2/skill-b"},
 		},
 	}
 	for _, tt := range tests {
@@ -240,6 +246,113 @@ func TestMergeSkills(t *testing.T) {
 			assert.Equal(t, tt.want, SkillSources(got))
 		})
 	}
+}
+
+func TestMergeSkills_DeclaredNameDistinguishesNestedDirs(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill := func(rel, name string) string {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(p, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(p, "SKILL.md"),
+			[]byte("---\nname: "+name+"\n---\n"), 0o644))
+		return p
+	}
+	labels := writeSkill("issue-labels/github", "issue-labels")
+	review := writeSkill("pr-review/github", "pr-review-github")
+
+	got := mergeSkills(nil, []SkillEntry{{Source: labels}, {Source: review}})
+	assert.Equal(t, []string{labels, review}, SkillSources(got))
+}
+
+func TestMergeSkills_DeclaredNameOverridesMatchingBase(t *testing.T) {
+	dir := t.TempDir()
+	baseDir := filepath.Join(dir, "cache", "github")
+	require.NoError(t, os.MkdirAll(baseDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# base\n"), 0o644))
+
+	childDir := filepath.Join(dir, "issue-labels")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# child\n"), 0o644))
+
+	got := mergeSkills(
+		[]SkillEntry{{Source: baseDir}},
+		[]SkillEntry{{Source: childDir}},
+	)
+	require.Len(t, got, 1)
+	assert.Equal(t, childDir, got[0].Source)
+}
+
+// TestMergeSkills_RelativeChildCannotSpoofBaseIdentity is a regression test
+// for a merge-time identity spoof: mergeSkills runs during ResolveForge,
+// which executes before run.go's ResolveRelativeTo for local (non-URL)
+// harnesses. At that point a relative child Source resolves against the
+// process's current working directory, not the harness tree. A
+// CWD-relative SKILL.md declaring a name that matches a base skill must not
+// be able to suppress that base skill from the merged list — skill.SandboxName
+// falls back to filepath.Base for any non-absolute path instead of reading
+// SKILL.md, so the base entry must survive and the child must be appended
+// as a distinct entry rather than overriding it.
+func TestMergeSkills_RelativeChildCannotSpoofBaseIdentity(t *testing.T) {
+	dir := t.TempDir()
+	attackerDir := filepath.Join(dir, "attacker-dir")
+	require.NoError(t, os.MkdirAll(attackerDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(attackerDir, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# spoofed\n"), 0o644))
+
+	oldwd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(oldwd)) })
+	require.NoError(t, os.Chdir(dir))
+
+	base := []SkillEntry{{Source: "/abs/base/code-review"}}
+	child := []SkillEntry{{Source: "attacker-dir"}}
+
+	got := mergeSkills(base, child)
+	assert.Equal(t, []string{"/abs/base/code-review", "attacker-dir"}, SkillSources(got))
+}
+
+// TestMergeSkills_LocalOverrideMatchesByBasenameNotDeclaredName documents a
+// caveat of the CWD-spoof fix above: a legitimate local project override
+// (relative child Source, not yet resolved by ResolveRelativeTo) whose
+// SKILL.md declares the same name: as an already-resolved absolute base
+// skill does NOT override it when the directory basenames differ — declared
+// names are only consulted for absolute paths (skill.SandboxName). Only a
+// matching directory basename lets a local override take effect. See the
+// "Local overrides must match by directory name" note in
+// docs/guides/user/customizing-with-skills.md and the skills row in
+// docs/contributing/harness-fields.md.
+func TestMergeSkills_LocalOverrideMatchesByBasenameNotDeclaredName(t *testing.T) {
+	dir := t.TempDir()
+	baseDir := filepath.Join(dir, "cache", "code-review")
+	require.NoError(t, os.MkdirAll(baseDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseDir, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# base\n"), 0o644))
+
+	oldwd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(oldwd)) })
+	require.NoError(t, os.Chdir(dir))
+
+	// Relative child directory basename ("my-override") differs from the
+	// base's basename ("code-review"), even though the child's own SKILL.md
+	// declares the matching name. Because the child Source is still
+	// relative at merge time, SandboxName falls back to basename and the
+	// declared name is never consulted, so the override does not attach to
+	// the base entry.
+	childDir := "my-override"
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# child\n"), 0o644))
+
+	got := mergeSkills(
+		[]SkillEntry{{Source: baseDir}},
+		[]SkillEntry{{Source: childDir}},
+	)
+	require.Len(t, got, 2, "declared-name match alone must not override when the child path is still relative")
+	assert.Equal(t, []string{baseDir, childDir}, SkillSources(got))
 }
 
 func TestLoadWithBase_LocalBase_PrivilegeLevelsMerge(t *testing.T) {

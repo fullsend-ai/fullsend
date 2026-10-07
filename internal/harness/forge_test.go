@@ -102,6 +102,148 @@ func TestResolveForge_SkillsOverrideByBasename(t *testing.T) {
 	assert.Equal(t, []string{"skills/code-implementation", "skills/common-b"}, SkillSources(h.Skills))
 }
 
+// TestResolveForge_NestedForgeSkillsShareBasename is the #7830 regression:
+// two forge skills whose directories share a leaf name (github, gitlab)
+// must both survive ResolveForge instead of the second silently replacing
+// the first.
+func TestResolveForge_NestedForgeSkillsShareBasename(t *testing.T) {
+	h := &Harness{
+		Agent: "a.md",
+		Forge: map[string]*ForgeConfig{
+			"github": {Skills: []SkillEntry{
+				{Source: "skills/issue-labels/github"},
+				{Source: "skills/pr-review/github"},
+			}},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, []string{
+		"skills/issue-labels/github",
+		"skills/pr-review/github",
+	}, SkillSources(h.Skills))
+}
+
+func TestResolveForge_ReviewHarnessKeepsForgeSkills(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/review.md",
+		Skills: []SkillEntry{
+			{Source: "skills/pr-review"},
+			{Source: "skills/code-review"},
+			{Source: "skills/docs-review"},
+			{Source: "skills/pr-risk-assessment"},
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {Skills: []SkillEntry{
+				{Source: "skills/github-forge"},
+				{Source: "skills/issue-labels/github"},
+				{Source: "skills/pr-review/github"},
+			}},
+			"gitlab": {Skills: []SkillEntry{
+				{Source: "skills/gitlab-forge"},
+				{Source: "skills/issue-labels/gitlab"},
+				{Source: "skills/pr-review/gitlab"},
+			}},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, []string{
+		"skills/pr-review",
+		"skills/code-review",
+		"skills/docs-review",
+		"skills/pr-risk-assessment",
+		"skills/github-forge",
+		"skills/issue-labels/github",
+		"skills/pr-review/github",
+	}, SkillSources(h.Skills))
+}
+
+func TestResolveForge_RetroHarnessKeepsForgeSkills(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/retro.md",
+		Skills: []SkillEntry{
+			{Source: "skills/retro-analysis"},
+			{Source: "skills/finding-agent-runs"},
+			{Source: "skills/agent-scaffolding"},
+			{Source: "skills/autonomy-readiness"},
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {Skills: []SkillEntry{
+				{Source: "skills/github-forge"},
+				{Source: "skills/retro-analysis/github"},
+				{Source: "skills/finding-agent-runs/github"},
+			}},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, []string{
+		"skills/retro-analysis",
+		"skills/finding-agent-runs",
+		"skills/agent-scaffolding",
+		"skills/autonomy-readiness",
+		"skills/github-forge",
+		"skills/retro-analysis/github",
+		"skills/finding-agent-runs/github",
+	}, SkillSources(h.Skills))
+}
+
+func TestResolveForge_GitlabNestedForgeSkillsShareBasename(t *testing.T) {
+	h := &Harness{
+		Agent: "a.md",
+		Forge: map[string]*ForgeConfig{
+			"gitlab": {Skills: []SkillEntry{
+				{Source: "skills/issue-labels/gitlab"},
+				{Source: "skills/pr-review/gitlab"},
+			}},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("gitlab"))
+	assert.Equal(t, []string{
+		"skills/issue-labels/gitlab",
+		"skills/pr-review/gitlab",
+	}, SkillSources(h.Skills))
+}
+
+// TestResolveForge_ForgeSkillDeclaredNameOverridesUnrelatedTopLevelSkill
+// documents a known gap (#7830 follow-up, still open): mergeSkills's
+// override key is skill.SandboxName, which for an already-resolved
+// absolute path is the declared SKILL.md `name:` rather than the
+// directory basename. A forge skill living at a directory with no
+// relation to a top-level skill can still silently replace it, purely by
+// declaring the same name — mergeSkills has no way to distinguish that
+// from an intentional override (the same #5408 child-replaces-base
+// mechanism this test exercises is by design; only the identity source
+// changed). There is no error or log for this case today.
+func TestResolveForge_ForgeSkillDeclaredNameOverridesUnrelatedTopLevelSkill(t *testing.T) {
+	dir := t.TempDir()
+
+	topLevel := filepath.Join(dir, "code-review")
+	require.NoError(t, os.MkdirAll(topLevel, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(topLevel, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# top-level code-review\n"), 0o644))
+
+	unrelated := filepath.Join(dir, "totally-unrelated-dir")
+	require.NoError(t, os.MkdirAll(unrelated, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(unrelated, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# unrelated skill declaring the same name\n"), 0o644))
+
+	h := &Harness{
+		Agent:  "agents/review.md",
+		Skills: []SkillEntry{{Source: topLevel}},
+		Forge: map[string]*ForgeConfig{
+			"github": {Skills: []SkillEntry{{Source: unrelated}}},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	// The unrelated directory silently replaced the top-level skill slot
+	// because both declare the same SKILL.md name — no error, no log.
+	assert.Equal(t, []string{unrelated}, SkillSources(h.Skills))
+}
+
 func TestResolveForge_NilSkillsInherits(t *testing.T) {
 	h := &Harness{
 		Agent:  "agents/test.md",
@@ -1346,8 +1488,8 @@ func TestResolveOverlays_ListFieldsAccumulate(t *testing.T) {
 		"profiles/base", "profiles/gh", "profiles/gh",
 	}, h.OpenShell.Profiles, "openshell profiles accumulate across overlays without dedup")
 
-	// Skills are deduplicated via mergeSkills (by basename)
-	require.Len(t, h.Skills, 3, "skills are deduplicated by basename across overlays")
+	// Skills are deduplicated via mergeSkills (by skill identity)
+	require.Len(t, h.Skills, 3, "skills are deduplicated by identity across overlays")
 	assert.Equal(t, "skills/base", h.Skills[0].Source)
 	assert.Equal(t, "skills/gh", h.Skills[1].Source)
 	assert.Equal(t, "skills/extra", h.Skills[2].Source)

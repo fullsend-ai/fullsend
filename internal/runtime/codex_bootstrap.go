@@ -177,18 +177,9 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		return err
 	}
 
-	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {
+	// codex discovers $CODEX_HOME/skills natively.
+	if err := uploadHarnessSkills(sandboxName, cfg+"/skills", input.SkillDirs()); err != nil {
 		return err
-	}
-	for _, skillPath := range input.SkillDirs() {
-		if skillPath == "" {
-			continue
-		}
-		// codex discovers $CODEX_HOME/skills natively.
-		if err := sandbox.Upload(sandboxName, skillPath, cfg+"/skills/"); err != nil {
-			return fmt.Errorf("copying skill %q: %w", skillPath, err)
-		}
-		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
 	for _, e := range input.Plugins() {

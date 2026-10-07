@@ -230,6 +230,35 @@ func TestCodexRuntimeBootstrap_UploadsSkillsAndWarnsOnPlugins(t *testing.T) {
 	assert.Contains(t, readFileString(t, logPath), r.ConfigDir()+"/skills/")
 }
 
+func TestCodexRuntimeBootstrap_NestedForgeSkillsShareBasename(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	fakeOpenshellCodex(t, logPath, t.TempDir(), "codex-cli 0.152.1")
+
+	root := t.TempDir()
+	labelsDir := filepath.Join(root, "issue-labels", "github")
+	reviewDir := filepath.Join(root, "pr-review", "github")
+	require.NoError(t, os.MkdirAll(labelsDir, 0o755))
+	require.NoError(t, os.MkdirAll(reviewDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(labelsDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(reviewDir, "SKILL.md"),
+		[]byte("---\nname: pr-review-github\n---\n"), 0o644))
+
+	r := CodexRuntime{}
+	err := r.Bootstrap(bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, codexTestAgentDef),
+		agentName:   "triage",
+		skillDirs:   []string{labelsDir, reviewDir},
+	})
+	require.NoError(t, err)
+
+	log := readFileString(t, logPath)
+	assert.Contains(t, log, r.ConfigDir()+"/skills/issue-labels")
+	assert.Contains(t, log, r.ConfigDir()+"/skills/pr-review-github")
+	assert.NotContains(t, log, r.ConfigDir()+"/skills/github")
+}
+
 func TestCodexRuntimeBootstrap_PreflightFailureIsReportedEarly(t *testing.T) {
 	binDir := t.TempDir()
 	script := `#!/bin/sh
