@@ -296,6 +296,7 @@ func TestValidateScriptEnvRefs_GCPOIDCTokenFile(t *testing.T) {
 		"runner_env":      {RunnerEnv: map[string]string{"OIDC_PATH": "${GCP_OIDC_TOKEN_FILE}"}},
 		"env.runner":      {Env: &harness.EnvConfig{Runner: map[string]string{"OIDC_PATH": "x-${GCP_OIDC_TOKEN_FILE}"}}},
 		"preflight_check": {ValidationLoop: &harness.ValidationLoop{PreflightCheck: "test -f ${GCP_OIDC_TOKEN_FILE}"}},
+		"schema":          {ValidationLoop: &harness.ValidationLoop{Schema: "${GCP_OIDC_TOKEN_FILE}"}},
 	}
 	for name, h := range refs {
 		t.Run(name, func(t *testing.T) {

@@ -642,7 +642,8 @@ authenticate as Analyst and bypass in-process checks such as
 
 `childScriptEnv` and `stripOIDCEnv` also strip fullsend's own GitLab
 credentials from every host-side script (#8146): `FULLSEND_ID_TOKEN`,
-`FULLSEND_JOB_TOKEN`, `FULLSEND_FORGE_TOKEN`, every
+`FULLSEND_JOB_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_DISPATCH_SECRET`
+(also unset by `run-agent-job.sh` once the dispatch HMAC is verified), every
 `FULLSEND_GITLAB_*_TOKEN` role secret (`isGitLabRoleSecretKey`, a family
 rule that covers new roles), and on GitLab runs `GCP_OIDC_TOKEN_FILE`.
 All but `GCP_OIDC_TOKEN_FILE` are refused at every harness YAML `${VAR}`
@@ -654,8 +655,9 @@ provider definitions (trusted config) resolve through
 `sandbox.DenyExpansionKeys`, which only carries `oidcDenyKeys`.
 `GCP_OIDC_TOKEN_FILE` stays expandable in `host_files[].src` and
 `env.sandbox` because `host_files` copies the token file into the sandbox;
-`validateScriptEnvRefs` rejects it in `runner_env`, `env.runner` and
-`preflight_check` on GitLab runs, so no script-visible value can alias it.
+`validateScriptEnvRefs` rejects it in `runner_env`, `env.runner`,
+`validation_loop.schema` and `preflight_check` on GitLab runs, so no
+script-visible value can alias it.
 `validationEnv` drops `runner_env` entries for role-routing keys
 (`isPinnedGitLabRoleRoutingKey`), as `childScriptEnv` does, so the pinning
 holds on the validation path too.

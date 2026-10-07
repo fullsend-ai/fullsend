@@ -230,6 +230,20 @@ func TestGitLabJobScripts_UnsetWebhookCredentialsBeforePin(t *testing.T) {
 	}
 }
 
+// TestRunAgentJobScript_UnsetsDispatchSecretAfterHMAC guards the agent job
+// script clearing the dispatch HMAC secret once the HMAC check has consumed
+// it, so host-side harness scripts cannot read it (#8146). Checked
+// structurally: a full run needs a signed dispatch fixture.
+func TestRunAgentJobScript_UnsetsDispatchSecretAfterHMAC(t *testing.T) {
+	s := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+	hmacIdx := strings.Index(s, `HMAC_SECRET="${FULLSEND_DISPATCH_SECRET}"`)
+	require.NotEqual(t, -1, hmacIdx, "expected the HMAC verification to read the dispatch secret")
+	unsetIdx := strings.Index(s, "\nunset FULLSEND_DISPATCH_SECRET\n")
+	require.NotEqual(t, -1, unsetIdx, "expected the dispatch secret unset")
+	assert.Greater(t, unsetIdx, hmacIdx, "the dispatch secret must be cleared only after HMAC verification")
+	assert.NotContains(t, s[unsetIdx:], "${FULLSEND_DISPATCH_SECRET", "the dispatch secret must not be read after the unset")
+}
+
 func TestRunAgentJobScript_DebugTraceAborts(t *testing.T) {
 	root := t.TempDir()
 	writeGitLabScript(t, root, ".gitlab/ci/scripts/select-gitlab-role-token.sh")

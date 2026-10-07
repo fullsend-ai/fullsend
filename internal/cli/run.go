@@ -1085,6 +1085,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// refuse the keys childScriptEnvDenied strips (GCP_OIDC_TOKEN_FILE on
 	// GitLab), so an aliased reference cannot smuggle them past the strip
 	// (#8146). host_files and env.sandbox keep the plain expander.
+	// validation_loop.schema reaches scripts as FULLSEND_OUTPUT_SCHEMA, so it
+	// uses scriptExpander too.
 	scriptExpander := func(key string) string {
 		if childScriptEnvDenied(key) {
 			return ""
@@ -1112,7 +1114,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Expand ${VAR} references in validation_loop.schema so the path
 	// resolves before ValidateFilesExist stat-checks it.
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
-		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, scriptExpander)
 	}
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
 		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, scriptExpander)
@@ -3016,6 +3018,11 @@ var oidcDenyKeys = map[string]bool{
 	// which the mint accepts. Runner-only, like the GitHub OIDC request
 	// credentials above (#8146).
 	"FULLSEND_ID_TOKEN": true,
+	// The GitLab dispatch HMAC secret. The agent job script uses it once to
+	// verify the dispatch signature and then unsets it; no run needs it, so
+	// if it is ever still present it stays runner-only too (#8146).
+	// `fullsend poll` reads it with os.Getenv and is unaffected.
+	forge.SecretDispatch: true,
 }
 
 // gitlabCredentialDenyKeys are fullsend's own GitLab credentials that the
@@ -3107,7 +3114,8 @@ var harnessVarRefRe = regexp.MustCompile(`\$\{([^}]+)\}`)
 // validateScriptEnvRefs rejects ${VAR} references that childScriptEnvDenied
 // strips from host-side scripts but harnessExpansionDenied still allows
 // (GCP_OIDC_TOKEN_FILE on GitLab), at the sites whose expanded value reaches
-// those scripts: runner_env, env.runner and validation_loop.preflight_check.
+// those scripts: runner_env, env.runner, validation_loop.schema (published to
+// scripts as FULLSEND_OUTPUT_SCHEMA) and validation_loop.preflight_check.
 // ValidateRunnerEnvWith's shared lookup cannot do this: host_files.src and
 // env.sandbox must keep expanding the key (#8146).
 func validateScriptEnvRefs(h *harness.Harness) error {
@@ -3128,6 +3136,7 @@ func validateScriptEnvRefs(h *harness.Harness) error {
 		}
 	}
 	if h.ValidationLoop != nil {
+		check("validation_loop.schema", h.ValidationLoop.Schema)
 		check("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck)
 	}
 	if len(problems) == 0 {
