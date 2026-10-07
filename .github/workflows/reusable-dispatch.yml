@@ -110,7 +110,7 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
@@ -421,55 +421,6 @@ jobs:
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
 
-      - name: Check for existing PRs
-        id: pr-check
-        if: steps.route.outputs.stage == 'code'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          SOURCE_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # Query for PRs that actually close this issue (Fixes/Closes/Resolves
-          # keywords), not a substring search over title/body — the latter
-          # false-positives on any PR that merely references the issue (#5575).
-          # closedByPullRequestsReferences also returns MERGED PRs regardless of
-          # includeClosedPrs, so filter on .state explicitly. Exclude the code-
-          # agent bot via __typename + login so it can re-dispatch even when it
-          # already has an open PR (#5974); other bots (e.g. Renovate) still
-          # block. See docs/contributing/bot-identities.md for the login format.
-          # NOTE: bot identity is checked in three places — (1) this existing-PR
-          # guard (GraphQL __typename), (2) the fix eligibility script
-          # (.defaults/.github/scripts/check-fix-eligibility.sh — gh pr view
-          # is_bot/login), (3) org-scaffold dispatch.yml:226 (webhook [bot]$
-          # regex). See docs/contributing/bot-identities.md.
-          OWNER="${SOURCE_REPO%%/*}"
-          REPO_NAME="${SOURCE_REPO##*/}"
-          GQL_ERR=$(mktemp)
-          if ! LINKED_PRS=$(gh api graphql -f query='
-            query($owner: String!, $repo: String!, $number: Int!) {
-              repository(owner: $owner, name: $repo) {
-                issue(number: $number) {
-                  closedByPullRequestsReferences(first: 20) {
-                    nodes { number state author { login __typename } }
-                  }
-                }
-              }
-            }' -f owner="${OWNER}" -f repo="${REPO_NAME}" -F number="${ISSUE_NUMBER}" \
-            --jq '[.data.repository.issue.closedByPullRequestsReferences.nodes[]
-                   | select(.state == "OPEN")
-                   | select(.author.__typename != "Bot" or .author.login != "fullsend-ai-coder")]
-                   | map("#\(.number)") | join(", ")' \
-            2>"${GQL_ERR}"); then
-            echo "::warning::Linked-PR query failed for issue #${ISSUE_NUMBER}: $(tr '\n' ' ' < "${GQL_ERR}" | sed 's/::/__/g')"
-            LINKED_PRS=""
-          fi
-          rm -f "${GQL_ERR}"
-          if [[ -n "${LINKED_PRS}" ]]; then
-            echo "::notice::Skipping code dispatch — issue #${ISSUE_NUMBER} has open PR(s) ${LINKED_PRS}"
-            echo "skipped=true" >> "${GITHUB_OUTPUT}"
-          fi
-
       - name: Validate routed stage
         if: steps.route.outputs.stage != ''
         env:
@@ -571,7 +522,7 @@ jobs:
 
       - name: Check agent is enabled
         id: agent-check
-        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true'
+        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true'
         env:
           STAGE: ${{ steps.route.outputs.stage }}
         run: |
@@ -599,7 +550,7 @@ jobs:
 
       - name: Resolve PR head for issue_comment events
         id: pr-head
-        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
+        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
@@ -868,13 +819,6 @@ jobs:
           FULLSEND_WORK_ITEM_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
-          # Reaches the harness pre-script inside fullsend run, which reads it
-          # for its --force override of the existing-PR check (pre-script
-          # output protocol, issue #4718). The override is not end-to-end:
-          # the route job's own "Check for existing PRs" step above gates
-          # stage=code first and does not honor --force, so a /fs-code
-          # --force comment is stopped before this value is ever read.
-          # env-quoted, never interpolated into run: blocks.
           COMMENT_BODY: ${{ fromJSON(needs.route.outputs.event_payload).comment.body }}
           REPO_FULL_NAME: ${{ github.repository }}
           CODE_ALLOWED_TARGET_BRANCHES: ''
