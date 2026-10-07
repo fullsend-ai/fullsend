@@ -87,7 +87,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
    your driver will invoke (e.g., `internal/cli/mint.go` for
    `mint deploy`, `internal/cli/mint_delete.go` for `mint delete`).
    Check the full flag surface — especially optional flags like
-   `--worker-name`, `--allowed-orgs`, `--workflow-host-repos`,
+   `--worker-name`, `--workflow-host-repos`,
    `--per-repo-wif-repos`, `--app-set`, and `--pem-dir`. Ensure deploy
    and teardown commands receive symmetric identifying flags (e.g., both
    `mint deploy` and `mint delete` need `--worker-name` if the Worker

@@ -9,7 +9,7 @@ This guide covers deploying and managing the fullsend token mint. The mint is th
 | `mint add-role` | Add an agent role (PEM secret + `ROLE_APP_IDS` entry) |
 | `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
 | `mint enroll` | Register a repo in `PER_REPO_WIF_REPOS` and create its WIF provider |
-| `mint unenroll` | Remove an org or repo from the mint |
+| `mint unenroll` | Remove a repo from `PER_REPO_WIF_REPOS` and disable its WIF provider |
 | `mint workflow-host add` | Add a repo to the workflow-host allow-list |
 | `mint workflow-host remove` | Remove a repo from the workflow-host allow-list |
 | `mint workflow-host list` | List the workflow-host allow-list |
@@ -294,7 +294,7 @@ Role PEM secrets and `ROLE_APP_IDS` must already exist on the mint, created duri
 
 When the mint is configured with `PER_REPO_WIF_REPOS=*` (public mode), `mint enroll` exits successfully (exit code 0) in both public and tight modes, but only tight mode updates `PER_REPO_WIF_REPOS` and WIF. In public mode, repository registration is unnecessary because all repositories are already allowed — the command discovers the mint and reports public mode without changing configuration. Scripts can call enroll in both modes without branching; per-repo installs on a public mint use the default WIF provider and upstream reusable workflows.
 
-`mint unenroll` cannot remove individual orgs from a public mint. To restrict access, clear `PER_REPO_WIF_REPOS=*` and set an explicit repo list. PEM rotation is not required, but the transition is not config-only on every mint:
+`mint unenroll` cannot remove individual repositories from a public mint. To restrict access, clear `PER_REPO_WIF_REPOS=*` and set an explicit repo list. PEM rotation is not required, but the transition is not config-only on every mint:
 
 - **JWKS-backed mints** verify tokens without per-repo WIF providers, so replacing `*` with an explicit repo list is a config-only change.
 - **GCF mints** select a dedicated per-repo WIF provider for every repo in the explicit list. Public-mode enrollment skips creating those providers, so a public-only GCF mint may not have them. Provision a dedicated repo WIF provider for each repo before (or as part of) switching to the explicit list; otherwise token minting for those repos fails.
@@ -309,19 +309,17 @@ This prevents a class of bugs where the service template is updated but traffic 
 
 Enroll repositories serially — do not run concurrent enrollment commands against the same mint. The CLI reads the current env vars, merges the new repo's entry, and writes the result back. Two concurrent enrollments will race, and one repo's entry may be lost.
 
-## Unenrolling organizations and repositories
+## Unenrolling repositories
 
-`fullsend mint unenroll` removes an organization or repository from the mint.
+`fullsend mint unenroll` removes a repository from the mint.
 
 ```bash
-# Unenroll an organization
-fullsend mint unenroll acme-corp --project="$GCP_PROJECT"
-
-# Unenroll a specific repository
 fullsend mint unenroll acme-corp/my-repo --project="$GCP_PROJECT"
 ```
 
-Org-scoped unenroll removes the org from mint env vars and the shared WIF provider's attribute condition. Role PEM secrets are shared across orgs and are not modified. Repo-scoped unenroll only disables the repo-specific WIF provider (or permanently deletes it with `--delete-provider`) — it does not touch PEM secrets.
+Only `owner/repo` targets are accepted; a bare org argument is rejected with an error because org unenrollment was removed with per-org installation. To remove every repository in an org, unenroll each repository individually.
+
+Unenroll removes the repo from `PER_REPO_WIF_REPOS` and disables the repo-specific WIF provider (or permanently deletes it with `--delete-provider`). Role PEM secrets and shared role app IDs are not modified.
 
 ### Flags
 
@@ -329,7 +327,7 @@ Org-scoped unenroll removes the org from mint env vars and the shared WIF provid
 |------|---------|-------------|
 | `--project` | | GCP project ID (required) |
 | `--region` | `us-central1` | Cloud region for the mint service |
-| `--delete-provider` | `false` | Permanently delete WIF provider (repo-scoped only) |
+| `--delete-provider` | `false` | Permanently delete the repo's WIF provider instead of disabling it |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--yolo` | `false` | Skip interactive confirmation (for automation) |
 
@@ -446,9 +444,6 @@ examples above.
 
 - Shared role→app-id mappings (from role-keyed `ROLE_APP_IDS`)
 - Per-repo WIF repos list (from `PER_REPO_WIF_REPOS`, which is what authorizes callers)
-
-The legacy `ALLOWED_ORGS` variable is not shown; the mint no longer uses it
-to authorize callers.
 
 **Org drill-down** (when an org argument is provided):
 

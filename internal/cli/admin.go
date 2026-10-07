@@ -542,7 +542,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			printer.StepInfo(fmt.Sprintf("  Mint URL: %s", mintDisplay))
 			printer.StepInfo(fmt.Sprintf("  Mint project: %s, region: %s", mintProject, mintRegion))
 			if mintFound {
-				printer.StepInfo(fmt.Sprintf("  Would register %s in ALLOWED_ORGS", owner))
+				printer.StepInfo(fmt.Sprintf("  Would register %s/%s in PER_REPO_WIF_REPOS", owner, repo))
 				printer.StepInfo(fmt.Sprintf("  Would use shared ROLE_APP_IDS for roles: %s", strings.Join(roles, ",")))
 			}
 		}

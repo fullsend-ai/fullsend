@@ -14,7 +14,6 @@ import (
 func TestStageMintDeployArgs_WithAppSet(t *testing.T) {
 	cfg := stageMintConfig{
 		pemDir:            "/tmp/pems",
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "halfsend/test-repo-01",
 		workflowHostRepos: "halfsend/test-repo-01,halfsend/test-repo-02",
 		appSet:            "fullsend-test",
@@ -30,20 +29,14 @@ func TestStageMintDeployArgs_WithAppSet(t *testing.T) {
 	assert.Contains(t, args, StageMintCustomDomain)
 	assert.Contains(t, args, "--pem-dir")
 	assert.Contains(t, args, "--app-set")
-	assert.Contains(t, args, "--allowed-orgs")
 	assert.Contains(t, args, "--per-repo-wif-repos")
 	assert.Contains(t, args, "--workflow-host-repos")
 
 	// No --preview flag for durable deploys.
 	assert.NotContains(t, args, "--preview")
 
-	for i, a := range args {
-		if a == "--allowed-orgs" {
-			require.Less(t, i+1, len(args), "--allowed-orgs must have a value")
-			assert.Equal(t, "", args[i+1], "--allowed-orgs should be explicit empty for per-repo mode")
-			break
-		}
-	}
+	// --allowed-orgs was removed with per-org installation (ADR 0044).
+	assert.NotContains(t, args, "--allowed-orgs")
 
 	for i, a := range args {
 		if a == "--custom-domain" {
@@ -75,7 +68,6 @@ func TestStageMintDeployArgs_AllowedWorkflowFiles(t *testing.T) {
 func TestStageMintDeployArgs_WithoutAppSet(t *testing.T) {
 	cfg := stageMintConfig{
 		pemDir:            "/tmp/pems",
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "halfsend/test-repo-01",
 		workflowHostRepos: "halfsend/test-repo-01",
 	}
@@ -116,7 +108,6 @@ func TestNewStageMintDriver_OK(t *testing.T) {
 
 	d, err := newStageMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, stageMintConfig{
 		pemDir:            dir,
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "halfsend/test-repo-01",
 		workflowHostRepos: "halfsend/test-repo-01",
 		appSet:            "fullsend-test",
@@ -177,7 +168,6 @@ func TestStageMintDriver_ImplementsMintDriver(t *testing.T) {
 
 	d, err := newStageMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, stageMintConfig{
 		pemDir:            dir,
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "halfsend/test-repo-01",
 		workflowHostRepos: "halfsend/test-repo-01",
 	})

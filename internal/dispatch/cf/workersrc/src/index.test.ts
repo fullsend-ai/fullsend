@@ -23,10 +23,9 @@ const allowRateLimit: Env["MINT_TOKEN_RATE_LIMITER"] = {
 };
 
 describe("mint worker bridge smoke", () => {
-  // The vitest config intentionally omits ALLOWED_ORGS from bindings
-  // to verify the Worker boots for per-repo-only deployments (parity
-  // with Go mintcore which allows empty ALLOWED_ORGS since #5856).
-  it("boots and serves /health without ALLOWED_ORGS", async () => {
+  // The vitest config sets only the minimal bindings needed to boot,
+  // verifying the Worker starts for per-repo-only deployments.
+  it("boots and serves /health with minimal bindings", async () => {
     const resp = await exports.default.fetch("https://worker.test/health");
     expect(resp.status).toBe(200);
 

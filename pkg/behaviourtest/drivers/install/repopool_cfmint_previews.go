@@ -27,7 +27,6 @@ import (
 type cfmintConfig struct {
 	pemDir            string
 	suiteName         string
-	allowedOrgs       string
 	perRepoWIFRepos   string
 	workflowHostRepos string
 	appSet            string
@@ -64,7 +63,6 @@ func NewRepoPoolCFMintPreviews(
 	cfg := cfmintConfig{
 		pemDir:            pemDir,
 		suiteName:         envSuiteName(),
-		allowedOrgs:       "", // per-repo mode — no org-level allowlist
 		perRepoWIFRepos:   buildRepoList(org, poolSize),
 		workflowHostRepos: buildRepoList(org, poolSize),
 		appSet:            envAppSet(),
@@ -241,11 +239,10 @@ func GenerateCFMintPreviewAlias() (string, error) {
 // CFMintDeployArgs builds the CLI arguments for `fullsend mint deploy --platform=cloudflare`.
 // Exported so unit tests can verify arg construction without shelling out.
 //
-// --allowed-orgs and --workflow-host-repos are always passed (even when
-// empty) so the CLI sees them as explicitly changed. The CLI uses
+// --per-repo-wif-repos and --workflow-host-repos are always passed (even
+// when empty) so the CLI sees them as explicitly changed. The CLI uses
 // "flag changed" semantics: omitted flags preserve existing Worker
-// bindings, while explicitly-empty values clear them. For per-repo
-// mode the caller should set AllowedOrgs to "" to avoid dual-enrollment.
+// bindings, while explicitly-empty values clear them.
 func CFMintDeployArgs(alias, workerName string, cfg cfmintConfig) []string {
 	args := []string{
 		"mint", "deploy",
@@ -253,7 +250,6 @@ func CFMintDeployArgs(alias, workerName string, cfg cfmintConfig) []string {
 		"--preview", alias,
 		"--worker-name", workerName,
 		"--pem-dir", cfg.pemDir,
-		"--allowed-orgs", cfg.allowedOrgs,
 		"--per-repo-wif-repos", cfg.perRepoWIFRepos,
 		"--workflow-host-repos", cfg.workflowHostRepos,
 	}
