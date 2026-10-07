@@ -475,10 +475,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// Unpack the runner secrets bundle (ADR 0136) before any child process
-	// starts: loadRunnerSecrets removes it from the environment.
+	// starts: loadRunnerSecrets deletes the bundle file and removes both
+	// bundle variables from the environment.
 	runnerSecrets, err := loadRunnerSecrets()
 	if err != nil {
-		printer.StepFail("Invalid " + runnerSecretsEnv)
+		printer.StepFail("Invalid runner secrets bundle")
 		return err
 	}
 
@@ -1101,6 +1102,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	for k, v := range h.RunnerEnv {
 		h.RunnerEnv[k] = os.Expand(v, expander)
 	}
+	// Collect the referenced bundle names before expansion replaces them.
+	usedRunnerSecrets := referencedRunnerSecretNames(h, runnerSecrets)
 
 	// Expand ${VAR} references in env.runner and env.sandbox (ADR 0055).
 	// Only env.runner resolves runner secrets; keys of the bundle that the
@@ -1237,8 +1240,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.PreScript != "" {
 		printer.KeyValue("Pre-script", h.PreScript)
 	}
-	if len(runnerSecrets) > 0 {
-		printer.KeyValue("Runner secrets", strings.Join(sortedRunnerSecretNames(runnerSecrets), ", "))
+	if len(usedRunnerSecrets) > 0 {
+		printer.KeyValue("Runner secrets", strings.Join(usedRunnerSecrets, ", "))
 	}
 	if h.PostScript != "" {
 		if noPostScript {
@@ -3029,10 +3032,14 @@ var oidcDenyKeys = map[string]bool{
 	// them.
 	"FULLSEND_TRIGGER_TOKEN":  true,
 	"FULLSEND_WEBHOOK_SECRET": true,
-	// The runner secrets bundle (ADR 0136). loadRunnerSecrets unsets it at
-	// start-up; listing it here keeps a harness from expanding the whole
-	// bundle and strips it from child scripts if it is ever still present.
-	runnerSecretsEnv: true,
+	// The runner secrets bundle and its file path (ADR 0136).
+	// loadRunnerSecrets unsets both at start-up; listing them here keeps a
+	// harness from expanding the whole bundle and strips them from child
+	// scripts if either is ever still present. In CI the bundle reaches
+	// fullsend run only as a file, which it deletes after reading, so no
+	// process environment holds it; scripts still run as the job user.
+	runnerSecretsEnv:     true,
+	runnerSecretsFileEnv: true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting
@@ -4328,10 +4335,15 @@ func dropUnusableCredentialFile(printer *ui.Printer, setEnv func(key, value stri
 	return false
 }
 
+// actionsCommandEscaper escapes a workflow command's data the way the
+// runner unescapes it, so a value holding %25, %0D or %0A (or a raw CR or
+// LF) is masked as written rather than as its unescaped form.
+var actionsCommandEscaper = strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
+
 // maskActionsValue asks GitHub Actions to mask a secret in the job log.
 func maskActionsValue(value string) {
 	if value != "" && os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", value)
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", actionsCommandEscaper.Replace(value))
 	}
 }
 

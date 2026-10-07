@@ -534,8 +534,9 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 
 // TestRunnerSecretsThreading validates the in-repo half of the
 // FULLSEND_RUNNER_SECRETS channel (ADR 0136): the scaffold shim forwards
-// the secret with its one fixed line, and the composite action hands its
-// runner_secrets input to the Run fullsend step only.
+// the secret with its one fixed line, the composite action reads its
+// runner_secrets input only in the staging step, and the Run fullsend
+// step receives the staged file's path, never the value.
 func TestRunnerSecretsThreading(t *testing.T) {
 	shim := string(loadScaffoldFile("templates/shim-per-repo.yaml")(t))
 	assert.Contains(t, shim, "FULLSEND_RUNNER_SECRETS: ${{ secrets.FULLSEND_RUNNER_SECRETS }}",
@@ -544,17 +545,35 @@ func TestRunnerSecretsThreading(t *testing.T) {
 	action := string(loadRepoFile("action.yml")(t))
 	assert.Contains(t, action, "  runner_secrets:\n", "action.yml must declare the runner_secrets input")
 	// action.yml steps sit at four-space indent, so extractStepSection's
-	// workflow-job pattern does not apply; slice the step by hand.
-	start := strings.Index(action, "\n    - name: Run fullsend\n")
-	require.GreaterOrEqual(t, start, 0, "action.yml must have a Run fullsend step")
-	step := action[start+1:]
-	if next := strings.Index(step[1:], "\n    - name: "); next >= 0 {
-		step = step[:next+1]
+	// workflow-job pattern does not apply; slice each step by hand.
+	actionStep := func(name string) string {
+		t.Helper()
+		start := strings.Index(action, "\n    - name: "+name+"\n")
+		require.GreaterOrEqual(t, start, 0, "action.yml must have a %s step", name)
+		step := action[start+1:]
+		if next := strings.Index(step[1:], "\n    - name: "); next >= 0 {
+			step = step[:next+1]
+		}
+		return step
 	}
-	assert.Contains(t, step, "FULLSEND_RUNNER_SECRETS: ${{ inputs.runner_secrets }}",
-		"Run fullsend step must receive runner_secrets")
-	assert.Equal(t, 1, strings.Count(action, "inputs.runner_secrets"),
-		"runner_secrets must reach no composite step other than Run fullsend")
+
+	stage := actionStep("Stage runner secrets")
+	assert.Contains(t, stage, "id: runner-secrets\n")
+	assert.Contains(t, stage, "FULLSEND_RUNNER_SECRETS: ${{ inputs.runner_secrets }}",
+		"the staging step must carry runner_secrets in its own env")
+	assert.Contains(t, stage, "umask 077", "the staged file must be readable by the job user only")
+	assert.Equal(t, strings.Count(action, "inputs.runner_secrets"), strings.Count(stage, "inputs.runner_secrets"),
+		"runner_secrets must reach no composite step other than Stage runner secrets")
+
+	run := actionStep("Run fullsend")
+	assert.Contains(t, run, "FULLSEND_RUNNER_SECRETS_FILE: ${{ steps.runner-secrets.outputs.path }}",
+		"Run fullsend step must receive the staged file path")
+	assert.NotContains(t, run, "FULLSEND_RUNNER_SECRETS:", "Run fullsend step must not receive the bundle itself")
+
+	cleanup := actionStep("Remove staged runner secrets")
+	assert.Contains(t, cleanup, "if: always() && steps.runner-secrets.outputs.path != ''")
+	assert.Less(t, strings.Index(action, stage), strings.Index(action, run), "staging must precede Run fullsend")
+	assert.Less(t, strings.Index(action, run), strings.Index(action, cleanup), "cleanup must follow Run fullsend")
 
 	prioritize := string(loadScaffoldFile(".github/workflows/prioritize.yml")(t))
 	assert.Contains(t, prioritize, "FULLSEND_RUNNER_SECRETS: ${{ secrets.FULLSEND_RUNNER_SECRETS }}",

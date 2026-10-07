@@ -2514,6 +2514,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"FULLSEND_WEBHOOK_SECRET",
 		// The runner secrets bundle must never be expandable as a whole (ADR 0136).
 		"FULLSEND_RUNNER_SECRETS",
+		// Nor may a harness or script learn where the bundle file was staged.
+		"FULLSEND_RUNNER_SECRETS_FILE",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)

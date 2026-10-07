@@ -48,6 +48,81 @@ func TestLoadRunnerSecrets_ParsesAndUnsets(t *testing.T) {
 	assert.False(t, present, "%s must not reach any child process", runnerSecretsEnv)
 }
 
+// writeRunnerSecretsFile writes body to a mode 0600 bundle file and points
+// FULLSEND_RUNNER_SECRETS_FILE at it, as the composite action does.
+func writeRunnerSecretsFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "runner-secrets.json")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	t.Setenv(runnerSecretsFileEnv, path)
+	t.Setenv(runnerSecretsEnv, "")
+	require.NoError(t, os.Unsetenv(runnerSecretsEnv))
+	return path
+}
+
+func TestLoadRunnerSecrets_FromFileDeletesFileAndUnsets(t *testing.T) {
+	path := writeRunnerSecretsFile(t, `{"JIRA_API_TOKEN":"jira-token-value"}`)
+
+	secrets, err := loadRunnerSecrets()
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"JIRA_API_TOKEN": "jira-token-value"}, secrets)
+	assert.NoFileExists(t, path, "the bundle file must be deleted right after it is read")
+	_, present := os.LookupEnv(runnerSecretsFileEnv)
+	assert.False(t, present, "%s must not reach any child process", runnerSecretsFileEnv)
+}
+
+func TestLoadRunnerSecrets_MalformedFileIsStillDeleted(t *testing.T) {
+	path := writeRunnerSecretsFile(t, `not-json-secret-value`)
+
+	secrets, err := loadRunnerSecrets()
+	require.Error(t, err)
+	assert.Nil(t, secrets)
+	assert.Contains(t, err.Error(), runnerSecretsFileEnv+" must hold a JSON object")
+	assert.NotContains(t, err.Error(), "not-json-secret-value")
+	assert.NoFileExists(t, path)
+	_, present := os.LookupEnv(runnerSecretsFileEnv)
+	assert.False(t, present)
+}
+
+func TestLoadRunnerSecrets_MissingFileFails(t *testing.T) {
+	writeRunnerSecretsFile(t, `{}`)
+	t.Setenv(runnerSecretsFileEnv, filepath.Join(t.TempDir(), "absent.json"))
+
+	_, err := loadRunnerSecrets()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading the "+runnerSecretsFileEnv+" file")
+	_, present := os.LookupEnv(runnerSecretsFileEnv)
+	assert.False(t, present)
+}
+
+// The composite action always sets the path; it is empty when the
+// FULLSEND_RUNNER_SECRETS secret is unset.
+func TestLoadRunnerSecrets_EmptyFilePathIsNoOp(t *testing.T) {
+	t.Setenv(runnerSecretsFileEnv, "")
+	t.Setenv(runnerSecretsEnv, "")
+	require.NoError(t, os.Unsetenv(runnerSecretsEnv))
+
+	secrets, err := loadRunnerSecrets()
+	require.NoError(t, err)
+	assert.Nil(t, secrets)
+	_, present := os.LookupEnv(runnerSecretsFileEnv)
+	assert.False(t, present)
+}
+
+func TestLoadRunnerSecrets_FileAndInlineConflict(t *testing.T) {
+	path := writeRunnerSecretsFile(t, `{"X":"x-secret-value-1"}`)
+	t.Setenv(runnerSecretsEnv, `{"X":"x-secret-value-2"}`)
+
+	_, err := loadRunnerSecrets()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not both")
+	assert.NoFileExists(t, path)
+	for _, name := range []string{runnerSecretsFileEnv, runnerSecretsEnv} {
+		_, present := os.LookupEnv(name)
+		assert.False(t, present, name)
+	}
+}
+
 func TestLoadRunnerSecrets_RegistersValuesForRedaction(t *testing.T) {
 	const value = "opaque-runner-secret-7689"
 	t.Setenv(runnerSecretsEnv, `{"OPAQUE_VALUE":"`+value+`"}`)
@@ -71,17 +146,91 @@ func TestLoadRunnerSecrets_MasksValuesOnActions(t *testing.T) {
 		_, err := loadRunnerSecrets()
 		require.NoError(t, err)
 	})
+	assert.Contains(t, stderr, "::add-mask::first-line-value%0Asecond-line-value\n",
+		"the whole value is masked, escaped for the workflow command")
 	assert.Contains(t, stderr, "::add-mask::first-line-value\n")
 	assert.Contains(t, stderr, "::add-mask::second-line-value\n")
 }
 
+// The bundle as a whole is never sent to add-mask: masking the JSON would
+// echo it into the command stream, and only the values are secret.
+func TestLoadRunnerSecrets_DoesNotMaskWholeBundle(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv(runnerSecretsEnv, `{"ONE_VALUE":"single-line-value"}`)
+
+	stderr := captureStderr(t, func() {
+		_, err := loadRunnerSecrets()
+		require.NoError(t, err)
+	})
+	assert.Equal(t, "::add-mask::single-line-value\n", stderr)
+}
+
+func TestMaskActionsValue_EscapesCommandData(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	for name, tc := range map[string]struct{ value, want string }{
+		"literal percent-25": {"abc%25def-secret", "::add-mask::abc%2525def-secret\n"},
+		"multi-line":         {"line-one\r\nline-two", "::add-mask::line-one%0D%0Aline-two\n"},
+		"plain":              {"plain-secret", "::add-mask::plain-secret\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stderr := captureStderr(t, func() { maskActionsValue(tc.value) })
+			assert.Equal(t, tc.want, stderr)
+		})
+	}
+}
+
+func TestLoadRunnerSecrets_MasksPercentEncodedValue(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv(runnerSecretsEnv, `{"PCT_VALUE":"pass%25word%0Avalue"}`)
+
+	stderr := captureStderr(t, func() {
+		_, err := loadRunnerSecrets()
+		require.NoError(t, err)
+	})
+	// The runner unescapes %25 to %, so the value must be sent escaped or
+	// a different string would be masked.
+	assert.Equal(t, "::add-mask::pass%2525word%250Avalue\n", stderr)
+}
+
+func TestLoadRunnerSecrets_RefusesValueTooShortToRedact(t *testing.T) {
+	t.Setenv(runnerSecretsEnv, `{"SHORT_VALUE":"abc1234","LONG_VALUE":"long-enough-value"}`)
+
+	secrets, err := loadRunnerSecrets()
+	require.Error(t, err)
+	assert.Nil(t, secrets)
+	assert.Contains(t, err.Error(), "SHORT_VALUE: value is too short to redact from logs")
+	assert.NotContains(t, err.Error(), "LONG_VALUE")
+	assert.NotContains(t, err.Error(), "abc1234")
+}
+
+func TestLoadRunnerSecrets_RegistersLinesAndJSONEscapedForm(t *testing.T) {
+	t.Setenv(runnerSecretsEnv, `{"PEM_LIKE":"first-line-7689-a\nsecond-line-7689-b","QUOTED":"say \"hi\" to 7689-c"}`)
+
+	_, err := loadRunnerSecrets()
+	require.NoError(t, err)
+
+	// A script that prints one line of a multi-line value is redacted.
+	out := redactFeedback("pre-script failed: second-line-7689-b rejected", nil)
+	assert.NotContains(t, out, "second-line-7689-b")
+	// A script that embeds the value in JSON output is redacted too.
+	res := security.NewSecretRedactor().Scan(`{"token":"say \"hi\" to 7689-c"}`)
+	assert.NotContains(t, res.Sanitized, `say \"hi\" to 7689-c`)
+}
+
+func TestJSONEscapedString(t *testing.T) {
+	assert.Equal(t, "plain", jsonEscapedString("plain"))
+	assert.Equal(t, `a\"b\\c\nd`, jsonEscapedString("a\"b\\c\nd"))
+	assert.Equal(t, "<&>", jsonEscapedString("<&>"), "HTML characters stay literal")
+}
+
 func TestLoadRunnerSecrets_Malformed(t *testing.T) {
 	for name, raw := range map[string]string{
-		"not json":     `not-json-secret-value`,
-		"array":        `["a"]`,
-		"null":         `null`,
-		"number value": `{"X":42}`,
-		"object value": `{"X":{"a":"b"}}`,
+		"not json":       `not-json-secret-value`,
+		"array":          `["a"]`,
+		"null":           `null`,
+		"truncated":      `{"X":"not-json-secret-value"`,
+		"trailing value": `{"X":"not-json-secret-value"} {}`,
+		"bad value":      `{"X":not-json-secret-value}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(runnerSecretsEnv, raw)
@@ -94,6 +243,39 @@ func TestLoadRunnerSecrets_Malformed(t *testing.T) {
 			assert.False(t, present, "a malformed bundle must still be removed")
 		})
 	}
+}
+
+func TestLoadRunnerSecrets_InvalidValues(t *testing.T) {
+	for name, tc := range map[string]struct{ raw, want string }{
+		"null value":    {`{"X":null}`, "X: value must be a string, not null"},
+		"number value":  {`{"X":42}`, "X: value must be a string"},
+		"object value":  {`{"X":{"a":"b"}}`, "X: value must be a string"},
+		"duplicate key": {`{"X":"first-secret-value","X":"second-secret-value"}`, "X: duplicate key"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(runnerSecretsEnv, tc.raw)
+
+			secrets, err := loadRunnerSecrets()
+			require.Error(t, err)
+			assert.Nil(t, secrets)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.NotContains(t, err.Error(), "secret-value")
+		})
+	}
+}
+
+// A duplicate key's value is masked like any other, so the entry that is
+// refused never prints in clear.
+func TestLoadRunnerSecrets_MasksDuplicateValue(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv(runnerSecretsEnv, `{"X":"first-secret-value","X":"second-secret-value"}`)
+
+	stderr := captureStderr(t, func() {
+		_, err := loadRunnerSecrets()
+		require.Error(t, err)
+	})
+	assert.Contains(t, stderr, "::add-mask::first-secret-value\n")
+	assert.Contains(t, stderr, "::add-mask::second-secret-value\n")
 }
 
 func TestLoadRunnerSecrets_RefusedNames(t *testing.T) {
@@ -109,6 +291,7 @@ func TestLoadRunnerSecrets_RefusedNames(t *testing.T) {
 		"LD_PRELOAD",
 		"GH_TOKEN",
 		"PUSH_TOKEN",
+		"PUSH_TOKEN_SOURCE",
 		"REVIEW_TOKEN",
 		"GITLAB_TOKEN",
 		"PATH",
@@ -257,17 +440,38 @@ func TestWithRunnerSecretExpanderAndLookup(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestRunnerSecretNameSetAndSortedNames(t *testing.T) {
+func TestRunnerSecretNameSetAndReferencedNames(t *testing.T) {
 	assert.Nil(t, runnerSecretNameSet(nil))
-	secrets := map[string]string{"B": "1", "A": "2"}
-	assert.Equal(t, map[string]bool{"A": true, "B": true}, runnerSecretNameSet(secrets))
-	assert.Equal(t, []string{"A", "B"}, sortedRunnerSecretNames(secrets))
+	secrets := map[string]string{"B": "1", "A": "2", "UNUSED": "3"}
+	assert.Equal(t, map[string]bool{"A": true, "B": true, "UNUSED": true}, runnerSecretNameSet(secrets))
+
+	h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{
+		"FIRST":  "${B}",
+		"SECOND": "Bearer $A and ${B}",
+		"OTHER":  "${HOME}",
+	}}}
+	assert.Equal(t, []string{"A", "B"}, referencedRunnerSecretNames(h, secrets))
+	assert.Nil(t, referencedRunnerSecretNames(h, nil))
+	assert.Nil(t, referencedRunnerSecretNames(&harness.Harness{}, secrets))
+}
+
+func TestRunnerSecretRefusedNames_DerivedFromRoleTokens(t *testing.T) {
+	for _, vars := range roleTokenVars {
+		for _, tv := range vars {
+			assert.True(t, runnerSecretRefusedNames[tv.Name], tv.Name)
+		}
+	}
+	for _, name := range []string{"GH_TOKEN", "GITLAB_TOKEN", "PATH"} {
+		assert.True(t, runnerSecretRefusedNames[name], name)
+	}
 }
 
 func TestChildScriptEnv_StripsRunnerSecretsBundle(t *testing.T) {
 	t.Setenv(runnerSecretsEnv, `{"X":"v"}`)
+	t.Setenv(runnerSecretsFileEnv, "/tmp/runner-secrets.json")
 	for _, e := range childScriptEnv(nil, "") {
 		assert.False(t, strings.HasPrefix(e, runnerSecretsEnv+"="), "child env must not carry %s", runnerSecretsEnv)
+		assert.False(t, strings.HasPrefix(e, runnerSecretsFileEnv+"="), "child env must not carry %s", runnerSecretsFileEnv)
 	}
 }
 
@@ -288,9 +492,45 @@ func newRunnerSecretHarnessDir(t *testing.T, harnessExtra, preScriptBody string)
 
 func runRunnerSecretAgent(t *testing.T, dir string) error {
 	t.Helper()
+	return runRunnerSecretAgentTo(t, dir, io.Discard)
+}
+
+func runRunnerSecretAgentTo(t *testing.T, dir string, out io.Writer) error {
+	t.Helper()
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	return runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
-		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+		statusOpts{}, ui.New(out), false, runOverrideFlags{})
+}
+
+// The CI path: the bundle arrives as a file, which is gone and whose path
+// variable is unset by the time the pre-script runs.
+func TestRunAgent_RunnerSecretFileReachesPreScript(t *testing.T) {
+	usePreScriptStub(t)
+	path := writeRunnerSecretsFile(t, `{"X":"x-secret-value-1","Y":"y-secret-value-2"}`)
+	marker := filepath.Join(t.TempDir(), "ran")
+	dir := newRunnerSecretHarnessDir(t,
+		"env:\n  runner:\n    X: \"${X}\"\n",
+		`[ "${X:-}" = "x-secret-value-1" ] || exit 11`+"\n"+
+			`[ -z "${Y+set}" ] || exit 13`+"\n"+
+			`[ -z "${`+runnerSecretsFileEnv+`+set}" ] || exit 14`+"\n"+
+			`[ ! -e "`+path+`" ] || exit 15`+"\n"+
+			"touch "+marker+"\n")
+
+	require.NoError(t, runRunnerSecretAgent(t, dir))
+	assert.FileExists(t, marker)
+}
+
+// The run log names only the bundle keys the harness references.
+func TestRunAgent_LogsOnlyReferencedRunnerSecretNames(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv(runnerSecretsEnv, `{"REFERENCED_NAME":"x-secret-value-1","UNREFERENCED_NAME":"y-secret-value-2"}`)
+	dir := newRunnerSecretHarnessDir(t, "env:\n  runner:\n    TOKEN: \"${REFERENCED_NAME}\"\n", "")
+
+	var out strings.Builder
+	require.NoError(t, runRunnerSecretAgentTo(t, dir, &out))
+	assert.Contains(t, out.String(), "Runner secrets")
+	assert.Contains(t, out.String(), "REFERENCED_NAME")
+	assert.NotContains(t, out.String(), "UNREFERENCED_NAME")
 }
 
 // The acceptance case from #7689: the pre-script receives X, does not

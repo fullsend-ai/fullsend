@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -11,12 +14,18 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
 
-// runnerSecretsEnv carries user secrets for host-side scripts as one JSON
-// object of name → value (ADR 0136). On GitHub the reusable workflow
-// passes the FULLSEND_RUNNER_SECRETS repository or organization secret to
-// the fullsend run step only. fullsend run unpacks it, resolves ${NAME}
-// references in the harness's env.runner from it, and removes it from the
-// process environment so no child process ever inherits the bundle.
+// runnerSecretsFileEnv names a file that holds the runner secrets bundle,
+// a JSON object of name → value (ADR 0136). In GitHub Actions the
+// composite action writes the FULLSEND_RUNNER_SECRETS secret to a mode
+// 0600 file under RUNNER_TEMP and passes only this path, so the bundle is
+// never in the environment of fullsend run or of any process it starts.
+// fullsend run deletes the file as soon as it has read it.
+const runnerSecretsFileEnv = "FULLSEND_RUNNER_SECRETS_FILE"
+
+// runnerSecretsEnv carries the same bundle inline. It is a fallback for
+// local runs only: in CI the value would stay readable in
+// /proc/<pid>/environ even after fullsend run unsets it. fullsend run
+// removes it from its environment before any child process starts.
 const runnerSecretsEnv = "FULLSEND_RUNNER_SECRETS"
 
 // runnerSecretRefusedPrefixes are variable families owned by the runner
@@ -31,16 +40,23 @@ var runnerSecretRefusedPrefixes = []string{
 }
 
 // runnerSecretRefusedNames are minted role tokens and other runner-owned
-// names outside the refused families. oidcDenyKeys, providerOnlyKeys and
+// names outside the refused families: GH_TOKEN, every role token in
+// roleTokenVars, GITLAB_TOKEN and PATH. oidcDenyKeys, providerOnlyKeys and
 // reservedSandboxKeys are refused as well (runnerSecretNameRefused), which
 // keeps GH_WORKFLOW_TOKEN (ADR 0114) unforgeable.
-var runnerSecretRefusedNames = map[string]bool{
-	"GH_TOKEN":     true,
-	"PUSH_TOKEN":   true,
-	"REVIEW_TOKEN": true,
-	"GITLAB_TOKEN": true,
-	"PATH":         true,
-}
+var runnerSecretRefusedNames = func() map[string]bool {
+	names := map[string]bool{
+		"GH_TOKEN":     true,
+		"GITLAB_TOKEN": true,
+		"PATH":         true,
+	}
+	for _, vars := range roleTokenVars {
+		for _, tv := range vars {
+			names[tv.Name] = true
+		}
+	}
+	return names
+}()
 
 // runnerSecretNameRefused reports whether name is runner-owned and so may
 // neither be a key in FULLSEND_RUNNER_SECRETS nor receive a runner secret
@@ -57,67 +73,182 @@ func runnerSecretNameRefused(name string) bool {
 	return false
 }
 
-// loadRunnerSecrets reads FULLSEND_RUNNER_SECRETS, removes it from the
-// process environment, masks and registers every value for redaction, and
-// returns the validated name → value map. An unset or blank variable
-// returns a nil map: the run behaves as it did before the channel existed.
+// loadRunnerSecrets reads the runner secrets bundle from the file named by
+// FULLSEND_RUNNER_SECRETS_FILE or, for local runs, from
+// FULLSEND_RUNNER_SECRETS. It masks and registers every value for
+// redaction and returns the validated name → value map. With neither set,
+// or with a blank bundle, it returns a nil map: the run behaves as it did
+// before the channel existed.
 //
-// The variable is removed before anything else, even when parsing fails,
-// so a malformed bundle still never reaches a child process. Values are
-// masked before validation so a refused entry's value is hidden too.
-// Errors never quote values.
+// Both variables are removed from the process environment and the file is
+// deleted before anything else, even when reading or parsing fails, so a
+// malformed bundle still never reaches a child process. Values are masked
+// before validation so a refused entry's value is hidden too. Errors never
+// quote values.
 func loadRunnerSecrets() (map[string]string, error) {
-	raw, present := os.LookupEnv(runnerSecretsEnv)
-	if !present {
-		return nil, nil
+	path, hasFile := os.LookupEnv(runnerSecretsFileEnv)
+	inline, hasInline := os.LookupEnv(runnerSecretsEnv)
+	for _, name := range []string{runnerSecretsFileEnv, runnerSecretsEnv} {
+		if err := os.Unsetenv(name); err != nil {
+			return nil, fmt.Errorf("removing %s from the environment: %w", name, err)
+		}
 	}
-	if err := os.Unsetenv(runnerSecretsEnv); err != nil {
-		return nil, fmt.Errorf("removing %s from the environment: %w", runnerSecretsEnv, err)
+	// The composite action always sets the path variable; it is empty when
+	// the FULLSEND_RUNNER_SECRETS secret is unset.
+	hasFile = hasFile && strings.TrimSpace(path) != ""
+
+	source, raw := runnerSecretsEnv, inline
+	if hasFile {
+		source = runnerSecretsFileEnv
+		data, readErr := os.ReadFile(path)
+		removeErr := os.Remove(path)
+		if readErr != nil {
+			return nil, fmt.Errorf("reading the %s file: %w", runnerSecretsFileEnv, readErr)
+		}
+		if removeErr != nil {
+			return nil, fmt.Errorf("deleting the %s file: %w", runnerSecretsFileEnv, removeErr)
+		}
+		if hasInline {
+			return nil, fmt.Errorf("set %s or %s, not both", runnerSecretsFileEnv, runnerSecretsEnv)
+		}
+		raw = string(data)
+	} else if !hasInline {
+		return nil, nil
 	}
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}
-	maskActionsValue(raw)
 
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &fields); err != nil || fields == nil {
-		return nil, fmt.Errorf("%s must be a JSON object of name → string value", runnerSecretsEnv)
+	entries, problems, err := parseRunnerSecretsBundle([]byte(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%s must hold a JSON object of name → string value", source)
 	}
-	secrets := make(map[string]string, len(fields))
-	var problems []string
-	for name, rawValue := range fields {
-		var value string
-		if err := json.Unmarshal(rawValue, &value); err != nil {
-			problems = append(problems, fmt.Sprintf("%s: value must be a string", name))
-			continue
-		}
-		maskRunnerSecretValue(value)
-		security.RegisterRuntimeSecret(value)
+	secrets := make(map[string]string, len(entries))
+	for _, e := range entries {
+		maskRunnerSecretValue(e.value)
+		redactable := registerRunnerSecretValue(e.value)
 		switch {
-		case !validEnvKeyRe.MatchString(name):
-			problems = append(problems, fmt.Sprintf("%q: not a valid environment variable name", name))
-		case runnerSecretNameRefused(name):
-			problems = append(problems, fmt.Sprintf("%s: name is reserved for the runner", name))
+		case e.duplicate:
+			problems = append(problems, fmt.Sprintf("%s: duplicate key", e.name))
+		case !validEnvKeyRe.MatchString(e.name):
+			problems = append(problems, fmt.Sprintf("%q: not a valid environment variable name", e.name))
+		case runnerSecretNameRefused(e.name):
+			problems = append(problems, fmt.Sprintf("%s: name is reserved for the runner", e.name))
+		case !redactable:
+			problems = append(problems, fmt.Sprintf("%s: value is too short to redact from logs", e.name))
 		default:
-			secrets[name] = value
+			secrets[e.name] = e.value
 		}
 	}
 	if len(problems) > 0 {
 		sort.Strings(problems)
-		return nil, fmt.Errorf("%s has %d invalid entr(ies):\n    %s", runnerSecretsEnv, len(problems), strings.Join(problems, "\n    "))
+		return nil, fmt.Errorf("%s has %d invalid entr(ies):\n    %s", source, len(problems), strings.Join(problems, "\n    "))
 	}
 	return secrets, nil
 }
 
-// maskRunnerSecretValue masks a runner secret in the GitHub Actions log.
-// The workflow command masks a single line, so a multi-line value is
-// masked line by line.
+// runnerSecretEntry is one name → string value pair of the bundle.
+// duplicate marks a repeat of a name seen earlier in the object; its value
+// is still returned so the caller masks it.
+type runnerSecretEntry struct {
+	name      string
+	value     string
+	duplicate bool
+}
+
+// errRunnerSecretsShape reports a bundle that is not a single JSON object.
+// It carries no detail from the decoder, which could quote the input.
+var errRunnerSecretsShape = errors.New("not a single JSON object")
+
+// parseRunnerSecretsBundle walks raw token by token so it can refuse what
+// json.Unmarshal into a map would accept silently: a duplicate key (the
+// last one would win) and a null value (it would decode as ""). It returns
+// every string entry, the problems with non-string values, and
+// errRunnerSecretsShape when raw is not a single JSON object. No problem
+// quotes a value.
+func parseRunnerSecretsBundle(raw []byte) ([]runnerSecretEntry, []string, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, nil, errRunnerSecretsShape
+	}
+	var entries []runnerSecretEntry
+	var problems []string
+	seen := make(map[string]bool)
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, nil, errRunnerSecretsShape
+		}
+		name, _ := tok.(string)
+		var rawValue json.RawMessage
+		if err := dec.Decode(&rawValue); err != nil {
+			return nil, nil, errRunnerSecretsShape
+		}
+		var value string
+		switch {
+		case string(rawValue) == "null":
+			problems = append(problems, fmt.Sprintf("%s: value must be a string, not null", name))
+		case json.Unmarshal(rawValue, &value) != nil:
+			problems = append(problems, fmt.Sprintf("%s: value must be a string", name))
+		default:
+			entries = append(entries, runnerSecretEntry{name: name, value: value, duplicate: seen[name]})
+		}
+		seen[name] = true
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, nil, errRunnerSecretsShape
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, nil, errRunnerSecretsShape
+	}
+	return entries, problems, nil
+}
+
+// maskRunnerSecretValue masks a runner secret in the GitHub Actions log:
+// the whole value, and each non-blank line of a multi-line value so a
+// script that prints one line of it is masked too.
 func maskRunnerSecretValue(value string) {
+	maskActionsValue(value)
+	if !strings.ContainsAny(value, "\r\n") {
+		return
+	}
 	for _, line := range strings.Split(value, "\n") {
 		if line = strings.TrimRight(line, "\r"); strings.TrimSpace(line) != "" {
 			maskActionsValue(line)
 		}
 	}
+}
+
+// registerRunnerSecretValue registers a runner secret with the
+// process-wide redactor and reports whether the whole value was long
+// enough to register. It also registers each line of a multi-line value
+// and the JSON-escaped form when that differs, so a script that prints one
+// line or embeds the value in JSON output is still redacted. A line or
+// escaped form below the redactor's minimum length is skipped.
+func registerRunnerSecretValue(value string) bool {
+	if !security.RegisterRuntimeSecret(value) {
+		return false
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		for _, line := range strings.Split(value, "\n") {
+			security.RegisterRuntimeSecret(strings.TrimRight(line, "\r"))
+		}
+	}
+	if escaped := jsonEscapedString(value); escaped != value {
+		security.RegisterRuntimeSecret(escaped)
+	}
+	return true
+}
+
+// jsonEscapedString returns value as it appears inside a JSON string
+// literal, without the surrounding quotes.
+func jsonEscapedString(value string) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(value) // encoding a string cannot fail
+	quoted := strings.TrimSuffix(buf.String(), "\n")
+	return quoted[1 : len(quoted)-1]
 }
 
 // runnerSecretNameSet returns the names of secrets as a set, or nil.
@@ -277,11 +408,23 @@ func withRunnerSecretLookup(secrets map[string]string, fallback func(string) (st
 	}
 }
 
-// sortedRunnerSecretNames returns the secret names in sorted order for
-// display. Names are not secret; values never leave this file unmasked.
-func sortedRunnerSecretNames(secrets map[string]string) []string {
-	names := make([]string, 0, len(secrets))
-	for n := range secrets {
+// referencedRunnerSecretNames returns, sorted and de-duplicated, the
+// runner secret names the harness's env.runner values reference: the only
+// names a host-side script can receive. Call it before env.runner is
+// expanded. Names are not secret; the run log lists these and not the
+// rest of the bundle.
+func referencedRunnerSecretNames(h *harness.Harness, secrets map[string]string) []string {
+	if len(secrets) == 0 || h.Env == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for _, v := range h.Env.Runner {
+		for _, n := range runnerSecretRefs(v, secrets) {
+			seen[n] = true
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
 		names = append(names, n)
 	}
 	sort.Strings(names)
