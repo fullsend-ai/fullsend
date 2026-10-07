@@ -401,10 +401,13 @@ The existing design principle is that [the repo is the coordinator](problems/age
   re-fetching the data, creating a new structure for retry/requeue, or
   terminating and re-invoking the agent ends that lifetime and requires fresh
   authorization resolution, even if the same in-memory structure is reused.
-  Only records whose source system can reliably resolve actor identity and
-  current authorization through its own authorization subsystem are eligible;
-  quoted or copied text inside an authorized record remains part of that one
-  trusted record.
+  Only records whose source system can reliably establish record/actor
+  attribution and whose current authorization can be resolved through the
+  applicable source-system or trusted provider are eligible; this includes
+  configured OWNERS-derived permissions and registered-bot roles. Event-carried
+  authorization is re-resolved after event admission and again immediately
+  before sandbox initialization. Quoted or copied text inside an authorized
+  record remains part of that one trusted record.
   Before model exposure, host-side filtering handles Unicode and hidden
   characters, redacts sensitive data, scans for prompt injection, and applies
   size limits; unrecognized or unauthorized records are redacted rather than

@@ -34,16 +34,21 @@ authorized actor truthful, safe, or authoritative.
 
 Agents nevertheless need to use actor-attributed data such as issue bodies,
 comments, reviews, and linked records. The boundary applies only to records
-whose source system can reliably resolve the actor identity and current
-authorization through its own authorization subsystem, such as GitHub pull
-request or issue comments and Jira issue comments. Self-asserted author or
-committer metadata is not sufficient; records whose actor cannot be reliably
-established are redacted. That data may arrive in the triggering event, a poll
-or snapshot, or a proactive read through another authorized API. Comments from
-an authorized actor can contain genuine task instructions that the agent must
-be able to heed. The boundary must still prevent content from changing
-platform authority or capabilities, and must protect against hidden Unicode,
-prompt injection, and indirect disclosure.
+whose source system can reliably establish the record and actor attribution,
+and for which Fullsend can obtain current authorization from the applicable
+trusted authorization provider. That provider may be the source system's
+permission subsystem or a configured provider recognized by [ADR
+0054](0054-require-authorization-on-all-agent-dispatch-paths.md) and [ADR
+0107](0107-bot-identity-resolution-for-dispatch-authorization.md), including
+OWNERS-derived permissions and registered-bot roles. GitHub pull request or
+issue comments and Jira issue comments are representative records. Self-
+asserted author or committer metadata is not sufficient; records whose actor
+cannot be reliably established are redacted. That data may arrive in the
+triggering event, a poll or snapshot, or a proactive read through another
+authorized API. Comments from an authorized actor can contain genuine task
+instructions that the agent must be able to heed. The boundary must still
+prevent content from changing platform authority or capabilities, and must
+protect against hidden Unicode, prompt injection, and indirect disclosure.
 
 ## Decision
 
@@ -80,13 +85,25 @@ The actor MUST meet the applicable observation or mutation threshold for the
 selected harness. A label grant authorizes only its verified label transition;
 it does not authorize unrelated content from that actor or other actors.
 
-Only a source-system record whose actor identity and current authorization can
-be reliably fetched from the source system's authorization subsystem is
-eligible for this boundary. GitHub pull request and issue comments and Jira
-issue comments are representative examples. A self-asserted Git author,
-committer, or account association does not establish actor identity for
-admission; if the source system cannot establish the actor and authorization,
-the record is redacted.
+Event-carried permission or role evidence may support initial event admission
+and routing, but it MUST NOT satisfy later model-bound authorization checks.
+For event-triggered runs, Fullsend MUST freshly resolve each record actor's
+current authorization after event admission and before model admission. It
+MUST freshly resolve that authorization again immediately before sandbox
+initialization when the record will be exposed to a model in that sandbox.
+Non-event retrieval paths perform the equivalent fresh resolution after
+retrieval admission and before model admission, followed by the
+sandbox-initialization check. A cache entry MUST NOT cross either checkpoint;
+the actor MUST still meet the applicable threshold at both checks. Failure,
+unavailability, or loss of authorization at either check redacts the record
+and, if no authorized records remain, denies the run.
+
+Only a source-system record whose actor attribution can be reliably
+established, and for which the applicable source-system or trusted-provider
+authorization can be resolved, is eligible for this boundary. A self-asserted
+Git author, committer, or account association does not establish actor identity
+for admission; if the required attribution or authorization cannot be
+established, the record is redacted.
 
 This is bounded trust: content with authorized provenance may inform analysis
 and, where the harness permits, provide task instructions. It cannot grant
@@ -149,4 +166,5 @@ source-system reads to the model.
 - Every forge adapter, poller, snapshot builder, proactive data source, and Fullsend-controlled model retrieval capability needs provenance binding, per-record authorization, bounded retrieval, and the common filtering pipeline before its content is model-visible.
 - Hidden-character and prompt-injection findings may omit legitimate-looking content, so the model and operators need bounded diagnostics rather than an assumption that all source text will be preserved.
 - Filtering reduces, but cannot prove the absence of prompt injection; immutable instructions, least privilege, output validation, and deterministic host-side mutations remain required defenses.
+- Quoted, forwarded, or copied text is intentionally not detected or assigned a separate trust level inside an authorized record. A trusted actor or bot can therefore relay hostile text as part of a trusted record; this residual risk is accepted in exchange for a whole-record admission model, and is mitigated by trusted-actor caution, filtering, explicit delimitation, least privilege, output validation, deterministic host-side mutations, and the fresh authorization checkpoints.
 - The data-filter contract becomes a versioned security boundary whose changes require compatibility review and regression testing across all model-bound data consumers.
