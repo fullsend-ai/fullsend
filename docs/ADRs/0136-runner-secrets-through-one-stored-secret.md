@@ -22,9 +22,12 @@ Accepted
 
 A custom harness's `pre_script`, `post_script` and `validation_loop` read
 `${NAME}` through `env.runner` ([ADR 0055](0055-unified-env-var-delivery.md)),
-but on GitHub a user secret such as a Jira token never reaches `fullsend run`:
-the reusable workflow receives only the secrets it declares, and the shim is a
-generated file that setup and `repos install` overwrite (#7689).
+but on GitHub the reusable workflow receives only the secrets it declares. For
+a user's own tools that is one fixed pair, `JIRA_TOKEN` and `JIRA_USER_EMAIL`,
+which only the `harness-run` job forwards, from a caller the user writes (the
+Jira poller). Any other secret, or Jira on another stage, cannot reach
+`fullsend run`, and the shim is a generated file that setup and
+`repos install` overwrite (#7689, #6359).
 
 Credentials stay out of the sandbox
 ([ADR 0017](0017-credential-isolation-for-sandboxed-agents.md)), workflow
@@ -52,20 +55,19 @@ reusable workflow passes it to each stage's composite action; a staging step
 writes it to a mode 0600 file under `RUNNER_TEMP` and hands `fullsend run`
 only the path. `fullsend run` deletes the file and unsets the path before any
 child starts, then resolves `${NAME}` in the resolved `env.runner` (after
-overlays) from the object. Only the short staging shell ever holds the object
-in its environment; it is never in the environment of `fullsend run` or of
-any process it starts, and keys the harness does not reference reach no
-script. Referenced values reach their scripts as environment variables, and
+overlays) from the object. The object is never in the environment of
+`fullsend run` or its children; unreferenced keys reach no script, and
 scripts still run as the job user. Locally, `FULLSEND_RUNNER_SECRETS` may
 carry the object inline.
 
 These rules apply to names in the GitHub object:
 
 - **Refused names:** `oidcDenyKeys`, `providerOnlyKeys`, sandbox-reserved
-  names, the `FULLSEND_`, `GITHUB_`, `ACTIONS_`, `RUNNER_`, `CI_` and `LD_`
-  families, `GH_TOKEN`, the minted role tokens, `GITLAB_TOKEN` and `PATH`.
-  Null values, duplicate keys and values shorter than the redactor's minimum
-  are refused too.
+  names, the `FULLSEND_`, `GITHUB_`, `ACTIONS_`, `RUNNER_`, `CI_`, `LD_` and
+  `OTEL_` families, `GH_TOKEN`, the minted role tokens, `GITLAB_TOKEN`, `PATH`,
+  and every name the workflow sets on the `fullsend run` step, such as the
+  named `JIRA_TOKEN`, so each name has one source. Null values, duplicate
+  keys and values shorter than the redactor's minimum are refused too.
 - **Host side only:** a reference from `env.sandbox`, `runner_env`, a provider
   credential, a `host_files` source or expanded content, or a
   `validation_loop` field fails validation.
@@ -92,7 +94,7 @@ but not redacted; and a script that receives a value can still leak it.
 ## Consequences
 
 - Adding an integration is one `gh secret set` and one `env.runner` line, with
-  no shim edit and no fullsend release.
+  no shim edit and no fullsend release; updating one value rewrites the object.
 - `GH_WORKFLOW_TOKEN` and the minted role tokens stay unforgeable, because
   their names are refused as keys.
 - The shim always passes the secret, and GitHub rejects a call that passes a
@@ -102,4 +104,5 @@ but not redacted; and a script that receives a value can still leak it.
 - Known gap: until ADR 0112's guarded-field check exists, an event-guarded
   overlay can still swap `pre_script`, `post_script` or `validation_loop`, and
   so choose which script receives a referenced secret.
-- Updating one value means rewriting the whole object.
+- Named workflow secrets (`JIRA_TOKEN` on `harness-run`, the OTEL headers)
+  still reach every script unfiltered; #8154 tracks that.

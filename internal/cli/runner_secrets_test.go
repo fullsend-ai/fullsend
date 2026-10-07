@@ -14,6 +14,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadRunnerSecrets_UnsetIsNoOp(t *testing.T) {
@@ -319,9 +320,63 @@ func TestLoadRunnerSecrets_InvalidName(t *testing.T) {
 	assert.Contains(t, err.Error(), `"has-dash": not a valid environment variable name`)
 }
 
+// Every name the reusable workflows and the composite action set on a
+// fullsend run step is refused, so a runner secret never shadows a named
+// workflow secret (JIRA_TOKEN on harness-run) or a workflow-provided value.
+func TestRunnerSecretNameRefused_CoversWorkflowSetNames(t *testing.T) {
+	type step struct {
+		Name string            `yaml:"name"`
+		Env  map[string]string `yaml:"env"`
+		With map[string]any    `yaml:"with"`
+	}
+	stepEnvKeys := func(steps []step, keep func(step) bool) []string {
+		var keys []string
+		for _, st := range steps {
+			if keep(st) {
+				for k := range st.Env {
+					keys = append(keys, k)
+				}
+			}
+		}
+		return keys
+	}
+	var names []string
+	for _, wf := range []string{"reusable-dispatch.yml", "reusable-prioritize.yml"} {
+		raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", wf))
+		require.NoError(t, err)
+		var doc struct {
+			Jobs map[string]struct {
+				Steps []step `yaml:"steps"`
+			} `yaml:"jobs"`
+		}
+		require.NoError(t, yaml.Unmarshal(raw, &doc), wf)
+		for _, job := range doc.Jobs {
+			names = append(names, stepEnvKeys(job.Steps, func(st step) bool { _, ok := st.With["agent"]; return ok })...)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+	var action struct {
+		Runs struct {
+			Steps []step `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &action))
+	names = append(names, stepEnvKeys(action.Runs.Steps, func(st step) bool { return st.Name == "Run fullsend" })...)
+
+	require.Contains(t, names, "JIRA_TOKEN", "harness-run must still set the named JIRA_TOKEN secret")
+	for _, name := range names {
+		assert.True(t, runnerSecretNameRefused(name), "%s is set on a fullsend run step but not refused as a runner secret name", name)
+	}
+}
+
 func TestRunnerSecretNameRefused_AllowsOrdinaryNames(t *testing.T) {
-	for _, name := range []string{"JIRA_API_TOKEN", "CODERABBIT_API_KEY", "JIRA_TOKEN", "MY_SECRET"} {
+	for _, name := range []string{"JIRA_API_TOKEN", "JIRA_API_EMAIL", "CODERABBIT_API_KEY", "MY_SECRET"} {
 		assert.False(t, runnerSecretNameRefused(name), name)
+	}
+	// The named workflow secrets keep their single source.
+	for _, name := range []string{"JIRA_TOKEN", "JIRA_USER_EMAIL", "JIRA_BASE_URL", "OTEL_EXPORTER_OTLP_HEADERS"} {
+		assert.True(t, runnerSecretNameRefused(name), name)
 	}
 }
 

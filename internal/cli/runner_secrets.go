@@ -37,11 +37,30 @@ var runnerSecretRefusedPrefixes = []string{
 	"RUNNER_",
 	"CI_",
 	"LD_",
+	"OTEL_",
+}
+
+// workflowSetEnvNames are the names reusable-dispatch.yml,
+// reusable-prioritize.yml and action.yml set on a fullsend run step
+// outside the refused families, such as the named JIRA_TOKEN and
+// JIRA_USER_EMAIL secrets on harness-run. A runner secret may not shadow
+// one, so each name has a single source.
+// TestRunnerSecretNameRefused_CoversWorkflowSetNames keeps the list in
+// step with the workflows.
+var workflowSetEnvNames = []string{
+	"AGENT", "CODE_ALLOWED_TARGET_BRANCHES", "COMMENT_BODY", "FIX_ITERATION",
+	"HUMAN_INSTRUCTION", "ISSUE_NUMBER", "JIRA_BASE_URL", "JIRA_TOKEN",
+	"JIRA_USER_EMAIL", "MINT_REPOS", "MINT_URL", "ORIGINATING_URL",
+	"PRE_AGENT_HEAD", "PRIOR_REVIEW_FILE", "PRIOR_REVIEW_PROVENANCE",
+	"PRIOR_REVIEW_SHA", "PR_HEAD_SHA", "PR_NUMBER", "REPO_FULL_NAME",
+	"RETRO_COMMENT", "REVIEW_BODY_FILE", "STATUS_COMMENT_ID", "STATUS_NUMBER",
+	"STATUS_REPO", "STATUS_RUN_URL", "TARGET_BRANCH", "TARGET_REPO",
+	"TRIGGER_SOURCE",
 }
 
 // runnerSecretRefusedNames are minted role tokens and other runner-owned
 // names outside the refused families: GH_TOKEN, every role token in
-// roleTokenVars, GITLAB_TOKEN and PATH. oidcDenyKeys, providerOnlyKeys and
+// roleTokenVars, GITLAB_TOKEN, PATH and workflowSetEnvNames. oidcDenyKeys, providerOnlyKeys and
 // reservedSandboxKeys are refused as well (runnerSecretNameRefused), which
 // keeps GH_WORKFLOW_TOKEN (ADR 0114) unforgeable.
 var runnerSecretRefusedNames = func() map[string]bool {
@@ -49,6 +68,9 @@ var runnerSecretRefusedNames = func() map[string]bool {
 		"GH_TOKEN":     true,
 		"GITLAB_TOKEN": true,
 		"PATH":         true,
+	}
+	for _, n := range workflowSetEnvNames {
+		names[n] = true
 	}
 	for _, vars := range roleTokenVars {
 		for _, tv := range vars {
@@ -133,7 +155,7 @@ func loadRunnerSecrets() (map[string]string, error) {
 		case !validEnvKeyRe.MatchString(e.name):
 			problems = append(problems, fmt.Sprintf("%q: not a valid environment variable name", e.name))
 		case runnerSecretNameRefused(e.name):
-			problems = append(problems, fmt.Sprintf("%s: name is reserved for the runner", e.name))
+			problems = append(problems, fmt.Sprintf("%s: name is reserved for the runner or set by the reusable workflow", e.name))
 		case !redactable:
 			problems = append(problems, fmt.Sprintf("%s: value is too short to redact from logs", e.name))
 		default:
@@ -318,7 +340,7 @@ func validateRunnerSecretRefs(h *harness.Harness, secrets map[string]string) err
 		}
 		for k, v := range h.Env.Runner {
 			if refs := runnerSecretRefs(v, secrets); len(refs) > 0 && runnerSecretNameRefused(k) {
-				errs = append(errs, fmt.Sprintf("env.runner[%s] receives runner secret %s, but %s is reserved for the runner", k, strings.Join(refs, ", "), k))
+				errs = append(errs, fmt.Sprintf("env.runner[%s] receives runner secret %s, but %s is reserved for the runner or set by the reusable workflow", k, strings.Join(refs, ", "), k))
 			}
 		}
 	}

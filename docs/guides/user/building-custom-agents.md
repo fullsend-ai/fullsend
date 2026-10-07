@@ -623,7 +623,7 @@ reusable workflow that invokes the agent.
 
 ### Pass secrets to host-side scripts (GitHub)
 
-A pre-script that calls Jira, CodeRabbit or another service needs a token. On GitHub, store all such tokens in one secret, `FULLSEND_RUNNER_SECRETS`, as a JSON object of name → value. The installed shim forwards it, and the reusable workflow hands it to each stage's composite action. The action writes it to a file that only the job user can read and passes `fullsend run` the path, never the value. `fullsend run` deletes the file as soon as it has read it, so the object is never in the environment of `fullsend run` or of any process it starts. A host-side script receives only the names its harness references in `env.runner`, as ordinary environment variables. The values never enter the sandbox ([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)).
+A pre-script that calls Jira, CodeRabbit or another service needs a token. If your Jira poller workflow already passes `JIRA_TOKEN` and `JIRA_USER_EMAIL` to the reusable workflow ([Jira integration](jira-integration.md)), the `harness-run` job keeps receiving them as before; this channel is for every other secret and every other stage. On GitHub, store all such tokens in one secret, `FULLSEND_RUNNER_SECRETS`, as a JSON object of name → value. The installed shim forwards it, and the reusable workflow hands it to each stage's composite action. The action writes it to a file that only the job user can read and passes `fullsend run` the path, never the value. `fullsend run` deletes the file as soon as it has read it, so the object is never in the environment of `fullsend run` or of any process it starts. A host-side script receives only the names its harness references in `env.runner`, as ordinary environment variables. The values never enter the sandbox ([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)).
 
 The example below is a review harness whose pre-script fetches the Jira issue named in the pull request title.
 
@@ -631,10 +631,10 @@ The example below is a review harness whose pre-script fetches the Jira issue na
 
    ```bash
    gh secret set FULLSEND_RUNNER_SECRETS --repo OWNER/REPO \
-     --body '{"JIRA_API_TOKEN":"...","JIRA_USER_EMAIL":"..."}'
+     --body '{"JIRA_API_TOKEN":"...","JIRA_API_EMAIL":"..."}'
 
    gh secret set FULLSEND_RUNNER_SECRETS --org OWNER --visibility selected \
-     --repos REPO_A,REPO_B --body '{"JIRA_API_TOKEN":"...","JIRA_USER_EMAIL":"..."}'
+     --repos REPO_A,REPO_B --body '{"JIRA_API_TOKEN":"...","JIRA_API_EMAIL":"..."}'
    ```
 
    A secret holds one value, so adding or rotating a key means setting the whole object again. Keep the JSON in a file outside the repository and run `gh secret set FULLSEND_RUNNER_SECRETS --repo OWNER/REPO < runner-secrets.json`. Each value must be a string of at least 8 characters (the redactor's current minimum), so that `fullsend run` can redact it; keys may not repeat.
@@ -645,13 +645,13 @@ The example below is a review harness whose pre-script fetches the Jira issue na
    env:
      runner:
        JIRA_API_TOKEN: "${JIRA_API_TOKEN}"
-       JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
+       JIRA_API_EMAIL: "${JIRA_API_EMAIL}"
        JIRA_BASE_URL: "https://example.atlassian.net"
    ```
 
-   A name the harness does not reference reaches no script. The name may not be runner-owned (`GH_TOKEN`, `GITHUB_*`, `FULLSEND_*`, `PATH`, ...), and it may appear only in `env.runner`. A reference from `env.sandbox`, a provider credential, an expanded `host_files` entry, or an overlay guarded by anything other than `runtime.forge` or `config` fails the run. The full rules are in the [harness reference](../../reference/harness-reference.md#field-details).
+   A name the harness does not reference reaches no script. The name may not be runner-owned (`GH_TOKEN`, `GITHUB_*`, `FULLSEND_*`, `OTEL_*`, `PATH`, ...) or one the reusable workflow already sets, such as `JIRA_TOKEN` or `JIRA_USER_EMAIL`, so pick your own names, and it may appear only in `env.runner`. A reference from `env.sandbox`, a provider credential, an expanded `host_files` entry, or an overlay guarded by anything other than `runtime.forge` or `config` fails the run. The full rules are in the [harness reference](../../reference/harness-reference.md#field-details).
 
-3. Read the variables in the pre-script as usual. `JIRA_API_TOKEN`, `JIRA_USER_EMAIL` and `JIRA_BASE_URL` come from `env.runner`. `REPO_FULL_NAME` and `PR_NUMBER` are set by the review stage of the reusable workflow, and `GH_TOKEN` is the token `fullsend run` mints for the agent. The Jira key is read from the pull request title (for example `PROJ-123: fix login`):
+3. Read the variables in the pre-script as usual. `JIRA_API_TOKEN`, `JIRA_API_EMAIL` and `JIRA_BASE_URL` come from `env.runner`. `REPO_FULL_NAME` and `PR_NUMBER` are set by the review stage of the reusable workflow, and `GH_TOKEN` is the token `fullsend run` mints for the agent. The Jira key is read from the pull request title (for example `PROJ-123: fix login`):
 
    ```bash
    #!/usr/bin/env bash
@@ -664,7 +664,7 @@ The example below is a review harness whose pre-script fetches the Jira issue na
    JIRA_KEY=$(grep -oE '[A-Z][A-Z0-9]+-[0-9]+' <<<"$TITLE" | head -n 1 || true)
    if [[ -n "$JIRA_KEY" ]]; then
      curl --fail-with-body --silent \
-       --user "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" \
+       --user "${JIRA_API_EMAIL}:${JIRA_API_TOKEN}" \
        "${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}" > "$WORKSPACE/jira.json"
    fi
    ```
