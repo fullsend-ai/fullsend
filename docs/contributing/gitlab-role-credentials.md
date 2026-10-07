@@ -645,9 +645,20 @@ credentials from every host-side script (#8146): `FULLSEND_ID_TOKEN`,
 `FULLSEND_JOB_TOKEN`, `FULLSEND_FORGE_TOKEN`, every
 `FULLSEND_GITLAB_*_TOKEN` role secret (`isGitLabRoleSecretKey`, a family
 rule that covers new roles), and on GitLab runs `GCP_OIDC_TOKEN_FILE`.
-All but `GCP_OIDC_TOKEN_FILE` are refused at every harness `${VAR}`
-expansion site (`harnessExpansionDenied`). `GCP_OIDC_TOKEN_FILE` stays
-expandable because `host_files` copies the token file into the sandbox.
+All but `GCP_OIDC_TOKEN_FILE` are refused at every harness YAML `${VAR}`
+expansion site (`harnessExpansionDenied`): `runner_env`, `env.runner`,
+`env.sandbox`, `host_files[].src`, `validation_loop.schema` and
+`preflight_check`. Inside `expand: true` host-file contents a denied
+reference expands to an empty string rather than failing validation, and
+provider definitions (trusted config) resolve through
+`sandbox.DenyExpansionKeys`, which only carries `oidcDenyKeys`.
+`GCP_OIDC_TOKEN_FILE` stays expandable in `host_files[].src` and
+`env.sandbox` because `host_files` copies the token file into the sandbox;
+`validateScriptEnvRefs` rejects it in `runner_env`, `env.runner` and
+`preflight_check` on GitLab runs, so no script-visible value can alias it.
+`validationEnv` drops `runner_env` entries for role-routing keys
+(`isPinnedGitLabRoleRoutingKey`), as `childScriptEnv` does, so the pinning
+holds on the validation path too.
 The selected credential stays available as `GITLAB_TOKEN` /
 `PUSH_TOKEN`.
 

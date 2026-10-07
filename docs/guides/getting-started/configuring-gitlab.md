@@ -911,11 +911,16 @@ Confirm:
   `FULLSEND_JOB_TOKEN`, `FULLSEND_FORGE_TOKEN`, or any
   `FULLSEND_GITLAB_*_TOKEN` role secret. The selected role's credential
   still reaches them as `GITLAB_TOKEN` (and `PUSH_TOKEN` for roles with
-  `write_repository`). A harness `${VAR}` reference to any of these names
-  except `GCP_OIDC_TOKEN_FILE` fails validation. `GCP_OIDC_TOKEN_FILE`
-  stays available to `host_files` so the sandbox can receive the token
-  file. CI/CD variables you set for your own tools still reach scripts,
-  either from the job environment or through `env.runner`.
+  `write_repository`). A `${VAR}` reference to any of these names in
+  `runner_env`, `env.runner`, `env.sandbox`, `host_files[].src` or
+  `preflight_check` fails validation, with one exception:
+  `GCP_OIDC_TOKEN_FILE` stays available to `host_files[].src` (and
+  `env.sandbox`) so the sandbox can receive the token file, but a
+  reference to it in `runner_env`, `env.runner` or `preflight_check`
+  fails validation. Inside the contents of an `expand: true` host file,
+  a reference to one of these names expands to an empty string. CI/CD
+  variables you set for your own tools still reach scripts, either from
+  the job environment or through `env.runner`.
 
 ## Testing Fullsend
 

@@ -11,6 +11,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 )
 
 // envKeys returns the variable names present in an exec env slice.
@@ -187,10 +188,10 @@ func TestCheckGitLabApprovalCapability_StrippedChildEnv(t *testing.T) {
 	getenv := mapGetenv(execEnvMap(postScriptEnv(&harness.Harness{}, "")))
 	require.Empty(t, getenv(forge.SecretGitLabAnalystToken), "precondition: the role secret is stripped")
 
-	require.NoError(t, checkGitLabApprovalCapability("gitlab", "approve", "analyst-pat", getenv))
-	require.NoError(t, checkGitLabApprovalCapability("gitlab", "approve", "", getenv), "GITLAB_TOKEN authenticates when --token is empty")
+	require.NoError(t, checkGitLabApprovalCapability(repos.ForgeGitLab, "approve", "analyst-pat", getenv))
+	require.NoError(t, checkGitLabApprovalCapability(repos.ForgeGitLab, "approve", "", getenv), "GITLAB_TOKEN authenticates when --token is empty")
 
-	err := checkGitLabApprovalCapability("gitlab", "approve", "other-pat", getenv)
+	err := checkGitLabApprovalCapability(repos.ForgeGitLab, "approve", "other-pat", getenv)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, gitlabroles.ErrIdentityMismatch)
 }
@@ -204,7 +205,7 @@ func TestWithPinnedSelectedRoleCredential(t *testing.T) {
 			envGitLabRoleSecret: forge.SecretGitLabCoderToken,
 			"GITLAB_TOKEN":      "c",
 		}
-		err := checkGitLabApprovalCapability("gitlab", "approve", "c", mapGetenv(env))
+		err := checkGitLabApprovalCapability(repos.ForgeGitLab, "approve", "c", mapGetenv(env))
 		require.Error(t, err)
 		assert.ErrorIs(t, err, gitlabroles.ErrCapabilityDenied)
 	})
@@ -215,7 +216,7 @@ func TestWithPinnedSelectedRoleCredential(t *testing.T) {
 			envGitLabRoleSecret: forge.SecretGitLabCoderToken,
 			"GITLAB_TOKEN":      "c",
 		}
-		err := checkGitLabApprovalCapability("gitlab", "approve", "c", mapGetenv(env))
+		err := checkGitLabApprovalCapability(repos.ForgeGitLab, "approve", "c", mapGetenv(env))
 		require.Error(t, err)
 		assert.ErrorIs(t, err, gitlabroles.ErrUnconfigured)
 	})
@@ -225,7 +226,7 @@ func TestWithPinnedSelectedRoleCredential(t *testing.T) {
 			envGitLabRole:  "analyst",
 			"GITLAB_TOKEN": "a",
 		}
-		err := checkGitLabApprovalCapability("gitlab", "approve", "a", mapGetenv(env))
+		err := checkGitLabApprovalCapability(repos.ForgeGitLab, "approve", "a", mapGetenv(env))
 		require.Error(t, err)
 		assert.ErrorIs(t, err, gitlabroles.ErrUnconfigured)
 	})
@@ -250,4 +251,68 @@ func TestWithPinnedSelectedRoleCredential(t *testing.T) {
 		assert.Empty(t, getenv(forge.SecretGitLabCoderToken))
 		assert.Equal(t, "a", getenv("GITLAB_TOKEN"))
 	})
+}
+
+// A harness runner_env must not be able to forge the role selection the
+// approval check trusts, on the validation path as well as pre/post scripts
+// (#8146).
+func TestCheckGitLabApprovalCapability_ValidationEnvForgedRouting(t *testing.T) {
+	t.Setenv(envGitLabRole, "coder")
+	t.Setenv(envGitLabRoleSecret, forge.SecretGitLabCoderToken)
+	t.Setenv("GITLAB_TOKEN", "coder-pat")
+	t.Setenv(forge.SecretGitLabCoderToken, "coder-pat")
+
+	h := &harness.Harness{RunnerEnv: map[string]string{
+		envGitLabRole:       "analyst",
+		envGitLabRoleSecret: forge.SecretGitLabAnalystToken,
+		"GITLAB_TOKEN":      "forged",
+		"JIRA_TOKEN":        "user-jira-token",
+	}}
+	paths := map[string][]string{
+		"inline validation": stripOIDCEnv(append(os.Environ(), validationEnv(h, "", "/run")...)),
+		"sweep validation":  stripOIDCEnv(append(os.Environ(), validationEnv(h, "/repo", "/run")...)),
+	}
+	for name, env := range paths {
+		t.Run(name, func(t *testing.T) {
+			got := execEnvMap(env)
+			assert.Equal(t, "coder", got[envGitLabRole])
+			assert.Equal(t, forge.SecretGitLabCoderToken, got[envGitLabRoleSecret])
+			assert.Equal(t, "coder-pat", got["GITLAB_TOKEN"])
+			assert.Equal(t, "user-jira-token", got["JIRA_TOKEN"], "non-routing runner_env entries still apply")
+
+			err := checkGitLabApprovalCapability(repos.ForgeGitLab, "approve", "coder-pat", mapGetenv(got))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, gitlabroles.ErrCapabilityDenied)
+		})
+	}
+}
+
+// GCP_OIDC_TOKEN_FILE stays expandable for host_files but must not be
+// copied into a script-visible value under another name (#8146).
+func TestValidateScriptEnvRefs_GCPOIDCTokenFile(t *testing.T) {
+	t.Setenv(envGitLabRole, "analyst")
+
+	refs := map[string]*harness.Harness{
+		"runner_env":      {RunnerEnv: map[string]string{"OIDC_PATH": "${GCP_OIDC_TOKEN_FILE}"}},
+		"env.runner":      {Env: &harness.EnvConfig{Runner: map[string]string{"OIDC_PATH": "x-${GCP_OIDC_TOKEN_FILE}"}}},
+		"preflight_check": {ValidationLoop: &harness.ValidationLoop{PreflightCheck: "test -f ${GCP_OIDC_TOKEN_FILE}"}},
+	}
+	for name, h := range refs {
+		t.Run(name, func(t *testing.T) {
+			err := validateScriptEnvRefs(h)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "GCP_OIDC_TOKEN_FILE")
+			assert.Contains(t, err.Error(), name)
+		})
+	}
+
+	allowed := &harness.Harness{
+		Env:       &harness.EnvConfig{Runner: map[string]string{"JIRA": "${JIRA_API_TOKEN}"}, Sandbox: map[string]string{"P": "${GCP_OIDC_TOKEN_FILE}"}},
+		HostFiles: []harness.HostFile{{Src: "${GCP_OIDC_TOKEN_FILE}", Dest: "/sandbox/x"}},
+	}
+	require.NoError(t, validateScriptEnvRefs(allowed))
+
+	// GitHub runs (no GitLab role selection) keep the existing behavior.
+	t.Setenv(envGitLabRole, "")
+	require.NoError(t, validateScriptEnvRefs(refs["runner_env"]))
 }

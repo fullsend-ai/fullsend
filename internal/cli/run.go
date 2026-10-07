@@ -1081,14 +1081,28 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
+	// Sites whose expanded value reaches host-side scripts additionally
+	// refuse the keys childScriptEnvDenied strips (GCP_OIDC_TOKEN_FILE on
+	// GitLab), so an aliased reference cannot smuggle them past the strip
+	// (#8146). host_files and env.sandbox keep the plain expander.
+	scriptExpander := func(key string) string {
+		if childScriptEnvDenied(key) {
+			return ""
+		}
+		return expander(key)
+	}
+	if err := validateScriptEnvRefs(h); err != nil {
+		printer.StepFail("Environment validation failed")
+		return fmt.Errorf("validating env: %w", err)
+	}
 	for k, v := range h.RunnerEnv {
-		h.RunnerEnv[k] = os.Expand(v, expander)
+		h.RunnerEnv[k] = os.Expand(v, scriptExpander)
 	}
 
 	// Expand ${VAR} references in env.runner and env.sandbox (ADR 0055).
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
-			h.Env.Runner[k] = os.Expand(v, expander)
+			h.Env.Runner[k] = os.Expand(v, scriptExpander)
 		}
 		for k, v := range h.Env.Sandbox {
 			h.Env.Sandbox[k] = os.Expand(v, expander)
@@ -1101,7 +1115,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
 	}
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
-		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
+		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, scriptExpander)
 	}
 
 	if err := h.ValidateFilesExist(); err != nil {
@@ -3087,6 +3101,42 @@ func harnessEnvLookup(key string) (string, bool) {
 	return os.LookupEnv(key)
 }
 
+// harnessVarRefRe matches a ${VAR} reference in harness YAML values.
+var harnessVarRefRe = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// validateScriptEnvRefs rejects ${VAR} references that childScriptEnvDenied
+// strips from host-side scripts but harnessExpansionDenied still allows
+// (GCP_OIDC_TOKEN_FILE on GitLab), at the sites whose expanded value reaches
+// those scripts: runner_env, env.runner and validation_loop.preflight_check.
+// ValidateRunnerEnvWith's shared lookup cannot do this: host_files.src and
+// env.sandbox must keep expanding the key (#8146).
+func validateScriptEnvRefs(h *harness.Harness) error {
+	var problems []string
+	check := func(source, value string) {
+		for _, m := range harnessVarRefRe.FindAllStringSubmatch(value, -1) {
+			if key := m[1]; childScriptEnvDenied(key) && !harnessExpansionDenied(key) {
+				problems = append(problems, fmt.Sprintf("%s is not available to host-side scripts (referenced by %s)", key, source))
+			}
+		}
+	}
+	for k, v := range h.RunnerEnv {
+		check(fmt.Sprintf("runner_env[%s]", k), v)
+	}
+	if h.Env != nil {
+		for k, v := range h.Env.Runner {
+			check(fmt.Sprintf("env.runner[%s]", k), v)
+		}
+	}
+	if h.ValidationLoop != nil {
+		check("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck)
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	sort.Strings(problems)
+	return fmt.Errorf("%d host variable reference(s) refused:\n    %s", len(problems), strings.Join(problems, "\n    "))
+}
+
 // reservedSandboxKeys are infrastructure env vars that env.sandbox must not
 // shadow. These are set by the runner in bootstrapEnv and overriding them
 // from harness YAML could break sandbox operation, or are security-sensitive
@@ -4806,8 +4856,19 @@ func agentTimedOut(elapsed, timeout time.Duration) bool {
 // script. It includes RunnerEnv, TARGET_REPO_DIR, FULLSEND_RUN_DIR, and —
 // when the harness specifies a validation_loop.schema — FULLSEND_OUTPUT_SCHEMA
 // pointing to the host-side cached schema path.
+//
+// Like childScriptEnv, it drops RunnerEnv entries for GitLab role-routing
+// keys (isPinnedGitLabRoleRoutingKey) so the process environment's role
+// selection cannot be shadowed by harness runner_env (#8146).
 func validationEnv(h *harness.Harness, hostRepoDir, runDir string) []string {
-	env := append(envToList(h.RunnerEnv),
+	env := make([]string, 0, len(h.RunnerEnv)+3)
+	for _, e := range envToList(h.RunnerEnv) {
+		if i := strings.IndexByte(e, '='); i > 0 && isPinnedGitLabRoleRoutingKey(e[:i]) {
+			continue
+		}
+		env = append(env, e)
+	}
+	env = append(env,
 		fmt.Sprintf("TARGET_REPO_DIR=%s", hostRepoDir),
 		fmt.Sprintf("FULLSEND_RUN_DIR=%s", runDir),
 	)
