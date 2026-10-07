@@ -160,7 +160,9 @@ missing names fail before launch. No shell evaluation, word splitting, or
 recursive substitution is performed.
 
 `stream_format` supports `none` (default) and `claude`. Claude format expects
-one clean Claude stream-json output stream. A script without an explicitly
+one clean Claude stream-json output stream. With `none`, script stdout is
+forwarded to the caller and retained in the iteration output artifact; stderr
+is forwarded separately. CI callers must apply their usual log secret masking. A script without an explicitly
 selected runtime does not get runtime bootstrap or inference credentials. With
 `runtime: claude`, Fullsend bootstraps Claude's hooks/plugins and installs the
 `fullsend-claude` helper on `PATH`; scripts can use it to launch child Claude

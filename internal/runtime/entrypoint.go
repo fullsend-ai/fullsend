@@ -91,7 +91,7 @@ func RunEntrypoint(ctx context.Context, sandboxName, repoDir string, argv []stri
 			cancel()
 			_, _ = io.Copy(io.Discard, stdout)
 		}
-	} else if _, err = io.Copy(out, stdout); err != nil {
+	} else if _, err = io.Copy(io.MultiWriter(out, os.Stdout), stdout); err != nil {
 		cancel()
 		return -1, fmt.Errorf("reading entrypoint output: %w", err)
 	}

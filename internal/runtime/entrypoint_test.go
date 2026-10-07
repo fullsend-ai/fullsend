@@ -64,12 +64,20 @@ exec /bin/sh -c "$command"
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	output := filepath.Join(dir, "stdout")
 	argv := []string{entry, "two words", "$(touch should-not-run)", ""}
+	savedStdout := os.Stdout
+	console, err := os.Create(filepath.Join(dir, "console"))
+	require.NoError(t, err)
+	os.Stdout = console
+	t.Cleanup(func() { os.Stdout = savedStdout; console.Close() })
 	code, err := RunEntrypoint(context.Background(), "test-sandbox", repo, argv, "none", 5*time.Second, output, nil, nil, &RunMetrics{})
 	require.NoError(t, err)
 	require.Equal(t, 0, code)
 	data, err := os.ReadFile(output)
 	require.NoError(t, err)
 	require.Equal(t, "<two words>\n<$(touch should-not-run)>\n<>\n", string(data))
+	consoleData, err := os.ReadFile(console.Name())
+	require.NoError(t, err)
+	require.Equal(t, data, consoleData)
 	assert.NoFileExists(t, filepath.Join(repo, "should-not-run"))
 }
 
