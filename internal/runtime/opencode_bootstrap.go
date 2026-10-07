@@ -139,6 +139,9 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 	if err := uploadBytes(sandboxName, r.openCodeAgentPath(agentName), agentMD); err != nil {
 		return fmt.Errorf("writing opencode agent definition: %w", err)
 	}
+	if err := openCodeVerifyAgent(sandboxName, agentName, r); err != nil {
+		return err
+	}
 
 	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {
 		return err
@@ -304,8 +307,9 @@ func openCodeToolNamesSorted(rec map[string]string) []string {
 // by validateOpenCodeTrustedEnv, so parse errors return an empty map (the
 // intersection becomes a no-op and the global policy still applies at
 // runtime). Pattern-map values (e.g. bash: {"gh *": "allow", "*": "deny"})
-// are collapsed to "deny" for intersection purposes — the agent frontmatter
-// cannot represent pattern maps, and the conservative choice is to not widen.
+// are omitted from the result so the global config-level rule continues to
+// apply at runtime. Collapsing them to "deny" here would override the global
+// pattern-map's per-command allowances in the agent frontmatter.
 func parseTrustedPermissionPolicy(configContent string) map[string]string {
 	var config struct {
 		Permission map[string]json.RawMessage `json:"permission"`
@@ -319,19 +323,24 @@ func parseTrustedPermissionPolicy(configContent string) map[string]string {
 		if err := json.Unmarshal(raw, &action); err == nil {
 			result[tool] = action
 		} else {
-			// Pattern map — collapse to "deny" for intersection.
-			result[tool] = "deny"
+			// Pattern map — omit from the intersection result so the
+			// global rule (which carries the full pattern map) applies
+			// at runtime. Collapsing to "deny" here would override
+			// the global pattern-map's per-command allowances.
 		}
 	}
 	return result
 }
 
 // intersectPermissionRecord caps the agent-level permission record so that any
-// tool the trusted policy denies stays denied in the agent frontmatter.
+// tool the trusted policy denies or asks stays capped in the agent frontmatter.
 // OpenCode's permission/index.ts evaluate uses findLast, so without this step
 // the agent rules (evaluated after the global policy) would win. The
 // intersection makes the global policy the ceiling:
 //   - If the trusted policy says "deny" for a tool, the agent gets "deny".
+//   - If the trusted policy says "ask" for a tool, the agent gets "ask" — in
+//     headless mode OpenCode auto-rejects "ask" requests, so agent "allow"
+//     must not override a trusted "ask".
 //   - If the trusted policy says "allow" (or is absent), the agent's value
 //     is preserved (it can narrow to "deny" but not widen to "allow" if the
 //     tool isn't in its allowlist).
@@ -349,8 +358,8 @@ func intersectPermissionRecord(rec map[string]string, trustedPolicy map[string]s
 			// Fall back to the wildcard entry.
 			policyAction = trustedPolicy["*"]
 		}
-		if policyAction == "deny" && agentAction == "allow" {
-			rec[tool] = "deny"
+		if (policyAction == "deny" || policyAction == "ask") && agentAction == "allow" {
+			rec[tool] = policyAction
 		}
 	}
 	return rec
@@ -374,6 +383,31 @@ func openCodeBashAllowlistWarning(allowlist []string) string {
 	return fmt.Sprintf(
 		"Agent Bash allowlist (%s) is recorded but not enforced on opencode — per-argument restrictions collapse to bare bash: \"allow\" until the hook adapter in unbound-force/unbound-force#515 enforces them (see docs/contributing/runtime-implementation.md)",
 		strings.Join(allowlist, ", "))
+}
+
+// openCodeVerifyAgent runs `opencode debug agent <name>` in the sandbox and
+// verifies the agent loaded as mode "primary" with the expected permission
+// record. This catches cases where OpenCode silently falls back to its default
+// agent (*:allow) due to frontmatter parse failures, file deletion, or
+// redefinition as mode:subagent — scenarios the name-mismatch guard does not
+// cover.
+func openCodeVerifyAgent(sandboxName, agentName string, r OpenCodeRuntime) error {
+	cmd := fmt.Sprintf("cd %s && OPENCODE_CONFIG_DIR=%s opencode debug agent %s 2>/dev/null",
+		shellQuote(r.WorkspaceDir()),
+		shellQuote(r.ConfigDir()),
+		shellQuote(openCodeValidatedArg(agentName)))
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("verifying opencode agent %q: %w", agentName, err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("opencode debug agent %q exited %d: %s", agentName, exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
+	}
+	out := strings.TrimSpace(sanitizeOutput(stdout))
+	if !strings.Contains(out, `"mode":"primary"`) && !strings.Contains(out, `"mode": "primary"`) {
+		return fmt.Errorf("opencode agent %q did not load as mode:primary (got: %s); OpenCode may have fallen back to its default agent", agentName, out)
+	}
+	return nil
 }
 
 // openCodePreflightVersion runs `opencode --version` in the sandbox. Failure

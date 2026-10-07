@@ -36,6 +36,7 @@ if [ "$2" = "exec" ]; then
     "test -f '/tmp/fs-upload-"*)
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
+    *"opencode debug agent"*) printf '{"name":"triage","mode":"primary","permission":{"bash":"allow","read":"allow"}}'; exit 0 ;;
     "opencode --version") echo "0.1.0"; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"bash":"allow","read":"allow","glob":"allow","grep":"allow","skill":"allow","*":"deny"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
   esac
@@ -504,6 +505,7 @@ func TestOpenCodeRuntimeClearIterationArtifacts(t *testing.T) {
 	log, readErr := os.ReadFile(logPath)
 	require.NoError(t, readErr)
 	assert.Contains(t, string(log), "rm -rf")
+	assert.Contains(t, string(log), openCodeRunnerSubdir)
 	assert.Contains(t, string(log), openCodeDebugLogFile)
 }
 
@@ -617,4 +619,33 @@ func TestOpenCodeRuntimeRun_ErrorSubtypeEmptyMessage(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, exit)
 	assert.Contains(t, buf.String(), "subtype")
+}
+
+func TestOpenCodeVerifyAgent_FallbackDetected(t *testing.T) {
+	binDir := t.TempDir()
+	// Fake openshell that reports a non-primary agent.
+	script := `#!/bin/sh
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    *"opencode debug agent"*) printf '{"name":"default","mode":"agent","permission":{"*":"allow"}}'; exit 0 ;;
+    "opencode --version") echo "0.1.0"; exit 0 ;;
+    *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"bash":"allow","*":"deny"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
+  esac
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "triage",
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did not load as mode:primary")
 }
