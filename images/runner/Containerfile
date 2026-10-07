@@ -116,7 +116,8 @@ ARG TARGETARCH
 # binary built above — listed explicitly rather than relied on transitively,
 # so the dependency is reviewable here. python3 + pip back the validation loop
 # (validate-output-schema.sh); git/jq/curl are used throughout the CLI and
-# scaffold scripts; openssh-clients covers ssh git remotes; gzip and
+# scaffold scripts; openssh-clients covers ssh git remotes; openssl signs
+# Scribe service-account OAuth assertions on the host; gzip and
 # findutils back the tar.gz extraction steps below. --allowerasing lets
 # full curl replace the base image's curl-minimal.
 RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
@@ -128,6 +129,7 @@ RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
       jq \
       libstdc++ \
       openssh-clients \
+      openssl \
       python3 \
       python3-pip \
       tar \

@@ -120,6 +120,7 @@ jobs:
             fullsend --version | grep -F "${EXPECTED_VERSION}" \
               || fail "fullsend --version does not report ${EXPECTED_VERSION}"
             openshell --version   || fail "openshell missing"
+            openssl version       || fail "openssl missing"
             gh --version          || fail "gh missing"
             gitleaks version      || fail "gitleaks missing"
             pre-commit --version  || fail "pre-commit missing"
