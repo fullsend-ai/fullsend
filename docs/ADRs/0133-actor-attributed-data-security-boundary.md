@@ -64,6 +64,13 @@ same authoritative API response, delivered in the same verified event payload,
 or lazily resolved from the authoritative source when first needed. A lazy
 result MAY be cached for the lifetime of the event or entity structure that
 requested it, but MUST NOT be reused for an unrelated record or structure.
+This is a logical lifetime, not an object-identity lifetime: re-reading or
+re-fetching the data, constructing a new structure for a retry or requeue, or
+terminating and re-invoking the agent ends the current lifetime and requires a
+new authorization result. The new result MUST be resolved again even if the
+implementation mutates or reuses the same in-memory structure. Within one
+such lifetime, this ADR does not require a separate wall-clock expiry or
+revalidation.
 The actor MUST meet the applicable observation or mutation threshold for the
 selected harness. A label grant authorizes only its verified label transition;
 it does not authorize unrelated content from that actor or other actors.

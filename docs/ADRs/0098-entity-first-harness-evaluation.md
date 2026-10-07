@@ -131,8 +131,7 @@ state become platform responsibilities.
   enumeration may produce an empty set for state-only predicates. CEL can
   additionally restrict action using the retained elements and their current
   actor permissions, but does not select an element for a later authorization
-  gate. Further trust and injection filtering MUST follow [ADR
-  0133](0133-actor-attributed-data-security-boundary.md) after CEL routing and
+  gate. Further trust and injection filtering MAY run after CEL routing and
   before the harness pre-script. Neither entity content nor a historical actor
   can alter the run's configured identity or permissions.
 - **Attribution:** A scheduled run without a prompting human is attributable to
