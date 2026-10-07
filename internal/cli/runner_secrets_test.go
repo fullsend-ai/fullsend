@@ -362,7 +362,9 @@ func TestRunnerSecretNameRefused_CoversWorkflowSetNames(t *testing.T) {
 		} `yaml:"runs"`
 	}
 	require.NoError(t, yaml.Unmarshal(raw, &action))
-	names = append(names, stepEnvKeys(action.Runs.Steps, func(st step) bool { return st.Name == "Run fullsend" })...)
+	actionNames := stepEnvKeys(action.Runs.Steps, func(st step) bool { return st.Name == "Run fullsend" })
+	require.Contains(t, actionNames, "STATUS_RUN_URL", "action.yml must have a Run fullsend step with its env")
+	names = append(names, actionNames...)
 
 	require.Contains(t, names, "JIRA_TOKEN", "harness-run must still set the named JIRA_TOKEN secret")
 	for _, name := range names {
@@ -375,7 +377,8 @@ func TestRunnerSecretNameRefused_AllowsOrdinaryNames(t *testing.T) {
 		assert.False(t, runnerSecretNameRefused(name), name)
 	}
 	// The named workflow secrets keep their single source.
-	for _, name := range []string{"JIRA_TOKEN", "JIRA_USER_EMAIL", "JIRA_BASE_URL", "OTEL_EXPORTER_OTLP_HEADERS"} {
+	for _, name := range []string{"JIRA_TOKEN", "JIRA_USER_EMAIL", "JIRA_BASE_URL", "OTEL_EXPORTER_OTLP_HEADERS",
+		"GIT_BOT_EMAIL", "OPENSHELL_VERSION", "TARGET_REPO_DIR", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CORE_PROJECT"} {
 		assert.True(t, runnerSecretNameRefused(name), name)
 	}
 }

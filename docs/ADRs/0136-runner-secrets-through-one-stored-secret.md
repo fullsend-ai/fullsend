@@ -63,11 +63,11 @@ carry the object inline.
 These rules apply to names in the GitHub object:
 
 - **Refused names:** `oidcDenyKeys`, `providerOnlyKeys`, sandbox-reserved
-  names, the `FULLSEND_`, `GITHUB_`, `ACTIONS_`, `RUNNER_`, `CI_`, `LD_` and
-  `OTEL_` families, `GH_TOKEN`, the minted role tokens, `GITLAB_TOKEN`, `PATH`,
-  and every name the workflow sets on the `fullsend run` step, such as the
-  named `JIRA_TOKEN`, so each name has one source. Null values, duplicate
-  keys and values shorter than the redactor's minimum are refused too.
+  names, the `FULLSEND_`, `GITHUB_`, `ACTIONS_`, `RUNNER_`, `CI_`, `LD_`,
+  `OTEL_`, `GOOGLE_` and `CLOUDSDK_` families, `GH_TOKEN`, the minted role
+  tokens, `GITLAB_TOKEN`, `PATH`, and every name the workflow sets for the
+  `fullsend run` step (such as `JIRA_TOKEN`), so each name has one source.
+  Null values, duplicate keys and too-short values are refused too.
 - **Host side only:** a reference from `env.sandbox`, `runner_env`, a provider
   credential, a `host_files` source or expanded content, or a
   `validation_loop` field fails validation.

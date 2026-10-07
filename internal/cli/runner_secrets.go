@@ -38,6 +38,9 @@ var runnerSecretRefusedPrefixes = []string{
 	"CI_",
 	"LD_",
 	"OTEL_",
+	// google-github-actions/auth exports these for the job.
+	"GOOGLE_",
+	"CLOUDSDK_",
 }
 
 // workflowSetEnvNames are the names reusable-dispatch.yml,
@@ -45,8 +48,10 @@ var runnerSecretRefusedPrefixes = []string{
 // outside the refused families, such as the named JIRA_TOKEN and
 // JIRA_USER_EMAIL secrets on harness-run. A runner secret may not shadow
 // one, so each name has a single source.
-// TestRunnerSecretNameRefused_CoversWorkflowSetNames keeps the list in
-// step with the workflows.
+// TestRunnerSecretNameRefused_CoversWorkflowSetNames keeps the step env:
+// part of the list in step with the workflows. GIT_BOT_EMAIL and the
+// OPENSHELL_* names arrive through GITHUB_ENV, and TARGET_REPO_DIR is set
+// by fullsend run itself, so the test cannot see them.
 var workflowSetEnvNames = []string{
 	"AGENT", "CODE_ALLOWED_TARGET_BRANCHES", "COMMENT_BODY", "FIX_ITERATION",
 	"HUMAN_INSTRUCTION", "ISSUE_NUMBER", "JIRA_BASE_URL", "JIRA_TOKEN",
@@ -56,6 +61,7 @@ var workflowSetEnvNames = []string{
 	"RETRO_COMMENT", "REVIEW_BODY_FILE", "STATUS_COMMENT_ID", "STATUS_NUMBER",
 	"STATUS_REPO", "STATUS_RUN_URL", "TARGET_BRANCH", "TARGET_REPO",
 	"TRIGGER_SOURCE",
+	"GIT_BOT_EMAIL", "OPENSHELL_VERSION", "OPENSHELL_SHA", "TARGET_REPO_DIR",
 }
 
 // runnerSecretRefusedNames are minted role tokens and other runner-owned
