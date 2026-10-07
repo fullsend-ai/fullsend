@@ -462,7 +462,12 @@ func newInstalledFakeGitLabClient(repos ...string) *forge.FakeClient {
 	client := forge.NewFakeClient()
 	for _, r := range repos {
 		for _, v := range gitlabUninstallVars {
-			client.VariableValues[r+"/"+v] = "test-value"
+			value := "test-value"
+			if v == forge.VarGitLabRoleRotation {
+				// Uninstall refuses to discard a rotation document it cannot decode.
+				value = `{"roles":{}}`
+			}
+			client.VariableValues[r+"/"+v] = value
 			client.VariablesExist[r+"/"+v] = true
 		}
 		for _, s := range gitlabUninstallSecrets {

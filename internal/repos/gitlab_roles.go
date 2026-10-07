@@ -2,6 +2,9 @@ package repos
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -13,20 +16,159 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 )
 
-var gitlabRoleOperationLocks sync.Map // map[string]*sync.Mutex
+var gitlabRoleOperationLocks sync.Map // map[string]chan struct{}
 
-func gitlabRoleOperationLock(owner, repo string) *sync.Mutex {
+// gitlabRoleOperationLock returns the process-local lock for one project: a
+// one-slot channel, so acquisition can observe cancellation and a deadline
+// where a sync.Mutex could not.
+func gitlabRoleOperationLock(owner, repo string) chan struct{} {
 	key := owner + "/" + repo
-	lock := &sync.Mutex{}
-	actual, _ := gitlabRoleOperationLocks.LoadOrStore(key, lock)
-	return actual.(*sync.Mutex)
+	actual, _ := gitlabRoleOperationLocks.LoadOrStore(key, make(chan struct{}, 1))
+	return actual.(chan struct{})
 }
 
-// LockGitLabRoleOperation serializes role credential operations for one repo.
-func LockGitLabRoleOperation(owner, repo string) func() {
-	lock := gitlabRoleOperationLock(owner, repo)
-	lock.Lock()
-	return lock.Unlock
+// GitLabProjectLeaseVar names the project CI/CD variable that serves as the
+// cross-process lease for GitLab role-credential and webhook transactions.
+// It exists only while an installer holds it and carries no secret.
+const GitLabProjectLeaseVar = "FULLSEND_GITLAB_INSTALL_LEASE"
+
+// gitlabLeaseWait bounds how long an installer waits for another installer's
+// lease; gitlabLeasePoll is the interval between attempts.
+var (
+	gitlabLeaseWait = 2 * time.Minute
+	gitlabLeasePoll = 2 * time.Second
+)
+
+// LockGitLabProject serializes every GitLab role-credential and webhook
+// transaction on one project: within this process by a mutex, and across
+// installer processes (any host) by a lease taken atomically on the project
+// itself. The returned release function must be deferred with the caller's
+// error pointer; it frees the lease and joins a failed release into *errp so
+// a stuck lease is reported rather than silent. A dry run takes only the
+// process-local mutex, since it must not write to the project.
+// A nil error pointer still releases both locks but discards release errors.
+//
+// It fails closed: a client that cannot take a lease, or a lease that stays
+// held past the wait budget, is an error, and the caller must not proceed
+// with Poller elevation or credential changes.
+func LockGitLabProject(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) (func(errp *error), error) {
+	local := gitlabRoleOperationLock(owner, repo)
+	// One deadline-bound context covers the whole acquisition: the
+	// process-local lock and every cross-process lease request, including a
+	// request the live client is retrying on Retry-After. The release below
+	// stays on a detached context.
+	acquireCtx, cancelAcquire := context.WithTimeout(ctx, gitlabLeaseWait)
+	defer cancelAcquire()
+	// budgetErr reports why acquisition stopped: the caller's own
+	// cancellation, or the acquisition budget running out.
+	budgetErr := func(what string) error {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%s: %w", what, ctx.Err())
+		}
+		return nil
+	}
+	select {
+	case local <- struct{}{}:
+	case <-acquireCtx.Done():
+		if err := budgetErr("waiting for another operation in this process to finish"); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("another fullsend operation in this process holds the project lock. Wait for it to finish, then re-run")
+	}
+	unlockLocal := func() { <-local }
+	// A free channel and cancellation can both be ready. Do not let select's
+	// random choice admit an already-canceled operation, including dry runs.
+	if err := acquireCtx.Err(); err != nil {
+		unlockLocal()
+		return nil, fmt.Errorf("taking the process-local project lock: %w", err)
+	}
+	if dryRun {
+		return func(*error) { unlockLocal() }, nil
+	}
+	lock := struct{ Unlock func() }{unlockLocal}
+	leaser, ok := client.(forge.ProjectLeaser)
+	if !ok {
+		lock.Unlock()
+		return nil, errors.New("this GitLab client cannot take the project lease that serializes installers across processes, so the operation was refused")
+	}
+	holder, err := newGitLabLeaseHolder()
+	if err != nil {
+		lock.Unlock()
+		return nil, err
+	}
+	heldElsewhere := fmt.Errorf("another fullsend installer holds the project lease (CI/CD variable %s). Wait for it to finish; if no installer is running, confirm the Poller member's project role is Developer and delete that variable, then re-run", GitLabProjectLeaseVar)
+	for {
+		acquired, err := leaser.AcquireProjectLease(acquireCtx, owner, repo, GitLabProjectLeaseVar, holder)
+		if acquired && err == nil && acquireCtx.Err() != nil {
+			// The lease request outlived the budget: do not proceed on a
+			// lease the caller was told it would not wait for.
+			releaseCtx, cancel := gitlabCleanupContext(ctx)
+			relErr := leaser.ReleaseProjectLease(releaseCtx, owner, repo, GitLabProjectLeaseVar, holder)
+			cancel()
+			lock.Unlock()
+			var cleanupErr error
+			if relErr != nil {
+				cleanupErr = safeAPIError(fmt.Sprintf("releasing the project lease granted after the wait budget expired; delete CI/CD variable %s manually if it remains", GitLabProjectLeaseVar), relErr)
+			}
+			if cerr := budgetErr("waiting for another installer to finish"); cerr != nil {
+				return nil, errors.Join(cerr, cleanupErr)
+			}
+			return nil, errors.Join(heldElsewhere, cleanupErr)
+		}
+		if err != nil {
+			// A failed request is ambiguous: GitLab may have committed the
+			// variable before the response was lost or the budget expired.
+			// The release is holder-checked, so it frees only a lease this
+			// acquisition created and never another installer's.
+			releaseCtx, cancel := gitlabCleanupContext(ctx)
+			relErr := leaser.ReleaseProjectLease(releaseCtx, owner, repo, GitLabProjectLeaseVar, holder)
+			cancel()
+			lock.Unlock()
+			var cleanupErr error
+			if relErr != nil {
+				cleanupErr = safeAPIError(fmt.Sprintf("releasing the project lease after a failed acquisition; delete CI/CD variable %s manually if it remains", GitLabProjectLeaseVar), relErr)
+			}
+			if acquireCtx.Err() != nil {
+				if cerr := budgetErr("waiting for another installer to finish"); cerr != nil {
+					return nil, errors.Join(cerr, cleanupErr)
+				}
+				return nil, errors.Join(heldElsewhere, cleanupErr)
+			}
+			return nil, errors.Join(safeAPIError("taking the project lease that serializes installers", err), cleanupErr)
+		}
+		if acquired {
+			break
+		}
+		select {
+		case <-acquireCtx.Done():
+			lock.Unlock()
+			if cerr := budgetErr("waiting for another installer to finish"); cerr != nil {
+				return nil, cerr
+			}
+			return nil, heldElsewhere
+		case <-time.After(gitlabLeasePoll):
+		}
+	}
+	return func(errp *error) {
+		defer lock.Unlock()
+		// The release is independent of the operation context so a canceled
+		// install still frees the lease.
+		releaseCtx, cancel := gitlabCleanupContext(ctx)
+		defer cancel()
+		if relErr := leaser.ReleaseProjectLease(releaseCtx, owner, repo, GitLabProjectLeaseVar, holder); relErr != nil && errp != nil {
+			*errp = errors.Join(*errp, safeAPIError(fmt.Sprintf("releasing the project lease; delete CI/CD variable %s manually", GitLabProjectLeaseVar), relErr))
+		}
+	}, nil
+}
+
+// newGitLabLeaseHolder returns a value unique to this lock acquisition. It
+// contains only an opaque nonce, without local machine identifiers.
+func newGitLabLeaseHolder() (string, error) {
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("generating the project lease holder: %w", err)
+	}
+	return hex.EncodeToString(nonce), nil
 }
 
 // gitlabMaskablePattern matches GitLab's allowed charset for a maskable
@@ -77,12 +219,20 @@ type RoleProvisionConfig struct {
 	// to decide whether to surface a diagnostic when the supplied
 	// registry is not persisted.
 	RegistryProvided bool
-	// ProvidedTokens maps a role name to an administrator-supplied
-	// PAT (free-tier enrollment or a custom own credential). Values
-	// must never be logged.
-	ProvidedTokens map[gitlabroles.Role]string
-	Now            time.Time
-	DryRun         bool
+	// ProvidedCredentials keeps supplied PATs and their resolved identities
+	// together. Credential values must never be logged.
+	ProvidedCredentials map[gitlabroles.Role]ProvidedRoleCredential
+	Now                 time.Time
+	DryRun              bool
+}
+
+// ProvidedRoleCredential is one administrator-supplied PAT and its optional
+// resolved user/token IDs. Zero IDs mean attribution is not yet established.
+// Token is sensitive and must never be logged.
+type ProvidedRoleCredential struct {
+	Token   string
+	OwnerID int
+	TokenID int
 }
 
 // RoleProvisionFailure is a per-role error. Reason and Secret are
@@ -183,14 +333,16 @@ var gitLabRoleUninstallVars = []string{
 // provisioning does not retire it, and no automated path does — that
 // leftover secret and its matching fullsend-bot project access token
 // require manual cleanup.
-func ProvisionGitLabRoleCredentials(ctx context.Context, cfg RoleProvisionConfig) (RoleProvisionResult, error) {
+func ProvisionGitLabRoleCredentials(ctx context.Context, cfg RoleProvisionConfig) (_ RoleProvisionResult, err error) {
 	result := RoleProvisionResult{DryRun: cfg.DryRun}
 	if cfg.Client == nil {
 		return result, fmt.Errorf("GitLab role provisioning requires a forge client")
 	}
-	operationLock := gitlabRoleOperationLock(cfg.Owner, cfg.Repo)
-	operationLock.Lock()
-	defer operationLock.Unlock()
+	release, lockErr := LockGitLabProject(ctx, cfg.Client, cfg.Owner, cfg.Repo, cfg.DryRun)
+	if lockErr != nil {
+		return result, lockErr
+	}
+	defer release(&err)
 	reg := cfg.Registry
 	if len(reg.Registrations()) == 0 {
 		reg = gitlabroles.BuiltinRegistry()
@@ -211,7 +363,7 @@ func ProvisionGitLabRoleCredentials(ctx context.Context, cfg RoleProvisionConfig
 		return result, fmt.Errorf("reading GitLab role credential presence: %w", presErr)
 	}
 	result.Report = gitlabroles.Diagnose(present, reg)
-	result.Diagnostics = result.Report.Diagnostics
+	result.Diagnostics = append(result.Diagnostics, result.Report.Diagnostics...)
 	if secretLeak(result) != "" {
 		return RoleProvisionResult{}, fmt.Errorf("internal error: provision result leaked a secret value")
 	}
@@ -222,11 +374,11 @@ func ProvisionGitLabRoleCredentials(ctx context.Context, cfg RoleProvisionConfig
 // --gitlab-role-token key that does not match a registered role name, so
 // a misspelled or unregistered role name is never silently ignored.
 func validateProvidedTokenRoles(cfg RoleProvisionConfig, reg gitlabroles.Registry, result *RoleProvisionResult) {
-	if len(cfg.ProvidedTokens) == 0 {
+	if len(cfg.ProvidedCredentials) == 0 {
 		return
 	}
-	roles := make([]gitlabroles.Role, 0, len(cfg.ProvidedTokens))
-	for role := range cfg.ProvidedTokens {
+	roles := make([]gitlabroles.Role, 0, len(cfg.ProvidedCredentials))
+	for role := range cfg.ProvidedCredentials {
 		roles = append(roles, role)
 	}
 	sort.Slice(roles, func(i, j int) bool { return roles[i] < roles[j] })
@@ -260,9 +412,15 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 			if !cfg.DryRun {
 				backfillInitialDistributionProof(ctx, cfg, rec, now, result)
 			}
+			convergeInstalledServiceAccount(ctx, cfg, rec, now, true, result)
 			continue
 		}
-		if provided := strings.TrimSpace(cfg.ProvidedTokens[rec.Name]); provided != "" {
+		failedBefore := len(result.Failed)
+		convergeInstalledServiceAccount(ctx, cfg, rec, now, false, result)
+		if len(result.Failed) > failedBefore {
+			continue
+		}
+		if provided := strings.TrimSpace(cfg.ProvidedCredentials[rec.Name].Token); provided != "" {
 			if !canMaskGitLabValue(provided) {
 				result.Failed = append(result.Failed, RoleProvisionFailure{
 					Role:   rec.Name,
@@ -273,6 +431,18 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 			}
 			if cfg.DryRun {
 				result.Enrolled = append(result.Enrolled, rec.Name)
+				continue
+			}
+			// Persist supplied ownership and the owner's exclusion before the
+			// credential is published so an interruption or write failure can
+			// never leave the new secret classified by an older managed entry.
+			// Fail closed: without durable provenance the credential is not stored.
+			if err := recordSuppliedProvenance(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, cfg.ProvidedCredentials[rec.Name].OwnerID); err != nil {
+				result.Failed = append(result.Failed, RoleProvisionFailure{
+					Role:   rec.Name,
+					Secret: secret,
+					Reason: "recording administrator-provided credential provenance failed; credential not stored",
+				})
 				continue
 			}
 			if err := cfg.Client.CreateRepoSecret(ctx, cfg.Owner, cfg.Repo, secret, provided); err != nil {
@@ -294,9 +464,12 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 			// supplied); tokenID=0 with phase=idle and DistributedAt set
 			// is the same not-due proof rotateProvided records for a
 			// later administrator-provided replacement.
-			if err := recordInitialDistribution(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, 0, "", now); err != nil {
+			if err := recordSuppliedEnrollment(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, cfg.ProvidedCredentials[rec.Name].OwnerID, now); err != nil {
 				result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
 					"%s: recording rotation-state distribution proof failed; a future rotation run will treat this credential as unproven and replace it", rec.Name))
+			} else if err := recordSuppliedTokenID(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, cfg.ProvidedCredentials[rec.Name].OwnerID, cfg.ProvidedCredentials[rec.Name].TokenID); err != nil {
+				result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
+					"%s: recording the supplied credential's token ID failed; every token of its owner's account will stand in for it in lifecycle checks", rec.Name))
 			}
 			continue
 		}
@@ -324,6 +497,9 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 				Secret: secret,
 				Reason: "project access token creation failed",
 			})
+			if _, ok := cfg.Tokens.(ServiceAccountTokenClient); ok {
+				result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: credential provisioning failed; check project service-account support, installer permissions and account limits, or enroll with --gitlab-role-token", rec.Name))
+			}
 			continue
 		}
 		if tok == nil || strings.TrimSpace(tok.Token) == "" {
@@ -337,27 +513,55 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 			})
 			continue
 		}
-		if err := cfg.Client.CreateRepoSecret(ctx, cfg.Owner, cfg.Repo, secret, tok.Token); err != nil {
+		// Record rotation-state provenance and distribution proof before the
+		// secret is published, so a write failure or interruption can never leave
+		// an installed managed credential without a record (later reconciliation
+		// fails closed on installed credentials of unknown provenance), and so a
+		// later RotateGitLabRoleCredentials run does not treat this healthy,
+		// just-provisioned PAT as an unproven orphan. Fail closed: without the
+		// record the credential is not published and the unused token is revoked.
+		priorEntry, hadPriorEntry, err := recordInitialDistributionWithPrior(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, tok.ID, expiresAt, now, true)
+		if err != nil {
 			if tok.ID != 0 {
 				_ = cfg.Tokens.RevokeProjectAccessToken(ctx, cfg.Owner, cfg.Repo, tok.ID)
 			}
 			result.Failed = append(result.Failed, RoleProvisionFailure{
 				Role:   rec.Name,
 				Secret: secret,
-				Reason: "storing role credential failed",
+				Reason: "recording role credential provenance failed; credential not stored",
+			})
+			continue
+		}
+		if err := cfg.Client.CreateRepoSecret(ctx, cfg.Owner, cfg.Repo, secret, tok.Token); err != nil {
+			// A failed request does not prove the variable was never stored:
+			// GitLab may commit it before the response is lost. Revoke the
+			// token and discard its provenance only once the secret is
+			// confirmed absent, checked on a context detached from
+			// cancellation. Otherwise keep both so the installed credential
+			// stays attributable and a later install can recover.
+			checkCtx, cancelCheck := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			stored, existsErr := cfg.Client.RepoSecretExists(checkCtx, cfg.Owner, cfg.Repo, secret)
+			cancelCheck()
+			reason := "storing role credential failed"
+			if existsErr == nil && !stored {
+				if tok.ID != 0 {
+					_ = cfg.Tokens.RevokeProjectAccessToken(ctx, cfg.Owner, cfg.Repo, tok.ID)
+				}
+				// Best effort: the revoked token's record must not describe a
+				// credential that was never installed.
+				_ = discardInitialDistribution(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, tok.ID, priorEntry, hadPriorEntry)
+			} else {
+				reason = "storing role credential failed and its publication could not be ruled out; the token and its provenance were kept"
+			}
+			result.Failed = append(result.Failed, RoleProvisionFailure{
+				Role:   rec.Name,
+				Secret: secret,
+				Reason: reason,
 			})
 			continue
 		}
 		present[secret] = true
 		result.Created = append(result.Created, rec.Name)
-		// Record rotation-state proof of this initial distribution so a
-		// later RotateGitLabRoleCredentials run does not treat this
-		// healthy, just-provisioned PAT as an unproven orphan and
-		// immediately mint a replacement for it.
-		if err := recordInitialDistribution(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, tok.ID, expiresAt, now); err != nil {
-			result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
-				"%s: recording rotation-state distribution proof failed; a future rotation run will treat this credential as unproven and replace it", rec.Name))
-		}
 	}
 }
 

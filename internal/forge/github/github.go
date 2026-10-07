@@ -4772,6 +4772,11 @@ func (c *LiveClient) ForceCommitFileToBranch(_ context.Context, _, _, _, _, _ st
 	return forge.ErrNotSupported
 }
 
+// DeleteProjectServiceAccount is unsupported on GitHub.
+func (c *LiveClient) DeleteProjectServiceAccount(context.Context, string, string, int) error {
+	return forge.ErrNotSupported
+}
+
 // isNotFound checks whether an error is a 404 API error.
 func isNotFound(err error) bool {
 	var apiErr *APIError

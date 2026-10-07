@@ -32,6 +32,7 @@ type LiveClient struct {
 // Compile-time interface checks.
 var _ forge.Client = (*LiveClient)(nil)
 var _ forge.GitLabExtensions = (*LiveClient)(nil)
+var _ forge.ProjectLeaser = (*LiveClient)(nil)
 
 // Option configures the GitLab client.
 type Option func(*LiveClient)
@@ -176,6 +177,13 @@ func projectPath(owner, repo string) string {
 }
 
 func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return c.doAttempts(ctx, method, path, body, maxRetries)
+}
+
+// doAttempts is do with an explicit attempt budget. A budget of one sends the
+// request exactly once, for callers whose request is not safe to repeat after
+// an ambiguous outcome (for example a DELETE whose response was lost).
+func (c *LiveClient) doAttempts(ctx context.Context, method, path string, body any, attempts int) (*http.Response, error) {
 	reqURL := c.apiURL(path)
 
 	var bodyData []byte
@@ -187,7 +195,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 		}
 	}
 
-	for attempt := range maxRetries {
+	for attempt := range attempts {
 		var reqBody io.Reader
 		if bodyData != nil {
 			reqBody = bytes.NewReader(bodyData)
@@ -205,7 +213,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			if isTransientError(err) && isIdempotent(method) && attempt < maxRetries-1 {
+			if isTransientError(err) && isIdempotent(method) && attempt < attempts-1 {
 				delay := retryDelay(nil, attempt)
 				select {
 				case <-c.afterFunc(delay):
@@ -220,10 +228,10 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 		if isRetryable(resp, method) {
 			resp.Body.Close()
 			delay := retryDelay(resp, attempt)
-			if attempt == maxRetries-1 {
+			if attempt == attempts-1 {
 				return nil, &APIError{
 					StatusCode: resp.StatusCode,
-					Message:    fmt.Sprintf("retryable error after %d attempts on %s %s", maxRetries, method, path),
+					Message:    fmt.Sprintf("retryable error after %d attempts on %s %s", attempts, method, path),
 				}
 			}
 			select {

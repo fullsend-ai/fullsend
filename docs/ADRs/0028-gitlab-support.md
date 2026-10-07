@@ -256,6 +256,14 @@ The implementation document is structured for iterative evolution as GitLab supp
 
 ## Consequences
 
+> **Update (#8083):** GitLab role provisioning now supports project service
+> accounts with project access tokens as the capability fallback. The Poller
+> remains Developer at runtime. Native trigger creation and rotation remain
+> deferred in the live adapter until it can establish server-side request draining
+> before temporary elevation; revocation and empty inventories are insufficient.
+> Existing compliant triggers can be reused, and polling remains available when
+> enabled. See the [current install reference](../cli/repos.md#repos-install).
+
 ### Positive
 
 - **Multi-forge support**: Organizations on GitLab can adopt fullsend
@@ -303,6 +311,7 @@ The implementation document is structured for iterative evolution as GitLab supp
 ### ADR Scope and Structure
 
 **Resolved**: Implementation details have been extracted to [docs/problems/gitlab-implementation.md](../problems/gitlab-implementation.md). The ADR now focuses on the architectural decision (context, options, rationale, consequences) while the implementation document contains evolving details about security mechanisms, pipeline configurations, forge interface evolution, and rollout phases. This aligns with CLAUDE.md's guidance that problem-oriented documents handle evolving design while ADRs record decisions.
+
 
 ## References
 

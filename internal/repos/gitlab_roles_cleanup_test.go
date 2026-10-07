@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -402,4 +403,210 @@ func TestGitLabRoleLifecycle_RevokedRoleRotatesWithoutSharedToken(t *testing.T) 
 	for _, name := range tokens.createdNames() {
 		assert.NotEqual(t, gitlabroles.SharedTokenName, name)
 	}
+}
+
+// The rotation document records supplied-credential provenance, so it is kept
+// until token revocation succeeds: a retry after a failed revocation must still
+// recognize the supplied account.
+func TestCleanupGitLabRoleIdentity_RetainsRotationStateUntilRevocationSucceeds(t *testing.T) {
+	t.Parallel()
+	fc := forge.NewFakeClient()
+	seedEnforcedIdentity(t, fc)
+	rotationKey := "group/project/" + forge.VarGitLabRoleRotation
+	fc.VariableValues[rotationKey] = `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z","supplied_user_id":90}}}`
+	tokens := &fakeTokens{failRevoke: errors.New("revoke refused")}
+	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.CoderTokenName, Active: true})
+
+	_, err := CleanupGitLabRoleIdentity(context.Background(), GitLabRoleCleanupConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+	})
+	require.Error(t, err)
+	assert.True(t, fc.VariablesExist[rotationKey], "provenance survives a failed revocation")
+	prov, perr := PollerCredentialProvenance(context.Background(), fc, "group", "project")
+	require.NoError(t, perr)
+	assert.Equal(t, PollerProvenance{Known: true, Supplied: true, UserID: 90, ExcludedUserIDs: []int{90}}, prov)
+
+	tokens.failRevoke = nil
+	_, err = CleanupGitLabRoleIdentity(context.Background(), GitLabRoleCleanupConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+	})
+	require.NoError(t, err)
+	// Only the supplied-account exclusions outlive a successful cleanup.
+	require.True(t, fc.VariablesExist[rotationKey], "exclusions for the surviving supplied account are kept")
+	prov, perr = PollerCredentialProvenance(context.Background(), fc, "group", "project")
+	require.NoError(t, perr)
+	assert.Equal(t, PollerProvenance{ExcludedUserIDs: []int{90}}, prov)
+}
+
+func TestPollerCredentialProvenance(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		state  string
+		exists bool
+		want   PollerProvenance
+	}{
+		{name: "missing document is unknown"},
+		{name: "empty document is unknown", exists: true, state: `{"roles":{}}`},
+		{name: "managed", exists: true, state: `{"roles":{"poller":{"phase":"idle","incoming_id":5,"distributed_at":"2026-01-01T00:00:00Z"}}}`, want: PollerProvenance{Known: true}},
+		{name: "supplied without owner", exists: true, state: `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z"}}}`, want: PollerProvenance{Known: true, Supplied: true}},
+		{name: "supplied with owner", exists: true, state: `{"roles":{"poller":{"phase":"failed","supplied_user_id":9}}}`, want: PollerProvenance{Known: true, Supplied: true, UserID: 9, ExcludedUserIDs: []int{9}}},
+		{name: "empty entry is unknown, not managed", exists: true, state: `{"roles":{"poller":{}}}`},
+		{name: "unknown phase without evidence is unknown", exists: true, state: `{"roles":{"poller":{"phase":"bogus","distributed_at":"2026-01-01T00:00:00Z"}}}`},
+		{name: "unknown phase with incoming token is unknown", exists: true, state: `{"roles":{"poller":{"phase":"bogus","incoming_id":5}}}`},
+		{name: "unknown phase with outgoing token is unknown", exists: true, state: `{"roles":{"poller":{"phase":"bogus","outgoing_ids":[5]}}}`},
+		{name: "negative incoming token is unknown", exists: true, state: `{"roles":{"poller":{"phase":"idle","incoming_id":-5}}}`},
+		{name: "nonpositive outgoing token is unknown", exists: true, state: `{"roles":{"poller":{"phase":"idle","outgoing_ids":[0]}}}`},
+		{name: "valid outgoing token proves managed", exists: true, state: `{"roles":{"poller":{"phase":"overlapping","outgoing_ids":[5]}}}`, want: PollerProvenance{Known: true}},
+		{name: "invalid outgoing token defeats incoming evidence", exists: true, state: `{"roles":{"poller":{"phase":"idle","incoming_id":5,"outgoing_ids":[6,-7]}}}`},
+		{name: "older entry with no phase and positive token is managed", exists: true, state: `{"roles":{"poller":{"incoming_id":5}}}`, want: PollerProvenance{Known: true}},
+		{name: "flagged supplied survives a failed replacement", exists: true, state: `{"roles":{"poller":{"phase":"failed","supplied":true}}}`, want: PollerProvenance{Known: true, Supplied: true}},
+		{name: "managed keeps earlier exclusions", exists: true, state: `{"roles":{"poller":{"phase":"idle","incoming_id":5,"excluded_user_ids":[7]}}}`, want: PollerProvenance{Known: true, ExcludedUserIDs: []int{7}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			if tc.exists {
+				fc.VariableValues["g/p/"+forge.VarGitLabRoleRotation] = tc.state
+				fc.VariablesExist["g/p/"+forge.VarGitLabRoleRotation] = true
+			}
+			got, err := PollerCredentialProvenance(context.Background(), fc, "g", "p")
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestLoadRotationStateRejectsInvalidIdentityIDs(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{
+		`{"supplied_user_id":-1}`,
+		`{"supplied_token_id":-1}`,
+		`{"managed_user_id":-1}`,
+		`{"excluded_user_ids":[0]}`,
+		`{"excluded_user_ids":[90,-1]}`,
+	} {
+		t.Run(state, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			key := "g/p/" + forge.VarGitLabRoleRotation
+			fc.VariableValues[key] = `{"roles":{"poller":` + state + `}}`
+			fc.VariablesExist[key] = true
+			_, _, err := loadRotationState(context.Background(), fc, "g", "p")
+			require.Error(t, err)
+			assert.Equal(t, `{"roles":{"poller":`+state+`}}`, fc.VariableValues[key], "invalid state must not be rewritten")
+		})
+	}
+}
+
+func TestRecordSuppliedEnrollment_RecordsOwner(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, recordSuppliedEnrollment(ctx, fc, "g", "p", gitlabroles.RolePoller, 90, now))
+	prov, err := PollerCredentialProvenance(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.Equal(t, PollerProvenance{Known: true, Supplied: true, UserID: 90, ExcludedUserIDs: []int{90}}, prov)
+
+	// A replacement enrollment updates the recorded owner.
+	require.NoError(t, recordSuppliedEnrollment(ctx, fc, "g", "p", gitlabroles.RolePoller, 91, now))
+	prov, err = PollerCredentialProvenance(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.Equal(t, 91, prov.UserID)
+	assert.Equal(t, []int{90, 91}, prov.ExcludedUserIDs, "the previous supplied owner stays excluded")
+
+	// A surviving managed entry (for example when the role secret went missing)
+	// does not keep its managed provenance once a supplied credential is
+	// installed over it, and its token tracking is preserved.
+	fc.VariableValues["g/p/"+forge.VarGitLabRoleRotation] = `{"roles":{"poller":{"phase":"overlapping","incoming_id":5,"outgoing_ids":[4],"distributed_at":"2026-01-01T00:00:00Z"}}}`
+	require.NoError(t, recordSuppliedEnrollment(ctx, fc, "g", "p", gitlabroles.RolePoller, 92, now))
+	prov, err = PollerCredentialProvenance(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.Equal(t, PollerProvenance{Known: true, Supplied: true, UserID: 92, ExcludedUserIDs: []int{92}}, prov)
+	state, _, err := loadRotationState(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.Equal(t, []int{4}, state.Roles["poller"].OutgoingIDs)
+	assert.Equal(t, 5, state.Roles["poller"].IncomingID)
+}
+
+// Replacing a supplied credential with a fullsend-minted one keeps the supplied
+// owner's account excluded.
+func TestSuppliedExclusionSurvivesManagedReplacement(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, recordSuppliedEnrollment(ctx, fc, "g", "p", gitlabroles.RolePoller, 90, now))
+	state, _, err := loadRotationState(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	rs := state.Roles["poller"]
+	rs.IncomingID = 7
+	rs.markManaged()
+	state.Roles["poller"] = rs
+	require.NoError(t, writeRotationState(ctx, fc, "g", "p", state))
+
+	prov, err := PollerCredentialProvenance(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.Equal(t, PollerProvenance{Known: true, ExcludedUserIDs: []int{90}}, prov)
+
+	// A later replacement distribution keeps it as well.
+	require.NoError(t, recordReplacementDistribution(ctx, fc, "g", "p", gitlabroles.RolePoller, 8, "", now, false))
+	prov, err = PollerCredentialProvenance(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.Equal(t, PollerProvenance{Known: true, ExcludedUserIDs: []int{90}}, prov)
+}
+
+func TestRecoverSuppliedPollerProvenance(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	token := "recovered-credential-value"
+
+	ok, err := RecoverSuppliedPollerProvenance(ctx, fc, "g", "p", token, 90, false, nil)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	prov, err := PollerCredentialProvenance(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.Equal(t, PollerProvenance{Known: true, Supplied: true, UserID: 90, ExcludedUserIDs: []int{90}}, prov)
+
+	// Known provenance is never overwritten.
+	ok, err = RecoverSuppliedPollerProvenance(ctx, fc, "g", "p", token, 91, false, nil)
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	// Nothing is written without a resolved owner or in a dry run.
+	fc2 := forge.NewFakeClient()
+	for _, tc := range []struct {
+		owner  int
+		dryRun bool
+	}{{0, false}, {90, true}} {
+		ok, err = RecoverSuppliedPollerProvenance(ctx, fc2, "g", "p", token, tc.owner, tc.dryRun, nil)
+		require.NoError(t, err)
+		assert.False(t, ok)
+	}
+	prov, err = PollerCredentialProvenance(ctx, fc2, "g", "p")
+	require.NoError(t, err)
+	assert.False(t, prov.Known)
+}
+
+func TestRecordSuppliedExclusions_IsIdempotentAndAdditive(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// No entry: an exclusions-only entry is created, which records no provenance.
+	require.NoError(t, RecordSuppliedExclusions(ctx, fc, "g", "p", gitlabroles.RolePoller, []int{5}))
+	prov, err := PollerCredentialProvenance(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.False(t, prov.Known)
+	assert.Equal(t, []int{5}, prov.ExcludedUserIDs)
+
+	require.NoError(t, recordSuppliedEnrollment(ctx, fc, "g", "p", gitlabroles.RolePoller, 0, now))
+	require.NoError(t, RecordSuppliedExclusions(ctx, fc, "g", "p", gitlabroles.RolePoller, []int{5, 3, 5}))
+	require.NoError(t, RecordSuppliedExclusions(ctx, fc, "g", "p", gitlabroles.RolePoller, []int{3}))
+	prov, err = PollerCredentialProvenance(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.Equal(t, []int{3, 5}, prov.ExcludedUserIDs)
 }

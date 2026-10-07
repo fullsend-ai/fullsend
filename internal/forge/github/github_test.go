@@ -71,6 +71,10 @@ func TestListOrgRepos(t *testing.T) {
 	assert.Equal(t, "main", repos[0].DefaultBranch)
 }
 
+func TestDeleteProjectServiceAccountUnsupported(t *testing.T) {
+	assert.ErrorIs(t, (&LiveClient{}).DeleteProjectServiceAccount(context.Background(), "g", "p", 77), forge.ErrNotSupported)
+}
+
 func TestListOrgRepos_IncludePrivate(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]map[string]any{

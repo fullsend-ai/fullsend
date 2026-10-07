@@ -333,6 +333,20 @@ func IsNotSupported(err error) bool {
 	return errors.Is(err, ErrNotSupported)
 }
 
+// ProjectLeaser is implemented by clients that can take a project-scoped
+// lease shared by every installer process, whatever host it runs on. A lease
+// is a named record the forge creates atomically only when it is absent, so
+// two holders can never both succeed. Callers use it to serialize
+// multi-request transactions that a process-local mutex cannot protect.
+type ProjectLeaser interface {
+	// AcquireProjectLease creates the lease named name with the given holder
+	// value. It reports false, without error, when the lease already exists.
+	AcquireProjectLease(ctx context.Context, owner, repo, name, holder string) (bool, error)
+	// ReleaseProjectLease removes the lease only while it still carries
+	// holder. A lease that is gone or held by someone else is left alone.
+	ReleaseProjectLease(ctx context.Context, owner, repo, name, holder string) error
+}
+
 // SecretProtection describes the exposure controls on an existing repo
 // secret. Forges that always encrypt and mask secrets report both true.
 type SecretProtection struct {
@@ -907,6 +921,12 @@ type Client interface {
 	// masking/protection controls applied to it. It never returns the value.
 	GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (SecretProtection, error)
 	DeleteRepoSecret(ctx context.Context, owner, repo, name string) error
+	// DeleteProjectServiceAccount deletes a project-owned service account,
+	// preserving its contributions. The caller must verify Fullsend ownership.
+	// This destructive uninstall operation stays on Client so all forge writes
+	// use the shared abstraction; GitLabServiceAccountAPI handles provisioning
+	// and token metadata, not cross-forge repository cleanup.
+	DeleteProjectServiceAccount(ctx context.Context, owner, repo string, userID int) error
 	// CreateOrUpdateRepoVariable writes an ordinary repository variable. On
 	// GitLab it creates or updates only the wildcard-scoped definition, leaving
 	// same-named variables in named environments untouched.

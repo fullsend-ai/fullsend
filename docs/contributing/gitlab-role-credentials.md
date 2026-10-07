@@ -158,7 +158,7 @@ references, never secret values.
 | `FULLSEND_GITLAB_CODER_TOKEN` | masked secret | Coder PAT. Provisioned by `repos install`. |
 | `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` | masked secret | Custom role PAT when `credential` is `own`. Provisioned when the role is registered. |
 | `FULLSEND_GITLAB_ROLE_REGISTRY` | unmasked variable | Administrator registry JSON. Absent or empty = built-ins only. |
-| `FULLSEND_GITLAB_ROLE_ROTATION` | unmasked variable | Per-role rotation state (lock, token IDs, expiry dates, phase). Never stores token values. |
+| `FULLSEND_GITLAB_ROLE_ROTATION` | unmasked variable | Version 1 per-role rotation state (lock, token IDs, expiry dates, phase, managed service-account IDs and supplied-account ownership/exclusions). Never stores token values. |
 
 Canonical constants live in [`internal/forge/forge.go`](../../internal/forge/forge.go)
 (`SecretForgeToken`, `SecretGitLabPollerToken`,
@@ -190,6 +190,290 @@ token, ordinary install provisions the missing role tokens but does not
 revoke `fullsend-bot` — an administrator must revoke that token manually.
 Access level and scopes match the legacy shared bot; do not claim finer
 GitLab permissions than the implementation uses.
+
+### Project service accounts
+
+Since [#8083](https://github.com/fullsend-ai/fullsend/issues/8083), a
+newly provisioned or rotated own-credential role is a **project service
+account** named after the token name above (for example
+`fullsend-poller`). Its credential is a personal access token of that
+service account with the same name, `api` scope, and expiry. The
+service account is a direct project member at Developer (30). Install
+refuses to provision any role identity above Developer. A project
+access token bot cannot change role, but a service account's membership
+can. That lets the Poller own the webhook trigger token (see below).
+
+- When the project has more than one service account with the same role
+  name, the one with the lowest ID wins.
+- Inventory merges service-account tokens with legacy project access
+  tokens. This applies to provisioning, rotation, `repos status`,
+  Poller pipeline access, and uninstall token revocation.
+- When the instance or plan does not offer project service accounts,
+  install falls back to a project access token, as before. Install
+  treats a 404, a 403, or a not-supported answer from the service-account
+  API as "not offered". Rotation, `repos status`, and protected-ref
+  reconciliation likewise use the inventory that is available when the
+  other source answers 403. Uninstall does not: a 403 from either
+  source leaves credentials the installer cannot see, so uninstall fails
+  rather than reporting success.
+- Unflagged install reconciles a positively identified managed legacy role
+  onto a service account using the existing rotation/recovery state. It
+  preserves administrator-supplied identities and does not require a separate
+  migration command or runtime compatibility gate. Replacement credentials
+  are authenticated and checked for identity, `api` scope and effective
+  Developer access before publication. Rotation of an existing role mints the new
+  credential on a service account. The old project access token is
+  revoked after the usual 24-hour grace.
+
+A failed credential-publication response does not prove the write failed.
+The forge secret interface cannot read values back, so rotation keeps the incoming
+credential active and retains recovery state, invalidating any prior supplied
+distribution proof. The next rotation replaces it safely and preserves the
+usual grace period before revocation.
+
+`repos uninstall` revokes service-account tokens with the other role
+tokens, then deletes accounts whose IDs are durably recorded as managed.
+Names alone never authorize membership changes, credential management or
+deletion. Operational inventories omit unverified same-named accounts so their
+tokens cannot become outgoing rotation-cleanup candidates. Explicitly enrolled
+supplied credentials retain read-only lifecycle metadata. Supplied accounts,
+accounts without
+ownership proof, and accounts with remaining credentials, unfinished jobs
+or owned schedules/triggers are preserved. An unsafe or unverifiable deletion
+fails uninstall and retains the ownership state for retry.
+Managed accounts renamed away from their recorded role name also fail inventory
+and retain ownership; restore the role name before retrying cleanup. Poller
+permission recovery still uses the recorded account ID after a rename, so
+name drift cannot bypass restoration to Developer.
+Contributions are preserved (the deletion API never uses `hard_delete`). GitLab processes account
+deletion asynchronously: successful uninstall means the deletion requests were
+accepted, not that the accounts have already disappeared from the inventory.
+
+Token clients used for uninstall expose managed-account cleanup through
+`repos.GitLabManagedAccountCleaner`, whose sole method is
+`DeleteManagedServiceAccounts(ctx, client, owner, repo) (int, error)`.
+Both `ServiceAccountTokenClient` and the CLI uninstall wrapper
+implement this interface. Cleanup runs after token revocation and before
+rotation-state retirement; its error retains the full ownership document.
+The CLI wrapper configures `VerifyAccountDeletion` to check SSH credentials,
+unfinished jobs, schedules and triggers before deletion.
+`repos.VerifyGitLabAccountDeletion` owns that safety decision; the CLI supplies
+the four resource-inventory callbacks in `GitLabAccountDeletionInventory`.
+Missing callbacks or unreadable inventories refuse deletion, and independent
+inventory errors are returned together.
+
+`repos.VerifyGitLabPollerCredentials` and `repos.ContainGitLabPoller` own
+elevation-safety decisions and failure containment. The GitLab lifecycle
+package supplies read-only `GitLabPollerCredentialInventory` callbacks for complete
+inventories. `GitLabPollerContainmentOperations` embeds that inventory and adds
+revocation, installed-credential attribution and deletion callbacks;
+`repos` controls ordering, detached cleanup budgets and the refusal to remove
+unmanaged credentials. Missing callbacks fail closed. Trigger bootstrap and
+Developer restoration remain orchestrated by the repository webhook lifecycle.
+
+`internal/gitlablifecycle` owns GitLab-specific account/credential attribution
+and the trigger-owner implementation. The CLI constructs the lifecycle and
+connects it to commands; it does not implement account safety or containment.
+
+Provisioning and rotation accept one `ProvidedRoleCredential` per registered
+role, bundling the sensitive token with its optional resolved owner and token
+IDs. Neither credential values nor remote error text are reported. Ownership
+lookup errors intentionally expose only the unresolved-ownership sentinel:
+redacted remote causes are flattened so an inner 403/404 cannot authorize
+legacy fallback or imply that managed accounts are absent.
+
+Rotation-state writes use schema version 1. Unversioned state remains readable;
+unsupported versions fail closed and are not rewritten. The marker cannot
+protect against older CLIs that ignore it; mixed-version lifecycle operations
+remain unsupported. If ownership recording fails immediately after account
+creation, install requests deletion of that newly created ID on a detached
+cleanup context before any membership or PAT is issued. It never deletes an
+unverified same-named account; failed deletion is reported for administrator
+cleanup.
+
+`repos status` includes account IDs, names, effective access and managed
+ownership in text diagnostics and `gitlab_service_accounts` JSON. Managed
+accounts not exactly Developer are drift and clear role readiness. Reinstall
+repairs direct membership for every positively owned, non-supplied role account
+and verifies effective Developer access before retaining its credential or
+provisioning a replacement when the role secret is missing. The token creation
+boundary also contains positively owned roles on failed membership repair or
+effective-access verification during direct rotation. Replacement Poller PATs
+must receive verified protected-default-branch pipeline access before publication.
+Inherited higher access or failed repair/verification fails provisioning and
+contains that positively owned, non-supplied role. The complete supplied-owner
+exclusion set must resolve before membership changes or containment; unresolved
+ownership preserves credentials and fails provisioning. Successful attribution
+is reused throughout that operation. During containment, managed PATs are revoked and
+relisted on bounded detached contexts, and the installed secret is removed only
+after live account attribution. Ownership records are retained. Unknown tokens
+and containment failures are reported for administrator recovery. Renamed
+currently supplied accounts remain in operational inventory by recorded owner
+ID, and enrolled token IDs retain their recorded role names; destructive
+inventory and membership reconciliation continue to exclude them.
+An unreadable inventory is reported,
+not interpreted as no accounts.
+
+Project service accounts and their Free-tier availability are generally
+available starting with GitLab 18.11. GitLab.com Free permits 100 per
+top-level group; Self-Managed Free permits 100 per instance. Installation
+uses capability checks rather than a version guess, reuses existing accounts,
+and retains supported legacy/supplied credentials on restricted instances.
+Quota exhaustion or insufficient permissions requires operator action; it
+must not delete unrelated accounts to make space. See the
+[GitLab API contract](https://docs.gitlab.com/api/service_accounts/).
+
+### Poller-owned webhook trigger token
+> **Poller elevation safety:** Creating or rotating a Poller-owned trigger
+> requires a verified server-side guarantee that requests accepted before
+> credential revocation, including asynchronous credential and job creation,
+> have finished. The current GitLab adapter cannot establish that guarantee,
+> so it defers temporary Maintainer elevation and new trigger creation. Polling
+> continues with Developer credentials; compliant existing triggers can still
+> be reused. Revocation and empty resource inventories alone do not prove that
+> requests have drained.
+
+GitLab binds a pipeline trigger token to its creator, and creating one
+needs Maintainer. A Poller that is raised to Maintainer raises every
+credential that authenticates as it, including the distributed runtime
+credential that running protected-branch jobs hold. So `repos install`
+never raises the Poller while a distributed runtime credential is valid.
+When an adapter can verify server-side request draining, it creates the
+token **authenticated as the Poller** through the following lifecycle, all
+under installer authority and inside one project lease:
+
+1. Identify the managed `fullsend-poller` service account from the
+   administrator's service-account inventory and its durable `managed_user_id`
+   creation record in role rotation state. A matching display name or token ID
+   alone does not authorize membership changes or PAT revocation; accounts
+   without that creation record are preserved, including during uninstall.
+   Supplied-account exclusions override the creation record. The distributed
+   runtime
+   credential is not needed for this. When it is installed and still
+   authenticates, it must be the managed `fullsend-poller` token of that
+   account; an administrator-supplied credential (for example
+   `--gitlab-role-token`) leaves the Poller untouched. Verify the Poller's
+   effective project access is exactly Developer. A leftover elevation is
+   corrected first. Less than Developer, or no membership, defers the fast
+   path.
+2. Account for every credential on the account, and refuse elevation
+   (deferring the fast path without changing membership or revoking
+   anything) when one cannot be accounted for. The only active personal
+   access tokens allowed are the managed `fullsend-poller` runtime token
+   and the installer's `fullsend-poller-bootstrap` token, and the Poller
+   must own no pipeline trigger token that fullsend does not manage:
+   a trigger acts with its owner's permissions and cannot be invalidated
+   safely afterwards. Revoke such a token or trigger first. An inventory
+   that cannot be read also refuses elevation. Credentials fullsend does
+   not manage are never revoked. Require the optional
+   `repos.GitLabPollerQuiescenceVerifier` capability before revoking runtime
+   credentials; the current live adapter lacks it and defers here.
+3. Invalidate the distributed credentials: remove
+   `FULLSEND_GITLAB_POLLER_TOKEN`, revoke the account's managed runtime
+   personal access tokens, and verify none is still active (removing the
+   variable alone does not revoke copies held by running jobs). Then
+   revoke the managed trigger tokens the Poller already owns, so neither
+   they nor the webhook URL that embeds one can start a pipeline with the
+   elevated role. Repeat the account safety inventory after revocation,
+   before creating the bootstrap token: no active personal access token is
+   allowed at this point, even if its name is `fullsend-poller` or
+   `fullsend-poller-bootstrap`. A managed-name token that appeared during
+   revocation still refuses elevation. Verify server-side request draining
+   after this inventory, including asynchronous credential and job creation.
+   If that verification fails, defer elevation and republish the runtime
+   credential at Developer access.
+4. Create the installer-only bootstrap personal access token
+   (`fullsend-poller-bootstrap`, `api` scope, two-day expiry) with the
+   admin credential. Its value lives only in installer memory: it is never
+   written to CI/CD variables, logs, agent environments, or any persistent
+   store, and error text is redacted against it. Any bootstrap token left
+   by an interrupted run is revoked first.
+5. Temporarily grant the Poller Maintainer with the admin credential and
+   create the trigger authenticated with the bootstrap credential.
+6. Restore Developer on every path, success or failure, retrying once.
+   Then verify effective access through `members/all`.
+7. Revoke the bootstrap credential and verify no active bootstrap token
+   remains.
+8. Publish a replacement runtime credential (`fullsend-poller`) as
+   `FULLSEND_GITLAB_POLLER_TOKEN`, and record its rotation-state proof.
+   This happens only after steps 6 and 7 succeeded: a runtime credential
+   is never published while the Poller exceeds Developer or its effective
+   access cannot be verified.
+9. Check that the token's owner is the Poller. Then enforce the usual
+   runtime ceiling: the owner is below Maintainer and admitted by the
+   protected default branch.
+
+Only after the restore is verified, the bootstrap credential is revoked,
+and the replacement runtime credential is published is the trigger token
+stored and the webhook created or updated.
+
+**Operational impact.** Between step 3 and step 8 no runtime Poller
+credential is valid. Polling schedule jobs and in-flight jobs that
+authenticate as the Poller fail during trigger creation or rotation, and
+the next scheduled poll picks the work up again after the replacement is
+published. Run install or `--rotate-gitlab-trigger-token` when a short
+polling gap is acceptable.
+
+**One installer at a time per project, across processes and hosts.** The
+whole transaction above, plus role provisioning, rotation, cleanup, and
+Poller reconciliation, holds a project lease: the CI/CD variable
+`FULLSEND_GITLAB_INSTALL_LEASE`, created atomically (GitLab rejects a second
+variable with the same key and scope) and deleted when the operation ends,
+even after a failure or cancellation. A second installer waits up to two
+minutes, then fails without inventorying, revoking, elevating, or publishing
+anything. A client that cannot take the lease is refused, and a dry run
+neither takes nor needs it. If an installer is killed while holding the
+lease, confirm the Poller member's project role is Developer and delete that
+variable by hand; fullsend never takes over a lease on its own, because
+deleting another installer's live lease would reopen the elevation window.
+Older CLI versions do not honor this lease. Do not run them concurrently with
+an upgraded installer; follow the [operations recovery procedure](../guides/getting-started/operations.md#gitlab-installer-lease-and-version-compatibility)
+before manually removing a stranded lease.
+
+- **Expired, revoked, or missing Poller token:** install identifies the
+  managed `fullsend-poller` service account from the administrator's
+  service-account inventory and durable creation record, never from the
+  installed token, so a leftover
+  elevation is restored and the credential can be provisioned, rotated, or
+  replaced. This is also how an interrupted run is recovered after the
+  previous runtime token was revoked: the installed variable is removed
+  before any token is revoked, so the next install finds it absent and
+  provisions a replacement.
+- **Interrupted run (kill, power loss):** every install first restores a
+  raised Poller to Developer and then revokes any leftover
+  `fullsend-poller-bootstrap` token by name, so the orphan is accounted
+  for without its value ever being stored. A bootstrap token that cannot be
+  revoked fails closed and contains the Poller like a failed restore. The
+  project lease is held for the whole transaction, including these steps.
+- **Published trigger cannot be verified:** after the webhook is
+  published, install re-reads the hooks and triggers. A failed listing, an
+  omitted owner, or a failed role lookup is treated as an unverified owner,
+  and the managed fast path is torn down on a detached, bounded context
+  with teardown failures reported.
+- **Restore, verify, or bootstrap revocation fails:** install revokes the
+  new token, publishes no runtime credential, disables the managed fast
+  path (all managed triggers and the webhook), revokes the Poller's
+  managed personal access tokens (runtime and bootstrap), removes the
+  installed Poller variable, and fails with an error telling the operator
+  to set the Poller member back to Developer (or to revoke the bootstrap
+  token). Every compensating request, including bootstrap revocation, runs
+  on its own bounded context that survives cancellation. After successful containment,
+  polling and webhook dispatch are both unavailable until the member is
+  Developer again and install provisions a replacement credential. If
+  another active token or an unmanaged pipeline trigger owned by the
+  Poller remains on the account, containment is reported as incomplete:
+  revoke it or have an administrator block the account. A failed
+  install runs the same restoration and containment before it finishes,
+  so an interrupted install cannot leave an elevated Poller behind.
+- **Poller membership cannot be raised (403/404):** this is the
+  project-access-token Poller case. The fast path is deferred nonfatally,
+  and an existing compliant fast path is preserved.
+- **No Poller credential installed:** the trigger is minted as the admin
+  identity as before, which the runtime ceiling rejects at Maintainer or
+  above.
+
+`ci_pipeline_variables_minimum_override_role` stays `no_one_allowed`.
+There is no fourth identity and no custom webhook receiver.
 
 ## Job → role mapping
 
@@ -409,9 +693,13 @@ report:
 - `Missing`: registered roles whose secrets are absent
 - `Diagnostics`: human-readable lines with **names only**
 
-`repos uninstall` deletes the registry, rotation document, built-in and
-custom role secrets, and matching `fullsend-poller` / `fullsend-analyst`
-/ `fullsend-coder` / `fullsend-role-*` project access tokens. It does
+`repos uninstall` deletes the registry, built-in and custom role secrets,
+and the rotation document (except that supplied-account exclusions are
+kept in an exclusions-only rotation document so preserved administrator-owned
+accounts are never treated as managed on a later install or uninstall; the
+document is retained whole when any cleanup step fails), and matching `fullsend-poller` / `fullsend-analyst`
+/ `fullsend-coder` / `fullsend-role-*` project access tokens and
+role service-account personal access tokens. It does
 **not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a
 matching `fullsend-bot` project access token — a repository installed
 before the role-only rollout requires manual cleanup of those. A
@@ -529,7 +817,14 @@ Fullsend creates a new PAT with the same token name, writes it to the
 existing masked CI variable, and leaves the previous PAT active for a
 24-hour grace so jobs that already hold the old value in their
 environment can finish. A later `repos install` after the grace period
-revokes the outgoing PAT. New jobs started after distribution read the
+revokes the outgoing PAT. `GitLabOutgoingTokenVerifier.ConfirmOutgoingTokenInactive`
+can instead retire an outgoing obligation when an authoritative inventory
+positively locates an inactive token, or complete service-account and configured
+legacy inventories confirm absence. An active service-account token can be
+revoked even when legacy inventory is unavailable.
+Unavailable or forbidden inventories retain the obligation; a revocation 404
+alone is insufficient. Generic revocation still reports unknown/unowned tokens
+as errors. New jobs started after distribution read the
 replacement from CI.
 
 **Failed rotation does not strand a role.** If creation fails, nothing
@@ -561,14 +856,15 @@ replacement itself. Enrolling a replacement this way therefore does not
 schedule any other active same-named PAT for revocation; if one exists,
 confirm it is not the replacement and revoke it manually.
 
-**Identity continuity.** GitLab assigns a new bot user per PAT, so the
-GitLab user ID changes on replacement. Fullsend preserves the role
+**Identity continuity.** Service-account PAT rotation preserves the account's
+user ID. Replacing a legacy project-token bot changes that ID. Fullsend preserves the role
 name, token name (`fullsend-poller`, `fullsend-role-<name>`), CI
 variable, and capability set. Rotation state records the old and new
 token IDs (never secret values) for internal use by
 `RotateGitLabRoleCredentials`: serialization between runs, crash
 recovery, and grace-period revocation tracking during `repos install`.
-It is not read or displayed by `repos status`.
+Status reads the recorded managed-account ownership but never displays token
+values. Uninstall uses creation provenance to authorize account deletion.
 
 **Diagnostics.** `DiagnoseLifecycle` classifies each role as `ok`,
 `expiring`, `expired`, `revoked`, `unverified`, `overlapping`, or
@@ -590,6 +886,7 @@ Leave these to the follow-up issues.
 | [#7558](https://github.com/fullsend-ai/fullsend/issues/7558) | **Implemented.** `repos uninstall` removes GitLab role-identity state: the registry, rotation document, built-in and custom role secrets, and matching project access tokens. |
 | [#7559](https://github.com/fullsend-ai/fullsend/issues/7559) | **Implemented.** Shared-token fallback and the public migration/cutover/rollback controls are removed; old state is ignored by runtime. |
 | [#7502](https://github.com/fullsend-ai/fullsend/issues/7502) | **Implemented.** [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) records that the three-role decision in [#7424](https://github.com/fullsend-ai/fullsend/issues/7424) / [#7496](https://github.com/fullsend-ai/fullsend/issues/7496) supersedes its shared-identity assumption and permits registered custom roles as an extension. Operator-facing lifecycle is in [configuring-gitlab.md](../guides/getting-started/configuring-gitlab.md#role-identity-model-and-credential-lifecycle). |
+| [#8083](https://github.com/fullsend-ai/fullsend/issues/8083) | Role service-account provisioning, install reconciliation, rotation/recovery, status/drift and ownership-gated uninstall cleanup are implemented. Native Poller triggers use installer-only bootstrap credentials and verified Developer restoration. Live acceptance validation, including GitLab.com Free and actual webhook/role-job execution, remains required before closing the issue. See [Project service accounts](#project-service-accounts). |
 | [#7931](https://github.com/fullsend-ai/fullsend/issues/7931) | **Implemented.** The `FULLSEND_GITLAB_ROLE_MIGRATION` gate constant, the cutover mechanism that retired a leftover shared credential during install, and the uninstall cleanup of that leftover secret and its project access token are all removed. Automated cleanup for a repository installed before the role-only rollout is intentionally not preserved; that repository may require manual cleanup. |
 
 ## Credential-routing security checklist
@@ -718,3 +1015,20 @@ These two are described independently in four documents:
   rule so the job never starts; the script-level guard is defense-in-depth.
 - When changing credential routing or rotation, follow the
   [credential-routing security checklist](#credential-routing-security-checklist).
+
+Legacy project-token creation ownership is tracked by `created_token_ids` in
+version 1 role state. Only IDs returned by token creation are recorded there;
+`incoming_id`, `outgoing_ids`, token names, and distribution backfill alone do
+not authorize legacy convergence or revocation. Unverified same-named legacy
+tokens are preserved and require manual recovery or explicit supplied enrollment.
+All token-client constructors used for installation and uninstall load these
+records through `ManagedLegacyTokenIDs`; live fallback creation records them
+through `LegacyTokenCreated` before publication. Failure to record creation
+revokes only the newly issued token using the creation call's authority.
+
+`gitlablifecycle.UninstallTokenClient` owns uninstall reconciliation and the
+per-project supplied-attribution cache. The CLI constructs live inventory
+adapters and passes the role client to `NewUninstallTokenClient`; it does not
+implement domain reconciliation. Enrolled supplied PATs shared by multiple
+roles produce one inventory snapshot per matching role reference, so reporting
+and unforced rotation retain every enrolled role.
