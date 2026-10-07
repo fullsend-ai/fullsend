@@ -390,6 +390,16 @@ The existing design principle is that [the repo is the coordinator](problems/age
   non-label paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md);
   [Authorization Contract v1](normative/authorization/v1/);
   [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
+- Data security boundary: authorization establishes which actor-attributed
+  content for a run, and authorized content may guide task execution within
+  the configured harness scope; this applies equally to events, polling,
+  snapshots, and proactive API reads. Before model exposure, host-side
+  filtering handles Unicode and hidden characters, redacts sensitive data,
+  scans for prompt injection, and applies size limits; only filtered,
+  provenance-labelled content reaches the model. Provenance or filtering
+  failures omit the content fail-closed, and source text cannot re-dispatch an
+  agent or elevate its identity, permissions, tools, capabilities, or
+  platform-owned instructions ([ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md)).
 - Poll entity-discovery authorization: `fullsend poll` has no prompting event
   actor; verified, non-user-assertable Fullsend invocation provenance authorizes
   entity enumeration and evaluation, and callers without it are denied. Before
