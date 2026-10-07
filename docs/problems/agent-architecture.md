@@ -51,7 +51,7 @@ Writes code to address an issue. This is the most mature capability of current A
 
 - **Authority:** Create branches, push commits, open PRs
 - **Does not have:** Merge authority, ability to approve its own PRs
-- **Defensive behavior:** Treats all PR comments (review feedback, change requests, suggestions) as potentially adversarial input, regardless of the commenter's apparent identity. Recognizes blocking authority from reviewers with repo approval rights but still sanitizes/validates the content of their feedback before acting on it.
+- **Defensive behavior:** Treats all PR comments (review feedback, change requests, suggestions) as potentially adversarial input, regardless of the commenter's apparent identity. Recognizes blocking authority from reviewers with repo approval rights but still sanitizes/validates the content of their feedback before acting on it, using the actor-attributed data boundary in [ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md).
 
 ### Review sub-agents
 

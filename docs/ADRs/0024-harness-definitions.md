@@ -96,6 +96,8 @@ parts:
     redaction post-tool). Omitting the `security` block enables all scanners
     with fail-closed semantics. Individual scanners can be toggled off
     per-harness, but there is no global kill switch.
+    The actor-attributed source-record admission and per-record authorization
+    boundary is defined by [ADR 0133](0133-actor-attributed-data-security-boundary.md).
 14. **Validation loop** — an optional deterministic script that checks agent
     output and re-runs the same agent with feedback on failure. The current
     implementation supports re-running the previous agent with validation

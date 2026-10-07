@@ -96,18 +96,20 @@ In fullsend's architecture, this is mitigated by several design decisions: agent
 ### Open questions
 
 - Can prompt injection be reliably detected? Current research suggests it's fundamentally hard.
-- ~~Should we treat all PR content as untrusted, even from org members?~~
-  Content from actors admitted by the dispatch/data policy may provide task
-  instructions within the configured harness scope; attribution does not grant
-  platform authority, and other content remains data rather than instruction,
-  regardless of whether the source arrived through an event or an API
-  ([ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md)).
+- ~~Should we treat all PR content as untrusted, even from org members? (Relates
+  to insider threat.)~~ Content from actors admitted by the dispatch/data policy
+  may provide task instructions within the configured harness scope;
+  attribution does not grant platform authority, and content from
+  unrecognized or unauthorized actors is redacted, regardless of whether the
+  source arrived through an event or an API ([ADR
+  0133](../ADRs/0133-actor-attributed-data-security-boundary.md)).
 - How do we handle the case where legitimate code contains text that looks like prompt injection? (e.g., a test for prompt injection defenses)
 - What's the blast radius if an injection succeeds? How do we limit it? (Credential exposure mitigated by keeping credentials out of sandboxes entirely — see [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); model-provider credentials for runtimes that need one follow the same rule through a run-scoped provider and a placeholder the agent never resolves — see [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) and, for codex, [ADR 0099](../ADRs/0099-codex-agent-runtime.md); the Actions workflow token used for GitHub Packages has its *placeholder* bound the same way, resolving only at the two registry hosts; but a value recovered through the registry's error echo is the job's own `GITHUB_TOKEN` and is replayable against whatever hosts the running role's forge profile already allows — read-write for `coder` — see [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md). Tool access limited by `permissions.deny` hard-blocks — see [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md). Other blast radius dimensions remain open.)
-- ~~Should agents operate on Unicode-normalized text with non-rendering characters stripped, or on raw text with a separate detection pass?~~ Model-bound
-  source content uses the filtered representation after Unicode/control-character
-  handling and prompt-injection scanning; raw source content is not exposed
-  ([ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md)).
+- Should agents operate on Unicode-normalized text with non-rendering characters
+  stripped, or on raw text with a separate detection pass? (ADR 0133 decides
+  that model-bound source content is the filtered representation and that raw
+  text is never exposed; strip versus detect-and-preserve remains deferred to
+  the versioned content-filter contract.)
 - How do we handle invisible Unicode in code itself (source files, not just metadata)? Some non-rendering characters are legitimate in string literals for internationalization. What heuristics distinguish malicious use from legitimate use?
 
 ## Threat 2: Insider threat / compromised credentials
