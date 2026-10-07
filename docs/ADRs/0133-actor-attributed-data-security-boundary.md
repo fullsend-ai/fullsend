@@ -33,12 +33,17 @@ whether processing may begin; they do not make the text produced by an
 authorized actor truthful, safe, or authoritative.
 
 Agents nevertheless need to use actor-attributed data such as issue bodies,
-comments, reviews, commit messages, and linked records. That data may arrive
-in the triggering event, a poll or snapshot, or a proactive read through
-another authorized API. Comments from an authorized actor can contain genuine
-task instructions that the agent must be able to heed. The boundary must still
-prevent content from changing platform authority or capabilities, and must
-protect against hidden Unicode, prompt injection, and indirect disclosure.
+comments, reviews, and linked records. The boundary applies only to records
+whose source system can reliably resolve the actor identity and current
+authorization through its own authorization subsystem, such as GitHub pull
+request or issue comments and Jira issue comments. Self-asserted author or
+committer metadata is not sufficient; records whose actor cannot be reliably
+established are redacted. That data may arrive in the triggering event, a poll
+or snapshot, or a proactive read through another authorized API. Comments from
+an authorized actor can contain genuine task instructions that the agent must
+be able to heed. The boundary must still prevent content from changing
+platform authority or capabilities, and must protect against hidden Unicode,
+prompt injection, and indirect disclosure.
 
 ## Decision
 
@@ -75,6 +80,14 @@ The actor MUST meet the applicable observation or mutation threshold for the
 selected harness. A label grant authorizes only its verified label transition;
 it does not authorize unrelated content from that actor or other actors.
 
+Only a source-system record whose actor identity and current authorization can
+be reliably fetched from the source system's authorization subsystem is
+eligible for this boundary. GitHub pull request and issue comments and Jira
+issue comments are representative examples. A self-asserted Git author,
+committer, or account association does not establish actor identity for
+admission; if the source system cannot establish the actor and authorization,
+the record is redacted.
+
 This is bounded trust: content with authorized provenance may inform analysis
 and, where the harness permits, provide task instructions. It cannot grant
 platform authority or become a source of credentials, identity, permissions,
@@ -106,9 +119,14 @@ The model-facing prompt MUST preserve the provenance and boundary of filtered
 source-system records relative to system/developer instructions and
 harness-provided task instructions. Content from an authorized actor MAY guide
 task execution within the configured harness scope, including by requesting an
-otherwise permitted change. Content from a redacted source is absent from the
-model context. No source content may re-dispatch the agent or elevate its
-identity, permissions, tools, capabilities, or platform-owned instructions.
+otherwise permitted change. An authorized record is one trusted text unit for
+this boundary: quoted, forwarded, or copied text inside that record is not
+assigned a separate trust level, and the entire filtered record text is
+admitted under the record actor's authorization. Separate linked records still
+require their own attribution and authorization. Content from a redacted
+source is absent from the model context. No source content may re-dispatch the
+agent or elevate its identity, permissions, tools, capabilities, or
+platform-owned instructions.
 The platform's pre-dispatch command parser and deterministic, schema-validated
 host/post-script paths remain the only paths that select a stage or perform a
 forge mutation.

@@ -401,6 +401,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   re-fetching the data, creating a new structure for retry/requeue, or
   terminating and re-invoking the agent ends that lifetime and requires fresh
   authorization resolution, even if the same in-memory structure is reused.
+  Only records whose source system can reliably resolve actor identity and
+  current authorization through its own authorization subsystem are eligible;
+  quoted or copied text inside an authorized record remains part of that one
+  trusted record.
   Before model exposure, host-side filtering handles Unicode and hidden
   characters, redacts sensitive data, scans for prompt injection, and applies
   size limits; unrecognized or unauthorized records are redacted rather than
