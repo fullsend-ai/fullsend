@@ -2998,6 +2998,42 @@ var oidcDenyKeys = map[string]bool{
 	// them.
 	"FULLSEND_TRIGGER_TOKEN":  true,
 	"FULLSEND_WEBHOOK_SECRET": true,
+	// The GitLab agent job's OIDC token (`id_tokens:` with aud: fullsend),
+	// which the mint accepts. Runner-only, like the GitHub OIDC request
+	// credentials above (#8146).
+	"FULLSEND_ID_TOKEN": true,
+}
+
+// gitlabCredentialDenyKeys are fullsend's own GitLab credentials that the
+// agent job exports: the role-selected bot PAT (select-gitlab-role-token.sh)
+// and the legacy shared forge token. Like every FULLSEND_GITLAB_*_TOKEN role
+// secret (isGitLabRoleSecretKey), they are refused at every harness ${VAR}
+// expansion site and stripped from host-side child scripts. The selected
+// role's credential still reaches scripts as GITLAB_TOKEN / PUSH_TOKEN
+// (#8146).
+var gitlabCredentialDenyKeys = map[string]bool{
+	"FULLSEND_JOB_TOKEN":   true,
+	forge.SecretForgeToken: true,
+}
+
+// isGitLabRoleSecretKey reports whether key names a GitLab role credential:
+// the built-in FULLSEND_GITLAB_{POLLER,ANALYST,CODER}_TOKEN, a custom
+// FULLSEND_GITLAB_ROLE_<NAME>_TOKEN, or any future role secret in the same
+// family. The family rule covers new roles without a list to maintain.
+// Non-secret routing vars (FULLSEND_GITLAB_ROLE, _ROLE_SECRET, _ROLE_SOURCE,
+// _ROLE_REGISTRY) do not end in _TOKEN and still reach scripts (#8146).
+func isGitLabRoleSecretKey(key string) bool {
+	return strings.HasPrefix(key, gitlabRoleRoutingKeyPrefix) && strings.HasSuffix(key, "_TOKEN")
+}
+
+// gitlabChildScriptOnlyDenyKeys are stripped from host-side child scripts on
+// GitLab runs but stay expandable: harness host_files use
+// ${GCP_OIDC_TOKEN_FILE} to copy the OIDC token into the sandbox, so refusing
+// it at expansion would break that path. On GitLab the file holds the
+// FULLSEND_ID_TOKEN that run-agent-job.sh wrote out. GitHub runs keep
+// passing it to pre-scripts (#7689 tracks the GitHub side) (#8146).
+var gitlabChildScriptOnlyDenyKeys = map[string]bool{
+	"GCP_OIDC_TOKEN_FILE": true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting
@@ -3017,7 +3053,20 @@ var providerOnlyKeys = map[string]bool{
 // env.sandbox, host_files, validation_loop.schema) and stripped from
 // pre/post/validation child environments.
 func harnessExpansionDenied(key string) bool {
-	return oidcDenyKeys[key] || providerOnlyKeys[key]
+	return oidcDenyKeys[key] || providerOnlyKeys[key] ||
+		gitlabCredentialDenyKeys[key] || isGitLabRoleSecretKey(key)
+}
+
+// childScriptEnvDenied reports whether key must be stripped from a host-side
+// child script (pre-script, post-script, preflight or validation command).
+// It is harnessExpansionDenied plus gitlabChildScriptOnlyDenyKeys once GitLab
+// role selection has run in this process (applyGitLabRoleSelection sets
+// FULLSEND_GITLAB_ROLE only on the GitLab path) (#8146).
+func childScriptEnvDenied(key string) bool {
+	if harnessExpansionDenied(key) {
+		return true
+	}
+	return gitlabChildScriptOnlyDenyKeys[key] && os.Getenv(envGitLabRole) != ""
 }
 
 // harnessEnvExpand is the expander used for harness YAML ${VAR} sites.
@@ -3736,7 +3785,7 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 func stripOIDCEnv(env []string) []string {
 	result := make([]string, 0, len(env))
 	for _, e := range env {
-		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
+		if i := strings.IndexByte(e, '='); i > 0 && childScriptEnvDenied(e[:i]) {
 			continue
 		}
 		result = append(result, e)
@@ -4667,6 +4716,12 @@ func stripControlChars(s string) string {
 // retains them for mintAgentToken and provider credential expansion.
 // See #5832, #6649.
 //
+// On GitLab, fullsend's own credentials are stripped too: the job's OIDC
+// token (FULLSEND_ID_TOKEN, and GCP_OIDC_TOKEN_FILE pointing at it), the
+// role-selected FULLSEND_JOB_TOKEN, FULLSEND_FORGE_TOKEN and every
+// FULLSEND_GITLAB_*_TOKEN role secret. The selected role's credential stays
+// available as GITLAB_TOKEN / PUSH_TOKEN; see childScriptEnvDenied (#8146).
+//
 // GitLab role-routing vars (isPinnedGitLabRoleRoutingKey) are pinned to the
 // process environment: a runnerEnv entry for one of those keys is dropped
 // rather than allowed to shadow the value applyGitLabRoleSelection already
@@ -4687,8 +4742,9 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 		if strings.HasPrefix(e, "TRACEPARENT=") {
 			continue
 		}
-		// Strip OIDC credential vars and provider-only keys (#5832, #6649).
-		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
+		// Strip OIDC credential vars, provider-only keys and fullsend's
+		// GitLab credentials (#5832, #6649, #8146).
+		if i := strings.IndexByte(e, '='); i > 0 && childScriptEnvDenied(e[:i]) {
 			continue
 		}
 		env = append(env, e)

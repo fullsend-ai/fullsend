@@ -367,8 +367,9 @@ func TestChildScriptEnv_PinsGitLabRoleRoutingKeys(t *testing.T) {
 	env := childScriptEnv(runnerEnv, "")
 
 	assert.Equal(t, "process-selected-token", envLast(env, "GITLAB_TOKEN"), "runner_env must not override GITLAB_TOKEN")
-	assert.Equal(t, "process-shared-token", envLast(env, forge.SecretForgeToken), "runner_env must not override FULLSEND_FORGE_TOKEN")
-	assert.Equal(t, "process-analyst-token", envLast(env, forge.SecretGitLabAnalystToken), "runner_env must not override a FULLSEND_GITLAB_* secret")
+	// The credentials themselves never reach scripts, from either source (#8146).
+	assert.NotContains(t, envKeys(env), forge.SecretForgeToken, "FULLSEND_FORGE_TOKEN must be stripped")
+	assert.NotContains(t, envKeys(env), forge.SecretGitLabAnalystToken, "a FULLSEND_GITLAB_*_TOKEN secret must be stripped")
 	assert.Equal(t, "allowed", envLast(env, "LEGIT_VAR"), "non-pinned runner_env entries still apply")
 }
 

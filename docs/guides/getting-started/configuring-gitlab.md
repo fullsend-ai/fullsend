@@ -905,6 +905,17 @@ Confirm:
   secret is unmasked, rotate it or restrict job-log visibility before running
   agents against untrusted content; revoke old personal PATs on their
   issuing accounts.
+* **Harness script environment** — host-side harness scripts (pre-script,
+  post-script, `validation_loop` script and preflight check) never receive
+  fullsend's own credentials: `FULLSEND_ID_TOKEN`, `GCP_OIDC_TOKEN_FILE`,
+  `FULLSEND_JOB_TOKEN`, `FULLSEND_FORGE_TOKEN`, or any
+  `FULLSEND_GITLAB_*_TOKEN` role secret. The selected role's credential
+  still reaches them as `GITLAB_TOKEN` (and `PUSH_TOKEN` for roles with
+  `write_repository`). A harness `${VAR}` reference to any of these names
+  except `GCP_OIDC_TOKEN_FILE` fails validation. `GCP_OIDC_TOKEN_FILE`
+  stays available to `host_files` so the sandbox can receive the token
+  file. CI/CD variables you set for your own tools still reach scripts,
+  either from the job environment or through `env.runner`.
 
 ## Testing Fullsend
 

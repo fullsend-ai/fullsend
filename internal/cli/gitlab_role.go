@@ -159,6 +159,7 @@ func checkGitLabApprovalCapability(forgeName, action, token string, getenv func(
 	if getenv == nil {
 		getenv = os.Getenv
 	}
+	getenv = withPinnedSelectedRoleCredential(getenv)
 	agentName := strings.TrimSpace(getenv(envGitLabRole))
 	if agentName == "" {
 		agentName = strings.TrimSpace(getenv("STAGE"))
@@ -180,4 +181,30 @@ func checkGitLabApprovalCapability(forgeName, action, token string, getenv func(
 		}
 	}
 	return gitlabroles.Require(sel.Registration, gitlabroles.CapApproveMergeRequest)
+}
+
+// withPinnedSelectedRoleCredential lets checkGitLabApprovalCapability run
+// inside a host-side script. childScriptEnv strips every
+// FULLSEND_GITLAB_*_TOKEN role secret (#8146), so `fullsend post-review`
+// called from a post-script cannot read the selected role's secret. That
+// env still has the role-selection result, which childScriptEnv pins
+// against runner_env overrides (isPinnedGitLabRoleRoutingKey):
+// FULLSEND_GITLAB_ROLE_SECRET names the selected secret and GITLAB_TOKEN
+// holds its value. When the named secret is absent, the returned getenv
+// answers it with GITLAB_TOKEN. The selected secret is never renamed to a
+// different role's: a role whose registered secret is not the recorded one
+// still resolves as unconfigured. Everything else falls through to getenv
+// unchanged.
+func withPinnedSelectedRoleCredential(getenv func(string) string) func(string) string {
+	selected := strings.TrimSpace(getenv(envGitLabRoleSecret))
+	if selected == "" || strings.TrimSpace(getenv(selected)) != "" {
+		return getenv
+	}
+	pinned := getenv("GITLAB_TOKEN")
+	return func(key string) string {
+		if key == selected {
+			return pinned
+		}
+		return getenv(key)
+	}
 }
