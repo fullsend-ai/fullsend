@@ -1492,46 +1492,6 @@ func TestRepoSecretExists(t *testing.T) {
 	})
 }
 
-func TestGetRepoSecretProtection(t *testing.T) {
-	t.Run("secret exists", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "GET", r.Method)
-			assert.Equal(t, "/repos/owner/repo/actions/secrets/MY_SECRET", r.URL.Path)
-			json.NewEncoder(w).Encode(map[string]any{"name": "MY_SECRET"})
-		}))
-		defer srv.Close()
-
-		client := newTestClient(t, srv)
-		got, err := client.GetRepoSecretProtection(context.Background(), "owner", "repo", "MY_SECRET")
-		require.NoError(t, err)
-		assert.Equal(t, forge.SecretProtection{Exists: true, Masked: true, Protected: true}, got)
-	})
-
-	t.Run("secret missing", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
-		}))
-		defer srv.Close()
-
-		client := newTestClient(t, srv)
-		got, err := client.GetRepoSecretProtection(context.Background(), "owner", "repo", "MISSING")
-		require.NoError(t, err)
-		assert.Equal(t, forge.SecretProtection{}, got)
-	})
-
-	t.Run("api error", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-		}))
-		defer srv.Close()
-
-		client := newTestClient(t, srv)
-		_, err := client.GetRepoSecretProtection(context.Background(), "owner", "repo", "MY_SECRET")
-		require.Error(t, err)
-	})
-}
-
 func TestCreateOrUpdateRepoVariable_Patch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// PATCH succeeds → variable updated

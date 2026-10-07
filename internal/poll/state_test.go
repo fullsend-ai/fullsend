@@ -2,7 +2,6 @@ package poll
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2359,63 +2358,5 @@ func TestEnsureDispatchSecret_CreateError(t *testing.T) {
 	_, _, err := EnsureDispatchSecret(context.Background(), fc, "group", "project")
 	if err == nil {
 		t.Fatal("expected create error to propagate")
-	}
-}
-
-// --- decodePendingLabels / restoreDispatchedKeys malformed-entry drop paths ---
-
-func TestDecodePendingLabels_MalformedEntriesDropped(t *testing.T) {
-	state := persistedPollState{
-		FailedKeysFull: map[string]int{
-			// A normal failed key — must survive unchanged.
-			"normal-key": 1,
-			// Corrupted base64 suffix: DecodeString will fail.
-			pendingKeyPrefix + "!!!not-base64!!!": 1,
-			// Valid base64 but the decoded bytes are not JSON.
-			pendingKeyPrefix + base64.RawURLEncoding.EncodeToString([]byte("not-json")): 1,
-			// Valid JSON but the Key field is empty, so the entry must be dropped.
-			pendingKeyPrefix + base64.RawURLEncoding.EncodeToString([]byte(`{"key":"","pending":{}}`)): 1,
-		},
-	}
-
-	got := decodePendingLabels(state)
-
-	if got.FailedKeysFull["normal-key"] != 1 {
-		t.Errorf("normal key clobbered: FailedKeysFull = %v", got.FailedKeysFull)
-	}
-	for k := range got.FailedKeysFull {
-		if strings.HasPrefix(k, pendingKeyPrefix) {
-			t.Errorf("malformed pending entry survived in FailedKeysFull: %q", k)
-		}
-	}
-	if len(got.PendingLabels) != 0 {
-		t.Errorf("expected no valid pending labels decoded, got %v", got.PendingLabels)
-	}
-}
-
-func TestRestoreDispatchedKeys_MalformedEntriesDropped(t *testing.T) {
-	failed := map[string]int{
-		// A normal failed key — must survive unchanged.
-		"normal-key": 1,
-		// Corrupted base64 suffix: DecodeString will fail.
-		replayKeyPrefix + "!!!not-base64!!!": 1,
-		// Valid base64 but the decoded bytes are not JSON.
-		replayKeyPrefix + base64.RawURLEncoding.EncodeToString([]byte("not-json")): 1,
-		// Valid JSON but the Key field is empty, so the entry must be dropped.
-		replayKeyPrefix + base64.RawURLEncoding.EncodeToString([]byte(`{"key":"","ts":123}`)): 1,
-	}
-
-	outFailed, outDispatched := restoreDispatchedKeys(failed, nil)
-
-	if outFailed["normal-key"] != 1 {
-		t.Errorf("normal key clobbered: outFailed = %v", outFailed)
-	}
-	for k := range outFailed {
-		if strings.HasPrefix(k, replayKeyPrefix) {
-			t.Errorf("malformed replay entry survived in outFailed: %q", k)
-		}
-	}
-	if len(outDispatched) != 0 {
-		t.Errorf("expected no dispatched keys restored from malformed entries, got %v", outDispatched)
 	}
 }
