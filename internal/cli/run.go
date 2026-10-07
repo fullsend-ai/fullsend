@@ -1757,13 +1757,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err != nil {
 			return err
 		}
-		// The reason and outputs are printed, relayed to GITHUB_OUTPUT,
-		// recorded in the trace and posted in the completion comment, so
-		// scrub any runner secret or credential a script echoed into them.
-		preResult.Reason = redactFeedback(preResult.Reason, h.RunnerEnv)
-		for k, v := range preResult.Outputs {
-			preResult.Outputs[k] = redactFeedback(v, h.RunnerEnv)
-		}
+		redactPreScriptResult(&preResult, h.RunnerEnv)
 		// Log the outputs so non-GitHub CIs and local runs still see what
 		// the pre-script reported.
 		if line := prescript.LogLine(preResult); line != "" {
@@ -3684,6 +3678,34 @@ const minRedactableSecretLen = 8
 // never passed through our env (a key baked into a fixture, a hook printing
 // its own).
 func redactFeedback(feedback string, runnerEnv map[string]string) string {
+	feedback = redactSecretLiterals(feedback, runnerEnv)
+	// ScanResult.Sanitized is empty when the scanner changed nothing, so the
+	// original text is the fallback — not an empty prompt.
+	if res := security.NewSecretRedactor().Scan(feedback); res.Sanitized != "" {
+		return res.Sanitized
+	}
+	return feedback
+}
+
+// redactPreScriptResult scrubs a pre-script result before it is printed,
+// relayed to GITHUB_OUTPUT, recorded in the trace or (the reason) posted in
+// the completion comment. Outputs lose only exact credential values, since
+// downstream steps read them; the reason gets the full redaction pass.
+func redactPreScriptResult(res *prescript.Result, runnerEnv map[string]string) {
+	for k, v := range res.Outputs {
+		res.Outputs[k] = redactSecretLiterals(v, runnerEnv)
+	}
+	res.Reason = redactFeedback(res.Reason, runnerEnv)
+	if _, ok := res.Outputs["reason"]; ok {
+		res.Outputs["reason"] = res.Reason
+	}
+}
+
+// redactSecretLiterals replaces only known credential values: sensitive
+// env.runner values, provider-only keys and registered runtime secrets
+// (runner secrets among them). Unlike redactFeedback it runs no pattern
+// scan, so text that merely looks like a secret is left alone.
+func redactSecretLiterals(feedback string, runnerEnv map[string]string) string {
 	// All exact literals are replaced in one pass, longest first, so a
 	// value that is a substring of another never leaves part of the longer
 	// one visible, whichever source each came from.
@@ -3715,11 +3737,6 @@ func redactFeedback(feedback string, runnerEnv map[string]string) string {
 	slices.SortStableFunc(literals, func(a, b literal) int { return cmp.Compare(len(b.value), len(a.value)) })
 	for _, l := range literals {
 		feedback = strings.ReplaceAll(feedback, l.value, l.mask)
-	}
-	// ScanResult.Sanitized is empty when the scanner changed nothing, so the
-	// original text is the fallback — not an empty prompt.
-	if res := security.NewSecretRedactor().Scan(feedback); res.Sanitized != "" {
-		return res.Sanitized
 	}
 	return feedback
 }

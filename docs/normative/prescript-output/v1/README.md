@@ -64,8 +64,15 @@ value validation — and the result is capped at 1024 bytes. It is also run
 through the same credential-redaction pass used for [hard-failure
 diagnostics](#hard-failure-diagnostics) (literal runner-env values plus the
 shared secret-pattern scanner), since it is derived from incidental stdout
-rather than a value the script author chose to put in a `reason=` line. A
-file-based `reason=` value is not redacted.
+rather than a value the script author chose to put in a `reason=` line.
+
+A file-based `reason=` value gets the same full redaction pass before it is
+logged, relayed, recorded or posted, because it can reach a public status
+comment. Every other output value loses only exact credential values
+(runner secrets, sensitive `env.runner` values and provider-only keys)
+before it is logged or relayed; the secret-pattern scanner is not applied
+to them, so a value that merely looks like a secret reaches downstream
+steps unchanged.
 
 ### Hard-failure diagnostics
 
