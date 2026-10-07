@@ -637,7 +637,7 @@ The example below is a review harness whose pre-script fetches the Jira issue na
      --repos REPO_A,REPO_B --body '{"JIRA_API_TOKEN":"...","JIRA_API_EMAIL":"..."}'
    ```
 
-   A secret holds one value, so adding or rotating a key means setting the whole object again. Keep the JSON in a file outside the repository and run `gh secret set FULLSEND_RUNNER_SECRETS --repo OWNER/REPO < runner-secrets.json`. Each value must be a string of at least 8 characters (the redactor's current minimum), so that `fullsend run` can redact it; keys may not repeat. Every agent run that receives the secret validates the whole object, so one invalid key fails every agent in every repository that gets it, not only your custom agent.
+   The object holds literal values: GitHub never expands a reference such as `${{ secrets.JIRA_TOKEN }}` inside a stored secret, so a token you already keep as its own secret must be copied into the object too. A secret holds one value, so adding or rotating a key means setting the whole object again. Keep the JSON in a file outside the repository and run `gh secret set FULLSEND_RUNNER_SECRETS --repo OWNER/REPO < runner-secrets.json`. Each value must be a string of at least 8 characters (the redactor's current minimum), so that `fullsend run` can redact it; keys may not repeat. Every agent run that receives the secret validates the whole object, so one invalid key fails every agent in every repository that gets it, not only your custom agent.
 
 2. Reference each name from `env.runner` in `.fullsend/harness/my-agent.yaml`:
 

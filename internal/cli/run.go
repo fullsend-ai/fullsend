@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"os"
@@ -1310,6 +1312,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					status = "skipped"
 					detail = runSkipReason
 				}
+				// The detail is posted to the issue or PR, where Actions log
+				// masking does not apply: a failing preflight check or a
+				// pre-script skip reason can carry a runner secret (ADR 0136).
+				detail = redactFeedback(detail, h.RunnerEnv)
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
@@ -1339,7 +1345,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if preflightCtx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("validation_loop.preflight_check timed out after %s: %s", preflightCheckTimeout, h.ValidationLoop.PreflightCheck)
 			}
-			return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, validationFailMessage(preflightOut, preflightErr))
+			// Redact before the message reaches the CLI error, the trace and
+			// the completion comment: the command runs with env.runner.
+			return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, redactFeedback(validationFailMessage(preflightOut, preflightErr), h.RunnerEnv))
 		}
 		printer.StepDone("Preflight dependency check passed")
 	}
@@ -1748,6 +1756,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		if err != nil {
 			return err
+		}
+		// The reason and outputs are printed, relayed to GITHUB_OUTPUT,
+		// recorded in the trace and posted in the completion comment, so
+		// scrub any runner secret or credential a script echoed into them.
+		preResult.Reason = redactFeedback(preResult.Reason, h.RunnerEnv)
+		for k, v := range preResult.Outputs {
+			preResult.Outputs[k] = redactFeedback(v, h.RunnerEnv)
 		}
 		// Log the outputs so non-GitHub CIs and local runs still see what
 		// the pre-script reported.
@@ -3669,21 +3684,37 @@ const minRedactableSecretLen = 8
 // never passed through our env (a key baked into a fixture, a hook printing
 // its own).
 func redactFeedback(feedback string, runnerEnv map[string]string) string {
-	for key, value := range runnerEnv {
-		if len(value) < minRedactableSecretLen || !sensitiveEnvKey(key) {
-			continue
+	// All exact literals are replaced in one pass, longest first, so a
+	// value that is a substring of another never leaves part of the longer
+	// one visible, whichever source each came from.
+	type literal struct{ value, mask string }
+	var literals []literal
+	seen := map[string]bool{}
+	add := func(value, mask string) {
+		if len(value) >= minRedactableSecretLen && !seen[value] {
+			seen[value] = true
+			literals = append(literals, literal{value, mask})
 		}
-		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
+	}
+	for _, key := range slices.Sorted(maps.Keys(runnerEnv)) {
+		if sensitiveEnvKey(key) {
+			add(runnerEnv[key], "[REDACTED:"+key+"]")
+		}
 	}
 	// Provider-only keys live in the process environment, not RunnerEnv.
 	// Redact their literals the same way so they cannot reach the agent
 	// prompt or the uploaded run directory (#6649).
-	for key := range providerOnlyKeys {
-		value := os.Getenv(key)
-		if len(value) < minRedactableSecretLen {
-			continue
-		}
-		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
+	for _, key := range slices.Sorted(maps.Keys(providerOnlyKeys)) {
+		add(os.Getenv(key), "[REDACTED:"+key+"]")
+	}
+	// Registered runtime secrets, such as runner secrets referenced under
+	// a key sensitiveEnvKey does not match.
+	for _, value := range security.RuntimeSecrets() {
+		add(value, "***")
+	}
+	slices.SortStableFunc(literals, func(a, b literal) int { return cmp.Compare(len(b.value), len(a.value)) })
+	for _, l := range literals {
+		feedback = strings.ReplaceAll(feedback, l.value, l.mask)
 	}
 	// ScanResult.Sanitized is empty when the scanner changed nothing, so the
 	// original text is the fallback — not an empty prompt.

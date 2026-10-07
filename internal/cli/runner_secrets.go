@@ -348,11 +348,11 @@ func validateRunnerSecretRefs(h *harness.Harness, secrets map[string]string) err
 	}
 	var errs runnerSecretErrors
 	for k, v := range h.RunnerEnv {
-		errs.refuse(fmt.Sprintf("runner_env[%s]", k), runnerSecretRefs(v, secrets))
+		errs.refuse(fmt.Sprintf("runner_env[%s]", runnerSecretDisplayName(k)), runnerSecretRefs(v, secrets))
 	}
 	if h.Env != nil {
 		for k, v := range h.Env.Sandbox {
-			errs.refuse(fmt.Sprintf("env.sandbox[%s]", k), runnerSecretRefs(v, secrets))
+			errs.refuse(fmt.Sprintf("env.sandbox[%s]", runnerSecretDisplayName(k)), runnerSecretRefs(v, secrets))
 		}
 		for k, v := range h.Env.Runner {
 			refs := runnerSecretRefs(v, secrets)
@@ -411,10 +411,10 @@ func validateRunnerSecretProviders(defs []harness.ProviderDef, secrets map[strin
 	var errs runnerSecretErrors
 	for _, d := range defs {
 		for k, v := range d.Credentials {
-			errs.refuse(fmt.Sprintf("provider %s credentials[%s]", d.Name, k), runnerSecretRefs(v, secrets))
+			errs.refuse(fmt.Sprintf("provider %s credentials[%s]", d.Name, runnerSecretDisplayName(k)), runnerSecretRefs(v, secrets))
 		}
 		for k, v := range d.Config {
-			errs.refuse(fmt.Sprintf("provider %s config[%s]", d.Name, k), runnerSecretRefs(v, secrets))
+			errs.refuse(fmt.Sprintf("provider %s config[%s]", d.Name, runnerSecretDisplayName(k)), runnerSecretRefs(v, secrets))
 		}
 	}
 	return errs.err()

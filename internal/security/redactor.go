@@ -51,6 +51,11 @@ func runtimeSecretSnapshot() []string {
 	return snapshot
 }
 
+// RuntimeSecrets returns the registered runtime secrets, longest first,
+// for callers that combine them with their own literals in one
+// longest-first pass.
+func RuntimeSecrets() []string { return runtimeSecretSnapshot() }
+
 // resetRuntimeSecrets clears the registry; tests only.
 func resetRuntimeSecrets() {
 	runtimeSecretsMu.Lock()

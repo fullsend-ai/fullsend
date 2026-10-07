@@ -98,9 +98,9 @@ but not redacted; and a script that receives a value can still leak it.
 - `GH_WORKFLOW_TOKEN` and the minted role tokens stay unforgeable, because
   their names are refused as keys.
 - The shim always passes the secret, and GitHub rejects a call that passes a
-  secret the called workflow does not declare. A shim rendered with
-  `--fullsend-ref` pointing at a release before this one therefore fails; an
-  older `--fullsend-ref` needs a matching older CLI.
+  secret the called workflow does not declare, so a shim rendered with an
+  older `--fullsend-ref` fails; it needs the CLI from that release. #7872
+  tracks detecting the mismatch.
 - Known gap: until ADR 0112's guarded-field check exists, an event-guarded
   overlay can still swap `pre_script`, `post_script` or `validation_loop`, and
   so choose which script receives a referenced secret.

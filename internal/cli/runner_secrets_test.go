@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -694,4 +695,52 @@ func TestRunAgent_RunnerSecretAllowedInForgeOverlay(t *testing.T) {
 
 	require.NoError(t, runRunnerSecretAgent(t, dir))
 	assert.FileExists(t, marker)
+}
+
+// Overlapping literals are redacted longest first, whatever the map order.
+func TestRedactFeedback_OverlappingLiteralsLongestFirst(t *testing.T) {
+	env := map[string]string{"X_TOKEN": "abcdefgh", "Y_TOKEN": "abcdefghijklmnop"}
+	for range 50 {
+		assert.Equal(t, "v=[REDACTED:Y_TOKEN] w=[REDACTED:X_TOKEN]", redactFeedback("v=abcdefghijklmnop w=abcdefgh", env))
+	}
+}
+
+// A shorter env.runner literal must not break a longer registered runtime
+// secret that it is a prefix of.
+func TestRedactFeedback_RuntimeSecretOverlapsRunnerEnv(t *testing.T) {
+	require.True(t, security.RegisterRuntimeSecret("zzopaque-runtime-0123456789"))
+	out := redactFeedback("x zzopaque-runtime-0123456789", map[string]string{"A_TOKEN": "zzopaque"})
+	assert.Equal(t, "x ***", out)
+}
+
+// A pre-script skip reason that echoes a runner secret is redacted before
+// it is printed, posted or recorded.
+func TestRunAgent_RunnerSecretSkipReasonRedacted(t *testing.T) {
+	usePreScriptStub(t)
+	writeRunnerSecretsFile(t, `{"X":"x-secret-value-skip"}`)
+	dir := newRunnerSecretHarnessDir(t,
+		"env:\n  runner:\n    X: \"${X}\"\n",
+		`echo "reason=leak ${X}" >> "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n")
+
+	var out bytes.Buffer
+	require.NoError(t, runRunnerSecretAgentTo(t, dir, &out))
+	assert.Contains(t, out.String(), "Run skipped by pre-script: leak ***")
+	assert.Contains(t, out.String(), "Pre-script outputs: reason=leak ***")
+	assert.NotContains(t, out.String(), "x-secret-value-skip")
+}
+
+// A failing preflight check that prints a runner secret is redacted in the
+// run error, which reaches the trace and the completion comment.
+func TestRunAgent_RunnerSecretPreflightFailureRedacted(t *testing.T) {
+	usePreScriptStub(t)
+	writeRunnerSecretsFile(t, `{"X":"x-secret-value-pre"}`)
+	validate := writePreScript(t, "exit 0\n")
+	dir := newRunnerSecretHarnessDir(t,
+		"env:\n  runner:\n    X: \"${X}\"\nvalidation_loop:\n  script: "+validate+"\n  preflight_check: \"printenv X; exit 1\"\n",
+		"")
+
+	err := runRunnerSecretAgent(t, dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check failed")
+	assert.NotContains(t, err.Error(), "x-secret-value-pre")
 }
