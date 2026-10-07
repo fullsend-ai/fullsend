@@ -128,9 +128,9 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 
 | Role | Command | What it does |
 |------|---------|-------------|
-| GCP Admin (Inference) | `fullsend inference provision <org\|owner/repo>` | Create WIF pool/provider and grant Agent Platform access (idempotent — safe to re-run for new orgs) |
-| GCP Admin (Inference) | `fullsend inference deprovision <org\|owner/repo>` | Remove org or repo from WIF |
-| GCP Admin (Inference) | `fullsend inference status <org\|owner/repo>` | Check WIF health, print config values |
+| GCP Admin (Inference) | `fullsend inference provision <owner/repo>` | Create the repo's WIF provider and grant Agent Platform access (idempotent — safe to re-run) |
+| GCP Admin (Inference) | `fullsend inference deprovision <owner/repo>` | Remove the repo's WIF provider and grant |
+| GCP Admin (Inference) | `fullsend inference status <owner/repo>` | Check WIF health, print config values |
 | Repo Maintainer (OpenAI) | `fullsend inference openai request <owner/repo>[,...]` | Generate the provider/mapping request for an OpenAI organization admin (GPT on pi or codex) |
 | Repo Maintainer (OpenAI) | `fullsend inference openai import [reply.json]` | Record the admin's reply in `config.yaml`, or set the repository variables |
 | Repo Maintainer (OpenAI) | `fullsend inference openai status <owner/repo>` | Check the OpenAI WIF identifiers, and the exchange when run inside Actions |
@@ -186,7 +186,7 @@ When using the split-responsibility workflow, each standalone command requires a
 
 ‡ GCP viewer roles for `mint status` are only required when using `--project` (GCP-based) mode. The API-based mode (`--mint-url` / `FULLSEND_MINT_URL`) requires only valid GitHub credentials and no GCP IAM roles.
 
-Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
+Repository enrollment does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
 
 Required GCP APIs also differ by command group:
 

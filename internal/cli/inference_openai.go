@@ -241,7 +241,7 @@ func parseRepoList(arg string) ([]string, error) {
 		if !strings.Contains(p, "/") {
 			return nil, fmt.Errorf("expected owner/repo format, got %q (org-only targets are not supported; specify the repository)", p)
 		}
-		_, _, err := parseOrgOrRepo(p)
+		_, _, err := parseOwnerRepo(p)
 		if err != nil {
 			return nil, err
 		}
@@ -825,12 +825,12 @@ without ever printing the token. Outside Actions, says so and stops
 at the config checks.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, repo, err := parseOrgOrRepo(args[0])
+			if !strings.Contains(args[0], "/") {
+				return fmt.Errorf("expected owner/repo format, got org-only %q", args[0])
+			}
+			_, repo, err := parseOwnerRepo(args[0])
 			if err != nil {
 				return err
-			}
-			if repo == "" {
-				return fmt.Errorf("expected owner/repo format, got org-only %q", args[0])
 			}
 
 			printer := ui.New(cmd.OutOrStdout())

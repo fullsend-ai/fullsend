@@ -37,6 +37,48 @@ func TestInferenceCommand_RegisteredInRoot(t *testing.T) {
 	assert.True(t, found, "expected inference subcommand registered in root")
 }
 
+// --- org-scoped removal tests ---
+
+func TestInferenceCmds_UseOwnerRepoOnly(t *testing.T) {
+	for _, cmd := range []*cobra.Command{
+		newInferenceProvisionCmd(),
+		newInferenceStatusCmd(),
+		newInferenceDeprovisionCmd(),
+	} {
+		assert.Equal(t, cmd.Name()+" <owner/repo>", cmd.Use)
+		assert.NotContains(t, cmd.Long, "Org-scoped")
+		assert.Nil(t, cmd.Flags().Lookup("provider"), "%s should not have --provider flag", cmd.Name())
+	}
+}
+
+func TestInferenceCmds_RejectBareOrg(t *testing.T) {
+	for _, sub := range []string{"provision", "status", "deprovision"} {
+		t.Run(sub, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetArgs([]string{"inference", sub, "acme", "--project", "my-project"})
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(),
+				"fullsend inference "+sub+" requires an owner/repo target, got \"acme\": org-scoped inference has been removed; "+
+					sub+" each repository with 'fullsend inference "+sub+" <owner/repo>'")
+		})
+	}
+}
+
+func TestInferenceCmds_RejectProviderFlag(t *testing.T) {
+	for _, sub := range []string{"provision", "status", "deprovision"} {
+		t.Run(sub, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetArgs([]string{"inference", sub, "acme/widget",
+				"--project", "my-project",
+				"--provider", "custom-provider"})
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unknown flag: --provider")
+		})
+	}
+}
+
 // --- provision tests ---
 
 func TestInferenceProvisionCmd_RequiresArg(t *testing.T) {
@@ -49,7 +91,7 @@ func TestInferenceProvisionCmd_RequiresArg(t *testing.T) {
 
 func TestInferenceProvisionCmd_RequiresProject(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "provision", "acme"})
+	cmd.SetArgs([]string{"inference", "provision", "acme/widget"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--project is required")
@@ -68,7 +110,7 @@ func TestInferenceProvisionCmd_RejectsInvalidProjectID(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := newRootCmd()
-			cmd.SetArgs([]string{"inference", "provision", "acme",
+			cmd.SetArgs([]string{"inference", "provision", "acme/widget",
 				"--project", tc.project, "--dry-run"})
 			err := cmd.Execute()
 			require.Error(t, err)
@@ -87,9 +129,7 @@ func TestInferenceProvisionCmd_Flags(t *testing.T) {
 	require.NotNil(t, poolFlag, "expected --pool flag")
 	assert.Equal(t, "fullsend-inference", poolFlag.DefValue)
 
-	providerFlag := cmd.Flags().Lookup("provider")
-	require.NotNil(t, providerFlag, "expected --provider flag")
-	assert.Equal(t, "github-oidc", providerFlag.DefValue)
+	assert.Nil(t, cmd.Flags().Lookup("provider"), "should not have --provider flag")
 
 	dryRunFlag := cmd.Flags().Lookup("dry-run")
 	require.NotNil(t, dryRunFlag, "expected --dry-run flag")
@@ -97,73 +137,40 @@ func TestInferenceProvisionCmd_Flags(t *testing.T) {
 	assert.Nil(t, cmd.Flags().Lookup("region"), "should not have --region flag")
 }
 
-func TestInferenceProvisionCmd_DetectsOrgMode(t *testing.T) {
-	// Org-scoped: arg without "/"
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "provision", "acme",
-		"--project", "my-project",
-		"--dry-run"})
-	err := cmd.Execute()
-	// Should succeed (dry-run prints what would happen)
-	require.NoError(t, err)
-}
-
-func TestInferenceProvisionCmd_DetectsRepoMode(t *testing.T) {
-	// Repo-scoped: arg with "/"
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "provision", "acme/widget",
-		"--project", "my-project",
-		"--dry-run"})
-	err := cmd.Execute()
-	// Should succeed (dry-run prints what would happen)
-	require.NoError(t, err)
-}
-
-func TestInferenceProvisionCmd_DryRunOrgSucceeds(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "provision", "acme",
-		"--project", "my-project",
-		"--dry-run"})
-	err := cmd.Execute()
-	require.NoError(t, err)
-}
-
 func TestInferenceProvisionCmd_DryRunRepoSucceeds(t *testing.T) {
 	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{"inference", "provision", "acme/widget",
 		"--project", "my-project",
 		"--dry-run"})
 	err := cmd.Execute()
 	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "repo-scoped")
+	assert.Contains(t, buf.String(), "assertion.repository == 'acme/widget'")
+	assert.NotContains(t, buf.String(), "repository_owner")
 }
 
 func TestInferenceProvisionCmd_DryRunCustomPool(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "provision", "acme",
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "provision", "acme/widget",
 		"--project", "my-project",
 		"--pool", "custom-pool",
-		"--provider", "custom-provider",
 		"--dry-run"})
 	err := cmd.Execute()
 	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "custom-pool")
 }
 
-func TestInferenceProvisionCmd_RejectsInvalidOrgName(t *testing.T) {
+func TestInferenceProvisionCmd_RejectsInvalidOwnerName(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "provision", "-invalid",
+	cmd.SetArgs([]string{"inference", "provision", "-invalid/widget",
 		"--project", "my-project"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid")
-}
-
-func TestInferenceProvisionCmd_RejectsPlaceholderOrg(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "provision", "x0fullsend0placeholder",
-		"--project", "my-project"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot provision reserved placeholder org")
 }
 
 func TestInferenceProvisionCmd_RejectsPlaceholderOrgInRepoMode(t *testing.T) {
@@ -190,7 +197,7 @@ func TestInferenceProvisionCmd_DoesNotRequireGitHubToken(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "provision", "acme",
+	cmd.SetArgs([]string{"inference", "provision", "acme/widget",
 		"--project", "my-project",
 		"--dry-run"})
 	err := cmd.Execute()
@@ -210,7 +217,7 @@ func TestInferenceStatusCmd_RequiresArg(t *testing.T) {
 
 func TestInferenceStatusCmd_RequiresProject(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "status", "acme"})
+	cmd.SetArgs([]string{"inference", "status", "acme/widget"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--project is required")
@@ -218,7 +225,7 @@ func TestInferenceStatusCmd_RequiresProject(t *testing.T) {
 
 func TestInferenceStatusCmd_RejectsInvalidProjectID(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "status", "acme",
+	cmd.SetArgs([]string{"inference", "status", "acme/widget",
 		"--project", "UPPER-CASE"})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -235,9 +242,7 @@ func TestInferenceStatusCmd_Flags(t *testing.T) {
 	require.NotNil(t, poolFlag, "expected --pool flag")
 	assert.Equal(t, "fullsend-inference", poolFlag.DefValue)
 
-	providerFlag := cmd.Flags().Lookup("provider")
-	require.NotNil(t, providerFlag, "expected --provider flag")
-	assert.Equal(t, "github-oidc", providerFlag.DefValue)
+	assert.Nil(t, cmd.Flags().Lookup("provider"), "should not have --provider flag")
 
 	formatFlag := cmd.Flags().Lookup("format")
 	require.NotNil(t, formatFlag, "expected --format flag")
@@ -248,7 +253,7 @@ func TestInferenceStatusCmd_Flags(t *testing.T) {
 
 func TestInferenceStatusCmd_RejectsInvalidFormat(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "status", "acme",
+	cmd.SetArgs([]string{"inference", "status", "acme/widget",
 		"--project", "my-project",
 		"--format", "yaml"})
 	err := cmd.Execute()
@@ -264,7 +269,7 @@ func TestInferenceStatusCmd_DoesNotRequireGitHubToken(t *testing.T) {
 	// Status without dry-run will try to reach GCP, which will fail,
 	// but it should NOT fail with "no GitHub token found".
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "status", "acme",
+	cmd.SetArgs([]string{"inference", "status", "acme/widget",
 		"--project", "my-project"})
 	err := cmd.Execute()
 	if err != nil {
@@ -272,23 +277,36 @@ func TestInferenceStatusCmd_DoesNotRequireGitHubToken(t *testing.T) {
 	}
 }
 
-// --- parseOrgOrRepo tests ---
-
-func TestParseOrgOrRepo_OrgMode(t *testing.T) {
-	org, repo, err := parseOrgOrRepo("acme")
-	require.NoError(t, err)
-	assert.Equal(t, "acme", org)
-	assert.Equal(t, "", repo)
+func TestInferenceStatusCmd_RejectsPlaceholderOrgInRepoMode(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"inference", "status", "x0fullsend0placeholder/somerepo",
+		"--project", "my-project"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot check status of reserved placeholder org")
 }
 
-func TestParseOrgOrRepo_RepoMode(t *testing.T) {
-	org, repo, err := parseOrgOrRepo("acme/widget")
+// --- parseInferenceRepo / parseOwnerRepo tests ---
+
+func TestParseInferenceRepo_RepoMode(t *testing.T) {
+	owner, repo, err := parseInferenceRepo("provision", "acme/widget")
 	require.NoError(t, err)
-	assert.Equal(t, "acme", org)
+	assert.Equal(t, "acme", owner)
 	assert.Equal(t, "acme/widget", repo)
 }
 
-func TestParseOrgOrRepo_Invalid(t *testing.T) {
+func TestParseInferenceRepo_RejectsBareOrg(t *testing.T) {
+	for _, sub := range []string{"provision", "status", "deprovision"} {
+		_, _, err := parseInferenceRepo(sub, "acme")
+		require.Error(t, err)
+		assert.Equal(t,
+			"fullsend inference "+sub+" requires an owner/repo target, got \"acme\": org-scoped inference has been removed; "+
+				sub+" each repository with 'fullsend inference "+sub+" <owner/repo>'",
+			err.Error())
+	}
+}
+
+func TestParseInferenceRepo_Invalid(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -296,18 +314,26 @@ func TestParseOrgOrRepo_Invalid(t *testing.T) {
 	}{
 		{"empty owner in repo", "/widget", "invalid"},
 		{"empty repo in repo", "acme/", "invalid"},
-		{"leading hyphen", "-acme", "hyphen"},
-		{"trailing hyphen", "acme-", "hyphen"},
-		{"invalid chars", "ac me", "invalid"},
-		{"dots in owner", "ac.me/widget", "invalid"},
+		{"leading hyphen owner", "-acme/widget", "invalid owner name"},
+		{"trailing hyphen owner", "acme-/widget", "invalid owner name"},
+		{"invalid chars", "ac me/widget", "invalid owner name"},
+		{"dots in owner", "ac.me/widget", "invalid owner name"},
+		{"invalid repo chars", "acme/wid get", "invalid repo name"},
+		{"bare org", "acme", "requires an owner/repo target"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := parseOrgOrRepo(tc.input)
+			_, _, err := parseInferenceRepo("status", tc.input)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+func TestParseOwnerRepo_RejectsBareOrg(t *testing.T) {
+	_, _, err := parseOwnerRepo("acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected owner/repo")
 }
 
 // --- formatStatusJSON tests ---
@@ -383,44 +409,6 @@ func TestFormatStatusEnv_Unhealthy(t *testing.T) {
 	assert.NotContains(t, output, "FULLSEND_GCP_WIF_PROVIDER")
 }
 
-func TestInferenceStatusCmd_RejectsProviderInRepoMode(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "status", "acme/widget",
-		"--project", "my-project",
-		"--provider", "custom-provider"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--provider is not supported in repo-scoped mode")
-}
-
-func TestInferenceStatusCmd_RejectsPlaceholderOrg(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "status", "x0fullsend0placeholder",
-		"--project", "my-project"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot check status of reserved placeholder org")
-}
-
-func TestInferenceStatusCmd_RejectsPlaceholderOrgInRepoMode(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "status", "x0fullsend0placeholder/somerepo",
-		"--project", "my-project"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot check status of reserved placeholder org")
-}
-
-func TestInferenceProvisionCmd_RejectsProviderInRepoMode(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "provision", "acme/widget",
-		"--project", "my-project",
-		"--provider", "custom-provider"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--provider is not supported in repo-scoped mode")
-}
-
 // --- deprovision tests ---
 
 func TestInferenceDeprovisionCmd_RequiresArg(t *testing.T) {
@@ -433,7 +421,7 @@ func TestInferenceDeprovisionCmd_RequiresArg(t *testing.T) {
 
 func TestInferenceDeprovisionCmd_RequiresProject(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "deprovision", "acme"})
+	cmd.SetArgs([]string{"inference", "deprovision", "acme/widget"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--project is required")
@@ -452,7 +440,7 @@ func TestInferenceDeprovisionCmd_RejectsInvalidProjectID(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := newRootCmd()
-			cmd.SetArgs([]string{"inference", "deprovision", "acme",
+			cmd.SetArgs([]string{"inference", "deprovision", "acme/widget",
 				"--project", tc.project, "--dry-run"})
 			err := cmd.Execute()
 			require.Error(t, err)
@@ -461,31 +449,17 @@ func TestInferenceDeprovisionCmd_RejectsInvalidProjectID(t *testing.T) {
 	}
 }
 
-func TestInferenceDeprovisionCmd_DryRunOrgSucceeds(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "deprovision", "acme",
-		"--project", "my-project",
-		"--dry-run"})
-	err := cmd.Execute()
-	require.NoError(t, err)
-}
-
 func TestInferenceDeprovisionCmd_DryRunRepoSucceeds(t *testing.T) {
 	cmd := newRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{"inference", "deprovision", "acme/widget",
 		"--project", "my-project",
 		"--dry-run"})
 	err := cmd.Execute()
 	require.NoError(t, err)
-}
-
-func TestInferenceDeprovisionCmd_RejectsPlaceholderOrg(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "deprovision", "x0fullsend0placeholder",
-		"--project", "my-project"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot deprovision reserved placeholder org")
+	assert.Contains(t, buf.String(), "Delete WIF provider")
+	assert.NotContains(t, buf.String(), "attribute condition")
 }
 
 func TestInferenceDeprovisionCmd_RejectsPlaceholderOrgInRepoMode(t *testing.T) {
@@ -497,9 +471,9 @@ func TestInferenceDeprovisionCmd_RejectsPlaceholderOrgInRepoMode(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot deprovision reserved placeholder org")
 }
 
-func TestInferenceDeprovisionCmd_RejectsInvalidOrgName(t *testing.T) {
+func TestInferenceDeprovisionCmd_RejectsInvalidOwnerName(t *testing.T) {
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "deprovision", "-invalid",
+	cmd.SetArgs([]string{"inference", "deprovision", "-invalid/widget",
 		"--project", "my-project"})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -515,16 +489,6 @@ func TestInferenceDeprovisionCmd_RejectsInvalidRepoFormat(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid")
 }
 
-func TestInferenceDeprovisionCmd_RejectsProviderInRepoMode(t *testing.T) {
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "deprovision", "acme/widget",
-		"--project", "my-project",
-		"--provider", "custom-provider"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--provider is not supported in repo-scoped mode")
-}
-
 func TestInferenceDeprovisionCmd_Flags(t *testing.T) {
 	cmd := newInferenceDeprovisionCmd()
 
@@ -535,9 +499,7 @@ func TestInferenceDeprovisionCmd_Flags(t *testing.T) {
 	require.NotNil(t, poolFlag, "expected --pool flag")
 	assert.Equal(t, "fullsend-inference", poolFlag.DefValue)
 
-	providerFlag := cmd.Flags().Lookup("provider")
-	require.NotNil(t, providerFlag, "expected --provider flag")
-	assert.Equal(t, "github-oidc", providerFlag.DefValue)
+	assert.Nil(t, cmd.Flags().Lookup("provider"), "should not have --provider flag")
 
 	dryRunFlag := cmd.Flags().Lookup("dry-run")
 	require.NotNil(t, dryRunFlag, "expected --dry-run flag")
@@ -548,7 +510,7 @@ func TestInferenceDeprovisionCmd_DoesNotRequireGitHubToken(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"inference", "deprovision", "acme",
+	cmd.SetArgs([]string{"inference", "deprovision", "acme/widget",
 		"--project", "my-project",
 		"--dry-run"})
 	err := cmd.Execute()
@@ -572,7 +534,7 @@ func TestRunInferenceStatus_RepoConditionMatch(t *testing.T) {
 		}),
 	)
 	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", "json", client)
+	err := runInferenceStatus(cmd, "acme/widget", "my-project", "fullsend-inference", "json", client)
 	require.NoError(t, err)
 
 	var parsed map[string]interface{}
@@ -604,7 +566,7 @@ func TestRunInferenceStatus_ProviderNotUsable(t *testing.T) {
 			info := tt.info
 			client := gcf.NewFakeGCFClient(gcf.WithFakeWIFProvider(&info))
 			cmd, buf := newStatusCmd(client)
-			err := runInferenceStatus(cmd, "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", "json", client)
+			err := runInferenceStatus(cmd, "acme/widget", "my-project", "fullsend-inference", "json", client)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "unhealthy")
 
@@ -616,14 +578,14 @@ func TestRunInferenceStatus_ProviderNotUsable(t *testing.T) {
 	}
 }
 
-func TestRunInferenceStatus_OrgProviderDisabled(t *testing.T) {
+func TestRunInferenceStatus_RepoProviderDisabled(t *testing.T) {
 	client := gcf.NewFakeGCFClient(gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
-		AttributeCondition: "assertion.repository_owner == 'acme'",
+		AttributeCondition: "assertion.repository == 'acme/widget'",
 		State:              gcf.WIFProviderStateActive,
 		Disabled:           true,
 	}))
 	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "acme", "", "my-project", "fullsend-inference", "github-oidc", "json", client)
+	err := runInferenceStatus(cmd, "acme/widget", "my-project", "fullsend-inference", "json", client)
 	require.Error(t, err)
 	assert.Contains(t, buf.String(), "WIF provider is disabled")
 }
@@ -636,7 +598,7 @@ func TestRunInferenceStatus_TextFormatUnhealthyHasNoConditionClaim(t *testing.T)
 		State:              "DELETED",
 	}))
 	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", "text", client)
+	err := runInferenceStatus(cmd, "acme/widget", "my-project", "fullsend-inference", "text", client)
 	require.Error(t, err)
 	assert.Contains(t, buf.String(), "Status: unhealthy")
 	assert.NotContains(t, buf.String(), "condition mismatch")
@@ -649,7 +611,7 @@ func TestRunInferenceStatus_ActiveProviderHealthy(t *testing.T) {
 		State:              gcf.WIFProviderStateActive,
 	}))
 	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", "json", client)
+	err := runInferenceStatus(cmd, "acme/widget", "my-project", "fullsend-inference", "json", client)
 	require.NoError(t, err)
 
 	var parsed map[string]interface{}
@@ -664,7 +626,7 @@ func TestRunInferenceStatus_RepoConditionCaseInsensitiveMatch(t *testing.T) {
 		}),
 	)
 	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "redhatproductsecurity", "redhatproductsecurity/osidb-bindings", "my-project", "fullsend-inference", "github-oidc", "json", client)
+	err := runInferenceStatus(cmd, "redhatproductsecurity/osidb-bindings", "my-project", "fullsend-inference", "json", client)
 	require.NoError(t, err)
 
 	var parsed map[string]interface{}
@@ -679,72 +641,30 @@ func TestRunInferenceStatus_RepoConditionMismatch(t *testing.T) {
 		}),
 	)
 	cmd, _ := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "acme", "acme/other-repo", "my-project", "fullsend-inference", "github-oidc", "json", client)
+	err := runInferenceStatus(cmd, "acme/other-repo", "my-project", "fullsend-inference", "json", client)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unhealthy")
 }
 
-func TestRunInferenceStatus_OrgConditionMatch(t *testing.T) {
+func TestRunInferenceStatus_OrgWideConditionIsUnhealthy(t *testing.T) {
+	// Org-wide WIF authorization is not supported: a provider whose
+	// condition grants the whole org is reported as a mismatch.
 	client := gcf.NewFakeGCFClient(
 		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
 			AttributeCondition: "assertion.repository_owner == 'acme'",
 		}),
 	)
 	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "acme", "", "my-project", "fullsend-inference", "github-oidc", "json", client)
-	require.NoError(t, err)
-
-	var parsed map[string]interface{}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
-	assert.Equal(t, "healthy", parsed["status"])
-}
-
-func TestRunInferenceStatus_OrgConditionCaseInsensitiveMatch(t *testing.T) {
-	client := gcf.NewFakeGCFClient(
-		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
-			AttributeCondition: "assertion.repository_owner == 'GoogleCloudPlatform'",
-		}),
-	)
-	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "googlecloudplatform", "", "my-project", "fullsend-inference", "github-oidc", "json", client)
-	require.NoError(t, err)
-
-	var parsed map[string]interface{}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
-	assert.Equal(t, "healthy", parsed["status"])
-}
-
-func TestRunInferenceStatus_OrgMultiOrgPoolMatch(t *testing.T) {
-	client := gcf.NewFakeGCFClient(
-		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
-			AttributeCondition: "assertion.repository_owner in ['acme', 'BigCorp']",
-		}),
-	)
-	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "bigcorp", "", "my-project", "fullsend-inference", "github-oidc", "json", client)
-	require.NoError(t, err)
-
-	var parsed map[string]interface{}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
-	assert.Equal(t, "healthy", parsed["status"])
-}
-
-func TestRunInferenceStatus_OrgConditionMismatch(t *testing.T) {
-	client := gcf.NewFakeGCFClient(
-		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
-			AttributeCondition: "assertion.repository_owner == 'acme'",
-		}),
-	)
-	cmd, _ := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "other-org", "", "my-project", "fullsend-inference", "github-oidc", "json", client)
+	err := runInferenceStatus(cmd, "acme/widget", "my-project", "fullsend-inference", "json", client)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unhealthy")
+	assert.Contains(t, buf.String(), "Condition mismatch")
 }
 
 func TestRunInferenceStatus_NotProvisioned(t *testing.T) {
 	client := gcf.NewFakeGCFClient()
 	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "acme", "", "my-project", "fullsend-inference", "github-oidc", "json", client)
+	err := runInferenceStatus(cmd, "acme/widget", "my-project", "fullsend-inference", "json", client)
 	require.NoError(t, err)
 
 	var parsed map[string]interface{}
@@ -755,11 +675,11 @@ func TestRunInferenceStatus_NotProvisioned(t *testing.T) {
 func TestRunInferenceStatus_EnvFormat(t *testing.T) {
 	client := gcf.NewFakeGCFClient(
 		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
-			AttributeCondition: "assertion.repository_owner == 'acme'",
+			AttributeCondition: "assertion.repository == 'acme/widget'",
 		}),
 	)
 	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "acme", "", "my-project", "fullsend-inference", "github-oidc", "env", client)
+	err := runInferenceStatus(cmd, "acme/widget", "my-project", "fullsend-inference", "env", client)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "FULLSEND_INFERENCE_STATUS=healthy")
 }
@@ -767,11 +687,11 @@ func TestRunInferenceStatus_EnvFormat(t *testing.T) {
 func TestRunInferenceStatus_TextFormat(t *testing.T) {
 	client := gcf.NewFakeGCFClient(
 		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
-			AttributeCondition: "assertion.repository_owner == 'acme'",
+			AttributeCondition: "assertion.repository == 'acme/widget'",
 		}),
 	)
 	cmd, buf := newStatusCmd(client)
-	err := runInferenceStatus(cmd, "acme", "", "my-project", "fullsend-inference", "github-oidc", "text", client)
+	err := runInferenceStatus(cmd, "acme/widget", "my-project", "fullsend-inference", "text", client)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "Status: healthy")
 }
@@ -815,46 +735,9 @@ func TestConditionMatchesRepo_Mismatch(t *testing.T) {
 	))
 }
 
-// --- conditionMatchesOrg tests ---
-
-func TestConditionMatchesOrg_ExactCase(t *testing.T) {
-	assert.True(t, conditionMatchesOrg(
+func TestConditionMatchesRepo_OrgWideConditionDoesNotMatch(t *testing.T) {
+	assert.False(t, conditionMatchesRepo(
 		"assertion.repository_owner == 'acme'",
-		"acme",
-	))
-}
-
-func TestConditionMatchesOrg_MixedCaseOrg(t *testing.T) {
-	assert.True(t, conditionMatchesOrg(
-		"assertion.repository_owner == 'GoogleCloudPlatform'",
-		"GoogleCloudPlatform",
-	))
-}
-
-func TestConditionMatchesOrg_CaseInsensitiveMatch(t *testing.T) {
-	// Condition was provisioned with mixed case; status queried with lowercase.
-	assert.True(t, conditionMatchesOrg(
-		"assertion.repository_owner == 'GoogleCloudPlatform'",
-		"googlecloudplatform",
-	))
-	// Condition was provisioned with lowercase; status queried with mixed case.
-	assert.True(t, conditionMatchesOrg(
-		"assertion.repository_owner == 'googlecloudplatform'",
-		"GoogleCloudPlatform",
-	))
-}
-
-func TestConditionMatchesOrg_MultiOrgPool(t *testing.T) {
-	condition := "assertion.repository_owner in ['acme', 'BigCorp']"
-	assert.True(t, conditionMatchesOrg(condition, "acme"))
-	assert.True(t, conditionMatchesOrg(condition, "BigCorp"))
-	assert.True(t, conditionMatchesOrg(condition, "bigcorp"))
-	assert.True(t, conditionMatchesOrg(condition, "ACME"))
-}
-
-func TestConditionMatchesOrg_Mismatch(t *testing.T) {
-	assert.False(t, conditionMatchesOrg(
-		"assertion.repository_owner == 'acme'",
-		"other-org",
+		"acme/widget",
 	))
 }

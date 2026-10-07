@@ -10,35 +10,31 @@ Manage the inference credentials agent runs use. `provision`, `deprovision` and 
 
 | Command | Description |
 |---------|-------------|
-| `fullsend inference provision <org\|owner/repo>` | Create WIF pool/provider and grant Agent Platform access |
-| `fullsend inference deprovision <org\|owner/repo>` | Remove org or repo from WIF |
-| `fullsend inference status <org\|owner/repo>` | Check WIF health and print config values |
+| `fullsend inference provision <owner/repo>` | Create WIF pool/provider and grant Agent Platform access |
+| `fullsend inference deprovision <owner/repo>` | Delete the repository's WIF provider |
+| `fullsend inference status <owner/repo>` | Check WIF health and print config values |
 | `fullsend inference openai request <owner/repo>[,…]` | Generate WIF provider/mapping request for OpenAI admin |
 | `fullsend inference openai import [reply.json]` | Import OpenAI WIF identifiers into config |
 | `fullsend inference openai status <owner/repo>` | Check OpenAI WIF configuration and exchange status |
 
 ## `inference provision`
 
-Creates a WIF pool (`fullsend-inference`), an OIDC provider (`github-oidc`), and grants `roles/aiplatform.user` to the WIF principal. Idempotent and safe to re-run.
-
-```bash
-fullsend inference provision <org> \
-  --project "<GCP_PROJECT>"
-```
-
-Per-repo mode scopes the WIF provider to a single repository:
+Creates a WIF pool (`fullsend-inference`) if needed, a dedicated OIDC provider scoped to a single repository (attribute condition `assertion.repository == '<owner/repo>'`, provider ID derived from owner/repo), and grants `roles/aiplatform.user` to the repository's WIF principal. Idempotent and safe to re-run.
 
 ```bash
 fullsend inference provision <owner/repo> \
   --project "<GCP_PROJECT>"
 ```
 
+The target must be `owner/repo`. Org-scoped inference has been removed: a bare org argument is rejected, so provision each repository separately.
+
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--project` | | GCP project ID |
-| `--region` | `global` | GCP region |
+| `--project` | | GCP project ID (required) |
+| `--pool` | `fullsend-inference` | WIF pool name (always created at `locations/global`) |
+| `--dry-run` | `false` | Preview changes without making them |
 
 ### Required IAM roles
 
@@ -59,29 +55,31 @@ gcloud services enable \
 
 ## `inference deprovision`
 
-Removes an org or repo from WIF by deleting the IAM binding and (optionally) the WIF provider.
+Removes a repository's inference access by deleting its dedicated WIF provider. The WIF pool is left in place for other repositories. The `roles/aiplatform.user` IAM binding is **not** revoked automatically; remove it manually to fully revoke access.
 
 ```bash
-fullsend inference deprovision <org|owner/repo> \
+fullsend inference deprovision <owner/repo> \
   --project "<GCP_PROJECT>"
 ```
+
+Accepts `--project`, `--pool`, and `--dry-run` (same as `provision`).
 
 ### Required IAM roles
 
 | Role | Description |
 |------|-------------|
-| `roles/iam.workloadIdentityPoolAdmin` | Modify WIF pool and provider |
+| `roles/iam.workloadIdentityPoolAdmin` | Delete WIF providers |
 
 ## `inference status`
 
 Checks WIF health and prints the configuration values needed for `github setup`.
 
 ```bash
-fullsend inference status <org|owner/repo> \
+fullsend inference status <owner/repo> \
   --project "<GCP_PROJECT>"
 ```
 
-Read-only — makes no changes.
+Read-only — makes no changes. Accepts `--project`, `--pool`, and `--format` (`text`, `json`, or `env`). The provider is reported healthy only when its attribute condition is scoped to that repository; an org-wide condition (`assertion.repository_owner == ...`) is reported as a mismatch.
 
 ## `inference openai`
 

@@ -119,7 +119,7 @@ type Config struct {
 	WIFPoolName       string // default: "fullsend-pool"
 	WIFProvider       string // default: "github-oidc"
 	GitHubOrgs        []string
-	Repo              string // per-repo mode: "owner/repo"; empty = per-org
+	Repo              string // "owner/repo"; required by ProvisionWIF/ProvisionRepoWIFProvider, enables per-repo mint WIF registration in Provision
 	FunctionSourceDir string // path to Cloud Function source directory
 
 	// AgentPEMs maps role → PEM private key data for all agent Apps.
@@ -559,12 +559,14 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 // When MintURL is empty, deploys the full mint infrastructure:
 //  1. Look up project number
 //  2. Create/verify service account
-//  3. Create/verify WIF pool + provider
-//  4. Grant Agent Platform access to each org's WIF principalSet (direct WIF)
-//  5. Store all agent PEMs in Secret Manager
-//  6. Grant SA access to all role secrets
-//  7. Deploy Cloud Function
-//  8. Return FULLSEND_MINT_URL
+//  3. Create/verify WIF pool + provider (used by the mint's STS verification)
+//  4. Store all agent PEMs in Secret Manager
+//  5. Grant SA access to all role secrets
+//  6. Deploy Cloud Function
+//  7. Return FULLSEND_MINT_URL
+//
+// No Agent Platform (Vertex AI) access is granted here; inference access is
+// granted per repo by ProvisionWIF.
 //
 // When MintURL is set, reuses an existing mint:
 //  1. Store all agent PEMs in Secret Manager
@@ -748,26 +750,13 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	if err != nil {
 		return nil, err
 	}
+	// projectNumber is passed to the mint as GCP_PROJECT_NUMBER so its STS
+	// verification can target the deploy-time WIF provider. No org-level
+	// Vertex AI grant is made here: inference access is granted per repo
+	// via ProvisionWIF (org-wide WIF authorization was removed, #8070).
 	projectNumber := wifResult.projectNumber
 
-	// Step 3: Grant Agent Platform access to each installing org's .fullsend repo
-	// at the project level (direct WIF — no intermediate service account).
-	// IAM policy changes can take up to 7 minutes to propagate.
-	iamGrantCount := 0
-	if !p.cfg.PublicMint {
-		for _, org := range installingOrgs {
-			if org == PlaceholderOrg {
-				continue
-			}
-			if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
-				return nil, err
-			}
-			iamGrantCount++
-		}
-	}
-	log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", iamGrantCount)
-
-	// Determine if code deployment is needed. When the function already
+	// Step 3: Determine if code deployment is needed. When the function already
 	// exists and is active with the same source hash, skip the code deploy
 	// path and use the lightweight provisionWithExistingMint for PEM storage
 	// and per-repo WIF registration. WIF infrastructure above always runs regardless.
@@ -1207,15 +1196,6 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 	return &wifMergeResult{projectNumber: projectNumber}, nil
 }
 
-func (p *Provisioner) grantOrgVertexAIAccessWithNumber(ctx context.Context, projectNumber, org string) error {
-	principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s/.fullsend",
-		projectNumber, p.cfg.WIFPoolName, org)
-	if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
-		return fmt.Errorf("granting Agent Platform access for org %s: %w", org, err)
-	}
-	return nil
-}
-
 func (p *Provisioner) grantRepoVertexAIAccessWithNumber(ctx context.Context, projectNumber, repo string) error {
 	principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
 		projectNumber, p.cfg.WIFPoolName, repo)
@@ -1223,48 +1203,6 @@ func (p *Provisioner) grantRepoVertexAIAccessWithNumber(ctx context.Context, pro
 		return fmt.Errorf("granting Agent Platform access for repo %s: %w", repo, err)
 	}
 	return nil
-}
-
-// RemoveOrgFromWIFCondition removes an org from the org-level WIF provider's
-// attribute condition.
-// WARNING: read-modify-write without locking — concurrent calls may race.
-func (p *Provisioner) RemoveOrgFromWIFCondition(ctx context.Context, org string) error {
-	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
-	if err != nil {
-		return fmt.Errorf("getting project number: %w", err)
-	}
-
-	existing, err := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
-	if err != nil {
-		return fmt.Errorf("reading WIF provider: %w", err)
-	}
-	if existing == nil {
-		return nil
-	}
-
-	existingOrgs := parseConditionOrgs(existing.AttributeCondition)
-	var filtered []string
-	for _, o := range existingOrgs {
-		if !strings.EqualFold(o, org) {
-			filtered = append(filtered, o)
-		}
-	}
-
-	if len(filtered) == len(existingOrgs) {
-		return nil
-	}
-
-	if len(filtered) == 0 {
-		filtered = []string{PlaceholderOrg}
-	}
-	sort.Strings(filtered)
-
-	newCondition := buildAttributeCondition(filtered)
-	audiences := []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
-	return p.gcpAPI.UpdateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
-		AttributeCondition: newCondition,
-		AllowedAudiences:   audiences,
-	})
 }
 
 // waitForReady polls the function until it responds with 200 OK, ensuring
@@ -1328,8 +1266,8 @@ func (p *Provisioner) ProvisionRepoWIFProvider(ctx context.Context) (string, err
 
 // provisionRepoWIFProvider validates the repo-scoped config and creates the
 // WIF pool plus the dedicated per-repo provider. Shared by
-// ProvisionRepoWIFProvider (mint enrollment, no IAM grant) and ProvisionWIF's
-// repo-scoped branch (which additionally grants roles/aiplatform.user), so the
+// ProvisionRepoWIFProvider (mint enrollment, no IAM grant) and ProvisionWIF
+// (which additionally grants roles/aiplatform.user), so the
 // provider config (attribute condition, audiences, issuer) cannot drift
 // between the two paths. Returns the provider resource path and the project
 // number.
@@ -1420,10 +1358,12 @@ func repoProviderMatches(existing *WIFProviderInfo, desired OIDCProviderConfig) 
 	return slices.Equal(have, want)
 }
 
-// ProvisionWIF creates the WIF infrastructure (service account, pool, provider,
-// principal binding) needed for GitHub Actions to authenticate via OIDC.
-// All operations are idempotent. Returns the full WIF provider resource path
-// and service account email.
+// ProvisionWIF creates the repo-scoped WIF infrastructure (pool, dedicated
+// per-repo provider, and a project-level roles/aiplatform.user binding for
+// the repo's principalSet) needed for GitHub Actions in p.cfg.Repo to call
+// Vertex AI via OIDC. p.cfg.Repo is required: organization-scoped inference
+// WIF has been removed (#8070). All operations are idempotent. Returns the
+// full WIF provider resource path.
 func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err error) {
 	if p.cfg.ProjectID == "" {
 		return "", fmt.Errorf("GCP project ID is required")
@@ -1435,9 +1375,8 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 		return "", fmt.Errorf("at least one GitHub org is required")
 	}
 
-	orgs := make([]string, len(p.cfg.GitHubOrgs))
 	seen := make(map[string]bool)
-	for i, org := range p.cfg.GitHubOrgs {
+	for _, org := range p.cfg.GitHubOrgs {
 		if !mintcore.GitHubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
 			return "", fmt.Errorf("invalid GitHub org name: %q", org)
 		}
@@ -1446,44 +1385,25 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 			return "", fmt.Errorf("duplicate GitHub org after normalization: %q", org)
 		}
 		seen[lower] = true
-		orgs[i] = org
+	}
+	if p.cfg.Repo == "" {
+		return "", fmt.Errorf("a repository (owner/repo) is required: organization-scoped inference WIF has been removed")
 	}
 
-	if p.cfg.Repo != "" {
-		// Repo-scoped: dedicated provider per repo, no org merge.
-		// Each repo gets a unique provider ID (via BuildRepoProviderID),
-		// so no risk of clobbering another repo's WIF condition.
-		// Provider creation is shared with ProvisionRepoWIFProvider; only
-		// this path additionally grants Vertex AI access.
-		repoProvider, projectNumber, err := p.provisionRepoWIFProvider(ctx)
-		if err != nil {
-			return "", err
-		}
-		if err := p.grantRepoVertexAIAccessWithNumber(ctx, projectNumber, p.cfg.Repo); err != nil {
-			return "", err
-		}
-		log.Printf("granted roles/aiplatform.user to %s (propagation may take several minutes)", p.cfg.Repo)
-		return repoProvider, nil
-	}
-
-	// Org-scoped: shared helper merges with existing orgs.
-	wifResult, err := p.ensureWIFPoolAndProvider(ctx, orgs)
+	// Repo-scoped: dedicated provider per repo, no org merge.
+	// Each repo gets a unique provider ID (via BuildRepoProviderID),
+	// so no risk of clobbering another repo's WIF condition.
+	// Provider creation is shared with ProvisionRepoWIFProvider; only
+	// this path additionally grants Vertex AI access.
+	repoProvider, projectNumber, err := p.provisionRepoWIFProvider(ctx)
 	if err != nil {
 		return "", err
 	}
-	projectNumber := wifResult.projectNumber
-
-	for _, org := range orgs {
-		if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
-			return "", err
-		}
+	if err := p.grantRepoVertexAIAccessWithNumber(ctx, projectNumber, p.cfg.Repo); err != nil {
+		return "", err
 	}
-	log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", len(orgs))
-
-	wifProvider = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
-		projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
-
-	return wifProvider, nil
+	log.Printf("granted roles/aiplatform.user to %s (propagation may take several minutes)", p.cfg.Repo)
+	return repoProvider, nil
 }
 
 // ValidateProjectID checks if a string is a valid GCP project ID.

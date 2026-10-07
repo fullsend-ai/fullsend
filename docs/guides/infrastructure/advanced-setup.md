@@ -137,7 +137,7 @@ The setup command detects that the public apps are already installed in the org 
 
 ### Custom inference WIF configuration
 
-For most cases, `fullsend inference provision` auto-provisions the inference WIF pool and prints the provider resource name to pass to `github setup --inference-wif-provider`. Use manual configuration only when you need custom pool names, attribute conditions, or want to share an inference WIF provider across multiple tools:
+For most cases, `fullsend inference provision` auto-provisions the inference WIF pool and prints the provider resource name to pass to `github setup --inference-wif-provider`. Use manual configuration only when you need custom pool or provider names, or want to share a repository's inference WIF provider across multiple tools:
 
 > **GitLab:** The recipe below is GitHub-specific — it uses GitHub's OIDC issuer and `assertion.repository`/`assertion.repository_owner` claims, which GitLab `id_token`s don't have. It cannot be copied as-is for GitLab. See [Configuring GitLab § Inference Setup](../getting-started/configuring-gitlab.md#inference-setup) for the GitLab-specific provider, claims, issuer, and audience configuration.
 
@@ -158,7 +158,7 @@ gcloud iam workload-identity-pools providers create-oidc github-oidc \
   --workload-identity-pool=fullsend-inference \
   --issuer-uri="https://token.actions.githubusercontent.com" \
   --attribute-mapping="google.subject=assertion.sub,attribute.repository_owner=assertion.repository_owner,attribute.repository=assertion.repository" \
-  --attribute-condition="assertion.repository_owner == '$ORG_NAME'" \
+  --attribute-condition="assertion.repository == '$ORG_NAME/$REPO_NAME'" \
   --project="$GCP_PROJECT"
 ```
 
@@ -166,7 +166,7 @@ gcloud iam workload-identity-pools providers create-oidc github-oidc \
 
 ```bash
 export PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT" --format='value(projectNumber)')
-export WIF_PRINCIPAL="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/fullsend-inference/attribute.repository_owner/$ORG_NAME"
+export WIF_PRINCIPAL="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/fullsend-inference/attribute.repository/$ORG_NAME/$REPO_NAME"
 
 gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --role="roles/aiplatform.user" \
@@ -174,9 +174,7 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --condition=None
 ```
 
-> **Warning — broad WIF scope:** The `attribute.repository_owner` condition above grants WIF access to _all_ repositories in the organization. This lets one provider serve many repos, but it significantly widens the trust boundary. Note that `fullsend inference provision <owner/repo>` auto-provisions a **per-repo** WIF provider scoped to a single repository — the org-wide condition here is broader than what the automated path creates.
->
-> **To limit access to a single repository**, use the tighter `assertion.repository == '$ORG_NAME/$REPO_NAME'` condition instead, and scope the WIF principal to `attribute.repository/$ORG_NAME/$REPO_NAME`. See [Google Cloud WIF documentation](https://cloud.google.com/iam/docs/workload-identity-federation) for condition syntax.
+> **Repository scope only:** fullsend does not support organization-wide WIF authorization. Keep the attribute condition and the WIF principal scoped to a single `owner/repo`, as above, and create one provider and binding per repository. Do not use an `assertion.repository_owner` condition or an `attribute.repository_owner/...` principal. See [Google Cloud WIF documentation](https://cloud.google.com/iam/docs/workload-identity-federation) for condition syntax.
 
 **Pass the provider to the installer:**
 

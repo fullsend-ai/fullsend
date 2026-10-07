@@ -36,47 +36,48 @@ GPT models on the pi runtime; it needs neither GCP nor an OpenAI key.`,
 	return cmd
 }
 
-// parseOrgOrRepo determines whether the argument is an org name or owner/repo.
-// Returns (org, "", nil) for org-scoped or (owner, "owner/repo", nil) for repo-scoped.
-func parseOrgOrRepo(arg string) (org string, repo string, err error) {
-	if strings.Contains(arg, "/") {
-		parts := strings.SplitN(arg, "/", 2)
-		owner, repoName := parts[0], parts[1]
-		if owner == "" || repoName == "" {
-			return "", "", fmt.Errorf("invalid repo format: expected owner/repo, got %q", arg)
-		}
-		if !githubOwnerPattern.MatchString(owner) {
-			return "", "", fmt.Errorf("invalid owner name %q: must contain only alphanumeric characters and hyphens", owner)
-		}
-		if !githubRepoPattern.MatchString(repoName) {
-			return "", "", fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repoName)
-		}
-		return owner, arg, nil
+// parseOwnerRepo validates an owner/repo argument and returns the owner and
+// the full "owner/repo" string.
+func parseOwnerRepo(arg string) (owner string, repo string, err error) {
+	parts := strings.SplitN(arg, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid repo format: expected owner/repo, got %q", arg)
 	}
+	owner, repoName := parts[0], parts[1]
+	if !githubOwnerPattern.MatchString(owner) {
+		return "", "", fmt.Errorf("invalid owner name %q: must contain only alphanumeric characters and hyphens", owner)
+	}
+	if !githubRepoPattern.MatchString(repoName) {
+		return "", "", fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repoName)
+	}
+	return owner, arg, nil
+}
 
-	if err := validateOrgName(arg); err != nil {
-		return "", "", err
+// parseInferenceRepo validates the owner/repo target of an inference
+// provision/status/deprovision subcommand. A bare org argument is rejected:
+// org-scoped inference has been removed (ADR 0044). Returns the owner and the
+// full "owner/repo" string.
+func parseInferenceRepo(subcommand, arg string) (owner string, repo string, err error) {
+	if !strings.Contains(arg, "/") {
+		return "", "", fmt.Errorf("fullsend inference %[1]s requires an owner/repo target, got %[2]q: org-scoped inference has been removed; %[1]s each repository with 'fullsend inference %[1]s <owner/repo>'", subcommand, arg)
 	}
-	return arg, "", nil
+	return parseOwnerRepo(arg)
 }
 
 func newInferenceProvisionCmd() *cobra.Command {
 	var project string
 	var pool string
-	var provider string
 	var dryRun bool
 
 	cmd := &cobra.Command{
-		Use:   "provision <org|owner/repo>",
+		Use:   "provision <owner/repo>",
 		Short: "Create WIF infrastructure for inference",
 		Long: `Provisions Workload Identity Federation infrastructure in a GCP project
 for GitHub Actions to authenticate and access Agent Platform.
 
-Org-scoped mode (e.g. 'fullsend inference provision acme'):
-  Creates a WIF pool and provider scoped to all repos in the org.
-
-Repo-scoped mode (e.g. 'fullsend inference provision acme/widget'):
-  Creates a WIF pool and a dedicated provider scoped to a single repo.
+Creates a WIF pool (if needed) and a dedicated provider scoped to a single
+repository (e.g. 'fullsend inference provision acme/widget'). The provider
+ID is derived from owner/repo.
 
 After provisioning, prints the WIF provider resource name for handoff
 to the GitHub admin who runs 'fullsend github setup'.
@@ -100,56 +101,48 @@ Required IAM roles on the target project:
 				return fmt.Errorf("invalid GCP project ID %q: must be 6-30 lowercase letters, digits, and hyphens", project)
 			}
 
-			org, repo, err := parseOrgOrRepo(args[0])
+			owner, repo, err := parseInferenceRepo("provision", args[0])
 			if err != nil {
 				return err
 			}
 
-			if repo != "" && cmd.Flags().Changed("provider") {
-				return fmt.Errorf("--provider is not supported in repo-scoped mode (provider ID is auto-generated from owner/repo)")
-			}
-
-			if org == gcf.PlaceholderOrg {
-				return fmt.Errorf("cannot provision reserved placeholder org %q", org)
+			if owner == gcf.PlaceholderOrg {
+				return fmt.Errorf("cannot provision reserved placeholder org %q", owner)
 			}
 
 			printer := ui.New(cmd.OutOrStdout())
 
 			if dryRun {
-				return runInferenceProvisionDryRun(cmd, printer, org, repo, project, pool, provider)
+				return runInferenceProvisionDryRun(printer, repo, project, pool)
 			}
 
-			return runInferenceProvision(cmd, printer, org, repo, project, pool, provider)
+			return runInferenceProvision(cmd, printer, owner, repo, project, pool)
 		},
 	}
 
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID for Agent Platform (required)")
 	cmd.Flags().StringVar(&pool, "pool", gcf.DefaultInferencePool, "WIF pool name")
-	cmd.Flags().StringVar(&provider, "provider", "github-oidc", "WIF provider name (org-scoped only)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 
 	return cmd
 }
 
-func runInferenceProvisionDryRun(cmd *cobra.Command, printer *ui.Printer, org, repo, project, pool, provider string) error {
+// repoProviderID returns the repo-scoped WIF provider ID for an owner/repo
+// string.
+func repoProviderID(repo string) string {
+	parts := strings.SplitN(repo, "/", 2)
+	return mintcore.BuildRepoProviderID(parts[0], parts[1])
+}
+
+func runInferenceProvisionDryRun(printer *ui.Printer, repo, project, pool string) error {
 	printer.Banner(Version())
 	printer.Blank()
 
-	if repo != "" {
-		printer.Header("Dry run: provision WIF for repo-scoped inference")
-		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("Repository:   %s", repo))
-		parts := strings.SplitN(repo, "/", 2)
-		providerID := mintcore.BuildRepoProviderID(parts[0], parts[1])
-		printer.StepInfo(fmt.Sprintf("WIF provider: %s (repo-scoped)", providerID))
-		printer.StepInfo(fmt.Sprintf("Condition:    assertion.repository == '%s'", repo))
-	} else {
-		printer.Header("Dry run: provision WIF for org-scoped inference")
-		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("Organization: %s", org))
-		printer.StepInfo(fmt.Sprintf("WIF provider: %s (org-scoped)", provider))
-		printer.StepInfo(fmt.Sprintf("Condition:    assertion.repository_owner == '%s'", org))
-	}
+	printer.Header("Dry run: provision WIF for repo-scoped inference")
+	printer.Blank()
+	printer.StepInfo(fmt.Sprintf("Repository:   %s", repo))
+	printer.StepInfo(fmt.Sprintf("WIF provider: %s (repo-scoped)", repoProviderID(repo)))
+	printer.StepInfo(fmt.Sprintf("Condition:    assertion.repository == '%s'", repo))
 
 	printer.Blank()
 	printer.StepInfo(fmt.Sprintf("GCP project:  %s", project))
@@ -164,15 +157,11 @@ func runInferenceProvisionDryRun(cmd *cobra.Command, printer *ui.Printer, org, r
 	return nil
 }
 
-func runInferenceProvision(cmd *cobra.Command, printer *ui.Printer, org, repo, project, pool, provider string) error {
+func runInferenceProvision(cmd *cobra.Command, printer *ui.Printer, owner, repo, project, pool string) error {
 	printer.Banner(Version())
 	printer.Blank()
 
-	if repo != "" {
-		printer.Header("Provisioning WIF for repo-scoped inference: " + repo)
-	} else {
-		printer.Header("Provisioning WIF for org-scoped inference: " + org)
-	}
+	printer.Header("Provisioning WIF for repo-scoped inference: " + repo)
 	printer.Blank()
 
 	ctx := cmd.Context()
@@ -180,10 +169,9 @@ func runInferenceProvision(cmd *cobra.Command, printer *ui.Printer, org, repo, p
 	gcpClient := gcf.NewLiveGCFClient(project)
 	provisioner := gcf.NewProvisioner(gcf.Config{
 		ProjectID:   project,
-		GitHubOrgs:  []string{org},
+		GitHubOrgs:  []string{owner},
 		Repo:        repo,
 		WIFPoolName: pool,
-		WIFProvider: provider,
 	}, gcpClient)
 
 	printer.StepStart("Provisioning WIF infrastructure")
@@ -198,12 +186,8 @@ func runInferenceProvision(cmd *cobra.Command, printer *ui.Printer, org, repo, p
 	printer.KeyValue("WIF Provider", wifProvider)
 	printer.Blank()
 
-	targetArg := org
-	if repo != "" {
-		targetArg = repo
-	}
 	printer.StepInfo("Pass this value to the GitHub setup command:")
-	printer.StepInfo(fmt.Sprintf("  fullsend github setup %s \\", targetArg))
+	printer.StepInfo(fmt.Sprintf("  fullsend github setup %s \\", repo))
 	printer.StepInfo(fmt.Sprintf("    --inference-project=%s \\", project))
 	printer.StepInfo(fmt.Sprintf("    --inference-wif-provider=%s", wifProvider))
 	printer.Blank()
@@ -224,11 +208,10 @@ type inferenceStatusResult struct {
 func newInferenceStatusCmd() *cobra.Command {
 	var project string
 	var pool string
-	var provider string
 	var format string
 
 	cmd := &cobra.Command{
-		Use:   "status <org|owner/repo>",
+		Use:   "status <owner/repo>",
 		Short: "Check inference WIF health and print config",
 		Long: `Checks the health of inference WIF infrastructure and displays
 configuration values for handoff to the GitHub admin.
@@ -257,32 +240,27 @@ Required IAM roles on the target project:
 				return fmt.Errorf("--format must be one of: text, json, env (got %q)", format)
 			}
 
-			org, repo, err := parseOrgOrRepo(args[0])
+			owner, repo, err := parseInferenceRepo("status", args[0])
 			if err != nil {
 				return err
 			}
 
-			if repo != "" && cmd.Flags().Changed("provider") {
-				return fmt.Errorf("--provider is not supported in repo-scoped mode (provider ID is auto-generated from owner/repo)")
+			if owner == gcf.PlaceholderOrg {
+				return fmt.Errorf("cannot check status of reserved placeholder org %q", owner)
 			}
 
-			if org == gcf.PlaceholderOrg {
-				return fmt.Errorf("cannot check status of reserved placeholder org %q", org)
-			}
-
-			return runInferenceStatus(cmd, org, repo, project, pool, provider, format, nil)
+			return runInferenceStatus(cmd, repo, project, pool, format, nil)
 		},
 	}
 
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID for Agent Platform (required)")
 	cmd.Flags().StringVar(&pool, "pool", gcf.DefaultInferencePool, "WIF pool name")
-	cmd.Flags().StringVar(&provider, "provider", "github-oidc", "WIF provider name")
 	cmd.Flags().StringVar(&format, "format", "text", "output format: text, json, env")
 
 	return cmd
 }
 
-func runInferenceStatus(cmd *cobra.Command, org, repo, project, pool, provider, format string, client gcf.GCFClient) error {
+func runInferenceStatus(cmd *cobra.Command, repo, project, pool, format string, client gcf.GCFClient) error {
 	ctx := cmd.Context()
 	gcpClient := client
 	if gcpClient == nil {
@@ -290,11 +268,7 @@ func runInferenceStatus(cmd *cobra.Command, org, repo, project, pool, provider, 
 	}
 
 	poolName := pool
-	providerName := provider
-	if repo != "" {
-		parts := strings.SplitN(repo, "/", 2)
-		providerName = mintcore.BuildRepoProviderID(parts[0], parts[1])
-	}
+	providerName := repoProviderID(repo)
 
 	result := &inferenceStatusResult{
 		ProjectID: project,
@@ -346,28 +320,12 @@ func runInferenceStatus(cmd *cobra.Command, org, repo, project, pool, provider, 
 		result.Details = append(result.Details, fmt.Sprintf("WIF provider state is %s and cannot exchange tokens", providerInfo.State))
 		healthy = false
 	}
-	if repo != "" {
-		if conditionMatchesRepo(condition, repo) {
-			result.Details = append(result.Details, "Condition matches repo: OK")
-		} else {
-			expected := fmt.Sprintf("assertion.repository == '%s'", repo)
-			result.Details = append(result.Details, fmt.Sprintf("Condition mismatch: expected %q", expected))
-			healthy = false
-		}
+	if conditionMatchesRepo(condition, repo) {
+		result.Details = append(result.Details, "Condition matches repo: OK")
 	} else {
-		if conditionMatchesOrg(condition, org) {
-			if strings.EqualFold(
-				condition,
-				fmt.Sprintf("assertion.repository_owner == '%s'", org),
-			) {
-				result.Details = append(result.Details, "Condition matches org: OK")
-			} else {
-				result.Details = append(result.Details, "Condition includes org (multi-org pool): OK")
-			}
-		} else {
-			result.Details = append(result.Details, fmt.Sprintf("Condition does not include org %q", org))
-			healthy = false
-		}
+		expected := fmt.Sprintf("assertion.repository == '%s'", repo)
+		result.Details = append(result.Details, fmt.Sprintf("Condition mismatch: expected %q", expected))
+		healthy = false
 	}
 
 	if healthy {
@@ -464,37 +422,17 @@ func conditionMatchesRepo(condition, repo string) bool {
 	return strings.EqualFold(condition, expected)
 }
 
-// conditionMatchesOrg reports whether the WIF attribute condition matches an
-// org-scoped assertion, either as a single-org condition or as a member of a
-// multi-org pool. Comparison is case-insensitive for the same reason as
-// conditionMatchesRepo.
-func conditionMatchesOrg(condition, org string) bool {
-	expected := fmt.Sprintf("assertion.repository_owner == '%s'", org)
-	if strings.EqualFold(condition, expected) {
-		return true
-	}
-	// Multi-org pool: condition may contain the org in an "in [...]" list.
-	return strings.Contains(condition, "repository_owner") &&
-		strings.Contains(strings.ToLower(condition), strings.ToLower(fmt.Sprintf("'%s'", org)))
-}
-
 func newInferenceDeprovisionCmd() *cobra.Command {
 	var project string
 	var pool string
-	var provider string
 	var dryRun bool
 
 	cmd := &cobra.Command{
-		Use:   "deprovision <org|owner/repo>",
-		Short: "Remove inference WIF access for an org or repo",
-		Long: `Removes inference WIF access for a GitHub organization or repository.
-
-Org-scoped mode (e.g. 'fullsend inference deprovision acme'):
-  Removes the org from the shared WIF provider's attribute condition.
-  The WIF pool and provider are left in place for other orgs.
-
-Repo-scoped mode (e.g. 'fullsend inference deprovision acme/widget'):
-  Deletes the repo's dedicated WIF provider entirely.
+		Use:   "deprovision <owner/repo>",
+		Short: "Remove inference WIF access for a repo",
+		Long: `Removes inference WIF access for a GitHub repository by deleting the
+repo's dedicated WIF provider (e.g. 'fullsend inference deprovision acme/widget').
+The WIF pool is left in place for other repositories.
 
 Note: the IAM binding (roles/aiplatform.user) is NOT automatically
 revoked. To fully revoke access, remove the IAM binding manually in
@@ -513,64 +451,46 @@ Required IAM roles on the target project:
 				return fmt.Errorf("invalid GCP project ID %q: must be 6-30 lowercase letters, digits, and hyphens", project)
 			}
 
-			org, repo, err := parseOrgOrRepo(args[0])
+			owner, repo, err := parseInferenceRepo("deprovision", args[0])
 			if err != nil {
 				return err
 			}
 
-			if repo != "" && cmd.Flags().Changed("provider") {
-				return fmt.Errorf("--provider is not supported in repo-scoped mode (provider ID is auto-generated from owner/repo)")
-			}
-
-			if org == gcf.PlaceholderOrg {
-				return fmt.Errorf("cannot deprovision reserved placeholder org %q", org)
+			if owner == gcf.PlaceholderOrg {
+				return fmt.Errorf("cannot deprovision reserved placeholder org %q", owner)
 			}
 
 			printer := ui.New(cmd.OutOrStdout())
 
 			if dryRun {
-				return runInferenceDeprovisionDryRun(printer, org, repo, project, pool, provider)
+				return runInferenceDeprovisionDryRun(printer, repo, project, pool)
 			}
 
-			return runInferenceDeprovision(cmd, printer, org, repo, project, pool, provider)
+			return runInferenceDeprovision(cmd, printer, repo, project, pool)
 		},
 	}
 
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID for Agent Platform (required)")
 	cmd.Flags().StringVar(&pool, "pool", gcf.DefaultInferencePool, "WIF pool name")
-	cmd.Flags().StringVar(&provider, "provider", "github-oidc", "WIF provider name (org-scoped only)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 
 	return cmd
 }
 
-func runInferenceDeprovisionDryRun(printer *ui.Printer, org, repo, project, pool, provider string) error {
+func runInferenceDeprovisionDryRun(printer *ui.Printer, repo, project, pool string) error {
 	printer.Banner(Version())
 	printer.Blank()
 
-	if repo != "" {
-		printer.Header("Dry run: deprovision repo " + repo + " from inference")
-		printer.Blank()
-		parts := strings.SplitN(repo, "/", 2)
-		providerID := mintcore.BuildRepoProviderID(parts[0], parts[1])
-		printer.StepInfo(fmt.Sprintf("Repository:   %s", repo))
-		printer.StepInfo(fmt.Sprintf("GCP project:  %s", project))
-		printer.StepInfo(fmt.Sprintf("WIF pool:     %s", pool))
-		printer.StepInfo(fmt.Sprintf("WIF provider: %s (repo-scoped)", providerID))
-		printer.Blank()
-		printer.StepInfo("Would perform:")
-		printer.StepInfo(fmt.Sprintf("  1. Delete WIF provider %s", providerID))
-	} else {
-		printer.Header("Dry run: deprovision org " + org + " from inference")
-		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("Organization: %s", org))
-		printer.StepInfo(fmt.Sprintf("GCP project:  %s", project))
-		printer.StepInfo(fmt.Sprintf("WIF pool:     %s", pool))
-		printer.StepInfo(fmt.Sprintf("WIF provider: %s", provider))
-		printer.Blank()
-		printer.StepInfo("Would perform:")
-		printer.StepInfo(fmt.Sprintf("  1. Remove %s from WIF provider %s attribute condition", org, provider))
-	}
+	printer.Header("Dry run: deprovision repo " + repo + " from inference")
+	printer.Blank()
+	providerID := repoProviderID(repo)
+	printer.StepInfo(fmt.Sprintf("Repository:   %s", repo))
+	printer.StepInfo(fmt.Sprintf("GCP project:  %s", project))
+	printer.StepInfo(fmt.Sprintf("WIF pool:     %s", pool))
+	printer.StepInfo(fmt.Sprintf("WIF provider: %s (repo-scoped)", providerID))
+	printer.Blank()
+	printer.StepInfo("Would perform:")
+	printer.StepInfo(fmt.Sprintf("  1. Delete WIF provider %s", providerID))
 
 	printer.Blank()
 	printer.StepWarn("IAM binding (roles/aiplatform.user) is NOT revoked automatically")
@@ -578,64 +498,37 @@ func runInferenceDeprovisionDryRun(printer *ui.Printer, org, repo, project, pool
 	return nil
 }
 
-func runInferenceDeprovision(cmd *cobra.Command, printer *ui.Printer, org, repo, project, pool, provider string) error {
+func runInferenceDeprovision(cmd *cobra.Command, printer *ui.Printer, repo, project, pool string) error {
 	printer.Banner(Version())
 	printer.Blank()
 
 	ctx := cmd.Context()
 	gcpClient := gcf.NewLiveGCFClient(project)
 
-	if repo != "" {
-		printer.Header("Deprovisioning inference for repo: " + repo)
-		printer.Blank()
+	printer.Header("Deprovisioning inference for repo: " + repo)
+	printer.Blank()
 
-		parts := strings.SplitN(repo, "/", 2)
-		providerID := mintcore.BuildRepoProviderID(parts[0], parts[1])
+	providerID := repoProviderID(repo)
 
-		provisioner := gcf.NewProvisioner(gcf.Config{
-			ProjectID:   project,
-			WIFPoolName: pool,
-		}, gcpClient)
+	provisioner := gcf.NewProvisioner(gcf.Config{
+		ProjectID:   project,
+		WIFPoolName: pool,
+	}, gcpClient)
 
-		printer.StepStart("Deleting WIF provider " + providerID)
-		if err := provisioner.DeleteWIFProvider(ctx, providerID); err != nil {
-			printer.StepFail("Failed to delete WIF provider")
-			return fmt.Errorf("deleting WIF provider: %w", err)
-		}
-		printer.StepDone("WIF provider deleted")
-
-		printer.Blank()
-		printer.Summary("Inference deprovisioning complete", []string{
-			fmt.Sprintf("Repository: %s", repo),
-			fmt.Sprintf("GCP project: %s", project),
-			fmt.Sprintf("Deleted WIF provider: %s", providerID),
-			"Note: IAM binding (roles/aiplatform.user) was NOT revoked — remove manually if needed",
-		})
-	} else {
-		printer.Header("Deprovisioning inference for org: " + org)
-		printer.Blank()
-
-		provisioner := gcf.NewProvisioner(gcf.Config{
-			ProjectID:   project,
-			GitHubOrgs:  []string{org},
-			WIFPoolName: pool,
-			WIFProvider: provider,
-		}, gcpClient)
-
-		printer.StepStart("Removing org from WIF provider condition")
-		if err := provisioner.RemoveOrgFromWIFCondition(ctx, org); err != nil {
-			printer.StepFail("Failed to update WIF condition")
-			return fmt.Errorf("updating WIF condition: %w", err)
-		}
-		printer.StepDone("WIF condition updated")
-
-		printer.Blank()
-		printer.Summary("Inference deprovisioning complete", []string{
-			fmt.Sprintf("Organization: %s", org),
-			fmt.Sprintf("GCP project: %s", project),
-			"Note: IAM binding (roles/aiplatform.user) was NOT revoked — remove manually if needed",
-		})
+	printer.StepStart("Deleting WIF provider " + providerID)
+	if err := provisioner.DeleteWIFProvider(ctx, providerID); err != nil {
+		printer.StepFail("Failed to delete WIF provider")
+		return fmt.Errorf("deleting WIF provider: %w", err)
 	}
+	printer.StepDone("WIF provider deleted")
+
+	printer.Blank()
+	printer.Summary("Inference deprovisioning complete", []string{
+		fmt.Sprintf("Repository: %s", repo),
+		fmt.Sprintf("GCP project: %s", project),
+		fmt.Sprintf("Deleted WIF provider: %s", providerID),
+		"Note: IAM binding (roles/aiplatform.user) was NOT revoked — remove manually if needed",
+	})
 
 	return nil
 }

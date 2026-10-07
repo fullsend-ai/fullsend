@@ -275,7 +275,6 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 		"CreateWIFPool",
 		"GetWIFProvider",
 		"CreateWIFProvider",
-		"SetProjectIAMBinding",
 		"GetSecret",
 		"CreateSecret",
 		"AddSecretVersion",
@@ -296,12 +295,9 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 	require.Contains(t, vars, "FULLSEND_MINT_URL")
 	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
 
-	// Verify project IAM binding arguments.
-	require.Len(t, fake.projectIAMBindings, 1)
-	assert.Equal(t, "my-project", fake.projectIAMBindings[0].ProjectID)
-	assert.Equal(t, "roles/aiplatform.user", fake.projectIAMBindings[0].Role)
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "principalSet://iam.googleapis.com/")
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/test-org/.fullsend")
+	// No org-level Vertex AI grant to <org>/.fullsend (#8070): inference
+	// access is granted per repo via ProvisionWIF.
+	assert.Empty(t, fake.projectIAMBindings)
 
 	// Verify PEMs were zeroed.
 	for role, pem := range p.cfg.AgentPEMs {
@@ -465,7 +461,7 @@ func TestProvisioner_Provision_SameHashAutoRoutesToExistingMint(t *testing.T) {
 	assert.Contains(t, fake.calls, "CreateServiceAccount")
 	assert.Contains(t, fake.calls, "CreateWIFPool")
 	assert.Contains(t, fake.calls, "CreateWIFProvider")
-	assert.Contains(t, fake.calls, "SetProjectIAMBinding")
+	assert.NotContains(t, fake.calls, "SetProjectIAMBinding", "no org-level Vertex AI grant (#8070)")
 	// Code deploy skipped — auto-routed to provisionWithExistingMint for PEM + org registration.
 	assert.NotContains(t, fake.calls, "UploadFunctionSource")
 	assert.NotContains(t, fake.calls, "CreateFunction")
@@ -1247,25 +1243,9 @@ func TestProvisioner_Provision_AddSecretVersionError(t *testing.T) {
 	assert.Contains(t, err.Error(), "version error")
 }
 
-func TestProvisioner_Provision_SetProjectIAMBindingError(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.errs["SetProjectIAMBinding"] = fmt.Errorf("project iam denied")
-
-	p := newTestProvisioner(Config{
-		ProjectID:         "test-project-id",
-		GitHubOrgs:        []string{"org"},
-		AgentPEMs:         singleRolePEMs(),
-		AgentAppIDs:       singleRoleAppIDs(),
-		FunctionSourceDir: fakeFunctionSourceDir(t),
-	}, fake)
-
-	_, err := p.Provision(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "granting Agent Platform access for org org")
-	assert.Contains(t, err.Error(), "project iam denied")
-}
-
-func TestProvisioner_Provision_MultiOrg_ProjectIAMBindings(t *testing.T) {
+func TestProvisioner_Provision_MultiOrg_NoOrgLevelVertexGrant(t *testing.T) {
+	// Org-wide WIF authorization was removed (#8070): deploying the mint
+	// must not grant roles/aiplatform.user to any <org>/.fullsend principal.
 	fake := newFakeGCFClient()
 	fake.functionInfoAfterCreate = &FunctionInfo{URI: "https://mint.run.app"}
 
@@ -1280,11 +1260,8 @@ func TestProvisioner_Provision_MultiOrg_ProjectIAMBindings(t *testing.T) {
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 
-	require.Len(t, fake.projectIAMBindings, 2)
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/org-a/.fullsend")
-	assert.Contains(t, fake.projectIAMBindings[1].Member, "attribute.repository/org-b/.fullsend")
-	assert.Equal(t, "roles/aiplatform.user", fake.projectIAMBindings[0].Role)
-	assert.Equal(t, "roles/aiplatform.user", fake.projectIAMBindings[1].Role)
+	assert.NotContains(t, fake.calls, "SetProjectIAMBinding")
+	assert.Empty(t, fake.projectIAMBindings)
 }
 
 func TestProvisioner_Provision_SetIAMBindingError(t *testing.T) {
@@ -1937,19 +1914,37 @@ func TestProvisionWIF_HappyPath(t *testing.T) {
 	p := NewProvisioner(Config{
 		ProjectID:  "my-project",
 		GitHubOrgs: []string{"acme"},
+		Repo:       "acme/widget",
 	}, fake)
 
 	wifProvider, err := p.ProvisionWIF(context.Background())
 	require.NoError(t, err)
 
-	assert.Equal(t, "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc", wifProvider)
+	assert.Equal(t, "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/gh-acme-widget", wifProvider)
 
 	assert.Contains(t, fake.calls, "GetProjectNumber")
 	assert.Contains(t, fake.calls, "CreateWIFPool")
 	assert.Contains(t, fake.calls, "CreateWIFProvider")
 	assert.Contains(t, fake.calls, "SetProjectIAMBinding")
 
-	assert.Equal(t, "assertion.repository_owner == 'acme'", fake.lastWIFProviderConfig.AttributeCondition)
+	assert.Equal(t, "assertion.repository == 'acme/widget'", fake.lastWIFProviderConfig.AttributeCondition)
+}
+
+func TestProvisionWIF_MissingRepo_RejectsOrgScoped(t *testing.T) {
+	// Organization-scoped inference WIF was removed (#8070): without a Repo,
+	// ProvisionWIF must fail before touching GCP.
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "a repository (owner/repo) is required")
+	assert.Contains(t, err.Error(), "organization-scoped inference WIF has been removed")
+	assert.Empty(t, fake.calls, "no GCP calls should be made without a repo")
+	assert.Empty(t, fake.projectIAMBindings)
 }
 
 func TestProvisionWIF_MissingProjectID(t *testing.T) {
@@ -1980,27 +1975,12 @@ func TestProvisionWIF_IAMBindingFails(t *testing.T) {
 	p := NewProvisioner(Config{
 		ProjectID:  "my-project",
 		GitHubOrgs: []string{"acme"},
+		Repo:       "acme/widget",
 	}, fake)
 
 	_, err := p.ProvisionWIF(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "granting Agent Platform access for org acme")
-}
-
-func TestProvisionWIF_MultipleOrgs(t *testing.T) {
-	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{
-		ProjectID:  "my-project",
-		GitHubOrgs: []string{"acme", "beta"},
-	}, fake)
-
-	_, err := p.ProvisionWIF(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "assertion.repository_owner in ['acme', 'beta']", fake.lastWIFProviderConfig.AttributeCondition)
-
-	require.Len(t, fake.projectIAMBindings, 2)
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/.fullsend")
-	assert.Contains(t, fake.projectIAMBindings[1].Member, "attribute.repository/beta/.fullsend")
+	assert.Contains(t, err.Error(), "granting Agent Platform access for repo acme/widget")
 }
 
 func TestProvisionWIF_GetProjectNumberFails(t *testing.T) {
@@ -2009,6 +1989,7 @@ func TestProvisionWIF_GetProjectNumberFails(t *testing.T) {
 	p := NewProvisioner(Config{
 		ProjectID:  "my-project",
 		GitHubOrgs: []string{"acme"},
+		Repo:       "acme/widget",
 	}, fake)
 
 	_, err := p.ProvisionWIF(context.Background())
@@ -2022,6 +2003,7 @@ func TestProvisionWIF_CreateWIFPoolFails(t *testing.T) {
 	p := NewProvisioner(Config{
 		ProjectID:  "my-project",
 		GitHubOrgs: []string{"acme"},
+		Repo:       "acme/widget",
 	}, fake)
 
 	_, err := p.ProvisionWIF(context.Background())
@@ -2035,6 +2017,7 @@ func TestProvisionWIF_CreateWIFProviderFails(t *testing.T) {
 	p := NewProvisioner(Config{
 		ProjectID:  "my-project",
 		GitHubOrgs: []string{"acme"},
+		Repo:       "acme/widget",
 	}, fake)
 
 	_, err := p.ProvisionWIF(context.Background())
@@ -2072,6 +2055,7 @@ func TestProvisionWIF_DoesNotMutateInput(t *testing.T) {
 	p := NewProvisioner(Config{
 		ProjectID:  "my-project",
 		GitHubOrgs: orgs,
+		Repo:       "ACME/widget",
 	}, fake)
 
 	_, err := p.ProvisionWIF(context.Background())
@@ -2089,18 +2073,6 @@ func TestProvisionWIF_InvalidProjectID(t *testing.T) {
 	_, err := p.ProvisionWIF(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid GCP project ID")
-}
-
-func TestProvisionWIF_PreservesOrgCase(t *testing.T) {
-	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{
-		ProjectID:  "my-project",
-		GitHubOrgs: []string{"ACME"},
-	}, fake)
-
-	_, err := p.ProvisionWIF(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "assertion.repository_owner == 'ACME'", fake.lastWIFProviderConfig.AttributeCondition)
 }
 
 func TestProvisionWIF_RepoScoped(t *testing.T) {
@@ -2188,22 +2160,6 @@ func TestProvisionWIF_RepoScoped_DoesNotTouchSharedProvider(t *testing.T) {
 	assert.Equal(t, "assertion.repository == 'acme/widget'", fake.lastWIFProviderConfig.AttributeCondition)
 }
 
-func TestProvisionWIF_OrgScoped_Unchanged(t *testing.T) {
-	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{
-		ProjectID:  "my-project",
-		GitHubOrgs: []string{"acme"},
-	}, fake)
-
-	_, err := p.ProvisionWIF(context.Background())
-	require.NoError(t, err)
-
-	assert.Equal(t, "github-oidc", fake.lastWIFProviderID)
-	assert.Equal(t, "assertion.repository_owner == 'acme'", fake.lastWIFProviderConfig.AttributeCondition)
-	require.Len(t, fake.projectIAMBindings, 1)
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/.fullsend")
-}
-
 func TestProvisionWIF_RepoScoped_RejectsInvalidRepo(t *testing.T) {
 	tests := []struct {
 		name, repo, errContains string
@@ -2236,73 +2192,6 @@ func TestProvisionWIF_RepoScoped_RejectsInvalidRepo(t *testing.T) {
 			assert.NotContains(t, fake.calls, "GetProjectNumber")
 		})
 	}
-}
-
-func TestProvisionWIF_OrgScoped_MergesExistingOrgs(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.wifProvider = &WIFProviderInfo{
-		AttributeCondition: "assertion.repository_owner in ['beta', 'gamma']",
-	}
-	p := NewProvisioner(Config{
-		ProjectID:  "my-project",
-		GitHubOrgs: []string{"acme"},
-	}, fake)
-
-	_, err := p.ProvisionWIF(context.Background())
-	require.NoError(t, err)
-
-	assert.Contains(t, fake.calls, "GetWIFProvider")
-	assert.Equal(t, "assertion.repository_owner in ['acme', 'beta', 'gamma']",
-		fake.lastWIFProviderConfig.AttributeCondition)
-
-	// IAM binding should only be for the installing org, not the merged ones.
-	require.Len(t, fake.projectIAMBindings, 1)
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/.fullsend")
-}
-
-func TestProvisionWIF_OrgScoped_PreservesOrgCase(t *testing.T) {
-	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{
-		ProjectID:  "my-project",
-		GitHubOrgs: []string{"AcmeCorp"},
-	}, fake)
-
-	_, err := p.ProvisionWIF(context.Background())
-	require.NoError(t, err)
-
-	assert.Equal(t, "assertion.repository_owner == 'AcmeCorp'", fake.lastWIFProviderConfig.AttributeCondition)
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/AcmeCorp/.fullsend")
-}
-
-func TestProvisionWIF_OrgScoped_MergeDedupsCase(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.wifProvider = &WIFProviderInfo{
-		AttributeCondition: "assertion.repository_owner == 'AcmeCorp'",
-	}
-	p := NewProvisioner(Config{
-		ProjectID:  "my-project",
-		GitHubOrgs: []string{"acmecorp"},
-	}, fake)
-
-	_, err := p.ProvisionWIF(context.Background())
-	require.NoError(t, err)
-
-	// Installing org's case wins over existing condition's case.
-	assert.Equal(t, "assertion.repository_owner == 'acmecorp'",
-		fake.lastWIFProviderConfig.AttributeCondition)
-}
-
-func TestProvisionWIF_OrgScoped_GetProviderError_FailsToPreventClobber(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.errs["GetWIFProvider"] = fmt.Errorf("transient error")
-	p := NewProvisioner(Config{
-		ProjectID:  "my-project",
-		GitHubOrgs: []string{"acme"},
-	}, fake)
-
-	_, err := p.ProvisionWIF(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reading existing WIF provider for merge")
 }
 
 // --- ProvisionRepoWIFProvider tests ---
@@ -3326,58 +3215,6 @@ func TestMarshalRoleAppIDs_SortsKeys(t *testing.T) {
 	raw, err := marshalRoleAppIDs(map[string]string{"triage": "2", "coder": "1"})
 	require.NoError(t, err)
 	assert.Equal(t, `{"coder":"1","triage":"2"}`, raw)
-}
-
-func TestRemoveOrgFromWIFCondition_RemovesOrgAndAddsPlaceholder(t *testing.T) {
-	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{
-		AttributeCondition: "assertion.repository_owner in ['acme', 'other']",
-	}))
-	p := NewProvisioner(Config{
-		ProjectID:   "proj1",
-		Region:      "us-central1",
-		WIFPoolName: "fullsend-pool",
-		WIFProvider: "github-oidc",
-	}, fake)
-
-	err := p.RemoveOrgFromWIFCondition(context.Background(), "acme")
-	require.NoError(t, err)
-	assert.Contains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
-	assert.Contains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'other'")
-	assert.NotContains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'acme'")
-}
-
-func TestRemoveOrgFromWIFCondition_CaseInsensitiveMatch(t *testing.T) {
-	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{
-		AttributeCondition: "assertion.repository_owner in ['AcmeCorp', 'other']",
-	}))
-	p := NewProvisioner(Config{
-		ProjectID:   "proj1",
-		Region:      "us-central1",
-		WIFPoolName: "fullsend-pool",
-		WIFProvider: "github-oidc",
-	}, fake)
-
-	err := p.RemoveOrgFromWIFCondition(context.Background(), "acmecorp")
-	require.NoError(t, err)
-	assert.Contains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
-	assert.Contains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'other'")
-	assert.NotContains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "AcmeCorp")
-}
-
-func TestRemoveOrgFromWIFCondition_NoOpWhenOrgAbsent(t *testing.T) {
-	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{
-		AttributeCondition: "assertion.repository_owner in ['other']",
-	}))
-	p := NewProvisioner(Config{
-		ProjectID:   "proj1",
-		Region:      "us-central1",
-		WIFPoolName: "fullsend-pool",
-		WIFProvider: "github-oidc",
-	}, fake)
-
-	err := p.RemoveOrgFromWIFCondition(context.Background(), "acme")
-	require.NoError(t, err)
-	assert.NotContains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
 }
 
 // --- Role management tests ---
