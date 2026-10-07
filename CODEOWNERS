@@ -5,7 +5,9 @@
 # digest bumps can auto-merge after CI passes.
 # GitHub CODEOWNERS uses last-match-wins, so these blank-owner
 # entries after the wildcard override @fullsend-ai/core for
-# these paths only.
-.gitmodules
-experiments
+# these paths only. Entries are root-anchored so the exemption
+# cannot leak to same-named paths at other depths.
+# .gitmodules is deliberately excluded: it maps submodule fetch
+# URLs, so URL swaps must keep @fullsend-ai/core review (#6082).
+/experiments
 eval/.agent-eval-harness
