@@ -70,9 +70,10 @@ A file-based `reason=` value gets the same full redaction pass before it is
 logged, relayed, recorded or posted, because it can reach a public status
 comment. Every other output value loses only exact credential values
 (runner secrets, sensitive `env.runner` values and provider-only keys)
-before it is logged or relayed; the secret-pattern scanner is not applied
-to them, so a value that merely looks like a secret reaches downstream
-steps unchanged.
+before it is relayed; the secret-pattern scanner is not applied to relayed
+values, so a value that merely looks like a secret reaches downstream steps
+unchanged. The `Pre-script outputs:` log line applies the full pass to every
+value, because people read it.
 
 ### Hard-failure diagnostics
 

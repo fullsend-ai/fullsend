@@ -1760,7 +1760,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		redactPreScriptResult(&preResult, h.RunnerEnv)
 		// Log the outputs so non-GitHub CIs and local runs still see what
 		// the pre-script reported.
-		if line := prescript.LogLine(preResult); line != "" {
+		if line := prescript.LogLine(preScriptLogResult(preResult, h.RunnerEnv)); line != "" {
 			printer.StepDone("Pre-script outputs: " + line)
 		}
 	}
@@ -3699,6 +3699,19 @@ func redactPreScriptResult(res *prescript.Result, runnerEnv map[string]string) {
 	if _, ok := res.Outputs["reason"]; ok {
 		res.Outputs["reason"] = res.Reason
 	}
+}
+
+// preScriptLogResult returns a copy of res for the log line, with every
+// output value given the full redaction pass. The log is read by people,
+// not by downstream steps, so a value that looks like a secret is hidden
+// there even though the relayed value keeps it.
+func preScriptLogResult(res prescript.Result, runnerEnv map[string]string) prescript.Result {
+	outputs := make(map[string]string, len(res.Outputs))
+	for k, v := range res.Outputs {
+		outputs[k] = redactFeedback(v, runnerEnv)
+	}
+	res.Outputs = outputs
+	return res
 }
 
 // redactSecretLiterals replaces only known credential values: sensitive

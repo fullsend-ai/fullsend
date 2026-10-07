@@ -142,6 +142,7 @@ func TestLoadRunnerSecrets_RegistersValuesForRedaction(t *testing.T) {
 }
 
 func TestLoadRunnerSecrets_MasksValuesOnActions(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv(runnerSecretsEnv, `{"MULTI_LINE":"first-line-value\nsecond-line-value"}`)
 
 	stderr := captureStderr(t, func() {
@@ -157,6 +158,7 @@ func TestLoadRunnerSecrets_MasksValuesOnActions(t *testing.T) {
 // The bundle as a whole is never sent to add-mask: masking the JSON would
 // echo it into the command stream, and only the values are secret.
 func TestLoadRunnerSecrets_DoesNotMaskWholeBundle(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv(runnerSecretsEnv, `{"ONE_VALUE":"single-line-value"}`)
 
 	stderr := captureStderr(t, func() {
@@ -167,6 +169,7 @@ func TestLoadRunnerSecrets_DoesNotMaskWholeBundle(t *testing.T) {
 }
 
 func TestMaskActionsValue_EscapesCommandData(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
 	for name, tc := range map[string]struct{ value, want string }{
 		"literal percent-25": {"abc%25def-secret", "::add-mask::abc%2525def-secret\n"},
 		"multi-line":         {"line-one\r\nline-two", "::add-mask::line-one%0D%0Aline-two\n"},
@@ -180,6 +183,7 @@ func TestMaskActionsValue_EscapesCommandData(t *testing.T) {
 }
 
 func TestLoadRunnerSecrets_MasksPercentEncodedValue(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv(runnerSecretsEnv, `{"PCT_VALUE":"pass%25word%0Avalue"}`)
 
 	stderr := captureStderr(t, func() {
@@ -269,6 +273,7 @@ func TestLoadRunnerSecrets_InvalidValues(t *testing.T) {
 // A duplicate key's value is masked like any other, so the entry that is
 // refused never prints in clear.
 func TestLoadRunnerSecrets_MasksDuplicateValue(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv(runnerSecretsEnv, `{"X":"first-secret-value","X":"second-secret-value"}`)
 
 	stderr := captureStderr(t, func() {
@@ -757,6 +762,11 @@ func TestRedactPreScriptResult_RelaysScrubbedOutputs(t *testing.T) {
 	assert.Contains(t, string(raw), "carried=***")
 	assert.NotContains(t, res.Reason, lookalike, "the reason gets the pattern scan too")
 	assert.Contains(t, string(raw), "note="+lookalike, "outputs lose exact credential values only")
+
+	// The log line hides the look-alike too, without touching the relayed map.
+	line := prescript.LogLine(preScriptLogResult(res, nil))
+	assert.NotContains(t, line, lookalike)
+	assert.Equal(t, lookalike, res.Outputs["note"])
 }
 
 // A failing preflight check that prints a runner secret is redacted in the
