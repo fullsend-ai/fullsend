@@ -319,15 +319,18 @@ import os, sys, yaml
 def load(text):
     return (yaml.safe_load(text) or {}) if text else {}
 
+# Resolve the overlay first, and only parse the base file when the
+# overlay is silent on kill_switch. This keeps a malformed base.yaml
+# from ever being able to suppress an explicit overlay value (it is
+# never parsed in that case), and treats overlay 'kill_switch: null'
+# (or a bare 'kill_switch:') the same as a fully omitted key — both
+# decode to None, matching Go's *bool nil-falls-through-to-parent
+# semantics — rather than as an explicit false that shadows the base.
 overlay = load(os.environ.get('OVERLAY_YAML', ''))
-base = load(os.environ.get('BASE_YAML', ''))
-
-if 'kill_switch' in overlay:
-    active = overlay.get('kill_switch')
-elif 'kill_switch' in base:
+active = overlay.get('kill_switch')
+if active is None:
+    base = load(os.environ.get('BASE_YAML', ''))
     active = base.get('kill_switch')
-else:
-    active = False
 
 print('true' if str(active).lower() in ('true', 'yes', '1', 'on') else 'false')
 "); then

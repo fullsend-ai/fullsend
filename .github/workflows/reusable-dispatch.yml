@@ -512,7 +512,7 @@ jobs:
               KILL_SWITCH="$BASE_KS"
             fi
           fi
-          if [[ "$KILL_SWITCH" == "true" ]]; then
+          if [[ "${KILL_SWITCH,,}" == "true" ]]; then
             echo "::error::Kill switch is active — all agent dispatch halted"
             echo "::error::Set kill_switch: false in .fullsend/config.yaml or .fullsend/config.base.yaml to resume"
             exit 1
