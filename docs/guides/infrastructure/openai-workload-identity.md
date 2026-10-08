@@ -471,6 +471,7 @@ agent starts and names the rule.
 | `sandbox policy rule codex allows api.openai.com:443 without L7 inspection` | The harness has no `policy:`, so the sandbox image's default policy applies. Add `policy: policies/base.yaml` to the harness (see [Run it locally](#run-it-locally)). |
 | `500 credential_unavailable` from `api.openai.com` | The placeholder pi sent no longer resolves: the credential expired, or the provider was replaced. With `--keep-sandbox` this is expected after the run ends. Otherwise check the refresh lines in the run log. |
 | `401` or `500` from `api.openai.com` partway through a run | The refresh could not get a new token in time (the run log shows the attempts) and the credential expired as designed. Check the exchange errors above and re-run. |
+| Local run on a laptop that slept | The refresher checks the wall clock every 30 seconds and refreshes on the first check after wake if the credential is due or already expired. Agent requests sent before that check can still fail. Note that `timeout_minutes` and the "Agent running (… elapsed, … remaining)" heartbeat count only time the host was awake. |
 
 ## Related
 

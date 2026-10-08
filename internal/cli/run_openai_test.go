@@ -955,6 +955,88 @@ func TestRunOpenAIRefresh_GivesUpAfterRetries(t *testing.T) {
 	assert.Contains(t, buf.String(), "gave up")
 }
 
+// simulateOpenAIHostSleep shrinks the wall-clock watchdog interval and
+// replaces the refresher's wall clock with one that runs ahead of the real
+// (monotonic) clock by the returned offset, the way it does after the host
+// slept. The offset starts at zero.
+func simulateOpenAIHostSleep(t *testing.T, watchdog time.Duration) *atomic.Int64 {
+	t.Helper()
+	var slept atomic.Int64
+	prevWatchdog, prevNow := openAIRefreshWatchdog, openAIWallNow
+	openAIRefreshWatchdog = watchdog
+	openAIWallNow = func() time.Time { return time.Now().Round(0).Add(time.Duration(slept.Load())) }
+	t.Cleanup(func() { openAIRefreshWatchdog, openAIWallNow = prevWatchdog, prevNow })
+	return &slept
+}
+
+func TestWaitOpenAIRefresh_WallClockPastDueReleasesTheWait(t *testing.T) {
+	slept := simulateOpenAIHostSleep(t, 5*time.Millisecond)
+	dueAt := openAIWallNow().Add(time.Hour)
+	// The monotonic timer still has an hour to go; the wall clock says the
+	// host slept past the deadline.
+	slept.Store(int64(2 * time.Hour))
+
+	done := make(chan bool, 1)
+	go func() { done <- waitOpenAIRefresh(context.Background(), time.Hour, dueAt) }()
+	select {
+	case ok := <-done:
+		assert.True(t, ok, "a wall-clock deadline that has passed releases the wait")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watchdog did not release a wait whose wall-clock deadline had passed")
+	}
+}
+
+func TestWaitOpenAIRefresh_WatchdogDoesNotFireAheadOfTheTimer(t *testing.T) {
+	simulateOpenAIHostSleep(t, time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	// An awake host: the watchdog ticks many times before ctx ends, but the
+	// wall-clock deadline is still an hour out.
+	assert.False(t, waitOpenAIRefresh(ctx, time.Hour, openAIWallNow().Add(time.Hour)), "only ctx ends the wait")
+}
+
+func TestWaitOpenAIRefresh_TimerReleasesTheWait(t *testing.T) {
+	simulateOpenAIHostSleep(t, time.Hour)
+	assert.True(t, waitOpenAIRefresh(context.Background(), 10*time.Millisecond, openAIWallNow().Add(10*time.Millisecond)))
+}
+
+func TestWaitOpenAIRefresh_StopsOnCancel(t *testing.T) {
+	simulateOpenAIHostSleep(t, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.False(t, waitOpenAIRefresh(ctx, time.Hour, openAIWallNow().Add(time.Hour)))
+}
+
+func TestRunOpenAIRefresh_RefreshesAfterHostSleep(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	slept := simulateOpenAIHostSleep(t, 5*time.Millisecond)
+	argsLog, _ := fakeOpenshellRecorder(t)
+	var buf syncBuffer
+	// time.Now carries a monotonic reading, as the expiry ensureOpenAIProvider
+	// records does.
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "static", expiresAt: time.Now().Add(time.Hour)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(ctx, h, ui.New(&buf))
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	assert.NotContains(t, buf.String(), "OpenAI credential refreshed", "an awake host waits for the scheduled refresh")
+
+	slept.Store(int64(2 * time.Hour))
+	require.Eventually(t, func() bool {
+		return strings.Contains(buf.String(), "OpenAI credential refreshed for openai-abc")
+	}, 5*time.Second, 10*time.Millisecond, "the first wall-clock check after wake refreshes a credential the host slept past")
+	assert.Contains(t, strings.Join(readArgLines(t, argsLog), "\n"), "--credential-expires-at")
+}
+
 func TestStartOpenAIRefreshers_NoHandles(t *testing.T) {
 	stops := startOpenAIRefreshers(nil, ui.New(io.Discard))
 	assert.Empty(t, stops, "no handles means no stop funcs")
