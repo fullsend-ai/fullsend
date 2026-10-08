@@ -3,12 +3,14 @@ package harness
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 )
 
@@ -298,6 +300,11 @@ func (h *Harness) validatePlugins() error {
 			return fmt.Errorf("%s: %q is already listed as plugins[%d]", field, p, prev)
 		}
 		seenPaths[p] = i
+		// The definition takes this sandbox directory only in a harness
+		// that has one; elsewhere the name is an ordinary plugin name.
+		if name := PluginEntryDirName(e); h.Workflow != nil && strings.EqualFold(name, WorkflowSandboxDir) {
+			return fmt.Errorf("%s: %q loads as plugin %q, a sandbox directory name reserved for the workflow: definition this harness declares (compared without case); rename the plugin directory", field, p, name)
+		}
 		if !IsURL(p) {
 			// URL entries are shape-checked by ValidateResourceTypes, which
 			// reads the basename out of the forge path rather than the URL
@@ -331,6 +338,21 @@ func (h *Harness) validatePlugins() error {
 		}
 	}
 	return nil
+}
+
+// PluginEntryDirName is the sandbox directory name of a plugins: entry:
+// the basename of its local path, or of a URL entry's forge tree path
+// (known before the entry is fetched). It is "" for a URL that names no
+// forge tree path, which has no directory name until it is resolved.
+func PluginEntryDirName(e PluginSpec) string {
+	if IsURL(e.Path) {
+		cleanURL, _, _ := ParseIntegrityHash(e.Path)
+		if info, err := forge.ParseForgeURL(cleanURL); err == nil && info.Path != "" {
+			return path.Base(info.Path)
+		}
+		return ""
+	}
+	return e.Name()
 }
 
 // validatePluginDir is the ValidateFilesExist check for one resolved

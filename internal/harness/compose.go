@@ -513,6 +513,13 @@ func loadBaseChain(
 		}
 		deps = append(deps, pluginDeps...)
 
+		// A relative workflow.source names a path in the base's own
+		// repository (ADR 0130 rule 1): pin it to the base's commit here,
+		// before the child sees it. Resolution fetches it at run time.
+		if err := ResolveBaseWorkflowSource(base.Workflow, baseRef, allowlist); err != nil {
+			return nil, nil, fmt.Errorf("resolving base workflow from %s: %w", cleanURL, err)
+		}
+
 		baseDir = childDir
 	} else {
 		// Local path base
@@ -594,6 +601,10 @@ func loadBaseChain(
 				return nil, nil, fmt.Errorf("base harness %s: %w", resolvedBasePath, err)
 			}
 		}
+		// A relative workflow.source names a path in the checkout that
+		// holds this base file (ADR 0130 rule 1), which may not be the
+		// child's: record where it was declared.
+		markLocalBaseWorkflow(base.Workflow, filepath.Dir(resolvedBasePath))
 
 		baseDir = filepath.Dir(absBasePath)
 	}
@@ -920,6 +931,11 @@ func mergeBaseIntoChild(base, child *Harness) error {
 			return err
 		}
 		child.Skills = skills
+	}
+	// Workflow: child replaces base wholesale (if non-nil).
+	if child.Workflow == nil && base.Workflow != nil {
+		w := *base.Workflow
+		child.Workflow = &w
 	}
 	if base.Plugins != nil {
 		merged := make([]PluginSpec, 0, len(base.Plugins)+len(child.Plugins))
