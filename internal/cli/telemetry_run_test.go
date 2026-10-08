@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -485,6 +486,60 @@ func TestValidationScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
 	assert.Equal(t, "https://collector.example.com", envLast(env, "OTEL_EXPORTER_OTLP_ENDPOINT"))
 	assert.Equal(t, "/repo", envLast(env, "TARGET_REPO_DIR"))
 	assert.Equal(t, "/run", envLast(env, "FULLSEND_RUN_DIR"))
+}
+
+// envCount returns how many entries in env set key.
+func envCount(env []string, key string) int {
+	n := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, key+"=") {
+			n++
+		}
+	}
+	return n
+}
+
+// TestScriptEnvs_ForcePythonDontWriteBytecode verifies that every host-side
+// script env sets PYTHONDONTWRITEBYTECODE=1 exactly once, overriding values
+// from the process environment and runner_env, so CPython never writes
+// bytecode into URL-sourced script directories in the fetch cache (#7137).
+func TestScriptEnvs_ForcePythonDontWriteBytecode(t *testing.T) {
+	t.Setenv("PYTHONDONTWRITEBYTECODE", "")
+	runnerEnv := map[string]string{"PYTHONDONTWRITEBYTECODE": "", "FOO": "bar"}
+
+	for name, env := range map[string][]string{
+		"childScriptEnv":      childScriptEnv(runnerEnv, ""),
+		"postScriptEnv":       postScriptEnv(&harness.Harness{RunnerEnv: runnerEnv}, ""),
+		"validationScriptEnv": validationScriptEnv(&harness.Harness{RunnerEnv: runnerEnv}, "/repo", "/run"),
+	} {
+		assert.Equal(t, 1, envCount(env, "PYTHONDONTWRITEBYTECODE"), "%s: exactly one PYTHONDONTWRITEBYTECODE entry", name)
+		assert.Equal(t, "1", envLast(env, "PYTHONDONTWRITEBYTECODE"), "%s: PYTHONDONTWRITEBYTECODE must be forced on", name)
+		assert.Equal(t, "bar", envLast(env, "FOO"), "%s: other runner_env entries preserved", name)
+	}
+}
+
+// TestChildScriptEnv_PythonWritesNoBytecode runs a Python script that imports
+// a sibling module (the #7137 reproduction) with the child script env and
+// checks that no __pycache__ directory is created next to it.
+func TestChildScriptEnv_PythonWritesNoBytecode(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	t.Setenv("PYTHONDONTWRITEBYTECODE", "")
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "helper.py"), []byte("VALUE = 1\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.py"), []byte("import helper\nprint(helper.VALUE)\n"), 0o644))
+
+	cmd := exec.Command(python, filepath.Join(dir, "main.py"))
+	cmd.Dir = dir
+	cmd.Env = childScriptEnv(map[string]string{}, "")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	_, statErr := os.Stat(filepath.Join(dir, "__pycache__"))
+	assert.True(t, os.IsNotExist(statErr), "python must not write __pycache__ into the script directory")
 }
 
 func TestIsInheritedScriptDenyKey(t *testing.T) {

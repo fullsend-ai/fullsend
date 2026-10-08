@@ -4724,6 +4724,10 @@ func stripControlChars(s string) string {
 // without this a harness runner_env/env.runner entry could silently swap
 // the GitLab identity or credential a pre/post script observes after
 // dispatch already selected one. See #7499, review on PR #7510.
+//
+// PYTHONDONTWRITEBYTECODE=1 is always set (withPythonNoBytecode) so Python
+// scripts fetched into the hashed cache tree do not write bytecode into it
+// (#7137).
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	merged := inheritedScriptEnv()
 	for _, e := range envToList(runnerEnv) {
@@ -4746,7 +4750,29 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	if traceparent != "" {
 		env = append(env, "TRACEPARENT="+traceparent)
 	}
-	return env
+	return withPythonNoBytecode(env)
+}
+
+// pythonNoBytecodeEnv stops CPython from writing __pycache__/*.pyc files.
+// Scripts resolved from a URL base run in place inside the content-addressed
+// fetch cache, and CacheGetDir recomputes the tree hash on every load, so
+// any bytecode CPython writes next to an imported module breaks the next
+// run's integrity check (#7137).
+const pythonNoBytecodeEnv = "PYTHONDONTWRITEBYTECODE=1"
+
+// withPythonNoBytecode returns env with any existing PYTHONDONTWRITEBYTECODE
+// entry removed and pythonNoBytecodeEnv appended. The value is forced, not
+// defaulted: an empty runner_env value would turn bytecode writes back on
+// and corrupt the cache for the following run.
+func withPythonNoBytecode(env []string) []string {
+	result := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if strings.HasPrefix(e, "PYTHONDONTWRITEBYTECODE=") {
+			continue
+		}
+		result = append(result, e)
+	}
+	return append(result, pythonNoBytecodeEnv)
 }
 
 // gitlabRoleRoutingKeyPrefix is the env var prefix used by the GitLab
@@ -4800,9 +4826,10 @@ func agentTimedOut(elapsed, timeout time.Duration) bool {
 // the inherited process environment minus named workflow secrets (#8154),
 // then validationEnv layered on top, with OIDC credential vars and
 // provider-only keys stripped from the composed result so keys injected via
-// h.RunnerEnv are removed too (#5832, #6649).
+// h.RunnerEnv are removed too (#5832, #6649). PYTHONDONTWRITEBYTECODE is
+// forced on, as for childScriptEnv (#7137).
 func validationScriptEnv(h *harness.Harness, hostRepoDir, runDir string) []string {
-	return stripOIDCEnv(append(inheritedScriptEnv(), validationEnv(h, hostRepoDir, runDir)...))
+	return withPythonNoBytecode(stripOIDCEnv(append(inheritedScriptEnv(), validationEnv(h, hostRepoDir, runDir)...)))
 }
 
 // validationEnv builds the extra environment entries for the validation
