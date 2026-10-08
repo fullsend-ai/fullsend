@@ -63,9 +63,12 @@ type jiraClient interface {
 	SetCommentProperty(ctx context.Context, issueIDOrKey, commentID, propertyKey string, value any) error
 	DeleteComment(ctx context.Context, issueIDOrKey, commentID string) error
 	GetMyself(ctx context.Context) (*jira.User, error)
+	LinkIssues(ctx context.Context, linkTypeName, inwardIssueKey, outwardIssueKey string) error
 }
 
 var _ jiraClient = (*jira.LiveClient)(nil)
+
+var _ Linker = (*JiraClient)(nil)
 
 // JiraClient adapts a Jira client to tracker.Client. project is a Jira
 // project key (e.g. "PROJ"); (project, number) maps to the issue key
@@ -342,6 +345,14 @@ func (c *JiraClient) UpdateComment(ctx context.Context, project string, number i
 func (c *JiraClient) DeleteComment(ctx context.Context, project string, number int, commentID string) error {
 	key := issueKey(project, number)
 	return wrapNotFound(c.jira.DeleteComment(ctx, key, commentID))
+}
+
+// LinkIssues implements Linker. The from issue is sent as Jira's
+// inwardIssue and the to issue as its outwardIssue, so Jira records the
+// link in the link type's outward direction: for "Blocks", the from issue
+// blocks the to issue.
+func (c *JiraClient) LinkIssues(ctx context.Context, fromProject string, fromNumber int, toProject string, toNumber int, linkType string) error {
+	return wrapNotFound(c.jira.LinkIssues(ctx, linkType, issueKey(fromProject, fromNumber), issueKey(toProject, toNumber)))
 }
 
 // fromJiraComment converts a jira.Comment to a tracker.Comment. HTMLURL is

@@ -517,6 +517,55 @@ func TestCreateCommentWithProperties(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// LinkIssues
+// ---------------------------------------------------------------------------
+
+func TestLinkIssues(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalled := false
+	mux.HandleFunc("/rest/api/3/issueLink", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+
+		var req map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		assert.Equal(t, map[string]any{
+			"type":         map[string]any{"name": "Blocks"},
+			"inwardIssue":  map[string]any{"key": "PROJ-123"},
+			"outwardIssue": map[string]any{"key": "OTHER-456"},
+		}, req)
+
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	err := client.LinkIssues(ctx, "Blocks", "PROJ-123", "OTHER-456")
+	require.NoError(t, err)
+	assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
+}
+
+func TestLinkIssues_Error(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issueLink", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]any{
+			"errorMessages": []string{"No issue link type with name 'Nope' found."},
+		})
+	})
+
+	err := client.LinkIssues(ctx, "Nope", "PROJ-123", "PROJ-456")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "link PROJ-123 to PROJ-456 (Nope)")
+	assert.Contains(t, err.Error(), "No issue link type")
+	assert.True(t, errors.Is(err, forge.ErrNotFound), "expected forge.ErrNotFound, got: %v", err)
+}
+
+// ---------------------------------------------------------------------------
 // DeleteComment
 // ---------------------------------------------------------------------------
 

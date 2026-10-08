@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -33,6 +34,201 @@ func TestNewIssuesCmd_SubcommandRegistration(t *testing.T) {
 	}
 	assert.Contains(t, names, "get")
 	assert.Contains(t, names, "post-comment")
+	assert.Contains(t, names, "link")
+}
+
+func TestNewIssuesLinkCmd_Flags(t *testing.T) {
+	cmd := newIssuesLinkCmd()
+
+	for _, name := range []string{"tracker", "from", "to", "type", "token", "jira-url", "jira-email", "fullsend-dir"} {
+		require.NotNil(t, cmd.Flags().Lookup(name), "flag %q should exist", name)
+	}
+	for _, name := range []string{"from", "to", "type"} {
+		f := cmd.Flags().Lookup(name)
+		assert.Equal(t, []string{"true"}, f.Annotations[cobra.BashCompOneRequiredFlag], "flag %q should be required", name)
+	}
+}
+
+func TestRunIssuesLink_Jira(t *testing.T) {
+	jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	var out bytes.Buffer
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "PROJ-123",
+		to:          "OTHER-456",
+		linkType:    "Blocks",
+		testClient:  jc,
+		testPrinter: ui.New(&out),
+	}
+
+	require.NoError(t, runIssuesLink(context.Background(), cfg))
+	require.Equal(t, []tracker.FakeJiraLink{{Type: "Blocks", InwardIssue: "PROJ-123", OutwardIssue: "OTHER-456"}}, fj.Links)
+	assert.Contains(t, out.String(), "Linked PROJ-123 to OTHER-456 (Blocks)")
+}
+
+func TestRunIssuesLink_TypePassedThroughVerbatim(t *testing.T) {
+	jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "PROJ-1",
+		to:          "PROJ-2",
+		linkType:    "Problem/Incident",
+		testClient:  jc,
+		testPrinter: ui.New(io.Discard),
+	}
+
+	require.NoError(t, runIssuesLink(context.Background(), cfg))
+	require.Len(t, fj.Links, 1)
+	assert.Equal(t, "Problem/Incident", fj.Links[0].Type)
+}
+
+func TestRunIssuesLink_EmptyFlags(t *testing.T) {
+	tests := []struct {
+		name     string
+		from     string
+		to       string
+		linkType string
+		wantErr  string
+	}{
+		{name: "empty from", from: " ", to: "PROJ-2", linkType: "Blocks", wantErr: "--from must not be empty"},
+		{name: "empty to", from: "PROJ-1", to: "", linkType: "Blocks", wantErr: "--to must not be empty"},
+		{name: "empty type", from: "PROJ-1", to: "PROJ-2", linkType: "  ", wantErr: "--type must not be empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+			require.NoError(t, err)
+			cfg := &issuesLinkConfig{
+				trackerName: trackerJira,
+				from:        tt.from,
+				to:          tt.to,
+				linkType:    tt.linkType,
+				testClient:  jc,
+				testPrinter: ui.New(io.Discard),
+			}
+			err = runIssuesLink(context.Background(), cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Empty(t, fj.Links)
+		})
+	}
+}
+
+func TestRunIssuesLink_MalformedKeys(t *testing.T) {
+	tests := []struct {
+		name    string
+		from    string
+		to      string
+		wantErr string
+	}{
+		{name: "from without number", from: "PROJ", to: "PROJ-2", wantErr: "invalid --from"},
+		{name: "from bare number", from: "123", to: "PROJ-2", wantErr: "invalid --from"},
+		{name: "to non-numeric", from: "PROJ-1", to: "PROJ-abc", wantErr: "invalid --to"},
+		{name: "to zero", from: "PROJ-1", to: "PROJ-0", wantErr: "invalid --to"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+			require.NoError(t, err)
+			cfg := &issuesLinkConfig{
+				trackerName: trackerJira,
+				from:        tt.from,
+				to:          tt.to,
+				linkType:    "Blocks",
+				testClient:  jc,
+				testPrinter: ui.New(io.Discard),
+			}
+			err = runIssuesLink(context.Background(), cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Empty(t, fj.Links)
+		})
+	}
+}
+
+func TestRunIssuesLink_UnsupportedTracker(t *testing.T) {
+	for _, name := range []string{trackerGitHub, trackerGitLab} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &issuesLinkConfig{
+				trackerName: name,
+				from:        "acme/widgets#1",
+				to:          "acme/widgets#2",
+				linkType:    "Blocks",
+				testClient:  tracker.NewForgeClient(forge.NewFakeClient()),
+				testPrinter: ui.New(io.Discard),
+			}
+			err := runIssuesLink(context.Background(), cfg)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tracker.ErrNotSupported)
+			assert.Contains(t, err.Error(), "--tracker "+name)
+		})
+	}
+}
+
+func TestRunIssuesLink_TrackerRequired(t *testing.T) {
+	cfg := &issuesLinkConfig{
+		from:        "PROJ-1",
+		to:          "PROJ-2",
+		linkType:    "Blocks",
+		testPrinter: ui.New(io.Discard),
+	}
+	err := runIssuesLink(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--tracker is required")
+}
+
+func TestRunIssuesLink_LinkError(t *testing.T) {
+	jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	fj.LinkError = errors.New("jira api: 400 No issue link type with name 'Nope' found.")
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "PROJ-1",
+		to:          "PROJ-2",
+		linkType:    "Nope",
+		testClient:  jc,
+		testPrinter: ui.New(io.Discard),
+	}
+
+	err = runIssuesLink(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "linking issues")
+	assert.Contains(t, err.Error(), "No issue link type")
+}
+
+func TestParseIssueKey(t *testing.T) {
+	tests := []struct {
+		key         string
+		wantProject string
+		wantNumber  int
+		wantErr     bool
+	}{
+		{key: "PROJ-123", wantProject: "PROJ", wantNumber: 123},
+		{key: "AB2-7", wantProject: "AB2", wantNumber: 7},
+		{key: "PROJ", wantErr: true},
+		{key: "-123", wantErr: true},
+		{key: "PROJ-", wantErr: true},
+		{key: "PROJ-x1", wantErr: true},
+		{key: "PROJ--1", wantErr: true},
+		{key: "PROJ-+1", wantErr: true},
+		{key: "PROJ-1-2", wantErr: true},
+		{key: "PROJ-0", wantErr: true},
+		{key: "PROJ-99999999999999999999", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			project, number, err := parseIssueKey(tt.key)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantProject, project)
+			assert.Equal(t, tt.wantNumber, number)
+		})
+	}
 }
 
 func TestNewIssuesGetCmd_RequiredFlags(t *testing.T) {
