@@ -644,6 +644,7 @@ func TestNewFakeJiraClient(t *testing.T) {
 
 var _ Client = (*JiraClient)(nil)
 var _ StatusCommentClient = (*JiraClient)(nil)
+var _ Linker = (*JiraClient)(nil)
 
 func TestJiraClient_AuthenticatedUser(t *testing.T) {
 	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")

@@ -627,6 +627,14 @@ func runIssuesLink(ctx context.Context, cfg *issuesLinkConfig) error {
 		return err
 	}
 
+	errNoLinks := fmt.Errorf("--tracker %s cannot create typed issue links (only jira can): %w", trackerName, tracker.ErrNotSupported)
+
+	// Reject trackers without link support before building a client, so
+	// the error does not depend on credentials being configured.
+	if trackerName != trackerJira {
+		return errNoLinks
+	}
+
 	tc := cfg.testClient
 	if tc == nil {
 		tc, err = newTrackerClient(trackerName, cfg.token, cfg.jiraURL, cfg.jiraEmail)
@@ -637,7 +645,7 @@ func runIssuesLink(ctx context.Context, cfg *issuesLinkConfig) error {
 
 	linker, ok := tc.(tracker.Linker)
 	if !ok {
-		return fmt.Errorf("--tracker %s cannot create typed issue links (only jira can): %w", trackerName, tracker.ErrNotSupported)
+		return errNoLinks
 	}
 
 	fromProject, fromNumber, err := parseIssueKey(from)

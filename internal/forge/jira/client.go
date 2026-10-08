@@ -584,7 +584,7 @@ type issueRef struct {
 // verbatim. Jira records the link in the link type's outward direction
 // from inwardIssueKey to outwardIssueKey: for "Blocks", inwardIssueKey
 // blocks outwardIssueKey.
-func (c *LiveClient) LinkIssues(ctx context.Context, linkTypeName, inwardIssueKey, outwardIssueKey string) error {
+func (c *LiveClient) LinkIssues(ctx context.Context, inwardIssueKey, outwardIssueKey, linkTypeName string) error {
 	reqBody, err := json.Marshal(issueLinkRequest{
 		Type:         issueLinkTypeRef{Name: linkTypeName},
 		InwardIssue:  issueRef{Key: inwardIssueKey},

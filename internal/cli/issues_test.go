@@ -167,6 +167,27 @@ func TestRunIssuesLink_UnsupportedTracker(t *testing.T) {
 	}
 }
 
+func TestRunIssuesLink_UnsupportedTrackerWithoutCredentials(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	for _, name := range []string{trackerGitHub, trackerGitLab} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &issuesLinkConfig{
+				trackerName: name,
+				from:        "PROJ-1",
+				to:          "PROJ-2",
+				linkType:    "Blocks",
+				testPrinter: ui.New(io.Discard),
+			}
+			err := runIssuesLink(context.Background(), cfg)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tracker.ErrNotSupported)
+			assert.Contains(t, err.Error(), "--tracker "+name)
+		})
+	}
+}
+
 func TestRunIssuesLink_TrackerRequired(t *testing.T) {
 	cfg := &issuesLinkConfig{
 		from:        "PROJ-1",

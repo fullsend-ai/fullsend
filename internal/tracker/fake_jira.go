@@ -193,7 +193,7 @@ func (f *FakeJiraClient) DeleteComment(_ context.Context, issueIDOrKey, commentI
 	return fmt.Errorf("delete comment %s on %s: %w", commentID, issueIDOrKey, forge.ErrNotFound)
 }
 
-func (f *FakeJiraClient) LinkIssues(_ context.Context, linkTypeName, inwardIssueKey, outwardIssueKey string) error {
+func (f *FakeJiraClient) LinkIssues(_ context.Context, inwardIssueKey, outwardIssueKey, linkTypeName string) error {
 	if f.LinkError != nil {
 		return f.LinkError
 	}

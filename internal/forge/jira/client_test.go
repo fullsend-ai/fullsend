@@ -542,7 +542,7 @@ func TestLinkIssues(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	})
 
-	err := client.LinkIssues(ctx, "Blocks", "PROJ-123", "OTHER-456")
+	err := client.LinkIssues(ctx, "PROJ-123", "OTHER-456", "Blocks")
 	require.NoError(t, err)
 	assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
 }
@@ -558,7 +558,7 @@ func TestLinkIssues_Error(t *testing.T) {
 		})
 	})
 
-	err := client.LinkIssues(ctx, "Nope", "PROJ-123", "PROJ-456")
+	err := client.LinkIssues(ctx, "PROJ-123", "PROJ-456", "Nope")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "link PROJ-123 to PROJ-456 (Nope)")
 	assert.Contains(t, err.Error(), "No issue link type")
