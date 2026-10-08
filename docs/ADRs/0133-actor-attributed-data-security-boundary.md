@@ -88,8 +88,15 @@ implementation mutates or reuses the same in-memory structure. Within one
 such lifetime, this ADR does not require a separate wall-clock expiry or
 revalidation.
 The actor MUST meet the applicable observation or mutation threshold for the
-selected harness. A label grant authorizes only its verified label transition;
-it does not authorize unrelated content from that actor or other actors.
+selected harness. For a human actor, this means the applicable current forge
+permission threshold. For a bot actor, whose `actor.role` remains `none`, a
+fresh provider-backed exact `actor.bot_role` recognition under ADR 0107
+satisfies this gate only when the selected harness policy admits that bot role
+for the record's operation; the ordinary `actor.role` threshold does not apply.
+An unrecognized, unresolved, or disallowed bot role fails closed and the
+record is redacted. A label grant authorizes only its verified label
+transition; it does not authorize unrelated content from that actor or other
+actors.
 
 Event-carried permission or role evidence may support initial event admission
 and routing, but it MUST NOT satisfy later model-bound authorization checks.
