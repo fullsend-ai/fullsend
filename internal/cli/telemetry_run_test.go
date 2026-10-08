@@ -499,10 +499,8 @@ func envCount(env []string, key string) int {
 	return n
 }
 
-// TestScriptEnvs_ForcePythonDontWriteBytecode verifies that every host-side
-// script env sets PYTHONDONTWRITEBYTECODE=1 exactly once, overriding values
-// from the process environment and runner_env, so CPython never writes
-// bytecode into URL-sourced script directories in the fetch cache (#7137).
+// TestScriptEnvs_ForcePythonDontWriteBytecode verifies every host-side script
+// env sets PYTHONDONTWRITEBYTECODE=1 exactly once, overriding other sources (#7137).
 func TestScriptEnvs_ForcePythonDontWriteBytecode(t *testing.T) {
 	t.Setenv("PYTHONDONTWRITEBYTECODE", "")
 	runnerEnv := map[string]string{"PYTHONDONTWRITEBYTECODE": "", "FOO": "bar"}
@@ -518,9 +516,8 @@ func TestScriptEnvs_ForcePythonDontWriteBytecode(t *testing.T) {
 	}
 }
 
-// TestChildScriptEnv_PythonWritesNoBytecode runs a Python script that imports
-// a sibling module (the #7137 reproduction) with the child script env and
-// checks that no __pycache__ directory is created next to it.
+// TestChildScriptEnv_PythonWritesNoBytecode checks that a Python script importing
+// a sibling module leaves no __pycache__ behind under the child script env (#7137).
 func TestChildScriptEnv_PythonWritesNoBytecode(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
