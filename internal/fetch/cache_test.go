@@ -360,15 +360,13 @@ func TestCacheGetDir_IgnoresPythonBytecode(t *testing.T) {
 	treeHash, err := CachePutDir(root, "https://example.com/scripts", files)
 	require.NoError(t, err)
 
-	// Plant bytecode as CPython would when running the scripts in place,
-	// plus a stray top-level .pyc outside any __pycache__ directory.
+	// Plant bytecode as CPython would when running the scripts in place.
 	dir, err := CachePath(root, treeHash)
 	require.NoError(t, err)
 	tree := filepath.Join(dir, "tree")
 	for _, pyc := range []string{
 		filepath.Join(tree, "__pycache__", "helper.cpython-312.pyc"),
 		filepath.Join(tree, "lib", "__pycache__", "helper.cpython-312.opt-1.pyc"),
-		filepath.Join(tree, "stray.pyc"),
 	} {
 		require.NoError(t, os.MkdirAll(filepath.Dir(pyc), 0o700))
 		require.NoError(t, os.WriteFile(pyc, []byte("bytecode"), 0o600))
@@ -385,6 +383,36 @@ func TestCacheGetDir_IgnoresPythonBytecode(t *testing.T) {
 	_, _, err = CacheGetDir(root, treeHash)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cache integrity check failed")
+}
+
+func TestCacheGetDir_RejectsUnrecordedNonCPythonBytecode(t *testing.T) {
+	// Files that are not CPython-named bytecode stay verified even when they
+	// are *.pyc files or live inside a __pycache__ directory.
+	for _, rel := range []string{
+		"stray.pyc",
+		"lib/stray.pyc",
+		"__pycache__/evil.sh",
+		"__pycache__/helper.pyc",
+		"__pycache__/sub/helper.cpython-312.pyc",
+	} {
+		t.Run(rel, func(t *testing.T) {
+			root := t.TempDir()
+			treeHash, err := CachePutDir(root, "https://example.com/scripts", map[string][]byte{
+				"main.py": []byte("import helper\n"),
+			})
+			require.NoError(t, err)
+
+			dir, err := CachePath(root, treeHash)
+			require.NoError(t, err)
+			p := filepath.Join(dir, "tree", filepath.FromSlash(rel))
+			require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o700))
+			require.NoError(t, os.WriteFile(p, []byte("planted"), 0o600))
+
+			_, _, err = CacheGetDir(root, treeHash)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "cache integrity check failed")
+		})
+	}
 }
 
 func TestCacheGetDir_VerifiesRecordedPythonBytecode(t *testing.T) {
@@ -423,15 +451,22 @@ func TestCacheGetDir_VerifiesRecordedPythonBytecode(t *testing.T) {
 
 func TestIsPythonBytecode(t *testing.T) {
 	for path, want := range map[string]bool{
-		"foo.pyc":                         true,
-		filepath.Join("a", "b.pyc"):       true,
-		filepath.Join("__pycache__", "x"): true,
-		filepath.Join("a", "__pycache__", "x.cpython-312.pyc"): true,
-		"foo.py":                             false,
-		"__pycache__.txt":                    false,
-		filepath.Join("my__pycache__", "x"):  false,
-		filepath.Join("scripts", "pyc.md"):   false,
-		filepath.Join("scripts", "foo.pycx"): false,
+		filepath.Join("__pycache__", "x.cpython-312.pyc"):       true,
+		filepath.Join("__pycache__", "x.cpython-312.opt-1.pyc"): true,
+		filepath.Join("__pycache__", "x.pypy39.opt-2.pyc"):      true,
+		filepath.Join("a", "__pycache__", "x.cpython-312.pyc"):  true,
+		"foo.pyc":                                                false,
+		filepath.Join("a", "b.pyc"):                              false,
+		filepath.Join("__pycache__", "x"):                        false,
+		filepath.Join("__pycache__", "evil.sh"):                  false,
+		filepath.Join("__pycache__", "x.pyc"):                    false,
+		filepath.Join("__pycache__", "x.cpython-312.opt-9.pyc"):  false,
+		filepath.Join("__pycache__", "sub", "x.cpython-312.pyc"): false,
+		"foo.py":          false,
+		"__pycache__.txt": false,
+		filepath.Join("my__pycache__", "x.cpython-312.pyc"): false,
+		filepath.Join("scripts", "pyc.md"):                  false,
+		filepath.Join("scripts", "foo.pycx"):                false,
 	} {
 		assert.Equal(t, want, isPythonBytecode(path), path)
 	}

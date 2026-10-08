@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +18,12 @@ var errInvalidHash = errors.New("cache: hash must be exactly 64 lowercase hex ch
 // atomicWriteTmpRe matches the temporary files os.CreateTemp produces for
 // atomicWrite's "<name>.tmp.*" pattern before they are renamed into place.
 var atomicWriteTmpRe = regexp.MustCompile(`\.tmp\.\d+$`)
+
+// pythonBytecodeRe matches the files CPython writes for imported modules:
+// __pycache__/<module>.<tag>[.opt-N].pyc, e.g. helper.cpython-312.pyc or
+// helper.cpython-312.opt-1.pyc. The file must sit directly in a __pycache__
+// directory.
+var pythonBytecodeRe = regexp.MustCompile(`^(?:.*/)?__pycache__/[^/.]+\.[A-Za-z0-9_-]+(?:\.opt-[12])?\.pyc$`)
 
 // skipVanished maps fs.ErrNotExist to nil so a cache-tree walk tolerates
 // entries that a concurrent writer renamed away between the directory read
@@ -335,8 +340,8 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 	// legitimate file still fails the integrity check.
 	//
 	// Scripts resolved from the cache run in place inside the tree, so
-	// CPython may write __pycache__/*.pyc bytecode next to them. Skip such
-	// bytecode unless the cached manifest records it — bytecode committed to
+	// CPython may write __pycache__/<module>.<tag>.pyc bytecode next to them.
+	// Skip such bytecode unless the cached manifest records it — bytecode committed to
 	// the fetched source is part of the pinned tree hash and stays verified.
 	recorded := make(map[string]bool, len(entry.Files))
 	for _, f := range entry.Files {
@@ -379,11 +384,12 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 	return treeDir, &entry, nil
 }
 
-// isPythonBytecode reports whether relPath is a CPython bytecode artifact:
-// a *.pyc file or any file inside a __pycache__ directory.
+// isPythonBytecode reports whether relPath matches the file name pattern
+// CPython uses for bytecode caches (__pycache__/<module>.<tag>[.opt-N].pyc).
+// Other files, including stray *.pyc files outside __pycache__ and
+// non-bytecode files inside __pycache__, are not matched and stay verified.
 func isPythonBytecode(relPath string) bool {
-	return strings.HasSuffix(relPath, ".pyc") ||
-		slices.Contains(strings.Split(filepath.ToSlash(relPath), "/"), "__pycache__")
+	return pythonBytecodeRe.MatchString(filepath.ToSlash(relPath))
 }
 
 // CacheNamedSymlink creates a symlink in a cache directory so that a
