@@ -21,9 +21,11 @@ var atomicWriteTmpRe = regexp.MustCompile(`\.tmp\.\d+$`)
 
 // pythonBytecodeRe matches the files CPython writes for imported modules:
 // __pycache__/<module>.<tag>[.opt-N].pyc, e.g. helper.cpython-312.pyc or
-// helper.cpython-312.opt-1.pyc. The file must sit directly in a __pycache__
+// helper.cpython-312.opt-1.pyc. The module name may itself contain dots
+// (helper.extra.cpython-314.pyc) and the optimization level may exceed two
+// (-OOO produces .opt-3). The file must sit directly in a __pycache__
 // directory.
-var pythonBytecodeRe = regexp.MustCompile(`^(?:.*/)?__pycache__/[^/.]+\.[A-Za-z0-9_-]+(?:\.opt-[12])?\.pyc$`)
+var pythonBytecodeRe = regexp.MustCompile(`^(?:.*/)?__pycache__/[^/]+\.[A-Za-z0-9_-]+(?:\.opt-\d+)?\.pyc$`)
 
 // skipVanished maps fs.ErrNotExist to nil so a cache-tree walk tolerates
 // entries that a concurrent writer renamed away between the directory read

@@ -367,6 +367,10 @@ func TestCacheGetDir_IgnoresPythonBytecode(t *testing.T) {
 	for _, pyc := range []string{
 		filepath.Join(tree, "__pycache__", "helper.cpython-312.pyc"),
 		filepath.Join(tree, "lib", "__pycache__", "helper.cpython-312.opt-1.pyc"),
+		// -OOO produces an optimization level above two.
+		filepath.Join(tree, "lib", "__pycache__", "helper.cpython-314.opt-3.pyc"),
+		// Modules loaded via importlib may have dots in the source basename.
+		filepath.Join(tree, "lib", "__pycache__", "helper.extra.cpython-314.pyc"),
 	} {
 		require.NoError(t, os.MkdirAll(filepath.Dir(pyc), 0o700))
 		require.NoError(t, os.WriteFile(pyc, []byte("bytecode"), 0o600))
@@ -455,13 +459,16 @@ func TestIsPythonBytecode(t *testing.T) {
 		filepath.Join("__pycache__", "x.cpython-312.opt-1.pyc"): true,
 		filepath.Join("__pycache__", "x.pypy39.opt-2.pyc"):      true,
 		filepath.Join("a", "__pycache__", "x.cpython-312.pyc"):  true,
-		"foo.pyc":                                                false,
-		filepath.Join("a", "b.pyc"):                              false,
-		filepath.Join("__pycache__", "x"):                        false,
-		filepath.Join("__pycache__", "evil.sh"):                  false,
-		filepath.Join("__pycache__", "x.pyc"):                    false,
-		filepath.Join("__pycache__", "x.cpython-312.opt-9.pyc"):  false,
-		filepath.Join("__pycache__", "sub", "x.cpython-312.pyc"): false,
+		"foo.pyc":                                                     false,
+		filepath.Join("a", "b.pyc"):                                   false,
+		filepath.Join("__pycache__", "x"):                             false,
+		filepath.Join("__pycache__", "evil.sh"):                       false,
+		filepath.Join("__pycache__", "x.pyc"):                         false,
+		filepath.Join("__pycache__", "x.cpython-312.opt-9.pyc"):       true,
+		filepath.Join("__pycache__", "x.cpython-314.opt-3.pyc"):       true,
+		filepath.Join("__pycache__", "x.extra.cpython-314.pyc"):       true,
+		filepath.Join("__pycache__", "x.extra.cpython-314.opt-1.pyc"): true,
+		filepath.Join("__pycache__", "sub", "x.cpython-312.pyc"):      false,
 		"foo.py":          false,
 		"__pycache__.txt": false,
 		filepath.Join("my__pycache__", "x.cpython-312.pyc"): false,
