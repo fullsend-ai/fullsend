@@ -31,6 +31,27 @@ func TestFakeClient_ListPullRequestCommits(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestFakeClient_ListPullRequestReviewThreads(t *testing.T) {
+	page := ReviewThreadPage{
+		Threads:   []ReviewThread{{ID: "thread-1", IsResolved: true, Path: "main.go"}},
+		Truncated: true,
+	}
+	f := NewFakeClient()
+	f.PRReviewThreads = map[string]ReviewThreadPage{"o/r/7": page}
+
+	got, err := f.ListPullRequestReviewThreads(context.Background(), "o", "r", 7)
+	require.NoError(t, err)
+	assert.Equal(t, page, got)
+
+	got, err = f.ListPullRequestReviewThreads(context.Background(), "o", "r", 8)
+	require.NoError(t, err)
+	assert.Empty(t, got.Threads)
+
+	f.Errors["ListPullRequestReviewThreads"] = errors.New("boom")
+	_, err = f.ListPullRequestReviewThreads(context.Background(), "o", "r", 7)
+	require.Error(t, err)
+}
+
 func TestFakeClient_ListOrgRepos(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{

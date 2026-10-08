@@ -628,7 +628,7 @@ in `internal/cli/gitlab_role.go`.
 After selecting a credential, blank every other registered role secret
 (and the shared `FULLSEND_FORGE_TOKEN`) from the process environment
 **before** invoking a pre/post-script. Host-side scripts inherit the
-whole process environment via `childScriptEnv`. A leftover
+process environment (minus OIDC and named workflow secrets) via `childScriptEnv`. A leftover
 `FULLSEND_GITLAB_ANALYST_TOKEN` in a Coder job lets a script
 authenticate as Analyst and bypass in-process checks such as
 `checkGitLabApprovalCapability`. See `clearSiblingGitLabRoleSecrets` /

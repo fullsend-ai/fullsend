@@ -3489,9 +3489,13 @@ func TestRolesFromAppIDs_RoleOnly(t *testing.T) {
 	assert.Equal(t, []string{"coder", "triage"}, roles)
 }
 
-func TestParseAllowedOrgs_SkipsPlaceholder(t *testing.T) {
-	orgs := parseAllowedOrgs("widget, " + gcf.PlaceholderOrg + ", acme")
-	assert.Equal(t, []string{"acme", "widget"}, orgs)
+func TestHasEnrolledRepoInOrg(t *testing.T) {
+	repos := []string{"Acme/widget", "bigcorp/gadget"}
+	assert.True(t, hasEnrolledRepoInOrg(repos, "acme"))
+	assert.True(t, hasEnrolledRepoInOrg(repos, "BigCorp"))
+	assert.False(t, hasEnrolledRepoInOrg(repos, "acm"))
+	assert.False(t, hasEnrolledRepoInOrg(repos, "other"))
+	assert.False(t, hasEnrolledRepoInOrg(nil, "acme"))
 }
 
 func TestIsPublicMintRepos(t *testing.T) {
@@ -3661,7 +3665,9 @@ func TestRunMintStatus_Healthy(t *testing.T) {
 	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "acme")
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "coder = 100")
-	assert.Contains(t, out.String(), "existing-org")
+	// ALLOWED_ORGS no longer authorizes callers, so status does not list it.
+	assert.NotContains(t, out.String(), "Enrolled Organizations")
+	assert.NotContains(t, out.String(), "existing-org")
 }
 
 func TestRunMintStatus_WithHealthVersion(t *testing.T) {
@@ -3805,7 +3811,16 @@ func TestRunMintStatus_OrgNotEnrolled(t *testing.T) {
 	printer := ui.New(out)
 	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "missing-org")
 	require.NoError(t, err)
-	assert.Contains(t, out.String(), "not in ALLOWED_ORGS")
+	assert.Contains(t, out.String(), "No missing-org/* repository is in PER_REPO_WIF_REPOS")
+	assert.NotContains(t, out.String(), "ALLOWED_ORGS")
+}
+
+func TestRunMintStatus_OrgWithEnrolledRepo(t *testing.T) {
+	withMintGCFClient(t, perRepoStatusClient("acme/widget", "acme/widget"))
+	out := &strings.Builder{}
+	err := runMintStatus(context.Background(), ui.New(out), "my-project", "us-central1", "acme")
+	require.NoError(t, err)
+	assert.NotContains(t, out.String(), "repository is in PER_REPO_WIF_REPOS")
 }
 
 func TestRunMintStatus_PublicMode(t *testing.T) {
@@ -3815,8 +3830,7 @@ func TestRunMintStatus_PublicMode(t *testing.T) {
 	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "any-org")
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "Public (PER_REPO_WIF_REPOS=*)")
-	assert.Contains(t, out.String(), "public mode — all orgs")
-	assert.NotContains(t, out.String(), "not in ALLOWED_ORGS")
+	assert.NotContains(t, out.String(), "repository is in PER_REPO_WIF_REPOS")
 	assert.Contains(t, out.String(), "Enrolled repos: unrestricted (public mode)")
 	assert.NotContains(t, out.String(), "Enrolled repos: 1")
 }

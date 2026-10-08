@@ -333,6 +333,11 @@ func (d *Driver) GetRunLogs(ctx context.Context, owner, repo string, runID int) 
 	return d.Client.GetWorkflowRunLogs(ctx, owner, repo, runID)
 }
 
+// ListRecentRuns implements ci.RunLister.
+func (d *Driver) ListRecentRuns(ctx context.Context, owner, repo string, limit int) ([]forge.WorkflowRun, error) {
+	return d.Client.ListRecentWorkflowRuns(ctx, owner, repo, limit)
+}
+
 func (d *Driver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error {
 	artifacts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, runID)
 	if err != nil {

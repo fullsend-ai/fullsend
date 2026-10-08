@@ -4152,6 +4152,64 @@ func TestListWorkflowRunJobs(t *testing.T) {
 	assert.Equal(t, "dispatch / Harness run (triage)", jobs[1].Name)
 }
 
+// TestGetWorkflowRunLogs_TruncationIsMarked verifies that an oversized job
+// log and a jobs listing that omits jobs are each reported in the returned
+// text, so callers can tell the snapshot is incomplete.
+func TestGetWorkflowRunLogs_TruncationIsMarked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 3,
+				"jobs": []map[string]any{
+					{"id": 1, "name": "big", "status": "completed", "conclusion": "success"},
+					{"id": 2, "name": "small", "status": "completed", "conclusion": "success"},
+				},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			_, _ = w.Write([]byte(strings.Repeat("x", maxJobLogBytes+5)))
+		case "/repos/org/repo/actions/jobs/2/logs":
+			_, _ = w.Write([]byte("small log"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(logs, "[log truncated:"), "only the oversized log is marked")
+	assert.Contains(t, logs, "[log truncated: job 1 exceeds 1048576 bytes]")
+	assert.Contains(t, logs, "small log")
+	assert.Contains(t, logs, "[job list truncated: 2 of 3 jobs included]")
+}
+
+// TestGetWorkflowRunLogs_CompleteHasNoTruncationMarkers verifies that a
+// complete snapshot carries no truncation note.
+func TestGetWorkflowRunLogs_CompleteHasNoTruncationMarkers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 1,
+				"jobs":        []map[string]any{{"id": 1, "name": "build", "status": "completed", "conclusion": "success"}},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			_, _ = w.Write([]byte(strings.Repeat("x", maxJobLogBytes)))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.NotContains(t, logs, "truncated")
+}
+
 // TestListWorkflowRunJobs_EscapesPathComponents is a regression test
 // (#7996 review): owner and repo were interpolated into the request URL
 // without escaping, so a delimiter-containing value (e.g. "#") could alter

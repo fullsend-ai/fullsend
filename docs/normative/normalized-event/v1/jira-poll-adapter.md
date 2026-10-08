@@ -62,11 +62,18 @@ the first line after the command (same rules as
 
 ## Actor mapping
 
+> **ADR 0107 target contract — not yet implemented:** The bot-role and
+> `role_verified` rows describe the post-migration adapter output. Current Jira
+> polling remains on its existing compatibility path until the resolver is
+> integrated.
+
 | Field | Source |
 |-------|--------|
 | `actor.id` | Jira `accountId` (preferred) or `name` when accountId unavailable |
-| `actor.kind` | `bot` when Jira account type is `app`, display name matches automation pattern, or the actor is the authenticated poller account (from `/myself`); else `human` |
-| `actor.role` | Derived from the actor's Jira project role: `admin` for Administrators, `write` for Developers, `read` for other named project roles, `external` when the actor does not hold any project role. Cross-system identity resolution (Jira user → GitHub user → repo permission) is not performed; the Jira project is the authorization boundary for Jira-sourced events. |
+| `actor.kind` | For the target adapter contract, `bot` only when Jira's authoritative account metadata identifies an app or the adapter configuration identifies the authenticated poller as a verified service identity; otherwise `human`. A display-name automation pattern alone is insufficient. The current compatibility poller may retain its legacy heuristics until it adopts the ADR 0107 target implementation. |
+| `actor.role` | `none` for target bots; for humans, derived from the actor's Jira project role: `admin` for Administrators, `write` for Developers, `read` for other named project roles, `external` when the actor does not hold any project role. Cross-system identity resolution (Jira user → GitHub user → repo permission) is not performed; the Jira project is the authorization boundary for Jira-sourced events. |
+| `actor.bot_role` | Provider lookup of the verified bot identity; the canonical Fullsend role when recognized, otherwise `null` |
+| `actor.role_verified` | `true` when bot-role or Jira project-role lookup completed, including a no-match result; `false` when resolution failed |
 | `actor.is_entity_author` | `true` when actor is the issue reporter |
 
 Authorization is enforced by `fullsend dispatch` per

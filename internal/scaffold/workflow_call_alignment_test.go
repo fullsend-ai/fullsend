@@ -25,6 +25,25 @@ type reusableWorkflow struct {
 	} `yaml:"on"`
 }
 
+// TestReviewWorkflowKeepsThreadFetchAgentOwned verifies that the supported
+// per-repo review workflow passes app identity through while the agent owns
+// thread-fetch output placement.
+func TestReviewWorkflowKeepsThreadFetchAgentOwned(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	workflow := string(content)
+	start := strings.Index(workflow, "\n  review:\n")
+	require.NotEqual(t, -1, start, "review job must be present")
+	section := workflow[start:]
+	if end := strings.Index(section, "\n  fix:\n"); end != -1 {
+		section = section[:end]
+	}
+
+	assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}")
+	assert.NotContains(t, section, "HUMAN_RESOLVED_FILE:")
+	assert.NotContains(t, section, "HUMAN_RESOLVED_FETCH_SCRIPT:")
+}
+
 type workflowInput struct {
 	Required bool   `yaml:"required"`
 	Type     string `yaml:"type"`

@@ -43,7 +43,6 @@ type adminWIFProvisioner interface {
 	DiscoverMint(ctx context.Context) (*adminMintDiscovery, error)
 	ProvisionWIF(ctx context.Context) (string, error)
 	RegisterPerRepoWIF(ctx context.Context, repo string) error
-	EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error
 	DeletePerRepoWIF(ctx context.Context, repo string) error
 	DeleteWIFProvider(ctx context.Context, repo string) error
 }
@@ -932,13 +931,6 @@ func (a *gcfProvisionerAdapter) RegisterPerRepoWIF(ctx context.Context, repo str
 	return a.provisioner.RegisterPerRepoWIF(ctx, repo)
 }
 
-func (a *gcfProvisionerAdapter) EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error {
-	if a.provisioner == nil {
-		return fmt.Errorf("WIF provisioner not configured")
-	}
-	return a.provisioner.EnsureOrgInMint(ctx, expectedURL, org)
-}
-
 func (a *gcfProvisionerAdapter) DeletePerRepoWIF(ctx context.Context, repo string) error {
 	if a.provisioner == nil {
 		return fmt.Errorf("WIF provisioner not configured")
@@ -1204,10 +1196,9 @@ func roleAppPrivateKeySecret(role string) string {
 }
 
 // installRequiredScopes is the set of OAuth scopes the install command
-// needs when it must also create GitHub Apps. It is the union of
-// perRepoRequiredScopes and RequiredScopes(OpInstall) across all layers
+// needs when it must also create GitHub Apps. It is perRepoRequiredScopes
 // plus admin:org, which app creation needs;
-// TestCheckInstallScopes_SyncWithLayers asserts parity.
+// TestCheckInstallScopes_SyncWithPerRepoScopes asserts parity.
 var installRequiredScopes = []string{"repo", "workflow", "admin:org"}
 
 // perRepoRequiredScopes is the set of OAuth scopes needed for per-repo install.

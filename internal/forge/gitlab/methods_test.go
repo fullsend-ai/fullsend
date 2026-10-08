@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -70,6 +71,199 @@ func TestCreateIssue(t *testing.T) {
 	assert.Equal(t, "Something broke", issue.Body)
 	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/issues/42", issue.URL)
 	assert.Equal(t, []string{"bug", "urgent"}, issue.Labels)
+}
+
+func TestListPullRequestReviewThreads(t *testing.T) {
+	client, mux := setupTest(t)
+	actorRequests := map[string]int{}
+	roleRequests := map[string]int{}
+	mux.HandleFunc("/api/v4/users/", func(w http.ResponseWriter, r *http.Request) {
+		actorID := strings.TrimPrefix(r.URL.Path, "/api/v4/users/")
+		actorRequests[actorID]++
+		switch actorID {
+		case "10":
+			writeJSON(t, w, http.StatusOK, map[string]any{"id": 10, "username": "botuser", "bot": true})
+		case "20":
+			writeJSON(t, w, http.StatusOK, map[string]any{"id": 20, "username": "reviewer", "bot": false})
+		case "40":
+			writeJSON(t, w, http.StatusOK, map[string]any{"id": 40, "username": "unknown", "bot": nil})
+		case "50", "60":
+			writeJSON(t, w, http.StatusOK, map[string]any{"id": actorID, "username": "external-" + actorID, "bot": false})
+		default:
+			writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 User Not Found"})
+		}
+	})
+	for _, actorID := range []string{"20", "50", "60"} {
+		actorID := actorID
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/members/all/"+actorID, func(w http.ResponseWriter, _ *http.Request) {
+			roleRequests[actorID]++
+			switch actorID {
+			case "20":
+				writeJSON(t, w, http.StatusOK, map[string]any{"access_level": 30})
+			case "50":
+				writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Member Not Found"})
+			case "60":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("{"))
+			}
+		})
+	}
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		assert.Equal(t, "1", r.URL.Query().Get("page"))
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"id": "discussion-1",
+				"notes": []map[string]any{
+					{
+						"id": 7, "body": "Please update this", "created_at": "2026-10-06T10:00:00Z",
+						"resolvable": true, "resolved": true,
+						"author":      map[string]any{"id": 10, "username": "botuser"},
+						"resolved_by": map[string]any{"id": 20, "username": "reviewer"},
+						"position":    map[string]any{"new_path": "main.go", "old_path": "main.go", "new_line": 17, "old_line": 16},
+					},
+				},
+			},
+			{
+				"id": "discussion-2",
+				"notes": []map[string]any{
+					{"id": 8, "body": "unresolved", "resolvable": true, "resolved": false, "author": map[string]any{"id": 20, "username": "reviewer"}, "position": map[string]any{"new_path": "unresolved.go", "new_line": 3}},
+				},
+			},
+			{
+				"id": "discussion-3",
+				"notes": []map[string]any{
+					{
+						"id": 9, "body": "resolved without actor type", "resolvable": true, "resolved": true,
+						"author":      map[string]any{"id": 20, "username": "reviewer"},
+						"resolved_by": map[string]any{"id": 30, "username": "unknown-resolver"},
+					},
+				},
+			},
+			{
+				"id": "discussion-4",
+				"notes": []map[string]any{
+					{"id": 10, "body": "system note", "system": true, "author": map[string]any{"id": 10, "username": "botuser"}},
+					{
+						"id": 11, "body": "resolved with unknown actors", "resolvable": true, "resolved": true,
+						"resolved_by": map[string]any{"id": 40, "username": "unknown-resolver"},
+						"position":    map[string]any{"new_path": "new.go", "old_path": "renamed.go", "old_line": 7},
+					},
+				},
+			},
+			{
+				"id": "discussion-5",
+				"notes": []map[string]any{
+					{
+						"id": 12, "body": "resolved note", "resolvable": true, "resolved": true,
+						"resolved_by": map[string]any{"id": 20, "username": "reviewer"},
+					},
+					{"id": 13, "body": "still open", "resolvable": true, "resolved": false},
+				},
+			},
+			{
+				"id": "discussion-6",
+				"notes": []map[string]any{
+					{"id": 14, "body": "external author", "resolvable": false, "author": map[string]any{"id": 50, "username": "external-50"}},
+					{"id": 15, "body": "unknown permission", "resolvable": false, "author": map[string]any{"id": 60, "username": "external-60"}},
+				},
+			},
+			{
+				"id": "discussion-7",
+				"notes": []map[string]any{
+					{"id": 16, "body": "older resolution", "resolvable": true, "resolved": true, "resolved_at": "2026-10-06T10:00:00Z", "resolved_by": map[string]any{"id": 20, "username": "older-resolver"}},
+					{"id": 17, "body": "latest resolution", "resolvable": true, "resolved": true, "resolved_at": "2026-10-06T11:00:00Z", "resolved_by": map[string]any{"id": 40, "username": "latest-resolver"}},
+				},
+			},
+			{
+				"id": "discussion-8",
+				"notes": []map[string]any{
+					{"id": 18, "body": "older resolution", "resolvable": true, "resolved": true, "resolved_at": "2026-10-06T10:00:00Z", "resolved_by": map[string]any{"id": 20, "username": "older-resolver"}},
+					{"id": 19, "body": "resolver unavailable", "resolvable": true, "resolved": true, "resolved_at": "2026-10-06T11:00:00Z", "resolved_by": nil},
+				},
+			},
+		})
+	})
+
+	got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.NoError(t, err)
+	require.Len(t, got.Threads, 8)
+	assert.Equal(t, "discussion-1", got.Threads[0].ID)
+	assert.True(t, got.Threads[0].IsResolved)
+	assert.Equal(t, "reviewer", got.Threads[0].ResolvedBy)
+	assert.Equal(t, "User", got.Threads[0].ResolvedByType)
+	assert.Equal(t, normevent.RoleWrite, got.Threads[0].ResolvedByRole)
+	assert.True(t, got.Threads[0].ResolvedByRoleVerified)
+	assert.Equal(t, "main.go", got.Threads[0].Path)
+	assert.Equal(t, 17, *got.Threads[0].Line)
+	assert.Equal(t, "Bot", got.Threads[0].Comments[0].AuthorType)
+	assert.Equal(t, normevent.RoleNone, got.Threads[0].Comments[0].AuthorRole)
+	assert.False(t, got.Threads[0].Comments[0].AuthorRoleVerified)
+	assert.False(t, got.Threads[1].IsResolved)
+	assert.Equal(t, "unresolved.go", got.Threads[1].Path, "position data is retained before unresolved notes are skipped")
+	require.NotNil(t, got.Threads[1].Line)
+	assert.Equal(t, 3, *got.Threads[1].Line)
+	assert.True(t, got.Threads[2].IsResolved)
+	assert.Equal(t, "Unknown", got.Threads[2].ResolvedByType)
+	assert.True(t, got.Threads[3].IsResolved)
+	assert.Equal(t, "renamed.go", got.Threads[3].Path)
+	require.Len(t, got.Threads[3].Comments, 1, "system notes must not be returned")
+	assert.Equal(t, "Unknown", got.Threads[3].Comments[0].AuthorType)
+	assert.Equal(t, "Unknown", got.Threads[3].ResolvedByType)
+	assert.Equal(t, normevent.RoleNone, got.Threads[3].ResolvedByRole)
+	assert.False(t, got.Threads[3].ResolvedByRoleVerified)
+	assert.False(t, got.Threads[4].IsResolved, "a discussion with an unresolved resolvable note is not resolved")
+	assert.Empty(t, got.Threads[4].ResolvedBy)
+	assert.Empty(t, got.Threads[4].ResolvedByType)
+	assert.Equal(t, 1, actorRequests["10"])
+	assert.Equal(t, 1, actorRequests["20"], "the actor lookup should be cached per request")
+	assert.Equal(t, 1, actorRequests["30"])
+	assert.Equal(t, 1, actorRequests["40"])
+	assert.Equal(t, normevent.RoleWrite, got.Threads[1].Comments[0].AuthorRole)
+	assert.True(t, got.Threads[1].Comments[0].AuthorRoleVerified)
+	assert.Equal(t, normevent.RoleNone, got.Threads[5].Comments[0].AuthorRole)
+	assert.True(t, got.Threads[5].Comments[0].AuthorRoleVerified)
+	assert.Equal(t, normevent.RoleNone, got.Threads[5].Comments[1].AuthorRole)
+	assert.False(t, got.Threads[5].Comments[1].AuthorRoleVerified)
+	assert.Equal(t, 1, roleRequests["20"], "member lookups should be cached per request")
+	assert.Equal(t, 1, roleRequests["50"])
+	assert.Equal(t, 1, roleRequests["60"])
+	assert.Zero(t, roleRequests["10"], "bot actors must not be treated as human permission actors")
+	assert.Equal(t, "latest-resolver", got.Threads[6].ResolvedBy, "the latest resolved note is the discussion resolver")
+	assert.Empty(t, got.Threads[7].ResolvedBy, "a missing latest resolver must not retain an older resolver")
+	assert.Equal(t, normevent.RoleNone, got.Threads[7].ResolvedByRole)
+}
+
+func TestListPullRequestReviewThreads_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{"))
+	})
+
+	_, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode discussions")
+}
+
+func TestListPullRequestReviewThreads_PaginatesAndCaps(t *testing.T) {
+	client, mux := setupTest(t)
+	var pages int
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		assert.Equal(t, strconv.Itoa(pages), r.URL.Query().Get("page"))
+		discussions := make([]map[string]any, 100)
+		for i := range discussions {
+			discussions[i] = map[string]any{"id": fmt.Sprintf("discussion-%d-%d", pages, i), "notes": []any{}}
+		}
+		writeJSON(t, w, http.StatusOK, discussions)
+	})
+
+	got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 20, pages)
+	assert.True(t, got.Truncated)
+	assert.Len(t, got.Threads, 2000)
 }
 
 func TestCreateIssue_NoLabels(t *testing.T) {
@@ -469,6 +663,14 @@ func TestMinimizeComment(t *testing.T) {
 
 	err := client.MinimizeComment(ctx, "myorg", "myrepo")
 	require.ErrorIs(t, err, forge.ErrNotSupported)
+}
+
+func TestListPullRequestReviewThreads_APIError(t *testing.T) {
+	client, _ := setupTest(t)
+
+	_, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list discussions for !42 page 1")
 }
 
 // ---------------------------------------------------------------------------
@@ -3403,6 +3605,28 @@ func TestGetWorkflowRunLogs_TraceError(t *testing.T) {
 	// Job 1 should show an error, job 2 should show output
 	assert.Contains(t, logs, "error fetching trace")
 	assert.Contains(t, logs, "test output")
+}
+
+// TestGetWorkflowRunLogs_TruncatedTraceIsMarked verifies that a trace over
+// the per-job limit is cut and says so, so callers can tell the snapshot is
+// incomplete.
+func TestGetWorkflowRunLogs_TruncatedTraceIsMarked(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success"},{"id":2,"name":"test","status":"success"}]`)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 10<<20+5)))
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("small trace"))
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(logs, "trace truncated at"), "only the oversized trace is marked")
+	assert.Contains(t, logs, "Job 1 (build): trace truncated at 10485760 bytes")
+	assert.Contains(t, logs, "small trace")
 }
 
 func TestGetWorkflowRunLogs_ListJobsError(t *testing.T) {

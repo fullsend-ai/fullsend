@@ -444,13 +444,16 @@ examples above.
 
 **Enrollment section:**
 
-- List of enrolled organizations (from the legacy `ALLOWED_ORGS` variable, which no longer authorizes callers)
 - Shared role→app-id mappings (from role-keyed `ROLE_APP_IDS`)
-- Per-repo WIF repos list
+- Per-repo WIF repos list (from `PER_REPO_WIF_REPOS`, which is what authorizes callers)
 
-**Per-org drill-down** (when an org argument is provided):
+The legacy `ALLOWED_ORGS` variable is not shown; the mint no longer uses it
+to authorize callers.
+
+**Org drill-down** (when an org argument is provided):
 
 - PEM secret status for each role (present/missing)
+- A warning when no `<org>/*` repository is in `PER_REPO_WIF_REPOS`
 
 **Health summary:**
 

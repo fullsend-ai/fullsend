@@ -100,22 +100,22 @@ func TestVendorBinary_Upload(t *testing.T) {
 	require.NoError(t, os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755))
 
 	client := &forge.FakeClient{}
-	err := VendorBinary(context.Background(), client, "org", forge.ConfigRepoName, VendoredBinaryPath, binPath, "chore: vendor binary")
+	err := VendorBinary(context.Background(), client, "org", "my-repo", VendoredBinaryPathPerRepo, binPath, "chore: vendor binary")
 	require.NoError(t, err)
 
-	key := "org/" + forge.ConfigRepoName + "/" + VendoredBinaryPath
+	key := "org/my-repo/" + VendoredBinaryPathPerRepo
 	assert.Contains(t, client.FileContents, key)
 }
 
 func TestVendorBinary_RejectsDirectory(t *testing.T) {
 	dir := t.TempDir()
-	err := VendorBinary(context.Background(), &forge.FakeClient{}, "org", forge.ConfigRepoName, VendoredBinaryPath, dir, "msg")
+	err := VendorBinary(context.Background(), &forge.FakeClient{}, "org", "my-repo", VendoredBinaryPathPerRepo, dir, "msg")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "is a directory")
 }
 
 func TestVendorBinary_RejectsMissingFile(t *testing.T) {
-	err := VendorBinary(context.Background(), &forge.FakeClient{}, "org", forge.ConfigRepoName, VendoredBinaryPath, "/nonexistent/fullsend", "msg")
+	err := VendorBinary(context.Background(), &forge.FakeClient{}, "org", "my-repo", VendoredBinaryPathPerRepo, "/nonexistent/fullsend", "msg")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stat binary")
 }
@@ -130,7 +130,7 @@ func TestVendorBinary_UploadError(t *testing.T) {
 			"CreateOrUpdateFile": errors.New("upload denied"),
 		},
 	}
-	err := VendorBinary(context.Background(), client, "org", forge.ConfigRepoName, VendoredBinaryPath, binPath, "msg")
+	err := VendorBinary(context.Background(), client, "org", "my-repo", VendoredBinaryPathPerRepo, binPath, "msg")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "uploading vendored binary")
 }

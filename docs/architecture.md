@@ -53,7 +53,7 @@ sole supported installation model
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
 - Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). A **conversation** is the container (Discussion / Slack channel) with exactly one category and optional M:M labels; a **thread** is the top-level message plus replies that share its `parent_id` (`parent_id == id` on the root message).
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
-- Installation model: the CLI installs per repository only (`fullsend github setup <owner/repo>`, `fullsend admin install <owner/repo>`, `fullsend repos install`); per-org CLI installation was removed ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)). The ordered layer stack (install forward, uninstall reverse, analyze for status reporting; vendor-binary → secrets → inference; the per-org workflows layer was removed) remains in `internal/layers` as a retained legacy implementation, but the CLI no longer orchestrates it for org-level installs ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
+- Installation model: the CLI installs per repository only (`fullsend github setup <owner/repo>`, `fullsend admin install <owner/repo>`, `fullsend repos install`); per-org CLI installation was removed ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)). The concrete layers of the ordered layer stack (vendor-binary, secrets, inference, and the per-org workflows layer) were removed along with per-org mode; `internal/layers` keeps only the `Layer` interface and shared helpers, and the CLI no longer orchestrates a layer stack ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
 - Dispatch: each repository's `.github/workflows/fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` via `workflow_call`; that workflow mints OIDC tokens exchanged at a central token mint (GCP Cloud Function or Cloudflare Worker) for scoped GitHub App installation tokens per agent role. App PEM secrets are stored in Secret Manager (GCF mint), Worker secrets (CF mint), or the local filesystem (standalone mint), not the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
 - Shim workflow security: `pull_request_target` prevents PR authors from modifying the shim workflow. No long-lived secrets flow through the shim — OIDC tokens are issued by the GitHub runtime and scoped to the workflow run ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
 - Installer scaffold: per-repo installs deploy content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants. The per-org dispatch, repo-maintenance, and enrollment-reconciliation scaffolds were removed with the rest of per-org mode ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)).
@@ -373,10 +373,22 @@ The existing design principle is that [the repo is the coordinator](problems/age
   paths check the acting user's collaborator permission via the repository API
   (`write` or above for mutation commands; `triage` or above for observation
   stages); a repo that enables the `owners_file` authorization provider also
-  grants these roles to its Prow `OWNERS` approvers and reviewers. Non-GitHub event paths map source-system roles to dispatch
-  authorization roles (`read`, `write`, `admin`) using source-native role
-  resolution, with no cross-system identity verification
-  ([Authorization Contract v1](normative/authorization/v1/);
+  grants these roles to its Prow `OWNERS` approvers and reviewers. Non-GitHub
+  event paths map source-system roles to dispatch authorization roles (`read`,
+  `write`, `admin`) using source-native role resolution, with no cross-system
+  identity verification. Bot actors are migrating to provider-backed exact role
+  resolution: adapters classify actors from source-native metadata; recognized bots receive a
+  canonical `actor.bot_role` such as `review`, and bot actors retain
+  `actor.role: none` with `actor.role_verified` reflecting completion of the
+  bot-role lookup; unknown or unresolved bots fail closed on non-label paths.
+  The label-added exception remains permanent across source systems: provider-
+  positive bot classification is required, but the forge-authorized label
+  mutation and authoritative actor-to-transition provenance are sufficient
+  platform evidence; label-to-agent mapping remains harness/CEL routing. At the
+  time of ADR 0107, GitHub is the only production implementation. CEL may
+  further restrict recognized bot roles but cannot authorize an unknown bot on
+  non-label paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md);
+  [Authorization Contract v1](normative/authorization/v1/);
   [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
 - Poll entity-discovery authorization: `fullsend poll` has no prompting event
   actor; verified, non-user-assertable Fullsend invocation provenance authorizes

@@ -109,16 +109,16 @@ func rolesFromAppIDs(roleAppIDs map[string]string) []string {
 	return roles
 }
 
-// parseAllowedOrgs splits ALLOWED_ORGS, excluding the deploy placeholder.
-func parseAllowedOrgs(allowedOrgs string) []string {
-	var orgs []string
-	for _, o := range mintcore.SplitCSV(allowedOrgs) {
-		if o != gcf.PlaceholderOrg {
-			orgs = append(orgs, o)
+// hasEnrolledRepoInOrg reports whether repos contains an owner/repo entry
+// whose owner matches org (case-insensitive).
+func hasEnrolledRepoInOrg(repos []string, org string) bool {
+	prefix := strings.ToLower(org) + "/"
+	for _, r := range repos {
+		if strings.HasPrefix(strings.ToLower(r), prefix) {
+			return true
 		}
 	}
-	sort.Strings(orgs)
-	return orgs
+	return false
 }
 
 // isPublicMintRepos reports whether a PER_REPO_WIF_REPOS value indicates
@@ -1623,7 +1623,8 @@ ambiguity.
 
 Shows function info, enrolled repos, role-app-id mappings, per-repo WIF
 repos, and overall health status. If an org argument is provided in
---project mode, drills into that org's PEM secret status.
+--project mode, drills into that org's PEM secret status and warns when
+no repository under that org is in PER_REPO_WIF_REPOS.
 
 Required IAM roles on the mint project (--project mode only):
   - roles/cloudfunctions.viewer                   (read Cloud Function metadata)
@@ -1823,11 +1824,6 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		}
 	}
 
-	enrolledOrgs := parseAllowedOrgs("")
-	if trafficEnv != nil {
-		enrolledOrgs = parseAllowedOrgs(trafficEnv["ALLOWED_ORGS"])
-	}
-
 	roleAppIDs := discovery.RoleAppIDs
 	if trafficEnv != nil && trafficEnv["ROLE_APP_IDS"] != "" {
 		var m map[string]string
@@ -1842,32 +1838,6 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		printer.Blank()
 		printer.Header("Mint Mode")
 		printer.StepInfo("  Public (PER_REPO_WIF_REPOS=*)")
-	}
-
-	if org != "" && !publicMint {
-		found := false
-		for _, o := range enrolledOrgs {
-			if o == org {
-				found = true
-				break
-			}
-		}
-		if !found {
-			printer.Blank()
-			printer.StepWarn(fmt.Sprintf("%s is not in ALLOWED_ORGS", org))
-		}
-	}
-
-	printer.Blank()
-	printer.Header("Enrolled Organizations")
-	if publicMint {
-		printer.StepInfo("  * (public mode — all orgs)")
-	} else if len(enrolledOrgs) == 0 {
-		printer.StepInfo("  (none)")
-	} else {
-		for _, o := range enrolledOrgs {
-			printer.StepInfo("  " + o)
-		}
 	}
 
 	printer.Blank()
@@ -1904,6 +1874,13 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		for _, r := range perRepoWIFRepos {
 			printer.StepInfo("  " + r)
 		}
+	}
+
+	// Callers are authorized per repository, so an org drill-down checks
+	// whether any repo under that org is enrolled.
+	if org != "" && !publicMint && trafficEnv != nil && !hasEnrolledRepoInOrg(perRepoWIFRepos, org) {
+		printer.Blank()
+		printer.StepWarn(fmt.Sprintf("No %s/* repository is in PER_REPO_WIF_REPOS", org))
 	}
 
 	// Workflow host repos.

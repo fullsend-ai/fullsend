@@ -323,7 +323,8 @@ fullsend mint status \
   --region "us-central1"
 ```
 
-Optionally filter to a specific org (GCP-based mode only):
+Optionally filter to a specific org (GCP-based mode only). The command
+warns when no repository under that org is in `PER_REPO_WIF_REPOS`:
 
 ```bash
 fullsend mint status <org> \

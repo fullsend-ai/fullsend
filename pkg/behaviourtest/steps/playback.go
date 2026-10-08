@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -310,7 +311,7 @@ func commitDirTree(w *world.World, localDir, repoPrefix string) error {
 // but returns an immediate zero when the just-triggered run has not yet
 // appeared at all in the CI API's workflow-run listing. Retrying here
 // covers that initial visibility gap instead of failing on the first
-// empty listing.
+// empty listing. Not-found errors are retried within the same budget.
 const dispatchVisibilityAttempts = 20
 
 // dispatchVisibilityRetryDelay is the delay between dispatch-visibility
@@ -323,24 +324,37 @@ var dispatchVisibilityRetryDelay = 15 * time.Second
 // pending runs before counting, so this also waits out an in-flight
 // dispatch rather than racing it; the retry loop here additionally waits
 // out a dispatch that has not become visible through the CI API yet.
+// Not-found errors are retried too (#8123).
 func thenAgentIsTriggered(w *world.World, agent string) error {
 	agent = strings.TrimSpace(agent)
 	if w.ScenarioStart.IsZero() {
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
-	var lastErr error
+	var lastErr, notFoundErr error
 	for attempt := 0; attempt < dispatchVisibilityAttempts; attempt++ {
 		count, err := w.CI.CountHarnessDispatches(context.Background(), w.Org, w.RepoName, agent, w.ScenarioStart)
-		if err != nil {
+		switch {
+		case err != nil && forge.IsNotFound(err):
+			// The jobs endpoint has returned intermittent 404s right
+			// after dispatch (#8123; cause unconfirmed). Any not-found
+			// here is retried, including one from the run listing.
+			notFoundErr = fmt.Errorf("checking %q agent dispatch (attempt %d/%d): %w",
+				agent, attempt+1, dispatchVisibilityAttempts, err)
+			lastErr = notFoundErr
+		case err != nil:
 			return fmt.Errorf("checking %q agent dispatch: %w", agent, err)
-		}
-		if count >= 1 {
+		case count >= 1:
 			return nil
+		default:
+			lastErr = fmt.Errorf("%q agent was not dispatched since %s", agent, w.ScenarioStart.Format(time.RFC3339))
 		}
-		lastErr = fmt.Errorf("%q agent was not dispatched since %s", agent, w.ScenarioStart.Format(time.RFC3339))
 		if attempt < dispatchVisibilityAttempts-1 {
 			time.Sleep(dispatchVisibilityRetryDelay)
 		}
+	}
+	if notFoundErr != nil && lastErr != notFoundErr {
+		// Keep the last 404 visible when the final attempt was a zero count.
+		return errors.Join(lastErr, notFoundErr)
 	}
 	return lastErr
 }

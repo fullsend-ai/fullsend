@@ -49,7 +49,7 @@ import mintcoreWasm from "../mintcore.wasm";
 export interface Env {
   /** JSON map of role -> GitHub App ID. */
   ROLE_APP_IDS: string;
-  /** Comma-separated list of allowed GitHub orgs (optional for per-repo-only deployments). */
+  /** Legacy comma-separated org list; the mint no longer reads it to authorize callers. */
   ALLOWED_ORGS?: string;
   /** Comma-separated list of allowed roles (derived from ROLE_APP_IDS if unset). */
   ALLOWED_ROLES?: string;

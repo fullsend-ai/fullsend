@@ -354,6 +354,9 @@ type FakeClient struct {
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
 
+	// Pull request review threads for ListPullRequestReviewThreads.
+	PRReviewThreads map[string]ReviewThreadPage // key: "owner/repo/number"
+
 	// WorkflowRunJobs for ListWorkflowRunJobs.
 	WorkflowRunJobs map[int][]WorkflowJob // key: runID
 
@@ -1948,6 +1951,21 @@ func (f *FakeClient) ListPullRequestReviews(_ context.Context, owner, repo strin
 		}
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListPullRequestReviewThreads(_ context.Context, owner, repo string, number int) (ReviewThreadPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListPullRequestReviewThreads"); e != nil {
+		return ReviewThreadPage{}, e
+	}
+	if f.PRReviewThreads != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if threads, ok := f.PRReviewThreads[key]; ok {
+			return threads, nil
+		}
+	}
+	return ReviewThreadPage{}, nil
 }
 
 func (f *FakeClient) DismissPullRequestReview(_ context.Context, owner, repo string, number, reviewID int, message string) error {

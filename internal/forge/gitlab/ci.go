@@ -883,14 +883,21 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 		if remaining > maxTraceSize {
 			remaining = maxTraceSize
 		}
-		data, readErr := io.ReadAll(io.LimitReader(resp.Body, remaining))
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, remaining+1))
 		resp.Body.Close()
 		if readErr != nil {
 			fmt.Fprintf(&b, "=== Job %d (%s): error reading trace: %v ===\n", j.ID, j.Name, readErr)
 			continue
 		}
+		truncated := int64(len(data)) > remaining
+		if truncated {
+			data = data[:remaining]
+		}
 		totalRead += int64(len(data))
 		fmt.Fprintf(&b, "=== Job %d (%s) ===\n%s\n", j.ID, j.Name, string(data))
+		if truncated {
+			fmt.Fprintf(&b, "=== Job %d (%s): trace truncated at %d bytes ===\n", j.ID, j.Name, remaining)
+		}
 	}
 	return b.String(), nil
 }

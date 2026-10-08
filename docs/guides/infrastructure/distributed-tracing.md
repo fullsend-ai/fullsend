@@ -446,6 +446,10 @@ secrets (add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
 `OTEL_EXPORTER_OTLP_HEADERS` under `secrets:`) until the scaffold is
 re-synced, in the fullsend shim workflow's dispatch job.
 
+`fullsend run` reads the OTLP header secrets for its own exporter but does not
+pass them to host-side scripts unless the harness declares them under
+[`env.runner`](../../reference/harness-reference.md#field-details).
+
 ### Bring your own workflow
 
 Add the environment variables to any job that runs `fullsend run`:

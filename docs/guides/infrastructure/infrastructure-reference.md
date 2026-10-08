@@ -403,16 +403,7 @@ access instead of Maintainer. See ADR 0067.
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
 - `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for projects whose `inference.auth` is `openai-api-key` (masked CI/CD variable written by `repos install --openai-api-key`; the job maps it to `OPENAI_API_KEY`, and an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used)
 
-### Secrets Layer Behavior
-
-- **Install**: Writes inference secrets when an inference project is configured.
-- **Analyze**: Checks that expected secrets/variables exist. Cannot verify secret values (GitHub Secrets API is write-only for values).
-- **Uninstall**: Deletes repo secrets and variables for all managed names.
-
-### Inference Layer Behavior
-
-- **Install**: Unconditionally writes secrets and variables (no way to check if values changed since GitHub doesn't expose secret values).
-- **Analyze**: Checks presence of `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_GCP_REGION`.
+Per-repo installation (`internal/repos`) writes the inference secrets and variables directly rather than through layer orchestration.
 
 ---
 

@@ -162,6 +162,12 @@ fullsend
 │   ├── --dry-run                            #   Print what would be posted without API calls
 │   ├── --keep-history                       #   Append previous content as collapsed history (default true)
 │   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR; resolves keep_history default)
+├── fetch-review-threads                      # Fetch PR/MR review threads as JSON
+│   ├── --repo <owner/repo>                   #   Repository in owner/repo format (required)
+│   ├── --pr <int>                            #   Pull request / merge request number (required)
+│   ├── --forge <forge>                       #   Forge backend: github (default) or gitlab
+│   ├── --token <string>                      #   Forge token (default: forge environment token)
+│   └── --base-url <url>                      #   Forge API base URL
 ├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
 │   └── --token <string>                     #   GitHub token (default: $GH_TOKEN / $GITHUB_TOKEN / gh auth token)
 ├── eval-measure                             # Score wild-run traces (eval measurements)
@@ -198,6 +204,16 @@ fullsend
 ```
 
 ### Command Decomposition
+
+`fetch-review-threads` emits a JSON object containing `threads` and a
+`truncated` flag. GitHub review threads are capped at 20 pages; consumers
+must treat `truncated: true` as an incomplete result. GitLab merge-request
+discussions are mapped to the same thread model, including resolution state,
+comments, positions, and resolver identity when GitLab provides it. Each comment
+also includes `author_role` and `author_role_verified`; resolved threads include
+`resolved_by_role` and `resolved_by_role_verified`. A role is `none` with
+`verified: true` for an authoritative non-member result, and `verified: false`
+when the actor is a bot/unknown or the permission lookup fails.
 
 The `mint`, `inference`, and `github` subcommands decompose setup into role-specific operations for organizations that separate GCP and GitHub responsibilities:
 
@@ -348,7 +364,7 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 
 ### Install orchestration
 
-`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation; the `Layer` types under `internal/layers` that remain (for example `VendorBinaryLayer`) are not used by CLI orchestration. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
+`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation, and `internal/layers` no longer ships concrete `Layer` implementations; it keeps the `Layer` interface, `AgentCredentials`, and the vendoring helpers. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -360,7 +376,7 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
-Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `bin/fullsend` or `.fullsend/bin/fullsend` when `--vendor` is not set.
+Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `.fullsend/bin/fullsend` when `--vendor` is not set.
 
 ---
 
@@ -725,8 +741,6 @@ var executableFiles = map[string]struct{}{
 | `internal/sandbox/sandbox.go` | ~459 | OpenShell sandbox operations |
 | `internal/harness/harness.go` | ~486 | Harness YAML parsing |
 | `internal/layers/layers.go` | ~159 | Layer interface and stack |
-| `internal/layers/secrets.go` | ~200 | PEM key deployment layer |
-| `internal/layers/inference.go` | ~150 | Inference credential layer |
 | `internal/scaffold/scaffold.go` | ~146 | Embedded template system |
 | `internal/inference/inference.go` | ~26 | Provider interface |
 | `internal/inference/vertex/vertex.go` | ~80 | Agent Platform (Vertex AI) implementation |

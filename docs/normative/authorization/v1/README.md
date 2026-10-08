@@ -5,8 +5,15 @@ Normative rules governing which actors may trigger agent dispatch.
 This document is the single living contract for authorization policy.
 The historical decision and rationale are recorded in
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
-The [NormalizedEvent v1](../../normalized-event/v1/) specification defines
-the `actor.role` field consumed by this contract.
+The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
+`actor.role`, `actor.kind`, `actor.role_verified`, and `actor.bot_role` fields
+consumed by this contract. Bot identity and role resolution are specified by
+[ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
+
+> **ADR 0107 target contract — not yet implemented:** The bot identity fields,
+> resolver outcomes, and bot-specific fail-closed rows below describe the
+> behavior to be implemented by the adapters and dispatch path. Until that
+> migration lands, existing compatibility behavior remains authoritative.
 
 ## Role ordering
 
@@ -94,6 +101,37 @@ or whose issue belongs to a different project — are mapped to `external`
 [Jira integration guide](../../../guides/user/jira-integration.md) for
 details on the name-based matching limitation.
 
+### Bot identity fields
+
+The adapter/provider MUST classify the verified actor using authoritative
+source-system metadata before authorization. This may include a provider actor
+name when that forge gives it bot-specific semantics, such as GitHub's `[bot]`
+logins; labels, review types, and arbitrary event-content strings are not bot
+identity signals. For post-migration producers with `actor.kind: bot`,
+`actor.role` MUST be `none`, and
+`actor.role_verified` is true exactly when the provider completes the bot-role
+lookup, including a successful no-match result; it is false when resolution
+fails. For `actor.kind: human`, `actor.bot_role` MUST be absent or `null`, and
+`actor.role` contains the forge permission role when `actor.role_verified` is
+true. For non-label dispatch, only a non-null, provider-resolved
+`actor.bot_role` can pass the bot gate. Once that gate succeeds, the
+`actor.role`-keyed observation and mutation thresholds below do not apply to the
+bot; platform authorization instead requires a valid normalized event, an
+applicable source and target, and a transition supported by the selected
+harness. CEL may further restrict routing but cannot create or broaden bot
+identity authorization.
+
+For humans on non-label paths, `role_verified: false` denies the event
+regardless of the role string. A missing `role_verified` on a trusted
+pre-migration event is treated as legacy input and retains the current human
+authorization behavior; new adapters MUST emit the field, and their false
+value MUST fail closed. Legacy status is determined by the adapter
+implementation contract, not by guessing from this field's absence. On the
+permanent label exception, `role_verified` is not an
+authorization input: an accepted forge label mutation authorizes a human, and
+a bot additionally requires positive provider bot classification. For bots,
+omission means that bot-role lookup is not applicable, not that it failed.
+
 ## Default thresholds
 
 | Category | Minimum role | Rationale |
@@ -104,6 +142,11 @@ details on the name-based matching limitation.
 A role satisfies a threshold when it is **at or above** the minimum in
 the role ordering. For example, `admin` satisfies both `triage` and
 `write` thresholds.
+
+These thresholds apply to human actors and to legacy bot events that still
+use forge permissions during migration. They do not apply to a bot after
+successful `actor.bot_role` recognition, because `actor.role` remains the
+compatibility value `none` for that target representation.
 
 The bash dispatch implementation uses a parameterized
 `has_repo_permission(username, min)` helper that encodes this comparison
@@ -126,12 +169,22 @@ The entity-discovery rows below specify the future ADR 0098 path and do not
 describe behavior currently implemented by `fullsend dispatch` or
 `fullsend poll`.
 
+The bot-specific rows in the following table are ADR 0107 target behavior;
+legacy events remain subject to the compatibility rules until implementation
+migration is complete.
+
 | Condition | Outcome |
 |-----------|---------|
 | Collaborator API returns a custom `role_name` with no effective permission signal | Mapped to `none`; denied |
 | Collaborator API returns an error or times out | Denied (function returns failure) |
+| Bot-role lookup returns no registered identity on a non-label path | `actor.role` remains `none`; `actor.role_verified` is true; `actor.bot_role` is absent; denied |
+| Bot-role lookup fails or is unverifiable on a non-label path | `actor.role` remains `none`; `actor.role_verified` is false; `actor.bot_role` is absent; denied, with the failure retained in resolver/audit diagnostics |
 | Collaborator API response is not valid JSON or does not match the expected shape | Denied |
 | `actor.role` is empty or missing | Event fails `NormalizedEvent` validation; never reaches dispatch |
+| `actor.role_verified` is false for a human | Denied regardless of `actor.role` |
+| Legacy bot event has an `actor.role` other than `none` | Valid in the v1 compatibility schema; authorization follows current compatibility behavior during migration and is not an ADR 0107 bot-role authorization result |
+| `actor.role_verified` is false but `actor.bot_role` is non-null for a bot | Event fails `NormalizedEvent` validation; never reaches dispatch |
+| `actor.bot_role` is non-null for a human | Event fails `NormalizedEvent` validation; never reaches dispatch |
 | Username is empty | Denied |
 | `OWNERS` is missing or malformed, or `OWNERS_ALIASES` is present but malformed (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |
 | Username contains characters outside `[A-Za-z0-9-]` (`owners_file` enabled) | OWNERS check skipped; the collaborator API decides |
@@ -150,28 +203,40 @@ Certain transitions are authorized without requiring a `write` or
 `triage` role from the acting user. Each exception is documented with its
 rationale.
 
-### Label application (GitHub)
+### Label application
 
-When `source.system` is `github`, `transition.kind` is `label_changed`,
-and `label.action` is `added`, the event is authorized regardless of
-`actor.role`. This exception applies only when `source.system` is
-`github`. GitHub's own permission model requires at least `triage`
-access to apply a label, so label application is an **implicit
-authorization gate**. Bot accounts that apply labels as part of
-agent-to-agent handoff (e.g., adding `ready-to-code` after triage
-completes) rely on this path because the collaborator API often returns
-404 for `[bot]` accounts even when the GitHub App has write access via
-its installation token.
+**Current compatibility behavior:** GitHub authorizes an added-label event
+without applying the ordinary `actor.role` threshold. This existing behavior
+preserves bot-to-bot handoffs such as adding `ready-to-code` after triage
+completes, including handoffs from provider bots that are not Fullsend-
+registered.
+
+**ADR 0107 target behavior:** When
+`transition.kind` is `label_changed` and `label.action` is `added`, GitHub
+authorizes the event regardless of `actor.role` once the adapter has
+established an accepted forge label mutation and authoritative actor-to-
+transition provenance. This is a separate platform authorization grant, not an
+application of the ordinary stage threshold. At the time of this ADR, GitHub
+is the only implementation; another adapter MUST provide equivalent
+forge-authoritative evidence before enabling the same grant, and absent or
+unverifiable evidence denies the event. For a bot actor, the adapter MUST
+positively classify it using provider-controlled metadata, but `actor.bot_role`
+lookup is not required. The platform gate MUST NOT inspect the label name or
+maintain an agent-role label allowlist; harness/CEL routing owns that mapping
+and may further narrow the dispatch.
 
 ### Bot-submitted reviews (GitHub)
 
-When `source.system` is `github`, `transition.kind` is
-`review_submitted`, and `actor.kind` is `bot`, the event is authorized
-regardless of `actor.role`. This exception applies only when
-`source.system` is `github`. This allows the review agent's bot identity
-to trigger downstream stages (e.g., the fix agent) without a
-collaborator role lookup. The downstream harness CEL trigger constrains
-which bot and review state are accepted.
+**Current compatibility behavior:** Until the resolver is implemented,
+`fullsend dispatch` continues to authorize a GitHub `review_submitted` event
+from a bot without requiring a collaborator permission or `actor.bot_role`.
+This existing exception is not evidence that the bot identity was resolved.
+
+**ADR 0107 target behavior:** After the resolver is implemented, a GitHub
+review event is authorized only when the provider classifies the actor as a
+bot and resolves its exact registered `actor.bot_role`; `actor.role` remains
+`none`. The downstream harness CEL trigger may further constrain which bot
+role and review state are accepted.
 
 ### Lifecycle close (pull\_request\_target.closed)
 
@@ -184,12 +249,22 @@ handling for closed transitions and applies the standard `write+` gate.
 
 ### Schedule and manual dispatch
 
-When `source.system` is `schedule` or `manual`, the actor is the
-configured service identity (GitHub App bot or workflow `GITHUB_ACTOR`).
-Adapters set `actor.kind` to `bot` and `actor.role` to the effective
-permission of that identity on the target repository (typically `write`
-for installed apps). The standard authorization gate applies; the
-platform does not default schedule or manual actors to `role: none`.
+When `source.system` is `schedule` or `manual`, the actor is the configured
+operator or service identity (for example, a GitHub App bot or workflow
+`GITHUB_ACTOR`). Adapters MUST classify that identity from authoritative
+provider metadata. Human identities use verified forge permissions and the
+human thresholds; bot identities use provider-backed `actor.bot_role`
+resolution and retain `actor.role` as `none`. An unrecognized or unresolved
+bot identity is denied.
+
+**Current compatibility behavior:** Until provider-backed bot-role resolution
+is wired into the adapters and dispatch path, adapters set `actor.role` to the
+service identity's effective repository permission (typically `write`), so
+the standard permission gate applies.
+
+> **Target contract, not yet implemented:** Existing schedule/manual
+> compatibility handling remains authoritative until provider-backed bot-role
+> resolution is wired into the adapters and dispatch path.
 
 ### Fullsend-originated entity discovery
 
@@ -318,7 +393,21 @@ This is a living normative document under
 [ADR 0015](../../../ADRs/0015-normative-specifications-directory.md).
 Breaking changes require `docs/normative/authorization/v2/`.
 
+**ADR 0107 migration exception:** The migration from legacy bot authorization
+exceptions to provider-backed bot identity is permitted within v1. It is a
+policy tightening, not a new supported actor population: existing
+compatibility behavior remains authoritative until an adapter implementation is
+updated; once updated, registered bots use `actor.bot_role` and unregistered
+non-label bots are denied. The adapter implementation itself is the migration
+boundary; no per-event mode marker or separate deprecation window is required.
+An updated adapter MUST enforce the target behavior and MUST NOT silently fall
+back to legacy bot authorization when its resolver fails. The normalized-event
+fields used to carry this distinction are additive, and the permanent
+label-added exception is preserved. This exception does not alter the general
+v2 rule for unrelated authorization changes.
+
 | Change | v1 impact |
 |--------|-----------|
 | **Breaking** (requires v2): remove a role from the hierarchy, raise a default threshold, remove a documented exception, change fail-closed to fail-open | Dispatch implementations must migrate |
+| **Adapter bot-identity migration** (allowed in v1): update an adapter to emit and enforce the ADR 0107 target representation | The adapter's existing compatibility behavior applies until that implementation update; afterward, registered bots use `actor.bot_role` and unregistered non-label bots are denied |
 | **Non-breaking** (allowed in v1): add a role, lower a default threshold, add a new exception, add forge mappings, clarify documentation | Existing dispatch behavior is preserved or relaxed |
