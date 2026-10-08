@@ -492,12 +492,36 @@ write a workflow. The dispatch workflow that setup installs runs every agent
 registered in `config.yaml` whose harness `trigger:` matches an event — see
 [Bring Your Own Agent](bring-your-own-agent.md). Dispatch needs a harness that has
 a `trigger:` ([CEL Triggers Reference](cel-triggers-reference.md)) and reads
-the inputs dispatch provides, such as `GITHUB_ISSUE_URL`. The examples in this
+the inputs dispatch provides. The examples in this
 guide do neither: the Step 2 harness and Step 5 scripts read `ISSUE_KEY` and
 `ISSUE_SOURCE`, which only the standalone workflow below sets. For a
 dispatched agent, start from `fullsend agent new`, whose harness and
 post-script already read what dispatch provides, then commit `.fullsend/` and
 fire the trigger.
+
+### Dispatch inputs
+
+When an event triggers an agent, the dispatch workflow exports these variables to the runner:
+
+| Variable | Description |
+|----------|-------------|
+| `FULLSEND_WORK_ITEM_URL` | Canonical, tracker-agnostic work item URL (`https://...`) |
+| `GITHUB_ISSUE_URL` | Legacy alias for `FULLSEND_WORK_ITEM_URL` |
+| `FULLSEND_WORK_ITEM_KEY` | Canonical key (`42` on GitHub, `PROJ-123` on Jira) |
+| `ISSUE_NUMBER` | Numeric issue/PR number or Jira key suffix |
+| `REPO_FULL_NAME` | Repository slug (`owner/repo`) |
+
+The full event payload is also written to `.fullsend/dispatch/event-payload.json`. Detect the tracker from `_normalized_event.source.system`, not variable presence.
+
+- **Pre/post scripts** inherit these variables directly from the host environment (`"$FULLSEND_WORK_ITEM_URL"`).
+- **The sandbox** does not inherit runner variables by default. Forward them via `env.sandbox` in your harness:
+  ```yaml
+  env:
+    sandbox:
+      FULLSEND_WORK_ITEM_URL: "${FULLSEND_WORK_ITEM_URL}"
+      ISSUE_NUMBER: "${ISSUE_NUMBER}"
+  ```
+  Alternatively, have your `pre_script` fetch issue details and write them into the workspace or `agent_input` directory.
 
 ### A standalone workflow (only outside dispatch)
 
