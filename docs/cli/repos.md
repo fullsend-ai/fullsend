@@ -227,6 +227,14 @@ For GitLab repos, `repos install` provisions the built-in Poller, Analyst, and C
 > continues with Developer credentials; compliant existing triggers can still
 > be reused. Revocation and empty resource inventories alone do not prove that
 > requests have drained.
+>
+> **Install-time reconciliation:** On every GitLab install, `repos install`
+> recovers interrupted supplied-credential provenance, restores or contains a
+> Poller left elevated by an interrupted run, and reconciles the webhook fast
+> path, whether or not webhook work or trigger rotation was requested. A
+> failure in any of these steps is reported as a role failure for that
+> repository, so automation that expects installs to be idempotent no-ops may
+> see new warnings or failures.
 
 For GitLab repos, `repos install` also provisions the [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) webhook fast path: a pipeline trigger token (`FULLSEND_TRIGGER_TOKEN`) and webhook secret (`FULLSEND_WEBHOOK_SECRET`), both stored as protected, masked CI/CD variables, plus a project webhook for issue, merge request, and comment events that triggers a pipeline on the protected default branch. The step is deferred (and reported) until the dispatcher is on the default branch, that branch is protected, and `ci_pipeline_variables_minimum_override_role=no_one_allowed` is verified. Re-runs reuse compliant existing credentials and reconcile webhook configuration. New trigger creation and rotation remain deferred in the current live adapter. When an adapter can verify server-side request draining, `--rotate-gitlab-trigger-token` mints a new token and updates the webhook; existing managed trigger tokens owned by the Poller are revoked first, before the temporary Maintainer elevation and minting. The trigger token is created as the Poller service account. Install first revokes the Poller's distributed runtime credential, creates an installer-only bootstrap credential, grants the Poller Maintainer only for the create call, restores Developer and verifies it, revokes the bootstrap credential, and publishes a replacement runtime credential before the webhook is enabled or updated. Polling and in-flight jobs that authenticate as the Poller are interrupted while the trigger is created or rotated. If that restore or check fails, install disables the managed fast path and reports an error. A Poller that is still a project access token bot leaves the fast path deferred. Token, secret, and webhook URL values are never printed.
 

@@ -1837,6 +1837,17 @@ func applyAdministratorEnrollmentProof(report *gitlabroles.Report, reg gitlabrol
 		}
 		state, ok := rotation.Roles[string(proofRole)]
 		enrolledIdx := -1
+		if ok && state.SuppliedTokenID > 0 && state.Supplied && !state.SuppliedDistributed && state.Phase == rotationPhaseFailed {
+			// A replacement publication is in progress or unconfirmed: the
+			// recorded token names the previous credential, but the installed
+			// one may already be the replacement. Do not report the role
+			// healthy on the previous token's state until the next run
+			// reconciles the installed credential.
+			if current == gitlabroles.LifecycleOK {
+				report.Roles[i].Lifecycle = gitlabroles.LifecycleUnverified
+			}
+			continue
+		}
 		if ok && state.SuppliedTokenID > 0 {
 			// The name-based lifecycle groups tokens by name only, so an
 			// unrelated healthy token carrying the role's name could mask the

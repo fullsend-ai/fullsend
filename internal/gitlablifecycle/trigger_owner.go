@@ -91,14 +91,7 @@ func (o *TriggerOwner) PollerUserID(ctx context.Context, owner, repo string) (in
 	if err != nil {
 		return 0, err
 	}
-	isManaged := false
-	for _, id := range managed {
-		if id == uid {
-			isManaged = true
-			break
-		}
-	}
-	if !isManaged {
+	if !slices.Contains(managed, uid) {
 		return 0, fmt.Errorf("the Poller credential (user ID %d) is not the %s project service account: %w", uid, gitlabroles.PollerTokenName, forge.ErrNotFound)
 	}
 	// Containment and revocation can only touch tokens named after the

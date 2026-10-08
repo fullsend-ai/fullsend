@@ -951,6 +951,31 @@ func TestEnrichGitLabRoleStatusEnrolledTokenMissingFromInventoryStaysUnverified(
 	assert.True(t, status.GitLabRolesReady)
 }
 
+// A supplied replacement whose publication is unconfirmed (state still names the
+// previous token with a failed, undistributed phase) is never reported healthy
+// from the previous active token: the installed credential may be the
+// replacement.
+func TestEnrichGitLabRoleStatusUnconfirmedSuppliedPublicationIsUnverified(t *testing.T) {
+	t.Parallel()
+	fc := provisionClient(t)
+	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+		require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
+	}
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{
+"poller":{"phase":"failed","error":"unconfirmed","distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_user_id":10,"supplied_token_id":7,"excluded_user_ids":[10,80]},
+"analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
+"coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
+}}`
+	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRotation] = true
+	now := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+
+	status := &RepoStatus{}
+	EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", []ProjectAccessToken{
+		{ID: 7, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2030-01-01"},
+	}, now, status)
+	assert.False(t, status.GitLabRolesReady, "the previous token's health does not vouch for the installed credential")
+}
+
 // An ordinary user's enrolled PAT is outside the project inventory, so no
 // supplied_token_id is recorded. Its recorded successful publication proves
 // distribution even when a surviving managed entry still carries an incoming ID

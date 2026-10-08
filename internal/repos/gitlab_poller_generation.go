@@ -173,7 +173,7 @@ func pollerHandoffBlocked(st PollerGenerationState) string {
 	}
 	switch p.Phase {
 	case PollerPhaseAccountRequested:
-		return "webhook fast-path blocked: a replacement GitLab Poller service account was requested but its account ID was never recorded. Identify the fullsend-poller service account created by that request, remove it, and clear " + forge.VarGitLabPollerGenerations + "; fullsend will not delete an account it cannot positively identify. The polling schedules remain in effect"
+		return fmt.Sprintf("webhook fast-path blocked: a replacement GitLab Poller service account was requested but its account ID was never recorded. Identify the %s service account created by that request, remove it, and clear %s; fullsend will not delete an account it cannot positively identify. The polling schedules remain in effect", gitlabroles.PollerTokenName, forge.VarGitLabPollerGenerations)
 	case PollerPhaseQuarantined:
 		return fmt.Sprintf("webhook fast-path blocked: the replacement GitLab Poller generation (user ID %d) is quarantined: %s. The polling schedules remain in effect", p.UserID, p.Reason)
 	case PollerPhaseVerified:
