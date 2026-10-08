@@ -1318,10 +1318,12 @@ display_name: repository copy
 	assert.Contains(t, urlHint, fmt.Sprintf("provider %q", provider.Name))
 	assert.Contains(t, urlHint, fmt.Sprintf("profile %q", provider.Type))
 
-	// A profile-only override should suggest the matching built-in provider.
-	profileOnlyHint := providerMigrationHint(provider, nil, map[string]string{provider.Type: profilePath})
+	// A profile-only override should identify the built-in profile without replacing a custom provider.
+	customProvider := harness.ProviderDef{Name: "custom-github", Type: provider.Type}
+	profileOnlyHint := providerMigrationHint(customProvider, nil, map[string]string{customProvider.Type: profilePath})
 	assert.Contains(t, profileOnlyHint, fmt.Sprintf("profile %q", profilePath))
-	assert.Contains(t, profileOnlyHint, fmt.Sprintf("%q", strings.TrimPrefix(provider.Type, "fullsend-")))
+	assert.Contains(t, profileOnlyHint, "use fullsend's corresponding built-in definitions instead")
+	assert.NotContains(t, profileOnlyHint, "declare the bare name")
 
 	// Paths must not add log lines or trigger workflow commands.
 	escapedHint := providerMigrationHint(provider,

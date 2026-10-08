@@ -6704,11 +6704,6 @@ func providerMigrationHint(pd harness.ProviderDef, providerOverrides, profileOve
 		return ""
 	}
 
-	bareName := pd.Name
-	if !hasProviderOverride {
-		bareName = strings.TrimPrefix(pd.Type, "fullsend-")
-	}
-
 	var definitions []string
 	if hasProviderOverride {
 		label := pd.Name
@@ -6724,8 +6719,8 @@ func providerMigrationHint(pd harness.ProviderDef, providerOverrides, profileOve
 		}
 		definitions = append(definitions, fmt.Sprintf("profile %s", quotePathForLog(label)))
 	}
-	return fmt.Sprintf(`Note: %s may not match this fullsend's built-in definition; declare the bare name %q in the harness and delete the repository overrides (see "Upgrading agents generated before built-in providers" in docs/guides/user/bring-your-own-agent.md).`,
-		strings.Join(definitions, " and "), bareName)
+	return fmt.Sprintf(`Note: %s may be outdated; use fullsend's corresponding built-in definitions instead (see "Upgrading agents generated before built-in providers" in docs/guides/user/bring-your-own-agent.md).`,
+		strings.Join(definitions, " and "))
 }
 
 // A repository file name must not inject log lines (%q escapes
