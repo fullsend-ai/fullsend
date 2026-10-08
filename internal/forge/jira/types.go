@@ -14,6 +14,13 @@ type Issue struct {
 	Fields IssueFields `json:"fields"`
 }
 
+// CreatedIssue is the response from POST /rest/api/3/issue.
+type CreatedIssue struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Self string `json:"self"`
+}
+
 // IssueFields contains the standard fields of a Jira issue.
 type IssueFields struct {
 	Summary     string       `json:"summary"`

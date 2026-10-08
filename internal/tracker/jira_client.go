@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,7 @@ type statusCommentProperty struct {
 // jira.LiveClient; faked in tests.
 type jiraClient interface {
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
+	CreateIssue(ctx context.Context, in jira.CreateIssueInput) (*jira.CreatedIssue, error)
 	ListComments(ctx context.Context, issueIDOrKey string) ([]jira.Comment, error)
 	CreateComment(ctx context.Context, issueIDOrKey, body string) (*jira.Comment, error)
 	CreateCommentWithProperties(ctx context.Context, issueIDOrKey, body string, properties []jira.CommentProperty) (*jira.Comment, error)
@@ -126,6 +128,52 @@ func (c *JiraClient) GetIssue(ctx context.Context, project string, number int) (
 		IssueType:    issueType,
 		CustomFields: issue.Fields.CustomFields,
 	}, nil
+}
+
+// CreateIssue implements Client. opts.IssueType is required (Jira rejects
+// a create without an issue type); opts.Parent, when set, makes the new
+// issue a child (e.g. a sub-task) of that issue key. body is converted to
+// ADF by the underlying client. The returned Issue.Number is parsed from
+// the new issue key, so it addresses the issue as (project, number) like
+// every other JiraClient method.
+func (c *JiraClient) CreateIssue(ctx context.Context, project, title string, body Body, opts CreateIssueOptions) (*Issue, error) {
+	if opts.IssueType == "" {
+		return nil, fmt.Errorf("tracker: Jira requires an issue type to create an issue")
+	}
+	created, err := c.jira.CreateIssue(ctx, jira.CreateIssueInput{
+		ProjectKey:  project,
+		IssueType:   opts.IssueType,
+		ParentKey:   opts.Parent,
+		Summary:     title,
+		Description: string(body),
+	})
+	if err != nil {
+		return nil, wrapNotFound(err)
+	}
+	number, err := issueNumberFromKey(created.Key)
+	if err != nil {
+		return nil, err
+	}
+	return &Issue{
+		Number: number,
+		Title:  title,
+		Body:   body,
+		URL:    c.baseURL + "/browse/" + created.Key,
+	}, nil
+}
+
+// issueNumberFromKey returns the numeric part of a Jira issue key, e.g.
+// issueNumberFromKey("PROJ-123") = 123.
+func issueNumberFromKey(key string) (int, error) {
+	idx := strings.LastIndex(key, "-")
+	if idx <= 0 {
+		return 0, fmt.Errorf("tracker: unexpected Jira issue key %q", key)
+	}
+	number, err := strconv.Atoi(key[idx+1:])
+	if err != nil || number <= 0 {
+		return 0, fmt.Errorf("tracker: unexpected Jira issue key %q", key)
+	}
+	return number, nil
 }
 
 // ListComments implements Client.

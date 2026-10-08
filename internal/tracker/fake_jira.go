@@ -32,6 +32,11 @@ type FakeJiraClient struct {
 	UpdatedCommentID string
 	UpdatedBody      string
 
+	// CreatedIssues records every CreateIssue input, in call order.
+	// CreateIssueError, when non-nil, is returned by CreateIssue.
+	CreatedIssues    []jira.CreateIssueInput
+	CreateIssueError error
+
 	// PropertyError, when non-nil, is returned by SetCommentProperty
 	// to simulate permission failures.
 	PropertyError error
@@ -83,6 +88,37 @@ func (f *FakeJiraClient) GetIssue(_ context.Context, issueIDOrKey string) (*jira
 		return nil, fmt.Errorf("get issue %s: %w", issueIDOrKey, forge.ErrNotFound)
 	}
 	return issue, nil
+}
+
+// CreateIssue stores a new issue under the first unused key
+// "<ProjectKey>-<n>" (n counting up from 1), with its description stored
+// as real ADF so GetIssue reads it back the way a live Jira instance would.
+func (f *FakeJiraClient) CreateIssue(_ context.Context, in jira.CreateIssueInput) (*jira.CreatedIssue, error) {
+	if f.CreateIssueError != nil {
+		return nil, f.CreateIssueError
+	}
+	f.CreatedIssues = append(f.CreatedIssues, in)
+	var description any
+	if in.Description != "" {
+		adf, err := jira.MarkdownToADF(in.Description)
+		if err != nil {
+			return nil, err
+		}
+		description = adf
+	}
+	if f.Issues == nil {
+		f.Issues = make(map[string]*jira.Issue)
+	}
+	n := 1
+	for f.Issues[fmt.Sprintf("%s-%d", in.ProjectKey, n)] != nil {
+		n++
+	}
+	key := fmt.Sprintf("%s-%d", in.ProjectKey, n)
+	f.Issues[key] = &jira.Issue{
+		Key:    key,
+		Fields: jira.IssueFields{Summary: in.Summary, Description: description},
+	}
+	return &jira.CreatedIssue{ID: fmt.Sprintf("%d", 10000+len(f.CreatedIssues)), Key: key}, nil
 }
 
 func (f *FakeJiraClient) ListComments(_ context.Context, issueIDOrKey string) ([]jira.Comment, error) {

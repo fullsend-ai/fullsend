@@ -417,6 +417,70 @@ func (c *LiveClient) GetIssue(ctx context.Context, issueIDOrKey string) (*Issue,
 	return &issue, nil
 }
 
+// CreateIssueInput describes a new Jira issue for CreateIssue.
+type CreateIssueInput struct {
+	// ProjectKey is the key of the project the issue is created in (e.g. "PROJ").
+	ProjectKey string
+	// IssueType selects the issue type: an all-digit value is sent as the
+	// issue type ID (e.g. "10003"), anything else as the issue type name
+	// (e.g. "Sub-task"). Jira requires an issue type on every create.
+	IssueType string
+	// ParentKey, when non-empty, is the key of the parent issue (e.g.
+	// "PROJ-42"), as required for sub-task issue types.
+	ParentKey string
+	// Summary is the issue title.
+	Summary string
+	// Description is markdown; it is converted to ADF before being sent.
+	// An empty description is omitted from the request.
+	Description string
+}
+
+// issueTypeRef returns the issuetype field for a create-issue request:
+// {"id": ...} for an all-digit value, {"name": ...} otherwise.
+func issueTypeRef(issueType string) map[string]string {
+	isID := issueType != ""
+	for _, r := range issueType {
+		if r < '0' || r > '9' {
+			isID = false
+			break
+		}
+	}
+	if isID {
+		return map[string]string{"id": issueType}
+	}
+	return map[string]string{"name": issueType}
+}
+
+// CreateIssue creates a new issue (POST /rest/api/3/issue) and returns
+// its ID and key. The request is not retried on 5xx responses, since a
+// create is not idempotent and a retry could create a duplicate issue.
+func (c *LiveClient) CreateIssue(ctx context.Context, in CreateIssueInput) (*CreatedIssue, error) {
+	fields := map[string]any{
+		"project":   map[string]string{"key": in.ProjectKey},
+		"issuetype": issueTypeRef(in.IssueType),
+		"summary":   in.Summary,
+	}
+	if in.ParentKey != "" {
+		fields["parent"] = map[string]string{"key": in.ParentKey}
+	}
+	if in.Description != "" {
+		adf, err := MarkdownToADF(in.Description)
+		if err != nil {
+			return nil, fmt.Errorf("convert issue description to ADF: %w", err)
+		}
+		fields["description"] = adf
+	}
+	reqBody, err := json.Marshal(map[string]any{"fields": fields})
+	if err != nil {
+		return nil, fmt.Errorf("marshal create issue request: %w", err)
+	}
+	var created CreatedIssue
+	if err := c.do(ctx, http.MethodPost, "/issue", bytes.NewReader(reqBody), &created); err != nil {
+		return nil, fmt.Errorf("create issue in project %s: %w", in.ProjectKey, err)
+	}
+	return &created, nil
+}
+
 // GetStatus fetches a single status by ID or name, including its
 // statusCategory. Used to classify changelog status transitions by category
 // rather than by matching locale/workflow-specific status name substrings.

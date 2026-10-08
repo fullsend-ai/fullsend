@@ -144,6 +144,13 @@ fullsend
 │   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
 │   │   ├── --number <int>                   #     Issue number
 │   │   └── --fields <ids>                   #     Jira custom field IDs (customfield_<digits>) to include under custom_fields (Jira only)
+│   ├── create                               #   Create an issue (prints number, key, URL as JSON)
+│   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
+│   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
+│   │   ├── --title <string>                 #     Issue title
+│   │   ├── --body <string>                  #     Issue description (Markdown), or '-' for stdin
+│   │   ├── --type <id-or-name>              #     Jira issue type ID or name (required for Jira; Jira only)
+│   │   └── --parent <key>                   #     Jira parent issue key for sub-tasks (Jira only)
 │   ├── post-comment                         #   Post or update a sticky comment on an issue
 │   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
 │   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
@@ -749,7 +756,7 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/inference_openai.go` | ~900 | OpenAI WIF enrolment: request document, reply import, status/exchange |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/github_client.go` | ~130 | GitHub token resolution and authenticated client construction |
-| `internal/cli/issues.go` | ~765 | Issue read/write commands (`fullsend issues get`, `post-comment`, `link`) |
+| `internal/cli/issues.go` | ~971 | Issue read/write commands (`fullsend issues get`, `create`, `post-comment`, `link`) |
 | `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |
