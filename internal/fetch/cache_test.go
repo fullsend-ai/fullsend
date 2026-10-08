@@ -349,6 +349,94 @@ func TestCacheGetDir_IgnoresAtomicWriteTempFiles(t *testing.T) {
 	assert.NotEmpty(t, treeDir)
 }
 
+func TestCacheGetDir_IgnoresPythonBytecode(t *testing.T) {
+	root := t.TempDir()
+	files := map[string][]byte{
+		"main.py":        []byte("import helper\n"),
+		"lib/helper.py":  []byte("def run():\n    pass\n"),
+		"lib/README.txt": []byte("docs"),
+	}
+
+	treeHash, err := CachePutDir(root, "https://example.com/scripts", files)
+	require.NoError(t, err)
+
+	// Plant bytecode as CPython would when running the scripts in place,
+	// plus a stray top-level .pyc outside any __pycache__ directory.
+	dir, err := CachePath(root, treeHash)
+	require.NoError(t, err)
+	tree := filepath.Join(dir, "tree")
+	for _, pyc := range []string{
+		filepath.Join(tree, "__pycache__", "helper.cpython-312.pyc"),
+		filepath.Join(tree, "lib", "__pycache__", "helper.cpython-312.opt-1.pyc"),
+		filepath.Join(tree, "stray.pyc"),
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(pyc), 0o700))
+		require.NoError(t, os.WriteFile(pyc, []byte("bytecode"), 0o600))
+	}
+
+	treeDir, entry, err := CacheGetDir(root, treeHash)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	assert.Equal(t, treeHash, entry.SHA256)
+	assert.Equal(t, tree, treeDir)
+
+	// Tampering with a real source file must still fail verification.
+	require.NoError(t, os.WriteFile(filepath.Join(tree, "lib", "helper.py"), []byte("evil"), 0o600))
+	_, _, err = CacheGetDir(root, treeHash)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cache integrity check failed")
+}
+
+func TestCacheGetDir_VerifiesRecordedPythonBytecode(t *testing.T) {
+	root := t.TempDir()
+	files := map[string][]byte{
+		"main.py":                          []byte("print('hi')\n"),
+		"__pycache__/main.cpython-312.pyc": []byte("committed bytecode"),
+		"legacy.pyc":                       []byte("committed legacy bytecode"),
+	}
+
+	treeHash, err := CachePutDir(root, "https://example.com/scripts", files)
+	require.NoError(t, err)
+
+	// Bytecode committed to the fetched source is part of the tree hash.
+	_, entry, err := CacheGetDir(root, treeHash)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+
+	dir, err := CachePath(root, treeHash)
+	require.NoError(t, err)
+	tree := filepath.Join(dir, "tree")
+	for _, rel := range []string{"__pycache__/main.cpython-312.pyc", "legacy.pyc"} {
+		t.Run(rel, func(t *testing.T) {
+			p := filepath.Join(tree, filepath.FromSlash(rel))
+			orig, err := os.ReadFile(p)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = os.WriteFile(p, orig, 0o600) })
+
+			require.NoError(t, os.WriteFile(p, []byte("tampered"), 0o600))
+			_, _, err = CacheGetDir(root, treeHash)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "cache integrity check failed")
+		})
+	}
+}
+
+func TestIsPythonBytecode(t *testing.T) {
+	for path, want := range map[string]bool{
+		"foo.pyc":                         true,
+		filepath.Join("a", "b.pyc"):       true,
+		filepath.Join("__pycache__", "x"): true,
+		filepath.Join("a", "__pycache__", "x.cpython-312.pyc"): true,
+		"foo.py":                             false,
+		"__pycache__.txt":                    false,
+		filepath.Join("my__pycache__", "x"):  false,
+		filepath.Join("scripts", "pyc.md"):   false,
+		filepath.Join("scripts", "foo.pycx"): false,
+	} {
+		assert.Equal(t, want, isPythonBytecode(path), path)
+	}
+}
+
 func TestSkipVanished(t *testing.T) {
 	assert.NoError(t, skipVanished(fs.ErrNotExist))
 	assert.NoError(t, skipVanished(fmt.Errorf("lstat foo.tmp.42: %w", fs.ErrNotExist)))

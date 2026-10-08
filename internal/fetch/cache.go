@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -332,6 +333,15 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 	// mid-walk (a concurrent writer renaming its temp file away). The tree-hash
 	// comparison below backstops both tolerances: skipping or losing a
 	// legitimate file still fails the integrity check.
+	//
+	// Scripts resolved from the cache run in place inside the tree, so
+	// CPython may write __pycache__/*.pyc bytecode next to them. Skip such
+	// bytecode unless the cached manifest records it — bytecode committed to
+	// the fetched source is part of the pinned tree hash and stays verified.
+	recorded := make(map[string]bool, len(entry.Files))
+	for _, f := range entry.Files {
+		recorded[f.Path] = true
+	}
 	files := make(map[string][]byte)
 	err = filepath.Walk(treeDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -346,6 +356,9 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 		relPath, err := filepath.Rel(treeDir, path)
 		if err != nil {
 			return err
+		}
+		if isPythonBytecode(relPath) && !recorded[filepath.ToSlash(relPath)] {
+			return nil
 		}
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -364,6 +377,13 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 	}
 
 	return treeDir, &entry, nil
+}
+
+// isPythonBytecode reports whether relPath is a CPython bytecode artifact:
+// a *.pyc file or any file inside a __pycache__ directory.
+func isPythonBytecode(relPath string) bool {
+	return strings.HasSuffix(relPath, ".pyc") ||
+		slices.Contains(strings.Split(filepath.ToSlash(relPath), "/"), "__pycache__")
 }
 
 // CacheNamedSymlink creates a symlink in a cache directory so that a
