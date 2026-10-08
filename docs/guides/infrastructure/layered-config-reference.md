@@ -298,7 +298,9 @@ models:
 commands (`github`, `gitlab`, or `jira`). Unset (`""`) means no default
 — `--tracker` is required on every `fullsend issues` invocation. When
 set, it is used as the default for `--tracker` on `fullsend issues
-get`, `fullsend issues post-comment`, and `fullsend issues link`; an
+get`, `fullsend issues post-comment`, and `fullsend issues link` (`link`
+supports only Jira, so a `github` or `gitlab` default makes it fail with a
+not-supported error unless `--tracker jira` is passed); an
 explicit `--tracker` flag overrides it. Distinct from `forge`: a repo's hosting forge does not
 imply its issue tracker (e.g. a GitHub-hosted repo may track issues in
 Jira).

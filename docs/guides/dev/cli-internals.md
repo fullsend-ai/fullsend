@@ -156,7 +156,8 @@ fullsend
 │       ├── --tracker <tracker>              #     Tracker backend; github/gitlab return "not supported"
 │       ├── --from <key>                     #     Source issue key (e.g. PROJ-123)
 │       ├── --to <key>                       #     Target issue key (e.g. PROJ-456)
-│       └── --type <name>                    #     Link type name (e.g. Blocks), passed through verbatim
+│       ├── --type <name>                    #     Link type name (e.g. Blocks), passed through verbatim
+│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves default --tracker)
 ├── post-review                              # Post sticky PR/MR review comments (formal review is best-effort)
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
 │   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)

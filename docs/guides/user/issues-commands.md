@@ -174,8 +174,8 @@ created in the type's outward direction: the example above records that
 | `--to` | Yes | Target issue key (e.g. `PROJ-456`) |
 | `--type` | Yes | Link type name (e.g. `Blocks`), passed through verbatim |
 | `--token` | No | API token (default: env var per tracker) |
-| `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
-| `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
+| `--jira-url` | If env var unset | Jira instance URL (default: `$JIRA_BASE_URL`) |
+| `--jira-email` | If env var unset | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
 | `--fullsend-dir` | No | Path to `.fullsend` config directory (sources a default `--tracker` from its `config.yaml` when the flag is omitted) |
 
 ## Config-based default tracker

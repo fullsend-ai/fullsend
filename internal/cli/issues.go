@@ -611,14 +611,15 @@ func runIssuesLink(ctx context.Context, cfg *issuesLinkConfig) error {
 
 	from := strings.TrimSpace(cfg.from)
 	to := strings.TrimSpace(cfg.to)
-	linkType := strings.TrimSpace(cfg.linkType)
 	if from == "" {
 		return fmt.Errorf("--from must not be empty")
 	}
 	if to == "" {
 		return fmt.Errorf("--to must not be empty")
 	}
-	if linkType == "" {
+	// Trim only to reject blank input; the link type is passed through
+	// to Jira exactly as given.
+	if strings.TrimSpace(cfg.linkType) == "" {
 		return fmt.Errorf("--type must not be empty")
 	}
 
@@ -627,12 +628,19 @@ func runIssuesLink(ctx context.Context, cfg *issuesLinkConfig) error {
 		return err
 	}
 
-	errNoLinks := fmt.Errorf("--tracker %s cannot create typed issue links (only jira can): %w", trackerName, tracker.ErrNotSupported)
-
 	// Reject trackers without link support before building a client, so
 	// the error does not depend on credentials being configured.
 	if trackerName != trackerJira {
-		return errNoLinks
+		return fmt.Errorf("--tracker %s cannot create typed issue links (only jira can): %w", trackerName, tracker.ErrNotSupported)
+	}
+
+	fromProject, fromNumber, err := parseIssueKey(from)
+	if err != nil {
+		return fmt.Errorf("invalid --from: %w", err)
+	}
+	toProject, toNumber, err := parseIssueKey(to)
+	if err != nil {
+		return fmt.Errorf("invalid --to: %w", err)
 	}
 
 	tc := cfg.testClient
@@ -645,23 +653,14 @@ func runIssuesLink(ctx context.Context, cfg *issuesLinkConfig) error {
 
 	linker, ok := tc.(tracker.Linker)
 	if !ok {
-		return errNoLinks
-	}
-
-	fromProject, fromNumber, err := parseIssueKey(from)
-	if err != nil {
-		return fmt.Errorf("invalid --from: %w", err)
-	}
-	toProject, toNumber, err := parseIssueKey(to)
-	if err != nil {
-		return fmt.Errorf("invalid --to: %w", err)
+		return fmt.Errorf("tracker %s client does not support typed issue links: %w", trackerName, tracker.ErrNotSupported)
 	}
 
 	printer.Header("Link Issues")
-	if err := linker.LinkIssues(ctx, fromProject, fromNumber, toProject, toNumber, linkType); err != nil {
+	if err := linker.LinkIssues(ctx, fromProject, fromNumber, toProject, toNumber, cfg.linkType); err != nil {
 		return fmt.Errorf("linking issues: %w", err)
 	}
-	printer.StepDone(fmt.Sprintf("Linked %s to %s (%s)", from, to, linkType))
+	printer.StepDone(fmt.Sprintf("Linked %s to %s (%s)", from, to, cfg.linkType))
 	return nil
 }
 

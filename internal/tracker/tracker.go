@@ -39,6 +39,12 @@ func IsNotFound(err error) bool {
 // requested operation (e.g. typed issue links on GitHub or GitLab).
 var ErrNotSupported = errors.New("not supported by this tracker")
 
+// IsNotSupported reports whether err indicates the tracker backend does
+// not support the requested operation.
+func IsNotSupported(err error) bool {
+	return errors.Is(err, ErrNotSupported)
+}
+
 // Body is Markdown-formatted issue/comment text, as produced by GitHub and
 // GitLab. Jira doesn't speak Markdown — its v3 API requires comment and
 // description bodies in Atlassian Document Format (ADF) and rejects plain

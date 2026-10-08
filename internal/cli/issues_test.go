@@ -84,6 +84,59 @@ func TestRunIssuesLink_TypePassedThroughVerbatim(t *testing.T) {
 	assert.Equal(t, "Problem/Incident", fj.Links[0].Type)
 }
 
+func TestRunIssuesLink_TypeWhitespacePreserved(t *testing.T) {
+	jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "PROJ-1",
+		to:          "PROJ-2",
+		linkType:    " Blocks ",
+		testClient:  jc,
+		testPrinter: ui.New(io.Discard),
+	}
+
+	require.NoError(t, runIssuesLink(context.Background(), cfg))
+	require.Len(t, fj.Links, 1)
+	assert.Equal(t, " Blocks ", fj.Links[0].Type)
+}
+
+func TestRunIssuesLink_InvalidKeyBeforeCredentials(t *testing.T) {
+	t.Setenv("JIRA_BASE_URL", "")
+	t.Setenv("JIRA_USER_EMAIL", "")
+	t.Setenv("JIRA_API_TOKEN", "")
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "bogus",
+		to:          "PROJ-2",
+		linkType:    "Blocks",
+		testPrinter: ui.New(io.Discard),
+	}
+
+	err := runIssuesLink(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --from")
+}
+
+func TestRunIssuesLink_ClientWithoutLinker(t *testing.T) {
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "PROJ-1",
+		to:          "PROJ-2",
+		linkType:    "Blocks",
+		testClient:  nonLinkerClient{},
+		testPrinter: ui.New(io.Discard),
+	}
+
+	err := runIssuesLink(context.Background(), cfg)
+	require.Error(t, err)
+	assert.True(t, tracker.IsNotSupported(err))
+	assert.Contains(t, err.Error(), "does not support typed issue links")
+}
+
+// nonLinkerClient is a tracker.Client that does not implement tracker.Linker.
+type nonLinkerClient struct{ tracker.Client }
+
 func TestRunIssuesLink_EmptyFlags(t *testing.T) {
 	tests := []struct {
 		name     string
