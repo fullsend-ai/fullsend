@@ -74,7 +74,21 @@ func ValidateSlotClean(w *world.World) error {
 	}
 	cfg, err := config.ParsePerRepoConfigWriterLayered(cfgData, baseData)
 	if err != nil {
-		return nil
+		// Fall back to an overlay-only parse so the
+		// overlay is still checked, and flag the malformed base
+		// itself as stale state worth reporting.
+		overlayCfg, overlayErr := config.ParsePerRepoConfigWriter(cfgData)
+		if overlayErr != nil {
+			return nil
+		}
+		stale := []string{fmt.Sprintf("config.base.yaml is malformed: %v", err)}
+		if overlayCfg.IsKillSwitchActive() {
+			stale = append(stale, "kill_switch is active")
+		}
+		if overlayCfg.IsOwnersFileAuthEnabled() {
+			stale = append(stale, "owners_file authorization is enabled")
+		}
+		return fmt.Errorf("repo slot has stale state from a previous scenario (cleanup likely failed): %s", strings.Join(stale, ", "))
 	}
 	var stale []string
 	if cfg.IsKillSwitchActive() {

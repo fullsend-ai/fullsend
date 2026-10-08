@@ -499,20 +499,25 @@ jobs:
           # config.yaml sets kill_switch at all, that value is final
           # and config.base.yaml is ignored; config.base.yaml is only
           # consulted when config.yaml is silent on the key.
+          # -o=json normalizes every YAML null spelling (bare key, ~,
+          # Null, NULL) to the literal "null", and every boolean case
+          # variant (True, FALSE, ...) to lowercase true/false — so the
+          # sentinel check below and the final comparison both work
+          # regardless of source spelling.
           KILL_SWITCH="false"
           OVERLAY_KS="null"
           if [[ -f .fullsend/config.yaml ]]; then
-            OVERLAY_KS=$(yq '.kill_switch' .fullsend/config.yaml)
+            OVERLAY_KS=$(yq -o=json '.kill_switch' .fullsend/config.yaml)
           fi
           if [[ "$OVERLAY_KS" != "null" ]]; then
             KILL_SWITCH="$OVERLAY_KS"
           elif [[ -f .fullsend/config.base.yaml ]]; then
-            BASE_KS=$(yq '.kill_switch' .fullsend/config.base.yaml)
+            BASE_KS=$(yq -o=json '.kill_switch' .fullsend/config.base.yaml)
             if [[ "$BASE_KS" != "null" ]]; then
               KILL_SWITCH="$BASE_KS"
             fi
           fi
-          if [[ "${KILL_SWITCH,,}" == "true" ]]; then
+          if [[ "$KILL_SWITCH" == "true" ]]; then
             echo "::error::Kill switch is active — all agent dispatch halted"
             echo "::error::Set kill_switch: false in .fullsend/config.yaml or .fullsend/config.base.yaml to resume"
             exit 1

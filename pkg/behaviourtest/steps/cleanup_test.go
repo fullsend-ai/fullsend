@@ -1315,6 +1315,25 @@ func TestValidateSlotClean(t *testing.T) {
 		require.NoError(t, ValidateSlotClean(w))
 	})
 
+	t.Run("malformed config.base.yaml does not mask an overlay kill switch left on", func(t *testing.T) {
+		t.Parallel()
+		w := leased(slotConfig(t, func(c config.PerRepoConfigWriter) { c.SetKillSwitch(true) }))
+		w.SCM.(*fakeCleanupSCM).baseFileConfigured = true
+		w.SCM.(*fakeCleanupSCM).baseFileContent = []byte("kill_switch: [unterminated\n")
+		err := ValidateSlotClean(w)
+		require.ErrorContains(t, err, "config.base.yaml is malformed")
+		require.ErrorContains(t, err, "kill_switch is active")
+	})
+
+	t.Run("malformed config.base.yaml alone is reported as stale", func(t *testing.T) {
+		t.Parallel()
+		w := leased(slotConfig(t, nil))
+		w.SCM.(*fakeCleanupSCM).baseFileConfigured = true
+		w.SCM.(*fakeCleanupSCM).baseFileContent = []byte("kill_switch: [unterminated\n")
+		err := ValidateSlotClean(w)
+		require.ErrorContains(t, err, "config.base.yaml is malformed")
+	})
+
 	t.Run("no leased repo", func(t *testing.T) {
 		t.Parallel()
 		require.NoError(t, ValidateSlotClean(&world.World{Org: "org", SCM: &fakeCleanupSCM{}}))
