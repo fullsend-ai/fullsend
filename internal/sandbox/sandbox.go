@@ -285,11 +285,50 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 	return nil
 }
 
-// gatewayProfileMetadataKeys lists top-level fields that the gateway's
-// profile export adds but a local profile never declares. They are the only
-// exported-only keys profileContentEqual ignores.
-var gatewayProfileMetadataKeys = map[string]bool{
-	"resource_version": true,
+// profileFieldSchema tells profileContentEqual how to compare one level of a
+// provider profile document.
+type profileFieldSchema struct {
+	// ignore lists fields that are gateway metadata, not profile content;
+	// they are skipped whatever their value.
+	ignore map[string]bool
+	// defaults maps a field to the value OpenShell gives it when a profile
+	// omits it. A field present on only one side matches only when it holds
+	// this value; any other one-sided field is a mismatch.
+	defaults map[string]any
+	// lists maps a list-valued field to the schema of its entries, so
+	// defaulted fields inside each entry are handled too.
+	lists map[string]profileFieldSchema
+}
+
+// gatewayProfileSchema describes what `openshell provider profile export`
+// (OpenShell 0.1.2, ProviderTypeProfile) adds to a profile imported from a
+// file that did not declare these fields. See #8211.
+var gatewayProfileSchema = profileFieldSchema{
+	ignore: map[string]bool{
+		"resource_version": true,
+	},
+	defaults: map[string]any{
+		"description":       "",
+		"category":          "other",
+		"credentials":       []any{},
+		"endpoints":         []any{},
+		"binaries":          []any{},
+		"inference_capable": false,
+		"source":            "user",
+		"scope":             "workspace",
+	},
+	lists: map[string]profileFieldSchema{
+		"credentials": {
+			defaults: map[string]any{
+				"description": "",
+				"env_vars":    []any{},
+				"required":    false,
+				"auth_style":  "",
+				"header_name": "",
+				"query_param": "",
+			},
+		},
+	},
 }
 
 // gatewayProfileMatches reports whether the gateway's current content for
@@ -317,11 +356,13 @@ func gatewayProfileMatches(ctx context.Context, id, profilePath string) (bool, e
 
 // profileContentEqual reports whether local (a profile YAML document) and
 // exported (the gateway's export of that same profile id) declare the same
-// fields with the same values, modulo gatewayProfileMetadataKeys.
+// fields with the same values, as described by gatewayProfileSchema: gateway
+// metadata is ignored, and a field the export fills in with its default
+// value matches a local profile that omits it (see #8211).
 //
 // The comparison is bidirectional: a local file that removes a field (e.g.
 // `credentials` or `endpoints`) must not match a gateway profile that still
-// has it (see #7973).
+// has it with a non-default value (see #7973).
 //
 // Unparseable input is an error, not a mismatch.
 func profileContentEqual(local, exported []byte) (bool, error) {
@@ -334,23 +375,77 @@ func profileContentEqual(local, exported []byte) (bool, error) {
 		return false, fmt.Errorf("parsing exported profile: %w", err)
 	}
 
-	for k, v := range localDoc {
-		ev, ok := exportedDoc[k]
-		if !ok || !reflect.DeepEqual(v, ev) {
-			return false, nil
-		}
-	}
+	return profileFieldsEqual(localDoc, exportedDoc, gatewayProfileSchema), nil
+}
 
-	for k := range exportedDoc {
-		if gatewayProfileMetadataKeys[k] {
+// profileFieldsEqual compares two profile maps under schema.
+func profileFieldsEqual(local, exported map[string]any, schema profileFieldSchema) bool {
+	for k, lv := range local {
+		if schema.ignore[k] {
 			continue
 		}
-		if _, ok := localDoc[k]; !ok {
-			return false, nil
+		ev, ok := exported[k]
+		if !ok {
+			if !profileFieldIsDefault(k, lv, schema) {
+				return false
+			}
+			continue
+		}
+		if entrySchema, isList := schema.lists[k]; isList {
+			if !profileListsEqual(lv, ev, entrySchema) {
+				return false
+			}
+			continue
+		}
+		if !reflect.DeepEqual(lv, ev) {
+			return false
 		}
 	}
 
-	return true, nil
+	for k, ev := range exported {
+		if schema.ignore[k] {
+			continue
+		}
+		if _, ok := local[k]; !ok && !profileFieldIsDefault(k, ev, schema) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// profileFieldIsDefault reports whether v is schema's default for field k.
+func profileFieldIsDefault(k string, v any, schema profileFieldSchema) bool {
+	d, ok := schema.defaults[k]
+	return ok && reflect.DeepEqual(v, d)
+}
+
+// profileListsEqual compares two list values entry by entry, applying
+// entrySchema to entries that are maps. Values that are not both lists
+// (e.g. a map-shaped `credentials`) are compared exactly.
+func profileListsEqual(local, exported any, entrySchema profileFieldSchema) bool {
+	localList, lok := local.([]any)
+	exportedList, eok := exported.([]any)
+	if !lok || !eok {
+		return reflect.DeepEqual(local, exported)
+	}
+	if len(localList) != len(exportedList) {
+		return false
+	}
+	for i := range localList {
+		lm, lIsMap := localList[i].(map[string]any)
+		em, eIsMap := exportedList[i].(map[string]any)
+		if lIsMap && eIsMap {
+			if !profileFieldsEqual(lm, em, entrySchema) {
+				return false
+			}
+			continue
+		}
+		if !reflect.DeepEqual(localList[i], exportedList[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // ProfileExists reports whether the gateway lists a provider profile with

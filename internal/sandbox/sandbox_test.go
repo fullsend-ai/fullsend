@@ -1699,6 +1699,192 @@ func TestImportProfile_AlreadyExists_GatewayMetadataIgnored(t *testing.T) {
 	assert.NoError(t, err, "a gateway-only metadata field must not be treated as a content mismatch")
 }
 
+// TestImportProfile_AlreadyExists_GatewayDefaultsIgnored covers #8211: the
+// gateway's export of an unchanged profile adds defaulted fields the local
+// file never declares, which must not be treated as a content mismatch.
+func TestImportProfile_AlreadyExists_GatewayDefaultsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	local := "id: my-profile\ncategory: source_control\ncredentials:\n  - name: api_token\n    env_vars: [GH_TOKEN]\n    required: true\n"
+	require.NoError(t, os.WriteFile(profilePath, []byte(local), 0o644))
+
+	exported := "id: my-profile\nresource_version: 3\ndescription: ''\ncategory: source_control\n" +
+		"credentials:\n- name: api_token\n  description: ''\n  env_vars:\n  - GH_TOKEN\n  required: true\n" +
+		"  auth_style: ''\n  header_name: ''\n  query_param: ''\n" +
+		"endpoints: []\nbinaries: []\ninference_capable: false\nsource: user\nscope: workspace\n"
+	alreadyExistsThenExportStub(t, dir, exported)
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	assert.NoError(t, err, "gateway-defaulted fields on an unchanged profile must not be a content mismatch")
+}
+
+func TestProfileContentEqual(t *testing.T) {
+	const local = `id: my-profile
+category: source_control
+credentials:
+  - name: api_token
+    env_vars: [GH_TOKEN]
+    required: true
+endpoints:
+  - host: api.github.com
+    port: 443
+binaries:
+  - "**/gh"
+`
+	const exported = `id: my-profile
+resource_version: 7
+description: ''
+category: source_control
+credentials:
+- name: api_token
+  description: ''
+  env_vars:
+  - GH_TOKEN
+  required: true
+  auth_style: ''
+  header_name: ''
+  query_param: ''
+endpoints:
+- host: api.github.com
+  port: 443
+binaries:
+- '**/gh'
+inference_capable: false
+source: user
+scope: workspace
+`
+	tests := []struct {
+		name     string
+		local    string
+		exported string
+		want     bool
+	}{
+		{
+			name:     "export adds only metadata and defaults",
+			local:    local,
+			exported: exported,
+			want:     true,
+		},
+		{
+			name:     "local declares defaults explicitly",
+			local:    local + "inference_capable: false\ndescription: ''\n",
+			exported: exported,
+			want:     true,
+		},
+		{
+			name:     "local declares a default the export omits",
+			local:    "id: p\nendpoints: []\n",
+			exported: "id: p\n",
+			want:     true,
+		},
+		{
+			name:     "no credentials locally, export has empty list",
+			local:    "id: p\ncategory: inference\n",
+			exported: "id: p\ncategory: inference\ncredentials: []\n",
+			want:     true,
+		},
+		{
+			name:     "category omitted locally defaults to other",
+			local:    "id: p\n",
+			exported: "id: p\ncategory: other\n",
+			want:     true,
+		},
+		{
+			name:     "credential env var differs",
+			local:    local,
+			exported: strings.Replace(exported, "  - GH_TOKEN", "  - OTHER_TOKEN", 1),
+			want:     false,
+		},
+		{
+			name:     "endpoint host differs",
+			local:    local,
+			exported: strings.Replace(exported, "host: api.github.com", "host: evil.example.com", 1),
+			want:     false,
+		},
+		{
+			name:     "credential count differs",
+			local:    local,
+			exported: strings.Replace(exported, "endpoints:\n", "- name: extra\nendpoints:\n", 1),
+			want:     false,
+		},
+		{
+			name:     "local drops credentials the export still has",
+			local:    "id: p\n",
+			exported: "id: p\ncredentials:\n- name: api_token\n  env_vars: [GH_TOKEN]\n",
+			want:     false,
+		},
+		{
+			name:     "local drops endpoints the export still has",
+			local:    "id: p\n",
+			exported: "id: p\nendpoints:\n- host: internal.example.com\n  port: 443\n",
+			want:     false,
+		},
+		{
+			name:     "export has non-default inference_capable",
+			local:    local,
+			exported: strings.Replace(exported, "inference_capable: false", "inference_capable: true", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default credential field",
+			local:    local,
+			exported: strings.Replace(exported, "query_param: ''", "query_param: token", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default source",
+			local:    local,
+			exported: strings.Replace(exported, "source: user", "source: builtin", 1),
+			want:     false,
+		},
+		{
+			name:     "export has unknown extra field",
+			local:    "id: p\n",
+			exported: "id: p\nannotations:\n  k: v\n",
+			want:     false,
+		},
+		{
+			name:     "local has field the export lacks",
+			local:    "id: p\ndisplay_name: P\n",
+			exported: "id: p\n",
+			want:     false,
+		},
+		{
+			name:     "map-shaped credentials compared exactly",
+			local:    "id: p\ncredentials:\n  api_token: GH_TOKEN\n",
+			exported: "id: p\ncredentials: {}\n",
+			want:     false,
+		},
+		{
+			name:     "list entries that are not maps compared exactly",
+			local:    "id: p\ncredentials: [a]\n",
+			exported: "id: p\ncredentials: [b]\n",
+			want:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := profileContentEqual([]byte(tt.local), []byte(tt.exported))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestProfileContentEqual_UnparseableYAML(t *testing.T) {
+	_, err := profileContentEqual([]byte("id: [unclosed"), []byte("id: p\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing local profile")
+
+	_, err = profileContentEqual([]byte("id: p\n"), []byte("id: [unclosed"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing exported profile")
+}
+
 // TestImportProfile_AlreadyExists_StaleContent covers #7973: a blocked delete
 // leaves old content on the gateway, so ImportProfile must fail rather than
 // cache a false success.
