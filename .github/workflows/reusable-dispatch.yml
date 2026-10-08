@@ -107,7 +107,7 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     permissions:
       contents: read
-      issues: write
+      issues: read
       pull-requests: read
     outputs:
       stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
@@ -116,6 +116,7 @@ jobs:
       authorization_denied: ${{ steps.route.outputs.authorization_denied || 'false' }}
       authorization_actor: ${{ steps.route.outputs.authorization_actor || '' }}
       authorization_number: ${{ steps.route.outputs.authorization_number || '' }}
+      legacy_command_applicable: ${{ steps.route.outputs.command_applicable || 'false' }}
     steps:
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}
@@ -428,8 +429,8 @@ jobs:
 
           # Keep legacy slash-command denial visible without turning
           # unrelated comments, bot comments, or inapplicable commands into
-          # authorization notices. The CEL path posts the same marker from
-          # the fullsend binary when its shared gate denies the event.
+          # authorization notices. The CEL path exposes the same denial
+          # metadata through the fullsend dispatch step.
           if [[ "${EVENT_NAME}" == "issue_comment" \
             && "${COMMENT_USER_TYPE}" != "Bot" \
             && "${COMMAND_APPLICABLE}" == "true" \
@@ -444,12 +445,14 @@ jobs:
           if [[ -z "${STAGE}" ]]; then
             echo "No stage matched — skipping dispatch"
             echo "stage=" >> "${GITHUB_OUTPUT}"
+            echo "command_applicable=${COMMAND_APPLICABLE}" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
           echo "Routed to stage: ${STAGE}"
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
+          echo "command_applicable=${COMMAND_APPLICABLE}" >> "${GITHUB_OUTPUT}"
 
       - name: Check for existing PRs
         id: pr-check
@@ -700,8 +703,8 @@ jobs:
 
   authorization-notice:
     name: Authorization notice
-    needs: route
-    if: needs.route.outputs.authorization_denied == 'true'
+    needs: [route, harness-dispatch]
+    if: ${{ always() && !cancelled() && (needs.route.outputs.authorization_denied == 'true' || needs.harness-dispatch.outputs.authorization_denied == 'true') }}
     runs-on: ${{ inputs.runner_image }}
     timeout-minutes: 5
     permissions:
@@ -712,8 +715,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPOSITORY: ${{ github.repository }}
-      ISSUE_NUMBER: ${{ needs.route.outputs.authorization_number }}
-      ACTOR_LOGIN: ${{ needs.route.outputs.authorization_actor }}
+      ISSUE_NUMBER: ${{ needs.route.outputs.authorization_number || needs.harness-dispatch.outputs.authorization_number }}
+      ACTOR_LOGIN: ${{ needs.route.outputs.authorization_actor || needs.harness-dispatch.outputs.authorization_actor }}
     steps:
       - name: Create first-denial comment
         shell: bash
@@ -729,7 +732,7 @@ jobs:
           fi
 
           MARKER="<!-- fullsend:authorization-denied:${ACTOR_LOGIN} -->"
-          COMMENTS="$(gh api "repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" --paginate --jq '.[].body')" || {
+          COMMENTS="$(gh api "repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" --paginate --jq '.[] | select(.user.login == "github-actions[bot]") | .body')" || {
             echo "::warning::Could not inspect existing authorization-denial comments"
             exit 0
           }
@@ -1595,15 +1598,18 @@ jobs:
 
   harness-dispatch:
     name: Harness dispatch
-    if: ${{ inputs.matrix == '' }}
+    needs: route
+    if: ${{ inputs.matrix == '' && needs.route.outputs.legacy_command_applicable != 'true' }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write
       contents: read
-      issues: write
       pull-requests: read
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
+      authorization_denied: ${{ steps.dispatch.outputs.authorization_denied || 'false' }}
+      authorization_actor: ${{ steps.dispatch.outputs.authorization_actor || '' }}
+      authorization_number: ${{ steps.dispatch.outputs.authorization_number || '' }}
     steps:
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}

@@ -110,12 +110,9 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	if err != nil {
 		return err
 	}
-	if result.AuthorizationDenied {
-		if err := harnessdispatch.AuthorizationDeniedComment(ctx, client, event); err != nil {
-			// Authorization remains denied even if the explanatory comment cannot
-			// be posted. Keep the dispatch matrix empty and surface the best-effort
-			// notification failure in the Actions log.
-			fmt.Fprintf(os.Stderr, "::warning::could not post authorization-denial comment: %v\n", err)
+	if inDriver == "gha-event" {
+		if err := writeAuthorizationOutput(event, result.AuthorizationDenied); err != nil {
+			return err
 		}
 	}
 
@@ -139,4 +136,36 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 		return fmt.Errorf("unknown output driver %q", opts.outputDriver)
 	}
 	return nil
+}
+
+func writeAuthorizationOutput(event *normevent.Event, denied bool) error {
+	if event == nil || event.Actor.Kind != normevent.ActorHuman || !denied {
+		return nil
+	}
+	path := os.Getenv("GITHUB_OUTPUT")
+	if path == "" || event.Entity.ID < 1 || !validGitHubLogin(event.Actor.ID) {
+		return nil
+	}
+
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("open GitHub output file: %w", err)
+	}
+	defer f.Close()
+	if _, err := fmt.Fprintf(f, "authorization_denied=true\nauthorization_actor=%s\nauthorization_number=%d\n", event.Actor.ID, event.Entity.ID); err != nil {
+		return fmt.Errorf("write authorization output: %w", err)
+	}
+	return nil
+}
+
+func validGitHubLogin(login string) bool {
+	if login == "" {
+		return false
+	}
+	for _, r := range login {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
 }

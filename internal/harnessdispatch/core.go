@@ -26,9 +26,9 @@ type Options struct {
 	FetchPolicy *fetch.FetchPolicy
 }
 
-// Result describes a dispatch evaluation. AuthorizationDenied is set when
-// the shared authorization gate rejected the event before any harness could
-// run; kill-switch and no-trigger results leave it false.
+// Result describes a dispatch evaluation. AuthorizationDenied is set only
+// when a confirmed authorization failure prevents at least one matching
+// harness from running; kill-switch and no-trigger results leave it false.
 type Result struct {
 	Refs                []ExecutionRef
 	AuthorizationDenied bool
@@ -80,18 +80,32 @@ func DispatchResult(ctx context.Context, opts Options) (Result, error) {
 
 	authCheck := *opts.Event
 	authCheck.Actor.Role = effectiveRole
-	if !IsAuthorized(&authCheck) {
-		return Result{AuthorizationDenied: true}, nil
+	authorized := IsAuthorized(&authCheck)
+	if !authorized && !opts.Event.AuthorizationAvailable() {
+		return Result{}, nil
 	}
 
 	candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, dirCfg, opts.FetchPolicy)
 	if err != nil {
+		// An already-denied event cannot launch anything, so an unavailable
+		// harness should not turn the denial-notification path into a failure.
+		// Authorized events still surface resolution errors normally.
+		if !authorized {
+			return Result{}, nil
+		}
 		return Result{}, err
 	}
 
 	matched, err := MatchHarnesses(candidates, opts.Event)
 	if err != nil {
 		return Result{}, err
+	}
+
+	if !authorized {
+		if !opts.Event.AuthorizationAvailable() {
+			return Result{}, nil
+		}
+		return Result{AuthorizationDenied: len(matched) > 0}, nil
 	}
 
 	var refs []ExecutionRef
