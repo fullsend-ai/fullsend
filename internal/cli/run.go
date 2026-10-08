@@ -1427,8 +1427,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Failed to load provider definitions")
 			return fmt.Errorf("loading provider definitions: %w", err)
 		}
-		warnReservedProviderNameOverrides(localDefs, result.Providers, printer)
-		listedReservedProfiles := warnReservedProfileCopies(result.Profiles, printer)
+		providerOverrides := warnReservedProviderNameOverrides(localDefs, result.Providers, printer)
+		profileOverrides := warnReservedProfileCopies(result.Profiles, printer)
 
 		// A bare provider name with no local or URL-resolved definition
 		// falls back to the definition the scaffold embeds in this binary
@@ -1465,7 +1465,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					// and stays live for this release (warned about by
 					// warnReservedProfileCopies); importing the embedded one
 					// now would replace it under the same id (#7268).
-					if _, listed := listedReservedProfiles[pd.Type]; !listed {
+					if _, hasProfileOverride := profileOverrides[pd.Type]; !hasProfileOverride {
 						if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
 							return err
 						}
@@ -1563,8 +1563,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepStart("Ensuring provider: " + pd.Name)
 				if err := sandbox.EnsureProvider(ctx, pd.Name, pd.Type, pd.Credentials, pd.Config, urlProviderNames[pd.Name]); err != nil {
 					printer.StepFail("Failed to create provider " + pd.Name)
+					_, hasProviderOverride := providerOverrides[pd.Name]
+					_, hasProfileOverride := profileOverrides[pd.Type]
 					mu.Lock()
-					errs = append(errs, fmt.Errorf("ensuring provider %q: %w", pd.Name, err))
+					errs = append(errs, wrapEnsureProviderError(pd, hasProviderOverride, hasProfileOverride, err))
 					mu.Unlock()
 					return
 				}
@@ -6685,6 +6687,39 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 	return allDefs, shadowed
 }
 
+// wrapEnsureProviderError preserves the existing provider context and error
+// chain while adding migration guidance only for reserved provider/profile
+// copies that actually participate in the failed provider operation.
+func wrapEnsureProviderError(pd harness.ProviderDef, hasProviderOverride, hasProfileOverride bool, err error) error {
+	wrapped := fmt.Errorf("ensuring provider %q: %w", pd.Name, err)
+	hint := providerMigrationHint(pd, hasProviderOverride, hasProfileOverride)
+	if hint == "" {
+		return wrapped
+	}
+	return fmt.Errorf("%w\n\n%s\n", wrapped, hint)
+}
+
+func providerMigrationHint(pd harness.ProviderDef, hasProviderOverride, hasProfileOverride bool) string {
+	if !hasProviderOverride && !hasProfileOverride {
+		return ""
+	}
+
+	bareName := pd.Name
+	if !hasProviderOverride {
+		bareName = strings.TrimPrefix(pd.Type, "fullsend-")
+	}
+
+	var definitions []string
+	if hasProviderOverride {
+		definitions = append(definitions, fmt.Sprintf("provider %q", pd.Name))
+	}
+	if hasProfileOverride {
+		definitions = append(definitions, fmt.Sprintf("profile %q", pd.Type))
+	}
+	return fmt.Sprintf(`Note: %s may not match this fullsend's built-in definition; declare the bare name %q in the harness and delete the repository overrides (see "Upgrading agents generated before built-in providers" in docs/guides/user/bring-your-own-agent.md).`,
+		strings.Join(definitions, " and "), bareName)
+}
+
 // builtinProviderNames are the provider names fullsend ships an embedded
 // definition and profile for (internal/scaffold/fullsend-repo/providers,
 // internal/scaffold/fullsend-repo/profiles). A bare name in a harness's
@@ -6721,11 +6756,14 @@ func isReservedProfileID(id string) bool {
 // (what agent new wrote on v0.44.0), or a URL-resolved one. The name is
 // reserved so a stale copy can never silently shadow a fix shipped in the
 // binary (#7268, #7973). For one release the copy is still used and this
-// only warns; a later release makes it an error.
-func warnReservedProviderNameOverrides(localDefs []harness.ProviderDef, resolved []resolve.ResolvedProvider, printer *ui.Printer) {
+// only warns; a later release makes it an error. It returns the set of
+// warned reserved names.
+func warnReservedProviderNameOverrides(localDefs []harness.ProviderDef, resolved []resolve.ResolvedProvider, printer *ui.Printer) map[string]struct{} {
+	overrides := make(map[string]struct{}, len(localDefs)+len(resolved))
 	warn := func(name, source string) {
 		if isBuiltinProviderName(name) {
 			printer.StepWarn(fmt.Sprintf("provider %q: the name is reserved for the definition built into fullsend, and a future release rejects %s. It is still used for now. Declare the bare name %q and delete the copy, or rename it to a name fullsend does not ship", name, source, name))
+			overrides[name] = struct{}{}
 		}
 	}
 	for _, d := range localDefs {
@@ -6741,6 +6779,7 @@ func warnReservedProviderNameOverrides(localDefs []harness.ProviderDef, resolved
 			warn(rp.Def.Name, "the copy at "+strings.ReplaceAll(fmt.Sprintf("%q", rp.LocalPath), "##[", `#\#[`))
 		}
 	}
+	return overrides
 }
 
 // rejectReservedProfileID fails when the run resolved a provider profile
@@ -6762,18 +6801,18 @@ func rejectReservedProfileID(id string, resolved []resolve.ResolvedProfile) erro
 // the embedded profile over it. fullsend-openai is skipped here because it
 // is already an error (rejectReservedProfileID) (#7268).
 func warnReservedProfileCopies(resolved []resolve.ResolvedProfile, printer *ui.Printer) map[string]struct{} {
-	listed := make(map[string]struct{})
+	overrides := make(map[string]struct{})
 	for _, rp := range resolved {
 		if rp.ID == openAIProviderType || !isReservedProfileID(rp.ID) {
 			continue
 		}
-		if _, seen := listed[rp.ID]; seen {
+		if _, seen := overrides[rp.ID]; seen {
 			continue
 		}
-		listed[rp.ID] = struct{}{}
+		overrides[rp.ID] = struct{}{}
 		printer.StepWarn(fmt.Sprintf("provider profile %q will be rejected in a future release: the id is reserved for the copy built into fullsend. Your copy is still used for now. Remove it from openshell.profiles and declare the bare provider name %q instead", rp.ID, strings.TrimPrefix(rp.ID, "fullsend-")))
 	}
-	return listed
+	return overrides
 }
 
 // appendEmbeddedProviderDefs adds the scaffold's embedded definition for
