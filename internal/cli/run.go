@@ -1563,10 +1563,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepStart("Ensuring provider: " + pd.Name)
 				if err := sandbox.EnsureProvider(ctx, pd.Name, pd.Type, pd.Credentials, pd.Config, urlProviderNames[pd.Name]); err != nil {
 					printer.StepFail("Failed to create provider " + pd.Name)
-					_, hasProviderOverride := providerOverrides[pd.Name]
-					_, hasProfileOverride := profileOverrides[pd.Type]
 					mu.Lock()
-					errs = append(errs, wrapEnsureProviderError(pd, hasProviderOverride, hasProfileOverride, err))
+					errs = append(errs, wrapEnsureProviderError(pd, providerOverrides, profileOverrides, err))
 					mu.Unlock()
 					return
 				}
@@ -6690,16 +6688,18 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 // wrapEnsureProviderError preserves the existing provider context and error
 // chain while adding migration guidance only for reserved provider/profile
 // copies that actually participate in the failed provider operation.
-func wrapEnsureProviderError(pd harness.ProviderDef, hasProviderOverride, hasProfileOverride bool, err error) error {
+func wrapEnsureProviderError(pd harness.ProviderDef, providerOverrides, profileOverrides map[string]string, err error) error {
 	wrapped := fmt.Errorf("ensuring provider %q: %w", pd.Name, err)
-	hint := providerMigrationHint(pd, hasProviderOverride, hasProfileOverride)
+	hint := providerMigrationHint(pd, providerOverrides, profileOverrides)
 	if hint == "" {
 		return wrapped
 	}
 	return fmt.Errorf("%w\n\n%s\n", wrapped, hint)
 }
 
-func providerMigrationHint(pd harness.ProviderDef, hasProviderOverride, hasProfileOverride bool) string {
+func providerMigrationHint(pd harness.ProviderDef, providerOverrides, profileOverrides map[string]string) string {
+	providerPath, hasProviderOverride := providerOverrides[pd.Name]
+	profilePath, hasProfileOverride := profileOverrides[pd.Type]
 	if !hasProviderOverride && !hasProfileOverride {
 		return ""
 	}
@@ -6711,13 +6711,28 @@ func providerMigrationHint(pd harness.ProviderDef, hasProviderOverride, hasProfi
 
 	var definitions []string
 	if hasProviderOverride {
-		definitions = append(definitions, fmt.Sprintf("provider %q", pd.Name))
+		label := pd.Name
+		if providerPath != "" {
+			label = providerPath
+		}
+		definitions = append(definitions, fmt.Sprintf("provider %s", quotePathForLog(label)))
 	}
 	if hasProfileOverride {
-		definitions = append(definitions, fmt.Sprintf("profile %q", pd.Type))
+		label := pd.Type
+		if profilePath != "" {
+			label = profilePath
+		}
+		definitions = append(definitions, fmt.Sprintf("profile %s", quotePathForLog(label)))
 	}
 	return fmt.Sprintf(`Note: %s may not match this fullsend's built-in definition; declare the bare name %q in the harness and delete the repository overrides (see "Upgrading agents generated before built-in providers" in docs/guides/user/bring-your-own-agent.md).`,
 		strings.Join(definitions, " and "), bareName)
+}
+
+// A repository file name must not inject log lines (%q escapes
+// newlines and control characters) or a legacy "##[" workflow
+// command, which the runner matches anywhere in a line.
+func quotePathForLog(path string) string {
+	return strings.ReplaceAll(fmt.Sprintf("%q", path), "##[", `#\#[`)
 }
 
 // builtinProviderNames are the provider names fullsend ships an embedded
@@ -6756,27 +6771,26 @@ func isReservedProfileID(id string) bool {
 // (what agent new wrote on v0.44.0), or a URL-resolved one. The name is
 // reserved so a stale copy can never silently shadow a fix shipped in the
 // binary (#7268, #7973). For one release the copy is still used and this
-// only warns; a later release makes it an error. It returns the set of
-// warned reserved names.
-func warnReservedProviderNameOverrides(localDefs []harness.ProviderDef, resolved []resolve.ResolvedProvider, printer *ui.Printer) map[string]struct{} {
-	overrides := make(map[string]struct{}, len(localDefs)+len(resolved))
-	warn := func(name, source string) {
+// only warns; a later release makes it an error. It returns the warned
+// reserved names and their repository-local paths when available.
+func warnReservedProviderNameOverrides(localDefs []harness.ProviderDef, resolved []resolve.ResolvedProvider, printer *ui.Printer) map[string]string {
+	overrides := make(map[string]string, len(localDefs)+len(resolved))
+	warn := func(name, source, localPath string) {
 		if isBuiltinProviderName(name) {
 			printer.StepWarn(fmt.Sprintf("provider %q: the name is reserved for the definition built into fullsend, and a future release rejects %s. It is still used for now. Declare the bare name %q and delete the copy, or rename it to a name fullsend does not ship", name, source, name))
-			overrides[name] = struct{}{}
+			if _, exists := overrides[name]; !exists {
+				overrides[name] = localPath
+			}
 		}
 	}
 	for _, d := range localDefs {
-		warn(d.Name, "the copy in the workspace providers/ directory")
+		warn(d.Name, "the copy in the workspace providers/ directory", "")
 	}
 	for _, rp := range resolved {
 		if rp.FromURL {
-			warn(rp.Def.Name, "the URL-resolved copy")
+			warn(rp.Def.Name, "the URL-resolved copy", "")
 		} else {
-			// A repository file name must not inject log lines (%q escapes
-			// newlines and control characters) or a legacy "##[" workflow
-			// command, which the runner matches anywhere in a line.
-			warn(rp.Def.Name, "the copy at "+strings.ReplaceAll(fmt.Sprintf("%q", rp.LocalPath), "##[", `#\#[`))
+			warn(rp.Def.Name, "the copy at "+quotePathForLog(rp.LocalPath), rp.LocalPath)
 		}
 	}
 	return overrides
@@ -6796,12 +6810,12 @@ func rejectReservedProfileID(id string, resolved []resolve.ResolvedProfile) erro
 
 // warnReservedProfileCopies warns once for each reserved profile id that
 // the harness lists its own copy of (openshell.profiles, by path or URL),
-// whether or not a provider in this run uses it, and returns those ids.
+// whether or not a provider in this run uses it, and returns ids with repository-local paths when available.
 // For one release the listed copy stays live: the caller does not import
 // the embedded profile over it. fullsend-openai is skipped here because it
 // is already an error (rejectReservedProfileID) (#7268).
-func warnReservedProfileCopies(resolved []resolve.ResolvedProfile, printer *ui.Printer) map[string]struct{} {
-	overrides := make(map[string]struct{})
+func warnReservedProfileCopies(resolved []resolve.ResolvedProfile, printer *ui.Printer) map[string]string {
+	overrides := make(map[string]string)
 	for _, rp := range resolved {
 		if rp.ID == openAIProviderType || !isReservedProfileID(rp.ID) {
 			continue
@@ -6809,7 +6823,11 @@ func warnReservedProfileCopies(resolved []resolve.ResolvedProfile, printer *ui.P
 		if _, seen := overrides[rp.ID]; seen {
 			continue
 		}
-		overrides[rp.ID] = struct{}{}
+		localPath := ""
+		if !rp.FromURL {
+			localPath = rp.LocalPath
+		}
+		overrides[rp.ID] = localPath
 		printer.StepWarn(fmt.Sprintf("provider profile %q will be rejected in a future release: the id is reserved for the copy built into fullsend. Your copy is still used for now. Remove it from openshell.profiles and declare the bare provider name %q instead", rp.ID, strings.TrimPrefix(rp.ID, "fullsend-")))
 	}
 	return overrides
