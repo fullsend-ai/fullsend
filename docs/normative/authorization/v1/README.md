@@ -308,7 +308,11 @@ Fullsend MUST omit or minimize other unneeded untrusted fields where the
 normalized entity contract permits, while retaining the state, content, and
 actor provenance required by the harness. Further trust or injection filtering
 MAY run after CEL routing and before the harness pre-script. Retained content
-remains untrusted throughout. Any resulting agent run uses the harness's
+remains untrusted for dispatch and CEL evaluation throughout. [ADR 0133]
+(../../../ADRs/0133-actor-attributed-data-security-boundary.md) defines the
+separate model-bound admission gate: only filtered content whose source record
+and current actor authorization satisfy that ADR may be exposed to the model
+under bounded harness scope. Any resulting agent run uses the harness's
 configured identity and permissions.
 
 ## Excluded fields

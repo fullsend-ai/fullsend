@@ -74,8 +74,8 @@ produced the exact current content revision: the creator for a never-edited
 record, or the latest authenticated editor when the source system records an
 edit. An event sender, poller, or retrieval credential never substitutes for
 that revision actor. If the source system cannot establish attribution for the
-current revision, the record is redacted.
-actor's applicable permission or recognized role MUST be co-fetched in the
+current revision, the record is redacted. The actor's applicable permission or
+recognized role MUST be co-fetched in the
 same authoritative API response, delivered in the same verified event payload,
 or lazily resolved from the authoritative source when first needed. A lazy
 result MAY be cached for the lifetime of the event or entity structure that
