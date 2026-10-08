@@ -492,7 +492,7 @@ write a workflow. The dispatch workflow that setup installs runs every agent
 registered in `config.yaml` whose harness `trigger:` matches an event — see
 [Bring Your Own Agent](bring-your-own-agent.md). Dispatch needs a harness that has
 a `trigger:` ([CEL Triggers Reference](cel-triggers-reference.md)) and reads
-the inputs dispatch provides, such as `GITHUB_ISSUE_URL`. The examples in this
+the inputs dispatch provides, such as `FULLSEND_WORK_ITEM_URL`. The examples in this
 guide do neither: the Step 2 harness and Step 5 scripts read `ISSUE_KEY` and
 `ISSUE_SOURCE`, which only the standalone workflow below sets. For a
 dispatched agent, start from `fullsend agent new`, whose harness and

@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -2615,4 +2616,29 @@ func TestResolveHarness_MixedAllowlists(t *testing.T) {
 	require.Len(t, result.Deps, 2)
 	assert.Equal(t, "agent", result.Deps[0].Field)
 	assert.Equal(t, "policy", result.Deps[1].Field)
+}
+
+func TestReadContainedFile_RejectsEscapesAndSpecialFiles(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.yaml")
+	require.NoError(t, os.WriteFile(secret, []byte("id: leaked\n"), 0o644))
+	require.NoError(t, os.Symlink(secret, filepath.Join(root, "link.yaml")))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "ok.yaml"), []byte("id: ok\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "dir.yaml"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "big.yaml"), bytes.Repeat([]byte("a"), MaxLocalResourceBytes+1), 0o644))
+
+	_, err := ReadContainedFile(filepath.Join(root, "ok.yaml"), root)
+	require.NoError(t, err)
+
+	for name, p := range map[string]string{
+		"absolute external path": secret,
+		"escaping symlink":       filepath.Join(root, "link.yaml"),
+		"device file":            "/dev/zero",
+		"directory":              filepath.Join(root, "dir.yaml"),
+		"oversized file":         filepath.Join(root, "big.yaml"),
+	} {
+		_, err := ReadContainedFile(p, root)
+		assert.Error(t, err, name)
+	}
 }

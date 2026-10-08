@@ -186,10 +186,10 @@ func TestCacheSymlinkProtection(t *testing.T) {
 	// Plant a symlink in the hash directory pointing outside the cache.
 	require.NoError(t, os.Symlink(outside, filepath.Join(cacheDir, hash)))
 
-	// CachePut: MkdirAll follows the symlink, then validateCachePath rejects it.
+	// CachePut: the containment check rejects the symlinked path.
 	err := CachePut(root, "https://example.com/symlink", content)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cache path escapes cache root")
+	assert.Contains(t, err.Error(), "path escapes")
 
 	// For CacheGet, plant metadata+content in the outside dir so reads succeed
 	// and the symlink check fires after.
@@ -646,4 +646,68 @@ func TestCacheNamedSymlink(t *testing.T) {
 		_, statErr := os.Lstat(filepath.Join(dir, "sub"))
 		assert.True(t, os.IsNotExist(statErr))
 	})
+}
+
+func TestCacheWritesRejectSymlinkEscapes(t *testing.T) {
+	files := map[string][]byte{"sub/a.txt": []byte("alpha")}
+	treeHash := ComputeTreeHash(files)
+
+	t.Run("cache root symlink", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		require.NoError(t, os.Symlink(outside, filepath.Join(root, ".fullsend-cache")))
+
+		_, err := CachePutDir(root, "https://example.com/dir", files)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes workspace")
+		assert.NoFileExists(t, filepath.Join(outside, "resources", "sha256", treeHash, "tree", "sub", "a.txt"))
+
+		err = CachePut(root, "https://example.com/f", []byte("content"))
+		require.Error(t, err)
+		entries, rerr := os.ReadDir(outside)
+		require.NoError(t, rerr)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("tree descendant symlink", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		treeDir := filepath.Join(root, ".fullsend-cache", "resources", "sha256", treeHash, "tree")
+		require.NoError(t, os.MkdirAll(treeDir, 0o700))
+		require.NoError(t, os.Symlink(outside, filepath.Join(treeDir, "sub")))
+
+		_, err := CachePutDir(root, "https://example.com/dir", files)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes workspace")
+		assert.NoFileExists(t, filepath.Join(outside, "a.txt"))
+	})
+
+	t.Run("tree descendant symlink with nested missing directory", func(t *testing.T) {
+		nested := map[string][]byte{"sub/new/a.txt": []byte("alpha")}
+		nestedHash := ComputeTreeHash(nested)
+		root := t.TempDir()
+		outside := t.TempDir()
+		treeDir := filepath.Join(root, ".fullsend-cache", "resources", "sha256", nestedHash, "tree")
+		require.NoError(t, os.MkdirAll(treeDir, 0o700))
+		require.NoError(t, os.Symlink(outside, filepath.Join(treeDir, "sub")))
+
+		_, err := CachePutDir(root, "https://example.com/dir", nested)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes workspace")
+		assert.NoDirExists(t, filepath.Join(outside, "new"))
+	})
+}
+
+func TestCheckWithinWorkspace(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "in"), 0o700))
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "out")))
+	require.NoError(t, os.Symlink(filepath.Join(root, "in"), filepath.Join(root, "inlink")))
+
+	assert.NoError(t, CheckWithinWorkspace(root, filepath.Join(root, "in", "new", "file")))
+	assert.NoError(t, CheckWithinWorkspace(root, filepath.Join(root, "inlink", "file")))
+	assert.Error(t, CheckWithinWorkspace(root, filepath.Join(root, "out", "file")))
+	assert.Error(t, CheckWithinWorkspace(root, filepath.Join(root, "out")))
+	assert.Error(t, CheckWithinWorkspace(root, outside))
 }

@@ -693,6 +693,26 @@ func TestRunAgent_NoPreScript_StillRelaysSkippedFalse(t *testing.T) {
 	assert.Equal(t, "role=test\nskipped=false\n", string(data))
 }
 
+// runAgent expands ${VAR} references in env.runner/env.sandbox before the
+// harness is ready to run; the GITHUB_ISSUE_URL deprecation warning must
+// still fire for a reference under a non-deprecated key.
+func TestRunAgent_WarnsOnDeprecatedIssueURLReference(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("GITHUB_ISSUE_URL", "https://github.com/o/r/issues/1")
+	dir := newSkipHarnessDir(t, `echo "skipped=true" >> "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	f, err := os.OpenFile(harnessPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString("env:\n  runner:\n    ISSUE_URL: ${GITHUB_ISSUE_URL}\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	var buf bytes.Buffer
+	require.NoError(t, runSkipHarnessAgent(t, dir, ui.New(&buf)))
+	assert.Contains(t, buf.String(), harness.DeprecatedIssueURLWarning)
+	assert.Contains(t, buf.String(), "env.runner.ISSUE_URL")
+}
+
 // The skip path relays skipped=true. Fast: it returns before sandbox
 // creation, so it does not pay the create-retry backoff.
 func TestRunAgent_PreScriptSkip_RelaysSkippedTrue(t *testing.T) {

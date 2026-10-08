@@ -1,8 +1,11 @@
 package harness
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -1851,4 +1854,42 @@ agents:
 	require.Len(t, registered, 1)
 	assert.Equal(t, "lint", registered[0].Name)
 	assert.Equal(t, "haiku", registered[0].Entry.Model)
+}
+
+func TestResolveOverlays_EvalErrorLogIsSanitized(t *testing.T) {
+	// A missing-key error embeds the key text from the harness's own when
+	// expression. A key with a decoded newline plus workflow-command syntax
+	// must not start a new line in the standard logger's output.
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `event["evil\n::error::pwned\u001b[31m"] == "x"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	require.NoError(t, h.ResolveOverlays(nil, "", nil))
+
+	out := buf.String()
+	require.Contains(t, out, "overlay[0].when eval failed")
+	assert.Equal(t, 1, strings.Count(strings.TrimRight(out, "\n"), "\n")+1, "log output must stay on one line: %q", out)
+	assert.NotContains(t, out, "\x1b")
+	assert.NotContains(t, out, "\n::")
+}
+
+func TestResolveOverlays_ForcedOverlayMergesWithoutMatching(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	require.NoError(t, h.resolveOverlays(nil, "", nil, map[int]bool{0: true}))
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Nil(t, h.Overlays)
 }

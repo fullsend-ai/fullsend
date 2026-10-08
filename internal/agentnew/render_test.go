@@ -77,7 +77,7 @@ func TestGeneratedHarnessLoads(t *testing.T) {
 			if err := h.ValidateFilesExist(); err != nil {
 				t.Fatalf("ValidateFilesExist: %v", err)
 			}
-			if diags := h.Lint(); len(diags) != 0 {
+			if diags := ignoreIssueURLDeprecation(h.Lint()); len(diags) != 0 {
 				t.Errorf("generated harness produces lint diagnostics: %v", diags)
 			}
 			if h.Role != role {

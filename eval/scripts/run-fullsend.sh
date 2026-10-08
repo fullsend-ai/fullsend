@@ -51,7 +51,8 @@ install -m 0600 /dev/null "$ENV_FILE"
   echo "REVIEW_TOKEN=${GH_TOKEN}"
 
   case "$FIXTURE_TYPE" in
-    issue)        echo "GITHUB_ISSUE_URL=${FIXTURE_URL}" ;;
+    issue)        echo "GITHUB_ISSUE_URL=${FIXTURE_URL}"
+                  echo "FULLSEND_WORK_ITEM_URL=${FIXTURE_URL}" ;;
     pull_request) echo "GITHUB_PR_URL=${FIXTURE_URL}" ;;
   esac
 

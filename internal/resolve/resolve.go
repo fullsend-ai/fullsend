@@ -3,6 +3,7 @@ package resolve
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -164,6 +165,54 @@ func parseProviderDef(content []byte, index int, source string) (harness.Provide
 	}
 	w := WarnLiteralCredentials(def.Name, def.Credentials)
 	return def, w, nil
+}
+
+// ValidateProviderFile parses and validates one provider definition document
+// with the same rules ResolveHarness applies to local provider files.
+func ValidateProviderFile(content []byte, index int, source string) error {
+	_, _, err := parseProviderDef(content, index, source)
+	return err
+}
+
+// MaxLocalResourceBytes bounds ReadContainedFile; provider and profile
+// definitions are small YAML documents.
+const MaxLocalResourceBytes = 1 << 20
+
+// ReadContainedFile reads a local resource file for static validation. Like
+// ResolveHarness it requires p to be inside root (resolving symlinks), and it
+// additionally requires a regular file no larger than MaxLocalResourceBytes,
+// so special files such as /dev/zero are never read.
+func ReadContainedFile(p, root string) ([]byte, error) {
+	if !isContainedPath(p, root) {
+		return nil, fmt.Errorf("path %q is outside workspace root", p)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("path %q is not a regular file", p)
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, MaxLocalResourceBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxLocalResourceBytes {
+		return nil, fmt.Errorf("file %q exceeds %d bytes", p, MaxLocalResourceBytes)
+	}
+	return data, nil
+}
+
+// IsContainedPath reports whether the absolute path p is inside root,
+// resolving symlinks when p exists. Static validators use it to keep local
+// directories outside the workspace from being inspected.
+func IsContainedPath(p, root string) bool {
+	return isContainedPath(p, root)
 }
 
 // isContainedPath reports whether the absolute path p is inside root.

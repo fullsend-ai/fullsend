@@ -121,6 +121,10 @@ func CachePut(workspaceRoot, url string, content []byte) error {
 		return err
 	}
 
+	// Check before MkdirAll creates directories through a planted symlink.
+	if err := CheckWithinWorkspace(workspaceRoot, dir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -167,7 +171,54 @@ func validateCachePath(workspaceRoot, dir string) error {
 	if !strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator)) {
 		return fmt.Errorf("cache path escapes cache root: %s", resolved)
 	}
+	// The cache root itself must not be a symlink out of the workspace.
+	return CheckWithinWorkspace(workspaceRoot, cacheRoot)
+}
+
+// CheckWithinWorkspace resolves symlinks in p (or in its nearest existing
+// ancestor when p does not exist yet) and verifies the result stays inside
+// workspaceRoot. Cache writes call it so a symlink planted in an untrusted
+// checkout cannot redirect them to files outside the workspace.
+func CheckWithinWorkspace(workspaceRoot, p string) error {
+	resolvedRoot, err := resolveExisting(workspaceRoot)
+	if err != nil {
+		return fmt.Errorf("resolving workspace root: %w", err)
+	}
+	resolved, err := resolveExisting(p)
+	if err != nil {
+		return fmt.Errorf("resolving path: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path escapes workspace: %s", resolved)
+	}
 	return nil
+}
+
+// resolveExisting makes p absolute and resolves symlinks in its nearest
+// existing ancestor, re-appending the not-yet-created remainder.
+func resolveExisting(p string) (string, error) {
+	existing, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for {
+		if _, lerr := os.Lstat(existing); lerr == nil {
+			break
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			break
+		}
+		rest = filepath.Join(filepath.Base(existing), rest)
+		existing = parent
+	}
+	resolved, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, rest), nil
 }
 
 // DirCacheEntry is metadata for a cached directory resource (e.g., a skill).
@@ -223,6 +274,10 @@ func CachePutDir(workspaceRoot, url string, files map[string][]byte, opts ...Dir
 		return "", err
 	}
 
+	// Check before MkdirAll creates directories through a planted symlink.
+	if err := CheckWithinWorkspace(workspaceRoot, dir); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -243,8 +298,16 @@ func CachePutDir(workspaceRoot, url string, files map[string][]byte, opts ...Dir
 			return "", fmt.Errorf("path traversal in file path: %s", relPath)
 		}
 		fileDir := filepath.Dir(fullPath)
+		// Check before MkdirAll: it follows symlinks planted inside tree/
+		// and would create missing directories outside the workspace.
+		if err := CheckWithinWorkspace(workspaceRoot, fileDir); err != nil {
+			return "", err
+		}
 		if err := os.MkdirAll(fileDir, 0o700); err != nil {
 			return "", fmt.Errorf("creating directory for %s: %w", relPath, err)
+		}
+		if err := CheckWithinWorkspace(workspaceRoot, fileDir); err != nil {
+			return "", err
 		}
 		if err := atomicWrite(fileDir, filepath.Base(fullPath), content); err != nil {
 			return "", fmt.Errorf("writing %s: %w", relPath, err)

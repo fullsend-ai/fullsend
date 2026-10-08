@@ -1,7 +1,9 @@
 package harness
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -397,6 +399,11 @@ type Harness struct {
 
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
+	// baseOverlaySuppliesScript is set only under lint composition (OverlayCount
+	// non-nil): a base layer has an overlay supplying validation_loop.script
+	// that may have been dropped for lack of an event. Child overlays then
+	// may omit the script, as they can at runtime.
+	baseOverlaySuppliesScript bool `yaml:"-"`
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -479,13 +486,48 @@ func parseRaw(data []byte) (*Harness, error) {
 // or ResolveForge. Used by base composition to load base harnesses without
 // consuming their forge maps before merging, and by the lock command to
 // discover forge keys without resolving them.
+//
+// The file must be a regular file of at most MaxHarnessFileBytes, so a special
+// file (a FIFO, /dev/zero) or an oversized one is rejected rather than read
+// without limit; this covers every layer of a base chain.
 func LoadRaw(path string) (*Harness, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedHarnessFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading harness file: %w", err)
 	}
 	return parseRaw(data)
 }
+
+// MaxHarnessFileBytes bounds the size of a harness file LoadRaw reads.
+const MaxHarnessFileBytes = 1 << 20
+
+func readBoundedHarnessFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q is not a regular file", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, MaxHarnessFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxHarnessFileBytes {
+		return nil, fmt.Errorf("%q exceeds %d bytes", path, MaxHarnessFileBytes)
+	}
+	return data, nil
+}
+
+// ErrValidationLoopScriptRequired is returned by Validate when validation_loop
+// is set without a script. Lint treats it specially: composed without an event,
+// an event-conditioned overlay that supplies the script is dropped.
+var ErrValidationLoopScriptRequired = errors.New("validation_loop.script is required when validation_loop is set")
 
 // Validate checks that required fields are present.
 func (h *Harness) Validate() error {
@@ -554,7 +596,7 @@ func (h *Harness) Validate() error {
 		}
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
-		return fmt.Errorf("validation_loop.script is required when validation_loop is set")
+		return ErrValidationLoopScriptRequired
 	}
 	if h.ValidationLoop != nil {
 		switch h.ValidationLoop.FeedbackMode {
@@ -922,11 +964,10 @@ func (h *Harness) Scripts() []string {
 	return scripts
 }
 
-// ValidateAllowedRemoteResources checks that each entry in AllowedRemoteResources
-// is a valid HTTPS URL ending with "/" and is covered by at least one entry in the
-// config-level allowlist. Allowlist entries are also validated: each must be a
-// valid HTTPS URL ending with "/" and must not contain double-encoded sequences.
-func (h *Harness) ValidateAllowedRemoteResources(orgAllowlist []string) error {
+// ValidateOrgAllowlist checks that every org-level allowlist entry is a valid
+// HTTPS URL ending with "/" and free of double-encoded sequences. It needs no
+// Harness, so callers validating only a config's allowlist can use it directly.
+func ValidateOrgAllowlist(orgAllowlist []string) error {
 	for i, orgEntry := range orgAllowlist {
 		if !IsURL(orgEntry) {
 			return fmt.Errorf("org allowlist[%d]: %q is not a valid HTTPS URL", i, orgEntry)
@@ -937,6 +978,17 @@ func (h *Harness) ValidateAllowedRemoteResources(orgAllowlist []string) error {
 		if strings.Contains(strings.ToLower(orgEntry), "%25") {
 			return fmt.Errorf("org allowlist[%d]: %q contains double-encoded sequence", i, orgEntry)
 		}
+	}
+	return nil
+}
+
+// ValidateAllowedRemoteResources checks that each entry in AllowedRemoteResources
+// is a valid HTTPS URL ending with "/" and is covered by at least one entry in the
+// org-level allowlist. Org allowlist entries are also validated: each must be a
+// valid HTTPS URL ending with "/" and must not contain double-encoded sequences.
+func (h *Harness) ValidateAllowedRemoteResources(orgAllowlist []string) error {
+	if err := ValidateOrgAllowlist(orgAllowlist); err != nil {
+		return err
 	}
 	for i, entry := range h.AllowedRemoteResources {
 		if !IsURL(entry) {
@@ -1132,6 +1184,62 @@ func (h *Harness) HasURLDirResources() bool {
 		}
 	}
 	return false
+}
+
+// ValidateRemoteResourceAuthorization verifies, without fetching, that every
+// declarative URL reference is covered by the harness's allowed_remote_resources
+// or orgAllowlist. It returns the first unauthorized reference, or nil.
+func (h *Harness) ValidateRemoteResourceAuthorization(orgAllowlist []string) error {
+	check := func(field, ref string) error {
+		if !IsURL(ref) {
+			return nil
+		}
+		cleanURL, _, _ := ParseIntegrityHash(ref)
+		if h.MatchingAllowedPrefix(cleanURL) != "" || MatchingAllowedPrefixInList(cleanURL, orgAllowlist) != "" {
+			return nil
+		}
+		return fmt.Errorf("%s: URL %q is not in allowed_remote_resources", field, cleanURL)
+	}
+
+	if err := check("agent", h.Agent); err != nil {
+		return err
+	}
+	if err := check("policy", h.Policy); err != nil {
+		return err
+	}
+	for i, s := range h.Skills {
+		if err := check(fmt.Sprintf("skills[%d]", i), s.Source); err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(s.Overrides))
+		for k := range s.Overrides {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if val := s.Overrides[k]; val != nil {
+				if err := check(fmt.Sprintf("skills[%d].overrides.%s", i, k), *val); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for i, p := range h.Plugins {
+		if err := check(fmt.Sprintf("plugins[%d]", i), p.Path); err != nil {
+			return err
+		}
+	}
+	for i, p := range h.OpenShellProfiles() {
+		if err := check(fmt.Sprintf("openshell.profiles[%d]", i), p); err != nil {
+			return err
+		}
+	}
+	for i, p := range h.Providers {
+		if err := check(fmt.Sprintf("providers[%d]", i), p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // HasURLReferences reports whether any declarative field (agent, policy, skills,

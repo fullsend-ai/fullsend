@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/pluginformat"
+	celast "github.com/google/cel-go/common/ast"
 	"gopkg.in/yaml.v3"
 )
 
@@ -87,6 +88,28 @@ type ComposeOpts struct {
 	// CEL when expressions as the config variable (ADR 0088).
 	Config map[string]any
 
+	// ForceOverlays lists overlay indices merged unconditionally (their when
+	// is not evaluated); all other overlays are skipped. Indices span every
+	// composition layer, deepest base first. Used by lint. Requires
+	// OverlayCount.
+	ForceOverlays map[int]bool
+
+	// OverlayCount, when non-nil, accumulates the overlays declared across
+	// all layers, for enumerating ForceOverlays. Must start at zero.
+	OverlayCount *int
+
+	// OverlayWhens, when non-nil, accumulates the when condition of every
+	// overlay across all layers in the same order as OverlayCount indices.
+	// Used by lint to learn the condition of each forceable overlay.
+	OverlayWhens *[]string
+
+	// ForceWhens lists the when conditions of the overlays in ForceOverlays.
+	// A preceding overlay whose condition is identical to, or syntactically
+	// broader than, a forced one always co-occurs with it at runtime, so it
+	// is kept even when its condition cannot be evaluated without an event.
+	// Used by lint.
+	ForceWhens map[string]bool
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
@@ -129,6 +152,9 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Record forge usage before ResolveForge nils it, for Lint().
+	child.hadForgeBeforeResolve = child.Forge != nil
 
 	if child.Base == "" {
 		// No base — resolve URL-sourced resources if the harness was
@@ -183,7 +209,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 			return nil, nil, fmt.Errorf("resolving forge config: %w", err)
 		}
-		if err := child.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
+		if err := child.resolveOverlaysFor(opts); err != nil {
 			return nil, nil, fmt.Errorf("resolving overlays: %w", err)
 		}
 		if err := child.Validate(); err != nil {
@@ -286,7 +312,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 		return nil, nil, fmt.Errorf("resolving forge config: %w", err)
 	}
-	if err := child.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
+	if err := child.resolveOverlaysFor(opts); err != nil {
 		return nil, nil, fmt.Errorf("resolving overlays: %w", err)
 	}
 	if err := child.Validate(); err != nil {
@@ -294,6 +320,328 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	}
 
 	return child, deps, nil
+}
+
+// resolveOverlaysFor resolves h's overlays (one layer) per opts, translating
+// global ForceOverlays indices to this layer's local ones.
+func (h *Harness) resolveOverlaysFor(opts ComposeOpts) error {
+	if opts.ForceOverlays != nil && opts.OverlayCount == nil {
+		// Without a counter every layer would use offset 0 and a forced
+		// index would silently match overlay i in every layer.
+		return fmt.Errorf("ForceOverlays requires OverlayCount")
+	}
+	offset := 0
+	if opts.OverlayCount != nil {
+		offset = *opts.OverlayCount
+		*opts.OverlayCount += len(h.Overlays)
+	}
+	if opts.OverlayWhens != nil {
+		for _, o := range h.Overlays {
+			*opts.OverlayWhens = append(*opts.OverlayWhens, o.When)
+		}
+	}
+	var force map[int]bool
+	if opts.ForceOverlays != nil {
+		// Overlays that precede the lowest forced overlay and whose
+		// condition matches the known forge/config context (including
+		// unconditional ones, when: 'true') apply on every real
+		// composition and may supply inherited defaults (e.g.
+		// validation_loop.script), so keep them. Conditions that error or
+		// depend on an unknown event do not match. Later overlays are
+		// skipped: they could mask the forced overlay. A preceding overlay
+		// whose condition is implied by a forced overlay's (ForceWhens;
+		// identical, or broader: fewer && terms or extra || alternatives)
+		// also applies whenever the forced one does, so it is kept too.
+		event := opts.Event
+		if event == nil {
+			event = map[string]any{}
+		}
+		first := -1
+		for idx := range opts.ForceOverlays {
+			if first < 0 || idx < first {
+				first = idx
+			}
+		}
+		force = make(map[int]bool, len(opts.ForceOverlays))
+		for i, o := range h.Overlays {
+			if opts.ForceOverlays[offset+i] {
+				force[i] = true
+				continue
+			}
+			if offset+i < first {
+				if forcedWhenImplies(opts.ForceWhens, o.When) {
+					force[i] = true
+				} else if opts.Event == nil && whenReadsEvent(o.When) {
+					// No real event: a condition that reads event data
+					// (e.g. `!has(event.entity)`) matches the empty event
+					// by accident and may be mutually exclusive with the
+					// forced overlay, so it is kept only via implication.
+				} else if matched, err := EvaluateOverlay(o.When, event, opts.ForgePlatform, opts.Config); err == nil && matched {
+					force[i] = true
+				}
+			}
+		}
+	}
+	return h.resolveOverlays(opts.Event, opts.ForgePlatform, opts.Config, force)
+}
+
+// whenReadsEvent reports whether the CEL condition references the `event`
+// variable, judged from the parsed expression so the text "event" inside a
+// string literal or a field name does not count. A condition that does not
+// compile is reported as reading event data (the conservative answer).
+func whenReadsEvent(when string) bool {
+	env, err := NewOverlayEnv()
+	if err != nil {
+		return true
+	}
+	checked, issues := env.Compile(strings.TrimSpace(when))
+	if issues != nil && issues.Err() != nil {
+		return true
+	}
+	root := celast.NavigateAST(checked.NativeRep())
+	for _, n := range celast.MatchDescendants(root, celast.KindMatcher(celast.IdentKind)) {
+		if n.AsIdent() == "event" {
+			return true
+		}
+	}
+	return false
+}
+
+// OverlayWhenPossible reports whether an overlay condition can match under
+// the known forge platform and config, for any event. It is conservative: a
+// condition is impossible only when every || alternative has an && term that
+// mentions neither event data nor an unknown context (empty forgePlatform,
+// nil config) and evaluates to false. Used by lint to skip overlays that
+// cannot apply to the selected forge/config.
+func OverlayWhenPossible(when, forgePlatform string, config map[string]any) bool {
+	alts := splitWhenTerms(when)
+	if len(alts) == 0 {
+		return true
+	}
+	for _, alt := range alts {
+		possible := true
+		for _, t := range alt {
+			if whenTermImpossible(t, forgePlatform, config) {
+				possible = false
+				break
+			}
+		}
+		if possible {
+			return true
+		}
+	}
+	return false
+}
+
+// whenTermImpossible reports whether a single && term is known false from the
+// forge platform and config alone.
+func whenTermImpossible(term, forgePlatform string, config map[string]any) bool {
+	if strings.Contains(term, "event") {
+		return false
+	}
+	if strings.Contains(term, "runtime") && forgePlatform == "" {
+		return false
+	}
+	if strings.Contains(term, "config") && config == nil {
+		return false
+	}
+	matched, err := EvaluateOverlay(term, map[string]any{}, forgePlatform, config)
+	return err == nil && !matched
+}
+
+// forcedWhenImplies reports whether any condition in forced syntactically
+// implies base (see whenImplies).
+func forcedWhenImplies(forced map[string]bool, base string) bool {
+	for w := range forced {
+		if whenImplies(w, base) {
+			return true
+		}
+	}
+	return false
+}
+
+// whenImplies conservatively reports whether condition child implies
+// condition base without evaluating either. Both are split at top level into
+// || alternatives of && terms; child implies base when every child
+// alternative contains all the terms of some base alternative (so a child
+// `a && b` implies a base `a`, and a child `a` implies a base `a || c`).
+// Anything it cannot prove is reported as false.
+func whenImplies(child, base string) bool {
+	baseAlts := splitWhenTerms(base)
+	childAlts := splitWhenTerms(child)
+	if len(baseAlts) == 0 || len(childAlts) == 0 {
+		return false
+	}
+	for _, ca := range childAlts {
+		have := make(map[string]bool, len(ca))
+		for _, t := range ca {
+			have[t] = true
+		}
+		found := false
+		for _, ba := range baseAlts {
+			all := true
+			for _, t := range ba {
+				if !have[t] {
+					all = false
+					break
+				}
+			}
+			if all {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// splitWhenTerms splits a condition into || alternatives, each a list of
+// normalized && terms. Splitting respects parentheses, brackets and quoted
+// strings; a term wrapped in a single pair of parentheses is unwrapped.
+func splitWhenTerms(expr string) [][]string {
+	// Unwrap enclosing parentheses first so `(a || b)` yields alternatives.
+	expr = normalizeWhenTerm(expr)
+	// A top-level ternary binds looser than || and &&; treat it as opaque.
+	if len(splitTopLevel(expr, "?")) > 1 {
+		return [][]string{{expr}}
+	}
+	var alts [][]string
+	for _, alt := range splitTopLevel(expr, "||") {
+		var terms []string
+		for _, t := range splitTopLevel(alt, "&&") {
+			t = normalizeWhenTerm(t)
+			if t == "" {
+				return nil
+			}
+			// A parenthesized conjunction such as `(a && b)` contributes
+			// its terms individually; a parenthesized disjunction stays
+			// one opaque term.
+			if len(splitTopLevel(t, "||")) == 1 && len(splitTopLevel(t, "&&")) > 1 {
+				if sub := splitWhenTerms(t); len(sub) == 1 {
+					terms = append(terms, sub[0]...)
+					continue
+				}
+			}
+			terms = append(terms, t)
+		}
+		alts = append(alts, terms)
+	}
+	return alts
+}
+
+// normalizeWhenTerm collapses whitespace (outside quoted string literals) and
+// strips enclosing parentheses that wrap the whole term, re-splitting is left
+// to the caller.
+func normalizeWhenTerm(t string) string {
+	t = collapseWhenSpace(t)
+	for len(t) >= 2 && t[0] == '(' && t[len(t)-1] == ')' && wrapsWhole(t) {
+		t = collapseWhenSpace(t[1 : len(t)-1])
+	}
+	return t
+}
+
+// collapseWhenSpace trims s and collapses each run of whitespace outside quoted
+// string literals to one space. Literal contents are preserved so `"a  b"` and
+// `"a b"` stay distinct.
+func collapseWhenSpace(s string) string {
+	var b strings.Builder
+	var quote byte
+	pendingSpace := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote != 0 {
+			b.WriteByte(c)
+			if c == '\\' && i+1 < len(s) {
+				i++
+				b.WriteByte(s[i])
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case ' ', '\t', '\n', '\r', '\v', '\f':
+			pendingSpace = b.Len() > 0
+			continue
+		}
+		if pendingSpace {
+			b.WriteByte(' ')
+			pendingSpace = false
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// wrapsWhole reports whether the opening parenthesis at t[0] closes at the
+// last byte of t.
+func wrapsWhole(t string) bool {
+	depth := 0
+	var quote byte
+	for i := 0; i < len(t); i++ {
+		c := t[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+			if depth == 0 && i < len(t)-1 {
+				return false
+			}
+		}
+	}
+	return depth == 0
+}
+
+// splitTopLevel splits expr on sep outside parentheses, brackets, braces and
+// quoted strings.
+func splitTopLevel(expr, sep string) []string {
+	var parts []string
+	depth := 0
+	var quote byte
+	start := 0
+	for i := 0; i < len(expr); i++ {
+		c := expr[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		default:
+			if depth == 0 && strings.HasPrefix(expr[i:], sep) {
+				parts = append(parts, expr[start:i])
+				i += len(sep) - 1
+				start = i + 1
+			}
+		}
+	}
+	return append(parts, expr[start:])
 }
 
 // loadBaseChain recursively loads a base harness and its ancestors.
@@ -538,12 +886,26 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 			mergeForgeConfig(base, fc)
 		}
 	}
+	// Record forge usage for Lint() before the map is niled.
+	if base.Forge != nil {
+		base.hadForgeBeforeResolve = true
+	}
 	base.Forge = nil
+
+	// Under lint composition, remember whether any (possibly dropped) overlay
+	// of this layer supplies validation_loop.script for descendants.
+	if opts.OverlayCount != nil {
+		for _, o := range base.Overlays {
+			if o.ValidationLoop != nil && o.ValidationLoop.Script != "" && OverlayWhenPossible(o.When, opts.ForgePlatform, opts.Config) {
+				base.baseOverlaySuppliesScript = true
+			}
+		}
+	}
 
 	// Resolve overlays: evaluate CEL conditions and merge matching
 	// entries into top-level fields.
 	if len(base.Overlays) > 0 {
-		if err := base.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
+		if err := base.resolveOverlaysFor(opts); err != nil {
 			return fmt.Errorf("resolving base overlays: %w", err)
 		}
 	}
@@ -674,6 +1036,14 @@ func mergeBaseIntoChild(base, child *Harness) {
 	// Enforce precondition: base must be flat (forge/overlays resolved).
 	if base.Forge != nil || base.Overlays != nil {
 		panic("mergeBaseIntoChild: base.Forge and base.Overlays must be nil (call resolveBaseForgeAndOverlays first)")
+	}
+
+	// Propagate base forge usage for Lint().
+	if base.hadForgeBeforeResolve {
+		child.hadForgeBeforeResolve = true
+	}
+	if base.baseOverlaySuppliesScript {
+		child.baseOverlaySuppliesScript = true
 	}
 
 	// Scalars: child overrides if non-zero
@@ -2249,6 +2619,11 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 	}
 	idxPath := urlIndexPath(workspaceRoot)
 	if err := os.MkdirAll(filepath.Dir(idxPath), 0o700); err != nil {
+		return err
+	}
+	// The cache dir or index file may be a symlink planted in an untrusted
+	// checkout; refuse to write through one that leaves the workspace.
+	if err := fetch.CheckWithinWorkspace(workspaceRoot, idxPath); err != nil {
 		return err
 	}
 

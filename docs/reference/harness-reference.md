@@ -163,7 +163,7 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
 
-**`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
+**`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`. Setting `allowed_remote_resources` without this field is a deprecated implicit opt-in; see [Deprecated fields](#deprecated-fields).
 
 **`plugins`** — Directories a runtime loads. Which runtime loads an entry follows from the directory, not from the key: a directory with `plugin.json` at its root or `.claude-plugin/plugin.json` is a Claude plugin and Claude Code loads it; anything else must be a directory pi's `-e` loader resolves an entry point in, and pi loads it as an extension ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). Each runtime names and skips the entries in the other format, so one list works whichever runtime the org configures.
 
@@ -211,8 +211,24 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 > **Deprecated:** `runner_env` is deprecated. Use `env.runner`
 > instead. The `runner_env` field still works but emits a deprecation warning
-> at runtime. Migration: move `runner_env:` entries under `env: runner:` and
-> delete the `runner_env:` block.
+> at runtime, and `fullsend lint` reports it statically. Migration: move
+> `runner_env:` entries under `env: runner:` and delete the `runner_env:` block.
+
+> **Deprecated:** `GITHUB_ISSUE_URL` is deprecated in favor of
+> `FULLSEND_WORK_ITEM_URL` (see #6610). `fullsend lint` and `fullsend run`
+> warn when it appears in `env.runner`, `env.sandbox`, or a `host_files`
+> source. Migration: rename the key and every `${GITHUB_ISSUE_URL}` reference.
+> Only migrate a harness once every workflow that runs it exports
+> `FULLSEND_WORK_ITEM_URL`: the reusable dispatch workflow exports both
+> variables, but the reusable prioritize workflow still exports only
+> `GITHUB_ISSUE_URL`, so keep `GITHUB_ISSUE_URL` for harnesses it runs.
+
+> **Deprecated:** declaring `allowed_remote_resources` without
+> `allow_runtime_fetch: true` implicitly enables the runtime fetch service for
+> backward compatibility ([ADR 0024](../ADRs/0024-harness-definitions.md)).
+> `fullsend lint` and `fullsend run` warn about it unless the harness has URL
+> directory resources. Migration: add `allow_runtime_fetch: true` to the
+> harness.
 
 ## Field merge rules (for `base` and `overlays`)
 
