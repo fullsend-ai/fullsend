@@ -321,6 +321,25 @@ func MapGitHubPermission(roleName string) ActorRole {
 	}
 }
 
+// MapGitLabAccessLevel maps a GitLab project membership access level to the
+// normalized repository permission role used by the authorization contract.
+func MapGitLabAccessLevel(accessLevel int) ActorRole {
+	switch accessLevel {
+	case 10: // Guest
+		return RoleRead
+	case 20: // Reporter
+		return RoleTriage
+	case 30: // Developer
+		return RoleWrite
+	case 40: // Maintainer
+		return RoleMaintain
+	case 50: // Owner
+		return RoleAdmin
+	default:
+		return RoleNone
+	}
+}
+
 // ComputeChangeProposalIsFork reports whether a change proposal is fork-based.
 // Missing head or base repo metadata is treated as fork (fail-closed) so CEL
 // guards like !event.state.change_proposal.is_fork stay trustworthy.

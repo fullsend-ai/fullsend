@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -218,6 +219,57 @@ func appendStaleVendoredDeletes(ctx context.Context, client forge.Client, printe
 
 func removeStaleVendoredAssets(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string) error {
 	return layers.RemoveStaleVendoredAssets(ctx, client, printer, owner, repo, vendorPathPrefix, layers.VendoredBinaryPathPerRepo)
+}
+
+// newVendoredWorkflowReader returns a reader for the reusable workflows a
+// vendored install copies from the resolved vendor source (the same source
+// and collection prepareVendorFiles uses), plus a cleanup to call once the
+// run is over. The source is resolved lazily, once, on the first read, so
+// runs that never vendor do no work. A workflow the source lacks yields
+// forge.ErrNotFound.
+func newVendoredWorkflowReader(fullsendSource string) (read func(path string) ([]byte, error), cleanup func()) {
+	var (
+		once      sync.Once
+		files     map[string][]byte
+		loadErr   error
+		cleanupFn func()
+	)
+	load := func() {
+		root, err := binary.ResolveVendorRoot(fullsendSource, version)
+		if err != nil {
+			loadErr = err
+			return
+		}
+		cleanupFn = root.Cleanup
+		assets, err := scaffold.CollectVendoredAssets(root.Path, "")
+		if err != nil {
+			loadErr = fmt.Errorf("collecting vendored content: %w", err)
+			return
+		}
+		files = make(map[string][]byte, len(assets))
+		for _, f := range assets {
+			files[f.Path] = f.Content
+		}
+	}
+	read = func(path string) ([]byte, error) {
+		once.Do(load)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		content, ok := files[path]
+		if !ok {
+			return nil, fmt.Errorf("%s is not in the vendor source: %w", path, forge.ErrNotFound)
+		}
+		return content, nil
+	}
+	cleanup = func() {
+		// once.Do makes a concurrent first read finish loading first.
+		once.Do(func() {})
+		if cleanupFn != nil {
+			cleanupFn()
+		}
+	}
+	return read, cleanup
 }
 
 func vendorDryRunMessage(fullsendBinary, fullsendSource, destPath string) string {

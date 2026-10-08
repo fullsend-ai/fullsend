@@ -20,7 +20,7 @@ fullsend
 │   ├── add-role       <role>                # Register role PEM + ROLE_APP_IDS entry
 │   ├── remove-role    <role>                # Remove role from mint
 │   ├── enroll       <owner/repo>            # Register repo in mint
-│   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
+│   ├── unenroll     <owner/repo>            # Remove repo from mint
 │   ├── status       [org]                   # Inspect mint state and PEM health
 │   │   ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
 │   │   ├── --project <id>                   #   GCP project ID (direct infra queries)
@@ -68,7 +68,7 @@ fullsend
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
 │   │   ├── --app-set <prefix>               #   GitHub App set prefix override ($FULLSEND_APP_SET); GitHub-only
 │   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
-│   │   ├── --inference-auth <method>        #   vertex-wif or openai-api-key; persisted as inference.auth on each selected manifest entry (a repo covered only by a glob gets its own copied entry); never changes defaults or forge sections
+│   │   ├── --inference-auth <method>        #   vertex-wif, openai-api-key or openai-wif (GitHub only); persisted as inference.auth on each selected manifest entry (a repo covered only by a glob gets its own copied entry); never changes defaults or forge sections
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
@@ -162,6 +162,12 @@ fullsend
 │   ├── --dry-run                            #   Print what would be posted without API calls
 │   ├── --keep-history                       #   Append previous content as collapsed history (default true)
 │   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR; resolves keep_history default)
+├── fetch-review-threads                      # Fetch PR/MR review threads as JSON
+│   ├── --repo <owner/repo>                   #   Repository in owner/repo format (required)
+│   ├── --pr <int>                            #   Pull request / merge request number (required)
+│   ├── --forge <forge>                       #   Forge backend: github (default) or gitlab
+│   ├── --token <string>                      #   Forge token (default: forge environment token)
+│   └── --base-url <url>                      #   Forge API base URL
 ├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
 │   └── --token <string>                     #   GitHub token (default: $GH_TOKEN / $GITHUB_TOKEN / gh auth token)
 ├── eval-measure                             # Score wild-run traces (eval measurements)
@@ -198,6 +204,16 @@ fullsend
 ```
 
 ### Command Decomposition
+
+`fetch-review-threads` emits a JSON object containing `threads` and a
+`truncated` flag. GitHub review threads are capped at 20 pages; consumers
+must treat `truncated: true` as an incomplete result. GitLab merge-request
+discussions are mapped to the same thread model, including resolution state,
+comments, positions, and resolver identity when GitLab provides it. Each comment
+also includes `author_role` and `author_role_verified`; resolved threads include
+`resolved_by_role` and `resolved_by_role_verified`. A role is `none` with
+`verified: true` for an authoritative non-member result, and `verified: false`
+when the actor is a bot/unknown or the permission lookup fails.
 
 The `mint`, `inference`, and `github` subcommands decompose setup into role-specific operations for organizations that separate GCP and GitHub responsibilities:
 
@@ -280,7 +296,7 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 │  │ Phase 3: Mint provisioning                                 │ │
 │  │                                                            │ │
 │  │  If mint not found → deploy GCF (Provision)                │ │
-│  │  If mint exists    → register org (EnsureOrgInMint)        │ │
+│  │  If mint exists    → verify mint URL (verifyMintURL)       │ │
 │  │                    → store PEMs in Secret Manager          │ │
 │  │                                                            │ │
 │  │  Uses gcf.NewProvisioner with a shared Config{}            │ │
@@ -341,7 +357,7 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 |-------|------|-------------------|
 | **1. Discover** | `DiscoverMint()`, resolve app IDs | Single repo validation |
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | Excludes "fullsend" role |
-| **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | Deploys the mint if absent, otherwise registers the owner in it (use `mint enroll <owner/repo>` separately to add repositories later) |
+| **3. Mint** | `gcf.Provision()` | Deploys the mint if absent, otherwise verifies the existing mint's URL; no org is registered (use `mint enroll <owner/repo>` separately to add repositories) |
 | **4. WIF** | `ProvisionWIF()` | `mintcore.BuildRepoProviderID()` (repo-scoped, GitHub only; GitLab uses shared `gitlab-oidc` provider) |
 | **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Writes `.fullsend/` dir + shim workflow + thin caller workflows + optional binary in target repo (committed after secrets, see #6122) |
 | **6. Secrets** | Repository secret and variable writes | Target repo + `FULLSEND_PER_REPO_INSTALL` (written before scaffold commit, see #6122) |

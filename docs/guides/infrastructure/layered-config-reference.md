@@ -227,7 +227,9 @@ unset (`""`) falls through to parent, then to code default
   falls through to parent (no code default — must be provided by the installer).
 - **`inference.openai.{audience,identity_provider_id,service_account_id}`**:
   the OpenAI Workload Identity identifiers for GPT on pi or codex (ADR 0092), written
-  by `fullsend github setup --openai-*`. Each resolves independently through
+  by `fullsend github setup --openai-*`; they can also come from configuration
+  presets or managed config, and `fullsend repos install` validates them for
+  `openai-wif` repos. Each resolves independently through
   the layers; a run needs all three from one source. The `FULLSEND_OPENAI_*`
   runner variables, when any is set, replace the resolved block entirely.
 

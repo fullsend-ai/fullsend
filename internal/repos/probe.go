@@ -17,7 +17,7 @@ import (
 type ComponentStatus struct {
 	// Name identifies the component, prefixed by category:
 	//   "workflow", "thin-caller:<path>", "scaffold:<path>", "var:<name>",
-	//   "secret:<name>", "schedule:<name>"
+	//   "secret:<name>", "schedule:<name>", "openai-wif:<name>"
 	Name string
 
 	// Present is true when the component exists on the forge.
@@ -80,6 +80,10 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 // that carry the selected method's credentials (inferenceSecretsForAuth),
 // and each must be present to match. An empty auth keeps the legacy
 // behavior: the GCP pair is probed and both absent counts as a match.
+// openai-wif probes the GCP pair the same optional way and adds an
+// openai-wif:identifiers component that matches only when a complete set
+// of OpenAI WIF identifiers is live on the default branch. Installed repos
+// also report openai-wif:workflows for their live workflow contract.
 func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, repo, forgeName, auth string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
 	var results []ComponentStatus
 
@@ -285,12 +289,38 @@ func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, rep
 			Match:   exists,
 		})
 	}
-	if auth != "" {
+	if auth == InferenceAuthOpenAIWIF {
+		// Readiness is a complete identifier set on the default branch,
+		// not a secret. The probed GCP pair stays optional below so
+		// Vertex sub-agents of an OpenAI parent keep working.
+		ids, err := probeOpenAIWIFIdentifiers(ctx, client, owner, repo)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, ids)
+		if workflowPresent {
+			contract, err := probeOpenAIWIFWorkflows(ctx, client, owner, repo, fc)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, contract)
+		}
+	} else if auth == InferenceAuthOpenAIAPIKey && anyComponentPresent(results) {
+		// Check inherited identifiers and unread scopes on both forges.
+		// Layered configuration overrides the key only on GitHub; the
+		// residual probe ignores that source on GitLab.
+		conflict, err := probeResidualOpenAIWIF(ctx, client, owner, repo, forgeName)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, conflict...)
+		return results, nil
+	} else if auth != "" {
 		// The selected method's credentials are required.
 		return results, nil
 	}
-	// Without a selected inference.auth, Vertex is optional. Keep both
-	// GCP components visible so a partial pair remains
+	// Without a selected inference.auth (or with openai-wif), Vertex is
+	// optional. Keep both GCP components visible so a partial pair remains
 	// detectable and convergence can repair it when values are supplied.
 	var projectIndex, wifIndex = -1, -1
 	for i := range results {

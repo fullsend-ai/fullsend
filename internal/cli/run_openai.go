@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
@@ -43,9 +44,9 @@ const openAIDefaultCredentialKey = "OPENAI_API_KEY"
 // identifiers; they are also in oidcDenyKeys so they never reach the
 // sandbox or user scripts.
 const (
-	openAIAudienceEnv           = "FULLSEND_OPENAI_AUDIENCE"
-	openAIIdentityProviderIDEnv = "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"
-	openAIServiceAccountIDEnv   = "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"
+	openAIAudienceEnv           = forge.VarOpenAIAudience
+	openAIIdentityProviderIDEnv = forge.VarOpenAIIdentityProviderID
+	openAIServiceAccountIDEnv   = forge.VarOpenAIServiceAccountID
 	openAIStaticKeyEnv          = "OPENAI_API_KEY"
 	// openAIRepoSecretName is the GitHub Actions secret workflows export as
 	// OPENAI_API_KEY. Named FULLSEND_* so an unrelated repository secret is

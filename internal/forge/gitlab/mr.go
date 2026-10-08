@@ -8,8 +8,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
 // requestChangesMarker is the hidden HTML comment posted on GitLab
@@ -768,6 +770,189 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 	}
 
 	return result, nil
+}
+
+type gitlabDiscussionActor struct {
+	ID       int    `json:"id"`
+	Username string `json:"username"`
+}
+
+// ListPullRequestReviewThreads maps GitLab merge-request discussions to the
+// common review-thread model. A discussion is resolved when all of its
+// resolvable notes are marked resolved; the latest resolver and note authors
+// are preserved so consumers can distinguish human and bot resolutions.
+func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, repo string, number int) (forge.ReviewThreadPage, error) {
+	proj := projectPath(owner, repo)
+	result := forge.ReviewThreadPage{}
+	actorTypes := make(map[int]string)
+	actorRoles := make(map[int]struct {
+		role     normevent.ActorRole
+		verified bool
+	})
+	lookupActorType := func(actor *gitlabDiscussionActor) string {
+		if actor == nil || actor.ID == 0 {
+			return "Unknown"
+		}
+		if actorType, ok := actorTypes[actor.ID]; ok {
+			return actorType
+		}
+
+		actorType := "Unknown"
+		resp, err := c.get(ctx, fmt.Sprintf("/users/%d", actor.ID))
+		if err == nil {
+			var user struct {
+				Bot *bool `json:"bot"`
+			}
+			if decodeErr := decodeJSON(resp, &user); decodeErr == nil {
+				actorType = gitlabActorType(user.Bot)
+			}
+		}
+		actorTypes[actor.ID] = actorType
+		return actorType
+	}
+	lookupActorRole := func(actor *gitlabDiscussionActor, actorType string) (normevent.ActorRole, bool) {
+		if actor == nil || actor.ID == 0 || actorType != "User" {
+			return normevent.RoleNone, false
+		}
+		if cached, ok := actorRoles[actor.ID]; ok {
+			return cached.role, cached.verified
+		}
+
+		level, err := c.GetProjectMemberAccessLevel(ctx, owner, repo, int64(actor.ID))
+		if err != nil {
+			verified := forge.IsNotFound(err)
+			actorRoles[actor.ID] = struct {
+				role     normevent.ActorRole
+				verified bool
+			}{normevent.RoleNone, verified}
+			return normevent.RoleNone, verified
+		}
+		role := normevent.MapGitLabAccessLevel(level)
+		actorRoles[actor.ID] = struct {
+			role     normevent.ActorRole
+			verified bool
+		}{role, true}
+		return role, true
+	}
+
+	for page := 1; page <= 20; page++ {
+		path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions?per_page=100&page=%d",
+			proj, number, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return forge.ReviewThreadPage{}, fmt.Errorf("list discussions for !%d page %d: %w", number, page, err)
+		}
+
+		var discussions []struct {
+			ID    string `json:"id"`
+			Notes []struct {
+				ID         int                    `json:"id"`
+				Body       string                 `json:"body"`
+				System     bool                   `json:"system"`
+				CreatedAt  string                 `json:"created_at"`
+				Resolvable bool                   `json:"resolvable"`
+				Resolved   bool                   `json:"resolved"`
+				ResolvedAt *string                `json:"resolved_at"`
+				Author     gitlabDiscussionActor  `json:"author"`
+				ResolvedBy *gitlabDiscussionActor `json:"resolved_by"`
+				Position   *struct {
+					NewPath string `json:"new_path"`
+					OldPath string `json:"old_path"`
+					NewLine *int   `json:"new_line"`
+					OldLine *int   `json:"old_line"`
+				} `json:"position"`
+			} `json:"notes"`
+		}
+		if err := decodeJSON(resp, &discussions); err != nil {
+			return forge.ReviewThreadPage{}, fmt.Errorf("decode discussions for !%d page %d: %w", number, page, err)
+		}
+
+		for _, discussion := range discussions {
+			thread := forge.ReviewThread{ID: discussion.ID, ResolvedByRole: normevent.RoleNone}
+			hasResolvableNote := false
+			allResolvableNotesResolved := true
+			var resolvedBy *gitlabDiscussionActor
+			var resolvedAt time.Time
+			resolvedNoteID := 0
+			resolvedNoteSelected := false
+			for _, note := range discussion.Notes {
+				if note.System || !note.Resolvable {
+					continue
+				}
+				hasResolvableNote = true
+				if !note.Resolved {
+					allResolvableNotesResolved = false
+					continue
+				}
+				noteResolvedAt := time.Time{}
+				if note.ResolvedAt != nil {
+					noteResolvedAt, _ = time.Parse(time.RFC3339Nano, *note.ResolvedAt)
+				}
+				if !resolvedNoteSelected || noteResolvedAt.After(resolvedAt) ||
+					(noteResolvedAt.Equal(resolvedAt) && note.ID > resolvedNoteID) {
+					resolvedBy = note.ResolvedBy
+					resolvedAt = noteResolvedAt
+					resolvedNoteID = note.ID
+					resolvedNoteSelected = true
+				}
+			}
+			thread.IsResolved = hasResolvableNote && allResolvableNotesResolved
+			if thread.IsResolved && resolvedBy != nil {
+				thread.ResolvedBy = resolvedBy.Username
+				thread.ResolvedByType = lookupActorType(resolvedBy)
+				thread.ResolvedByRole, thread.ResolvedByRoleVerified = lookupActorRole(resolvedBy, thread.ResolvedByType)
+			}
+
+			for _, note := range discussion.Notes {
+				if note.System {
+					continue
+				}
+
+				authorType := lookupActorType(&note.Author)
+				authorRole, authorRoleVerified := lookupActorRole(&note.Author, authorType)
+				thread.Comments = append(thread.Comments, forge.ReviewThreadComment{
+					Author:             note.Author.Username,
+					AuthorType:         authorType,
+					AuthorRole:         authorRole,
+					AuthorRoleVerified: authorRoleVerified,
+					Body:               note.Body,
+					CreatedAt:          note.CreatedAt,
+				})
+				if note.Position != nil {
+					thread.Path = note.Position.NewPath
+					if note.Position.NewLine == nil && note.Position.OldLine != nil {
+						thread.Path = note.Position.OldPath
+					} else if thread.Path == "" {
+						thread.Path = note.Position.OldPath
+					}
+					thread.Line = note.Position.NewLine
+					thread.OriginalLine = note.Position.OldLine
+				}
+			}
+			result.Threads = append(result.Threads, thread)
+		}
+
+		if len(discussions) < 100 {
+			break
+		}
+		if page == 20 {
+			result.Truncated = true
+		}
+	}
+
+	return result, nil
+}
+
+// gitlabActorType fails closed when GitLab does not identify whether an actor
+// is a bot. Callers use the User value to trust a human resolution.
+func gitlabActorType(bot *bool) string {
+	if bot == nil {
+		return "Unknown"
+	}
+	if *bot {
+		return "Bot"
+	}
+	return "User"
 }
 
 // DismissPullRequestReview dismisses a review on a merge request.

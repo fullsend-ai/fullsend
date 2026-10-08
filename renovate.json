@@ -47,6 +47,14 @@
       "groupName": "cloudflare-workers"
     },
     {
+      "description": "Red Hat rebuilds the UBI 10 base images (images/runner/Containerfile) almost daily. Group their digest bumps into one PR and only open it on Mondays (UTC) to cut the daily churn of protected-path PRs (#8187). Tag/version bumps are not affected.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["/^registry\\.access\\.redhat\\.com\\/ubi10\\//"],
+      "matchUpdateTypes": ["digest"],
+      "groupName": "ubi10 base images",
+      "schedule": ["* * * * 1"]
+    },
+    {
       "description": "After cosign version bump, verify the new binary's sigstore signature and update COSIGN_SHA256",
       "matchPackageNames": ["sigstore/cosign"],
       "automerge": false,

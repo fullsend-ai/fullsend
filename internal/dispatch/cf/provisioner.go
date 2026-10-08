@@ -98,7 +98,7 @@ type Config struct {
 	PreviewAlias string
 
 	// EnvVars are non-secret environment variables to set on the Worker
-	// (e.g. ROLE_APP_IDS, ALLOWED_ORGS).
+	// (e.g. ROLE_APP_IDS, PER_REPO_WIF_REPOS).
 	EnvVars map[string]string
 
 	// Secrets are secret values to bind to the Worker during deploy.
@@ -261,7 +261,7 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 			// Bootstrap: create an empty durable Worker script shell
 			// so wrangler versions upload can target it. The bootstrap
 			// deploy intentionally sets NO env vars — mint configuration
-			// (ALLOWED_ORGS, PER_REPO_WIF_REPOS, etc.) applies only to
+			// (PER_REPO_WIF_REPOS, ROLE_APP_IDS, etc.) applies only to
 			// the preview version deployed immediately after. This
 			// prevents dual-enrollment when a later per-repo preview
 			// inherits env vars from the durable script via --keep-vars.

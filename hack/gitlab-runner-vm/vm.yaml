@@ -88,8 +88,22 @@ spec:
               user: __VM_USER__
               ssh_authorized_keys:
                 - __SSH_PUBLIC_KEY__
+              # bootcmd runs before the packages module, so the repo config
+              # must be usable here (setup.sh's fix_fedora_repos runs too
+              # late). Switch metalink= to baseurl= (egress allowlist),
+              # replace the download.example placeholder that Fedora 43/44
+              # cloud images ship in their commented-out baseurl= lines, and
+              # use HTTPS: the stock baseurl= lines are plain HTTP, which
+              # egress-restricted clusters may block (port 80) while HTTPS
+              # to dl.fedoraproject.org works. The HTTPS rewrite also mends
+              # an already-enabled HTTP baseurl= with no metalink= left.
+              # The optional OpenH264 repo has no baseurl= at all, so once
+              # its metalink= is commented out dnf cannot load it: disable
+              # it. Keep in step with vm_test.sh and setup.sh's
+              # fix_fedora_repos.
               bootcmd:
-                - "sed -i -e 's/^metalink=/#metalink=/' -e 's/^#baseurl=/baseurl=/' /etc/yum.repos.d/fedora*.repo"
+                - "sed -i -e 's/^metalink=/#metalink=/' -e 's/^#baseurl=/baseurl=/' -e 's|download[.]example|dl.fedoraproject.org|g' -e 's|^baseurl=http://dl[.]fedoraproject[.]org/|baseurl=https://dl.fedoraproject.org/|' /etc/yum.repos.d/fedora*.repo"
+                - "[ ! -f /etc/yum.repos.d/fedora-cisco-openh264.repo ] || sed -i 's/^enabled=1/enabled=0/' /etc/yum.repos.d/fedora-cisco-openh264.repo"
               packages:
                 - podman
                 - curl

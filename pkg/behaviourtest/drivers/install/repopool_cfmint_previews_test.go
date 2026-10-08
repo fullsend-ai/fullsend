@@ -117,7 +117,6 @@ func TestNewCFMintDriver_OK(t *testing.T) {
 	d, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, cfmintConfig{
 		pemDir:            dir,
 		suiteName:         "bt",
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "my-org/test-repo-01,my-org/test-repo-02",
 		workflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		appSet:            "fullsend-test",
@@ -130,7 +129,6 @@ func TestCFMintDeployArgs_WithAppSet(t *testing.T) {
 	cfg := cfmintConfig{
 		pemDir:            "/tmp/pems",
 		suiteName:         "bt",
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "my-org/test-repo-01",
 		workflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		appSet:            "fullsend-test",
@@ -147,17 +145,9 @@ func TestCFMintDeployArgs_WithAppSet(t *testing.T) {
 		}
 	}
 	assert.Contains(t, args, "--pem-dir")
-	assert.Contains(t, args, "--allowed-orgs")
 	assert.Contains(t, args, "--per-repo-wif-repos")
 	assert.Contains(t, args, "--workflow-host-repos")
-
-	for i, a := range args {
-		if a == "--allowed-orgs" {
-			require.Less(t, i+1, len(args), "--allowed-orgs must have a value")
-			assert.Equal(t, "", args[i+1], "--allowed-orgs should be explicit empty for per-repo mode")
-			break
-		}
-	}
+	assert.NotContains(t, args, "--allowed-orgs", "per-org mint enrollment was removed")
 
 	for i, a := range args {
 		if a == "--workflow-host-repos" {
@@ -172,7 +162,6 @@ func TestCFMintDeployArgs_WithoutAppSet(t *testing.T) {
 	cfg := cfmintConfig{
 		pemDir:            "/tmp/pems",
 		suiteName:         "bt",
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "my-org/test-repo-01",
 		workflowHostRepos: "my-org/test-repo-01",
 	}
@@ -181,7 +170,7 @@ func TestCFMintDeployArgs_WithoutAppSet(t *testing.T) {
 
 	assert.NotContains(t, args, "--app-set")
 	assert.Contains(t, args, "--pem-dir")
-	assert.Contains(t, args, "--allowed-orgs")
+	assert.NotContains(t, args, "--allowed-orgs")
 	assert.Contains(t, args, "--workflow-host-repos")
 }
 
@@ -217,7 +206,6 @@ func TestCFMintDriver_Implements_MintDriver(t *testing.T) {
 	d, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, cfmintConfig{
 		pemDir:            dir,
 		suiteName:         "bt",
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "org/repo",
 		workflowHostRepos: "org/repo",
 	})

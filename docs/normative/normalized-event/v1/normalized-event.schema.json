@@ -316,13 +316,61 @@
             "none",
             "external"
           ],
-          "description": "Effective repository permission level (ADR 0054). Adapters populate from the forge collaborator permission API when available."
+          "description": "Effective repository permission level (ADR 0054); post-migration ADR 0107 producers use `none` for bots, while legacy bot permission values remain valid in v1 during migration."
+        },
+        "bot_role": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Optional provider-resolved canonical Fullsend bot role; absent or null for humans and unrecognized bots."
+        },
+        "role_verified": {
+          "type": "boolean",
+          "description": "Optional lookup-verification bit: for humans, true means role is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result. It is not required for the permanent GitHub label-added authorization exception."
         },
         "is_entity_author": {
           "type": "boolean",
           "description": "True when actor.id is the author of the work item, change proposal, or conversation."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "human" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "bot_role": { "const": null }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "const": "bot" },
+              "role_verified": { "const": false }
+            },
+            "required": ["kind", "role_verified"]
+          },
+          "then": {
+            "properties": { "bot_role": { "const": null } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "const": "bot" },
+              "bot_role": { "type": "string" }
+            },
+            "required": ["kind", "bot_role"]
+          },
+          "then": {
+            "required": ["role_verified"],
+            "properties": { "role_verified": { "const": true } }
+          }
+        }
+      ]
     },
     "state": {
       "type": "object",

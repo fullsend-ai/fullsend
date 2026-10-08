@@ -355,6 +355,12 @@ pre/post/validation child environments never receive it. Outside Actions the var
 derived from a local PAT — a caller may set it explicitly. `GH_TOKEN` / `PUSH_TOKEN` still receive
 the minted App identity.
 
+Host-side scripts (pre/post and validation) also no longer inherit `JIRA_TOKEN`,
+`JIRA_USER_EMAIL`, or the OTLP collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
+`OTEL_EXPORTER_OTLP_*_HEADERS`) from the `fullsend run` process environment. A script
+receives one only when the harness declares it under `env.runner`; see
+[`env.runner`](../reference/harness-reference.md#field-details) in the harness reference.
+
 Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 [Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).
 

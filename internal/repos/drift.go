@@ -250,6 +250,16 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 		if managedNames[name] {
 			continue
 		}
+		// OpenAI WIF identifiers are a user-provided identifier source:
+		// supported, but not installer-owned. They configure the OpenAI
+		// provider for openai-wif repositories and for OpenAI WIF
+		// sub-agents of a vertex-wif parent, where they do not override
+		// the Vertex authentication. On an openai-api-key route they are
+		// retained drift: the runtime would still prefer them over the key.
+		if (cfg.InferenceAuth == InferenceAuthOpenAIWIF || cfg.InferenceAuth == InferenceAuthVertexWIF) &&
+			slices.Contains(openAIWIFVariables, name) {
+			continue
+		}
 		if cfg.Forge == ForgeGitLab && IsGitLabRoleManagedVar(name) {
 			continue
 		}

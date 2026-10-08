@@ -430,15 +430,6 @@ else
     echo "    You may need to run: gcloud auth login"
     mint_ok=false
   else
-    # Check ALLOWED_ORGS
-    allowed_orgs=$(echo "${mint_env}" | jq -r '.ALLOWED_ORGS // ""')
-    if echo "${allowed_orgs}" | tr ',' '\n' | grep -qx "${ORG}"; then
-      echo "    OK: ${ORG} is in ALLOWED_ORGS"
-    else
-      echo "    MISSING: ${ORG} is NOT in ALLOWED_ORGS"
-      mint_ok=false
-    fi
-
     # Check ROLE_APP_IDS
     role_app_ids=$(echo "${mint_env}" | jq -r '.ROLE_APP_IDS // ""')
     missing_roles=()

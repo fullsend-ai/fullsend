@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
 // ConfigRepoName is the conventional name for the org-level fullsend
@@ -42,6 +44,11 @@ const (
 	VarGCPRegion      = "FULLSEND_GCP_REGION"
 	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
 	VarAppSet         = "FULLSEND_APP_SET"
+
+	// User-managed OpenAI Workload Identity identifier variables.
+	VarOpenAIAudience           = "FULLSEND_OPENAI_AUDIENCE"
+	VarOpenAIIdentityProviderID = "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"
+	VarOpenAIServiceAccountID   = "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"
 
 	// Retired GitLab poller state variables. Superseded by HMAC-signed
 	// state.json on fullsend-poll-state-slash / fullsend-poll-state-events.
@@ -214,6 +221,31 @@ var ErrForbidden = errors.New("forbidden")
 // IsForbidden reports whether err indicates a permission denial.
 func IsForbidden(err error) bool {
 	return errors.Is(err, ErrForbidden)
+}
+
+// UnverifiedScopesError is returned by ListInheritedRepoVariables together
+// with the variables that could be read when some inherited scopes (ancestor
+// groups, the instance) could not be inspected. Those scopes are unknown, not
+// verified empty: a caller that needs the effective variable set must not
+// treat their variables as absent.
+type UnverifiedScopesError struct {
+	// Scopes names each scope that could not be inspected.
+	Scopes []string
+}
+
+// Error implements error.
+func (e *UnverifiedScopesError) Error() string {
+	return "could not inspect inherited variable scopes: " + strings.Join(e.Scopes, ", ")
+}
+
+// UnverifiedScopes returns the scopes named by an UnverifiedScopesError in
+// err's chain, or nil when there is none.
+func UnverifiedScopes(err error) []string {
+	var scopesErr *UnverifiedScopesError
+	if errors.As(err, &scopesErr) {
+		return scopesErr.Scopes
+	}
+	return nil
 }
 
 // ErrTreeTruncated indicates that the repository's Git tree is too large
@@ -466,6 +498,41 @@ type ReviewComment struct {
 	Body string // comment body (Markdown)
 }
 
+// ReviewThreadComment is a comment belonging to a pull-request review thread.
+// AuthorType is the forge's actor type (for example, "Bot" or "User").
+type ReviewThreadComment struct {
+	Author             string              `json:"author"`
+	AuthorType         string              `json:"author_type"`
+	AuthorRole         normevent.ActorRole `json:"author_role"`
+	AuthorRoleVerified bool                `json:"author_role_verified"`
+	Body               string              `json:"body"`
+	CreatedAt          string              `json:"created_at"`
+}
+
+// ReviewThread represents the resolution state and comments of a pull-request
+// review thread. Forges that do not expose review threads return
+// ErrNotSupported.
+type ReviewThread struct {
+	ID                     string                `json:"id"`
+	IsResolved             bool                  `json:"is_resolved"`
+	Path                   string                `json:"path"`
+	Line                   *int                  `json:"line"`
+	OriginalLine           *int                  `json:"original_line"`
+	ResolvedBy             string                `json:"resolved_by"`
+	ResolvedByType         string                `json:"resolved_by_type"`
+	ResolvedByRole         normevent.ActorRole   `json:"resolved_by_role"`
+	ResolvedByRoleVerified bool                  `json:"resolved_by_role_verified"`
+	Comments               []ReviewThreadComment `json:"comments"`
+	CommentsTruncated      bool                  `json:"comments_truncated"`
+}
+
+// ReviewThreadPage contains a complete fetch of a pull request's review
+// threads. Truncated is true when the implementation hit its safety cap.
+type ReviewThreadPage struct {
+	Threads   []ReviewThread `json:"threads"`
+	Truncated bool           `json:"truncated"`
+}
+
 // PullRequestFileDiff represents a file changed in a pull request along
 // with its unified diff patch. The patch may be empty for binary files,
 // rename-only changes, or when GitHub truncates large diffs.
@@ -518,10 +585,20 @@ type Installation struct {
 	Permissions   map[string]string
 }
 
+// RepoVariable describes stored contents and the runtime delivery type.
+type RepoVariable struct {
+	Value    string
+	FileType bool
+}
+
 // OrgVariable is a GitHub organization variable or an inherited GitLab group variable.
 type OrgVariable struct {
 	Name  string
 	Value string
+	// NonBlank reports effective value presence without disclosing a GitLab
+	// group/instance variable's potentially sensitive value. Nil means that
+	// metadata was unavailable; Value remains the source on other forges.
+	NonBlank *bool
 }
 
 // UserIdentity holds a forge user's display name and email, used for
@@ -816,20 +893,39 @@ type Client interface {
 	// Secrets and variables
 	//
 	// On GitLab, RepoSecretExists, GetRepoSecretProtection, and
-	// DeleteRepoSecret address only the wildcard-scoped (environment_scope
+	// DeleteRepoSecret and all individual repository-variable operations address
+	// only the wildcard-scoped (environment_scope
 	// "*") variable; an environment-specific variable with the same key is
 	// ignored and left untouched. ListRepoVariables returns the
-	// wildcard-scoped value when a key exists for several scopes.
+	// wildcard-scoped value when a key exists for several scopes. Listing
+	// inventories all scopes: a name defined only for a named environment is
+	// included in the list but is absent from the individual wildcard lookups.
+	// Its listed value must not be treated as evidence of a wildcard definition.
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
 	// GetRepoSecretProtection reports whether a repo secret exists and the
 	// masking/protection controls applied to it. It never returns the value.
 	GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (SecretProtection, error)
 	DeleteRepoSecret(ctx context.Context, owner, repo, name string) error
+	// CreateOrUpdateRepoVariable writes an ordinary repository variable. On
+	// GitLab it creates or updates only the wildcard-scoped definition, leaving
+	// same-named variables in named environments untouched.
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
+	// RepoVariableExists checks the wildcard definition on GitLab; a variable
+	// present only in a named environment is reported absent.
 	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
+	// GetRepoVariable reads the wildcard definition on GitLab; a variable
+	// present only in a named environment is reported absent.
 	GetRepoVariable(ctx context.Context, owner, repo, name string) (string, bool, error)
+	// GetRepoVariableInfo returns stored contents and file-type metadata.
+	// On GitLab it uses the same wildcard lookup as GetRepoVariable.
+	GetRepoVariableInfo(ctx context.Context, owner, repo, name string) (RepoVariable, bool, error)
+	// ListRepoVariables inventories all repository-variable scopes on GitLab.
+	// Wildcard values win duplicate names, but a listed name alone does not
+	// establish that a wildcard definition exists.
 	ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error)
+	// DeleteRepoVariable removes only the wildcard definition on GitLab,
+	// preserving same-named variables in named environments.
 	DeleteRepoVariable(ctx context.Context, owner, repo, name string) error
 
 	// Org-level secrets (cleanup of legacy dispatch tokens)
@@ -842,6 +938,14 @@ type Client interface {
 	CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error
 	GetOrgVariable(ctx context.Context, org, name string) (value string, exists bool, err error)
 	ListOrgVariables(ctx context.Context, org string) ([]OrgVariable, error)
+	// ListInheritedRepoVariables lists the organization (GitHub) or group
+	// (GitLab) variables a repository inherits. GitHub returns only the
+	// variables whose visibility includes the repository, with values;
+	// GitLab returns group variable names and NonBlank metadata without values.
+	// A repository variable takes precedence over an inherited one.
+	// When some scopes cannot be inspected, the variables that could be read
+	// are returned together with an *UnverifiedScopesError.
+	ListInheritedRepoVariables(ctx context.Context, owner, repo string) ([]OrgVariable, error)
 	// ListInstanceVariables lists the names of instance-level CI/CD variables
 	// (self-managed GitLab). Forges without instance-level variables, or
 	// where the caller cannot inspect them, return an error; ErrForbidden
@@ -928,6 +1032,10 @@ type Client interface {
 	// comments, when non-nil, attaches inline diff comments to the review.
 	CreatePullRequestReview(ctx context.Context, owner, repo string, number int, event, body, commitSHA string, comments []ReviewComment) error
 	ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]PullRequestReview, error)
+	// ListPullRequestReviewThreads returns review threads, including their
+	// resolution state and comments. It returns ErrNotSupported when the forge
+	// has no equivalent review-thread API.
+	ListPullRequestReviewThreads(ctx context.Context, owner, repo string, number int) (ReviewThreadPage, error)
 	DismissPullRequestReview(ctx context.Context, owner, repo string, number, reviewID int, message string) error
 
 	// Change proposal merge

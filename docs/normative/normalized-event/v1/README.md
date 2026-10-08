@@ -23,6 +23,11 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
   decision is recorded in
   [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 
+> **ADR 0107 target contract — not yet implemented:** The bot-specific actor
+> fields and lookup semantics described below are normative design, but current
+> adapters and Go event types have not yet been migrated to emit or enforce
+> them. Existing compatibility behavior remains authoritative until migration.
+
 ## Scope (v1)
 
 v1 adapters and examples target **GitHub** webhooks, **GitLab** cron-poll
@@ -61,6 +66,21 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 |--------|-----------|
 | **Breaking** (requires v2): remove or rename fields, change field types, remove enum values, add new required top-level fields, tighten patterns that reject previously valid documents | Consumers must migrate |
 | **Non-breaking** (allowed in v1.x schema/README): add optional fields, add new enum values, relax validation, clarify documentation | Existing fixtures and triggers keep working |
+
+The new optional actor fields are additive, but consumers that vendor this
+schema with `additionalProperties: false` must refresh their copy before an
+adapter emits `bot_role` or `role_verified`; otherwise their local validator
+may reject an otherwise valid v1 event. Fullsend controls the supported
+NormalizedEvent producers and consumers, so the bundled validator and other
+supported consumers MUST be updated to this v1 schema before any adapter emits
+the new fields. Older strict schema copies are not a supported
+producer/consumer combination after that rollout. v1 compatibility means that
+existing events without these fields remain valid; it does not require a
+stale `additionalProperties: false` schema to accept newly emitted fields.
+The JSON Schema's cross-field rules are currently stricter than the Go
+`normevent.Validate()` implementation. The adapter migration MUST bring the Go
+validator to parity before emitting the new fields; until then the schema
+remains the normative stricter check.
 
 Adding a new `transition.kind` is **non-breaking** — CEL triggers use boolean
 expressions, not exhaustive enum matching.
@@ -103,11 +123,18 @@ not emit events with a missing or synthetic entity.
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md))
 treats schedule and manual dispatch as **trusted operator actions**, not
 end-user webhook events.
-Adapters set `actor.id` to the configured service identity (e.g. the GitHub App
-bot or workflow `GITHUB_ACTOR`), `actor.kind` to `bot`, and `actor.role` to the
-effective permission of that identity on the target repo (typically `write` for
-installed apps). `fullsend dispatch` applies the same permission check as
-webhook paths; it does not default schedule/manual actors to `role: none`.
+Adapters set `actor.id` to the configured operator or service identity (e.g. a
+GitHub App bot or workflow `GITHUB_ACTOR`) and classify `actor.kind` as either
+`human` or `bot` using authoritative provider metadata. Under [ADR
+0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md),
+human identities use verified forge permissions, while bot identities may
+resolve `actor.bot_role` and retain `actor.role: none` for v1 compatibility.
+Authorization therefore follows the identity kind: human permission thresholds
+for humans, and recognized bot identity for bots.
+`fullsend dispatch` applies the same identity lookup as webhook paths.
+If that lookup returns no recognized role or fails/unverifiable, authorization
+is denied. These lookup and denial rules are ADR 0107 target behavior and are
+not yet enforced by the production runtime.
 
 ### Transition sub-objects
 
@@ -151,7 +178,7 @@ This moves instruction extraction from downstream workflow steps (e.g.
 
 ### Actor role mapping (GitHub)
 
-`actor.role` uses permission levels aligned with
+For human actors, `actor.role` uses permission levels aligned with
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
 and the GitHub collaborator permission API:
 
@@ -166,10 +193,34 @@ and the GitHub collaborator permission API:
 | `external` | — | Actor outside the repository (fork PR author, drive-by commenter) |
 
 Adapters populate `role` from the GitHub collaborator permission API for human
-actors. For **GitHub App bots**, use the installation's effective permission on
-the repository (typically `write`), not `none` — the collaborator API often
-returns 404 for `[bot]` accounts even when the app has write access via
-installation token.
+actors. Current adapters may also populate a GitHub App bot's legacy forge
+permission in `actor.role`, and that representation remains valid in
+NormalizedEvent v1 while the adapter has not adopted ADR 0107. Once an adapter
+adopts ADR 0107, it MUST use the provider's authoritative bot
+classification, emit `role: none` for bots, and use the provider-backed
+optional `bot_role` lookup instead. Both representations are therefore
+intentional v1 compatibility forms; the adapter implementation determines
+which one it emits.
+
+`actor.role_verified` is an optional additive field. For humans, it is true
+only when `actor.role` is a trusted forge permission. For bots, it is true
+when the bot-role lookup completed, whether it found a role or not. A
+recognized bot has `role_verified: true` and a provider-resolved `bot_role`; an
+unknown bot has `role_verified: true` and an absent or null `bot_role`; failed
+resolution has `role_verified: false` and no `bot_role`.
+
+For a label-added event, the permanent label authorization exception does not
+require bot-role lookup. On that path, the provider's positive bot
+classification and the forge-authorized label mutation are sufficient; an
+absent `role_verified` field means that bot-role lookup was not applicable. At
+the time of this ADR, GitHub is the only production adapter implementing this
+exception; other source adapters must provide equivalent authoritative label
+and actor-transition evidence before enabling the target behavior.
+Whether an event uses the legacy representation is determined by the adapter's
+implementation contract, not inferred from field omission alone.
+
+This is the ADR 0107 target representation; it is not yet emitted by the
+production adapters or available as a runtime CEL field.
 
 ### Fork security (`state.change_proposal.is_fork`)
 
@@ -254,11 +305,16 @@ event.entity.kind == "conversation"
   && event.state.conversation.category.slug == "vouch-request"
 ```
 
-See [`examples/`](examples/) for matching `NormalizedEvent` fixtures.
+See [`examples/`](examples/) for matching `NormalizedEvent` fixtures. The
+existing top-level fixtures retain the legacy v1 representation; target
+fixtures for ADR 0107 are under
+[`examples/adr-0107/`](examples/adr-0107/).
 
 ## Examples
 
-See [`examples/`](examples/).
+See [`examples/`](examples/). The `examples/adr-0107/` subdirectory contains
+target representations and is not emitted until an adapter adopts the ADR 0107
+target implementation.
 
 ## Execution ref projection
 
@@ -360,6 +416,7 @@ GitLab is a normative v1 source system ([gitlab-implementation.md](../../../prob
 | MR closed (unmerged) | Cron poll (`closed_at` > watermark, `merged_at` empty) → `transition.kind: closed` (retro) |
 | Notes | `note` → `transition.kind: comment_added` |
 | Role mapping | Guest→`read`, Reporter→`triage`, Developer→`write`, Maintainer→`maintain`, Owner→`admin` |
+| Bot identity | GitLab provider metadata may classify project-token actors as bots, but bot classification alone does not provide the registered `bot_role` required for non-label bot dispatch; an equivalent provider lookup is required. |
 
 The MR/note rows above are the **cron-poll** watermark mappings. The webhook
 fast-path derives the transition from the payload action instead of a

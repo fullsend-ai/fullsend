@@ -25,6 +25,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
@@ -382,6 +383,125 @@ func TestChildScriptEnv_DoesNotPinPushToken(t *testing.T) {
 	env := childScriptEnv(map[string]string{"PUSH_TOKEN": "reminted-token"}, "")
 
 	assert.Equal(t, "reminted-token", envLast(env, "PUSH_TOKEN"), "runner_env must still be able to override PUSH_TOKEN (#7231)")
+}
+
+// setInheritedScriptSecrets sets the named workflow secrets from #8154 in the
+// process environment, plus non-secret OTEL settings that must survive.
+func setInheritedScriptSecrets(t *testing.T) {
+	t.Helper()
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization=Bearer%20collector")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "Authorization=Bearer%20traces")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_HEADERS", "Authorization=Bearer%20metrics")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com")
+	t.Setenv("OTEL_EXPORTER_OTLP_CERTIFICATE", "/tmp/collector.pem")
+	t.Setenv("JIRA_TOKEN", "process-jira-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+}
+
+func envHasKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestChildScriptEnv_StripsInheritedNamedSecrets verifies that named
+// workflow secrets set on the `fullsend run` step do not reach host-side
+// scripts unless the harness declares them (#8154).
+func TestChildScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
+	setInheritedScriptSecrets(t)
+
+	env := childScriptEnv(map[string]string{"RUNNER_VAR": "present"}, "")
+
+	for _, key := range []string{
+		"OTEL_EXPORTER_OTLP_HEADERS",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+		"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+		"JIRA_TOKEN",
+		"JIRA_USER_EMAIL",
+	} {
+		assert.False(t, envHasKey(env, key), "%s must not be inherited by child scripts", key)
+	}
+	assert.Equal(t, "https://collector.example.com", envLast(env, "OTEL_EXPORTER_OTLP_ENDPOINT"), "non-secret OTEL settings must survive")
+	assert.Equal(t, "/tmp/collector.pem", envLast(env, "OTEL_EXPORTER_OTLP_CERTIFICATE"), "non-secret OTEL settings must survive")
+	assert.Equal(t, "https://acme.atlassian.net", envLast(env, "JIRA_BASE_URL"), "JIRA_BASE_URL is not a secret and must survive")
+	assert.Equal(t, "present", envLast(env, "RUNNER_VAR"))
+
+	// The parent process keeps them for its own Jira client and exporter.
+	assert.Equal(t, "process-jira-token", os.Getenv("JIRA_TOKEN"))
+	assert.Equal(t, "Authorization=Bearer%20traces", os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"))
+}
+
+// TestChildScriptEnv_KeepsDeclaredNamedSecrets verifies that a harness that
+// declares a named secret in env.runner still passes it to its scripts.
+func TestChildScriptEnv_KeepsDeclaredNamedSecrets(t *testing.T) {
+	setInheritedScriptSecrets(t)
+
+	env := childScriptEnv(map[string]string{
+		"JIRA_TOKEN":      "process-jira-token",
+		"JIRA_USER_EMAIL": "bot@example.com",
+	}, "")
+
+	assert.Equal(t, "process-jira-token", envLast(env, "JIRA_TOKEN"), "declared JIRA_TOKEN must reach the script")
+	assert.Equal(t, "bot@example.com", envLast(env, "JIRA_USER_EMAIL"), "declared JIRA_USER_EMAIL must reach the script")
+	assert.False(t, envHasKey(env, "OTEL_EXPORTER_OTLP_HEADERS"), "undeclared OTLP headers must still be stripped")
+}
+
+// TestPostScriptEnv_StripsInheritedNamedSecrets covers the post-script path.
+func TestPostScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
+	setInheritedScriptSecrets(t)
+
+	env := postScriptEnv(&harness.Harness{RunnerEnv: map[string]string{"JIRA_TOKEN": "declared"}}, "")
+
+	assert.Equal(t, "declared", envLast(env, "JIRA_TOKEN"))
+	assert.False(t, envHasKey(env, "JIRA_USER_EMAIL"))
+	assert.False(t, envHasKey(env, "OTEL_EXPORTER_OTLP_HEADERS"))
+	assert.False(t, envHasKey(env, "OTEL_EXPORTER_OTLP_TRACES_HEADERS"))
+}
+
+// TestValidationScriptEnv_StripsInheritedNamedSecrets covers the validation
+// loop path, which composes its env separately from childScriptEnv.
+func TestValidationScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
+	setInheritedScriptSecrets(t)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-token")
+
+	env := validationScriptEnv(&harness.Harness{RunnerEnv: map[string]string{
+		"JIRA_USER_EMAIL": "declared@example.com",
+	}}, "/repo", "/run")
+
+	for _, key := range []string{
+		"OTEL_EXPORTER_OTLP_HEADERS",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+		"JIRA_TOKEN",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+	} {
+		assert.False(t, envHasKey(env, key), "%s must not reach the validation script", key)
+	}
+	assert.Equal(t, "declared@example.com", envLast(env, "JIRA_USER_EMAIL"), "declared value must reach the validation script")
+	assert.Equal(t, "https://collector.example.com", envLast(env, "OTEL_EXPORTER_OTLP_ENDPOINT"))
+	assert.Equal(t, "/repo", envLast(env, "TARGET_REPO_DIR"))
+	assert.Equal(t, "/run", envLast(env, "FULLSEND_RUN_DIR"))
+}
+
+func TestIsInheritedScriptDenyKey(t *testing.T) {
+	for key, want := range map[string]bool{
+		"JIRA_TOKEN":                        true,
+		"JIRA_USER_EMAIL":                   true,
+		"OTEL_EXPORTER_OTLP_HEADERS":        true,
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS": true,
+		"OTEL_EXPORTER_OTLP_LOGS_HEADERS":   true,
+		"OTEL_EXPORTER_OTLP_ENDPOINT":       false,
+		"OTEL_EXPORTER_OTLP_PROTOCOL":       false,
+		"OTEL_RESOURCE_ATTRIBUTES":          false,
+		"JIRA_BASE_URL":                     false,
+		"GH_TOKEN":                          false,
+	} {
+		assert.Equal(t, want, isInheritedScriptDenyKey(key), key)
+	}
 }
 
 func TestAgentSpanStartAttrs(t *testing.T) {

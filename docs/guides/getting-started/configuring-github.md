@@ -75,6 +75,9 @@ will use only OpenAI agents, omit both `--inference-project` and
 a later Vertex run requires both credentials.
 Configure each enabled agent's runtime and model for OpenAI before it runs.
 For OpenAI credentials, see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
+For repositories managed with `fullsend repos install`, select OpenAI Workload Identity with
+`--inference-auth openai-wif` (or `inference.auth: openai-wif` in `repos.yaml`); see
+[Manifest-managed repositories](../infrastructure/openai-workload-identity.md#manifest-managed-repositories-repos-install).
 
 ### Enabling a subset of agents
 

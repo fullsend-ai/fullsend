@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
-       mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
+       mindmap go-build go-test go-fmt go-vet go-tidy \
        lint-md-links script-test test \
        behaviour-test playback-test lint-eval-cases functional-tests \
        wasm-build wasm-stage mint-cf-worker-test
@@ -21,7 +21,6 @@ help:
 	@echo "  mindmap              - Open the interactive document graph in a browser"
 	@echo "  go-build             - Build the fullsend binary"
 	@echo "  go-test              - Run Go tests with race detection and coverage"
-	@echo "  go-lint              - Run golangci-lint"
 	@echo "  go-fmt               - Format Go code"
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
@@ -120,9 +119,6 @@ go-test:
 	@go tool cover -func=coverage.out | tail -1
 	@rm -f cover-default.out cover-github.out
 
-go-lint:
-	golangci-lint run ./...
-
 go-fmt:
 	gofmt -l -w .
 
@@ -197,7 +193,11 @@ script-test:
 	$(call run-timed,bash hack/gitlab-runner-vm/executor/gateway_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/lib_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/setup_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/vm_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/create-openshift-vm_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/create-gcp-vm_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/podman-prune_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/grow-root-fs_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
 	$(call run-timed,python3 skills/nextwork/scripts/nextwork_test.py)

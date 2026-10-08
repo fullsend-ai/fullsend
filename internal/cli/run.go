@@ -2666,8 +2666,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// while success sets it to true immediately above. Pass the
 		// repo dir directly.
 		// Strip OIDC credential vars from the full composed env so keys
-		// injected via h.RunnerEnv are also removed (#5832).
-		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...))
+		// injected via h.RunnerEnv are also removed (#5832), and drop
+		// inherited named workflow secrets (#8154).
+		valCmd.Env = validationScriptEnv(h, hostRepositoryDownloadDir, runDir)
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -3010,6 +3011,46 @@ const workflowTokenEnv = "GH_WORKFLOW_TOKEN"
 // pushed to sandbox.DenyExpansionKeys. See #6649.
 var providerOnlyKeys = map[string]bool{
 	workflowTokenEnv: true,
+}
+
+// inheritedScriptDenyKeys are named workflow secrets that host-side scripts
+// (pre/post, preflight, validation) must not inherit from the `fullsend run`
+// process environment (#8154). Unlike oidcDenyKeys they stay expandable at
+// harness ${VAR} sites, so a harness that declares one in env.runner (e.g.
+// `JIRA_TOKEN: "${JIRA_TOKEN}"`) still passes it to its scripts; one that
+// does not declare it no longer receives it. The parent process keeps them
+// for its own Jira client and trace exporter. The OTLP *_HEADERS variants
+// are matched by isInheritedScriptDenyKey.
+var inheritedScriptDenyKeys = map[string]bool{
+	"JIRA_TOKEN":      true,
+	"JIRA_USER_EMAIL": true,
+}
+
+// isInheritedScriptDenyKey reports whether key must be dropped from the
+// inherited process environment of a host-side script: an
+// inheritedScriptDenyKeys entry, or an OTLP exporter header variable
+// (OTEL_EXPORTER_OTLP_HEADERS and the per-signal OTEL_EXPORTER_OTLP_*_HEADERS),
+// which carry trace collector credentials only fullsend's own exporter needs.
+func isInheritedScriptDenyKey(key string) bool {
+	if inheritedScriptDenyKeys[key] {
+		return true
+	}
+	return strings.HasPrefix(key, "OTEL_EXPORTER_OTLP_") && strings.HasSuffix(key, "_HEADERS")
+}
+
+// inheritedScriptEnv returns os.Environ() without the names
+// isInheritedScriptDenyKey matches. Callers layer the harness RunnerEnv on
+// top, so a value the harness declares explicitly still reaches the script.
+func inheritedScriptEnv() []string {
+	env := os.Environ()
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		if i := strings.IndexByte(e, '='); i > 0 && isInheritedScriptDenyKey(e[:i]) {
+			continue
+		}
+		result = append(result, e)
+	}
+	return result
 }
 
 // harnessExpansionDenied reports whether a ${VAR} reference must be refused
@@ -3589,6 +3630,9 @@ func sensitiveEnvKey(key string) bool {
 	case "PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "GITHUB_TOKEN", "FULLSEND_FETCH_TOKEN":
 		return true
 	}
+	if isInheritedScriptDenyKey(key) {
+		return true
+	}
 	for _, suffix := range []string{"_TOKEN", "_SECRET", "_PASSWORD", "_KEY", "_CREDENTIALS"} {
 		if strings.HasSuffix(key, suffix) {
 			return true
@@ -3712,8 +3756,9 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
 		// Strip OIDC credential vars from the full composed env so keys
-		// injected via h.RunnerEnv are also removed (#5832).
-		valCmd.Env = stripOIDCEnv(append(os.Environ(), validationEnv(h, "", runDir)...))
+		// injected via h.RunnerEnv are also removed (#5832), and drop
+		// inherited named workflow secrets (#8154).
+		valCmd.Env = validationScriptEnv(h, "", runDir)
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -4667,6 +4712,11 @@ func stripControlChars(s string) string {
 // retains them for mintAgentToken and provider credential expansion.
 // See #5832, #6649.
 //
+// Named workflow secrets (inheritedScriptDenyKeys: JIRA_TOKEN,
+// JIRA_USER_EMAIL, OTEL_EXPORTER_OTLP_*HEADERS) are dropped from the
+// inherited process environment only; a runnerEnv entry for one of them is
+// kept, so a harness that declares it in env.runner still gets it (#8154).
+//
 // GitLab role-routing vars (isPinnedGitLabRoleRoutingKey) are pinned to the
 // process environment: a runnerEnv entry for one of those keys is dropped
 // rather than allowed to shadow the value applyGitLabRoleSelection already
@@ -4675,7 +4725,7 @@ func stripControlChars(s string) string {
 // the GitLab identity or credential a pre/post script observes after
 // dispatch already selected one. See #7499, review on PR #7510.
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
-	merged := os.Environ()
+	merged := inheritedScriptEnv()
 	for _, e := range envToList(runnerEnv) {
 		if i := strings.IndexByte(e, '='); i > 0 && isPinnedGitLabRoleRoutingKey(e[:i]) {
 			continue
@@ -4744,6 +4794,15 @@ func postScriptEnv(h *harness.Harness, traceparent string) []string {
 // mechanism rather than completing on its own. See #5075.
 func agentTimedOut(elapsed, timeout time.Duration) bool {
 	return elapsed >= timeout*9/10
+}
+
+// validationScriptEnv builds the full environment for the validation script:
+// the inherited process environment minus named workflow secrets (#8154),
+// then validationEnv layered on top, with OIDC credential vars and
+// provider-only keys stripped from the composed result so keys injected via
+// h.RunnerEnv are removed too (#5832, #6649).
+func validationScriptEnv(h *harness.Harness, hostRepoDir, runDir string) []string {
+	return stripOIDCEnv(append(inheritedScriptEnv(), validationEnv(h, hostRepoDir, runDir)...))
 }
 
 // validationEnv builds the extra environment entries for the validation

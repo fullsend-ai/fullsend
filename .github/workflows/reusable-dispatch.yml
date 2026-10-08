@@ -1004,6 +1004,7 @@ jobs:
           PRIOR_REVIEW_SHA: ${{ steps.prior-review.outputs.prior_sha }}
           PRIOR_REVIEW_FILE: ${{ steps.prior-review.outputs.prior_review_file }}
           PRIOR_REVIEW_PROVENANCE: ${{ steps.prior-review.outputs.prior_review_provenance }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}

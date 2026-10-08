@@ -71,8 +71,9 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 ## Adding a CI driver
 
 1. Implement `ci.Driver` — `WaitForWorkflow`, `FindCompletedWorkflowRun`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`, `DownloadNamedArtifactFromRun`, `DownloadNamedArtifactAfter`, `WaitForHarnessAgent`, `WaitForHarnessAgentRound`, `WaitForFailedHarnessAgent`, `AssertNoHarnessAgentArtifact`, `CountHarnessDispatches`.
-2. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from the GitHub Actions driver in `pkg/behaviourtest/drivers/ci/githubactions/`.
-3. Register in `behaviourtest.RunSuite` for the matching `BEHAVIOUR_CI` value.
+2. Also implement the optional `ci.RunLister` interface (`ListRecentRuns`). A failed scenario's After hook uses it to save the logs of runs that no step resolved before the leased repository is deleted. Without it, only the run a step resolved has its logs collected.
+3. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from the GitHub Actions driver in `pkg/behaviourtest/drivers/ci/githubactions/`.
+4. Register in `behaviourtest.RunSuite` for the matching `BEHAVIOUR_CI` value.
 
 ## Adding an install driver
 
@@ -87,7 +88,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
    your driver will invoke (e.g., `internal/cli/mint.go` for
    `mint deploy`, `internal/cli/mint_delete.go` for `mint delete`).
    Check the full flag surface — especially optional flags like
-   `--worker-name`, `--allowed-orgs`, `--workflow-host-repos`,
+   `--worker-name`, `--workflow-host-repos`,
    `--per-repo-wif-repos`, `--app-set`, and `--pem-dir`. Ensure deploy
    and teardown commands receive symmetric identifying flags (e.g., both
    `mint deploy` and `mint delete` need `--worker-name` if the Worker

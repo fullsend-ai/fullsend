@@ -56,12 +56,18 @@ const NoneSentinel = "none"
 const (
 	InferenceAuthVertexWIF    = "vertex-wif"
 	InferenceAuthOpenAIAPIKey = "openai-api-key"
+	// InferenceAuthOpenAIWIF selects OpenAI Workload Identity Federation
+	// (ADR 0092). It needs no Fullsend-managed secret: the runtime
+	// exchanges the GitHub Actions OIDC token using three non-secret
+	// identifiers delivered as repository variables or through
+	// .fullsend/config.yaml. GitHub only.
+	InferenceAuthOpenAIWIF = "openai-wif"
 )
 
 // ValidInferenceAuths returns the accepted inference.auth values in
 // documentation order.
 func ValidInferenceAuths() []string {
-	return []string{InferenceAuthVertexWIF, InferenceAuthOpenAIAPIKey}
+	return []string{InferenceAuthVertexWIF, InferenceAuthOpenAIAPIKey, InferenceAuthOpenAIWIF}
 }
 
 // ValidateInferenceAuth accepts an empty value (inherit) or one of
@@ -81,8 +87,8 @@ func ValidateInferenceAuth(key, value string) error {
 // values are supplied on the command line and never stored here.
 type InferenceSettings struct {
 	// Auth selects which managed inference credentials the repository
-	// needs: "vertex-wif" or "openai-api-key". Empty inherits from the
-	// next level (entry → forge section → defaults).
+	// needs: "vertex-wif", "openai-api-key" or "openai-wif". Empty
+	// inherits from the next level (entry → forge section → defaults).
 	Auth string `yaml:"auth,omitempty"`
 }
 
@@ -527,7 +533,24 @@ func (m *Manifest) AllRepos() []RepoEntry {
 //   - forge URLs must be valid HTTPS URLs with no path component
 //   - inference.auth values must be one of ValidInferenceAuths
 func (m *Manifest) Validate() error {
-	return m.validate(ValidateInferenceAuth)
+	return m.validate(validateManifestInferenceAuth)
+}
+
+// validateManifestInferenceAuth is ValidateInferenceAuth for a manifest
+// key, additionally rejecting values the key's forge cannot satisfy
+// (openai-wif under the gitlab section or on a GitLab entry). Defaults
+// apply to both forges, so they are checked per repository instead
+// (ResolvedConfig.RequireInferenceAuth).
+func validateManifestInferenceAuth(key, value string) error {
+	if err := ValidateInferenceAuth(key, value); err != nil {
+		return err
+	}
+	if strings.HasPrefix(key, ForgeGitLab+".") {
+		if err := ValidateInferenceAuthForForge(ForgeGitLab, value); err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 // ValidateStructure is Validate without the inference.auth value checks.
@@ -1138,10 +1161,25 @@ func (c ResolvedConfig) RequireInferenceAuth() error {
 		if err := ValidateInferenceAuth("inference.auth", c.InferenceAuth); err != nil {
 			return fmt.Errorf("invalid inference authentication for %s/%s: %w", c.Owner, c.Repo, err)
 		}
+		if err := ValidateInferenceAuthForForge(c.Forge, c.InferenceAuth); err != nil {
+			return fmt.Errorf("unsupported inference authentication for %s/%s: %w", c.Owner, c.Repo, err)
+		}
 		return nil
 	}
 	return fmt.Errorf("no inference authentication selected for %s/%s: set inference.auth (%s) on the repository entry, in the %s section, or under defaults in repos.yaml, or pass --inference-auth to repos install",
 		c.Owner, c.Repo, strings.Join(ValidInferenceAuths(), " or "), c.Forge)
+}
+
+// ValidateInferenceAuthForForge rejects an inference.auth selection the
+// forge cannot satisfy. OpenAI Workload Identity Federation exchanges a
+// GitHub Actions OIDC token, so it is GitHub only; a GitLab repository
+// must use openai-api-key (or vertex-wif) instead.
+func ValidateInferenceAuthForForge(forgeName, auth string) error {
+	if auth == InferenceAuthOpenAIWIF && forgeName == ForgeGitLab {
+		return fmt.Errorf("inference.auth %s is supported on GitHub only (the exchange needs a GitHub Actions OIDC token); use %s or %s for GitLab repositories",
+			InferenceAuthOpenAIWIF, InferenceAuthOpenAIAPIKey, InferenceAuthVertexWIF)
+	}
+	return nil
 }
 
 // firstNonEmpty returns the first non-empty value, or "" when all are empty.

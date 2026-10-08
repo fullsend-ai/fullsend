@@ -46,7 +46,8 @@ type InstallConfig struct {
 	InferenceRegion  string
 
 	// InferenceAuth is the repository's effective inference.auth
-	// (InferenceAuthVertexWIF or InferenceAuthOpenAIAPIKey). It selects
+	// (InferenceAuthVertexWIF, InferenceAuthOpenAIAPIKey or
+	// InferenceAuthOpenAIWIF). It selects
 	// which inference credentials Install writes. Empty keeps the legacy
 	// behavior: the Vertex secrets are written when InferenceProject is set.
 	InferenceAuth string
@@ -150,6 +151,13 @@ type InstallConfig struct {
 	// repositories (ADR 0122). Unmanaged repos leave this nil so existing
 	// installer generation is preserved.
 	ManagedConfig []byte
+
+	// ExistingConfig, when non-nil and ManagedConfig is nil, is written
+	// byte-for-byte as .fullsend/config.yaml instead of generating an
+	// installer overlay. Used on a fresh install when a hand-authored
+	// config.yaml already exists and must survive (it may carry settings,
+	// such as OpenAI WIF identifiers, that the selected route depends on).
+	ExistingConfig []byte
 
 	// ManagedConfigAdoptionRequired, when true, skips writing
 	// .fullsend/config.yaml entirely, even though ManagedConfig may be
@@ -506,6 +514,7 @@ func driftInstallConfig(resolved ResolvedConfig, dcfg DriftConfig) InstallConfig
 		UpstreamTag:       ref,
 		Runtime:           resolved.Runtime,
 		VendorBinary:      resolved.Vendor,
+		InferenceAuth:     resolved.InferenceAuth,
 		InferenceRegion:   dcfg.InferenceRegion,
 		ReviewAppClientID: dcfg.ReviewAppClientID,
 		AgentRunnerTags:   dcfg.AgentRunnerTags,
@@ -594,6 +603,8 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 	if !cfg.ManagedConfigAdoptionRequired {
 		if cfg.ManagedConfig != nil {
 			cfgYAML = cfg.ManagedConfig
+		} else if cfg.ExistingConfig != nil {
+			cfgYAML = cfg.ExistingConfig
 		} else {
 			var perRepoCfg config.PerRepoConfigWriter
 			switch {
@@ -911,11 +922,24 @@ func requiredSecretsForForge(forgeName string) []string {
 // that carry the inference credentials for auth. openai-api-key uses
 // FULLSEND_OPENAI_API_KEY on both forges; vertex-wif (and the legacy
 // empty selection) uses the GCP project ID and WIF provider pair.
+// openai-wif needs no secret of its own; it returns the GCP pair, which
+// stays optional there and is written only when Vertex inputs are
+// supplied, so an OpenAI parent can keep Vertex sub-agents.
 func inferenceSecretsForAuth(auth string) []string {
 	if auth == InferenceAuthOpenAIAPIKey {
 		return []string{forge.SecretOpenAIAPIKey}
 	}
 	return requiredSecrets
+}
+
+// requiredInferenceSecretsForAuth returns the inference secrets that must
+// exist (or be supplied) for auth to be usable. openai-wif requires none:
+// its identifiers are non-secret configuration checked separately.
+func requiredInferenceSecretsForAuth(auth string) []string {
+	if auth == InferenceAuthOpenAIWIF {
+		return nil
+	}
+	return inferenceSecretsForAuth(auth)
 }
 
 // managedInferenceSecrets returns every Fullsend-managed inference
@@ -942,11 +966,14 @@ func managedInferenceSecrets() []string {
 // only after the selected method's credentials are established. GitLab's
 // unprefixed OPENAI_API_KEY is never included: it may be shared with
 // other jobs and Fullsend does not manage it.
+//
+// openai-wif makes only FULLSEND_OPENAI_API_KEY obsolete: the GCP pair
+// may still serve Vertex sub-agents of an OpenAI parent, so it is kept.
 func obsoleteInferenceSecrets(auth string) []string {
 	switch auth {
 	case InferenceAuthOpenAIAPIKey:
 		return requiredSecrets
-	case InferenceAuthVertexWIF:
+	case InferenceAuthVertexWIF, InferenceAuthOpenAIWIF:
 		return []string{forge.SecretOpenAIAPIKey}
 	default:
 		return nil
