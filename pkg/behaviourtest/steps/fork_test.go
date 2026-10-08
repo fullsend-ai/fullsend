@@ -482,12 +482,123 @@ func TestCreateForkBranch_ContextCancelled(t *testing.T) {
 	assert.Contains(t, err.Error(), "context cancelled")
 }
 
+// --- isNameCollisionError / createFork unit tests ---
+
+func TestIsNameCollisionError_403(t *testing.T) {
+	err := fmt.Errorf("create fork of org/repo in org org: github api: 403 Name already exists on this account")
+	assert.True(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_422Detail(t *testing.T) {
+	err := fmt.Errorf("create fork of org/repo in org org: github api: 422 Validation Failed (name already exists on this account)")
+	assert.True(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_NilError(t *testing.T) {
+	assert.False(t, isNameCollisionError(nil))
+}
+
+func TestIsNameCollisionError_NotFork(t *testing.T) {
+	// ErrNotFork is a real collision with a different repo and must
+	// not be retried. Its message contains "already exists" but not
+	// "name already exists".
+	err := fmt.Errorf("repo org/repo-fork already exists and is not a fork: %w", forge.ErrNotFork)
+	assert.False(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_NotForkWithNameSuffix(t *testing.T) {
+	// If forkName itself ends in "name" (e.g. "foo-name"), the wrapped
+	// ErrNotFork message ("repo org/foo-name already exists and is not
+	// a fork") contains the substring "name already exists". This must
+	// still be classified as a permanent, non-retryable collision.
+	err := fmt.Errorf("repo org/foo-name already exists and is not a fork: %w", forge.ErrNotFork)
+	assert.False(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_Unrelated(t *testing.T) {
+	assert.False(t, isNameCollisionError(fmt.Errorf("permission denied")))
+}
+
+func TestCreateFork_ImmediateSuccess(t *testing.T) {
+	scmDriver := &fakeForkSCM{forkRepo: "repo-fork"}
+	w := &world.World{SCM: scmDriver}
+	got, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "repo-fork", got)
+	assert.Equal(t, 1, scmDriver.createForkCalls)
+}
+
+func TestCreateFork_RetriesThenSucceeds(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		forkRepo:               "repo-fork",
+		createForkFailures:     2,
+		createForkCollisionErr: fmt.Errorf("github api: 403 Name already exists on this account"),
+	}
+	w := &world.World{SCM: scmDriver}
+	got, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "repo-fork", got)
+	assert.Equal(t, 3, scmDriver.createForkCalls,
+		"CreateFork should be called 2 failures + 1 success = 3 times")
+}
+
+func TestCreateFork_ExhaustsRetries(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkFailures:     -1,
+		createForkCollisionErr: fmt.Errorf("github api: 403 Name already exists on this account"),
+	}
+	w := &world.World{SCM: scmDriver}
+	_, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 3, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creation failed after 3 attempts")
+	assert.Contains(t, err.Error(), "Name already exists")
+	assert.Equal(t, 3, scmDriver.createForkCalls)
+}
+
+func TestCreateFork_NonCollisionErrorNotRetried(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkErr: fmt.Errorf("permission denied"),
+	}
+	w := &world.World{SCM: scmDriver}
+	_, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Equal(t, 1, scmDriver.createForkCalls,
+		"non-collision errors should not be retried")
+}
+
+func TestCreateFork_NotForkNotRetried(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkErr: fmt.Errorf("repo org/repo-fork already exists and is not a fork: %w", forge.ErrNotFork),
+	}
+	w := &world.World{SCM: scmDriver}
+	_, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFork)
+	assert.Equal(t, 1, scmDriver.createForkCalls,
+		"ErrNotFork is a real collision and must not be retried")
+}
+
+func TestCreateFork_ContextCancelled(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkFailures:     -1,
+		createForkCollisionErr: fmt.Errorf("github api: 403 Name already exists on this account"),
+	}
+	w := &world.World{SCM: scmDriver}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := createFork(ctx, w, "org", "repo", "repo-fork", 30, 2*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
 // fakeForkSCM implements scm.Driver for fork step unit tests.
 type fakeForkSCM struct {
 	forkRepo           string
 	prNumber           int
 	createForkCalled   bool
 	createForkName     string // records the forkName arg passed to CreateFork
+	createForkCalls    int
 	createBranchCalled bool
 	commitToForkCalled bool
 	createForkPRCalled bool
@@ -520,6 +631,13 @@ type fakeForkSCM struct {
 	createBranchFailures   int
 	createBranchCalls      int
 	createBranchReplicaErr error // error to return on replication failures
+
+	// createForkFailures controls how many times CreateFork returns
+	// a name-collision error before succeeding. Each call decrements
+	// the counter; when it reaches 0, CreateFork returns success. A
+	// value of -1 means CreateFork always fails with the collision.
+	createForkFailures     int
+	createForkCollisionErr error // error to return on name-collision failures
 }
 
 type addedLabelRecord struct {
@@ -532,8 +650,19 @@ type addedLabelRecord struct {
 func (f *fakeForkSCM) CreateFork(_ context.Context, _, _, forkName string) (string, error) {
 	f.createForkCalled = true
 	f.createForkName = forkName
+	f.createForkCalls++
 	if f.createForkErr != nil {
 		return "", f.createForkErr
+	}
+	// Support counted name-collision failures for retry tests.
+	if f.createForkCollisionErr != nil {
+		if f.createForkFailures == -1 {
+			return "", f.createForkCollisionErr
+		}
+		if f.createForkFailures > 0 {
+			f.createForkFailures--
+			return "", f.createForkCollisionErr
+		}
 	}
 	if f.forkRepo != "" {
 		return f.forkRepo, nil

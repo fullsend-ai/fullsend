@@ -93,7 +93,8 @@ func TestVendorCommitPathsPruneStaleFiles(t *testing.T) {
 		return n
 	}
 
-	out, _, err := appendVendorTreeFiles(ctx, seed(), ui.New(&strings.Builder{}), "org", "my-repo", nil, true, exe, "")
+	out, _, cleanup, err := appendVendorTreeFiles(ctx, seed(), ui.New(&strings.Builder{}), "org", "my-repo", nil, true, exe, "")
+	defer cleanup()
 	require.NoError(t, err)
 	assert.Equal(t, 1, countDeletes(out), "appendVendorTreeFiles must prune")
 }

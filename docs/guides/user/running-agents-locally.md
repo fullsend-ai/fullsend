@@ -479,14 +479,15 @@ Fullsend automatically aggregates different layers of information before running
 In case you want to test how customizations impact default agents, or you custom agents, follow the
 next steps.
 
-If your organization uses config-driven agents registered in `config.yaml`,
-pass your `.fullsend` config repo as `--fullsend-dir`:
+If your repository uses config-driven agents registered in
+`.fullsend/config.yaml`, pass the target repository's local `.fullsend/`
+directory as `--fullsend-dir`:
 
 ```bash
-git clone --depth 1 https://github.com/{org}/.fullsend.git /tmp/org-fullsend/
+git clone --depth 1 https://github.com/{org}/{repo}.git /tmp/target-repo/
 ```
 
-When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/org-fullsend/`.
+When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/target-repo/.fullsend/`.
 See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven
 approach.
 

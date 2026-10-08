@@ -331,10 +331,10 @@ func TestFetchRemoteScaffold_GitHub_IncludesThinCallers(t *testing.T) {
 		}
 		content := string(files[i+1].Content)
 		if !strings.Contains(content, "install_mode: per-repo") {
-			t.Errorf("thin caller %s should have install_mode: per-repo, got:\n%s", tcPath, content)
+			t.Errorf("thin caller %s should normalize legacy install_mode, got:\n%s", tcPath, content)
 		}
 		if strings.Contains(content, "install_mode: per-org") {
-			t.Errorf("thin caller %s should not have install_mode: per-org", tcPath)
+			t.Errorf("thin caller %s should not retain per-org install_mode, got:\n%s", tcPath, content)
 		}
 	}
 }

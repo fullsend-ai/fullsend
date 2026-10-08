@@ -70,14 +70,14 @@ about it" (Reach 2.0), instead of guessing from the issue text alone.
 The prioritize agent can be triggered automatically by a scheduler workflow
 that polls a GitHub Project board for unscored issues. This scheduler
 is **not managed by fullsend** — it is bespoke org-level automation that you
-create manually in your `{org}/.fullsend` repo.
+create manually in a repository of your choice.
 
 #### Prerequisites
 
 - A GitHub Projects (v2) board with a numeric **RICE Score** field.
   Run `scripts/setup-prioritize.sh` to create the field if it does not
-  exist. The script is installed to the `.fullsend` repo by org-mode
-  scaffold; per-repo orgs can find it in the fullsend source tree at
+  exist. The script is not installed into target repos; find it in the
+  fullsend source tree at
   `internal/scaffold/fullsend-repo/scripts/setup-prioritize.sh`.
 - `prioritize.yml` installed in every target repo (handled by `repos install`).
 - The scheduler passes `project_number` to each target repo's

@@ -43,7 +43,6 @@ type adminWIFProvisioner interface {
 	DiscoverMint(ctx context.Context) (*adminMintDiscovery, error)
 	ProvisionWIF(ctx context.Context) (string, error)
 	RegisterPerRepoWIF(ctx context.Context, repo string) error
-	EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error
 	DeletePerRepoWIF(ctx context.Context, repo string) error
 	DeleteWIFProvider(ctx context.Context, repo string) error
 }
@@ -862,7 +861,10 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		if buildErr != nil {
 			return fmt.Errorf("building scaffold files for vendor: %w", buildErr)
 		}
-		vendorFiles, _, vendorErr := appendVendorTreeFiles(ctx, client, printer, owner, repo, scaffoldFiles, vendor, fullsendBinary, fullsendSource)
+		vendorFiles, _, vendorCleanup, vendorErr := appendVendorTreeFiles(ctx, client, printer, owner, repo, scaffoldFiles, vendor, fullsendBinary, fullsendSource)
+		if vendorCleanup != nil {
+			defer vendorCleanup()
+		}
 		if vendorErr != nil {
 			return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 		}
@@ -928,13 +930,6 @@ func (a *gcfProvisionerAdapter) RegisterPerRepoWIF(ctx context.Context, repo str
 		return fmt.Errorf("WIF provisioner not configured")
 	}
 	return a.provisioner.RegisterPerRepoWIF(ctx, repo)
-}
-
-func (a *gcfProvisionerAdapter) EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error {
-	if a.provisioner == nil {
-		return fmt.Errorf("WIF provisioner not configured")
-	}
-	return a.provisioner.EnsureOrgInMint(ctx, expectedURL, org)
 }
 
 func (a *gcfProvisionerAdapter) DeletePerRepoWIF(ctx context.Context, repo string) error {
@@ -1202,9 +1197,9 @@ func roleAppPrivateKeySecret(role string) string {
 }
 
 // installRequiredScopes is the set of OAuth scopes the install command
-// needs when it must also create GitHub Apps. It is the union of
-// RequiredScopes(OpInstall) across all layers plus admin:org, which app
-// creation needs; TestCheckInstallScopes_SyncWithLayers asserts parity.
+// needs when it must also create GitHub Apps. It is perRepoRequiredScopes
+// plus admin:org, which app creation needs;
+// TestCheckInstallScopes_SyncWithPerRepoScopes asserts parity.
 var installRequiredScopes = []string{"repo", "workflow", "admin:org"}
 
 // perRepoRequiredScopes is the set of OAuth scopes needed for per-repo install.

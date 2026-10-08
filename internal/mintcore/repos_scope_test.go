@@ -53,38 +53,33 @@ func TestValidateReposScope(t *testing.T) {
 	t.Parallel()
 	const emptyDeny = "same-org mint requires non-empty repos"
 	const perRepoDeny = "per-repo mint requires repos to be exactly the requesting repository"
-	const perOrgDeny = "repos scope not allowed for per-org caller"
 	tests := []struct {
 		name           string
 		foreign        bool
 		requestingRepo string
 		repos          []string
-		perRepo        bool
 		wantErrSubstr  string
 		wantShape      string
 	}{
-		{"foreign empty", true, "fullsend-ai/fullsend", nil, false, "", ""},
-		{"foreign non-empty allowed", true, "fullsend-ai/fullsend", []string{"e2e-lock"}, false, "", reposScopeShapeForeignRepoScoped},
-		{"foreign non-empty multi", true, "fullsend-ai/fullsend", []string{"a", "b"}, true, "", reposScopeShapeForeignRepoScoped},
-		{"same self", false, "acme/api", []string{"api"}, false, "", ""},
-		{"same empty per-org", false, "acme/api", nil, false, emptyDeny, ""},
-		{"same empty per-repo", false, "acme/api", nil, true, emptyDeny, ""},
-		{"per-repo other denied", false, "acme/.fullsend", []string{"api"}, true, perRepoDeny, ""},
-		{"per-org fullsend any", false, "acme/.fullsend", []string{"api"}, false, "", reposScopeShapeFullsendAny},
-		{"per-org fullsend multi", false, "acme/.fullsend", []string{"a", "b", "c"}, false, "", reposScopeShapeFullsendAny},
-		{"per-org fullsend pair", false, "acme/.fullsend", []string{"api", ".fullsend"}, false, "", reposScopeShapeFullsendAny},
-		{"fullsend self per-repo", false, "acme/.fullsend", []string{".fullsend"}, true, "", ""},
-		{"enrolled fullsend per-org", false, "acme/api", []string{".fullsend"}, false, "", reposScopeShapeEnrolledFullsend},
-		{"enrolled pair per-org", false, "acme/api", []string{"api", ".fullsend"}, false, "", reposScopeShapeEnrolledPair},
-		{"enrolled pair reverse", false, "acme/api", []string{".fullsend", "api"}, false, "", reposScopeShapeEnrolledPair},
-		{"enrolled other per-org denied", false, "acme/api", []string{"other"}, false, perOrgDeny, ""},
-		{"enrolled multi per-org denied", false, "acme/api", []string{"api", ".fullsend", "x"}, false, perOrgDeny, ""},
-		{"enrolled pair per-repo denied", false, "acme/api", []string{"api", ".fullsend"}, true, perRepoDeny, ""},
+		{"foreign empty", true, "fullsend-ai/fullsend", nil, "", ""},
+		{"foreign non-empty allowed", true, "fullsend-ai/fullsend", []string{"e2e-lock"}, "", reposScopeShapeForeignRepoScoped},
+		{"foreign non-empty multi", true, "fullsend-ai/fullsend", []string{"a", "b"}, "", reposScopeShapeForeignRepoScoped},
+		{"same self", false, "acme/api", []string{"api"}, "", ""},
+		{"same self case-insensitive", false, "acme/API", []string{"api"}, "", ""},
+		{"same empty denied", false, "acme/api", nil, emptyDeny, ""},
+		{"other repo denied", false, "acme/api", []string{"other"}, perRepoDeny, ""},
+		{"fullsend self", false, "acme/.fullsend", []string{".fullsend"}, "", ""},
+		// Legacy per-org shapes are no longer granted.
+		{"legacy fullsend caller any denied", false, "acme/.fullsend", []string{"api"}, perRepoDeny, ""},
+		{"legacy fullsend caller multi denied", false, "acme/.fullsend", []string{"a", "b", "c"}, perRepoDeny, ""},
+		{"legacy enrolled fullsend denied", false, "acme/api", []string{".fullsend"}, perRepoDeny, ""},
+		{"legacy enrolled pair denied", false, "acme/api", []string{"api", ".fullsend"}, perRepoDeny, ""},
+		{"legacy enrolled pair reverse denied", false, "acme/api", []string{".fullsend", "api"}, perRepoDeny, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			shape, err := validateReposScope(tc.foreign, tc.requestingRepo, tc.repos, tc.perRepo)
+			shape, err := validateReposScope(tc.foreign, tc.requestingRepo, tc.repos)
 			if tc.wantErrSubstr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -109,7 +104,7 @@ func TestValidateReposScope(t *testing.T) {
 
 func TestValidateReposScope_PerRepoSentinel(t *testing.T) {
 	t.Parallel()
-	_, err := validateReposScope(false, "acme/api", []string{"other"}, true)
+	_, err := validateReposScope(false, "acme/api", []string{"other"})
 	if err == nil {
 		t.Fatal("expected error")
 	}

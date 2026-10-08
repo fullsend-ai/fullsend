@@ -444,8 +444,7 @@ that hosts the fullsend caller workflows:
 Installations scaffolded before OTEL support was added must also forward the
 secrets (add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
 `OTEL_EXPORTER_OTLP_HEADERS` under `secrets:`) until the scaffold is
-re-synced: in the `.fullsend` repo's stage workflows (per-org), or in the
-fullsend shim workflow's dispatch job (per-repo).
+re-synced, in the fullsend shim workflow's dispatch job.
 
 ### Bring your own workflow
 

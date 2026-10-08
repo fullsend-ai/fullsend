@@ -1,12 +1,12 @@
 # Reusable dispatch workflow for per-repo installation mode.
 # Routes events to the appropriate stage and runs the agent inline.
-# This is the per-repo equivalent of the per-org dispatch.yml + thin caller pair.
+# This is the dispatch workflow for per-repo installations.
 #
 # ADR 62: Stage workflows are inlined into this file to avoid version skew.
-# Per-repo mode previously referenced reusable-{stage}.yml@v0 via uses: lines,
+# The former per-repo mode referenced reusable-{stage}.yml@v0 via uses: lines,
 # which hardcoded @v0 and didn't pick up dev changes. Inlining eliminates the
-# second workflow_call hop. Standalone reusable-{stage}.yml files are kept for
-# per-org mode until it's removed (ADR 44).
+# second workflow_call hop. Standalone reusable-prioritize.yml remains for the
+# explicit prioritize caller.
 #
 # Pre-computed matrix: The optional `matrix` input allows custom pollers in
 # external repos to skip the dispatch step and directly invoke harness agents.
@@ -35,7 +35,7 @@ on:
         type: string
         default: ""
       install_mode:
-        description: "Installation mode: per-repo (default) or per-org"
+        description: "Legacy compatibility input; ignored because installations are always per-repo"
         required: false
         type: string
         default: "per-repo"
@@ -198,8 +198,10 @@ jobs:
             return 1
           }
 
-          # Collaborator role_name vs min (write|triage). See #5223 / ADR 0054.
+          # Collaborator role vs min (write|triage). See #5223 / ADR 0054.
           # API resolves org membership regardless of visibility (gh-aw-mcpg#2862).
+          # Custom role names resolve from GitHub's effective permission flags,
+          # then the legacy permission field; anything else is none (#7834).
           has_repo_permission() {
             local username="${1:-}" min="${2:-write}" role api_err
             [[ -z "${username}" ]] && return 1
@@ -237,7 +239,19 @@ jobs:
               return 1
             }
             role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
-              --jq '.role_name' 2>"${api_err}") || {
+              --jq '.user.permissions as $p
+                | if (.role_name | type) != "string" or .role_name == "" then "none"
+                  elif (.role_name | IN("admin", "maintain", "write", "triage", "read")) then .role_name
+                  elif $p == null then
+                    if (.permission | IN("admin", "write", "read")) then .permission else "none" end
+                  elif ($p | type) == "object" then
+                    if $p.admin == true then "admin"
+                    elif $p.maintain == true then "maintain"
+                    elif $p.push == true then "write"
+                    elif $p.triage == true then "triage"
+                    elif $p.pull == true then "read"
+                    else "none" end
+                  else "none" end' 2>"${api_err}") || {
               echo "::warning::Permission API call failed for ${username}: $(cat "${api_err}")" >&2
               rm -f "${api_err}"
               return 1
@@ -669,7 +683,7 @@ jobs:
       issues: write
 
     steps:
-      - name: Checkout config repository
+      - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
@@ -694,7 +708,6 @@ jobs:
         id: workspace
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
-          install_mode: ${{ inputs.install_mode }}
           source_repo: ${{ github.repository }}
 
       - name: Mint triage token
@@ -751,7 +764,7 @@ jobs:
           agent: triage
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
@@ -777,7 +790,7 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Checkout config repository
+      - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
@@ -802,7 +815,6 @@ jobs:
         id: workspace
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
-          install_mode: ${{ inputs.install_mode }}
           source_repo: ${{ github.repository }}
 
       - name: Mint coder token
@@ -887,7 +899,7 @@ jobs:
           agent: code
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
@@ -912,7 +924,7 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Checkout config repository
+      - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
@@ -937,7 +949,6 @@ jobs:
         id: workspace
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
-          install_mode: ${{ inputs.install_mode }}
           source_repo: ${{ github.repository }}
 
       - name: Mint review token
@@ -968,7 +979,7 @@ jobs:
           ORG_NAME: ${{ github.repository_owner }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
-          FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          FULLSEND_DIR: .fullsend
         run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fetch-prior-review.sh"
 
       - name: Setup agent environment
@@ -1013,7 +1024,7 @@ jobs:
           agent: review
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
@@ -1039,7 +1050,7 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Checkout config repository
+      - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
@@ -1064,7 +1075,6 @@ jobs:
         id: workspace
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
-          install_mode: ${{ inputs.install_mode }}
           source_repo: ${{ github.repository }}
 
       - name: Mint coder token
@@ -1302,7 +1312,7 @@ jobs:
           agent: fix
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
@@ -1326,7 +1336,7 @@ jobs:
       issues: write
 
     steps:
-      - name: Checkout config repository
+      - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
@@ -1351,7 +1361,6 @@ jobs:
         id: workspace
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
-          install_mode: ${{ inputs.install_mode }}
           source_repo: ${{ github.repository }}
 
       - name: Mint retro token
@@ -1359,7 +1368,7 @@ jobs:
         uses: ./.defaults/.github/actions/mint-token
         with:
           role: retro
-          repos: ${{ inputs.install_mode == 'per-repo' && steps.workspace.outputs.repo_name || format('{0},.fullsend', steps.workspace.outputs.repo_name) }}
+          repos: ${{ steps.workspace.outputs.repo_name }}
           mint_url: ${{ inputs.mint_url }}
 
       - name: Checkout target repository
@@ -1388,7 +1397,7 @@ jobs:
           ORIGINATING_URL: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.html_url || fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           RETRO_COMMENT: ${{ fromJSON(needs.route.outputs.event_payload).comment.body || '' }}
           REPO_FULL_NAME: ${{ github.repository }}
-          MINT_REPOS: ${{ steps.workspace.outputs.repo_name != '' && (inputs.install_mode == 'per-repo' && steps.workspace.outputs.repo_name || format('{0},.fullsend', steps.workspace.outputs.repo_name)) || '' }}
+          MINT_REPOS: ${{ steps.workspace.outputs.repo_name }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
@@ -1409,7 +1418,7 @@ jobs:
           agent: retro
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
@@ -1433,7 +1442,7 @@ jobs:
       issues: write
 
     steps:
-      - name: Checkout config repository
+      - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
@@ -1458,7 +1467,6 @@ jobs:
         id: workspace
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
-          install_mode: ${{ inputs.install_mode }}
           source_repo: ${{ github.repository }}
 
       - name: Setup agent environment
@@ -1502,7 +1510,7 @@ jobs:
           agent: prioritize
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
@@ -1688,7 +1696,7 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - name: Checkout config repository
+      - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
@@ -1709,22 +1717,12 @@ jobs:
             internal/scaffold/fullsend-repo/
             action.yml
 
-      - name: Prepare workspace (upstream defaults + org/repo overrides)
-        env:
-          INSTALL_MODE: ${{ inputs.install_mode }}
+      - name: Prepare workspace (upstream defaults + repo overrides)
         run: |
           set -euo pipefail
-          if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
-            printf 'Received install_mode: %q\n' "${INSTALL_MODE}"
-            echo "::error::Invalid install_mode: must be 'per-org' or 'per-repo'"
-            exit 1
-          fi
           SRC=".defaults/internal/scaffold/fullsend-repo"
           LAYERED_DIRS="agents skills schemas harness plugins scripts env"
-          DEST=""
-          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
-            DEST=".fullsend/"
-          fi
+          DEST=".fullsend/"
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p "${DEST}${dir}"
@@ -1869,7 +1867,7 @@ jobs:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          fullsend-dir: .fullsend
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}
           status-number: ${{ matrix.status_number }}

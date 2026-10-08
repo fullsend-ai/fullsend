@@ -424,7 +424,7 @@ func forgeKeyList(m map[string]*ForgeConfig) string {
 // BuildConfigMap extracts user-facing per-repo config fields for overlay
 // CEL evaluation (ADR 0088). The returned map is exposed to overlay when
 // expressions as the "config" variable. Returns nil when cfg is nil or
-// does not implement PerRepoConfigReader (e.g. org-mode configs).
+// does not implement PerRepoConfigReader.
 //
 // All safe per-repo config fields are exposed. Sensitive fields (mint_url,
 // inference provider details) are excluded. Per PR #6285 review feedback,

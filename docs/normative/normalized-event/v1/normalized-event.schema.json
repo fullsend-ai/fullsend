@@ -430,6 +430,93 @@
             },
             "is_fork": {
               "type": "boolean"
+            },
+            "diff": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "files",
+                "additions",
+                "deletions"
+              ],
+              "dependentRequired": {
+                "paths_complete": [
+                  "paths"
+                ]
+              },
+              "properties": {
+                "files": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "additions": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "deletions": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "paths": {
+                  "type": "array",
+                  "maxItems": 3000,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "pattern": "^(?:[^./\\x00-\\x1f\\x7f][^/\\x00-\\x1f\\x7f]*|\\.[^./\\x00-\\x1f\\x7f][^/\\x00-\\x1f\\x7f]*|\\.\\.[^/\\x00-\\x1f\\x7f]+)(?:/(?:[^./\\x00-\\x1f\\x7f][^/\\x00-\\x1f\\x7f]*|\\.[^./\\x00-\\x1f\\x7f][^/\\x00-\\x1f\\x7f]*|\\.\\.[^/\\x00-\\x1f\\x7f]+))*$"
+                  },
+                  "description": "Changed file paths relative to the repository root. May be truncated when the forge caps the list; see paths_complete."
+                },
+                "paths_complete": {
+                  "type": "boolean",
+                  "description": "True only when paths is present and lists every changed file."
+                }
+              },
+              "description": "Optional change facts at head_sha, added for ADR 0112's routing and not yet populated by any adapter. Untrusted (README, Trusted fields)."
+            },
+            "linked_work_items": {
+              "type": "array",
+              "maxItems": 50,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "state",
+                  "labels"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "pattern": "^([A-Za-z][A-Za-z0-9_]+-\\d+|[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+#\\d+)$",
+                    "description": "Human-readable key when the id alone is ambiguous, for example a Jira key (PROJ-123) or a cross-repository reference (owner/repo#12)."
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "open",
+                      "closed"
+                    ]
+                  },
+                  "labels": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255
+                    }
+                  }
+                }
+              },
+              "description": "Optional work items the change proposal links to (for example through closing keywords), added for ADR 0112's routing and not yet populated by any adapter. Untrusted: the author chooses which items are linked (README, Trusted fields)."
             }
           },
           "description": "Required when the matched harness needs change-proposal execution context (review, fix, retro on a PR). id MUST match entity.id or entity.linked_change_proposal.id when those are present. Adapters must populate branch and repo fields so dispatch can project event_payload without API round-trips."

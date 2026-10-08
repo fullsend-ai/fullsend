@@ -72,12 +72,12 @@ agents:
 
 Because config-registered agents take precedence over built-in agents on name collision, your `code` agent replaces the default — with all of the base agent's scripts, policies, host_files, and plugins still inherited.
 
-To re-pin the `base:` URL to a new upstream commit (and recompute the integrity hash), run `fullsend agent update code --fullsend-dir .fullsend`. That writes the new SHA into the local harness file and leaves `config.yaml` unchanged.
+To re-pin the `base:` URL to a new upstream commit (and recompute the integrity hash), run `fullsend agent update code`. That writes the new SHA into the local harness file and leaves `config.yaml` unchanged.
 
 Test it locally first (add `--forge github` or `--forge gitlab` only if this
 repo's `.fullsend/config.yaml` does not already set `forge:`):
 ```bash
-fullsend run code --fullsend-dir .fullsend --target-repo ./my-repo --env-file .env.local
+fullsend run code --target-repo ./my-repo --env-file .env.local
 ```
 
 See [Running agents locally](running-agents-locally.md) for prerequisites and troubleshooting.
@@ -414,7 +414,7 @@ variables to protect sandbox operation.
 
 ### Adding a skill
 
-Create `skills/my-skill/SKILL.md` in your `.fullsend` config repo or agents repo:
+Create `.fullsend/skills/my-skill/SKILL.md` in the target repository, or `skills/my-skill/SKILL.md` in a shared agents repo:
 
 ```markdown
 # My Custom Skill
@@ -579,8 +579,8 @@ OWNERS files, see the
 - [Bring Your Own Agent](bring-your-own-agent.md) — building and registering custom agents from scratch
 - [Configuring with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
 - [Configuring with Skills](customizing-with-skills.md) — extending agents with skills
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when does configuration cross into derived or custom agent territory?
-- [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
+- [Default, derived, and custom agents](default-vs-custom.md) — when does configuration cross into derived or custom agent territory?
+- [Escalation ladder](escalation-ladder.md) — prove-it path before deriving or replacing a core agent
 - [Authorization Contract](../../normative/authorization/v1/README.md) — role hierarchy, thresholds, and exceptions
 - [Getting Started](../getting-started/) — initial setup
 - [Bugfix Workflow](bugfix-workflow.md) — how agents work together

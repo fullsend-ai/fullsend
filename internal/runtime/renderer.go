@@ -127,7 +127,31 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		r.endBlock()
 		r.printer.StepWarn(fmt.Sprintf("Retry %d/%d: %s (delay %dms)",
 			e.Attempt, e.MaxRetries, sanitizeOutput(e.Error), e.DelayMs))
+	case PluginErrorEvent:
+		r.endBlock()
+		r.printer.StepWarn(pluginErrorMessage(e))
 	}
+}
+
+// pluginErrorMessage formats a plugin load failure as one warning line. The
+// whole line is sanitized once, since plugin names, paths and messages come
+// from the sandbox.
+func pluginErrorMessage(e PluginErrorEvent) string {
+	name := e.Plugin
+	if name == "" {
+		name = "(unnamed)"
+	}
+	msg := "Plugin " + name + " failed to load"
+	if e.Path != "" {
+		msg += " from " + e.Path
+	}
+	if e.Type != "" {
+		msg += " (" + e.Type + ")"
+	}
+	if e.Message != "" {
+		msg += ": " + e.Message
+	}
+	return sanitizeOutput(msg)
 }
 
 // endBlock closes any open text or thinking block.

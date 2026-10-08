@@ -79,6 +79,12 @@ override is visible after the fact.
 inside the sandbox. A blocked tool reports its reason in the transcript; an allowlist mismatch names
 the offending tool and the expected vocabulary.
 
+**A harness plugin did not load.** When Claude Code reports a plugin in the `plugin_errors` of its
+startup `system`/`init` event, the run output prints one `Plugin <name> failed to load …` warning per
+entry, with the error category and message. It also shows the plugin directory when Claude Code
+names one (2.1.283 and later, for `--plugin-dir` entries). The run continues: the warning is the
+signal to check the plugin's path and `plugin.json`.
+
 **Output looks truncated or condensed.** The PostToolUse chain condenses verification-command output
 only on positive evidence of success, and attaches a note saying it did. Anything carrying a failure
 marker passes through untouched.

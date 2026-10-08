@@ -65,26 +65,6 @@ type stageConcurrencyExpectation struct {
 }
 
 var thinCallerConcurrencyExpectations = map[string]stageConcurrencyExpectation{
-	"triage": {
-		groupPrefix: "fullsend-triage-",
-		groupMust:   []string{"inputs.source_repo", "issue.number"},
-	},
-	"code": {
-		groupPrefix: "fullsend-code-",
-		groupMust:   []string{"inputs.source_repo", "issue.number"},
-	},
-	"review": {
-		groupPrefix: "fullsend-review-",
-		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
-	},
-	"fix": {
-		groupPrefix: "fullsend-fix-",
-		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number", "inputs.pr_number"},
-	},
-	"retro": {
-		groupPrefix: "fullsend-retro-",
-		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
-	},
 	"prioritize": {
 		groupPrefix: "fullsend-prioritize-",
 		groupMust:   []string{"inputs.source_repo", "issue.number"},
@@ -92,26 +72,6 @@ var thinCallerConcurrencyExpectations = map[string]stageConcurrencyExpectation{
 }
 
 var reusableAgentConcurrencyExpectations = map[string]stageConcurrencyExpectation{
-	"triage": {
-		groupPrefix: "fullsend-triage-agent-",
-		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
-	},
-	"code": {
-		groupPrefix: "fullsend-code-agent-",
-		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
-	},
-	"review": {
-		groupPrefix: "fullsend-review-agent-",
-		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
-	},
-	"fix": {
-		groupPrefix: "fullsend-fix-agent-",
-		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number", "inputs.pr_number"},
-	},
-	"retro": {
-		groupPrefix: "fullsend-retro-agent-",
-		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
-	},
 	"prioritize": {
 		groupPrefix: "fullsend-prioritize-agent-",
 		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
@@ -186,11 +146,6 @@ type callerPair struct {
 }
 
 var workflowCallPairs = []callerPair{
-	{"scaffold/triage.yml", loadRenderedScaffoldCaller(".github/workflows/triage.yml"), "triage"},
-	{"scaffold/code.yml", loadRenderedScaffoldCaller(".github/workflows/code.yml"), "code"},
-	{"scaffold/review.yml", loadRenderedScaffoldCaller(".github/workflows/review.yml"), "review"},
-	{"scaffold/fix.yml", loadRenderedScaffoldCaller(".github/workflows/fix.yml"), "fix"},
-	{"scaffold/retro.yml", loadRenderedScaffoldCaller(".github/workflows/retro.yml"), "retro"},
 	{"scaffold/prioritize.yml", loadRenderedScaffoldCaller(".github/workflows/prioritize.yml"), "prioritize"},
 }
 
@@ -199,7 +154,7 @@ func loadRenderedScaffoldCaller(path string) func(t *testing.T) []byte {
 		t.Helper()
 		raw, err := FullsendRepoFile(path)
 		require.NoError(t, err)
-		rendered, err := RenderTemplate(path, raw, RenderOptionsForInstall(false, false, "", ""))
+		rendered, err := RenderTemplate(path, raw, RenderOptionsForInstall(false, "", ""))
 		require.NoError(t, err)
 		return rendered
 	}
@@ -295,17 +250,9 @@ func TestReusableWorkflowInputContractAlignment(t *testing.T) {
 	var dispatch reusableWorkflow
 	require.NoError(t, yaml.Unmarshal(dispatchContent, &dispatch))
 
-	for _, pair := range workflowCallPairs {
-		t.Run(pair.callerName, func(t *testing.T) {
-			callerContent := pair.callerSource(t)
-			var caller callerWorkflow
-			require.NoError(t, yaml.Unmarshal(callerContent, &caller))
-
-			job, ok := caller.Jobs[pair.jobName]
-			require.True(t, ok, "job %q not found in caller workflow", pair.jobName)
-			match := reusableWorkflowRef.FindString(job.Uses)
-			require.NotEmpty(t, match, "could not extract reusable workflow filename from uses: %q", job.Uses)
-
+	for _, stageName := range []string{"prioritize"} {
+		match := fmt.Sprintf("reusable-%s.yml", stageName)
+		t.Run(match, func(t *testing.T) {
 			stageContent, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", match))
 			require.NoError(t, err, "could not read reusable workflow %s", match)
 
@@ -318,16 +265,6 @@ func TestReusableWorkflowInputContractAlignment(t *testing.T) {
 					continue
 				}
 				if name == "install_mode" {
-					// Dispatch defaults to per-repo; standalone stage workflows
-					// default to per-org until that deprecated chain is removed.
-					assert.False(t, dispatchInput.Required,
-						"reusable-dispatch.yml install_mode must remain optional")
-					assert.Equal(t, "per-repo", dispatchInput.Default,
-						"reusable-dispatch.yml install_mode default changed")
-					assert.False(t, stageInput.Required,
-						"%s install_mode must remain optional", match)
-					assert.Equal(t, "per-org", stageInput.Default,
-						"%s install_mode default changed", match)
 					continue
 				}
 				assert.Equal(t, dispatchInput.Required, stageInput.Required,
@@ -353,7 +290,6 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 		"mint_url",
 		"gcp_region",
 		"fullsend_version",
-		"install_mode",
 		"fullsend_ai_ref",
 		"runner_image",
 	}
@@ -366,7 +302,7 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_HEADERS",
 	}
 
-	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	stages := []string{"prioritize"}
 
 	for _, stage := range stages {
 		t.Run(stage, func(t *testing.T) {
@@ -482,11 +418,6 @@ func TestOpenAIAPIKeySecretThreading(t *testing.T) {
 		content func(t *testing.T) []byte
 	}{
 		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
-		{"scaffold/triage.yml", loadScaffoldFile(".github/workflows/triage.yml")},
-		{"scaffold/code.yml", loadScaffoldFile(".github/workflows/code.yml")},
-		{"scaffold/review.yml", loadScaffoldFile(".github/workflows/review.yml")},
-		{"scaffold/fix.yml", loadScaffoldFile(".github/workflows/fix.yml")},
-		{"scaffold/retro.yml", loadScaffoldFile(".github/workflows/retro.yml")},
 		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
 		// This repo's own installed shims (not just the scaffold templates
 		// new installs get) must forward the secret too, or fullsend's own
@@ -504,9 +435,9 @@ func TestOpenAIAPIKeySecretThreading(t *testing.T) {
 	declaration := "FULLSEND_OPENAI_API_KEY:\n        required: false"
 	export := "OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}"
 
-	// Standalone reusable-{stage}.yml files have exactly one job/one agent
-	// step each, so a whole-file substring check is unambiguous.
-	standaloneStages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	// The standalone reusable-prioritize.yml has exactly one job/one agent
+	// step, so a whole-file substring check is unambiguous.
+	standaloneStages := []string{"prioritize"}
 	for _, stage := range standaloneStages {
 		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
 			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
@@ -546,8 +477,8 @@ func TestOpenAIAPIKeySecretThreading(t *testing.T) {
 }
 
 // TestOTELHeadersSecretThreading validates that the optional OTLP headers
-// secrets (#2862, #5886) are forwarded along both installation-mode chains
-// to every reusable stage workflow. TestWorkflowCallInputAlignment only
+// secrets (#2862, #5886) are forwarded by the scaffold callers and injected
+// by every reusable stage workflow. TestWorkflowCallInputAlignment only
 // enforces required secrets; an omitted optional forward silently arrives
 // empty, which turns into a 401 at authenticated backends instead of
 // failing loudly.
@@ -563,17 +494,7 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 	}{
 		// per-repo chain: shim → reusable-dispatch
 		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
-		// per-org chain: thin caller → reusable-{stage}
-		{"reusable-triage.yml", loadRepoFile(".github/workflows/reusable-triage.yml")},
-		{"scaffold/triage.yml", loadScaffoldFile(".github/workflows/triage.yml")},
-		{"reusable-code.yml", loadRepoFile(".github/workflows/reusable-code.yml")},
-		{"scaffold/code.yml", loadScaffoldFile(".github/workflows/code.yml")},
-		{"reusable-review.yml", loadRepoFile(".github/workflows/reusable-review.yml")},
-		{"scaffold/review.yml", loadScaffoldFile(".github/workflows/review.yml")},
-		{"reusable-fix.yml", loadRepoFile(".github/workflows/reusable-fix.yml")},
-		{"scaffold/fix.yml", loadScaffoldFile(".github/workflows/fix.yml")},
-		{"reusable-retro.yml", loadRepoFile(".github/workflows/reusable-retro.yml")},
-		{"scaffold/retro.yml", loadScaffoldFile(".github/workflows/retro.yml")},
+		// standalone reusable-{stage} workflows (prioritize thin caller chain)
 		{"reusable-prioritize.yml", loadRepoFile(".github/workflows/reusable-prioritize.yml")},
 		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
 	}
@@ -636,8 +557,8 @@ func TestOTELVariableForwarding(t *testing.T) {
 		return v + ": ${{ vars." + v + " }}"
 	}
 
-	// Reusable stage workflows (single agent step each).
-	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	// Standalone reusable stage workflows (single agent step each).
+	stages := []string{"prioritize"}
 	for _, stage := range stages {
 		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
 			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
@@ -718,7 +639,8 @@ func TestReusableAgentWorkflowConcurrency(t *testing.T) {
 			assert.True(t, wf.Concurrency.CancelInProgress,
 				"reusable-%s.yml should cancel in-progress runs", stage)
 
-			callerExpect := thinCallerConcurrencyExpectations[stage]
+			callerExpect := dispatchStageConcurrencyExpectations[stage]
+			require.NotEmpty(t, callerExpect.groupPrefix, "missing dispatch expectation for %s", stage)
 			assert.NotEqual(t, callerExpect.groupPrefix, expect.groupPrefix,
 				"reusable-%s.yml must use a distinct agent-scoped group prefix", stage)
 			assert.Contains(t, wf.Concurrency.Group, "-agent-",
@@ -728,7 +650,7 @@ func TestReusableAgentWorkflowConcurrency(t *testing.T) {
 }
 
 // TestThinCallerStageConcurrency validates per-role cancel-in-progress groups on
-// per-org thin caller workflows in the scaffold (#981, ADR 0033).
+// thin caller workflows in the scaffold (#981, ADR 0033).
 func TestThinCallerStageConcurrency(t *testing.T) {
 	for stage, expect := range thinCallerConcurrencyExpectations {
 		t.Run(stage, func(t *testing.T) {
@@ -750,7 +672,7 @@ func TestThinCallerStageConcurrency(t *testing.T) {
 }
 
 // TestReusableDispatchWorkflowContent validates PR-context gating in per-repo
-// reusable-dispatch.yml routing (per-org dispatch.yml unchanged).
+// reusable-dispatch.yml routing.
 func TestReusableDispatchWorkflowContent(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
 	require.NoError(t, err)
@@ -761,9 +683,7 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 
 // TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch
 // path receives the configured app-set prefix and recognizes its exact review
-// bot identity. The scaffold dispatch workflow is a legacy, deprecated
-// per-org compatibility path retained only until ADR 0044 removal; workflow
-// parity requires it to stay aligned with the supported per-repo path.
+// bot identity.
 func TestCustomAppSetReviewBotWiring(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -771,9 +691,6 @@ func TestCustomAppSetReviewBotWiring(t *testing.T) {
 		assertCustom bool
 	}{
 		{"reusable-dispatch", loadRepoFile(".github/workflows/reusable-dispatch.yml"), true},
-		{"reusable-fix", loadRepoFile(".github/workflows/reusable-fix.yml"), true},
-		{"reusable-review", loadRepoFile(".github/workflows/reusable-review.yml"), false},
-		{"scaffold-dispatch", loadScaffoldFile(".github/workflows/dispatch.yml"), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -790,7 +707,6 @@ func TestCustomAppSetReviewBotWiring(t *testing.T) {
 		content func(*testing.T) []byte
 	}{
 		{"reusable-dispatch", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
-		{"scaffold-dispatch", loadScaffoldFile(".github/workflows/dispatch.yml")},
 	} {
 		t.Run(tc.name+"-route", func(t *testing.T) {
 			s := string(tc.content(t))
@@ -814,16 +730,6 @@ func TestCustomAppSetReviewBotWiring(t *testing.T) {
 			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
 			[]string{"Pre-fetch prior review context", "Check fix eligibility", "Pre-fetch review body"},
 		},
-		{
-			"reusable-fix",
-			loadRepoFile(".github/workflows/reusable-fix.yml"),
-			[]string{"Check fix eligibility", "Pre-fetch review body"},
-		},
-		{
-			"reusable-review",
-			loadRepoFile(".github/workflows/reusable-review.yml"),
-			[]string{"Pre-fetch prior review context"},
-		},
 	} {
 		t.Run(tc.name+"-consumers", func(t *testing.T) {
 			s := string(tc.content(t))
@@ -840,7 +746,7 @@ func TestCustomAppSetReviewBotWiring(t *testing.T) {
 	}
 }
 
-// TestDispatchPunctuationStrip ensures both dispatch files strip trailing
+// TestDispatchPunctuationStrip ensures reusable-dispatch.yml strips trailing
 // punctuation clusters (not just a single char) from COMMAND and SECOND_WORD.
 // See #5582.
 func TestDispatchPunctuationStrip(t *testing.T) {
@@ -850,7 +756,6 @@ func TestDispatchPunctuationStrip(t *testing.T) {
 	}
 	cases := []workflowCase{
 		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
-		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
 	}
 	for _, wc := range cases {
 		t.Run(wc.name, func(t *testing.T) {
@@ -876,10 +781,6 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 		{
 			"reusable-dispatch.yml",
 			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
-		},
-		{
-			"scaffold/dispatch.yml",
-			loadScaffoldFile(".github/workflows/dispatch.yml"),
 		},
 	}
 
@@ -954,7 +855,6 @@ func TestOwnersCheckoutRefPin(t *testing.T) {
 		content func(t *testing.T) []byte
 	}{
 		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
-		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -982,7 +882,7 @@ func TestOwnersCheckoutRefPin(t *testing.T) {
 	}
 }
 
-// TestShimScaffoldBranchFilter validates that both shim templates skip dispatch
+// TestShimScaffoldBranchFilter validates that the shim template skips dispatch
 // for PRs from the fullsend/scaffold branch. Without this filter, the shim
 // fires pull_request_target on the scaffold PR, causing dispatch noise (#5470).
 func TestShimScaffoldBranchFilter(t *testing.T) {
@@ -990,7 +890,6 @@ func TestShimScaffoldBranchFilter(t *testing.T) {
 		name    string
 		content func(t *testing.T) []byte
 	}{
-		{"shim-workflow-call", loadScaffoldFile("templates/shim-workflow-call.yaml")},
 		{"shim-per-repo", loadScaffoldFile("templates/shim-per-repo.yaml")},
 	}
 	for _, tc := range cases {
@@ -1029,7 +928,6 @@ func TestShimPerRepoNoFullsendAlias(t *testing.T) {
 		content func(t *testing.T) []byte
 	}
 	cases := []workflowCase{
-		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
 		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
 	}
 	for _, wc := range cases {
@@ -1060,7 +958,7 @@ func TestLiveShimSlashCommandFilter(t *testing.T) {
 		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
 }
 
-// TestDispatchPRHeadResolution validates that both dispatch workflows contain
+// TestDispatchPRHeadResolution validates that reusable-dispatch.yml contains
 // the "Resolve PR head for issue_comment events" step and the pull_request
 // merge into event_payload, ensuring issue_comment-triggered agents receive
 // the correct PR head SHA.
@@ -1074,10 +972,6 @@ func TestDispatchPRHeadResolution(t *testing.T) {
 		{
 			"reusable-dispatch.yml",
 			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
-		},
-		{
-			"scaffold/dispatch.yml",
-			loadScaffoldFile(".github/workflows/dispatch.yml"),
 		},
 	}
 
@@ -1122,10 +1016,6 @@ func TestDispatchPRCheckBotFilter(t *testing.T) {
 		{
 			"reusable-dispatch.yml",
 			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
-		},
-		{
-			"scaffold/dispatch.yml",
-			loadScaffoldFile(".github/workflows/dispatch.yml"),
 		},
 	}
 
@@ -1205,17 +1095,6 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 // common harness-dispatch path expose the forge-neutral key alongside the
 // backwards-compatible GitHub issue number (#6760).
 func TestWorkItemKeyEnvCompatibility(t *testing.T) {
-	t.Run("legacy reusable code", func(t *testing.T) {
-		content := string(loadRepoFile(".github/workflows/reusable-code.yml")(t))
-		section := extractStepSection(t, content, "Run code agent")
-		assert.Contains(t, section,
-			"FULLSEND_WORK_ITEM_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}")
-		assert.Contains(t, section,
-			"FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(inputs.event_payload).issue.number }}")
-		assert.Contains(t, section,
-			"ISSUE_NUMBER: ${{ fromJSON(inputs.event_payload).issue.number }}")
-	})
-
 	t.Run("route based code", func(t *testing.T) {
 		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
 		section := extractStepSection(t, content, "Run code agent")
@@ -1304,57 +1183,21 @@ func TestPrioritizeThinCallerThreadsProjectNumber(t *testing.T) {
 		"prioritize thin caller must fall back to vars.FULLSEND_PROJECT_NUMBER when input is empty")
 }
 
-// TestShimLabeledEventFiltering validates that shim workflows use the ready-
-// prefix filter at the if: guard level and label-aware concurrency keys so
-// routing labels don't cancel each other (#2452).
-//
-// The per-repo shim is exempt from the prefix filter because it has no
-// concurrency group and BYOA harness agents may trigger on arbitrary labels.
+// TestShimLabeledEventFiltering validates that per-repo shims do not filter
+// labeled events on a routing-label prefix and carry no job-level
+// concurrency group (#2452, ADR 0034). BYOA harness agents may trigger on
+// arbitrary labels, and per-role groups live in reusable-dispatch.yml.
 func TestShimLabeledEventFiltering(t *testing.T) {
-	type shimCase struct {
-		name           string
-		content        func(t *testing.T) []byte
-		hasConcurrency bool
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
+		{"scaffold/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
 	}
 
-	cases := []shimCase{
-		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml"), false},
-		{"scaffold/shim-workflow-call.yaml", loadScaffoldFile("templates/shim-workflow-call.yaml"), true},
-		{"scaffold/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml"), false},
-	}
-
-	// Workflow-call shims must have the ready- prefix filter in the if: guard.
-	// The per-repo shim is exempt (no concurrency group, BYOA compat).
 	for _, tc := range cases {
-		if !tc.hasConcurrency {
-			continue
-		}
-		t.Run(tc.name+"/guard", func(t *testing.T) {
-			var wf callerWorkflow
-			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
-			job, ok := wf.Jobs["dispatch"]
-			require.True(t, ok, "%s must have a dispatch job", tc.name)
-
-			// Pin the full composed clause including enclosing parens and the
-			// joining && that conjoins it with the preceding guards. Without
-			// the parens, && binds tighter than || in GHA expressions and the
-			// ready- prefix gate floats to the top of the entire if:. Without
-			// the joining &&, the clause could be OR'd, bypassing the
-			// scaffold-install and bot-comment guards. Whitespace is flexible
-			// via \s* to tolerate reformatting.
-			assert.Regexp(t,
-				`\)\s*&&\s*\(\s*github\.event\.action\s*!=\s*'labeled'\s*\|\|\s*startsWith\(github\.event\.label\.name,\s*'ready-'\)\s*\)`,
-				job.If,
-				"%s if: guard must AND-conjoin the ready- prefix filter with enclosing parens", tc.name)
-		})
-	}
-
-	// Per-repo shim must NOT have the ready- prefix filter (BYOA compat).
-	for _, tc := range cases {
-		if tc.hasConcurrency {
-			continue
-		}
-		t.Run(tc.name+"/no-label-guard", func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			var wf callerWorkflow
 			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
 			job, ok := wf.Jobs["dispatch"]
@@ -1362,116 +1205,14 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 
 			assert.NotContains(t, job.If, "startsWith(github.event.label.name",
 				"%s per-repo shim must not filter on label prefix — BYOA harness agents may use arbitrary labels", tc.name)
-		})
-	}
-
-	// Workflow-call shims must have a label-aware concurrency key (#2452).
-	for _, tc := range cases {
-		if !tc.hasConcurrency {
-			continue
-		}
-		t.Run(tc.name+"/concurrency", func(t *testing.T) {
-			var wf callerWorkflow
-			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
-			job, ok := wf.Jobs["dispatch"]
-			require.True(t, ok, "%s must have a dispatch job", tc.name)
-			require.NotNil(t, job.Concurrency, "%s dispatch job must have a concurrency group", tc.name)
-
-			assert.Regexp(t,
-				`fullsend-dispatch-\$\{\{\s*github\.event\.issue\.number\s*\|\|\s*github\.event\.pull_request\.number\s*\}\}-\$\{\{\s*github\.event\.action\s*==\s*'labeled'\s*&&\s*format\('label-\{0\}',\s*github\.event\.label\.name\)\s*\|\|\s*'dispatch'\s*\}\}`,
-				job.Concurrency.Group,
-				"%s concurrency group must match full label-aware structure", tc.name)
-			assert.False(t, job.Concurrency.CancelInProgress,
-				"%s concurrency group must have cancel-in-progress: false", tc.name)
-		})
-	}
-
-	// Per-repo shim must NOT have a job-level concurrency group (ADR 0034);
-	// per-role groups live in reusable-dispatch.yml stage jobs.
-	for _, tc := range cases {
-		if tc.hasConcurrency {
-			continue
-		}
-		t.Run(tc.name+"/no-concurrency", func(t *testing.T) {
-			var wf callerWorkflow
-			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
-			job, ok := wf.Jobs["dispatch"]
-			require.True(t, ok, "%s must have a dispatch job", tc.name)
 			assert.Nil(t, job.Concurrency,
 				"%s per-repo shim must not have job-level concurrency (ADR 0034: per-role groups live in reusable-dispatch.yml)", tc.name)
 		})
 	}
 }
 
-// TestRoutingLabelPrefixDrift validates that every TRIGGERING_LABEL comparison
-// in the per-org scaffold dispatch workflow satisfies the ready- prefix
-// predicate used by the workflow-call shim if: guard. If someone adds a
-// routing label without the prefix, this test converts a silent production
-// skip into a build break (#2452).
-//
-// Scope: scaffold/dispatch.yml only — the router that per-org (workflow-call)
-// shims deploy. reusable-dispatch.yml serves per-repo installs whose shim
-// has no prefix guard (BYOA compat), so it is intentionally excluded.
-func TestRoutingLabelPrefixDrift(t *testing.T) {
-	dispatchFiles := []struct {
-		name    string
-		content func(t *testing.T) []byte
-	}{
-		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
-	}
-
-	// Match all forms of TRIGGERING_LABEL comparison. Braces and quotes
-	// are optional so unbraced ($TRIGGERING_LABEL) and unquoted RHS forms
-	// are visible. For case blocks, the header is matched first and then
-	// every arm up to esac is collected, splitting on | for joined arms.
-	eqPattern := regexp.MustCompile(`TRIGGERING_LABEL\}?"?\s*={1,2}\s*"?([^")\s]+)"?`)
-	rePattern := regexp.MustCompile(`TRIGGERING_LABEL\}?"?\s*=~\s*"?([^")\s]+)"?`)
-	caseHeader := regexp.MustCompile(`(?m)case\s+"?\$\{?TRIGGERING_LABEL\}?"?\s+in\b`)
-	caseArm := regexp.MustCompile(`(?m)^\s*([\w|*?-]+)\)`)
-
-	extractLabels := func(content string) []string {
-		var labels []string
-		for _, m := range eqPattern.FindAllStringSubmatch(content, -1) {
-			labels = append(labels, m[1])
-		}
-		for _, m := range rePattern.FindAllStringSubmatch(content, -1) {
-			labels = append(labels, m[1])
-		}
-		for _, headerLoc := range caseHeader.FindAllStringIndex(content, -1) {
-			block := content[headerLoc[1]:]
-			esacIdx := strings.Index(block, "esac")
-			if esacIdx >= 0 {
-				block = block[:esacIdx]
-			}
-			for _, m := range caseArm.FindAllStringSubmatch(block, -1) {
-				for _, arm := range strings.Split(m[1], "|") {
-					labels = append(labels, arm)
-				}
-			}
-		}
-		return labels
-	}
-
-	for _, df := range dispatchFiles {
-		t.Run(df.name, func(t *testing.T) {
-			content := string(df.content(t))
-			labels := extractLabels(content)
-			require.Len(t, labels, 4,
-				"%s: expected exactly 4 TRIGGERING_LABEL comparisons (found %d) — "+
-					"if a comparison was added or restyled, update this count and verify "+
-					"the new label satisfies the ready- prefix predicate", df.name, len(labels))
-
-			for _, label := range labels {
-				assert.True(t, strings.HasPrefix(label, "ready-"),
-					"%s: routing label %q does not satisfy the ready- prefix predicate — "+
-						"per-org workflow-call shim if: guard will silently skip it (#2452)", df.name, label)
-			}
-		})
-	}
-}
-
 // TestRoleCheckCaseBranches validates the role-check step's case mapping and
-// backward-compat logic in both dispatch workflows (#2298).
+// backward-compat logic in reusable-dispatch.yml (#2298).
 func TestRoleCheckCaseBranches(t *testing.T) {
 	type workflowCase struct {
 		name    string
@@ -1482,10 +1223,6 @@ func TestRoleCheckCaseBranches(t *testing.T) {
 		{
 			"reusable-dispatch.yml",
 			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
-		},
-		{
-			"scaffold/dispatch.yml",
-			loadScaffoldFile(".github/workflows/dispatch.yml"),
 		},
 	}
 
@@ -1535,7 +1272,7 @@ func TestOpenAIVariableForwarding(t *testing.T) {
 		return v + ": ${{ vars." + v + " }}"
 	}
 
-	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	stages := []string{"prioritize"}
 	for _, stage := range stages {
 		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
 			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
@@ -1639,7 +1376,7 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 	}{
 		{"actions/prepare-workspace/action.yml", loadRepoFile(".github/actions/prepare-workspace/action.yml")},
 	}
-	for _, stage := range []string{"triage", "code", "review", "fix", "retro", "prioritize", "dispatch"} {
+	for _, stage := range []string{"prioritize", "dispatch"} {
 		files = append(files, struct {
 			name    string
 			content func(t *testing.T) []byte

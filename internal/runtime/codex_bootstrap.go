@@ -321,11 +321,28 @@ func codexDeveloperInstructions(agentName string, def *piAgentDef) string {
 // single-context path deliberately instead of recording a failed dispatch.
 // codex does have a spawn_agent tool, but fullsend wires no sub-agent roster
 // for it in v1, the same position pi was in (#6527).
+//
+// The second paragraph is the chunked-read rule for Codex's exec truncation
+// (10,000 tokens, head and tail, at 0.157.0). A single cat of a long SKILL.md
+// drops the middle with no retry (#7831). Lines are counted with awk's NR, not
+// `wc -l`: `wc -l` counts newline characters, so a file whose last line has no
+// trailing newline reports one line too few and the last range would stop
+// short of it.
 const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). No fullsend sub-agent " +
 	"roster is available. When a skill says to dispatch sub-agents, execute each sub-agent " +
 	"definition yourself, in the listed order, with the same context package, and treat each " +
-	"output as that sub-agent's result.\n"
+	"output as that sub-agent's result.\n\n" +
+	"When reading a SKILL.md or other instruction file, do not cat it in one call: Codex " +
+	"truncates exec output (head and tail, dropping the middle). For each file, count its " +
+	"lines with `awk 'END { print NR }' <file>` (`wc -l` misses a last line with no newline), " +
+	"then `sed -n '<start>,<end>p'` in contiguous ranges of at most 200 lines, one range per " +
+	"tool call, including a short final chunk so the last line is covered — do not round the " +
+	"line count down to a multiple of 200 (a 425-line file is three ranges: `1,200p`, " +
+	"`201,400p`, `401,425p`). Never combine files or ranges in one exec. Inspect the returned " +
+	"output for a truncation warning before advancing; if a range is truncated, split it into " +
+	"smaller contiguous windows that together still cover its start through end — never skip " +
+	"the back half — and read those windows before moving on to the next range.\n"
 
 // codexUnsupportedTools returns the Claude tool names from an agent
 // definition that have no codex tool. Unlike pi, nothing is dropped from an

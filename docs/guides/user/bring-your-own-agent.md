@@ -16,7 +16,7 @@ all customization options, see
 agent needs and registers it, so you edit prose rather than plumbing:
 
 ```bash
-fullsend agent new lint-docs --fullsend-dir .fullsend \
+fullsend agent new lint-docs \
   --role triage --description "Check docs changes for broken links"
 ```
 
@@ -54,7 +54,7 @@ Next:
 3. **Dry-run locally.**
 
    ```bash
-   POST_LINT_DOCS_DRY_RUN=1 fullsend run lint-docs --fullsend-dir .fullsend \
+   POST_LINT_DOCS_DRY_RUN=1 fullsend run lint-docs \
      --target-repo . --env-file .env.local
    ```
 
@@ -91,7 +91,7 @@ row that matches the agent you want; CI is covered below the table.
 | pi on Vertex | `--runtime pi` | `vertex-ai`, `github-ro` (`github` for `--role coder`), `openai` | `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS` |
 | pi on OpenAI | `--runtime pi --model openai/<id>` | `github-ro` (`github` for `--role coder`), `openai` | `OPENAI_API_KEY` |
 | pi, OpenAI parent + Vertex sub-agents | `--runtime pi --model openai/<id>`, then uncomment the generated `overlays:` block | `github-ro`/`github`, `openai`, plus `vertex-ai` once uncommented | `OPENAI_API_KEY`, plus the three Vertex variables once uncommented |
-| pi, Vertex parent + sub-agents on OpenAI | `--runtime pi`, then `fullsend agent set <name> --fullsend-dir .fullsend --subagent default=openai/<id>` (or `<persona>=openai/<id>` for one persona) | `vertex-ai`, `github-ro`/`github`, `openai` | The three Vertex variables above, plus `OPENAI_API_KEY` |
+| pi, Vertex parent + sub-agents on OpenAI | `--runtime pi`, then `fullsend agent set <name> --subagent default=openai/<id>` (or `<persona>=openai/<id>` for one persona) | `vertex-ai`, `github-ro`/`github`, `openai` | The three Vertex variables above, plus `OPENAI_API_KEY` |
 
 Notes on the last two rows:
 
@@ -115,7 +115,7 @@ Notes on the last two rows:
   when you want the configured default:
 
   ```bash
-  fullsend agent set lint-docs --fullsend-dir .fullsend --runtime pi \
+  fullsend agent set lint-docs --runtime pi \
     --subagent default=openai/gpt-5.6-luna
   ```
 
@@ -566,7 +566,7 @@ Base chains support up to 5 levels (`MaxBaseDepth` in `internal/harness/compose.
 
 > **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes or enabling runtime fetching in the child.
 
-> **Org-level fallback:** Separately from base-harness inheritance, the org-level `allowed_remote_resources` from `config.yaml` acts as a fallback for all URL resolution. URLs trusted at the org level are accepted even when the child harness omits the field. This is a distinct trust layer from base composition — the org-level list is set by organization administrators, not by base harness authors.
+> **Config-level fallback:** Separately from base-harness inheritance, the `allowed_remote_resources` from the repository-local configuration acts as a fallback for all URL resolution. URLs trusted at the config level are accepted even when the child harness omits the field. This is a distinct trust layer from base composition — the config-level list is set by repository administrators, not by base harness authors.
 
 To configure an existing agent without building from scratch, see [Configuring Agent Behavior](customizing-agents.md#configuration-with-base-composition).
 
@@ -576,7 +576,6 @@ Before registering, verify your agent works locally. Use `fullsend run` as a dev
 
 ```bash
 fullsend run my-agent \
-  --fullsend-dir .fullsend \
   --target-repo ./my-repo \
   --env-file .env.local
 ```
@@ -611,7 +610,7 @@ POST_LINT_DOCS_DRY_RUN=1 \
   REPO_FULL_NAME=OWNER/REPO \
   GH_TOKEN="$(gh auth token)" \
   ANTHROPIC_VERTEX_PROJECT_ID=unused CLOUD_ML_REGION=unused \
-  fullsend run lint-docs --fullsend-dir .fullsend \
+  fullsend run lint-docs \
     --runtime dummy --target-repo .
 ```
 
@@ -630,17 +629,16 @@ Harness agents route via CEL triggers on arbitrary labels — there is no prefix
 ```bash
 # Add (auto-pins URL with SHA256):
 fullsend agent add \
-  https://github.com/fullsend-ai/agents/blob/main/harness/triage.yaml \
-  --fullsend-dir .fullsend
+  https://github.com/fullsend-ai/agents/blob/main/harness/triage.yaml
 
 # Add local:
-fullsend agent add harness/my-agent.yaml --name my-agent --fullsend-dir .fullsend
+fullsend agent add harness/my-agent.yaml --name my-agent
 
 # List / update / remove:
-fullsend agent list --fullsend-dir .fullsend
-fullsend agent update triage <sha> --fullsend-dir .fullsend
-fullsend agent update code --fullsend-dir .fullsend   # re-pins base: in a local harness
-fullsend agent remove triage --fullsend-dir .fullsend
+fullsend agent list
+fullsend agent update triage <sha>
+fullsend agent update code   # re-pins base: in a local harness
+fullsend agent remove triage
 ```
 
 #### Config file (`.fullsend/config.yaml`)
@@ -677,6 +675,6 @@ allowed_remote_resources:
 - [`author-fullsend-augmentations` skill](../../../skills/author-fullsend-augmentations/SKILL.md) — discovery-driven guide for writing skills and sub-agents that complement shipped defaults
 - [Configuring with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
 - [Configuring Agent Behavior](customizing-agents.md) — harness configuration and `base:` composition
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when configuration crosses into custom agent territory
-- [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
+- [Default, derived, and custom agents](default-vs-custom.md) — when configuration crosses into custom agent territory
+- [Escalation ladder](escalation-ladder.md) — prove-it path before deriving or replacing a core agent
 - [Standalone mint](../infrastructure/standalone-mint.md) — custom agent roles and identity

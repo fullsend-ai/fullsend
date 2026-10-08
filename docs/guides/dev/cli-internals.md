@@ -19,7 +19,7 @@ fullsend
 │   ├── delete                               # Tear down mint infrastructure
 │   ├── add-role       <role>                # Register role PEM + ROLE_APP_IDS entry
 │   ├── remove-role    <role>                # Remove role from mint
-│   ├── enroll       <org|owner/repo>        # Register org/repo in mint
+│   ├── enroll       <owner/repo>            # Register repo in mint
 │   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
 │   ├── status       [org]                   # Inspect mint state and PEM health
 │   │   ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
@@ -53,13 +53,6 @@ fullsend
 │   └── set          <owner/repo> <key> <value> # Update a config value
 ├── repos                                    # Manage per-repo installations via manifest
 │   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
-│   ├── migrate      <org>                   # Migrate org from per-org to per-repo install
-│   │   ├── --project <id>                   #   GCP project ID for inference (required)
-│   │   ├── --repo <name>                    #   Filter to specific repos (repeatable, supports globs)
-│   │   ├── --dry-run                        #   Preview only
-│   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
-│   │   ├── --concurrency <int>              #   Parallel limit (1-32, default: 4)
-│   │   └── -f, --manifest <path>            #   Output path for repos.yaml (default: repos.yaml)
 │   ├── install      [repos...]              # Converge repos to desired state (provision, repair drift, upgrade)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
@@ -96,7 +89,7 @@ fullsend
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-├── agent                                    # Generate and manage agents in config
+├── agent                                    # Generate and manage agents in config (--fullsend-dir default: .fullsend)
 │   ├── new          <name>                   # Generate a complete custom agent and register it
 │   │   ├── --role <name>                    #   Mint role: triage|review|coder|retro|prioritize
 │   │   ├── --on <preset>                    #   Trigger preset (command:/label:/issue-opened/pr-opened)
@@ -118,14 +111,14 @@ fullsend
 │   └── remove       <name>                   # Unregister agent from config
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
-│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --forge <platform>                   #   Lock only this forge variant; omit for all
 │   ├── --update                             #   Force re-resolve even if current
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
 │   └── --max-resources <int>                #   Max total remote resources
 ├── run                                      # Execute an agent in a sandbox
-│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
@@ -348,14 +341,14 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 |-------|------|-------------------|
 | **1. Discover** | `DiscoverMint()`, resolve app IDs | Single repo validation |
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | Excludes "fullsend" role |
-| **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | Deploys the mint if absent, otherwise registers the owner in it (use `mint enroll` separately for later changes) |
+| **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | Deploys the mint if absent, otherwise registers the owner in it (use `mint enroll <owner/repo>` separately to add repositories later) |
 | **4. WIF** | `ProvisionWIF()` | `mintcore.BuildRepoProviderID()` (repo-scoped, GitHub only; GitLab uses shared `gitlab-oidc` provider) |
 | **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Writes `.fullsend/` dir + shim workflow + thin caller workflows + optional binary in target repo (committed after secrets, see #6122) |
 | **6. Secrets** | Repository secret and variable writes | Target repo + `FULLSEND_PER_REPO_INSTALL` (written before scaffold commit, see #6122) |
 
 ### Install orchestration
 
-`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation; the `Layer` types under `internal/layers` that remain (for example `WorkflowsLayer` or `VendorBinaryLayer`) are not used by CLI orchestration. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
+`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation, and `internal/layers` no longer ships concrete `Layer` implementations; it keeps the `Layer` interface, `AgentCredentials`, and the vendoring helpers. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -367,7 +360,7 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
-Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `bin/fullsend` or `.fullsend/bin/fullsend` when `--vendor` is not set.
+Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `.fullsend/bin/fullsend` when `--vendor` is not set.
 
 ---
 
@@ -597,7 +590,7 @@ After downloading files from the sandbox, `sanitizeDownload()` removes:
 
 ### Scaffold Architecture
 
-The fullsend binary embeds a complete `.fullsend` repo template using Go's `embed.FS`:
+The fullsend binary embeds the installation scaffold using Go's `embed.FS`:
 
 ```go
 //go:embed all:fullsend-repo
@@ -609,7 +602,7 @@ var content embed.FS
 ```
 fullsend-repo/                      (embedded template)
 ├── .github/
-│   ├── workflows/                  → Pushed to config repo
+│   ├── workflows/                  → Thin callers installed to target repo
 │   ├── actions/                    → Upstream-only (not installed)
 │   └── scripts/                    → Upstream-only (not installed)
 ├── agents/                         → Layered (runtime, not installed)
@@ -621,15 +614,15 @@ fullsend-repo/                      (embedded template)
 ├── scripts/                        → Layered (runtime, not installed)
 ├── env/                            → Layered (runtime, not installed)
 ├── templates/
-│   └── shim-per-repo.yaml          → Per-repo shim workflow template
-└── (other files)                   → Installed to config repo
+│   └── shim-per-repo.yaml          → Rendered to .github/workflows/fullsend.yaml
+└── (other files)                   → Not installed by per-repo installs
 ```
 
 **Four categories:**
 
 | Category | Installed? | Source | Purpose |
 |----------|-----------|--------|---------|
-| **Installed** | Yes | Scaffold → `.fullsend` repo | Workflows, configs, static files |
+| **Installed** | Yes | Scaffold → target repo | `fullsend.yaml` shim (from `templates/shim-per-repo.yaml`) and the `prioritize.yml` thin caller |
 | **Layered** | No (runtime) or yes with `--vendor` | Upstream `@main` sparse checkout, or vendored at install | agents/, skills/, harness/, plugins/, scripts/, schemas/, env/ |
 | **Built in** | No | Embedded in the `fullsend` binary; `fullsend run` resolves a bare provider name to it | providers/, profiles/ |
 | **Upstream-only** | No (layered) or yes with `--vendor` | Referenced directly or vendored at install | .github/actions/, .github/scripts/ |
@@ -645,10 +638,8 @@ var executableFiles = map[string]struct{}{
     "scripts/fullsend-check-output":          {},
     "scripts/install-precommit-tools.sh":     {},
     "scripts/prepare-sandbox-credentials.sh": {},
-    "scripts/reconcile-repos.sh":             {},
     "scripts/resolve-precommit-tools.py":     {},
     "scripts/setup-prioritize.sh":            {},
-    "scripts/validate-source-repo.sh":        {},
 }
 ```
 
@@ -734,8 +725,6 @@ var executableFiles = map[string]struct{}{
 | `internal/sandbox/sandbox.go` | ~459 | OpenShell sandbox operations |
 | `internal/harness/harness.go` | ~486 | Harness YAML parsing |
 | `internal/layers/layers.go` | ~159 | Layer interface and stack |
-| `internal/layers/secrets.go` | ~200 | PEM key deployment layer |
-| `internal/layers/inference.go` | ~150 | Inference credential layer |
 | `internal/scaffold/scaffold.go` | ~146 | Embedded template system |
 | `internal/inference/inference.go` | ~26 | Provider interface |
 | `internal/inference/vertex/vertex.go` | ~80 | Agent Platform (Vertex AI) implementation |

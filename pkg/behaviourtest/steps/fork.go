@@ -8,6 +8,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -46,9 +47,27 @@ const createBranchMaxAttempts = 5
 // createBranchPoll is the delay between CreateBranch retries.
 const createBranchPoll = 2 * time.Second
 
+// createForkMaxAttempts is how many times createFork retries
+// CreateFork when GitHub rejects the name as still taken after a
+// recent delete. GitHub's uniqueness constraint can lag the
+// DeleteRepo 404 by tens of seconds: GetRepo already reports the
+// fork gone while POST /forks still returns 403 "Name already
+// exists on this account".
+const createForkMaxAttempts = 15
+
+// createForkPoll is the delay between CreateFork retries on a
+// stale name-collision error.
+const createForkPoll = 2 * time.Second
+
 // givenFork creates a fork of the enrolled test repository if absent, or
 // reuses it if it already exists. The fork is created within the same
 // organization as the source repository.
+//
+// CreateFork is retried on stale name-collision errors (GitHub 403/422
+// "Name already exists on this account"). CleanupScenario deletes the
+// previous scenario's fork, but GitHub's uniqueness constraint can lag
+// the DeleteRepo 404, so a later scenario reusing the same target name
+// would otherwise fail even though GetRepo reports the name free.
 //
 // After creation, givenFork polls GetBranchRef until the fork's
 // default-branch git ref is readable. GitHub's fork API returns before
@@ -71,7 +90,7 @@ func givenFork(w *world.World, forkName string) error {
 	resolved := resolveForkName(w, forkName)
 
 	ctx := context.Background()
-	forkRepo, err := w.SCM.CreateFork(ctx, w.RepoOwner, w.RepoName, resolved)
+	forkRepo, err := createFork(ctx, w, w.RepoOwner, w.RepoName, resolved, createForkMaxAttempts, createForkPoll)
 	if err != nil {
 		return fmt.Errorf("creating fork %q: %w", resolved, err)
 	}
@@ -170,6 +189,67 @@ func resolveForkName(w *world.World, logicalName string) string {
 		return logicalName
 	}
 	return w.RepoName + suffix
+}
+
+// isNameCollisionError reports whether err looks like GitHub still
+// holding a recently deleted repository name. The observed live
+// failure is 403 "Name already exists on this account"; the Contents
+// / repos API also emits 422 Validation Failed with the same detail.
+// GetRepo 404 is not a sufficient uniqueness signal, so CreateFork
+// itself must retry this class of error.
+//
+// ErrNotFork ("already exists and is not a fork") is a real collision
+// with a different repo and is not retried, even if forkName itself
+// ends in "name" (e.g. "foo-name"), which would otherwise make the
+// wrapped ErrNotFork message ("repo org/foo-name already exists and
+// is not a fork") match the substring check below. forge.IsNotFork is
+// checked first, before the substring heuristic, to avoid that false
+// positive.
+func isNameCollisionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if forge.IsNotFork(err) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "name already exists")
+}
+
+// createFork wraps CreateFork with retry logic for stale name-collision
+// errors. After CleanupScenario deletes a per-scenario fork, GitHub can
+// still reject a recreate of the same name even though GetRepo 404s.
+// Retrying CreateFork is the only reliable probe: uniqueness lag is not
+// observable via GetRepo.
+//
+// Non-collision errors (permissions, ErrNotFork, network) fail
+// immediately. maxAttempts and poll are explicit parameters so that
+// unit tests can pass small values to avoid real sleeps.
+func createFork(ctx context.Context, w *world.World, owner, repo, forkName string, maxAttempts int, poll time.Duration) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		forkRepo, err := w.SCM.CreateFork(ctx, owner, repo, forkName)
+		if err == nil {
+			return forkRepo, nil
+		}
+		lastErr = err
+		if !isNameCollisionError(lastErr) {
+			return "", lastErr
+		}
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return "", fmt.Errorf(
+					"context cancelled retrying CreateFork %q: %w",
+					forkName, ctx.Err(),
+				)
+			case <-time.After(poll):
+			}
+		}
+	}
+	return "", fmt.Errorf(
+		"fork %q creation failed after %d attempts: %w",
+		forkName, maxAttempts, lastErr,
+	)
 }
 
 // isReplicationError reports whether err looks like a GitHub fork

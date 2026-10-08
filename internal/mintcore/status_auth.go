@@ -22,8 +22,7 @@ type statusAuthResult struct {
 	// oidcClaims is set when OIDC authentication succeeded.
 	// When non-nil, the status response is scoped to the
 	// authenticating workflow's org. When nil, a non-OIDC validator
-	// authenticated the request and the status response reports all
-	// configured allowed orgs.
+	// authenticated the request and the status response omits the org.
 	oidcClaims *Claims
 }
 
@@ -38,7 +37,7 @@ type statusAuthResult struct {
 // with no fall-through — the validator positively rejected the request.
 func (h *Handler) authenticateStatus(ctx context.Context, r *http.Request) (*statusAuthResult, error) {
 	// --- OIDC (always tried first) ---
-	claims, _, oidcErr := h.verifyOIDCRequest(ctx, r)
+	claims, oidcErr := h.verifyOIDCRequest(ctx, r)
 	if oidcErr == nil {
 		return &statusAuthResult{oidcClaims: claims}, nil
 	}
@@ -84,9 +83,6 @@ func (h *Handler) handleStatusWithAuth(w http.ResponseWriter, auth *statusAuthRe
 	if auth.oidcClaims != nil {
 		// OIDC success: scope to the authenticating workflow's org.
 		resp.Org = strings.ToLower(auth.oidcClaims.RepositoryOwner)
-	} else {
-		// Non-OIDC validator: report all configured allowed orgs.
-		resp.AllowedOrgs = h.allowedOrgs
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -58,8 +58,9 @@ func CommitFilesViaPR(ctx context.Context, client forge.Client, printer *ui.Prin
 }
 
 // knownScaffoldBranches lists all branch names that have been used to deliver
-// scaffold files across different install modes. Per-org mode uses
-// "fullsend/onboard" (via reconcile-repos.sh); per-repo mode uses
+// scaffold files across different install modes. The removed per-org mode
+// used "fullsend/onboard" (via reconcile-repos.sh), kept here so stale
+// onboarding PRs are still cleaned up; per-repo mode uses
 // "fullsend/scaffold-install" (via the Go CLI) for both install and uninstall
 // delivery.
 var knownScaffoldBranches = []string{
@@ -187,11 +188,12 @@ func commitViaFork(ctx context.Context, client forge.Client, printer *ui.Printer
 		scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody, files)
 }
 
-// closeStaleScaffoldPRs finds and closes open scaffold PRs from install modes
-// other than the current one. When switching from per-org to per-repo (or vice
-// versa), the old mode's scaffold PR may remain open with stale content (e.g.,
-// referencing a deleted .fullsend repo). This function closes those PRs and
-// deletes their head branches so they cannot be accidentally merged.
+// closeStaleScaffoldPRs finds and closes open scaffold PRs delivered on a
+// branch other than the current one. A repository previously onboarded by
+// the removed per-org mode may still have that mode's scaffold PR open with
+// stale content (e.g., referencing a deleted .fullsend repo). This function
+// closes those PRs and deletes their head branches so they cannot be
+// accidentally merged.
 //
 // Only PRs authored by authenticatedUser are closed (fail-closed: PRs with an
 // empty author field are skipped), preventing accidental closure of PRs opened
@@ -237,7 +239,8 @@ func closeStaleScaffoldPRs(ctx context.Context, client forge.Client, printer *ui
 }
 
 // isKnownScaffoldBranch reports whether branch is one of the well-known branch
-// names used by scaffold installs (per-org or per-repo mode), including
+// names used by scaffold installs (including the removed per-org mode's
+// onboarding branch), including
 // version-specific upgrade branches like "fullsend/bump-v0.28.0".
 func isKnownScaffoldBranch(branch string) bool {
 	for _, b := range knownScaffoldBranches {

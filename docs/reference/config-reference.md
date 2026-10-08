@@ -300,13 +300,14 @@ Model configuration, currently containing only `aliases`.
   config system, aliases merge per key across layers. See
   [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
-## Per-repo vs. org-mode
+## Installation model
 
 This reference documents the **per-repo** config format (stored in
-`.fullsend/config.yaml` within the target repository). Per-repo is the sole
-supported installation model going forward — per-org installation mode is
-deprecated ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md))
-and installations still on org mode should migrate.
+`.fullsend/config.yaml` within the target repository). Per-repo is the only
+supported installation model. Per-org installation was removed
+([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md)). Fullsend
+rejects a `config.yaml` that uses the old per-org format, which is any file
+with top-level `dispatch`, `repos`, or `defaults` keys.
 
 ## Layered configuration
 

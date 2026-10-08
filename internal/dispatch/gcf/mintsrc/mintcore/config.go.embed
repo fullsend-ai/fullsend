@@ -5,7 +5,7 @@ import (
 )
 
 // SplitCSV splits a comma-separated string into trimmed, non-empty entries.
-// Shared by all entrypoints for parsing config fields like AllowedOrgs,
+// Shared by all entrypoints for parsing config fields like
 // AllowedWorkflowFiles, PerRepoWIFRepos, and WorkflowHostRepos.
 func SplitCSV(s string) []string {
 	if s == "" {

@@ -24,7 +24,6 @@ func TestNewHandler_Config(t *testing.T) {
 	setBindings(t, map[string]string{
 		"ROLE_APP_IDS":           `{"triage":"100","coder":"200"}`,
 		"ALLOWED_ROLES":          "",
-		"ALLOWED_ORGS":           "test-org",
 		"ALLOWED_WORKFLOW_FILES": "*",
 	})
 	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
@@ -192,7 +191,6 @@ func TestNewHandler_PerRepoWIFRepos(t *testing.T) {
 	setBindings(t, map[string]string{
 		"ROLE_APP_IDS":           `{"coder":"200"}`,
 		"PER_REPO_WIF_REPOS":     "org/repo-a, Org/Repo-B",
-		"ALLOWED_ORGS":           "org",
 		"ALLOWED_WORKFLOW_FILES": "*",
 	})
 	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
@@ -209,17 +207,11 @@ func TestNewHandler_PerRepoWIFRepos(t *testing.T) {
 	if len(h.perRepoWIFRepos) != 2 {
 		t.Fatalf("expected 2 entries in perRepoWIFRepos, got %d", len(h.perRepoWIFRepos))
 	}
-
-	// Verify allowedOrgs was set on the handler.
-	if len(h.allowedOrgs) != 1 || h.allowedOrgs[0] != "org" {
-		t.Fatalf("expected allowedOrgs=[org], got %v", h.allowedOrgs)
-	}
 }
 
 func TestNewHandler_WorkflowHostRepos(t *testing.T) {
 	setBindings(t, map[string]string{
 		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_ORGS":           "org",
 		"ALLOWED_WORKFLOW_FILES": "*",
 		"WORKFLOW_HOST_REPOS":    "acme/workflows, Acme/Other",
 	})
@@ -241,7 +233,6 @@ func TestNewHandler_WorkflowHostRepos(t *testing.T) {
 func TestNewHandler_WorkflowHostReposDefault(t *testing.T) {
 	setBindings(t, map[string]string{
 		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_ORGS":           "org",
 		"ALLOWED_WORKFLOW_FILES": "*",
 		"WORKFLOW_HOST_REPOS":    "",
 	})
@@ -278,15 +269,15 @@ func TestNewHandler_ServeHTTPWorks(t *testing.T) {
 func TestNewHandler_FullMintFlow(t *testing.T) {
 	setBindings(t, map[string]string{
 		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_ORGS":           "test-org",
+		"PER_REPO_WIF_REPOS":     "test-org/test-repo",
 		"ALLOWED_WORKFLOW_FILES": "*",
 	})
 	verifier := &fakeOIDCVerifier{
 		claims: &Claims{
 			Issuer:          "https://token.actions.githubusercontent.com",
-			Repository:      "test-org/.fullsend",
+			Repository:      "test-org/test-repo",
 			RepositoryOwner: "test-org",
-			JobWorkflowRef:  "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+			JobWorkflowRef:  "fullsend-ai/fullsend/.github/workflows/code.yml@refs/heads/main",
 		},
 	}
 
@@ -365,17 +356,17 @@ func TestNewHandler_DefaultGithubBaseURL(t *testing.T) {
 	}
 }
 
-func TestNewHandler_EmptyAllowedOrgs(t *testing.T) {
-	// Verifies that an empty ALLOWED_ORGS with PER_REPO_WIF_REPOS works.
+func TestNewHandler_PerRepoOnlyConfig(t *testing.T) {
+	// Verifies that a PER_REPO_WIF_REPOS-only configuration (no
+	// ALLOWED_ORGS, which is no longer read) produces a healthy handler.
 	setBindings(t, map[string]string{
 		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_ORGS":           "",
 		"PER_REPO_WIF_REPOS":     "test-org/my-repo",
 		"ALLOWED_WORKFLOW_FILES": "*",
 	})
 	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
 	if err != nil {
-		t.Fatalf("NewHandler should succeed with empty ALLOWED_ORGS: %v", err)
+		t.Fatalf("NewHandler should succeed with only PER_REPO_WIF_REPOS: %v", err)
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)

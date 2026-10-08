@@ -106,7 +106,7 @@ When you need a completely new agent — with its own trigger, scripts, and
 output schema — start with the generator:
 
 ```bash
-fullsend agent new my-agent --fullsend-dir .fullsend --role triage
+fullsend agent new my-agent --role triage
 ```
 
 It writes the files below, registers the agent in `config.yaml`, and checks
@@ -143,7 +143,7 @@ output schemas.
 
 ## See also
 
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when does configuration cross into custom agent territory?
-- [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
+- [Default, derived, and custom agents](default-vs-custom.md) — when does configuration cross into custom agent territory?
+- [Escalation ladder](escalation-ladder.md) — prove-it path before deriving or replacing a core agent
 - [OWNERS file authorization](owners-file-authorization.md) — control who can trigger agents via Prow-style OWNERS files
 - [Bugfix Workflow](bugfix-workflow.md) — how agents work together end to end

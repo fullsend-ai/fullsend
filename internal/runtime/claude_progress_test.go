@@ -711,6 +711,113 @@ func TestParseClaudeStreamInitEvent(t *testing.T) {
 	}
 }
 
+func TestParseClaudeStreamInitEventPluginErrors(t *testing.T) {
+	input := `{"type":"system","subtype":"init","model":"claude-opus-4-6","plugin_errors":[` +
+		`{"plugin":"demo@inline","type":"path-not-found","message":"Plugin directory not found","path":"/sandbox/plugins/demo"},` +
+		`{"plugin":"legacy@inline","type":"manifest-validation-error","message":"invalid manifest"}` +
+		`]}`
+	events := collectEvents(t, input)
+	want := []AgentEvent{
+		InitEvent{Model: "claude-opus-4-6"},
+		PluginErrorEvent{Plugin: "demo@inline", Type: "path-not-found", Path: "/sandbox/plugins/demo", Message: "Plugin directory not found"},
+		PluginErrorEvent{Plugin: "legacy@inline", Type: "manifest-validation-error", Message: "invalid manifest"},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("expected %d events, got %d: %+v", len(want), len(events), events)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Errorf("event %d: got %+v, want %+v", i, events[i], want[i])
+		}
+	}
+}
+
+func TestParseClaudeStreamInitEventNoPluginErrors(t *testing.T) {
+	for name, input := range map[string]string{
+		"absent": `{"type":"system","subtype":"init","model":"claude-opus-4-6"}`,
+		"empty":  `{"type":"system","subtype":"init","model":"claude-opus-4-6","plugin_errors":[]}`,
+		"null":   `{"type":"system","subtype":"init","model":"claude-opus-4-6","plugin_errors":null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			events := collectEvents(t, input)
+			if len(events) != 1 {
+				t.Fatalf("expected only the InitEvent, got %+v", events)
+			}
+			if _, ok := events[0].(InitEvent); !ok {
+				t.Fatalf("expected InitEvent, got %T", events[0])
+			}
+		})
+	}
+}
+
+func TestParseClaudeStreamInitEventMalformedPluginErrors(t *testing.T) {
+	t.Run("not an array", func(t *testing.T) {
+		input := `{"type":"system","subtype":"init","model":"claude-opus-4-6","plugin_errors":"boom"}`
+		events := collectEvents(t, input)
+		if len(events) != 1 {
+			t.Fatalf("expected only the InitEvent, got %+v", events)
+		}
+		if init, ok := events[0].(InitEvent); !ok || init.Model != "claude-opus-4-6" {
+			t.Fatalf("expected InitEvent with model, got %+v", events[0])
+		}
+	})
+
+	t.Run("bad entries skipped", func(t *testing.T) {
+		lines := []string{
+			`{"type":"system","subtype":"init","model":"claude-opus-4-6","plugin_errors":[` +
+				`42,{"plugin":7},null,{},{"plugin":"ok@inline","type":"generic-error","message":"failed"}]}`,
+			`{"type":"system","subtype":"api_retry","attempt":1,"max_retries":3,"retry_delay_ms":10,"error":"x"}`,
+		}
+		events := collectEvents(t, strings.Join(lines, "\n"))
+		want := []AgentEvent{
+			InitEvent{Model: "claude-opus-4-6"},
+			PluginErrorEvent{Plugin: "ok@inline", Type: "generic-error", Message: "failed"},
+			RetryEvent{Attempt: 1, MaxRetries: 3, DelayMs: 10, Error: "x"},
+		}
+		if len(events) != len(want) {
+			t.Fatalf("expected %d events, got %d: %+v", len(want), len(events), events)
+		}
+		for i := range want {
+			if events[i] != want[i] {
+				t.Errorf("event %d: got %+v, want %+v", i, events[i], want[i])
+			}
+		}
+	})
+}
+
+func TestProgressParserPluginErrorsWarn(t *testing.T) {
+	render := func(input string) string {
+		var buf bytes.Buffer
+		if err := progressParser(strings.NewReader(input), ui.New(&buf), &RunMetrics{}); err != nil {
+			t.Fatalf("progressParser returned error: %v", err)
+		}
+		return buf.String()
+	}
+
+	clean := render(`{"type":"system","subtype":"init","model":"claude-opus-4-6"}`)
+	if got := render(`{"type":"system","subtype":"init","model":"claude-opus-4-6","plugin_errors":[]}`); got != clean {
+		t.Errorf("empty plugin_errors changed output:\n got: %q\nwant: %q", got, clean)
+	}
+	if strings.Contains(clean, "Plugin") {
+		t.Errorf("unexpected plugin warning without plugin_errors: %q", clean)
+	}
+
+	out := render(`{"type":"system","subtype":"init","model":"claude-opus-4-6","plugin_errors":[` +
+		`{"plugin":"de\u001b[31mmo@inline","type":"path-not-found","message":"gone\n::error::forged","path":"/sandbox/plu\rgins/demo"}]}`)
+	if !strings.Contains(out, "demo@inline") {
+		t.Errorf("expected plugin name in warning, got: %q", out)
+	}
+	if !strings.Contains(out, "/sandbox/plu") || !strings.Contains(out, "gins/demo") {
+		t.Errorf("expected plugin path in warning, got: %q", out)
+	}
+	if strings.Contains(out, "\x1b[31m") || strings.Contains(out, "\r") || strings.Contains(out, "::error::") {
+		t.Errorf("warning not sanitized: %q", out)
+	}
+	if strings.Count(out, "failed to load") != 1 {
+		t.Errorf("expected exactly one warning line, got: %q", out)
+	}
+}
+
 func TestParseClaudeStreamRetryEvent(t *testing.T) {
 	input := `{"type":"system","subtype":"api_retry","attempt":2,"max_retries":5,"retry_delay_ms":1000,"error":"overloaded"}`
 	events := collectEvents(t, input)

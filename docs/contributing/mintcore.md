@@ -68,7 +68,7 @@ Reads environment/configuration values.
 | `js` (WASM) | JS callback registered via `RegisterEnv` | `env_js.go` |
 
 `NewHandler` reads all configuration variables (`ROLE_APP_IDS`,
-`ALLOWED_ORGS`, `ALLOWED_WORKFLOW_FILES`, `PER_REPO_WIF_REPOS`,
+`ALLOWED_WORKFLOW_FILES`, `PER_REPO_WIF_REPOS`,
 `WORKFLOW_HOST_REPOS`, `CUSTOM_ROLE_PERMISSIONS`, `ALLOWED_ROLES`)
 via `mintEnv` at construction time.
 
@@ -235,7 +235,7 @@ Promises to settle. Constructor-time HTTP would deadlock.
 
 ### Handler reads config via `mintEnv`
 
-`NewHandler` reads `ROLE_APP_IDS`, `ALLOWED_ORGS`, and other
+`NewHandler` reads `ROLE_APP_IDS`, `PER_REPO_WIF_REPOS`, and other
 configuration variables once via `mintEnv` at construction time.
 This works because `RegisterEnv` has already been called by the
 time `NewHandler` runs — the pattern is: register → construct →

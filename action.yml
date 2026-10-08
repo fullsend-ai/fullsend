@@ -473,8 +473,8 @@ runs:
     # (tool-agnostic artifact); missing telemetry/manifest skips with no file.
     # Manifest trust: prefer a local override from the PR base SHA (same
     # trusted tip reusable-* workflows check out for kill-switch config).
-    # Path prefix comes from inputs.fullsend-dir (install layout: per-repo
-    # `.fullsend/` or per-org workspace root); file bytes come from the
+    # Path prefix comes from inputs.fullsend-dir (per-repo install layout:
+    # `.fullsend/`); file bytes come from the
     # trusted ref — never from a PR-head working tree. When no trusted
     # override exists, fetch SHA-pinned agents@v0 (no --fullsend-dir).
     - name: Eval measurements
@@ -554,7 +554,7 @@ runs:
 
         # Resolve the correct commit SHA. Priority order:
         # 1. Explicit pr-head-sha input (per-repo workflow_call callers)
-        # 2. Extracted from .inputs.event_payload (per-org workflow_dispatch)
+        # 2. Extracted from .inputs.event_payload (workflow_dispatch payload)
         # 3. GITHUB_SHA fallback
         COMMIT_SHA=""
         if [[ -n "${PR_HEAD_SHA_INPUT}" ]]; then

@@ -208,6 +208,39 @@ func TestRendererRetryEvent(t *testing.T) {
 	}
 }
 
+func TestRendererPluginErrorEvent(t *testing.T) {
+	tests := []struct {
+		name string
+		evt  PluginErrorEvent
+		want string
+	}{
+		{
+			name: "with path",
+			evt:  PluginErrorEvent{Plugin: "demo@inline", Type: "path-not-found", Path: "/plugins/demo", Message: "not found"},
+			want: "Plugin demo@inline failed to load from /plugins/demo (path-not-found): not found",
+		},
+		{
+			name: "without path",
+			evt:  PluginErrorEvent{Plugin: "demo@inline", Type: "generic-error", Message: "boom"},
+			want: "Plugin demo@inline failed to load (generic-error): boom",
+		},
+		{
+			name: "unnamed, path only",
+			evt:  PluginErrorEvent{Path: "/plugins/x"},
+			want: "Plugin (unnamed) failed to load from /plugins/x",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			newTestRenderer(&buf).Handle(tt.evt)
+			if got := buf.String(); !strings.Contains(got, tt.want) {
+				t.Errorf("got %q, want it to contain %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRendererTokensEvent(t *testing.T) {
 	var buf bytes.Buffer
 	r := newTestRenderer(&buf)

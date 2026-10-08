@@ -6,11 +6,10 @@ Practical how-to documentation for fullsend, organized by audience. For design d
 
 Guides for onboarding organizations and configuring GitHub or GitLab — the first thing most users need.
 
-- [Mint enrollment](getting-started/README.md) — Enroll your org or repo in a token mint before configuring anything else
+- [Mint enrollment](getting-started/README.md) — Enroll your repo in a token mint before configuring anything else
 - [Getting Inference](getting-started/getting-inference.md) — Provision GCP inference access for your org or repo
 - [Configuring GitHub](getting-started/configuring-github.md) — Install GitHub Apps and run the setup CLI
 - [Configuring GitLab](getting-started/configuring-gitlab.md) — Install via `repos install --forge gitlab`, runners, polling, and role-credential lifecycle
-- [Organization Mode](getting-started/org-mode.md) — _(deprecated — see [per-repo Getting Started](getting-started/configuring-github.md))_ Org-wide setup with a shared `.fullsend` config repo
 
 ## Operations & Advanced Setup
 
@@ -57,7 +56,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 - [CEL Triggers Reference](user/cel-triggers-reference.md) — Dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Custom Poller Example](user/custom-poller-example.md) — Create a custom poller workflow that invokes fullsend harness agents with a pre-computed matrix
 - [Building custom agents from scratch](user/building-custom-agents.md) — _(deprecated — see [Bring Your Own Agent](user/bring-your-own-agent.md))_
-- [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
+- [Default, derived, and custom agents](user/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
 
 ### Integrations & observability
 

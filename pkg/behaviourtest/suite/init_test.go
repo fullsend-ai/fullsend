@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	messages "github.com/cucumber/messages/go/v21"
+	messages "github.com/cucumber/messages/go/v34"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -207,9 +207,6 @@ func TestSkipErrorForTagNames(t *testing.T) {
 	}{
 		{name: "no tags", tags: nil, wantErr: nil},
 		{name: "skip per-repo on per-repo", tags: []string{"@skip:per-repo"}, wantErr: godog.ErrSkip},
-		{name: "skip per-org on per-repo", tags: []string{"@skip:per-org"}, wantErr: nil},
-		{name: "requires per-repo on per-repo", tags: []string{"@requires:per-repo"}, wantErr: nil},
-		{name: "requires per-repo on per-org", tags: []string{"@requires:per-repo"}, wantErr: godog.ErrSkip, cfg: env.RunnerConfig{InstallMode: "per-org"}},
 		{name: "skip gitlab on github", tags: []string{"@skip:gitlab"}, wantErr: nil},
 		{name: "skip gitlab on gitlab", tags: []string{"@skip:gitlab"}, wantErr: godog.ErrSkip, cfg: env.RunnerConfig{SCM: "gitlab"}},
 		{name: "requires capability undeclared", tags: []string{"@requires:capability:applier-branch-namespace"}, wantErr: godog.ErrSkip},

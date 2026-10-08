@@ -1,6 +1,6 @@
 # Operations
 
-Day-2 administration for fullsend per-repo installations: configuration updates, workflow syncing, uninstall, and standalone commands for split-responsibility workflows. For per-org operations (enrollment, org-level status, org uninstall), see [Per-Org Mode](org-mode.md).
+Day-2 administration for fullsend per-repo installations: configuration updates, workflow syncing, uninstall, and standalone commands for split-responsibility workflows.
 
 ## Prerequisites
 
@@ -140,7 +140,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint delete` | Tear down mint infrastructure (inverse of deploy) |
 | GCP Admin (Mint) | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
 | GCP Admin (Mint) | `fullsend mint remove-role <role>` | Remove a role from the mint (deletes PEM secret by default) |
-| GCP Admin (Mint) | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint (does not grant Agent Platform access — use `inference provision`) |
+| GCP Admin (Mint) | `fullsend mint enroll <owner/repo>` | Register a repo in the mint (does not grant Agent Platform access — use `inference provision`) |
 | GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 

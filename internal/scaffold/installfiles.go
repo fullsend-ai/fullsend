@@ -15,34 +15,6 @@ type InstallFile struct {
 // InstallFiles is the slice type returned by install collectors.
 type InstallFiles []InstallFile
 
-// CollectInstallFilesOptions controls which scaffold files are collected.
-type CollectInstallFilesOptions struct {
-	RenderOptions
-	PathPrefix string
-}
-
-// CollectInstallFiles gathers scaffold files for org or per-repo installation.
-func CollectInstallFiles(opts CollectInstallFilesOptions) (InstallFiles, error) {
-	var files InstallFiles
-	err := WalkFullsendRepo(func(path string, content []byte) error {
-		rendered, renderErr := RenderTemplate(path, content, opts.RenderOptions)
-		if renderErr != nil {
-			return fmt.Errorf("rendering %s: %w", path, renderErr)
-		}
-		files = append(files, InstallFile{
-			Path:    opts.PathPrefix + path,
-			Content: PrependManagedHeader(path, rendered),
-			Mode:    FileMode(path),
-		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return files, nil
-}
-
 // perRepoThinCallers lists thin stage caller workflows installed directly
 // into per-repo repos (in addition to the per-repo shim). These are
 // workflows that receive workflow_dispatch events from external schedulers
@@ -62,7 +34,7 @@ func PerRepoThinCallerPaths() []string {
 
 // CollectPerRepoInstallFiles gathers files for per-repo installation.
 func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) (InstallFiles, error) {
-	opts := RenderOptionsForInstall(vendored, true, upstreamRef, upstreamTag)
+	opts := RenderOptionsForInstall(vendored, upstreamRef, upstreamTag)
 
 	shimRaw, err := PerRepoShimTemplate()
 	if err != nil {
@@ -216,22 +188,4 @@ func ResolveFullsendVersion(upstreamRef, upstreamTag string) string {
 		return upstreamRef
 	}
 	return "latest"
-}
-
-// ManagedPaths returns embed-derived scaffold paths for analyze/sync.
-// Vendored content is reported separately by the vendor layer.
-func ManagedPaths(_ bool, pathPrefix string) ([]string, error) {
-	opts := CollectInstallFilesOptions{
-		RenderOptions: RenderOptionsForInstall(false, pathPrefix != "", "", ""),
-		PathPrefix:    pathPrefix,
-	}
-	files, err := CollectInstallFiles(opts)
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]string, len(files))
-	for i, f := range files {
-		paths[i] = f.Path
-	}
-	return paths, nil
 }

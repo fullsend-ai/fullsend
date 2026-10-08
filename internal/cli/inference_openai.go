@@ -697,7 +697,7 @@ func runImportConfig(printer *ui.Printer, ids config.OpenAIWIFConfig, fullsendDi
 
 	perRepo, ok := writer.(config.PerRepoConfigWriter)
 	if !ok {
-		return fmt.Errorf("inference openai import writes per-repo config; %s contains an org-mode config", fullsendDir)
+		return fmt.Errorf("inference openai import writes per-repo config; %s did not load as a per-repo config", fullsendDir)
 	}
 
 	perRepo.SetInferenceOpenAI(ids)
@@ -887,8 +887,8 @@ func resolveOpenAIStatusSources(fullsendDir string) (openAIStatusSource, error) 
 	perRepo, ok := writer.(config.PerRepoConfigReader)
 	if !ok {
 		// Same condition import refuses by name, rather than a generic
-		// "nothing configured" (org mode is deprecated, ADR 0044).
-		return s, fmt.Errorf("%s contains an org-mode config; OpenAI WIF enrolment is per-repo", fullsendDir)
+		// "nothing configured".
+		return s, fmt.Errorf("%s did not load as a per-repo config; OpenAI WIF enrolment is per-repo", fullsendDir)
 	}
 	cfgIDs := perRepo.ConfigInferenceOpenAI().Trimmed()
 

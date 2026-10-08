@@ -667,7 +667,7 @@ if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ] || [ "${STAGE}" = "review" 
 fi
 
 # Pre-fetch review body for the fix agent — equivalent to the
-# "Pre-fetch review body" step in reusable-fix.yml. Queries the
+# "Pre-fetch review body" step in the fix job of reusable-dispatch.yml. Queries the
 # GitLab Notes API for the last review bot comment, validates
 # size and non-empty for bot-triggered runs, and exports
 # REVIEW_BODY_FILE for the harness.
@@ -791,8 +791,8 @@ if [ "${STAGE}" = "fix" ]; then
   export REVIEW_BODY_FILE
 
   # Fix-stage environment variables — equivalent to the env vars
-  # set by reusable-fix.yml's "Extract PR number and context",
-  # "Record pre-agent HEAD", and "Run fix agent" steps. These are
+  # set by the fix job in reusable-dispatch.yml ("Extract PR number and context",
+  # "Record pre-agent HEAD", and "Run fix agent" steps). These are
   # required by the fix harness env.runner and forge.gitlab blocks.
 
   # Target branch (MR base branch). This job's admit source is
@@ -860,7 +860,7 @@ if [ "${STAGE}" = "fix" ]; then
   # Human instruction — extracted from the /fs-fix note body in
   # the event payload. Default to "none" so the env var is always
   # non-empty (the fullsend binary rejects empty runner_env values).
-  # Bot-triggered runs always get "none" (matching reusable-fix.yml).
+  # Bot-triggered runs always get "none" (matching the fix job in reusable-dispatch.yml).
   HUMAN_INSTRUCTION="none"
   if [ "${_IS_BOT_TRIGGER}" != "true" ] && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
     _NOTE_BODY=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d \

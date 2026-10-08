@@ -237,7 +237,6 @@ export default defineConfig({
             { text: "Choose a Runtime", link: "/guides/getting-started/choosing-a-runtime" },
             { text: "Configuring GitHub", link: "/guides/getting-started/configuring-github" },
             { text: "Configuring GitLab", link: "/guides/getting-started/configuring-gitlab" },
-            { text: "Per-Org Mode", link: "/guides/getting-started/org-mode" },
             { text: "Repo Management", link: "/guides/getting-started/repo-management" },
             { text: "Operations", link: "/guides/getting-started/operations" },
           ],
@@ -264,8 +263,6 @@ export default defineConfig({
             { text: "Fix", link: "/agents/fix" },
             { text: "Retro", link: "/agents/retro" },
             { text: "Prioritize", link: "/agents/prioritize" },
-            { text: "Default vs. Custom", link: "/agents/topics/default-vs-custom" },
-            { text: "Escalation Ladder", link: "/agents/topics/escalation-ladder" },
           ],
         },
         {
@@ -290,6 +287,8 @@ export default defineConfig({
                   text: "Configuring Agent Behavior",
                   link: "/guides/user/customizing-agents",
                 },
+                { text: "Default vs. Custom", link: "/guides/user/default-vs-custom" },
+                { text: "Escalation Ladder", link: "/guides/user/escalation-ladder" },
                 { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
                 {
                   text: "Custom Agent Identity",

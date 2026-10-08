@@ -69,14 +69,13 @@ use the same pinned dependencies.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
+	addFullsendDirFlag(cmd, &fullsendDir)
 	cmd.Flags().BoolVar(&update, "update", false, "force re-resolve even if lock entry is current")
 	cmd.Flags().BoolVar(&lockAll, "all", false, "lock all harness files in the .fullsend/harness/ directory")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to lock (e.g. "github"); omit to lock all forge variants`)
 	cmd.Flags().BoolVar(&rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
 	cmd.Flags().IntVar(&rFlags.maxDepth, "max-depth", resolve.DefaultMaxDepth, "maximum dependency depth for transitive resolution (0 disables)")
 	cmd.Flags().IntVar(&rFlags.maxResources, "max-resources", resolve.DefaultMaxResources, "maximum total remote resources per harness")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 
 	return cmd
 }

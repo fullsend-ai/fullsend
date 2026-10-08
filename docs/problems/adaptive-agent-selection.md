@@ -206,6 +206,6 @@ The experiment should actively pressure-test three assumptions:
 - Should the fitness function include a cost term from the start, or should cost optimization be a separate experiment after quality optimization is validated?
 - What is the right exploration budget, and how should it decay? Too high wastes runs on poor configurations; too low starves new options.
 - Can fitness data transfer across repos with similar characteristics, and how do we measure "similar"?
-- How should the adaptive layer interact with the deterministic safety model — is selection-only sufficient, or are there edge cases where the choice of configuration implicitly affects safety coverage?
+- How should the adaptive layer interact with the deterministic safety model — is selection-only sufficient, or are there edge cases where the choice of configuration implicitly affects safety coverage? (Partially decided for model and effort: routing is harness overlays setting those fields ([ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md)), falling back to the model and effort the run would use without overlays when a routed model isn't served; LLM-based and learned routing remain open.)
 - What prevents a well-scoring configuration from being well-scoring only because it is assigned to a biased subset of tasks (selection bias in the evaluation)?
 - Should there be a human-in-the-loop approval step before any configuration is retired, or is soft retirement with recovery probing sufficient?

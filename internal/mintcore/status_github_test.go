@@ -12,7 +12,6 @@ import (
 
 func TestStatusGitHub_ValidToken_TeamMember(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "alpha-org,beta-org")
 
 	// Set up a fake GitHub API server.
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -65,12 +64,9 @@ func TestStatusGitHub_ValidToken_TeamMember(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// Non-OIDC auth should report all allowed orgs, not a single org.
+	// Non-OIDC auth is not scoped to a single org.
 	if resp.Org != "" {
 		t.Fatalf("non-OIDC auth should not set org, got %q", resp.Org)
-	}
-	if len(resp.AllowedOrgs) != 2 {
-		t.Fatalf("expected 2 allowed orgs, got %v", resp.AllowedOrgs)
 	}
 	if len(resp.Roles) == 0 {
 		t.Fatal("expected roles in response")
@@ -79,7 +75,6 @@ func TestStatusGitHub_ValidToken_TeamMember(t *testing.T) {
 
 func TestStatusGitHub_InvalidToken_Returns401(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
 
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/user" {
@@ -116,7 +111,6 @@ func TestStatusGitHub_InvalidToken_Returns401(t *testing.T) {
 
 func TestStatusGitHub_NotInTeam_Returns401(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
 
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authVal := r.Header.Get("Authorization")
@@ -163,7 +157,6 @@ func TestStatusGitHub_NotInTeam_Returns401(t *testing.T) {
 func TestStatusGitHub_OIDCSuccess_BypassesValidator(t *testing.T) {
 	// When OIDC succeeds, the GitHub validator should NOT be called.
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
 
 	StatusGitHubGroup = "acme/admins"
 	t.Cleanup(func() {
@@ -199,7 +192,6 @@ func TestStatusGitHub_NotConfigured_Returns401(t *testing.T) {
 	// When StatusGitHubGroup is empty, the validator returns
 	// errStatusAuthSkip. Without OIDC, this should yield 401.
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
 
 	StatusGitHubGroup = ""
 
@@ -254,7 +246,6 @@ func TestStatusGitHub_ValidateStatusGitHub_DirectCall(t *testing.T) {
 func TestStatusGitHub_PendingMembership_Returns401(t *testing.T) {
 	// GitHub returns state="pending" for invited but not-yet-accepted members.
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
 
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

@@ -82,8 +82,8 @@ const (
 	// PerRepoTriageWorkflow is the workflow path for per-repo triage.
 	PerRepoTriageWorkflow = "fullsend.yaml"
 
-	// PerRepoAgentWorkflow is the reusable workflow for the triage agent.
-	PerRepoAgentWorkflow = "reusable-triage.yml"
+	// PerRepoAgentWorkflow is the per-repo shim workflow that runs the agent.
+	PerRepoAgentWorkflow = "fullsend.yaml"
 
 	// PerRepoAgentArtifact is the upload-artifact name for triage output.
 	PerRepoAgentArtifact = "fullsend-triage"

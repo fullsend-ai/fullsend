@@ -8,17 +8,17 @@ When you register a custom agent and give it a `trigger` expression, fullsend ha
 
 ### The dispatch flow
 
-1. **Event arrives.** A GitHub webhook fires (issue opened, label added, comment posted, PR submitted, etc.). The installed shim workflow forwards the event to the centralized dispatch workflow in `.fullsend/`.
+1. **Event arrives.** A GitHub webhook fires (issue opened, label added, comment posted, PR submitted, etc.). The repository's installed shim workflow calls the upstream `reusable-dispatch.yml` workflow.
 
 2. **Normalize.** The `gha-event` input driver converts the raw GitHub event into a [`NormalizedEvent`](../../normative/normalized-event/v1/) — a forge-neutral struct with fields like `event.entity.kind`, `event.transition.kind`, and `event.actor.role`.
 
 3. **Authorize.** `fullsend dispatch` enforces the platform authorization gate before any agent is considered. Authorization is a platform-level decision — your CEL trigger does not need to implement permission checks (though you can add guards like `event.actor.role` if your agent has stricter requirements).
 
-4. **Enumerate.** Dispatch loads all registered agents from the merged config (`agents:` list in org and per-repo `config.yaml`, plus scaffold discovery). Each harness with a non-empty `trigger` field is a candidate. If a registered agent's harness cannot be resolved or loaded, dispatch logs a GitHub Actions `::error::` annotation and skips that agent so other agents can still run. If every registered agent fails to load, `fullsend dispatch` exits non-zero instead of emitting an empty matrix — a fully unreadable harness set is a configuration error, not a "no trigger matched" result.
+4. **Enumerate.** Dispatch loads all registered agents from the merged repository-local config (the `agents:` list in `.fullsend/config.yaml`, optionally layered over `.fullsend/config.base.yaml`, plus scaffold discovery). Each harness with a non-empty `trigger` field is a candidate. If a registered agent's harness cannot be resolved or loaded, dispatch logs a GitHub Actions `::error::` annotation and skips that agent so other agents can still run. If every registered agent fails to load, `fullsend dispatch` exits non-zero instead of emitting an empty matrix — a fully unreadable harness set is a configuration error, not a "no trigger matched" result.
 
 5. **Evaluate.** Each candidate's CEL `trigger` expression is evaluated with `event` bound to the `NormalizedEvent`. Every harness whose trigger returns `true` is selected. Multiple agents can match the same event (parallel fan-out).
 
-6. **Launch.** Matched agents are launched via `fullsend run` using the existing sandbox and execution infrastructure. The dispatch workflow passes the event payload, source repo, and any trigger-specific metadata to the agent workflow.
+6. **Launch.** Matched agents are launched via `fullsend run` in the inline `harness-run` job of `reusable-dispatch.yml`, using the existing sandbox and execution infrastructure. The dispatch workflow passes the event payload, source repo, and any trigger-specific metadata to that job.
 
 ### What you configure vs. what dispatch handles
 

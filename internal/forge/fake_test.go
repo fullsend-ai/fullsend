@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -2048,6 +2050,68 @@ func TestFakeClient_CreateProtectedCIVariable(t *testing.T) {
 	assert.Equal(t, "SECRET_KEY", fc.CreatedProtectedVars[0].Name)
 	assert.Equal(t, "secret-val", fc.CreatedProtectedVars[0].Value)
 	assert.True(t, fc.CreatedProtectedVars[0].Protected)
+}
+
+func TestFakeClient_CommitFiles_LocalPath(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fullsend")
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff}
+	require.NoError(t, os.WriteFile(path, content, 0o755))
+
+	fc := NewFakeClient()
+	changed, err := fc.CommitFiles(ctx, "org", "repo", "vendor", []TreeFile{
+		{Path: "bin/fullsend", LocalPath: path, Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.True(t, changed)
+	assert.Equal(t, content, fc.FileContents["org/repo/bin/fullsend"])
+}
+
+func TestFakeClient_CommitFiles_LocalPathMissing(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	_, err := fc.CommitFiles(ctx, "org", "repo", "vendor", []TreeFile{
+		{Path: "bin/fullsend", LocalPath: filepath.Join(t.TempDir(), "missing"), Mode: "100755"},
+	})
+	require.Error(t, err)
+}
+
+func TestFakeClient_CommitFiles_LocalPathMissingIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	missing := filepath.Join(t.TempDir(), "missing")
+	files := []TreeFile{
+		{Path: "update.txt", Content: []byte("new"), Mode: "100644"},
+		{Path: "delete.txt", Delete: true},
+		{Path: "bin/fullsend", LocalPath: missing, Mode: "100755"},
+	}
+	setup := func() *FakeClient {
+		fc := NewFakeClient()
+		fc.FileContents["org/repo/update.txt"] = []byte("old")
+		fc.FileContents["org/repo/delete.txt"] = []byte("keep")
+		return fc
+	}
+	assertUnchanged := func(t *testing.T, fc *FakeClient) {
+		t.Helper()
+		assert.Equal(t, []byte("old"), fc.FileContents["org/repo/update.txt"])
+		assert.Equal(t, []byte("keep"), fc.FileContents["org/repo/delete.txt"])
+		assert.NotContains(t, fc.FileContents, "org/repo/bin/fullsend")
+		assert.Empty(t, fc.CommittedFiles)
+		assert.Empty(t, fc.CommittedFilesToBranch)
+	}
+
+	t.Run("CommitFiles", func(t *testing.T) {
+		fc := setup()
+		_, err := fc.CommitFiles(ctx, "org", "repo", "msg", files)
+		require.Error(t, err)
+		assertUnchanged(t, fc)
+	})
+	t.Run("CommitFilesToBranch", func(t *testing.T) {
+		fc := setup()
+		_, err := fc.CommitFilesToBranch(ctx, "org", "repo", "branch", "msg", files)
+		require.Error(t, err)
+		assertUnchanged(t, fc)
+	})
 }
 
 func TestFakeClient_CommitFilesErrSeq(t *testing.T) {

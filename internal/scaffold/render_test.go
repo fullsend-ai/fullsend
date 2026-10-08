@@ -8,33 +8,18 @@ import (
 )
 
 func TestRenderThinCallerNotVendored(t *testing.T) {
-	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	raw, err := FullsendRepoFile(".github/workflows/prioritize.yml")
 	require.NoError(t, err)
 
-	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
+	rendered, err := RenderTemplate(".github/workflows/prioritize.yml", raw, RenderOptions{
 		Vendored: false,
 	})
 	require.NoError(t, err)
 	out := string(rendered)
-	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@main")
+	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@main")
 	assertFreeOfRenderPlaceholders(t, out)
 	assert.NotContains(t, out, "distribution_mode")
 	assert.NotContains(t, out, "fullsend_ai_repo:")
-}
-
-func TestRenderThinCallerVendoredPerOrg(t *testing.T) {
-	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
-	require.NoError(t, err)
-
-	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
-		Vendored: true,
-	})
-	require.NoError(t, err)
-	out := string(rendered)
-	assert.Contains(t, out, "uses: ./.github/workflows/reusable-triage.yml")
-	assertFreeOfRenderPlaceholders(t, out)
-	assert.NotContains(t, out, "distribution_mode")
-	assert.Contains(t, out, "install_mode: per-org")
 }
 
 func TestRenderPerRepoShimVendored(t *testing.T) {
@@ -43,52 +28,16 @@ func TestRenderPerRepoShimVendored(t *testing.T) {
 
 	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{
 		Vendored: true,
-		PerRepo:  true,
 	})
 	require.NoError(t, err)
 	out := string(rendered)
 	assert.Contains(t, out, "uses: ./.github/workflows/reusable-dispatch.yml")
 	assert.NotContains(t, out, "distribution_mode")
+	assert.NotContains(t, out, "install_mode",
+		"per-repo shim must rely on the reusable-dispatch.yml install_mode default")
 }
 
-func TestRenderThinCallerVendoredPerRepo(t *testing.T) {
-	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
-	require.NoError(t, err)
-
-	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
-		Vendored: true,
-		PerRepo:  true,
-	})
-	require.NoError(t, err)
-	out := string(rendered)
-	// GitHub Actions requires local reusable workflow references to be under .github/workflows/.
-	assert.Contains(t, out, "uses: ./.github/workflows/reusable-triage.yml")
-	assert.NotContains(t, out, ".fullsend/")
-	assertFreeOfRenderPlaceholders(t, out)
-	assert.Contains(t, out, "install_mode: per-repo",
-		"per-repo thin callers must use install_mode: per-repo")
-	assert.NotContains(t, out, "install_mode: per-org")
-}
-
-func TestRenderPrioritizeThinCallerPerRepo(t *testing.T) {
-	raw, err := FullsendRepoFile(".github/workflows/prioritize.yml")
-	require.NoError(t, err)
-
-	rendered, err := RenderTemplate(".github/workflows/prioritize.yml", raw, RenderOptions{
-		Vendored: true,
-		PerRepo:  true,
-	})
-	require.NoError(t, err)
-	out := string(rendered)
-	assert.Contains(t, out, "uses: ./.github/workflows/reusable-prioritize.yml")
-	assert.Contains(t, out, "install_mode: per-repo",
-		"per-repo prioritize thin caller must use install_mode: per-repo")
-	assert.NotContains(t, out, "install_mode: per-org")
-	assert.Contains(t, out, "project_number: ${{ inputs.project_number || vars.FULLSEND_PROJECT_NUMBER }}")
-	assertFreeOfRenderPlaceholders(t, out)
-}
-
-func TestRenderPrioritizeThinCallerVendored(t *testing.T) {
+func TestRenderPrioritizeThinCaller(t *testing.T) {
 	raw, err := FullsendRepoFile(".github/workflows/prioritize.yml")
 	require.NoError(t, err)
 
@@ -98,8 +47,22 @@ func TestRenderPrioritizeThinCallerVendored(t *testing.T) {
 	require.NoError(t, err)
 	out := string(rendered)
 	assert.Contains(t, out, "uses: ./.github/workflows/reusable-prioritize.yml")
+	assert.NotContains(t, out, "install_mode")
 	assert.NotContains(t, out, "distribution_mode")
 	assert.Contains(t, out, "project_number: ${{ inputs.project_number || vars.FULLSEND_PROJECT_NUMBER }}")
+	assertFreeOfRenderPlaceholders(t, out)
+}
+
+func TestRenderThinCallerNormalizesLegacyInstallMode(t *testing.T) {
+	legacy := []byte("# fullsend-stage: prioritize\n" +
+		"uses: __REUSABLE_WORKFLOW__\n" +
+		"install_mode: per-org\n")
+
+	rendered, err := RenderTemplate(".github/workflows/prioritize.yml", legacy, RenderOptions{})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "install_mode: per-repo")
+	assert.NotContains(t, out, "install_mode: per-org")
 }
 
 func TestWalkUpstreamIncludesReusableWorkflows(t *testing.T) {
@@ -111,7 +74,6 @@ func TestWalkUpstreamIncludesReusableWorkflows(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, want := range []string{
-		".github/workflows/reusable-triage.yml",
 		".github/workflows/reusable-prioritize.yml",
 		".github/workflows/reusable-dispatch.yml",
 		".github/actions/mint-token/action.yml",
@@ -160,16 +122,16 @@ func TestRenderAllThinCallersFreeOfPlaceholders(t *testing.T) {
 }
 
 func TestRenderThinCallerPinnedSHA(t *testing.T) {
-	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	raw, err := FullsendRepoFile(".github/workflows/prioritize.yml")
 	require.NoError(t, err)
 
-	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
+	rendered, err := RenderTemplate(".github/workflows/prioritize.yml", raw, RenderOptions{
 		UpstreamRef: "abc123def456",
 		UpstreamTag: "v0.19.0",
 	})
 	require.NoError(t, err)
 	out := string(rendered)
-	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@abc123def456")
+	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@abc123def456")
 	assert.Contains(t, out, "# v0.19.0")
 	assert.NotContains(t, out, "fullsend_ai_ref:")
 	assertFreeOfRenderPlaceholders(t, out)
@@ -180,7 +142,6 @@ func TestRenderPerRepoShimPinnedSHA(t *testing.T) {
 	require.NoError(t, err)
 
 	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{
-		PerRepo:     true,
 		UpstreamRef: "abc123def456",
 		UpstreamTag: "v0.19.0",
 	})
@@ -193,10 +154,10 @@ func TestRenderPerRepoShimPinnedSHA(t *testing.T) {
 }
 
 func TestRenderDefaultRunner(t *testing.T) {
-	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	raw, err := FullsendRepoFile(".github/workflows/prioritize.yml")
 	require.NoError(t, err)
 
-	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{})
+	rendered, err := RenderTemplate(".github/workflows/prioritize.yml", raw, RenderOptions{})
 	require.NoError(t, err)
 	out := string(rendered)
 	assert.Contains(t, out, "runner_image: ubuntu-24.04")
@@ -204,10 +165,10 @@ func TestRenderDefaultRunner(t *testing.T) {
 }
 
 func TestRenderCustomRunner(t *testing.T) {
-	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	raw, err := FullsendRepoFile(".github/workflows/prioritize.yml")
 	require.NoError(t, err)
 
-	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
+	rendered, err := RenderTemplate(".github/workflows/prioritize.yml", raw, RenderOptions{
 		RunnerImage: "ubuntu-22.04",
 	})
 	require.NoError(t, err)
@@ -221,9 +182,7 @@ func TestRenderPerRepoShimRunner(t *testing.T) {
 	raw, err := PerRepoShimTemplate()
 	require.NoError(t, err)
 
-	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{
-		PerRepo: true,
-	})
+	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{})
 	require.NoError(t, err)
 	out := string(rendered)
 	assert.Contains(t, out, "runner_image: ubuntu-24.04")
@@ -232,10 +191,10 @@ func TestRenderPerRepoShimRunner(t *testing.T) {
 }
 
 func TestRenderFallbackToDefaultRef(t *testing.T) {
-	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	raw, err := FullsendRepoFile(".github/workflows/prioritize.yml")
 	require.NoError(t, err)
 
-	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{})
+	rendered, err := RenderTemplate(".github/workflows/prioritize.yml", raw, RenderOptions{})
 	require.NoError(t, err)
 	out := string(rendered)
 	assert.Contains(t, out, "@main")

@@ -23,8 +23,8 @@ type RepoState struct {
 // ProbeRepoState reads a repo's current per-repo installation state
 // by probing all installation components (workflow files, variables,
 // secrets). A repo is considered per-repo installed when at least one
-// required variable is present — a workflow file alone may come from
-// per-org enrollment. Returns a zero RepoState when no required
+// required variable is present — a workflow file alone may be a leftover
+// from the removed per-org enrollment. Returns a zero RepoState when no required
 // variables are found.
 func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig) (RepoState, error) {
 	components, err := ProbeComponents(ctx, client, owner, repo, forgeName, fc, nil)
@@ -32,7 +32,8 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 		return RepoState{}, fmt.Errorf("probing components for %s/%s: %w", owner, repo, err)
 	}
 
-	// Check required components — these distinguish per-repo from per-org.
+	// Check required components — these distinguish an installed repo from
+	// leftover workflow files.
 	// GitHub uses FULLSEND_MINT_URL. GitLab install evidence is its workflow
 	// carrier, legacy shared token, or a poll schedule. Poll-state branch
 	// presence alone is deliberately not

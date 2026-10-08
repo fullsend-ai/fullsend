@@ -152,7 +152,7 @@ What a local codex run needs, beyond the guide:
   ([ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md)).
 - **Reads the repo's root `AGENTS.md` through `$CODEX_HOME`.** Codex skips a project's own
   `AGENTS.md` while the project is untrusted, so the runner copies the repo's root `AGENTS.md` (or
-  the org-level one fullsend injects when the repo has none) to `$CODEX_HOME/AGENTS.md`, which codex
+  the fallback one fullsend injects when the repo has none) to `$CODEX_HOME/AGENTS.md`, which codex
   loads as instructions. Only the root file is read, cut at 32 KiB: nested `AGENTS.md` files and
   `AGENTS.override.md` are not, and a symlinked `AGENTS.md` is skipped. No `CLAUDE.md` bridge is
   injected.
@@ -202,10 +202,12 @@ has no default behaviour-test coverage; its scenario is gated. What was run, and
 is recorded in [codex runtime
 internals](../contributing/runtime-implementation.md#codex-runtime-internals-6920).
 
-**Keep `review` and `retro` on Claude Code.** Codex has a `spawn_agent` tool, but fullsend does not
-build a persona roster for it yet, so those two agents run in a single context instead of with their
-reviewer personas. Nothing prevents a repo-wide `runtime: codex` from applying to them — they will
-run — so pin them with `runtime: claude` on their `agents:` entries if you want the roster:
+**Keep `review` and `retro` on Claude Code.** fullsend turns off Codex's native delegation
+(`agents.enabled = false` and `features.multi_agent_v2 = false` in the config it writes) because it
+does not yet support persona wiring or child token accounting, so those two agents run in a single
+context instead of with their reviewer personas. Nothing prevents a repo-wide `runtime: codex` from
+applying to them — they will run — so pin them with `runtime: claude` on their `agents:` entries if
+you want the roster:
 
 ```yaml
 agents:

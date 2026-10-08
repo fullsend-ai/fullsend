@@ -56,8 +56,8 @@ func CleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 	}
 
 	// 3. Ensure test-repo exists and has at least one commit (needed for
-	// enrollment testing). An empty repo (no commits) causes the
-	// reconcile-repos script to fail with "Could not get default branch tree".
+	// per-repo install testing). An empty repo (no commits) has no default
+	// branch tree, which breaks installing into it.
 	_, err := client.GetRepo(ctx, org, TestRepo)
 	if forge.IsNotFound(err) {
 		t.Logf("[cleanup] Creating missing %s repo", TestRepo)
@@ -104,7 +104,9 @@ func CleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 	}
 
 	// 7. Delete stale FULLSEND_PER_REPO_INSTALL guard variable from test-repo.
-	// reconcile-repos.sh skips repos with this variable set to true.
+	// A leaked guard from a previous run (historically also honored by the
+	// removed reconcile-repos.sh) would leave test-repo in a stale per-repo
+	// install state.
 	if delErr := client.DeleteRepoVariable(ctx, org, TestRepo, forge.PerRepoGuardVar); delErr != nil {
 		t.Logf("[cleanup] Warning: could not delete per-repo guard variable: %v", delErr)
 	}

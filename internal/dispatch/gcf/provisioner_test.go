@@ -3204,12 +3204,6 @@ func TestEnsureOrgInMint_ProceedsOnFirstEnrollment(t *testing.T) {
 	assert.Equal(t, "new-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
 }
 
-func TestParseAllowedOrgsEnv(t *testing.T) {
-	assert.Equal(t, []string{"*"}, mintcore.ParseAllowedOrgs("*"))
-	assert.Equal(t, []string{"org-a", "org-b"}, mintcore.ParseAllowedOrgs(" org-a , org-b "))
-	assert.Nil(t, mintcore.ParseAllowedOrgs(""))
-}
-
 func TestEnsureOrgInMint_PublicModeNoOp(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{

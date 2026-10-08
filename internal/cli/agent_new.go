@@ -56,12 +56,12 @@ The agent is generated with a trigger, because an agent without one
 registers and validates but is silently never dispatched.
 
 Examples:
-  fullsend agent new lint-docs --fullsend-dir .fullsend \
+  fullsend agent new lint-docs \
     --role triage --description "Check docs changes for broken links"
 
-  fullsend agent new lint-docs --fullsend-dir .fullsend --on label:needs-docs
+  fullsend agent new lint-docs --on label:needs-docs
 
-  fullsend agent new -f lint-docs.agent.yaml --fullsend-dir .fullsend
+  fullsend agent new -f lint-docs.agent.yaml
 
 ` + agentnew.RoleHelp(),
 		Args: cobra.MaximumNArgs(1),
@@ -76,7 +76,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&f.fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
+	addFullsendDirFlag(cmd, &f.fullsendDir)
 	cmd.Flags().StringVarP(&f.specFile, "file", "f", "", "read the agent definition from a spec YAML file")
 	cmd.Flags().StringVar(&f.role, "role", agentnew.DefaultRole, "mint role the agent runs as (see the table below)")
 	cmd.Flags().StringVar(&f.description, "description", "", "one-line description of what the agent does")
@@ -93,7 +93,6 @@ Examples:
 	cmd.Flags().BoolVar(&f.noRegister, "no-register", false, "write the files but do not add the agent to config.yaml")
 	cmd.Flags().BoolVar(&f.force, "force", false, "overwrite generated files that already exist (never overwrites shared scaffold assets)")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "validate and report what would be written without writing anything")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
 
@@ -301,10 +300,10 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 
 	if f.noRegister {
 		printer.StepInfo("Not registered (--no-register). Register it later with:")
-		printer.Raw(fmt.Sprintf("  fullsend agent add %s --fullsend-dir %s\n", result.HarnessPath, f.fullsendDir))
+		printer.Raw(fmt.Sprintf("  fullsend agent add %s%s\n", result.HarnessPath, fullsendDirArg(f.fullsendDir)))
 		// agent add has no --runtime, and the harness is already shaped by it.
 		if runtimeName != "" {
-			printer.Raw(fmt.Sprintf("  fullsend agent set %s --runtime %s --fullsend-dir %s\n", opts.Name, runtimeName, f.fullsendDir))
+			printer.Raw(fmt.Sprintf("  fullsend agent set %s --runtime %s%s\n", opts.Name, runtimeName, fullsendDirArg(f.fullsendDir)))
 		}
 	} else {
 		if err := runAgentAdd(ctx, result.HarnessPath, opts.Name, f.fullsendDir, nil, printer); err != nil {
@@ -332,8 +331,8 @@ func printNextSteps(opts agentnew.Options, f agentNewFlags, printer *ui.Printer)
 	// The dry-run variable is printed so that following step 2 literally
 	// never posts a real comment on the issue it was pointed at.
 	printer.Raw(fmt.Sprintf("  2. Test locally, printing the result instead of commenting:\n"+
-		"       %s=1 fullsend run %s --fullsend-dir %s \\\n         --target-repo . --env-file .env.local\n",
-		agentnew.DryRunEnvVar(opts.Name), opts.Name, f.fullsendDir))
+		"       %s=1 fullsend run %s%s \\\n         --target-repo . --env-file .env.local\n",
+		agentnew.DryRunEnvVar(opts.Name), opts.Name, fullsendDirArg(f.fullsendDir)))
 	printer.Raw("     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,\n")
 	switch {
 	case !opts.UsesVertex():

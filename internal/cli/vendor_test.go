@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -49,18 +50,23 @@ func TestVendorDryRunMessage(t *testing.T) {
 	msg = vendorDryRunMessage("/tmp/fullsend", "/tmp/src", layers.VendoredBinaryPathPerRepo)
 	assert.Contains(t, msg, "content from /tmp/src")
 
-	msg = vendorDryRunMessage("", "/tmp/src", layers.VendoredBinaryPath)
+	msg = vendorDryRunMessage("", "/tmp/src", layers.VendoredBinaryPathPerRepo)
 	assert.Contains(t, msg, "Would cross-compile from /tmp/src")
 
-	msg = vendorDryRunMessage("", "", layers.VendoredBinaryPath)
+	msg = vendorDryRunMessage("", "", layers.VendoredBinaryPathPerRepo)
 	assert.True(t, strings.Contains(msg, "Would cross-compile and upload") ||
 		strings.Contains(msg, "Would download release") ||
 		strings.Contains(msg, "Would fail: dev CLI"))
 }
 
+func TestNopCleanup(t *testing.T) {
+	nopCleanup()
+}
+
 func TestAppendVendorTreeFiles_Disabled(t *testing.T) {
 	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
-	out, count, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(nil), "org", "my-repo", files, false, "", "")
+	out, count, cleanup, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(nil), "org", "my-repo", files, false, "", "")
+	defer cleanup()
 	require.NoError(t, err)
 	assert.Equal(t, files, out)
 	assert.Equal(t, 0, count)
@@ -71,20 +77,18 @@ func TestAppendVendorTreeFiles_Enabled(t *testing.T) {
 
 	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
 	var buf strings.Builder
-	out, count, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(&buf), "org", "my-repo", files, true, exe, "")
+	out, count, cleanup, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(&buf), "org", "my-repo", files, true, exe, "")
+	defer cleanup()
 	require.NoError(t, err)
 	assert.Greater(t, len(out), len(files))
 	assert.Greater(t, count, 0)
 }
 
 func TestAppendVendorTreeFiles_InvalidBinary(t *testing.T) {
-	_, _, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo", nil, true, "/nonexistent/fullsend", "")
+	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
+	_, _, cleanup, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo", files, true, "/nonexistent/fullsend", "")
+	defer cleanup()
 	require.Error(t, err)
-}
-
-func TestVendorPathPrefix(t *testing.T) {
-	assert.Equal(t, "", vendorPathPrefix("org", forge.ConfigRepoName))
-	assert.Equal(t, ".fullsend/", vendorPathPrefix("org", "my-repo"))
 }
 
 func TestApplyDeprecatedVendorBinaryFlag(t *testing.T) {
@@ -104,6 +108,19 @@ func TestPrepareVendorFiles_ExplicitBinary(t *testing.T) {
 	t.Cleanup(cleanup)
 	assert.Greater(t, bundle.assetCount, 0)
 	assert.NotEmpty(t, bundle.files)
+
+	var binFile *forge.TreeFile
+	for i := range bundle.files {
+		if bundle.files[i].Path == layers.VendoredBinaryPathPerRepo {
+			binFile = &bundle.files[i]
+			break
+		}
+	}
+	require.NotNil(t, binFile, "vendored binary tree entry")
+	require.NotEmpty(t, binFile.LocalPath)
+	_, statErr := os.Stat(binFile.LocalPath)
+	require.NoError(t, statErr)
+	assert.Empty(t, binFile.Content, "binary must not be buffered in TreeFile.Content")
 }
 
 func TestPrepareVendorFiles_InvalidExplicitBinary(t *testing.T) {

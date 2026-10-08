@@ -897,9 +897,9 @@ func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, worke
 // Preview deploys do NOT use --keep-vars. Each preview version must be
 // self-contained: only the --var env vars and --secrets-file PEMs passed
 // in this deploy are applied. Without this isolation, sequential preview
-// uploads (e.g. both → per-repo → per-org) would inherit env vars from
-// the prior preview via --keep-vars, causing cross-preview contamination
-// (per-repo preview ends up with per-org's ALLOWED_ORGS, etc.).
+// uploads to different aliases would inherit env vars from the prior
+// preview via --keep-vars, causing cross-preview contamination (one
+// preview ends up with another's PER_REPO_WIF_REPOS, etc.).
 //
 // Durable deploys DO use --keep-vars (see deployDurable) so that secrets
 // stored via StoreAgentPEM are not wiped on redeploy.

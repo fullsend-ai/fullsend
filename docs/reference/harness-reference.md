@@ -231,7 +231,7 @@ More-specific entries go last so they override broader defaults.
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — not a `ForgeConfig` field, so this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
 | `security` | Child replaces entirely |
-| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the org-level `allowed_remote_resources` from `config.yaml` acts as a fallback for URL resolution |
+| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution |
 
 ## Referencing resources: local vs. remote
 

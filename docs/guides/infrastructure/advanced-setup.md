@@ -17,7 +17,7 @@ Most users should use the **managed** model — the [Getting Started guides](../
 
 When a platform operator has already deployed the mint and shared `fullsend-ai-*` apps, installation follows the standard [Getting Started](../getting-started/) flow — you only need a GCP project for inference. Before running the installer, confirm with your platform operator that:
 
-- Your organization is registered in the mint's `ALLOWED_ORGS`
+- Your repository is enrolled in the mint's `PER_REPO_WIF_REPOS` (or the mint explicitly runs in public mode with `PER_REPO_WIF_REPOS=*`)
 - The shared GitHub Apps are installed on your repository (or org)
 - Mint-side WIF is configured to accept OIDC tokens from your organization
 
@@ -47,10 +47,9 @@ If you have IAM access to the platform operator's GCP project, pass `--mint-proj
 |-------|-------------|-----|
 | `repo` | install, analyze | Read/write repository contents, manage repo-level secrets and variables |
 | `workflow` | install | Create and update GitHub Actions workflow files in `.github/workflows/` |
-| `admin:org` | install (per-org), uninstall, analyze | Manage organization-level Actions variables and app installations |
-| `delete_repo` | uninstall | Delete the `.fullsend` config repository |
+| `admin:org` | install (creating new GitHub Apps) | Create GitHub Apps and manage their organization installations |
 
-> **Per-repo scope note:** Per-repo install only requires `repo` and `workflow` scopes when reusing existing GitHub Apps. Creating new apps requires `admin:org`.
+> **Scope note:** Per-repo install only requires `repo` and `workflow` scopes when reusing existing GitHub Apps. Creating new apps requires `admin:org`.
 
 > **Note on scope breadth:** `gh auth` scopes apply to *every* organization your account belongs to — GitHub does not support per-org scoping for classic OAuth tokens. If that is a concern, create a [fine-grained personal access token](https://github.com/settings/tokens?type=beta) scoped to the target organization and export it as `GH_TOKEN` before running the installer.
 
@@ -72,10 +71,10 @@ fullsend mint deploy --project "$GCP_PROJECT"
 
 See [Mint service administration](mint-administration.md) for deployment details, PEM management, and role configuration.
 
-**2. Enroll the org or repo in the mint** (GCP Admin):
+**2. Enroll the repo in the mint** (GCP Admin):
 
 ```bash
-fullsend mint enroll "$ORG_NAME" --project "$GCP_PROJECT"
+fullsend mint enroll "$ORG_NAME/$REPO_NAME" --project "$GCP_PROJECT"
 ```
 
 **3. Provision WIF for inference** (GCP Admin):
@@ -106,7 +105,7 @@ By default, the installer creates GitHub Apps with the `fullsend-ai` prefix (e.g
 #### Creating a custom app set
 
 ```bash
-fullsend github setup "$ORG_NAME" \
+fullsend github setup "$ORG_NAME/$REPO_NAME" \
   --mint-url "$MINT_URL" \
   --inference-project "$GCP_PROJECT" \
   --inference-wif-provider "$WIF_PROVIDER" \
@@ -120,7 +119,7 @@ This creates apps named `{org}-fullsend`, `{org}-coder`, `{org}-review`, etc. Th
 When a mint already has public apps registered under a custom app set (e.g., `fullsend-ai-fullsend`, `fullsend-ai-coder`), additional orgs installing those apps must pass the same `--app-set` so the CLI resolves the correct slugs:
 
 ```bash
-fullsend github setup "$NEW_ORG" \
+fullsend github setup "$NEW_ORG/$REPO_NAME" \
   --mint-url "$MINT_URL" \
   --inference-project "$GCP_PROJECT" \
   --inference-wif-provider "$WIF_PROVIDER" \
@@ -147,6 +146,7 @@ For most cases, `fullsend inference provision` auto-provisions the inference WIF
 ```bash
 export GCP_PROJECT="<gcp-project>"
 export ORG_NAME="<org-name>"
+export REPO_NAME="<repo-name>"
 
 gcloud iam workload-identity-pools create fullsend-inference \
   --location=global \
@@ -174,16 +174,16 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
   --condition=None
 ```
 
-> **Warning — broad WIF scope:** The `attribute.repository_owner` condition above grants WIF access to _all_ repositories in the organization, not just `.fullsend`. This is required for orgs using per-repo mode (where multiple repos need to authenticate to GCP independently), but it significantly widens the trust boundary compared to per-org-only setups. Note that `fullsend inference provision <owner/repo>` auto-provisions a **per-repo** WIF provider scoped to a single repository — the org-wide condition here is broader than what the automated path creates.
+> **Warning — broad WIF scope:** The `attribute.repository_owner` condition above grants WIF access to _all_ repositories in the organization. This lets one provider serve many repos, but it significantly widens the trust boundary. Note that `fullsend inference provision <owner/repo>` auto-provisions a **per-repo** WIF provider scoped to a single repository — the org-wide condition here is broader than what the automated path creates.
 >
-> **For per-org-only setups**, use the tighter `assertion.repository == '$ORG_NAME/.fullsend'` condition instead, and scope the WIF principal to `attribute.repository/$ORG_NAME/.fullsend`. See [Google Cloud WIF documentation](https://cloud.google.com/iam/docs/workload-identity-federation) for condition syntax.
+> **To limit access to a single repository**, use the tighter `assertion.repository == '$ORG_NAME/$REPO_NAME'` condition instead, and scope the WIF principal to `attribute.repository/$ORG_NAME/$REPO_NAME`. See [Google Cloud WIF documentation](https://cloud.google.com/iam/docs/workload-identity-federation) for condition syntax.
 
 **Pass the provider to the installer:**
 
 ```bash
 export WIF_PROVIDER="projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc"
 
-fullsend github setup "$ORG_NAME" \
+fullsend github setup "$ORG_NAME/$REPO_NAME" \
   --inference-project "$GCP_PROJECT" \
   --inference-wif-provider "$WIF_PROVIDER" \
   --mint-url "$MINT_URL"

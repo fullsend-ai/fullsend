@@ -125,3 +125,17 @@ type RetryEvent struct {
 }
 
 func (RetryEvent) agentEvent() {}
+
+// PluginErrorEvent reports a plugin the runtime failed to load at startup.
+// Only the Claude parser emits it, once per entry of the init event's
+// plugin_errors. Type is the runtime's error category (an open set);
+// Path is empty when the runtime does not name a directory (Claude Code
+// before 2.1.283, or an entry that is not a --plugin-dir load failure).
+type PluginErrorEvent struct {
+	Plugin  string
+	Type    string
+	Path    string
+	Message string
+}
+
+func (PluginErrorEvent) agentEvent() {}

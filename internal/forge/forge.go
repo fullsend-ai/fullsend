@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 )
@@ -17,8 +18,8 @@ import (
 // configuration repository. See ADR-0003.
 const ConfigRepoName = ".fullsend"
 
-// PerRepoGuardVar is the repo variable set by per-repo install to prevent
-// per-org enrollment from overriding a per-repo installation.
+// PerRepoGuardVar is the repo variable set by per-repo install to mark the
+// repository as installed.
 const PerRepoGuardVar = "FULLSEND_PER_REPO_INSTALL"
 
 // ChangesRequestedMarker is the hidden HTML comment the GitLab review
@@ -557,11 +558,34 @@ func FormatSignOffTrailer(name, email string) (string, error) {
 // Mode controls file permissions: "100644" for regular files,
 // "100755" for executable files (e.g., shell scripts).
 // When Delete is true, the file is removed from the tree.
+//
+// Large binaries (e.g. a vendored CLI) should set LocalPath instead of
+// Content so callers do not hold the full payload in memory between
+// collection and CommitFiles. Forge clients stream or read LocalPath at
+// commit time. When LocalPath is set, Content is ignored.
 type TreeFile struct {
-	Path    string
-	Content []byte
-	Mode    string // "100644" or "100755"
-	Delete  bool   // remove file from tree instead of adding/updating
+	Path      string
+	Content   []byte
+	LocalPath string // stream from this filesystem path instead of Content
+	Mode      string // "100644" or "100755"
+	Delete    bool   // remove file from tree instead of adding/updating
+}
+
+// Bytes returns the file payload. LocalPath, when set, is read from disk
+// so callers can keep large binaries out of TreeFile.Content. Delete
+// entries have no payload.
+func (f TreeFile) Bytes() ([]byte, error) {
+	if f.Delete {
+		return nil, nil
+	}
+	if f.LocalPath != "" {
+		data, err := os.ReadFile(f.LocalPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", f.LocalPath, err)
+		}
+		return data, nil
+	}
+	return f.Content, nil
 }
 
 // DirectoryEntry represents a file or subdirectory in a repository directory listing.
@@ -579,14 +603,9 @@ type Client interface {
 	// It excludes archived repos (no active development) and forks.
 	//
 	// When includePrivate is false, private repos are also excluded.
-	// This is the appropriate setting for per-org mode because the
-	// default .fullsend config repo is public and agent workflows
-	// dispatched to it run with public logs. Enrolling a private repo
-	// would expose its code in those logs when agents check out and
-	// process the repo content.
 	//
 	// When includePrivate is true, private repos are included in the
-	// result. This is appropriate for per-repo mode where agents run
+	// result. This is appropriate for per-repo installs where agents run
 	// on the target repo itself, so public log exposure does not apply.
 	//
 	// Forks are excluded because fullsend's trust model is org-centric:
@@ -1276,8 +1295,9 @@ type GitHubExtensions interface {
 	// GetAppClientID returns the OAuth client ID for the named GitHub App.
 	GetAppClientID(ctx context.Context, slug string) (string, error)
 
-	// GetCollaboratorPermission returns the effective GitHub collaborator
-	// permission role_name for username on owner/repo.
+	// GetCollaboratorPermission returns the effective GitHub base role
+	// (admin, maintain, write, triage, read or none) for username on
+	// owner/repo, resolving custom role names from effective permissions.
 	// Returns forge.ErrNotFound when the user has no explicit permission.
 	GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (role string, err error)
 

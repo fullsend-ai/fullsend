@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -529,4 +530,206 @@ func TestRunGitHubSetupPerRepo_InvalidCLIProviderFails(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid --inference-provider")
 	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestRunGitHubSetupPerRepo_PinWarningWhenCLIEqualsBase(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	presetContent := "version: \"1\"\nruntime: claude\ninference:\n  project: preset-project\n  wif_provider: " + validWIFProvider + "\n"
+	presetPath := writeSetupPreset(t, presetContent)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:    presetPath,
+		runtime:         "claude",
+		inferenceRegion: "global",
+		changedFlags: map[string]bool{
+			"config":           true,
+			"runtime":          true,
+			"inference-region": true,
+		},
+	})
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Contains(t, out, "runtime is being pinned")
+	assert.Contains(t, out, "inference.region is being pinned")
+	assert.Contains(t, out, "currently inherited value")
+
+	files := committedSetupFiles(client)
+	assert.Equal(t, presetContent, string(files[".fullsend/config.base.yaml"]), "preset must stay unchanged")
+	// Assert on the raw overlay bytes rather than a parsed reader:
+	// ParsePerRepoConfig always falls through to compiled defaults
+	// ("claude" / "global"), so asserting on the parsed reader would
+	// pass even if the overlay never recorded these keys at all.
+	overlayYAML := string(files[".fullsend/config.yaml"])
+	assert.Contains(t, overlayYAML, "runtime: claude", "overlay must record the pinned runtime")
+	assert.Regexp(t, `region:\s*global`, overlayYAML, "overlay must record the pinned inference region")
+}
+
+func TestRunGitHubSetupPerRepo_NoPinWarningWhenCLIDiffers(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: claude\ninference:\n  project: preset-project\n  wif_provider: "+validWIFProvider+"\n")
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:    presetPath,
+		runtime:         "pi",
+		inferenceRegion: "us-west2",
+		changedFlags: map[string]bool{
+			"config":           true,
+			"runtime":          true,
+			"inference-region": true,
+		},
+	})
+	require.NoError(t, err)
+	out := buf.String()
+	assert.NotContains(t, out, "is being pinned")
+}
+
+func TestRunGitHubSetupPerRepo_PaddedCLIValueIsNotAPin(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: claude\ninference:\n  project: preset-project\n  wif_provider: "+validWIFProvider+"\n")
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:    presetPath,
+		inferenceRegion: " global ",
+		changedFlags: map[string]bool{
+			"config":           true,
+			"inference-region": true,
+		},
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, buf.String(), "is being pinned", "a padded value differs from the inherited default and is a real override")
+	overlayYAML := string(committedSetupFiles(client)[".fullsend/config.yaml"])
+	assert.Regexp(t, `region:\s*['"] global ['"]`, overlayYAML, "overlay must persist the padded value verbatim")
+}
+
+func TestRunGitHubSetupPerRepo_PaddedCLIValueRestatingPaddedBaseIsAPin(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	presetPath := writeSetupPreset(t, "version: \"1\"\nruntime: claude\ninference:\n  project: preset-project\n  region: \" global \"\n  wif_provider: "+validWIFProvider+"\n")
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset:    presetPath,
+		inferenceRegion: " global ",
+		changedFlags: map[string]bool{
+			"config":           true,
+			"inference-region": true,
+		},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "inference.region is being pinned")
+	overlayYAML := string(committedSetupFiles(client)[".fullsend/config.yaml"])
+	assert.Regexp(t, `region:\s*['"] global ['"]`, overlayYAML)
+}
+
+func TestRunGitHubSetupPerRepo_BaseOnlyComposesInheritedValues(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newSetupClient(t)
+	// config.base.yaml exists but the overlay does not, and no --config.
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.base.yaml": []byte("version: \"1\"\nmint_url: https://mint-base.example.run.app\ninference:\n  project: base-project\n  region: europe-west1\n  wif_provider: " + validWIFProvider + "\n"),
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:           "acme/widget",
+		agents:           strings.Join(config.PerRepoDefaultRoles(), ","),
+		inferenceProject: "base-project",
+		changedFlags:     map[string]bool{"inference-project": true},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "inference.project is being pinned")
+
+	vars := make(map[string]string)
+	for _, v := range client.Variables {
+		vars[v.Name] = v.Value
+	}
+	assert.Equal(t, "https://mint-base.example.run.app", vars["FULLSEND_MINT_URL"])
+	assert.Equal(t, "europe-west1", vars["FULLSEND_GCP_REGION"])
+	secrets := make(map[string]string)
+	for _, s := range client.CreatedSecrets {
+		secrets[s.Name] = s.Value
+	}
+	assert.Equal(t, "base-project", secrets["FULLSEND_GCP_PROJECT_ID"])
+	assert.Equal(t, validWIFProvider, secrets["FULLSEND_GCP_WIF_PROVIDER"], "WIF provider must come from the base, not be reported missing")
+}
+
+func TestRunGitHubSetupPerRepo_BaseOnlyOverlayStaysSparse(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	baseYAML := []byte("version: \"1\"\nallowed_remote_resources: []\ncreate_issues:\n  allow_targets:\n    repos:\n      - acme/dependencies\ninference:\n  project: base-project\n  wif_provider: " + validWIFProvider + "\n")
+	client := newSetupClient(t)
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.base.yaml": baseYAML,
+	}
+
+	require.NoError(t, runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{},
+	}))
+
+	overlay := committedSetupFiles(client)[".fullsend/config.yaml"]
+	assert.NotRegexp(t, `(?m)^create_issues:`, string(overlay), "overlay must not materialize create_issues targets")
+	assert.NotRegexp(t, `(?m)^allowed_remote_resources:`, string(overlay), "overlay must not materialize the remote-resource allowlist")
+
+	effective, err := config.ParsePerRepoConfigWriterLayered(overlay, baseYAML)
+	require.NoError(t, err)
+	require.NotNil(t, effective.IssueCreationConfig())
+	assert.Equal(t, []string{"acme/dependencies"}, effective.IssueCreationConfig().AllowTargets.Repos)
+	assert.Empty(t, effective.AllowedResources(), "empty base allowlist must stay deny-all")
+}
+
+func TestRunGitHubSetupPerRepo_BaseOnlyInheritsRolesWhenAgentsOmitted(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	baseYAML := []byte("version: \"1\"\nroles:\n  - triage\ninference:\n  project: base-project\n  wif_provider: " + validWIFProvider + "\n")
+	run := func(t *testing.T, cfg githubSetupConfig) []byte {
+		t.Helper()
+		client := newSetupClient(t)
+		client.FileContents = map[string][]byte{
+			"acme/widget/.fullsend/config.base.yaml": baseYAML,
+		}
+		cfg.target = "acme/widget"
+		if cfg.agents == "" {
+			cfg.agents = strings.Join(config.PerRepoDefaultRoles(), ",")
+		}
+		require.NoError(t, runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), cfg))
+		return committedSetupFiles(client)[".fullsend/config.yaml"]
+	}
+
+	t.Run("omitted --agents leaves roles unset", func(t *testing.T) {
+		overlay := run(t, githubSetupConfig{changedFlags: map[string]bool{}})
+		assert.NotRegexp(t, `(?m)^roles:`, string(overlay), "overlay must not materialize default roles")
+
+		effective, err := config.ParsePerRepoConfigWriterLayered(overlay, baseYAML)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"triage"}, effective.ConfigRoles())
+	})
+
+	t.Run("explicit --agents is written to the overlay", func(t *testing.T) {
+		overlay := run(t, githubSetupConfig{
+			agents:       "triage,review",
+			changedFlags: map[string]bool{"agents": true},
+		})
+		effective, err := config.ParsePerRepoConfigWriterLayered(overlay, baseYAML)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"triage", "review"}, effective.ConfigRoles())
+	})
 }

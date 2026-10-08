@@ -103,6 +103,49 @@ type systemEvent struct {
 	MaxRetries        int    `json:"max_retries"`
 	RetryDelayMs      int    `json:"retry_delay_ms"`
 	Error             string `json:"error"`
+	// PluginErrors stays raw so a malformed value cannot fail decoding of
+	// the whole init event; decodePluginErrors reads it entry by entry.
+	PluginErrors json.RawMessage `json:"plugin_errors"`
+}
+
+// claudePluginError is one entry of the init event's plugin_errors. path is
+// only present on --plugin-dir load failures from Claude Code 2.1.283 on.
+type claudePluginError struct {
+	Plugin  string `json:"plugin"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	Path    string `json:"path"`
+}
+
+// decodePluginErrors converts the init event's plugin_errors into events.
+// It is tolerant: a value that is not an array yields nothing, and an entry
+// that does not decode, or names neither a plugin, a path nor a message, is
+// skipped without affecting the others.
+func decodePluginErrors(raw json.RawMessage) []PluginErrorEvent {
+	if len(raw) == 0 {
+		return nil
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil
+	}
+	var out []PluginErrorEvent
+	for _, entry := range entries {
+		var pe claudePluginError
+		if err := json.Unmarshal(entry, &pe); err != nil {
+			continue
+		}
+		if pe.Plugin == "" && pe.Path == "" && pe.Message == "" {
+			continue
+		}
+		out = append(out, PluginErrorEvent{
+			Plugin:  pe.Plugin,
+			Type:    pe.Type,
+			Path:    pe.Path,
+			Message: pe.Message,
+		})
+	}
+	return out
 }
 
 type contentItem struct {
@@ -294,6 +337,9 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					Model:   se.Model,
 					Version: se.ClaudeCodeVersion,
 				})
+				for _, pe := range decodePluginErrors(se.PluginErrors) {
+					onEvent(pe)
+				}
 			case "api_retry":
 				onEvent(RetryEvent{
 					Attempt:    se.Attempt,

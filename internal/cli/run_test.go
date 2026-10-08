@@ -50,10 +50,8 @@ func TestRunCommand_HasFullsendDirFlag(t *testing.T) {
 	cmd := newRunCmd()
 	flag := cmd.Flags().Lookup("fullsend-dir")
 	require.NotNil(t, flag)
-	assert.Equal(t, "", flag.DefValue)
-
-	annotations := flag.Annotations
-	require.Contains(t, annotations, "cobra_annotation_bash_completion_one_required_flag")
+	assert.Equal(t, defaultFullsendDir, flag.DefValue)
+	assert.NotContains(t, flag.Annotations, "cobra_annotation_bash_completion_one_required_flag")
 }
 
 func TestRunCommand_RegisteredOnRoot(t *testing.T) {

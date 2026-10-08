@@ -427,7 +427,7 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
+	addFullsendDirFlag(cmd, &fullsendDir)
 	cmd.Flags().StringVar(&outputBase, "output-dir", "", "base directory for run output (default: /tmp/fullsend)")
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "path to the target repository")
 	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to copy into the sandbox (default: current executable)")
@@ -449,7 +449,6 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, opencode, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi, codex, and opencode — codex takes OpenAI ids only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
@@ -572,8 +571,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// channel when --event-file is not provided. The Go dispatch path
 	// (ProjectExecutionRef) embeds the complete normalized event in the
 	// legacy event_payload as _normalized_event (#6748). Try the on-disk
-	// dispatch file first (per-org path), then GITHUB_EVENT_PATH (per-repo
-	// workflow_call path where event_payload is nested in inputs).
+	// dispatch file first (written by reusable-dispatch.yml), then
+	// GITHUB_EVENT_PATH (workflow_call path where event_payload is nested
+	// in inputs).
 	if eventMap == nil {
 		eventMap = extractNormalizedEventFromDispatch(absFullsendDir)
 	}
@@ -718,7 +718,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				harnessHash := fetch.ComputeSHA256(harnessData)
 
 				if entry.IsStale(harnessHash) {
-					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s --fullsend-dir %s' to update.", agentName, fullsendDir))
+					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s%s' to update.", agentName, fullsendDirArg(fullsendDir)))
 				} else {
 					printer.StepStart("Using pinned dependencies from lock file")
 					lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
@@ -3857,7 +3857,7 @@ func resolveWorkItemID() string {
 	if prNum := strings.TrimSpace(os.Getenv("PR_NUMBER")); prNum != "" {
 		return prNum
 	}
-	// GitHub retro: reusable-retro.yml sets ORIGINATING_URL (PR/issue HTML URL).
+	// GitHub retro: the retro job in reusable-dispatch.yml sets ORIGINATING_URL (PR/issue HTML URL).
 	// GitLab agent jobs export GITLAB_ISSUE_URL (issue or MR) when IID is known.
 	if v := strings.TrimSpace(os.Getenv("ORIGINATING_URL")); v != "" {
 		return v
@@ -5655,7 +5655,7 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 	sha := os.Getenv("GITHUB_SHA")
 	// Prefer explicit PR_HEAD_SHA (set by per-repo workflow_call callers
 	// where GITHUB_EVENT_PATH lacks the dispatched event_payload wrapper).
-	// Fall back to extracting from event payload (per-org workflow_dispatch).
+	// Fall back to extracting from the workflow_dispatch event payload.
 	if prSHA := os.Getenv("PR_HEAD_SHA"); prSHA != "" {
 		sha = prSHA
 	} else if prSHA := prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH")); prSHA != "" {
@@ -5834,10 +5834,10 @@ func prHeadSHAFromEventPath(path string) string {
 // embedded by ProjectExecutionRef in the legacy event_payload channel (#6748).
 //
 // It checks two locations in order:
-//  1. <fullsendDir>/dispatch/event-payload.json — written by the per-org
+//  1. <fullsendDir>/dispatch/event-payload.json — written by the
 //     reusable-dispatch workflow before invoking the action.
-//  2. GITHUB_EVENT_PATH → inputs.event_payload — the per-repo workflow_call
-//     path where event_payload is a nested JSON string inside the
+//  2. GITHUB_EVENT_PATH → inputs.event_payload — the workflow_call path
+//     where event_payload is a nested JSON string inside the
 //     workflow_dispatch event file.
 //
 // In both cases, the function looks for a top-level "_normalized_event" key
@@ -5846,11 +5846,11 @@ func prHeadSHAFromEventPath(path string) string {
 // if the normalized event is absent or invalid (best-effort; overlays fall
 // back to the empty-map behavior documented in ResolveOverlays).
 func extractNormalizedEventFromDispatch(fullsendDir string) map[string]any {
-	// Try 1: on-disk dispatch event-payload.json (per-org path).
+	// Try 1: on-disk dispatch event-payload.json (reusable-dispatch path).
 	if m := extractNormalizedEventFromFile(filepath.Join(fullsendDir, "dispatch", "event-payload.json")); m != nil {
 		return m
 	}
-	// Try 2: GITHUB_EVENT_PATH → inputs.event_payload (per-repo path).
+	// Try 2: GITHUB_EVENT_PATH → inputs.event_payload (workflow_call path).
 	ghEventPath := os.Getenv("GITHUB_EVENT_PATH")
 	if ghEventPath == "" {
 		return nil

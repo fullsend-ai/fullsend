@@ -836,14 +836,16 @@ func (f *FakeClient) CommitFiles(_ context.Context, owner, repo, message string,
 		return false, e
 	}
 
+	if err := f.applyFileContents(owner, repo, files); err != nil {
+		return false, err
+	}
+
 	f.CommittedFiles = append(f.CommittedFiles, CommitFilesRecord{
 		Owner:   owner,
 		Repo:    repo,
 		Message: message,
 		Files:   files,
 	})
-
-	f.applyFileContents(owner, repo, files)
 
 	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
 	return changed, nil
@@ -857,6 +859,10 @@ func (f *FakeClient) CommitFilesToBranch(_ context.Context, owner, repo, branch,
 		return false, e
 	}
 
+	if err := f.applyFileContents(owner, repo, files); err != nil {
+		return false, err
+	}
+
 	f.CommittedFilesToBranch = append(f.CommittedFilesToBranch, CommitFilesToBranchRecord{
 		Owner:   owner,
 		Repo:    repo,
@@ -864,8 +870,6 @@ func (f *FakeClient) CommitFilesToBranch(_ context.Context, owner, repo, branch,
 		Message: message,
 		Files:   files,
 	})
-
-	f.applyFileContents(owner, repo, files)
 
 	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
 	return changed, nil
@@ -937,18 +941,32 @@ func (f *FakeClient) ForceCommitFileToBranch(_ context.Context, owner, repo, bra
 	return nil
 }
 
-func (f *FakeClient) applyFileContents(owner, repo string, files []TreeFile) {
+func (f *FakeClient) applyFileContents(owner, repo string, files []TreeFile) error {
 	if f.FileContents == nil {
 		f.FileContents = make(map[string][]byte)
 	}
-	for _, file := range files {
+	// Resolve every payload before mutating FileContents so a failed read
+	// leaves the fake repository unchanged, matching real forge behavior.
+	contents := make([][]byte, len(files))
+	for i, file := range files {
+		if file.Delete {
+			continue
+		}
+		content, err := file.Bytes()
+		if err != nil {
+			return err
+		}
+		contents[i] = content
+	}
+	for i, file := range files {
 		key := owner + "/" + repo + "/" + file.Path
 		if file.Delete {
 			delete(f.FileContents, key)
-		} else {
-			f.FileContents[key] = file.Content
+			continue
 		}
+		f.FileContents[key] = contents[i]
 	}
+	return nil
 }
 
 func (f *FakeClient) getRefLocked(owner, repo, refPath string) (string, bool) {

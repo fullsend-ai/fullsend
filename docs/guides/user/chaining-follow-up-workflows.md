@@ -343,9 +343,6 @@ identity.
 
 - **Treat the result as a filter, never as a command.** Confirm ids and
   states against the API before acting on them.
-- **Per-repo installation only.** In the deprecated per-org mode the shim runs
-  in the org's host repository, so neither the event nor the job token reaches
-  yours.
 - **Default branch only.** Edits to the follow-up take effect after they merge.
 - **Grant one permission per need.** `actions: write` for re-runs and
   dispatches; nothing else unless the follow-up uses it.

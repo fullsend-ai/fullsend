@@ -16,7 +16,7 @@ Playwright or stored sessions.
 Before running e2e locally or in CI:
 
 1. **Pool orgs** (`halfsend-01` … `halfsend-12`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
-2. **Mint** deployed with `e2e` role enrolled and `ALLOWED_ORGS` including `fullsend-ai`
+2. **Mint** deployed with `e2e` role enrolled and the requesting repository `fullsend-ai/fullsend` enrolled in `PER_REPO_WIF_REPOS` (or the mint explicitly in public mode, `PER_REPO_WIF_REPOS=*`)
 3. **CI only:** pool orgs with `FULLSEND_FOREIGN_E2E_REPOS` authorizing `fullsend-ai/fullsend`
 4. **Local only:** `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN`) with admin access on pool orgs
 
@@ -171,7 +171,7 @@ Each pool org must be provisioned before e2e can use it:
 3. Test actor permissions granted (see [Test actor permissions](#test-actor-permissions) below)
 4. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`)
 5. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
-6. Mint enrolled: org in `ALLOWED_ORGS`, `e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
+6. Mint enrolled: requesting repository `fullsend-ai/fullsend` in `PER_REPO_WIF_REPOS` (or public mode), `e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled. The pool org is a foreign target, so its access is governed by the `FULLSEND_FOREIGN_E2E_REPOS` grant and App installation above rather than by requesting-repository enrollment
 
 Use the idempotent setup script. Numeric arguments become `halfsend-NN`; a full org name (for example `halfsend` for STAGE) is used as-is:
 

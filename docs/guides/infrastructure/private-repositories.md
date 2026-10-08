@@ -4,38 +4,15 @@ This guide covers what administrators need to configure when enabling fullsend o
 
 ## Supported scenarios
 
-The two install modes have different requirements when the target repo is private.
-
-### Per-repo install (recommended for private repos)
-
-Per-repo install is self-contained: the fullsend workflow shim lives inside the target repo under `.fullsend/`, and it calls the public action workflows in the upstream `fullsend-ai/fullsend` repository directly. Because the caller and the called workflow are in the same repo (or the called repo is public), there are no cross-repo visibility constraints. Per-repo install works for any private repo on any GitHub plan.
-
-**This is the recommended install mode when adding fullsend to private repositories.**
-
-### Per-org install (`.fullsend` config repo)
-
-Per-org install uses a shared `.fullsend` config repo in your organization, with enrolled repos calling into it via cross-repo `workflow_call`. GitHub's Actions access controls create a visibility constraint:
-
-| `.fullsend` visibility | Enrolled repo visibility | Result |
-|------------------------|--------------------------|--------|
-| Public | Any (public, private, internal) | Works |
-| Private | Private | Works |
-| Private | Public | **Fails** (silent — 0 jobs, no error) |
-| Private | Internal (Enterprise Cloud only) | **Fails** (silent) |
-
-The installer creates `.fullsend` as **public by default**, which avoids all visibility edge cases. If your org overrides this to private — for example, to keep orchestration workflows proprietary — then **every enrolled repo must also be private**. Enrolling a public repo into a private `.fullsend` causes silent `workflow_call` failures with no diagnostics.
-
-> **Enterprise Cloud note:** On Enterprise Cloud orgs, GitHub distinguishes between _internal_ and _private_ repo visibility. A private `.fullsend` config repo accepts `workflow_call` only from other _private_ repos — internal repos are excluded. If your org has internal repos you want to enroll, the `.fullsend` config repo must be public or internal (not private).
+A per-repo install is self-contained. The fullsend workflow shim lives inside the target repo under `.fullsend/`, and it calls the public action workflows in the upstream `fullsend-ai/fullsend` repository directly. Because the caller and the called workflow are in the same repo (or the called repo is public), there are no cross-repo visibility constraints. Per-repo install works for any private repo on any GitHub plan.
 
 ## How private repos differ from public repos
 
 Fullsend treats all repositories the same at the infrastructure level — the same agents, harness, and pipeline run regardless of visibility. The differences are operational, not architectural:
 
-1. **Information disclosure risk.** Agents process repository content (code, issues, PR descriptions) and produce output (comments, commits, filed issues) that may reference that content. In a public repo this is harmless — the content is already public. In a private repo, agent output that crosses a visibility boundary (e.g., an issue filed in a public `.fullsend` config repo) can leak private information. See [#1189](https://github.com/fullsend-ai/fullsend/issues/1189) for a concrete example involving the retro agent.
+1. **Information disclosure risk.** Agents process repository content (code, issues, PR descriptions) and produce output (comments, commits, filed issues) that may reference that content. In a public repo this is harmless — the content is already public. In a private repo, agent output that crosses a visibility boundary (e.g., an issue filed in a public repository) can leak private information. See [#1189](https://github.com/fullsend-ai/fullsend/issues/1189) for a concrete example involving the retro agent.
 
 2. **Sensitive data exposure.** Private repos are more likely to contain credentials, PII, internal hostnames, or proprietary logic. Agents may reproduce this content in their output — not because they are instructed to, but because quoting context is a natural part of code review, triage summaries, and retrospective analysis. The [security threat model](../../problems/security-threat-model.md#indirect-information-disclosure) documents how indirect disclosure bypasses content-level guardrails.
-
-3. **`.fullsend` config repo Actions logs (per-org install only).** If your org uses per-org install, agent workflows in `.fullsend` may log run artifacts that reference private repo content. Consider whether your `.fullsend` repo's Actions log visibility needs to be restricted, particularly if `.fullsend` is public but enrolled repos are private.
 
 ## Which agents are safe to enable by default
 
@@ -152,7 +129,7 @@ If the retro agent is enabled, trigger it on a merged PR and check the filed iss
 
 ### 4. Review Actions logs
 
-Check the GitHub Actions logs for agent runs in both the target repo and `.fullsend`:
+Check the GitHub Actions logs for agent runs in the target repo:
 
 - Do log outputs contain sensitive values from the private repo?
 - Are the harness-level [secret redaction](../../reference/harness-reference.md) and output scanning working as expected?
@@ -168,7 +145,6 @@ Not all private repos are equal. A repo containing open-source code that happens
 - **Enable only:** triage, coder, review
 - **Disable:** retro, prioritize (any agent that produces cross-repo output)
 - **Require:** `AGENTS.md` with the private repository rules above
-- **Consider:** Restricting the `.fullsend` config repo Actions log visibility, since workflow logs may contain references to private repo content
 
 ### Medium-sensitivity repos (proprietary code, internal tooling)
 

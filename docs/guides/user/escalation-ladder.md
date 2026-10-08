@@ -14,7 +14,7 @@ This ladder applies to **core agent roles that fullsend already ships**
 (triage, code, review, fix, retro, prioritize). If you are building an agent
 for a job fullsend does not cover — a release-notes generator, a
 compliance checker, a deployment orchestrator — skip ahead to
-[Bring Your Own Agent](../../guides/user/bring-your-own-agent.md). There is
+[Bring Your Own Agent](bring-your-own-agent.md). There is
 no existing default to exhaust first.
 
 ## The four levels
@@ -40,14 +40,14 @@ changes to the agent's identity-defining fields. Some rows need a thin
 
 | Extension point | What it does | Guide |
 |---|---|---|
-| `AGENTS.md` | Project-wide instructions for all agents — code style, test commands, architecture rules, domain context. No harness required. | [Customizing with AGENTS.md](../../guides/user/customizing-with-agents-md.md) |
-| Repo skills (`.agents/skills/`) | Domain-specific knowledge for individual agents — linting rules, deployment checklists, label glossaries. No harness required. | [Customizing with Skills](../../guides/user/customizing-with-skills.md) |
-| Documented env vars | Per-agent tuning knobs (e.g., `REVIEW_FINDING_SEVERITY_THRESHOLD`). No harness required. | Each agent's [reference page](../) |
+| `AGENTS.md` | Project-wide instructions for all agents — code style, test commands, architecture rules, domain context. No harness required. | [Customizing with AGENTS.md](customizing-with-agents-md.md) |
+| Repo skills (`.agents/skills/`) | Domain-specific knowledge for individual agents — linting rules, deployment checklists, label glossaries. No harness required. | [Customizing with Skills](customizing-with-skills.md) |
+| Documented env vars | Per-agent tuning knobs (e.g., `REVIEW_FINDING_SEVERITY_THRESHOLD`). No harness required. | Each agent's [reference page](../../agents/) |
 | `env:` in harness | Add environment variables without changing the agent's identity. Needs a thin `base` harness. | [Harness Field Reference](../../reference/harness-reference.md) |
-| `skills:` in harness | Add skills via `base` composition — concatenated with the base agent's skill list. Needs a thin `base` harness. | [Configuring Agent Behavior](../../guides/user/customizing-agents.md#configuration-with-base-composition) |
+| `skills:` in harness | Add skills via `base` composition — concatenated with the base agent's skill list. Needs a thin `base` harness. | [Configuring Agent Behavior](customizing-agents.md#configuration-with-base-composition) |
 | `plugins:` in harness | Add language-server plugins. Needs a thin `base` harness. | [Harness Field Reference](../../reference/harness-reference.md) |
 | `host_files:` in harness | Inject additional files into the sandbox. Needs a thin `base` harness. | [Harness Field Reference](../../reference/harness-reference.md) |
-| Sandbox image layers | Base your image on the default, add tools; point the harness `image:` field at it. Needs a thin `base` harness. | [Extending the sandbox image](../../guides/user/customizing-agents.md#extending-the-sandbox-image) |
+| Sandbox image layers | Base your image on the default, add tools; point the harness `image:` field at it. Needs a thin `base` harness. | [Extending the sandbox image](customizing-agents.md#extending-the-sandbox-image) |
 
 **Evidence to escalate:** show that no combination of these extension points
 produces the behavior you need. Concrete evidence includes:
@@ -116,7 +116,7 @@ post_script: scripts/post-my-code.sh    # Custom post-processing
 slug: my-org-code                       # Custom identity
 ```
 
-See [Configuring Agent Behavior](../../guides/user/customizing-agents.md#configuration-with-base-composition)
+See [Configuring Agent Behavior](customizing-agents.md#configuration-with-base-composition)
 for the full pattern and
 [Classification by harness field](default-vs-custom.md#classification-by-harness-field)
 for which fields cross the derived threshold.
@@ -146,7 +146,7 @@ agent. This is the heaviest option — you inherit nothing from upstream and
 must maintain the full harness, agent definition, scripts, skills, and
 testing independently.
 
-See [Bring Your Own Agent](../../guides/user/bring-your-own-agent.md) for
+See [Bring Your Own Agent](bring-your-own-agent.md) for
 the end-to-end guide.
 
 **When this is appropriate:**
@@ -160,7 +160,7 @@ the end-to-end guide.
 Register your replacement agent with the same role name in `config.yaml` —
 config-registered agents take precedence over built-in agents on name
 collision. See
-[Registering your agent](../../guides/user/bring-your-own-agent.md#registering-your-agent).
+[Registering your agent](bring-your-own-agent.md#registering-your-agent).
 
 ## Prove-it checklist
 
@@ -184,11 +184,11 @@ Before creating a derived or replacement agent for a core role, confirm:
 
 - [Default, derived, and custom agents](default-vs-custom.md) — how to
   classify your agent after making changes
-- [Bring Your Own Agent](../../guides/user/bring-your-own-agent.md) —
+- [Bring Your Own Agent](bring-your-own-agent.md) —
   building and registering custom agents
-- [Customizing with AGENTS.md](../../guides/user/customizing-with-agents-md.md)
+- [Customizing with AGENTS.md](customizing-with-agents-md.md)
   — Level 1: project-wide instructions
-- [Customizing with Skills](../../guides/user/customizing-with-skills.md)
+- [Customizing with Skills](customizing-with-skills.md)
   — Level 1: agent-specific domain knowledge
-- [Configuring agent behavior](../../guides/user/customizing-agents.md) — harness
+- [Configuring agent behavior](customizing-agents.md) — harness
   configurations and `base:` composition

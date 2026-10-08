@@ -412,7 +412,7 @@ func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
 	assert.Contains(t, s, `"fix"`)
 	// Uses the review-agent marker to find the review note
 	assert.Contains(t, s, "fullsend:review-agent")
-	// Validates size (1 MB limit, matching GitHub reusable-fix.yml)
+	// Validates size (1 MB limit, matching the GitHub fix job in reusable-dispatch.yml)
 	assert.Contains(t, s, "1048576")
 	// Bot-triggered runs require non-empty review body (checks is_bot, not PIPELINE_SOURCE)
 	assert.Contains(t, s, "Bot-triggered run but review body is empty")
@@ -425,7 +425,7 @@ func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
 
 	// Defense-in-depth author mismatch logs a warning (not silent)
 	assert.Contains(t, s, "does not match bot")
-	// Fix-stage environment variables (parallel to reusable-fix.yml)
+	// Fix-stage environment variables (parallel to the fix job in reusable-dispatch.yml)
 	assert.Contains(t, s, "export TARGET_BRANCH")
 	assert.Contains(t, s, "export TRIGGER_SOURCE")
 	assert.Contains(t, s, "export HUMAN_INSTRUCTION")

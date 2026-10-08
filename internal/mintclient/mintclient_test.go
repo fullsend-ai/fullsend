@@ -851,8 +851,9 @@ func TestQueryStatus_GitHubTokenPath(t *testing.T) {
 			t.Errorf("auth = %q, want %q", got, "Bearer ghp-test")
 		}
 		json.NewEncoder(w).Encode(StatusResult{
-			AllowedOrgs: []string{"acme", "bigcorp"},
-			Roles:       []string{"coder"},
+			Roles:             []string{"coder"},
+			WorkflowHostRepos: []string{"fullsend-ai/fullsend"},
+			Version:           "2.0.0",
 		})
 	}))
 	defer statusServer.Close()
@@ -871,8 +872,17 @@ func TestQueryStatus_GitHubTokenPath(t *testing.T) {
 	if method != StatusAuthGitHub {
 		t.Errorf("method = %q, want %q", method, StatusAuthGitHub)
 	}
-	if len(result.AllowedOrgs) != 2 {
-		t.Errorf("allowed_orgs = %v, want 2", result.AllowedOrgs)
+	if result.Org != "" {
+		t.Errorf("org = %q, want empty on the GitHub token path", result.Org)
+	}
+	if len(result.Roles) != 1 || result.Roles[0] != "coder" {
+		t.Errorf("roles = %v, want [coder]", result.Roles)
+	}
+	if len(result.WorkflowHostRepos) != 1 || result.WorkflowHostRepos[0] != "fullsend-ai/fullsend" {
+		t.Errorf("workflow_host_repos = %v, want [fullsend-ai/fullsend]", result.WorkflowHostRepos)
+	}
+	if result.Version != "2.0.0" {
+		t.Errorf("version = %q, want %q", result.Version, "2.0.0")
 	}
 }
 
@@ -889,8 +899,7 @@ func TestQueryStatus_OIDCFallsBackToGitHub(t *testing.T) {
 		}
 		if auth == "Bearer ghp-fallback" {
 			json.NewEncoder(w).Encode(StatusResult{
-				AllowedOrgs: []string{"acme"},
-				Roles:       []string{"triage"},
+				Roles: []string{"triage"},
 			})
 			return
 		}
@@ -926,8 +935,8 @@ func TestQueryStatus_OIDCFallsBackToGitHub(t *testing.T) {
 	if method != StatusAuthGitHub {
 		t.Errorf("method = %q, want %q", method, StatusAuthGitHub)
 	}
-	if len(result.AllowedOrgs) != 1 || result.AllowedOrgs[0] != "acme" {
-		t.Errorf("allowed_orgs = %v, want [acme]", result.AllowedOrgs)
+	if len(result.Roles) != 1 || result.Roles[0] != "triage" {
+		t.Errorf("roles = %v, want [triage]", result.Roles)
 	}
 	if calls != 2 {
 		t.Errorf("calls = %d, want 2 (one OIDC, one GitHub)", calls)

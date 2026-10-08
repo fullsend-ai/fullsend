@@ -33,9 +33,9 @@ agents:
       model: google-vertex/gemini-3.8-flash
     - name: review
       runtime: pi
-      model: openai/gpt-6.1-sol
+      model: sonnet
       subagents:
-        challenger: openai/gpt-6.1-sol
+        challenger: opus
         correctness: openai/gpt-6.1-sol
         docs-currency: google-vertex/gemini-3.8-flash
         intent-coherence: google-vertex/gemini-3.8-flash

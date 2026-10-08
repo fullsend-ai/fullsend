@@ -35,7 +35,7 @@ type STSVerifierConfig struct {
 
 // STSVerifier validates OIDC tokens by exchanging them with GCP STS
 // (Workload Identity Federation). It performs lightweight JWT pre-validation
-// before the STS exchange. Authorization (org-allowed, workflow-ref) is
+// before the STS exchange. Authorization (per-repo enrollment, workflow-ref) is
 // performed by the Handler after authentication succeeds.
 type STSVerifier struct {
 	stsBaseURL         string
@@ -134,14 +134,12 @@ func (v *STSVerifier) prevalidate(token string) (*Claims, error) {
 }
 
 // resolveWIFProvider returns the WIF provider name to use for STS validation.
-// Repos in the perRepoWIFRepos registry use a dedicated per-repo provider;
-// all others (including .fullsend) use the default.
+// Repos explicitly listed in the perRepoWIFRepos registry use their
+// dedicated per-repo provider; all others (e.g. callers admitted by the
+// public-mode "*" entry) use the default.
 func (v *STSVerifier) resolveWIFProvider(repository string) string {
 	parts := strings.SplitN(repository, "/", 2)
 	if len(parts) != 2 {
-		return v.defaultWIFProvider
-	}
-	if parts[1] == ".fullsend" {
 		return v.defaultWIFProvider
 	}
 	if v.perRepoWIFRepos[strings.ToLower(repository)] {

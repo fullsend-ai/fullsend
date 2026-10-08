@@ -706,71 +706,6 @@ reports drift. Supply the complete GCP inference flags to `repos install`
 to write the missing secret, or add it manually; until then a Vertex run
 fails its early credential check. An OpenAI run does not use the GCP pair.
 
-## Migrating from per-org mode to manifest management
-
-> **Removed:** `fullsend repos migrate` and the `fullsend github` org commands
-> referenced in this section have been removed along with per-org installation.
-> Install repositories directly with `fullsend repos install` instead. This
-> section is kept for historical reference only.
-
-Organizations migrating from per-org mode to per-repo manifest management
-could use `repos migrate` — a single command that handled the full migration.
-
-### Step 1: Migrate from per-org to per-repo
-
-```bash
-fullsend repos migrate <org> --project <gcp-project>
-```
-
-This discovers enrolled repos from the per-org config, provisions WIF
-infrastructure, installs per-repo (scaffold, variables, secrets) with
-config carried over from the org config, removes migrated repository
-entries from the per-org config, and writes `repos.yaml`. If a manifest
-already exists, new entries are merged in rather than overwriting it.
-Successful migrations delete the source config entry entirely rather
-than setting `enabled: false`.
-
-Preview first with `--dry-run`:
-
-```bash
-fullsend repos migrate <org> --project <gcp-project> --dry-run
-```
-
-### Step 2: Verify per-repo installations
-
-```bash
-fullsend repos status -f repos.yaml
-```
-
-Confirm all repos show `installed` status with no drift.
-
-### Step 3: Uninstall the per-org configuration
-
-```bash
-fullsend github uninstall "$ORG_NAME"
-```
-
-This removes the `.fullsend` config repo, org-level variables, and org
-secrets. It also lists any installed GitHub Apps and provides links for
-manual deletion.
-
-> **Warning:** Do **not** delete the GitHub Apps listed by the uninstall
-> command if you are migrating to per-repo mode. The agents still need
-> these apps to function. The apps are shared between per-org and
-> per-repo installations — only delete them if you are fully removing
-> fullsend from the organization.
-
-In non-interactive environments, pass `--yolo` to skip the confirmation
-prompt:
-
-```bash
-fullsend github uninstall "$ORG_NAME" --yolo
-```
-
-> **Note:** `fullsend github unenroll` is only needed when keeping some
-> repos on per-org mode while migrating others to per-repo. When
-> migrating all repos, skip unenroll and go directly to uninstall.
-
 ## Tearing down
 
 ### Removing individual repos
@@ -807,7 +742,7 @@ infrastructure, coordinate between roles:
 |------|------|---------|
 | 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
 | 2 | GCP Admin (Inference) | GitHub: `fullsend inference deprovision <org>` (WIF cleanup). GitLab: `inference deprovision` does not cover the shared `gitlab-oidc` provider — see [Operations § Per-repo teardown](operations.md#per-repo-teardown) step 6 to revoke each repo's WIF trust instead. |
-| 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` (self-hosted mints only; not needed for the hosted community mint) |
+| 3 | GCP Admin (Mint) | `fullsend mint unenroll <owner/repo>` for each enrolled repository, adding `--delete-provider` to permanently delete its dedicated WIF provider (self-hosted mints only; not needed for the hosted community mint). Bare-org `mint unenroll <org>` is optional legacy cleanup of `ALLOWED_ORGS` and the shared WIF condition; it does not remove `PER_REPO_WIF_REPOS` entries or repo providers. |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
 flag: `--yes` for `repos` commands, `--yolo` for `github` and `mint`
@@ -817,6 +752,5 @@ commands.
 
 - [Configuring GitLab](configuring-gitlab.md) — GitLab-specific getting-started guide
 - [Operations](operations.md) — Day-2 per-repo administration and standalone commands
-- [Per-Org Mode](org-mode.md) — Organization-mode installation (planned deprecation)
 - [CLI Reference: fullsend repos](../../cli/repos.md) — Full flag and subcommand reference
 - [Mint administration](../infrastructure/mint-administration.md) — Token mint deployment and management

@@ -8,15 +8,15 @@ This guide covers deploying and managing the fullsend token mint. The mint is th
 | `mint delete` | Tear down mint infrastructure (Cloud Function, secrets, SA, WIF pool or Worker) |
 | `mint add-role` | Add an agent role (PEM secret + `ROLE_APP_IDS` entry) |
 | `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
-| `mint enroll` | Register an org or repo in `ALLOWED_ORGS` and configure WIF |
+| `mint enroll` | Register a repo in `PER_REPO_WIF_REPOS` and create its WIF provider |
 | `mint unenroll` | Remove an org or repo from the mint |
 | `mint workflow-host add` | Add a repo to the workflow-host allow-list |
 | `mint workflow-host remove` | Remove a repo from the workflow-host allow-list |
 | `mint workflow-host list` | List the workflow-host allow-list |
-| `mint status` | Inspect mint health, enrolled orgs, and PEM secrets |
+| `mint status` | Inspect mint health, enrolled repos, and PEM secrets |
 | `mint token` | Exchange a GitHub Actions OIDC token for an installation token |
 
-> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint. If you are an end user setting up fullsend for your organization, see [Getting Started](../getting-started/) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
+> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint. If you are an end user setting up fullsend for your organization, see [Getting Started](../getting-started/) instead — the mint is typically deployed once by a platform operator, and repositories are enrolled as needed.
 
 ## Hosted mint
 
@@ -74,7 +74,7 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   ‡ `roles/cloudfunctions.viewer` and `roles/secretmanager.viewer` are required for `mint status` only when using `--project` (GCP-based) mode. The API-based mode (`--mint-url` / `FULLSEND_MINT_URL`) requires only valid GitHub credentials and no GCP IAM roles.
 
-  Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
+  Enrollment does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
 
   `roles/owner` covers all of the above for users with broad access.
 
@@ -148,7 +148,7 @@ The optional `--pem-dir` flag seeds role PEM secrets during deployment on both G
 fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems
 
 # Cloudflare bootstrap:
-fullsend mint deploy --platform=cloudflare --pem-dir=/path/to/pems --allowed-orgs=acme
+fullsend mint deploy --platform=cloudflare --pem-dir=/path/to/pems --per-repo-wif-repos=acme/widget
 ```
 
 The `--pem-dir` directory must contain one `{role}.pem` file per agent role (e.g., `fullsend.pem`, `triage.pem`, `coder.pem`, `review.pem`, `retro.pem`, `prioritize.pem`). The CLI auto-discovers each app's numeric ID from the GitHub API by looking up the public app slug (`fullsend-ai-{role}`).
@@ -164,7 +164,7 @@ fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems \
 
 ### Mint URL stability
 
-The mint URL is stable across redeploys within the same project and region — updating the Cloud Function does not change its URL. Adding a new org to an existing mint only updates `ALLOWED_ORGS` (and WIF configuration) without redeploying the function. Shared `ROLE_APP_IDS` are managed at deploy/bootstrap time (`mint deploy --pem-dir`) or per-role via `mint add-role` / `remove-role` — not during enrollment. Existing enrolled repos continue working with no changes when orgs are added.
+The mint URL is stable across redeploys within the same project and region — updating the Cloud Function does not change its URL. Enrolling a new repository in an existing mint only updates `PER_REPO_WIF_REPOS` (and WIF configuration) without redeploying the function. Shared `ROLE_APP_IDS` are managed at deploy/bootstrap time (`mint deploy --pem-dir`) or per-role via `mint add-role` / `remove-role` — not during enrollment. Existing enrolled repos continue working with no changes when new repos are enrolled.
 
 Deploying to a **different region** (e.g., changing `--region` from `us-central1` to `us-east5`) creates a new Cloud Run service with a different URL. All enrolled repos store the mint URL in a repo or org variable (`FULLSEND_MINT_URL`), so changing the region requires updating every enrolled repo's variable. Avoid changing `--region` after initial deployment unless you plan to update all consumers.
 
@@ -178,7 +178,7 @@ Agent roles on the mint are **global** — each role maps to a GitHub App PEM se
 | `mint add-role` | Add a single role later, or register a custom app set one role at a time |
 | `mint remove-role` | Remove a role from the mint (updates env vars; deletes PEM secret by default) |
 
-`mint enroll` does **not** create or modify roles — it only authorizes orgs/repos to use roles that already exist on the mint.
+`mint enroll` does **not** create or modify roles — it only authorizes repos to use roles that already exist on the mint.
 
 ### Adding a role
 
@@ -260,15 +260,11 @@ Requires typing the role name to confirm (unless `--dry-run` or `--yolo`). Remov
 
 This command does not uninstall GitHub Apps from organizations or update any repository's `.fullsend` configuration — edit repository configuration separately (for example with `fullsend github set <owner/repo> <key> <value>`).
 
-## Enrolling organizations and repositories
+## Enrolling repositories
 
-`fullsend mint enroll` registers an organization or repository in the mint and configures WIF to accept OIDC tokens from the target.
+`fullsend mint enroll` registers a repository in the mint and configures WIF to accept OIDC tokens from it. Only `owner/repo` targets are accepted; a bare org argument is rejected because org enrollment was removed with per-org installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)).
 
 ```bash
-# Enroll an organization
-fullsend mint enroll acme-corp --project="$GCP_PROJECT"
-
-# Enroll a specific repository
 fullsend mint enroll acme-corp/my-repo --project="$GCP_PROJECT"
 ```
 
@@ -284,42 +280,34 @@ Enrollment does **not** grant Agent Platform (inference) access — use `fullsen
 
 ### Migration from per-org app ID flags
 
-Prior versions of `mint enroll` accepted `--app-set`, `--role-app-ids`, `--roles`, and `--source-org` to copy per-org app ID mappings into `ROLE_APP_IDS`. App IDs are now **shared per role** on the mint (like PEM secrets) and are set at deploy time via `mint deploy --pem-dir` or per-role via `mint add-role`. Enrollment only adds the org to `ALLOWED_ORGS` and updates WIF — remove those flags from scripts and ensure the mint already has role-keyed `ROLE_APP_IDS` before enrolling.
+Prior versions of `mint enroll` accepted `--app-set`, `--role-app-ids`, `--roles`, and `--source-org` to copy per-org app ID mappings into `ROLE_APP_IDS`. App IDs are now **shared per role** on the mint (like PEM secrets) and are set at deploy time via `mint deploy --pem-dir` or per-role via `mint add-role`. Enrollment only adds the repo to `PER_REPO_WIF_REPOS` and creates its WIF provider — remove those flags from scripts and ensure the mint already has role-keyed `ROLE_APP_IDS` before enrolling.
 
 ### What enrollment does
 
 1. Discovers the existing mint infrastructure and verifies shared role→app-id mappings exist
-2. Updates the mint Cloud Run service environment variable `ALLOWED_ORGS` using REVISION-pinned traffic routing
-3. Runs post-enrollment verification (see below)
-4. Configures the mint-side WIF provider to accept OIDC tokens from the organization's repositories
+2. Adds the repository to the mint Cloud Run service environment variable `PER_REPO_WIF_REPOS` using REVISION-pinned traffic routing
+3. Creates a dedicated mint-side WIF provider that accepts OIDC tokens from the repository
 
 Role PEM secrets and `ROLE_APP_IDS` must already exist on the mint, created during `mint deploy --pem-dir` or `mint add-role`. Enrollment does not create, copy, or modify PEM secrets or app ID mappings.
 
 ### Public mint mode
 
-When the mint is configured with `PER_REPO_WIF_REPOS=*` (public mode), `mint enroll` exits successfully (exit code 0) in both public and tight modes, but only tight mode updates `ALLOWED_ORGS` and WIF. In public mode, org registration is unnecessary because all orgs are already allowed — the command discovers the mint and reports public mode without changing configuration. Scripts can call enroll in both modes without branching. `mint enroll owner/repo` also succeeds without per-repo WIF changes; per-repo installs use the default WIF provider and upstream reusable workflows.
+When the mint is configured with `PER_REPO_WIF_REPOS=*` (public mode), `mint enroll` exits successfully (exit code 0) in both public and tight modes, but only tight mode updates `PER_REPO_WIF_REPOS` and WIF. In public mode, repository registration is unnecessary because all repositories are already allowed — the command discovers the mint and reports public mode without changing configuration. Scripts can call enroll in both modes without branching; per-repo installs on a public mint use the default WIF provider and upstream reusable workflows.
 
-`mint unenroll` cannot remove individual orgs from a public mint. To restrict access, clear `PER_REPO_WIF_REPOS=*` and set an explicit org list (config-only rollback; no PEM rotation required).
+`mint unenroll` cannot remove individual orgs from a public mint. To restrict access, clear `PER_REPO_WIF_REPOS=*` and set an explicit repo list. PEM rotation is not required, but the transition is not config-only on every mint:
 
-### Post-enrollment verification
-
-After updating the mint, the CLI automatically verifies that the enrollment took effect on the traffic-serving revision:
-
-- **Revision state check** — confirms which Cloud Run revision is serving traffic and whether it matches the latest template
-- **Env var read-back** — reads `ALLOWED_ORGS` from the traffic-serving revision (not the template) to confirm the enrolled org is present
-- **Shared app IDs** — verifies the mint has role-keyed `ROLE_APP_IDS` entries (e.g., `coder`, `review`) for all configured roles
-
-If verification fails, the CLI prints actionable diagnostics and suggests running `mint status` to investigate. See [Troubleshooting](#troubleshooting) for common failure scenarios.
+- **JWKS-backed mints** verify tokens without per-repo WIF providers, so replacing `*` with an explicit repo list is a config-only change.
+- **GCF mints** select a dedicated per-repo WIF provider for every repo in the explicit list. Public-mode enrollment skips creating those providers, so a public-only GCF mint may not have them. Provision a dedicated repo WIF provider for each repo before (or as part of) switching to the explicit list; otherwise token minting for those repos fails.
 
 ### REVISION-pinned traffic routing
 
 The CLI updates the Cloud Run service using a two-step process: first it patches the service template (env vars), then it explicitly routes 100% of traffic to the newly created revision. This is called REVISION-pinned routing.
 
-This prevents a class of bugs where the service template is updated but traffic continues serving from an older revision with stale env vars. Without REVISION-pinned routing, a newly enrolled org might not be recognized by the mint because the traffic-serving revision still has the old `ALLOWED_ORGS` value.
+This prevents a class of bugs where the service template is updated but traffic continues serving from an older revision with stale env vars. Without REVISION-pinned routing, a newly enrolled repo might not be recognized by the mint because the traffic-serving revision still has the old `PER_REPO_WIF_REPOS` value.
 
 ### Enrollment ordering
 
-Enroll organizations serially — do not run concurrent enrollment commands against the same mint. The CLI reads the current env vars, merges the new org's entries, and writes the result back. Two concurrent enrollments will race, and one org's entries may be lost.
+Enroll repositories serially — do not run concurrent enrollment commands against the same mint. The CLI reads the current env vars, merges the new repo's entry, and writes the result back. Two concurrent enrollments will race, and one repo's entry may be lost.
 
 ## Unenrolling organizations and repositories
 
@@ -347,7 +335,7 @@ Org-scoped unenroll removes the org from mint env vars and the shared WIF provid
 
 ## Managing workflow hosts
 
-`fullsend mint workflow-host` manages the `WORKFLOW_HOST_REPOS` environment variable, which controls which repositories may host workflows that call the mint for per-repo callers. Per-org-only callers are not affected — they hard-wire to `{org}/.fullsend` and the upstream `fullsend-ai/fullsend` repo. Dual-enrolled callers (listed in both `PER_REPO_WIF_REPOS` and `ALLOWED_ORGS`) accept workflows from **either** per-repo sources (`WORKFLOW_HOST_REPOS`) or per-org sources (`{org}/.fullsend`, upstream).
+`fullsend mint workflow-host` manages the `WORKFLOW_HOST_REPOS` environment variable, which controls which repositories may host workflows that call the mint. The check applies to every admitted caller: the workflow must be hosted by the upstream `fullsend-ai/fullsend` repo (always accepted) or a repository in `WORKFLOW_HOST_REPOS`, and its basename must be in `ALLOWED_WORKFLOW_FILES`.
 
 When `WORKFLOW_HOST_REPOS` is not set, it defaults to `fullsend-ai/fullsend`.
 
@@ -415,7 +403,6 @@ API-based mode returns the following fields:
 - **version** — the mint's build version
 - **commit** — the mint's build commit hash
 - **org** — the calling workflow's organization (OIDC auth only)
-- **allowed_orgs** — all configured allowed organizations (non-OIDC auth)
 - **roles** — configured role names
 - **workflow_host_repos** — repositories allowed as workflow hosts
 
@@ -426,7 +413,7 @@ mint state directly from GCP infrastructure. This requires GCP viewer IAM
 roles (see the [IAM table above](#prerequisites)).
 
 ```bash
-# Overview of all enrolled orgs
+# Overview of all enrolled repos
 fullsend mint status --mint-url= --project="$GCP_PROJECT"
 
 # Drill into a specific org's PEM status
@@ -457,13 +444,16 @@ examples above.
 
 **Enrollment section:**
 
-- List of enrolled organizations (from `ALLOWED_ORGS`)
 - Shared role→app-id mappings (from role-keyed `ROLE_APP_IDS`)
-- Per-repo WIF repos list
+- Per-repo WIF repos list (from `PER_REPO_WIF_REPOS`, which is what authorizes callers)
 
-**Per-org drill-down** (when an org argument is provided):
+The legacy `ALLOWED_ORGS` variable is not shown; the mint no longer uses it
+to authorize callers.
+
+**Org drill-down** (when an org argument is provided):
 
 - PEM secret status for each role (present/missing)
+- A warning when no `<org>/*` repository is in `PER_REPO_WIF_REPOS`
 
 **Health summary:**
 
@@ -471,8 +461,8 @@ The status command reports overall health as one of:
 
 | Health | Condition |
 |--------|-----------|
-| `healthy` | At least one org enrolled, template matches traffic revision |
-| `degraded` | No enrolled orgs, OR template diverges from traffic-serving revision |
+| `healthy` | At least one repo in `PER_REPO_WIF_REPOS` (or public mode), traffic-serving revision readable, template matches traffic revision |
+| `degraded` | No enrolled repos, OR the traffic-serving revision is unreadable (enrollment unverified), OR template diverges from traffic-serving revision |
 | `not-installed` | Mint function not found in the specified project/region |
 
 ## Minting tokens at runtime
@@ -510,8 +500,8 @@ export GCP_PROJECT="<your-gcp-project>"
 # 1. Deploy the token mint
 fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems
 
-# 2. Enroll the first org in the mint
-fullsend mint enroll "$FIRST_ORG" --project="$GCP_PROJECT"
+# 2. Enroll the first repository in the mint
+fullsend mint enroll "$FIRST_ORG/$FIRST_REPO" --project="$GCP_PROJECT"
 
 # 3. Provision inference WIF for the repository. Use the same owner/repo
 #    target as the GitHub setup in step 4, so the Vertex AI role is granted to
@@ -558,8 +548,8 @@ export ADDITIONAL_REPO="<additional-github-repo>"
 `GCP_PROJECT` carries over from the first-org step above.
 
 ```bash
-# 1. Enroll the additional org in the existing mint
-fullsend mint enroll "$ADDITIONAL_ORG" --project="$GCP_PROJECT"
+# 1. Enroll the additional repository in the existing mint
+fullsend mint enroll "$ADDITIONAL_ORG/$ADDITIONAL_REPO" --project="$GCP_PROJECT"
 
 # 2. Provision inference WIF for the additional repository. Each repository
 #    has its own WIF provider, so do not reuse the first repository's value.
@@ -598,7 +588,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 
 **Symptom:** `mint status` reports health as "degraded" with the message "template diverges from traffic-serving revision".
 
-**What it means:** The Cloud Run service template was updated (e.g., env vars changed) but traffic is still routed to an older revision. The mint is serving requests with the old revision's configuration — newly enrolled orgs may not be recognized.
+**What it means:** The Cloud Run service template was updated (e.g., env vars changed) but traffic is still routed to an older revision. The mint is serving requests with the old revision's configuration — newly enrolled repos may not be recognized.
 
 **Common causes:**
 
@@ -609,7 +599,7 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
 **Resolution:**
 
 1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to confirm which revision is serving and what the template expects
-2. Re-run `fullsend mint enroll` for any org — this triggers a new revision and routes traffic to it
+2. Run `fullsend mint enroll` for a repository that is not yet enrolled — this triggers a new revision and routes traffic to it (re-running for an already-enrolled repo makes no change)
 3. If no enrollment is needed, manually route traffic with:
 
    ```bash
@@ -618,37 +608,25 @@ PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, s
      --to-latest
    ```
 
-### Post-enrollment verification failure
-
-**Symptom:** After `mint enroll`, the CLI reports "Post-write verification FAILED" — the enrolled org is missing from the traffic-serving revision's `ALLOWED_ORGS`.
-
-**What it means:** The env var update was applied to the service template, but the traffic-serving revision does not reflect the change. This typically means traffic routing did not complete.
-
-**Resolution:**
-
-1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to check revision state
-2. If the template diverges from traffic, re-run the enrollment command — the CLI will detect the org is already in the template and route traffic to the new revision
-3. Check the CLI output for partial failure messages — if the traffic PATCH failed, the new revision name is reported for manual recovery
-
 ### LATEST allocation type
 
 **Symptom:** `mint status` shows allocation type as `TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST` instead of `REVISION`.
 
 **What it means:** Traffic is auto-routed to the newest revision. This can cause issues if a non-enrollment deployment creates a new revision that doesn't include the latest env vars (e.g., deploying new source code via `gcloud functions deploy` without preserving env vars).
 
-**Resolution:** Re-run `fullsend mint enroll` for any org. The CLI always uses REVISION-pinned routing, which overrides the LATEST setting.
+**Resolution:** Run `fullsend mint enroll` for a repository that is not yet enrolled, or route traffic manually as described above. The CLI always uses REVISION-pinned routing, which overrides the LATEST setting.
 
 ### Concurrent enrollment race
 
-**Symptom:** After enrolling two orgs in parallel, one org is missing from `ALLOWED_ORGS`.
+**Symptom:** After enrolling two repos in parallel, one repo is missing from `PER_REPO_WIF_REPOS`.
 
-**What it means:** Both enrollment commands read the same initial state, merged their org independently, and wrote back. The second write overwrote the first org's entries.
+**What it means:** Both enrollment commands read the same initial state, merged their repo independently, and wrote back. The second write overwrote the first repo's entry.
 
 **Resolution:**
 
-1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to confirm which org is missing
-2. Re-run `fullsend mint enroll` for the missing org
-3. Always enroll orgs serially — one at a time
+1. Run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` to confirm which repo is missing
+2. Re-run `fullsend mint enroll` for the missing repo
+3. Always enroll repos serially — one at a time
 
 ### Mint not found
 
@@ -676,7 +654,7 @@ directly. The commands below are **read-only** — they do not modify the
 mint.
 
 > **DANGER — never use `--set-env-vars` to modify the mint service.**
-> `--set-env-vars` **replaces all** env vars, destroying ALLOWED_ORGS,
+> `--set-env-vars` **replaces all** env vars, destroying PER_REPO_WIF_REPOS,
 > ROLE_APP_IDS, PEM secret references, and every other variable. If you
 > need to fix an env var manually, use `--update-env-vars` which
 > **merges** the provided values into the existing set. Prefer

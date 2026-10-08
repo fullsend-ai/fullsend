@@ -30,7 +30,7 @@ const (
 // JWKSVerifier validates GitHub Actions OIDC JWTs by fetching JWKS from
 // the issuer's discovery endpoint and verifying RS256 signatures directly.
 // It handles authentication only (token parsing, signature verification);
-// authorization (org-allowed, workflow-ref) is performed by the Handler.
+// authorization (per-repo enrollment, workflow-ref) is performed by the Handler.
 type JWKSVerifier struct {
 	issuerURL string
 	audience  string

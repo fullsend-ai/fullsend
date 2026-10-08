@@ -104,7 +104,7 @@ The standalone mint is configured entirely through environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `ALLOWED_ORGS` | Comma-separated GitHub orgs allowed to request tokens, or `*` for public mint mode (any org; upstream-only workflow provenance) | `myorg,myorg-sandbox` or `*` |
+| `PER_REPO_WIF_REPOS` | Comma-separated `owner/repo` entries enrolled to request tokens, or `*` for public mint mode (every requesting repository is admitted). A repository that is not listed is denied. Per-repo callers can only mint to their own repo scope unless repo-level FOREIGN grants authorize more. | `myorg/my-repo,myorg/other-repo` or `*` |
 | `ROLE_APP_IDS` | JSON map of role name to GitHub App ID (use plain role names, not org-prefixed) | `{"triage":"4087047","scanner":"5555555"}` |
 | `PEM_DIR` | Path to directory containing `{role}.pem` files | `./pems` |
 
@@ -115,17 +115,15 @@ The standalone mint is configured entirely through environment variables:
 | `ALLOWED_WORKFLOW_FILES` | Comma-separated workflow file allowlist; `*` for all | `*` |
 | `FALLBACK_MINT_URL` | Upstream mint URL for roles without local PEMs | `https://mint.fullsend.sh` |
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
-| `PER_REPO_WIF_REPOS` | Comma-separated repos with per-repo WIF treatment. Use `*` for public mint mode (all repos get per-repo treatment). Per-repo callers can only mint to their own repo scope. Callers not in this list fall through to per-org (`ALLOWED_ORGS`) and get org-mode repos shapes. | `myorg/private-repo` |
-| `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint for per-repo callers. Per-org callers are not affected (they hard-wire to `{org}/.fullsend` and upstream). Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
+| `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint. Applies to every admitted caller; the upstream `fullsend-ai/fullsend` is always accepted. Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
 | `PORT` | HTTP listen port | `8080` (default) |
 
 ### Public mint mode
 
-Set `ALLOWED_ORGS=*` and `PER_REPO_WIF_REPOS=*` to enable public mint mode:
+Set `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 
-- Any org may request tokens (installation lookup still scopes tokens to the requesting org)
-- `job_workflow_ref` validation uses the same per-repo path: only repos in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`) are accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2)
-- Set `PER_REPO_WIF_REPOS=*` alongside `ALLOWED_ORGS=*`
+- Any repository may request tokens (installation lookup still scopes tokens to the requesting org)
+- `job_workflow_ref` validation is the same as in enrolled mode: only the upstream `fullsend-ai/fullsend` and repos in `WORKFLOW_HOST_REPOS` are accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2)
 - No WIF or GCP STS setup is required — standalone mint validates OIDC via GitHub JWKS directly
 
 ### Example: local roles with fallback proxy
@@ -133,7 +131,7 @@ Set `ALLOWED_ORGS=*` and `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 This configuration serves `triage` and `scanner` locally while proxying all other roles (coder, review, etc.) to the hosted mint:
 
 ```bash
-export ALLOWED_ORGS="myorg"
+export PER_REPO_WIF_REPOS="myorg/my-repo"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
@@ -156,7 +154,7 @@ On startup, the mint logs the configuration:
 If you do not need the hosted mint at all, omit `FALLBACK_MINT_URL`. Requests for roles without local PEMs will be rejected:
 
 ```bash
-export ALLOWED_ORGS="myorg"
+export PER_REPO_WIF_REPOS="myorg/my-repo"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
@@ -342,9 +340,10 @@ fullsend mint status --mint-url="$FULLSEND_MINT_URL"
 Under GitHub Actions OIDC, this reports the mint's version, build commit,
 the calling workflow's organization, configured roles, and workflow host
 repos — without requiring any GCP IAM roles. It does not list all enrolled
-organizations; that field (`allowed_orgs`) is only populated on the
-non-OIDC (GitHub token) path, which a default standalone mint rejects with
-HTTP 401 as described above. To verify locally without GitHub Actions
+organizations; the status response no longer includes an
+`allowed_orgs` field. The non-OIDC (GitHub token) path, which a default
+standalone mint rejects with HTTP 401 as described above, returns the
+roles, workflow host repos, and version without an `org`. To verify locally without GitHub Actions
 OIDC, use the health endpoint above instead.
 
 ### Test from a GitHub Actions workflow
@@ -402,7 +401,7 @@ git clone https://github.com/fullsend-ai/fullsend.git
 cd fullsend/cmd/mint && go build -o fullsend-mint .
 
 # 4. Run
-export ALLOWED_ORGS="myorg"
+export PER_REPO_WIF_REPOS="myorg/my-repo"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"

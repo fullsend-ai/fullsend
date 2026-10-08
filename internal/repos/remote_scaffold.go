@@ -73,7 +73,7 @@ func fetchRemoteGitHubScaffold(ctx context.Context, client forge.Client,
 		return nil, fmt.Errorf("fetching GitHub shim template at %s: %w", manifestRef, err)
 	}
 
-	opts := scaffold.RenderOptionsForInstall(vendored, true, resolvedSHA, manifestRef)
+	opts := scaffold.RenderOptionsForInstall(vendored, resolvedSHA, manifestRef)
 	rendered, err := scaffold.RenderTemplate("templates/shim-per-repo.yaml", content, opts)
 	if err != nil {
 		return nil, fmt.Errorf("rendering remote GitHub shim: %w", err)

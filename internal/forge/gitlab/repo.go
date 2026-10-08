@@ -6,9 +6,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -31,6 +33,31 @@ func blobSHA(content []byte) string {
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func blobSHAFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", info.Size())
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+func treeFileBlobSHA(f forge.TreeFile) (string, error) {
+	if f.LocalPath != "" {
+		return blobSHAFile(f.LocalPath)
+	}
+	return blobSHA(f.Content), nil
 }
 
 func (c *LiveClient) getDefaultBranch(ctx context.Context, owner, repo string) (string, error) {
@@ -977,6 +1004,8 @@ func (c *LiveClient) resolveRootCommitSHA(ctx context.Context, owner, repo strin
 // CommitFiles atomically commits multiple files to the default branch
 // via GitLab's Commits API. Returns (false, nil) when all files already
 // match the current tree (idempotent).
+// TreeFile.LocalPath is hashed from disk and read only when the file
+// actually needs to be uploaded.
 func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message string, files []forge.TreeFile) (bool, error) {
 	if len(files) == 0 {
 		return false, nil
@@ -1055,7 +1084,10 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 			continue
 		}
 
-		expectedSHA := blobSHA(f.Content)
+		expectedSHA, err := treeFileBlobSHA(f)
+		if err != nil {
+			return false, fmt.Errorf("hash %s: %w", f.Path, err)
+		}
 		info, exists := existing[f.Path]
 		if exists && info.sha == expectedSHA && info.mode == f.Mode {
 			continue
@@ -1066,10 +1098,27 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 			action = "update"
 		}
 
+		// NOTE: unlike the GitHub blob path, this still base64-encodes the
+		// full file content in memory. GitLab's Commits API takes all
+		// actions for a commit as a single JSON body, so there is no
+		// per-file streaming endpoint to target the way Git Blobs has for
+		// GitHub. LocalPath only defers the read until a file is confirmed
+		// changed (see the hashing above); it does not stream the upload.
+		// This is a documented limitation of GitLab's commit API, not a
+		// tracked follow-up — there is no open issue for it. Issue #2353
+		// (avoid loading the full binary into memory across the install
+		// path) is still resolved: LocalPath keeps the payload off the
+		// heap until a file is confirmed changed, for both GitHub and
+		// GitLab. Only a changed GitLab upload still peaks at
+		// file-plus-base64 in memory, bounded by GitLab's API shape.
+		content, err := f.Bytes()
+		if err != nil {
+			return false, fmt.Errorf("reading %s: %w", f.Path, err)
+		}
 		entry := map[string]any{
 			"action":    action,
 			"file_path": f.Path,
-			"content":   base64.StdEncoding.EncodeToString(f.Content),
+			"content":   base64.StdEncoding.EncodeToString(content),
 			"encoding":  "base64",
 		}
 		if f.Mode == "100755" {

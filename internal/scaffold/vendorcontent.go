@@ -14,7 +14,7 @@ const defaultsVendoredPrefix = ".defaults/"
 // Upstream mirror content lives under .defaults/ (same layout as runtime sparse checkout).
 // Reusable workflows are always written under .github/workflows/ because GitHub
 // Actions requires local reusable workflow references (./path) to live there.
-// Other vendored assets use workflowPrefix (.fullsend/ for per-repo, "" for per-org).
+// Other vendored assets use workflowPrefix (.fullsend/ for repository installs).
 func CollectVendoredAssets(root, workflowPrefix string) (InstallFiles, error) {
 	var files InstallFiles
 

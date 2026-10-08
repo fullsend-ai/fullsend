@@ -416,7 +416,7 @@ DOS has elements that touch several existing threats:
 - Should cost budgets trigger a hard stop or a human-in-the-loop approval flow?
 - How do we distinguish legitimate bursts of activity (e.g., a major outage generating many related bug reports) from an attack, and should rate limits be configurable per organization to account for this?
 - How do we handle the case where rate limiting causes legitimate high-priority issues to be delayed?
-- Can we implement cost estimation before committing to an agent run — predicting whether an issue will require expensive processing and routing accordingly?
+- Can we implement cost estimation before committing to an agent run — predicting whether an issue will require expensive processing and routing accordingly? (Routing by change facts is decided in [ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md); cost estimation before a run remains open.)
 - ~~Should the event debouncing strategy from the March 31 concurrency
   discussion be treated as a DOS defense or purely a correctness concern?~~ It
   serves both purposes; the finish-and-coalesce policy is decided in

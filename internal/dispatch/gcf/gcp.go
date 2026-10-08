@@ -94,6 +94,10 @@ type ServiceRevisionInfo struct {
 	RecentRevisions []RevisionSummary
 	// TrafficEnvVars holds the env vars from the traffic-serving revision.
 	TrafficEnvVars map[string]string
+	// TrafficEnvVarsFromTemplate is true when TrafficEnvVars were taken from
+	// the service template because the traffic-serving revision could not be
+	// read. Such values may not reflect what the mint is actually serving.
+	TrafficEnvVarsFromTemplate bool
 }
 
 // RevisionSummary is a brief snapshot of a Cloud Run revision.
@@ -1986,6 +1990,7 @@ func (c *LiveGCFClient) GetServiceRevisionInfo(ctx context.Context, projectID, r
 			envVars[e.Name] = e.Value
 		}
 		info.TrafficEnvVars = envVars
+		info.TrafficEnvVarsFromTemplate = true
 	}
 
 	return info, nil

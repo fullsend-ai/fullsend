@@ -10,15 +10,14 @@ import (
 // RenderOptions controls install-time substitution for shim and thin-caller templates.
 type RenderOptions struct {
 	Vendored    bool
-	PerRepo     bool
 	UpstreamRef string // commit SHA to pin workflow refs to; empty = use DefaultUpstreamRef
 	UpstreamTag string // version tag for traceability comment (e.g. "v0.19.0")
 	RunnerImage string // GitHub Actions runner image; empty = use DefaultGHRunner
 }
 
 // RenderOptionsForInstall builds render options from the --vendor flag.
-func RenderOptionsForInstall(vendored, perRepo bool, upstreamRef, upstreamTag string) RenderOptions {
-	return RenderOptions{Vendored: vendored, PerRepo: perRepo, UpstreamRef: upstreamRef, UpstreamTag: upstreamTag}
+func RenderOptionsForInstall(vendored bool, upstreamRef, upstreamTag string) RenderOptions {
+	return RenderOptions{Vendored: vendored, UpstreamRef: upstreamRef, UpstreamTag: upstreamTag}
 }
 
 // thinStageWorkflows lists thin caller paths and their stage markers. Keep in sync
@@ -27,11 +26,6 @@ var thinStageWorkflows = []struct {
 	stage string
 	path  string
 }{
-	{"triage", ".github/workflows/triage.yml"},
-	{"code", ".github/workflows/code.yml"},
-	{"review", ".github/workflows/review.yml"},
-	{"fix", ".github/workflows/fix.yml"},
-	{"retro", ".github/workflows/retro.yml"},
 	{"prioritize", ".github/workflows/prioritize.yml"},
 }
 
@@ -48,9 +42,9 @@ func RenderTemplate(path string, content []byte, opts RenderOptions) ([]byte, er
 			return nil, err
 		}
 		out = strings.ReplaceAll(out, "__REUSABLE_WORKFLOW__", reusableWorkflowUses(stage, opts))
-		if opts.PerRepo {
-			out = strings.ReplaceAll(out, "install_mode: per-org", "install_mode: per-repo")
-		}
+		// Thin callers fetched from older upstream releases may still carry the
+		// removed organization-mode input. Normalize it for repository installs.
+		out = strings.ReplaceAll(out, "install_mode: per-org", "install_mode: per-repo")
 	case path == "templates/shim-per-repo.yaml":
 		out = strings.ReplaceAll(out, "__REUSABLE_DISPATCH__", reusableDispatchUses(opts))
 	}

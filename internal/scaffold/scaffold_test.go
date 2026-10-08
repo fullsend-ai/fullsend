@@ -49,18 +49,10 @@ func TestFileModeMatchesFilesystem(t *testing.T) {
 
 func TestFullsendRepoFilesExist(t *testing.T) {
 	expected := []string{
-		".github/workflows/dispatch.yml",
-		".github/workflows/triage.yml",
-		".github/workflows/code.yml",
-		".github/workflows/review.yml",
-		".github/workflows/fix.yml",
-		".github/workflows/repo-maintenance.yml",
 		".github/scripts/setup-agent-env.sh",
-		"scripts/reconcile-repos.sh",
 		"scripts/fullsend-check-output",
-		"scripts/validate-source-repo.sh",
 		"scripts/prepare-sandbox-credentials.sh",
-		"templates/shim-workflow-call.yaml",
+		"templates/shim-per-repo.yaml",
 		".github/workflows/prioritize.yml",
 	}
 
@@ -71,89 +63,27 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 	}
 }
 
-func TestShimWorkflowCallTemplateContent(t *testing.T) {
-	content, err := FullsendRepoFile("templates/shim-workflow-call.yaml")
-	require.NoError(t, err)
-	s := string(content)
-	// yamllint document-start rule requires --- at the top
-	assert.True(t, strings.HasPrefix(s, "---\n"), "shim workflow must start with YAML document start marker")
-	// ADR 34: shim has 2 jobs (dispatch + stop-fix), not per-stage jobs
-	assert.Contains(t, s, "dispatch:")
-	assert.Contains(t, s, "stop-fix:")
-	assert.Contains(t, s, "event_action:")
-	assert.Contains(t, s, "id-token: write")
-	assert.Contains(t, s, "__ORG__/.fullsend/.github/workflows/dispatch.yml@main")
-	// Dispatch concurrency group (no cancel — thin callers handle per-stage cancellation)
-	assert.Contains(t, s, "fullsend-dispatch-${{")
-	assert.Contains(t, s, "cancel-in-progress: false")
-	// Event triggers
-	assert.Contains(t, s, "pull_request_target")
-	assert.Contains(t, s, "pull_request_review")
-	assert.Contains(t, s, "issue_comment")
-	assert.Contains(t, s, "issues:")
-	// Bot filter
-	assert.Contains(t, s, "comment.user.type != 'Bot'")
-	// stop-fix authorization
-	assert.Contains(t, s, "/fs-fix-stop")
-	assert.Contains(t, s, "fullsend-no-fix")
-	// Per-stage jobs removed
-	assert.NotContains(t, s, "dispatch-triage")
-	assert.NotContains(t, s, "dispatch-code")
-	assert.NotContains(t, s, "dispatch-review")
-	assert.NotContains(t, s, "dispatch-fix-bot")
-	assert.NotContains(t, s, "dispatch-fix-human")
-	assert.NotContains(t, s, "dispatch-retro")
-	assert.NotContains(t, s, "stage: triage")
-	assert.NotContains(t, s, "stage: code")
-	assert.NotContains(t, s, "stage: review")
-	assert.NotContains(t, s, "stage: fix")
-	assert.NotContains(t, s, "stage: retro")
-	assert.NotContains(t, s, "FULLSEND_DISPATCH_TOKEN")
-	assert.NotContains(t, s, "FULLSEND_DISPATCH_URL")
-	assert.NotContains(t, s, "curl")
-
-	// Permissions assertions (YAML-parsed, not string-contains) — #5785
-	var wc struct {
-		Permissions map[string]string `yaml:"permissions"`
-		Jobs        struct {
-			Dispatch struct {
-				Permissions map[string]string `yaml:"permissions"`
-			} `yaml:"dispatch"`
-			StopFix struct {
-				Permissions map[string]string `yaml:"permissions"`
-			} `yaml:"stop-fix"`
-		} `yaml:"jobs"`
+// TestPerOrgScaffoldFilesRemoved guards against reintroducing per-org-only
+// scaffold assets (ADR 0044): the org dispatch and maintenance workflows,
+// the org-routed thin stage callers, the workflow-call shim template, and
+// the enrollment reconciliation and source-repo validation scripts.
+func TestPerOrgScaffoldFilesRemoved(t *testing.T) {
+	for _, path := range []string{
+		".github/workflows/dispatch.yml",
+		".github/workflows/repo-maintenance.yml",
+		".github/workflows/triage.yml",
+		".github/workflows/code.yml",
+		".github/workflows/review.yml",
+		".github/workflows/fix.yml",
+		".github/workflows/retro.yml",
+		"templates/shim-workflow-call.yaml",
+		"scripts/reconcile-repos.sh",
+		"scripts/reconcile-repos-test.sh",
+		"scripts/validate-source-repo.sh",
+	} {
+		_, err := FullsendRepoFile(path)
+		assert.Error(t, err, "per-org scaffold file %s must not be embedded", path)
 	}
-	require.NoError(t, yaml.Unmarshal(content, &wc))
-
-	// Workflow-level: least-privilege default must be empty permissions
-	require.NotNil(t, wc.Permissions,
-		"workflow-level permissions must be present (permissions: {})")
-	assert.Empty(t, wc.Permissions,
-		"workflow-level permissions must be empty (least-privilege default)")
-
-	// Dispatch job: intentionally narrower than per-repo mode
-	assert.Equal(t, map[string]string{
-		"actions":       "write",
-		"id-token":      "write",
-		"contents":      "read",
-		"pull-requests": "read",
-	}, wc.Jobs.Dispatch.Permissions, "dispatch job permissions")
-
-	// Negative assertions: workflow-call dispatch must NOT have write
-	// access to contents or pull-requests (intentionally narrower than
-	// per-repo mode).
-	assert.NotEqual(t, "write", wc.Jobs.Dispatch.Permissions["contents"],
-		"workflow-call dispatch must not have contents: write")
-	assert.NotEqual(t, "write", wc.Jobs.Dispatch.Permissions["pull-requests"],
-		"workflow-call dispatch must not have pull-requests: write")
-
-	// Stop-fix job permissions
-	assert.Equal(t, map[string]string{
-		"contents":      "read",
-		"issues":        "write",
-		"pull-requests": "write",
-	}, wc.Jobs.StopFix.Permissions, "stop-fix job permissions")
 }
 
 func TestShimPerRepoTemplateContent(t *testing.T) {
@@ -164,7 +94,9 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "dispatch:")
 	assert.Contains(t, s, "stop-fix:")
 	assert.Contains(t, s, "__REUSABLE_DISPATCH__")
-	assert.Contains(t, s, "install_mode: per-repo")
+	// reusable-dispatch.yml defaults install_mode to per-repo; the shim
+	// must not pass it explicitly (#2887).
+	assert.NotContains(t, s, "install_mode")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
 	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
 	// Per-role concurrency lives in reusable-dispatch.yml, not a monolithic shim group (#2452).
@@ -218,7 +150,6 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 // external contributor disable the fix agent on another user's PR.
 func TestShimStopFixAuthorization(t *testing.T) {
 	for _, tmpl := range []string{
-		"templates/shim-workflow-call.yaml",
 		"templates/shim-per-repo.yaml",
 	} {
 		t.Run(tmpl, func(t *testing.T) {
@@ -273,6 +204,9 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
 	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available")
+	}
 
 	extractRun := func(t *testing.T, tmpl string) string {
 		t.Helper()
@@ -295,17 +229,19 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 	}
 
 	// runScenario runs the script with a stub gh that logs its invocations and
-	// returns the given role (or fails when role == "FAIL"). It returns the
-	// combined output and whether the label mutation (`gh pr edit`) ran.
-	runScenario := func(t *testing.T, script, commentUser, issueUser, role string) (string, bool) {
+	// applies the script's --jq expression to the given permission response
+	// (or fails when response == "FAIL"). It returns the combined output and
+	// whether the label mutation (`gh pr edit`) ran.
+	runScenario := func(t *testing.T, script, commentUser, issueUser, response string) (string, bool) {
 		t.Helper()
 		dir := t.TempDir()
 		logPath := filepath.Join(dir, "gh.log")
 		stub := "#!/usr/bin/env bash\n" +
 			"echo \"$@\" >> \"$GH_STUB_LOG\"\n" +
 			"if [[ \"$1\" == \"api\" ]]; then\n" +
-			"  if [[ \"$GH_STUB_ROLE\" == \"FAIL\" ]]; then echo 'simulated api failure' >&2; exit 1; fi\n" +
-			"  echo \"$GH_STUB_ROLE\"; exit 0\n" +
+			"  if [[ \"$GH_STUB_RESPONSE\" == \"FAIL\" ]]; then echo 'simulated api failure' >&2; exit 1; fi\n" +
+			"  [[ \"$3\" == \"--jq\" ]] || exit 1\n" +
+			"  jq -r \"$4\" <<<\"$GH_STUB_RESPONSE\"; exit\n" +
 			"fi\n" +
 			"exit 0\n"
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755))
@@ -316,7 +252,7 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 		cmd.Env = append(os.Environ(),
 			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
 			"GH_STUB_LOG="+logPath,
-			"GH_STUB_ROLE="+role,
+			"GH_STUB_RESPONSE="+response,
 			"COMMENT_USER_LOGIN="+commentUser,
 			"ISSUE_USER_LOGIN="+issueUser,
 			"REPO=octo/repo",
@@ -332,7 +268,6 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 	}
 
 	for _, tmpl := range []string{
-		"templates/shim-workflow-call.yaml",
 		"templates/shim-per-repo.yaml",
 	} {
 		t.Run(tmpl, func(t *testing.T) {
@@ -341,18 +276,35 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 			t.Run("pr author escape hatch", func(t *testing.T) {
 				// Author with only read access can still stop on their own PR,
 				// and the permission API is never consulted.
-				out, labeled := runScenario(t, script, "alice", "alice", "read")
+				out, labeled := runScenario(t, script, "alice", "alice", `{"role_name":"read"}`)
 				assert.True(t, labeled, "PR author must be able to stop the fix agent")
 				assert.NotContains(t, out, "api repos/", "author hatch must skip the permission API")
 			})
 
 			t.Run("write collaborator authorized", func(t *testing.T) {
-				_, labeled := runScenario(t, script, "bob", "alice", "write")
+				_, labeled := runScenario(t, script, "bob", "alice", `{"role_name":"write"}`)
 				assert.True(t, labeled, "write-access collaborator must be authorized")
 			})
 
+			t.Run("custom role with maintain flags authorized", func(t *testing.T) {
+				_, labeled := runScenario(t, script, "bob", "alice",
+					`{"permission":"write","user":{"login":"custom-role-maintainer","type":"User","permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true},"role_name":"Repo Maintainer"},"role_name":"Repo Maintainer"}`)
+				assert.True(t, labeled, "custom role with effective maintain must be authorized")
+			})
+
+			t.Run("custom role with triage flags denied", func(t *testing.T) {
+				_, labeled := runScenario(t, script, "bob", "alice",
+					`{"permission":"read","role_name":"Helper","user":{"permissions":{"triage":true,"pull":true}}}`)
+				assert.False(t, labeled, "stop-fix requires write; effective triage must be denied")
+			})
+
+			t.Run("custom role without effective permission denied", func(t *testing.T) {
+				_, labeled := runScenario(t, script, "bob", "alice", `{"role_name":"Mystery"}`)
+				assert.False(t, labeled, "custom role with no effective permission must be denied")
+			})
+
 			t.Run("read collaborator denied", func(t *testing.T) {
-				out, labeled := runScenario(t, script, "bob", "alice", "read")
+				out, labeled := runScenario(t, script, "bob", "alice", `{"role_name":"read"}`)
 				assert.False(t, labeled, "read-only collaborator must be denied")
 				assert.Contains(t, out, "not authorized")
 			})
@@ -367,10 +319,62 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 	}
 }
 
+// TestCollaboratorPermissionJQ checks that reusable-dispatch.yml and the
+// stop-fix shims share one --jq role resolution and that it maps custom roles
+// to their effective base role (#7834).
+func TestCollaboratorPermissionJQ(t *testing.T) {
+	jqExpr := regexp.MustCompile(`(?s)/permission" \\\s*--jq '(.*?)' 2>`)
+	extract := func(t *testing.T, content []byte) string {
+		t.Helper()
+		m := jqExpr.FindSubmatch(content)
+		require.NotNil(t, m, "collaborator permission --jq expression not found")
+		return strings.Join(strings.Fields(string(m[1])), " ")
+	}
+
+	dispatch, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	shim, err := FullsendRepoFile("templates/shim-per-repo.yaml")
+	require.NoError(t, err)
+	expr := extract(t, dispatch)
+	require.Equal(t, expr, extract(t, shim), "dispatch and stop-fix shim must resolve roles identically")
+	managed, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "fullsend.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, expr, extract(t, managed), "this repo's managed shim must match the template")
+
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available")
+	}
+
+	cases := []struct{ name, response, want string }{
+		{"built-in role", `{"permission":"read","role_name":"triage"}`, "triage"},
+		{"custom maintain", `{"permission":"write","user":{"login":"custom-role-maintainer","type":"User","permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true},"role_name":"Repo Maintainer"},"role_name":"Repo Maintainer"}`, "maintain"},
+		{"custom triage", `{"permission":"read","role_name":"Helper","user":{"permissions":{"triage":true,"pull":true}}}`, "triage"},
+		{"custom legacy write", `{"permission":"write","role_name":"Dev"}`, "write"},
+		{"custom legacy read stays read", `{"permission":"read","role_name":"Helper"}`, "read"},
+		{"custom non-boolean flag ignores legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":{"push":"true"}}}`, "none"},
+		{"custom all flags false ignores legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":{"admin":false,"maintain":false,"push":false,"triage":false,"pull":false}}}`, "none"},
+		{"custom null flags use legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":null}}`, "write"},
+		{"custom empty flags ignore legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":{}}}`, "none"},
+		{"custom non-object flags ignore legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":[]}}`, "none"},
+		{"missing role_name", `{"permission":"write","user":{"permissions":{"push":true,"pull":true}}}`, "none"},
+		{"non-string role_name", `{"permission":"write","role_name":7}`, "none"},
+		{"custom no signals", `{"role_name":"Mystery"}`, "none"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("jq", "-r", expr)
+			cmd.Stdin = strings.NewReader(tc.response)
+			out, err := cmd.Output()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, strings.TrimSpace(string(out)))
+		})
+	}
+}
+
 // TestManagedShimStopFixNotStale guards against drift between the shim
 // template and this repo's own rendered managed workflow
 // (.github/workflows/fullsend.yaml). That file is generated from
-// shim-workflow-call.yaml at deploy time; if a template security fix lands
+// shim-per-repo.yaml at deploy time; if a template security fix lands
 // without regenerating it, the repo keeps running the vulnerable logic. See
 // issue #5421.
 func TestManagedShimStopFixNotStale(t *testing.T) {
@@ -406,124 +410,6 @@ func TestManagedShimStopFixNotStale(t *testing.T) {
 		"managed shim must preserve the PR-author escape hatch")
 }
 
-func TestShimTriggerParity(t *testing.T) {
-	// Both shim templates must declare the same event trigger types so that
-	// per-repo and workflow-call installation modes have identical behavior.
-	perRepo, err := FullsendRepoFile("templates/shim-per-repo.yaml")
-	require.NoError(t, err)
-	workflowCall, err := FullsendRepoFile("templates/shim-workflow-call.yaml")
-	require.NoError(t, err)
-
-	type onSection struct {
-		On map[string]struct {
-			Types []string `yaml:"types"`
-		} `yaml:"on"`
-	}
-
-	var prOn, wcOn onSection
-	require.NoError(t, yaml.Unmarshal(perRepo, &prOn))
-	require.NoError(t, yaml.Unmarshal(workflowCall, &wcOn))
-
-	// Check that each shared event has matching sub-types.
-	for event, wcTrigger := range wcOn.On {
-		prTrigger, ok := prOn.On[event]
-		require.True(t, ok, "per-repo shim is missing event trigger %q", event)
-		assert.ElementsMatch(t, wcTrigger.Types, prTrigger.Types,
-			"event %q types differ between shim templates", event)
-	}
-	for event := range prOn.On {
-		_, ok := wcOn.On[event]
-		assert.True(t, ok, "per-repo shim has extra event trigger %q not in workflow-call shim", event)
-	}
-}
-
-func TestDispatchWorkflowContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/workflows/dispatch.yml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "workflow_call:")
-	assert.NotContains(t, s, "workflow_dispatch:")
-	// ADR 34: event_action input replaces stage input
-	assert.Contains(t, s, "event_action:")
-	assert.Contains(t, s, "required: true")
-	// Routing logic
-	assert.Contains(t, s, "Determine stage")
-	assert.Contains(t, s, "/fs-triage")
-	assert.Contains(t, s, "/fs-code")
-	assert.Contains(t, s, "/fs-review")
-	assert.Contains(t, s, "/fs-fix")
-	assert.Contains(t, s, "/fs-retro")
-	assert.Contains(t, s, "/fs-prioritize")
-	assert.Contains(t, s, "ready-for-triage")
-	assert.Contains(t, s, "ready-to-code")
-	assert.Contains(t, s, "ready-for-review")
-	assert.Contains(t, s, "TRIGGERING_LABEL")
-	assert.Contains(t, s, "pull_request_target")
-	assert.Contains(t, s, "pull_request_review")
-	assert.Contains(t, s, "changes_requested")
-	assert.NotContains(t, s, "needs-info")
-	assert.Contains(t, s, "opened|synchronize|ready_for_review")
-	// /code must only run on issues, not PRs
-	assert.Contains(t, s, "ISSUE_HAS_PR")
-	// Authorization checks (collaborator permission API using .role_name)
-	assert.Contains(t, s, "is_authorized")
-	assert.Contains(t, s, "has_repo_permission")
-	assert.Contains(t, s, "has_write_permission")
-	assert.Contains(t, s, ".role_name")
-	assert.Contains(t, s, "admin|maintain|write")
-	// Observation stages accept triage; mutation stages stay write+ (#5223)
-	assert.Contains(t, s, `is_authorized triage`)
-	assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="code"`, s)
-	assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="fix"`, s)
-	assert.NotContains(t, s, `COMMENT_AUTHOR_ASSOC`)
-	assert.NotContains(t, s, "is_issue_author")
-	// Bot filtering
-	assert.Contains(t, s, `COMMENT_USER_TYPE`)
-	assert.Contains(t, s, `!= "Bot"`)
-	// No-fix label check (uses PR_LABELS for pull_request_review events)
-	assert.Contains(t, s, "fullsend-no-fix")
-	assert.Contains(t, s, "PR_LABELS")
-	// Fork PR detection
-	assert.Contains(t, s, "PR_HEAD_REPO")
-	assert.Contains(t, s, "PR_BASE_REPO")
-	// Kill switch and role check
-	assert.Contains(t, s, "kill_switch")
-	assert.Contains(t, s, "defaults.roles")
-	// Stage output
-	assert.Contains(t, s, "steps.route.outputs.stage")
-	assert.Contains(t, s, "trigger_source")
-	// Fan-out (unchanged)
-	assert.Contains(t, s, "# fullsend-stage:")
-	assert.Contains(t, s, "gh workflow run")
-	assert.Contains(t, s, "permissions: {}")
-	assert.Contains(t, s, "permissions:")
-	assert.Contains(t, s, "actions: write")
-	assert.Contains(t, s, "contents: read")
-	assert.Contains(t, s, "id-token: write")
-	assert.Contains(t, s, "set -euo pipefail")
-	assert.Contains(t, s, "dispatched=0")
-	assert.Contains(t, s, "No workflows found for stage")
-	assert.Contains(t, s, "|| true")
-	assert.Contains(t, s, "Invalid stage name")
-	assert.Contains(t, s, `^[a-z][a-z0-9_-]*$`)
-	assert.Contains(t, s, "dispatch.yml")
-	assert.Contains(t, s, "self-dispatch guard")
-	assert.Contains(t, s, "Scanned")
-	assert.Contains(t, s, "skipped")
-	// Verify OIDC mint is the sole token path
-	assert.Contains(t, s, "FULLSEND_MINT_URL")
-	assert.Contains(t, s, "oidc-mint")
-	assert.Contains(t, s, "/v1/token")
-	assert.Contains(t, s, "fullsend-mint")
-	assert.Contains(t, s, "job.workflow_repository")
-	// Verify both OIDC token and minted token are masked
-	assert.Contains(t, s, "::add-mask::$OIDC_TOKEN")
-	assert.Contains(t, s, "::add-mask::$TOKEN")
-	assert.NotContains(t, s, "create-github-app-token")
-	assert.NotContains(t, s, "FULLSEND_FULLSEND_APP_PRIVATE_KEY")
-	assert.NotContains(t, s, "FULLSEND_FULLSEND_CLIENT_ID")
-}
-
 func TestWalkFullsendRepo(t *testing.T) {
 	var paths []string
 	err := WalkFullsendRepo(func(path string, content []byte) error {
@@ -531,7 +417,8 @@ func TestWalkFullsendRepo(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	assert.True(t, len(paths) >= 10, "expected at least 10 installed files, got %d", len(paths))
+	assert.Contains(t, paths, ".github/workflows/prioritize.yml")
+	assert.Contains(t, paths, "templates/shim-per-repo.yaml")
 }
 
 // vestigialLayeredDirs are layeredDirs entries the embed has shipped nothing
@@ -640,160 +527,6 @@ func TestWalkFullsendRepoAllIncludesEverything(t *testing.T) {
 	}
 }
 
-func TestTriageWorkflowContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/workflows/triage.yml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "# fullsend-stage: triage")
-	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "event_type")
-	assert.Contains(t, s, "source_repo")
-	assert.Contains(t, s, "event_payload")
-	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
-	assert.NotContains(t, s, "distribution_mode")
-	assert.Contains(t, s, "FULLSEND_MINT_URL")
-	assert.NotContains(t, s, "secrets: inherit")
-	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
-	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
-	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
-	assert.Contains(t, s, "concurrency:")
-	assert.Contains(t, s, "fullsend-triage-")
-	assert.Contains(t, s, "cancel-in-progress: true")
-	// Permissions required by the reusable workflow
-	assert.Contains(t, s, "permissions:")
-	assert.Contains(t, s, "actions: write")
-	assert.Contains(t, s, "id-token: write")
-	assert.Contains(t, s, "issues: write")
-	assert.Contains(t, s, "contents: read")
-}
-
-func TestCodeWorkflowContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/workflows/code.yml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "# fullsend-stage: code")
-	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
-	assert.NotContains(t, s, "distribution_mode")
-	assert.Contains(t, s, "FULLSEND_MINT_URL")
-	assert.NotContains(t, s, "secrets: inherit")
-	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
-	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
-	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
-	assert.NotContains(t, s, "GCP_WIF_SA_EMAIL")
-	assert.Contains(t, s, "concurrency:")
-	assert.Contains(t, s, "fullsend-code-")
-	assert.Contains(t, s, "cancel-in-progress: true")
-	// Permissions required by the reusable workflow
-	assert.Contains(t, s, "permissions:")
-	assert.Contains(t, s, "actions: write")
-	assert.Contains(t, s, "contents: write")
-	assert.Contains(t, s, "id-token: write")
-	assert.Contains(t, s, "issues: write")
-	assert.Contains(t, s, "packages: read")
-	assert.Contains(t, s, "pull-requests: write")
-}
-
-func TestReviewWorkflowContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/workflows/review.yml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "# fullsend-stage: review")
-	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
-	assert.NotContains(t, s, "distribution_mode")
-	assert.Contains(t, s, "FULLSEND_MINT_URL")
-	assert.NotContains(t, s, "secrets: inherit")
-	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
-	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
-	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
-	assert.Contains(t, s, "concurrency:")
-	assert.Contains(t, s, "fullsend-review-")
-	assert.Contains(t, s, "cancel-in-progress: true")
-	// Permissions required by the reusable workflow
-	assert.Contains(t, s, "permissions:")
-	assert.Contains(t, s, "actions: write")
-	assert.Contains(t, s, "contents: read")
-	assert.Contains(t, s, "id-token: write")
-	assert.Contains(t, s, "issues: write")
-	assert.Contains(t, s, "pull-requests: write")
-}
-
-func TestFixWorkflowContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/workflows/fix.yml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "# fullsend-stage: fix")
-	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "trigger_source")
-	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
-	assert.NotContains(t, s, "distribution_mode")
-	assert.Contains(t, s, "FULLSEND_MINT_URL")
-	assert.NotContains(t, s, "secrets: inherit")
-	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
-	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
-	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
-	assert.Contains(t, s, "concurrency:")
-	assert.Contains(t, s, "fullsend-fix-")
-	assert.Contains(t, s, "cancel-in-progress: true")
-	// Permissions required by the reusable workflow
-	assert.Contains(t, s, "permissions:")
-	assert.Contains(t, s, "actions: write")
-	assert.Contains(t, s, "contents: write")
-	assert.Contains(t, s, "id-token: write")
-	assert.Contains(t, s, "issues: write")
-	assert.Contains(t, s, "packages: read")
-	assert.Contains(t, s, "pull-requests: write")
-}
-
-func TestRetroWorkflowContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/workflows/retro.yml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "# fullsend-stage: retro")
-	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
-	assert.NotContains(t, s, "distribution_mode")
-	assert.Contains(t, s, "FULLSEND_MINT_URL")
-	assert.NotContains(t, s, "secrets: inherit")
-	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
-	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
-	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
-	assert.Contains(t, s, "concurrency:")
-	assert.Contains(t, s, "fullsend-retro-")
-	assert.Contains(t, s, "cancel-in-progress: true")
-	// Permissions required by the reusable workflow
-	assert.Contains(t, s, "permissions:")
-	assert.Contains(t, s, "actions: write")
-	assert.Contains(t, s, "contents: read")
-	assert.Contains(t, s, "id-token: write")
-	assert.Contains(t, s, "issues: write")
-}
-
-func TestValidateSourceRepoContent(t *testing.T) {
-	content, err := FullsendRepoFile("scripts/validate-source-repo.sh")
-	require.NoError(t, err)
-	s := string(content)
-	// Verify security-critical format regex
-	assert.Contains(t, s, "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
-	assert.Contains(t, s, "Invalid source_repo format")
-	// Verify owner check
-	assert.Contains(t, s, "REPO_OWNER=\"${SOURCE_REPO%%/*}\"")
-	assert.Contains(t, s, "source_repo owner does not match org")
-	// Verify allowlist check
-	assert.Contains(t, s, "REPO_NAME=\"${SOURCE_REPO#*/}\"")
-	assert.Contains(t, s, "repo is not enabled in config.yaml")
-	// Verify required environment variables
-	assert.Contains(t, s, "${SOURCE_REPO:?SOURCE_REPO is required}")
-	assert.Contains(t, s, "${GITHUB_REPOSITORY_OWNER:?GITHUB_REPOSITORY_OWNER is required}")
-	// Verify error messages use ::error:: format
-	assert.Contains(t, s, "::error::")
-	// Verify config.yaml existence check (not masked by 2>/dev/null)
-	assert.Contains(t, s, "config.yaml not found")
-	// Verify yq availability check
-	assert.Contains(t, s, "yq command not found")
-}
-
 func TestSetupAgentEnvContent(t *testing.T) {
 	content, err := FullsendRepoFile(".github/scripts/setup-agent-env.sh")
 	require.NoError(t, err)
@@ -804,178 +537,6 @@ func TestSetupAgentEnvContent(t *testing.T) {
 	assert.Contains(t, s, "FULLSEND_REPO_VARS")
 	for _, key := range []string{"FULLSEND_RUNTIME", "FULLSEND_MODEL", "FULLSEND_EFFORT", "FULLSEND_FALLBACK_MODELS", "FULLSEND_PI_PROVIDER", "FULLSEND_PI_MODEL", "FULLSEND_CODEX_MODEL"} {
 		assert.Contains(t, s, key)
-	}
-}
-
-func TestRepoMaintenanceWorkflowContent(t *testing.T) {
-	content, err := FullsendRepoFile(".github/workflows/repo-maintenance.yml")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "config.yaml")
-	assert.Contains(t, s, "templates/shim-workflow-call.yaml",
-		"push trigger must include workflow_call shim template so changes propagate to enrolled repos")
-	assert.NotContains(t, s, "templates/shim-workflow.yaml",
-		"PAT shim template reference should be removed")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_AI_REF__")
-	assert.Contains(t, s, "Checkout upstream scripts")
-	assert.Contains(t, s, "Prepare scripts")
-	assert.NotContains(t, s, "customized/scripts",
-		"customized/ overlay removed per ADR-0064")
-	assert.Contains(t, s, "role: fullsend")
-	assert.Contains(t, s, "id-token: write")
-	assert.NotContains(t, s, "create-github-app-token")
-	assert.NotContains(t, s, "FULLSEND_FULLSEND_CLIENT_ID")
-	assert.NotContains(t, s, "./.github/actions/")
-}
-
-func TestRepoMaintenanceTokenCoversAllRepos(t *testing.T) {
-	content, err := FullsendRepoFile(".github/workflows/repo-maintenance.yml")
-	require.NoError(t, err)
-	s := string(content)
-
-	// The mint-token step must request access to ALL repos (enabled + disabled),
-	// not just enabled ones. Without access to disabled repos, the reconcile
-	// script can't check for or remove the shim workflow, and silently skips
-	// unenrollment (gh api fails, 2>/dev/null hides it, script thinks "already
-	// unenrolled").
-	assert.Contains(t, s, "select(.value.enabled == true or .value.enabled == false)",
-		"repo-list step must extract both enabled and disabled repos so the minted token covers them for unenrollment")
-}
-
-func TestReconcileReposContent(t *testing.T) {
-	content, err := FullsendRepoFile("scripts/reconcile-repos.sh")
-	require.NoError(t, err)
-	s := string(content)
-	assert.Contains(t, s, "shim-workflow-call.yaml")
-	assert.NotContains(t, s, "shim-workflow.yaml\"",
-		"reconcile-repos.sh should not reference deleted PAT shim template")
-	assert.NotContains(t, s, "dispatch.mode",
-		"reconcile-repos.sh should not parse dispatch mode")
-	assert.Contains(t, s, "private repos cannot be enrolled",
-		"reconcile-repos.sh should skip private repos to prevent log exposure")
-
-	// The "Getting started" slash-command catalog (#2165) must appear in both the
-	// enrollment and update PR bodies. The update path is the first touchpoint for
-	// already-enrolled repos, which is the scenario the original incident hit.
-	assert.Contains(t, s, "## Getting started",
-		"reconcile-repos.sh PR bodies should include the Getting started section")
-	assert.Contains(t, s, `GETTING_STARTED_SECTION`,
-		"Getting started block should be shared so it appears in both enroll and update PRs")
-	assert.Contains(t, s, `ENROLL_PR_BODY=`)
-	assert.Contains(t, s, `UPDATE_PR_BODY=`)
-	// Both PR bodies interpolate the shared block.
-	assert.Equal(t, 2, strings.Count(s, `${GETTING_STARTED_SECTION}`),
-		"shared Getting started block should be appended to both the enroll and update PR bodies")
-}
-
-// commandsNotInOnboardingCatalog lists slash commands that dispatch.yml routes
-// on but that are deliberately omitted from the user-facing onboarding catalog,
-// so the omission is a recorded decision rather than a regex accident. Anything
-// routed by dispatch.yml and not listed here must appear in the catalog.
-var commandsNotInOnboardingCatalog = map[string]bool{}
-
-// extractGettingStartedSection returns the body of the GETTING_STARTED_SECTION
-// shell assignment in reconcile-repos.sh — the exact block rendered into the
-// onboarding PR bodies. Assertions scope to this block rather than the whole
-// script so a command name appearing in an unrelated comment or code path cannot
-// satisfy the catalog guard.
-func extractGettingStartedSection(t *testing.T, scriptStr string) string {
-	t.Helper()
-	const marker = `GETTING_STARTED_SECTION="`
-	start := strings.Index(scriptStr, marker)
-	require.GreaterOrEqual(t, start, 0,
-		"expected GETTING_STARTED_SECTION assignment in reconcile-repos.sh")
-	rest := scriptStr[start+len(marker):]
-	// The block contains no embedded double quotes, so the next quote closes it.
-	end := strings.Index(rest, `"`)
-	require.GreaterOrEqual(t, end, 0,
-		"GETTING_STARTED_SECTION assignment should be closed with a double quote")
-	return rest[:end]
-}
-
-// dispatchCaseArmRE matches a case-arm label line in dispatch.yml's
-// `case "${COMMAND}"` switch, e.g. "                /fs-triage)".
-// Scoping route extraction to these lines keeps a command mentioned in a
-// comment, URL, or unrelated shell statement from being counted as routed.
-var dispatchCaseArmRE = regexp.MustCompile(`(?m)^[ \t]*(/fs-[a-z0-9-]+(?:\|/fs-[a-z0-9-]+)*)\)`)
-
-// slashCommandRE matches a single /fs-* command token.
-var slashCommandRE = regexp.MustCompile(`/fs-[a-z0-9-]+`)
-
-// catalogBulletRE matches a rendered onboarding-catalog bullet, e.g.
-// "- `/fs-triage`". The optional leading backslash accommodates the shell
-// assignment (backticks are escaped as \` there); the per-repo Go catalog uses
-// bare backticks. Anchoring to the "- " bullet keeps a command mentioned in a
-// docs URL or prose from counting as documented.
-var catalogBulletRE = regexp.MustCompile("(?m)^- \\\\?`(/fs-[a-z0-9-]+)\\\\?`")
-
-// routedDispatchCommands returns the set of slash commands dispatch.yml routes
-// on, scoped to case-arm labels (see dispatchCaseArmRE).
-func routedDispatchCommands(dispatchStr string) map[string]bool {
-	cmds := map[string]bool{}
-	for _, arm := range dispatchCaseArmRE.FindAllStringSubmatch(dispatchStr, -1) {
-		for _, cmd := range slashCommandRE.FindAllString(arm[1], -1) {
-			cmds[cmd] = true
-		}
-	}
-	return cmds
-}
-
-// catalogCommands returns the set of slash commands documented as bullets in an
-// onboarding catalog block (see catalogBulletRE).
-func catalogCommands(catalog string) map[string]bool {
-	cmds := map[string]bool{}
-	for _, m := range catalogBulletRE.FindAllStringSubmatch(catalog, -1) {
-		cmds[m[1]] = true
-	}
-	return cmds
-}
-
-// TestReconcileReposSlashCommandCatalog guards against the onboarding PR body's
-// slash-command catalog drifting from dispatch.yml's routing, in both directions:
-//   - forward: every command dispatch.yml routes on (except deliberately-omitted
-//     aliases in commandsNotInOnboardingCatalog) must appear in the catalog, so a
-//     command added/renamed in dispatch.yml without updating the catalog fails CI.
-//   - reverse: every command documented in the catalog must actually be routed by
-//     dispatch.yml, so a command removed from dispatch.yml but left in the
-//     user-facing catalog also fails CI.
-//
-// Routed commands are extracted only from dispatch.yml's case-arm labels, and
-// documented commands only from rendered catalog bullets, so comments, URLs, or
-// prose on either side cannot spoof a match. Membership is compared as exact
-// tokens (via sets) rather than substring containment so a hyphenated command
-// (e.g. /fs-fix-stop) cannot satisfy the guard against an unrelated prefix
-// (/fs-fix). The omission allow-list is applied to the forward check only: a
-// command written into the catalog and later dropped from dispatch must fail even
-// if it is allow-listed.
-func TestReconcileReposSlashCommandCatalog(t *testing.T) {
-	dispatch, err := FullsendRepoFile(".github/workflows/dispatch.yml")
-	require.NoError(t, err)
-	script, err := FullsendRepoFile("scripts/reconcile-repos.sh")
-	require.NoError(t, err)
-
-	catalog := extractGettingStartedSection(t, string(script))
-
-	dispatchCmds := routedDispatchCommands(string(dispatch))
-	require.NotEmpty(t, dispatchCmds, "expected dispatch.yml to route on /fs-* commands")
-
-	catalogCmds := catalogCommands(catalog)
-	require.NotEmpty(t, catalogCmds, "expected the onboarding catalog to document /fs-* commands")
-
-	// Forward: dispatch.yml commands must be documented (unless deliberately omitted).
-	for cmd := range dispatchCmds {
-		if commandsNotInOnboardingCatalog[cmd] {
-			continue
-		}
-		assert.True(t, catalogCmds[cmd],
-			"dispatch.yml routes on %s but the onboarding catalog does not document it "+
-				"(add it to GETTING_STARTED_SECTION, or to commandsNotInOnboardingCatalog if intentional)", cmd)
-	}
-
-	// Reverse: every documented command must be routed by dispatch.yml.
-	for cmd := range catalogCmds {
-		assert.True(t, dispatchCmds[cmd],
-			"onboarding catalog documents %s but dispatch.yml does not route on it", cmd)
 	}
 }
 
@@ -1024,8 +585,8 @@ func TestScaffoldShimsForwardOpenAIAPIKey(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, checked, 7,
-		"expected at least the six agent shims plus the per-repo shim to forward GCP_PROJECT_ID")
+	assert.GreaterOrEqual(t, checked, 2,
+		"expected at least the prioritize thin caller and the per-repo shim to forward GCP_PROJECT_ID")
 }
 
 func TestAllScaffoldYAMLDocumentStartMarker(t *testing.T) {
@@ -1052,8 +613,8 @@ func TestManagedHeader(t *testing.T) {
 	}{
 		// YAML workflow files get a header
 		{
-			path:   ".github/workflows/triage.yml",
-			expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/.github/workflows/triage.yml\n",
+			path:   ".github/workflows/prioritize.yml",
+			expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/.github/workflows/prioritize.yml\n",
 		},
 		// YAML template files get a header
 		{
@@ -1065,7 +626,7 @@ func TestManagedHeader(t *testing.T) {
 		// JSON files are skipped (no comment syntax)
 		{path: "data/example.json", expect: ""},
 		// Shell scripts get a header
-		{path: "scripts/reconcile-repos.sh", expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/scripts/reconcile-repos.sh\n"},
+		{path: "scripts/setup-prioritize.sh", expect: "# This file is managed by fullsend. Do not edit it directly.\n# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/scripts/setup-prioritize.sh\n"},
 	}
 
 	for _, tc := range tests {
@@ -1079,8 +640,8 @@ func TestManagedHeader(t *testing.T) {
 func TestManagedHeaderPreservesShebang(t *testing.T) {
 	// When content starts with #!, the header should go after the shebang line
 	content := []byte("#!/bin/bash\nset -euo pipefail\n")
-	header := ManagedHeader("scripts/reconcile-repos.sh")
-	result := PrependManagedHeader("scripts/reconcile-repos.sh", content)
+	header := ManagedHeader("scripts/setup-prioritize.sh")
+	result := PrependManagedHeader("scripts/setup-prioritize.sh", content)
 
 	assert.True(t, strings.HasPrefix(string(result), "#!/bin/bash\n"))
 	assert.Contains(t, string(result), header)

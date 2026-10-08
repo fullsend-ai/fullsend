@@ -35,6 +35,11 @@ var hexSHARe = regexp.MustCompile(`^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$`)
 var reasonRe = regexp.MustCompile(`^[a-zA-Z0-9_-]*$`)
 var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
+// findingIDRe matches the opaque id the review agent emits (f_ plus
+// alphanumeric). Anything else is left off the comment so a crafted id
+// cannot inject markup. The resolved-thread fetch matches this form (#7907).
+var findingIDRe = regexp.MustCompile(`^f_[a-zA-Z0-9]+$`)
+
 func newPostReviewCmd() *cobra.Command {
 	var (
 		repo        string
@@ -200,6 +205,23 @@ type ReviewFinding struct {
 	Description string `json:"description"`
 	Remediation string `json:"remediation,omitempty"`
 	Actionable  bool   `json:"actionable,omitempty"`
+	// ID is an opaque stable identifier (f_ plus alphanumeric) assigned
+	// upstream. This command copies it onto the inline comment; it does
+	// not mint ids. Empty until the agents repo starts emitting it.
+	ID findingID `json:"id,omitempty"`
+}
+
+// findingID is an optional review finding id. Non-string JSON values are
+// ignored so a bad id does not fail the whole review parse.
+type findingID string
+
+func (id *findingID) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil
+	}
+	*id = findingID(s)
+	return nil
 }
 
 // reviewActionToEvent maps a ReviewResult action to a GitHub PR review event.
@@ -532,9 +554,14 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 }
 
 // formatFindingComment renders a single review finding as a Markdown
-// inline comment body.
+// inline comment body. A valid id is stamped first so a later fetch of
+// resolved review threads can match the comment without parsing prose.
+// File-level comments use this same helper, so they carry the stamp too.
 func formatFindingComment(f ReviewFinding) string {
 	var b strings.Builder
+	if findingIDRe.MatchString(string(f.ID)) {
+		fmt.Fprintf(&b, "<!-- finding:%s -->\n", f.ID)
+	}
 	fmt.Fprintf(&b, "**[%s]** %s", f.Severity, f.Category)
 	b.WriteString("\n\n")
 	b.WriteString(strings.TrimSpace(f.Description))
@@ -821,6 +848,12 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 			result := pipeline.Scan(r.Findings[i].Remediation)
 			if result.Sanitized != "" {
 				r.Findings[i].Remediation = result.Sanitized
+			}
+		}
+		if r.Findings[i].ID != "" {
+			result := pipeline.Scan(string(r.Findings[i].ID))
+			if len(result.Findings) > 0 || result.Sanitized != "" {
+				r.Findings[i].ID = ""
 			}
 		}
 	}

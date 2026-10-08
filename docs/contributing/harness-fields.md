@@ -10,6 +10,12 @@
 > schema) and [ADR-0088](../ADRs/0088-cel-guarded-overlays.md) (CEL-guarded
 > overlays). Those ADRs are point-in-time records; this document reflects the
 > current state.
+>
+> **Decided, not yet implemented (2026-10-01):**
+> [ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md) will let
+> overlays set any field except `base`, `trigger`, `overlays`, `slug`, `role`
+> and `forge`, with guarded fields limited to trusted inputs. The tables below
+> change when it is implemented.
 
 ## Field classification
 

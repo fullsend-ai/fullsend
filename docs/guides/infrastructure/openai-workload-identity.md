@@ -359,7 +359,7 @@ workflows pass them to every agent run, and when any of them is set they replace
 
 In `.fullsend/config.yaml`, put the agent on a runtime that serves OpenAI models — `pi` or
 `codex` — with an OpenAI model, or run
-`fullsend agent set code --fullsend-dir .fullsend --runtime pi --model openai/gpt-5.6-luna`
+`fullsend agent set code --runtime pi --model openai/gpt-5.6-luna`
 (swap in `--runtime codex` for codex), which writes the same entry after validating it:
 
 ```yaml

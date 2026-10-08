@@ -9,7 +9,7 @@ inputs:
     description: 'GCP project ID — passed to google-github-actions/auth so the runner env has GOOGLE_CLOUD_PROJECT'
     required: false
   fullsend-dir:
-    description: 'Path to fullsend config directory (empty for per-org workspace root layout)'
+    description: 'Path to the per-repo fullsend config directory'
     required: false
     default: ''
 

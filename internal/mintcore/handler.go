@@ -43,10 +43,9 @@ type mintResponse struct {
 // statusResponse is returned by the /v1/status diagnostic endpoint.
 // When authenticated via OIDC, Org is set to the caller's org.
 // When authenticated via an optional validator (e.g. GitHub user
-// token), AllowedOrgs lists all configured orgs instead.
+// token), Org is omitted.
 type statusResponse struct {
 	Org               string   `json:"org,omitempty"`
-	AllowedOrgs       []string `json:"allowed_orgs,omitempty"`
 	Roles             []string `json:"roles"`
 	WorkflowHostRepos []string `json:"workflow_host_repos,omitempty"`
 	Version           string   `json:"version,omitempty"`
@@ -69,19 +68,15 @@ type Handler struct {
 	foreignCacheTTL time.Duration
 	foreignCacheMu  sync.Mutex
 
-	// perRepoWIFRepos is the set of repositories with per-repo WIF treatment.
-	// The handler uses this to decide repos scope policy (per-repo vs per-org).
+	// perRepoWIFRepos is the set of repositories enrolled for per-repo
+	// mint access. "*" enrolls every repository (public mint mode).
 	perRepoWIFRepos map[string]bool
-
-	// allowedOrgs lists the orgs permitted to use the mint (per-org callers).
-	allowedOrgs []string
 
 	// allowedWorkflowFiles lists the workflow basenames permitted to call the mint.
 	allowedWorkflowFiles []string
 
 	// workflowHostRepos lists the repos whose workflows are trusted to
-	// call the mint in per-repo mode. Defaults to fullsend-ai/fullsend.
-	// Per-org callers hard-wire to {org}/.fullsend and upstream instead.
+	// call the mint. Defaults to fullsend-ai/fullsend.
 	workflowHostRepos map[string]bool
 }
 
@@ -92,7 +87,7 @@ type foreignInflight struct {
 }
 
 // NewHandler creates a Handler with the given dependencies.
-// Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES, ALLOWED_ORGS,
+// Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES,
 // ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS)
 // are read once at construction time via the package-internal mintEnv
 // accessor. On native platforms mintEnv delegates to os.Getenv; on WASM
@@ -107,8 +102,8 @@ type foreignInflight struct {
 //
 // Load sites construct the appropriate OIDCVerifier (STSVerifier for
 // the Cloud Function, JWKSVerifier for devmint/standalone/Worker) and
-// pass it in. The handler only performs authorization (org-allowed,
-// workflow-ref) after the verifier authenticates the token.
+// pass it in. The handler only performs authorization (per-repo
+// enrollment, workflow-ref) after the verifier authenticates the token.
 func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, error) {
 	if oidcVerifier == nil {
 		return nil, errors.New("oidcVerifier must not be nil")
@@ -150,7 +145,6 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		foreignInflight:      make(map[string]*foreignInflight),
 		foreignCacheTTL:      defaultForeignCacheTTL,
 		perRepoWIFRepos:      perRepoWIFRepos,
-		allowedOrgs:          ParseAllowedOrgs(mintEnv("ALLOWED_ORGS")),
 		allowedWorkflowFiles: SplitCSV(mintEnv("ALLOWED_WORKFLOW_FILES")),
 		workflowHostRepos:    workflowHostRepos,
 	}
@@ -302,7 +296,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- /v1/token auth: OIDC only (shared helper) ---
-	claims, isPerRepo, oidcErr := h.verifyOIDCRequest(r.Context(), r)
+	claims, oidcErr := h.verifyOIDCRequest(r.Context(), r)
 	if oidcErr != nil {
 		log.Printf("authentication failed: %v", oidcErr)
 		writeError(w, http.StatusUnauthorized, "authentication failed")
@@ -325,14 +319,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
-	shape, scopeErr := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
+	shape, scopeErr := validateReposScope(isTargetForeign, claims.Repository, req.Repos)
 	if scopeErr != nil && !isTargetForeign {
-		// Same-org scope denied. For per-repo callers requesting repos
-		// beyond their own (specific per-repo denial), check repo-level
+		// Same-org scope denied. For callers requesting repos beyond
+		// their own (specific per-repo denial), check repo-level
 		// FOREIGN grants. Only override the per-repo cross-repo denial;
-		// other denial reasons (empty repos, org-mode shape violations)
-		// must not be overridden.
-		if isPerRepo && len(req.Repos) > 0 && errors.Is(scopeErr, errPerRepoCrossRepo) {
+		// other denial reasons (empty repos) must not be overridden.
+		if len(req.Repos) > 0 && errors.Is(scopeErr, errPerRepoCrossRepo) {
 			if fErr := h.checkRepoForeignGrants(ctx, claims, callerOrg, req.Role, req.Repos); fErr == nil {
 				log.Printf("intra-org repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
 					claims.Repository, callerOrg, req.Repos, req.Role)
