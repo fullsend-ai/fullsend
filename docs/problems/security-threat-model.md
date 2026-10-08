@@ -110,7 +110,7 @@ In fullsend's architecture, this is mitigated by several design decisions: agent
   that model-bound source content is the filtered representation and that raw
   text is never exposed; strip versus detect-and-preserve remains deferred to
   the versioned content-filter contract.)
-- How do we handle invisible Unicode in code itself (source files, not just metadata)? Some non-rendering characters are legitimate in string literals for internationalization. What heuristics distinguish malicious use from legitimate use?
+- How do we handle invisible Unicode in code itself (source files, not just metadata)? Some non-rendering characters are legitimate in string literals for internationalization. What heuristics distinguish malicious use from legitimate use? [ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md) defines the source-content boundary; code-content handling remains open.
 
 ## Threat 2: Insider threat / compromised credentials
 

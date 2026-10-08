@@ -406,8 +406,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   applicable source-system or trusted provider are eligible; this includes
   configured OWNERS-derived permissions and registered-bot roles. Event-carried
   authorization is re-resolved after event admission and again immediately
-  before sandbox initialization. Quoted or copied text inside an authorized
-  record remains part of that one trusted record.
+  before sandbox initialization and immediately before first model exposure;
+  mid-run controlled retrievals perform the equivalent fresh check immediately
+  before releasing each result to the model. Quoted or copied text inside an
+  authorized record remains part of that one trusted record.
   Before model exposure, host-side filtering handles Unicode and hidden
   characters, redacts sensitive data, scans for prompt injection, and applies
   size limits; unrecognized or unauthorized records are redacted rather than

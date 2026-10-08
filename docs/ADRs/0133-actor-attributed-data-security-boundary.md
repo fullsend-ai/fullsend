@@ -69,6 +69,12 @@ the entity; it does not authorize the entity's content.
 Authorization is per source-system record and uses that record's actor. The
 actor who updates a change proposal may differ from the actor who wrote a
 comment on it, so the latter's authorization is evaluated independently. The
+checked actor is the principal authenticated by the source system as having
+produced the exact current content revision: the creator for a never-edited
+record, or the latest authenticated editor when the source system records an
+edit. An event sender, poller, or retrieval credential never substitutes for
+that revision actor. If the source system cannot establish attribution for the
+current revision, the record is redacted.
 actor's applicable permission or recognized role MUST be co-fetched in the
 same authoritative API response, delivered in the same verified event payload,
 or lazily resolved from the authoritative source when first needed. A lazy
@@ -90,13 +96,22 @@ and routing, but it MUST NOT satisfy later model-bound authorization checks.
 For event-triggered runs, Fullsend MUST freshly resolve each record actor's
 current authorization after event admission and before model admission. It
 MUST freshly resolve that authorization again immediately before sandbox
-initialization when the record will be exposed to a model in that sandbox.
+initialization and immediately before the first model exposure when the record
+will be exposed to a model in that sandbox; if those operations are contiguous,
+the same fresh check may serve both gates. Revocation after first exposure
+cannot retract content already in the model context, but every later retrieval
+result has its own release check.
 Non-event retrieval paths perform the equivalent fresh resolution after
 retrieval admission and before model admission, followed by the
-sandbox-initialization check. A cache entry MUST NOT cross either checkpoint;
-the actor MUST still meet the applicable threshold at both checks. Failure,
-unavailability, or loss of authorization at either check redacts the record
-and, if no authorized records remain, denies the run.
+sandbox-initialization and first-exposure checks. Preloaded records use the
+sandbox gates; a Fullsend-controlled capability invoked after sandbox
+initialization MUST freshly resolve authorization immediately before releasing
+each retrieved result to the model. That release check is the equivalent
+checkpoint for mid-run retrieval and MUST apply the same filtering, cache, and
+failure semantics. A cache entry MUST NOT cross any checkpoint; the actor MUST
+still meet the applicable threshold at each check. Failure, unavailability, or
+loss of authorization at a check redacts the record and, if no authorized
+records remain, denies the run.
 
 Only a source-system record whose actor attribution can be reliably
 established, and for which the applicable source-system or trusted-provider
@@ -167,4 +182,5 @@ source-system reads to the model.
 - Hidden-character and prompt-injection findings may omit legitimate-looking content, so the model and operators need bounded diagnostics rather than an assumption that all source text will be preserved.
 - Filtering reduces, but cannot prove the absence of prompt injection; immutable instructions, least privilege, output validation, and deterministic host-side mutations remain required defenses.
 - Quoted, forwarded, or copied text is intentionally not detected or assigned a separate trust level inside an authorized record. A trusted actor or bot can therefore relay hostile text as part of a trusted record; this residual risk is accepted in exchange for a whole-record admission model, and is mitigated by trusted-actor caution, filtering, explicit delimitation, least privilege, output validation, deterministic host-side mutations, and the fresh authorization checkpoints.
+- Any harness that admits an authorized record as task guidance MUST keep that guidance within its configured scope and enforce least privilege, output validation, and deterministic host-side mutation rules; the whole-record rule does not authorize a new stage, capability, provider, or separate source-system record.
 - The data-filter contract becomes a versioned security boundary whose changes require compatibility review and regression testing across all model-bound data consumers.
