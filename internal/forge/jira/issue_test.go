@@ -16,7 +16,9 @@ func TestCreateIssue(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
+	handlerCalled := false
 	mux.HandleFunc("/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		assert.Equal(t, http.MethodPost, r.Method)
 
 		var body struct {
@@ -44,6 +46,7 @@ func TestCreateIssue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "10100", created.ID)
 	assert.Equal(t, "PROJ-43", created.Key)
+	assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
 }
 
 func TestCreateIssue_TypeNameNoParentNoDescription(t *testing.T) {
@@ -51,7 +54,9 @@ func TestCreateIssue_TypeNameNoParentNoDescription(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
+	handlerCalled := false
 	mux.HandleFunc("/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		var body struct {
 			Fields map[string]any `json:"fields"`
 		}
@@ -66,6 +71,7 @@ func TestCreateIssue_TypeNameNoParentNoDescription(t *testing.T) {
 	created, err := client.CreateIssue(ctx, CreateIssueInput{ProjectKey: "PROJ", IssueType: "Task", Summary: "t"})
 	require.NoError(t, err)
 	assert.Equal(t, "PROJ-44", created.Key)
+	assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
 }
 
 func TestCreateIssue_NotRetriedOnServerError(t *testing.T) {
@@ -89,13 +95,16 @@ func TestCreateIssue_BadRequest(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
+	handlerCalled := false
 	mux.HandleFunc("/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusBadRequest, map[string]any{"errors": map[string]string{"parent": "Given parent work item does not belong to appropriate hierarchy."}})
 	})
 
 	_, err := client.CreateIssue(ctx, CreateIssueInput{ProjectKey: "PROJ", IssueType: "10003", ParentKey: "PROJ-1", Summary: "t"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parent")
+	assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
 }
 
 func TestCreateIssue_DescriptionTooLarge(t *testing.T) {

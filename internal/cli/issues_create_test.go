@@ -131,6 +131,33 @@ func TestRunIssuesCreate_JiraSubTask(t *testing.T) {
 	assert.Equal(t, "https://acme.atlassian.net/browse/TC-1", result.URL)
 }
 
+// canonicalKeyClient mimics Jira returning a canonical key whose project
+// spelling differs from the requested one.
+type canonicalKeyClient struct {
+	tracker.Client
+}
+
+func (canonicalKeyClient) CreateIssue(_ context.Context, _, title string, _ tracker.Body, _ tracker.CreateIssueOptions) (*tracker.Issue, error) {
+	return &tracker.Issue{Number: 43, Title: title, Key: "PROJ-43", URL: "https://acme.atlassian.net/browse/PROJ-43"}, nil
+}
+
+func TestRunIssuesCreate_JiraKeyFromTracker(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &issuesCreateConfig{
+		trackerName: trackerJira,
+		project:     "proj",
+		issueType:   "Task",
+		title:       "t",
+		testClient:  canonicalKeyClient{},
+		testWriter:  &buf,
+	}
+	require.NoError(t, runIssuesCreate(context.Background(), cfg))
+
+	result := decodeCreateResult(t, &buf)
+	assert.Equal(t, "PROJ-43", result.Key)
+	assert.Equal(t, "https://acme.atlassian.net/browse/PROJ-43", result.URL)
+}
+
 func TestRunIssuesCreate_TrackerFromConfig(t *testing.T) {
 	reader, err := config.ParsePerRepoConfig([]byte("tracker: jira\n"))
 	require.NoError(t, err)

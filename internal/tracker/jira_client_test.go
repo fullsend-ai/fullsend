@@ -772,6 +772,18 @@ func (b *badKeyJiraClient) CreateIssue(_ context.Context, _ jira.CreateIssueInpu
 	return &jira.CreatedIssue{Key: b.key}, nil
 }
 
+func TestJiraClient_CreateIssue_ReturnsJiraKey(t *testing.T) {
+	// The requested project spelling differs from the key Jira returns.
+	c := newTestJiraClient(t, &badKeyJiraClient{key: "PROJ-7"}, "https://acme.atlassian.net")
+	issue, err := c.CreateIssue(context.Background(), "proj", "t", "", CreateIssueOptions{IssueType: "10003"})
+	if err != nil {
+		t.Fatalf("CreateIssue returned error: %v", err)
+	}
+	if issue.Key != "PROJ-7" || issue.Number != 7 || issue.URL != "https://acme.atlassian.net/browse/PROJ-7" {
+		t.Errorf("CreateIssue returned unexpected issue: %+v", issue)
+	}
+}
+
 func TestJiraClient_CreateIssue_UnexpectedKey(t *testing.T) {
 	for _, key := range []string{"", "PROJ", "-1", "PROJ-abc", "PROJ-0"} {
 		c := newTestJiraClient(t, &badKeyJiraClient{key: key}, "https://acme.atlassian.net")

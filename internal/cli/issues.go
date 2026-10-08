@@ -176,7 +176,12 @@ func runIssuesCreate(ctx context.Context, cfg *issuesCreateConfig) error {
 		URL:    issue.URL,
 	}
 	if trackerName == trackerJira {
-		result.Key = fmt.Sprintf("%s-%d", cfg.project, issue.Number)
+		// Prefer the key Jira returned so key and url cannot disagree
+		// when --project is spelled differently from the canonical key.
+		result.Key = issue.Key
+		if result.Key == "" {
+			result.Key = fmt.Sprintf("%s-%d", cfg.project, issue.Number)
+		}
 	}
 
 	w := cfg.testWriter

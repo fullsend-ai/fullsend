@@ -159,6 +159,7 @@ func (c *JiraClient) CreateIssue(ctx context.Context, project, title string, bod
 		Title:  title,
 		Body:   body,
 		URL:    c.baseURL + "/browse/" + created.Key,
+		Key:    created.Key,
 	}, nil
 }
 

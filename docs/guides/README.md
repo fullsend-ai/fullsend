@@ -37,7 +37,7 @@ Guides for developers working in repositories where fullsend is active.
 
 - [Adopting fullsend incrementally](user/adoption.md) — Crawl, walk, run, fly: incremental adoption path from first agents to auto-merge
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
-- [Issue commands](user/issues-commands.md) — Slash commands and label triggers for interacting with agents
+- [Issue commands](user/issues-commands.md) — Read, create, and post comments on issues across GitHub, GitLab, and Jira (`fullsend issues get`, `create`, `post-comment`)
 - [OWNERS file authorization](user/owners-file-authorization.md) — Authorize agent dispatch via Prow-style OWNERS files
 - [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine using released binaries (macOS + Linux)
 
