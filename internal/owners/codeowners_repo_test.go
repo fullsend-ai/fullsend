@@ -35,16 +35,46 @@ func codeownersPatternMatches(pattern, relPath string) bool {
 		return false
 	}
 	p = strings.TrimPrefix(p, "/")
-	if strings.Contains(p, "/") {
-		ok, err := path.Match(p, relPath)
+	if !strings.Contains(p, "/") {
+		if p == "**" {
+			return true
+		}
+		// Slash-free rule: matches the basename at any depth.
+		base := relPath[strings.LastIndex(relPath, "/")+1:]
+		ok, err := path.Match(p, base)
 		return err == nil && ok
 	}
-	if p == "**" {
-		return true
+	return matchSegments(strings.Split(p, "/"), strings.Split(relPath, "/"))
+}
+
+// matchSegments matches path segments against root-anchored pattern
+// segments following the gitignore "**" rules: a leading or interior "**"
+// segment matches zero or more directories ("**/foo" matches a root-level
+// "foo"; "a/**/b" matches "a/b"), while a trailing "**" means "everything
+// inside" and requires at least one remaining path segment ("a/**" does
+// not match "a" itself). Other segments match via path.Match, whose
+// wildcards never cross a "/" boundary.
+func matchSegments(patternSegs, pathSegs []string) bool {
+	if len(patternSegs) == 0 {
+		return len(pathSegs) == 0
 	}
-	base := relPath[strings.LastIndex(relPath, "/")+1:]
-	ok, err := path.Match(p, base)
-	return err == nil && ok
+	if patternSegs[0] == "**" {
+		if len(patternSegs) == 1 {
+			// Trailing "**": everything inside, so at least one segment.
+			return len(pathSegs) >= 1
+		}
+		for i := 0; i <= len(pathSegs); i++ {
+			if matchSegments(patternSegs[1:], pathSegs[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(pathSegs) == 0 {
+		return false
+	}
+	ok, err := path.Match(patternSegs[0], pathSegs[0])
+	return err == nil && ok && matchSegments(patternSegs[1:], pathSegs[1:])
 }
 
 // codeownersOwners resolves the effective owners for a repo-relative path
@@ -107,6 +137,10 @@ func TestCodeownersOwnersMatchesGitignoreVariants(t *testing.T) {
 		{"glob *.gitmodules revokes", "*.gitmodules", false},
 		{"catch-all * revokes", "*", false},
 		{"globstar ** revokes", "**", false},
+		{"globstar **/.gitmodules revokes", "**/.gitmodules", false},
+		{"globstar /**/.gitmodules revokes", "/**/.gitmodules", false},
+		{"globstar **/sub/.gitmodules misses root file", "**/sub/.gitmodules", true},
+		{"inside-only .gitmodules/** misses the file itself", ".gitmodules/**", true},
 		{"dir-only .gitmodules/ cannot match a file", ".gitmodules/", true},
 		{"anchored sub/.gitmodules misses root file", "sub/.gitmodules", true},
 		{"unrelated experiments keeps owner", "experiments", true},
