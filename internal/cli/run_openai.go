@@ -93,11 +93,11 @@ var (
 	// that wakes only briefly (macOS maintenance wakes last 45-60 s) still
 	// gets a check in each wake.
 	openAIRefreshWatchdog = 30 * time.Second
-	// openAIWallNow is the refresher's wall clock: time.Now with the
+	// openAIWallNowFn is the refresher's wall clock: time.Now with the
 	// monotonic reading stripped, so comparisons count time the host spent
-	// asleep, as the gateway's expiry does. Tests substitute it to simulate
-	// a host that slept.
-	openAIWallNow = func() time.Time { return time.Now().Round(0) }
+	// asleep, as the gateway's expiry does. Override in tests to return a
+	// clock that runs ahead of the real one, simulating a host that slept.
+	openAIWallNowFn = func() time.Time { return time.Now().Round(0) }
 )
 
 // openAIProviderHandle describes a run-scoped provider instance created by
@@ -921,7 +921,7 @@ func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.P
 		if openAIRefreshJitter > 0 {
 			jitter = time.Duration(rand.Int64N(int64(openAIRefreshJitter)))
 		}
-		now := openAIWallNow()
+		now := openAIWallNowFn()
 		delay := openAIRefreshDelay(expiresAt, now, jitter)
 		if !waitOpenAIRefresh(ctx, delay, now.Add(delay)) {
 			return
@@ -940,7 +940,7 @@ func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.P
 			// An attempt is bounded by what is left of the credential it is
 			// renewing — but an already-expired credential is exactly when a
 			// refresh is needed most (a suspended laptop), so keep a floor.
-			budget := expiresAt.Sub(openAIWallNow())
+			budget := expiresAt.Sub(openAIWallNowFn())
 			if budget < time.Minute {
 				budget = time.Minute
 			}
@@ -958,7 +958,7 @@ func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.P
 			return
 		}
 		expiresAt = next.Round(0)
-		printer.StepDone(fmt.Sprintf("OpenAI credential refreshed for %s (%s, next expiry in %s)", h.name, h.source, expiresAt.Sub(openAIWallNow()).Round(time.Minute)))
+		printer.StepDone(fmt.Sprintf("OpenAI credential refreshed for %s (%s, next expiry in %s)", h.name, h.source, expiresAt.Sub(openAIWallNowFn()).Round(time.Minute)))
 	}
 }
 
@@ -981,7 +981,7 @@ func waitOpenAIRefresh(ctx context.Context, delay time.Duration, dueAt time.Time
 		case <-timer.C:
 			return true
 		case <-watchdog.C:
-			if !openAIWallNow().Before(dueAt) {
+			if !openAIWallNowFn().Before(dueAt) {
 				return true
 			}
 		}

@@ -962,16 +962,16 @@ func TestRunOpenAIRefresh_GivesUpAfterRetries(t *testing.T) {
 func simulateOpenAIHostSleep(t *testing.T, watchdog time.Duration) *atomic.Int64 {
 	t.Helper()
 	var slept atomic.Int64
-	prevWatchdog, prevNow := openAIRefreshWatchdog, openAIWallNow
+	prevWatchdog, prevNow := openAIRefreshWatchdog, openAIWallNowFn
 	openAIRefreshWatchdog = watchdog
-	openAIWallNow = func() time.Time { return time.Now().Round(0).Add(time.Duration(slept.Load())) }
-	t.Cleanup(func() { openAIRefreshWatchdog, openAIWallNow = prevWatchdog, prevNow })
+	openAIWallNowFn = func() time.Time { return time.Now().Round(0).Add(time.Duration(slept.Load())) }
+	t.Cleanup(func() { openAIRefreshWatchdog, openAIWallNowFn = prevWatchdog, prevNow })
 	return &slept
 }
 
 func TestWaitOpenAIRefresh_WallClockPastDueReleasesTheWait(t *testing.T) {
 	slept := simulateOpenAIHostSleep(t, 5*time.Millisecond)
-	dueAt := openAIWallNow().Add(time.Hour)
+	dueAt := openAIWallNowFn().Add(time.Hour)
 	// The monotonic timer still has an hour to go; the wall clock says the
 	// host slept past the deadline.
 	slept.Store(int64(2 * time.Hour))
@@ -992,19 +992,19 @@ func TestWaitOpenAIRefresh_WatchdogDoesNotFireAheadOfTheTimer(t *testing.T) {
 	defer cancel()
 	// An awake host: the watchdog ticks many times before ctx ends, but the
 	// wall-clock deadline is still an hour out.
-	assert.False(t, waitOpenAIRefresh(ctx, time.Hour, openAIWallNow().Add(time.Hour)), "only ctx ends the wait")
+	assert.False(t, waitOpenAIRefresh(ctx, time.Hour, openAIWallNowFn().Add(time.Hour)), "only ctx ends the wait")
 }
 
 func TestWaitOpenAIRefresh_TimerReleasesTheWait(t *testing.T) {
 	simulateOpenAIHostSleep(t, time.Hour)
-	assert.True(t, waitOpenAIRefresh(context.Background(), 10*time.Millisecond, openAIWallNow().Add(10*time.Millisecond)))
+	assert.True(t, waitOpenAIRefresh(context.Background(), 10*time.Millisecond, openAIWallNowFn().Add(10*time.Millisecond)))
 }
 
 func TestWaitOpenAIRefresh_StopsOnCancel(t *testing.T) {
 	simulateOpenAIHostSleep(t, time.Hour)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	assert.False(t, waitOpenAIRefresh(ctx, time.Hour, openAIWallNow().Add(time.Hour)))
+	assert.False(t, waitOpenAIRefresh(ctx, time.Hour, openAIWallNowFn().Add(time.Hour)))
 }
 
 func TestRunOpenAIRefresh_RefreshesAfterHostSleep(t *testing.T) {
