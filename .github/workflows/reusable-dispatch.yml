@@ -437,22 +437,28 @@ jobs:
             && -z "${STAGE}" \
             && "${AUTH_CHECK_FAILED}" != "true" ]]; then
             echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to launch the requested agent"
-            echo "authorization_denied=true" >> "${GITHUB_OUTPUT}"
-            echo "authorization_actor=${COMMENT_USER_LOGIN}" >> "${GITHUB_OUTPUT}"
-            echo "authorization_number=${ISSUE_NUMBER}" >> "${GITHUB_OUTPUT}"
+            {
+              echo "authorization_denied=true"
+              echo "authorization_actor=${COMMENT_USER_LOGIN}"
+              echo "authorization_number=${ISSUE_NUMBER}"
+            } >> "${GITHUB_OUTPUT}"
           fi
 
           if [[ -z "${STAGE}" ]]; then
             echo "No stage matched — skipping dispatch"
-            echo "stage=" >> "${GITHUB_OUTPUT}"
-            echo "command_applicable=${COMMAND_APPLICABLE}" >> "${GITHUB_OUTPUT}"
+            {
+              echo "stage="
+              echo "command_applicable=${COMMAND_APPLICABLE}"
+            } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
           echo "Routed to stage: ${STAGE}"
-          echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
-          echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
-          echo "command_applicable=${COMMAND_APPLICABLE}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "stage=${STAGE}"
+            echo "trigger_source=${TRIGGER_SOURCE}"
+            echo "command_applicable=${COMMAND_APPLICABLE}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Check for existing PRs
         id: pr-check
