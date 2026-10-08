@@ -65,9 +65,12 @@ sequenceDiagram
 | Content capture (Level 3) | Text, reasoning, tool calls and tool results (correlating ids) | Text, reasoning, tool calls (no correlating ids) — pi's parser emits neither ids nor tool results yet ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) | Text, reasoning, tool calls (no correlating ids) — codex's parser emits neither ids nor tool results ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) |
 | Tool spans (`execute_tool`) | One per id-bearing tool call (server-side tools get none), up to 1,024 per iteration, a child of the iteration's `agent` span, timed at receipt | None — the parser emits no call ids ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) | None — the parser emits no call ids ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) |
 
-All three run unattended in the same sandbox, behind the same egress allowlist. Choose `pi` when you
+All four run unattended in the same sandbox, behind the same egress allowlist. Choose `pi` when you
 want a non-Anthropic model, several vendors from one runtime, or its `Agent`/`Task` sub-agent roster.
 Choose `codex` when you want OpenAI models specifically and codex's shell-centric way of working.
+Choose `opencode` for an experimental open-source runtime backed by configurable providers; it is
+currently limited to read-only agents (`triage`, `prioritize`) until the security-hook adapter
+lands ([#7824](https://github.com/fullsend-ai/fullsend/issues/7824)).
 
 ## Selecting a runtime and model
 

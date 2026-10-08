@@ -329,7 +329,13 @@ RUN case "$TARGETARCH" in \
 
 # OpenCode hygiene defaults. OPENCODE_CONFIG_DIR must match
 # sandbox.SandboxOpenCodeConfig (internal/sandbox/sandbox.go).
-RUN install -d -o root -g sandbox -m 0750 /sandbox/opencode-config
+# Root-owned, group-writable (0775): Bootstrap and the run prelude create
+# subdirectories and write opencode.json as the sandbox user (gid sandbox).
+# The run prelude re-pins OPENCODE_CONFIG_DIR after sourcing .env so the
+# agent cannot redirect the config path; per-run agent tampering with
+# opencode.json is overwritten at the next iteration. Full config-dir
+# lockdown is deferred to the hook adapter (#7824).
+RUN install -d -o root -g sandbox -m 0775 /sandbox/opencode-config
 ENV OPENCODE_CONFIG_DIR="/sandbox/opencode-config" \
     OPENCODE_DISABLE_PROJECT_CONFIG="true"
 

@@ -124,7 +124,7 @@ func parseOpenCodeTranscriptFile(path string) (TranscriptError, bool) {
 	}
 	source := filepath.Base(path)
 	var result *ResultEvent
-	_, _ = parseOpenCodeStream(bytes.NewReader(data), func(evt AgentEvent) {
+	_, _, _ = parseOpenCodeStream(bytes.NewReader(data), func(evt AgentEvent) {
 		if e, ok := evt.(ResultEvent); ok {
 			result = &e
 		}

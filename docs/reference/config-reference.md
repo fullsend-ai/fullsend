@@ -25,7 +25,7 @@ kill_switch: false                   # Emergency stop — disables all agent dis
 keep_history: true                   # Append previous sticky-comment content as collapsed "Previous run" blocks
 
 # ── Runtime ──────────────────────────────────────────────────
-runtime: claude                      # Default agent runtime: claude, pi, codex
+runtime: claude                      # Default agent runtime: claude, pi, codex, opencode
 
 # ── Roles ────────────────────────────────────────────────────
 roles:                               # Agent roles to install (determines which Apps and credentials are provisioned)
@@ -140,7 +140,10 @@ comments are synced to Jira where `<details>` does not render as collapsible.
 ### `runtime`
 
 Default agent runtime for all agents in this repository. Valid values:
-`claude`, `pi`, `codex`. Per-agent overrides in the `agents:` list take
+`claude`, `pi`, `codex`, `opencode`. `opencode` is opt-in and limited to
+read-only agents (`triage`, `prioritize`) until the security-hook adapter
+lands ([#7824](https://github.com/fullsend-ai/fullsend/issues/7824)).
+Per-agent overrides in the `agents:` list take
 precedence. Per-run overrides via `--runtime` flag or `FULLSEND_RUNTIME` env
 var take precedence over both. See
 [Choose a Runtime](../guides/getting-started/choosing-a-runtime.md) for

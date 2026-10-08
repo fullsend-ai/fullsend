@@ -131,8 +131,8 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 		return err
 	}
 
-	trustedPolicy := parseTrustedPermissionPolicy(trustedEnv.ConfigContent)
-	agentMD, err := openCodeAgentMarkdown(agentName, def, trustedPolicy)
+	trustedPolicy, patternMapTools := parseTrustedPermissionPolicy(trustedEnv.ConfigContent)
+	agentMD, err := openCodeAgentMarkdown(agentName, def, trustedPolicy, patternMapTools)
 	if err != nil {
 		return err
 	}
@@ -195,11 +195,13 @@ type openCodeAgentFrontmatter struct {
 // YAML; JSON is valid YAML) followed by the Claude body as the prompt.
 //
 // trustedPolicy is the parsed permission section from OPENCODE_CONFIG_CONTENT.
-// The agent-level permission record is intersected with the trusted policy so
-// that agent frontmatter can only narrow, never widen, the global gate.
-func openCodeAgentMarkdown(agentName string, def *piAgentDef, trustedPolicy map[string]string) ([]byte, error) {
+// patternMapTools is the set of tools that have pattern-map rules in the
+// global config. The agent-level permission record is intersected with the
+// trusted policy so that agent frontmatter can only narrow, never widen, the
+// global gate.
+func openCodeAgentMarkdown(agentName string, def *piAgentDef, trustedPolicy map[string]string, patternMapTools map[string]bool) ([]byte, error) {
 	rec := openCodePermissionRecord(def.Tools)
-	rec = intersectPermissionRecord(rec, trustedPolicy)
+	rec = intersectPermissionRecord(rec, trustedPolicy, patternMapTools)
 	fm := openCodeAgentFrontmatter{
 		Description: def.Description,
 		Mode:        "primary",
@@ -307,29 +309,34 @@ func openCodeToolNamesSorted(rec map[string]string) []string {
 // by validateOpenCodeTrustedEnv, so parse errors return an empty map (the
 // intersection becomes a no-op and the global policy still applies at
 // runtime). Pattern-map values (e.g. bash: {"gh *": "allow", "*": "deny"})
-// are omitted from the result so the global config-level rule continues to
-// apply at runtime. Collapsing them to "deny" here would override the global
-// pattern-map's per-command allowances in the agent frontmatter.
-func parseTrustedPermissionPolicy(configContent string) map[string]string {
+// are omitted from the flat result and their tool names are returned in
+// patternMapTools so intersectPermissionRecord can skip wildcard fallback
+// for them — the global config-level pattern map is the source of truth at
+// runtime. Collapsing pattern maps to "deny" would override the global
+// pattern-map's per-command allowances in the agent frontmatter; falling
+// back to a wildcard deny for them would have the same over-deny effect.
+func parseTrustedPermissionPolicy(configContent string) (policy map[string]string, patternMapTools map[string]bool) {
 	var config struct {
 		Permission map[string]json.RawMessage `json:"permission"`
 	}
 	if err := json.Unmarshal([]byte(configContent), &config); err != nil {
-		return nil
+		return nil, nil
 	}
-	result := make(map[string]string, len(config.Permission))
+	policy = make(map[string]string, len(config.Permission))
+	patternMapTools = make(map[string]bool)
 	for tool, raw := range config.Permission {
 		var action string
 		if err := json.Unmarshal(raw, &action); err == nil {
-			result[tool] = action
+			policy[tool] = action
 		} else {
-			// Pattern map — omit from the intersection result so the
-			// global rule (which carries the full pattern map) applies
-			// at runtime. Collapsing to "deny" here would override
-			// the global pattern-map's per-command allowances.
+			// Pattern map — record the tool name so the intersection
+			// skips wildcard fallback for it. The global config-level
+			// rule (which carries the full pattern map) applies at
+			// runtime via findLast ordering.
+			patternMapTools[tool] = true
 		}
 	}
-	return result
+	return policy, patternMapTools
 }
 
 // intersectPermissionRecord caps the agent-level permission record so that any
@@ -345,16 +352,27 @@ func parseTrustedPermissionPolicy(configContent string) map[string]string {
 //     is preserved (it can narrow to "deny" but not widen to "allow" if the
 //     tool isn't in its allowlist).
 //   - The wildcard "*" entry in the trusted policy applies to any tool not
-//     explicitly listed in the policy.
+//     explicitly listed in the policy and not in patternMapTools.
+//   - Tools in patternMapTools are governed by a global pattern-map rule
+//     (e.g. bash: {"gh *": "allow", "*": "deny"}). The wildcard fallback
+//     must not apply to them — the global pattern map is the source of truth
+//     at runtime, and a flat deny/ask from the wildcard would override the
+//     per-command allows the pattern map defines.
 //
 // An empty rec (unrestricted agent) is left empty — the global policy applies.
-func intersectPermissionRecord(rec map[string]string, trustedPolicy map[string]string) map[string]string {
+func intersectPermissionRecord(rec map[string]string, trustedPolicy map[string]string, patternMapTools map[string]bool) map[string]string {
 	if len(rec) == 0 || len(trustedPolicy) == 0 {
 		return rec
 	}
 	for tool, agentAction := range rec {
 		policyAction, ok := trustedPolicy[tool]
 		if !ok {
+			// Tools with a pattern-map rule in the global config must
+			// not fall back to the wildcard — the per-command pattern
+			// map is more specific and applies at runtime.
+			if patternMapTools[tool] {
+				continue
+			}
 			// Fall back to the wildcard entry.
 			policyAction = trustedPolicy["*"]
 		}

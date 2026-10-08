@@ -528,11 +528,14 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	}
 
 	var streamParseErr error
-	if _, parseErr := parseOpenCodeStream(reader, handler); parseErr != nil {
+	var malformedLines int
+	if _, ml, parseErr := parseOpenCodeStream(reader, handler); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		streamParseErr = parseErr
 		cancel()
 		io.Copy(io.Discard, reader)
+	} else {
+		malformedLines = ml
 	}
 
 	waitErr := execCmd.Wait()
@@ -547,10 +550,15 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 		return exitCode, fmt.Errorf("opencode hook adapter missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
 	}
 
-	// A stream parse error means the NDJSON output was corrupt or truncated;
-	// treat as a failed run so a broken stream cannot pass as successful.
+	// A stream parse error or silently skipped malformed lines means the
+	// NDJSON output was corrupt or truncated; treat as a failed run so a
+	// broken stream cannot pass as successful.
 	if exitCode == 0 && streamParseErr != nil {
 		printer.StepWarn("opencode exited 0 but the output stream failed to parse: " + sanitizeOutput(streamParseErr.Error()))
+		return 1, nil
+	}
+	if exitCode == 0 && malformedLines > 0 {
+		printer.StepWarn(fmt.Sprintf("opencode exited 0 but the output stream contained %d malformed line(s)", malformedLines))
 		return 1, nil
 	}
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {
