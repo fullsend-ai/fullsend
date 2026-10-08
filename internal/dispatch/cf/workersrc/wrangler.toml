@@ -25,7 +25,7 @@ enabled = true
 #
 # [vars]
 # ROLE_APP_IDS = ""          # JSON map: role → GitHub App ID
-# ALLOWED_ORGS = ""          # Legacy org list; ignored by the mint
+# PER_REPO_WIF_REPOS = ""    # Comma-separated owner/repo list ("*" = public mode)
 # ALLOWED_ROLES = ""         # Comma-separated role names
 # ALLOWED_WORKFLOW_FILES = "" # Comma-separated workflow file patterns (unset = fail-closed)
 # Note: OIDC audience is a compile-time constant (mintconsts.OIDCAudience)

@@ -15,7 +15,7 @@ Deploy and manage the OIDC token mint service. The mint exchanges GitHub Actions
 | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
 | `fullsend mint remove-role <role>` | Remove a role from the mint |
 | `fullsend mint enroll <owner/repo>` | Register a repo in the mint |
-| `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
+| `fullsend mint unenroll <owner/repo>` | Remove a repo from the mint |
 | `fullsend mint workflow-host add <owner/repo>` | Add a repo to the workflow-host allow-list |
 | `fullsend mint workflow-host remove <owner/repo>` | Remove a repo from the workflow-host allow-list |
 | `fullsend mint workflow-host list` | List the workflow-host allow-list |
@@ -36,7 +36,9 @@ fullsend mint deploy \
   --region "us-central1"
 ```
 
-The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and org registration.
+The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure.
+
+`mint deploy` does not enroll any organization or repository. Per-org enrollment (bare-org `mint enroll <org>` / `mint unenroll <org>`) and the Cloudflare `--allowed-orgs` flag have been removed; enroll each repository with `fullsend mint enroll <owner/repo>`. See [Cleaning up legacy per-org mint state](../guides/infrastructure/mint-administration.md#cleaning-up-legacy-per-org-mint-state) for removing leftover org entries from existing mints.
 
 Use `--public` to deploy a **public mint** (`PER_REPO_WIF_REPOS=*` with permissive WIF). Public mints accept any org that calls upstream reusable workflows in `fullsend-ai/fullsend`; org enrollment is not required. Unlike standalone JWKS mints, GCF-hosted public mints still need permissive WIF for the STS exchange path.
 
@@ -114,7 +116,6 @@ Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `
 | `--skip-deploy` | `false` | Skip code upload, reuse existing function (GCP only) |
 | `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
 | `--preview` | `""` | Preview alias for `wrangler versions upload` (Cloudflare only). Example: `--preview=bt-run-42` |
-| `--allowed-orgs` | | Comma-separated allowed GitHub orgs (Cloudflare only, sets `ALLOWED_ORGS`). Legacy: the mint no longer uses `ALLOWED_ORGS` to authorize callers. Omit to preserve existing; set to `""` to clear |
 | `--per-repo-wif-repos` | | Comma-separated per-repo WIF repos (Cloudflare only, sets `PER_REPO_WIF_REPOS`). Mutually exclusive with `--public` |
 | `--workflow-host-repos` | | Comma-separated workflow host repos (Cloudflare only, sets `WORKFLOW_HOST_REPOS`). Omit to preserve existing; set to `""` to clear |
 | `--allowed-workflow-files` | | Comma-separated workflow file basenames (Cloudflare only, sets `ALLOWED_WORKFLOW_FILES`). Durable: omit to preserve existing binding; set to `""` to clear. Preview: defaults to `*` when omitted (all basenames allowed) |
@@ -240,15 +241,15 @@ Enrollment creates the WIF provider needed for OIDC verification only — it doe
 
 ## `mint unenroll`
 
-Removes an organization or repository from the mint's allowed list.
+Removes a repository from the mint's `PER_REPO_WIF_REPOS` list. By default the repository's dedicated WIF provider is disabled; pass `--delete-provider` to delete it permanently.
 
 ```bash
-fullsend mint unenroll <org|owner/repo> \
+fullsend mint unenroll <owner/repo> \
   --project "<GCP_PROJECT>" \
   --region "us-central1"
 ```
 
-Unlike `mint enroll`, which accepts only `owner/repo` targets, `mint unenroll` still accepts a bare org. This asymmetry is intentional: bare-org unenrollment exists for legacy cleanup. It removes the org from `ALLOWED_ORGS` and from the shared WIF provider condition, and it does not remove repository entries from `PER_REPO_WIF_REPOS`. Current repository authorization is managed with `owner/repo` targets.
+Like `mint enroll`, `mint unenroll` accepts only `owner/repo` targets. Bare-org unenrollment has been removed and a bare org argument is rejected with an error. To remove leftover org entries from `ALLOWED_ORGS` or the shared WIF provider condition on an existing mint, follow [Cleaning up legacy per-org mint state](../guides/infrastructure/mint-administration.md#cleaning-up-legacy-per-org-mint-state).
 
 ## `mint workflow-host`
 

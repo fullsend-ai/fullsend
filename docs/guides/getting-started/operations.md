@@ -149,7 +149,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
 | GCP Admin (Mint) | `fullsend mint remove-role <role>` | Remove a role from the mint (deletes PEM secret by default) |
 | GCP Admin (Mint) | `fullsend mint enroll <owner/repo>` | Register a repo in the mint (does not grant Agent Platform access — use `inference provision`) |
-| GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
+| GCP Admin (Mint) | `fullsend mint unenroll <owner/repo>` | Remove a repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
 | Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, repair component drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access, GitLab pipeline-variable override-role inspection — typed jobs require verified `no_one_allowed` before template delivery; legacy upgrades need maintenance-window preparation; legacy variable-based wrappers are exempt), repair scaffold content drift, refresh a declared configuration preset, rewrite a drifted managed `.fullsend/config.yaml`, upgrade refs |

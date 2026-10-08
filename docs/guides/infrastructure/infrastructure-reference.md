@@ -208,7 +208,7 @@ Mode is inferred from `PER_REPO_WIF_REPOS` — there is no separate trust-mode f
 - **PER_REPO_WIF_REPOS**: Any repository may mint (cross-org isolation still enforced at installation lookup). For the GCF mint, all repos use `WIF_PROVIDER_NAME`
 - **job_workflow_ref validation**: Same as tight mode — the upstream plus repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`). `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2, revised 2026-08-05)
 - **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
-- **mint enroll**: Succeeds without changing mint configuration (repository registration is unnecessary); **mint unenroll** for individual orgs is rejected
+- **mint enroll**: Succeeds without changing mint configuration (repository registration is unnecessary); **mint unenroll** for individual repositories is not supported in public mode
 
 **GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `PER_REPO_WIF_REPOS=*` and permissive WIF together; in tight mode (default), `mint deploy` provisions an org-scoped WIF provider and `mint enroll` creates a dedicated repo-scoped WIF provider for each enrolled repository. Redeploys must match the mint mode (`--public` for public, omit for tight).
 
@@ -456,7 +456,6 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  │ Function          │ SHA256 hash comparison to skip           │
 │  │                   │ redundant deploys                        │
 │  │                   │ Env vars:                                │
-│  │                   │   ALLOWED_ORGS                           │
 │  │                   │   GCP_PROJECT_NUMBER                     │
 │  │                   │   WIF_POOL_NAME                          │
 │  │                   │   WIF_PROVIDER_NAME                      │

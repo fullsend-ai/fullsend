@@ -751,7 +751,7 @@ infrastructure, coordinate between roles:
 |------|------|---------|
 | 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
 | 2 | GCP Admin (Inference) | GitHub: `fullsend inference deprovision <org>` (WIF cleanup). GitLab: `inference deprovision` does not cover the shared `gitlab-oidc` provider — see [Operations § Per-repo teardown](operations.md#per-repo-teardown) step 6 to revoke each repo's WIF trust instead. |
-| 3 | GCP Admin (Mint) | `fullsend mint unenroll <owner/repo>` for each enrolled repository, adding `--delete-provider` to permanently delete its dedicated WIF provider (self-hosted mints only; not needed for the hosted community mint). Bare-org `mint unenroll <org>` is optional legacy cleanup of `ALLOWED_ORGS` and the shared WIF condition; it does not remove `PER_REPO_WIF_REPOS` entries or repo providers. |
+| 3 | GCP Admin (Mint) | `fullsend mint unenroll <owner/repo>` for each enrolled repository, adding `--delete-provider` to permanently delete its dedicated WIF provider (self-hosted mints only; not needed for the hosted community mint). Org entries left by the removed per-org enrollment need manual cleanup — see [Cleaning up legacy per-org mint state](../infrastructure/mint-administration.md#cleaning-up-legacy-per-org-mint-state). |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
 flag: `--yes` for `repos` commands, `--yolo` for `github` and `mint`

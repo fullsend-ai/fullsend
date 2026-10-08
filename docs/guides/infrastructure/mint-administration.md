@@ -9,7 +9,7 @@ This guide covers deploying and managing the fullsend token mint. The mint is th
 | `mint add-role` | Add an agent role (PEM secret + `ROLE_APP_IDS` entry) |
 | `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
 | `mint enroll` | Register a repo in `PER_REPO_WIF_REPOS` and create its WIF provider |
-| `mint unenroll` | Remove an org or repo from the mint |
+| `mint unenroll` | Remove a repo from the mint |
 | `mint workflow-host add` | Add a repo to the workflow-host allow-list |
 | `mint workflow-host remove` | Remove a repo from the workflow-host allow-list |
 | `mint workflow-host list` | List the workflow-host allow-list |
@@ -294,7 +294,7 @@ Role PEM secrets and `ROLE_APP_IDS` must already exist on the mint, created duri
 
 When the mint is configured with `PER_REPO_WIF_REPOS=*` (public mode), `mint enroll` exits successfully (exit code 0) in both public and tight modes, but only tight mode updates `PER_REPO_WIF_REPOS` and WIF. In public mode, repository registration is unnecessary because all repositories are already allowed — the command discovers the mint and reports public mode without changing configuration. Scripts can call enroll in both modes without branching; per-repo installs on a public mint use the default WIF provider and upstream reusable workflows.
 
-`mint unenroll` cannot remove individual orgs from a public mint. To restrict access, clear `PER_REPO_WIF_REPOS=*` and set an explicit repo list. PEM rotation is not required, but the transition is not config-only on every mint:
+`mint unenroll` cannot remove individual repositories from a public mint. To restrict access, clear `PER_REPO_WIF_REPOS=*` and set an explicit repo list. PEM rotation is not required, but the transition is not config-only on every mint:
 
 - **JWKS-backed mints** verify tokens without per-repo WIF providers, so replacing `*` with an explicit repo list is a config-only change.
 - **GCF mints** select a dedicated per-repo WIF provider for every repo in the explicit list. Public-mode enrollment skips creating those providers, so a public-only GCF mint may not have them. Provision a dedicated repo WIF provider for each repo before (or as part of) switching to the explicit list; otherwise token minting for those repos fails.
@@ -309,19 +309,15 @@ This prevents a class of bugs where the service template is updated but traffic 
 
 Enroll repositories serially — do not run concurrent enrollment commands against the same mint. The CLI reads the current env vars, merges the new repo's entry, and writes the result back. Two concurrent enrollments will race, and one repo's entry may be lost.
 
-## Unenrolling organizations and repositories
+## Unenrolling repositories
 
-`fullsend mint unenroll` removes an organization or repository from the mint.
+`fullsend mint unenroll` removes a repository from the mint. Only `owner/repo` targets are accepted. A bare org argument is rejected because per-org unenrollment was removed with per-org installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)). To clean up org entries that an older CLI left behind, see [Cleaning up legacy per-org mint state](#cleaning-up-legacy-per-org-mint-state).
 
 ```bash
-# Unenroll an organization
-fullsend mint unenroll acme-corp --project="$GCP_PROJECT"
-
-# Unenroll a specific repository
 fullsend mint unenroll acme-corp/my-repo --project="$GCP_PROJECT"
 ```
 
-Org-scoped unenroll removes the org from mint env vars and the shared WIF provider's attribute condition. Role PEM secrets are shared across orgs and are not modified. Repo-scoped unenroll only disables the repo-specific WIF provider (or permanently deletes it with `--delete-provider`) — it does not touch PEM secrets.
+Unenroll removes the repository from `PER_REPO_WIF_REPOS` and disables its repo-specific WIF provider. Pass `--delete-provider` to delete the provider permanently instead. Role PEM secrets are shared across repositories and are not modified.
 
 ### Flags
 
@@ -329,9 +325,72 @@ Org-scoped unenroll removes the org from mint env vars and the shared WIF provid
 |------|---------|-------------|
 | `--project` | | GCP project ID (required) |
 | `--region` | `us-central1` | Cloud region for the mint service |
-| `--delete-provider` | `false` | Permanently delete WIF provider (repo-scoped only) |
+| `--delete-provider` | `false` | Permanently delete the repo's WIF provider |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--yolo` | `false` | Skip interactive confirmation (for automation) |
+
+## Cleaning up legacy per-org mint state
+
+Per-org mint enrollment was removed along with per-org installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)). This is a breaking change for scripts and automation:
+
+- `fullsend mint enroll <org>` and `fullsend mint unenroll <org>` with a bare org argument now fail. Enroll and unenroll each repository with an `owner/repo` target.
+- `fullsend mint deploy --allowed-orgs` was removed. Passing it fails with `unknown flag: --allowed-orgs`.
+- `mint deploy` no longer writes `ALLOWED_ORGS` on GCP or Cloudflare, and `mint status` no longer reports it.
+- The fullsend action no longer runs a vendored CLI from the per-org location `bin/fullsend`. It only uses `.fullsend/bin/fullsend`, which per-repo installs create with `--vendor`. If `bin/fullsend` exists, the action logs a warning and ignores it.
+
+Mints that older CLI versions deployed or enrolled orgs in can still hold org-level state. The mint authorizes callers only through `PER_REPO_WIF_REPOS` and ignores `ALLOWED_ORGS`, so this cleanup is hygiene: leftover entries do not grant access to the mint. The CLI cannot remove them anymore, so clean them up manually.
+
+> **Do not touch inference WIF.** These steps apply only to the mint's WIF pool (`fullsend-pool`, provider `github-oidc`). Organization-scoped inference WIF set up by `fullsend inference provision <org>` uses the separate `fullsend-inference` pool and is managed by `fullsend inference deprovision <org>`. Do not edit the inference pool's providers as part of this cleanup.
+
+### GCP mints
+
+1. Inspect the attribute condition on the mint's shared WIF provider:
+
+   ```bash
+   gcloud iam workload-identity-pools providers describe github-oidc \
+     --workload-identity-pool=fullsend-pool \
+     --location=global \
+     --project="$GCP_PROJECT" \
+     --format='value(attributeCondition)'
+   ```
+
+   If the condition is `assertion.repository_owner != ''`, the mint is in public mode. Leave it as is. If it lists organizations, such as `assertion.repository_owner in ['x0fullsend0placeholder', 'acme-corp', 'other-org']`, those org entries were added by the removed per-org enrollment.
+
+2. Rewrite the condition without the legacy org entries. Keep the deploy-time placeholder org `x0fullsend0placeholder` so the condition never becomes empty:
+
+   ```bash
+   gcloud iam workload-identity-pools providers update-oidc github-oidc \
+     --workload-identity-pool=fullsend-pool \
+     --location=global \
+     --project="$GCP_PROJECT" \
+     --attribute-condition="assertion.repository_owner == 'x0fullsend0placeholder'"
+   ```
+
+   Per-repo providers created by `mint enroll <owner/repo>` are separate providers in the same pool. Leave them alone.
+
+3. Remove the leftover `ALLOWED_ORGS` environment variable from the mint service:
+
+   ```bash
+   gcloud run services update fullsend-mint \
+     --project="$GCP_PROJECT" --region="$MINT_REGION" \
+     --remove-env-vars=ALLOWED_ORGS
+   ```
+
+   This creates a new revision. The mint uses REVISION-pinned traffic, so the new revision does not serve requests until you route traffic to it:
+
+   ```bash
+   gcloud run services update-traffic fullsend-mint \
+     --project="$GCP_PROJECT" --region="$MINT_REGION" \
+     --to-latest
+   ```
+
+   Then run `fullsend mint status --mint-url= --project="$GCP_PROJECT"` and confirm that the template and the traffic revision match. See [Template/traffic revision divergence](#templatetraffic-revision-divergence). The next `fullsend mint enroll` for a new repository pins traffic to a specific revision again.
+
+### Cloudflare mints
+
+Durable Worker deploys pass `--keep-vars`, so an `ALLOWED_ORGS` variable from an older deploy remains on the Worker. Delete it in the Cloudflare dashboard: open **Workers & Pages**, select the mint Worker (`fullsend-mint` by default), then go to **Settings** > **Variables and Secrets** and delete `ALLOWED_ORGS`. Later `mint deploy` runs do not add it back.
+
+Cloudflare mints have no GCP WIF provider, so no attribute condition cleanup is needed.
 
 ## Managing workflow hosts
 
