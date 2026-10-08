@@ -103,17 +103,25 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 		return err
 	}
 
-	refs, err := harnessdispatch.Dispatch(ctx, harnessdispatch.Options{
+	result, err := harnessdispatch.DispatchResult(ctx, harnessdispatch.Options{
 		ConfigDir: opts.configDir,
 		Event:     event,
 	})
 	if err != nil {
 		return err
 	}
+	if result.AuthorizationDenied {
+		if err := harnessdispatch.AuthorizationDeniedComment(ctx, client, event); err != nil {
+			// Authorization remains denied even if the explanatory comment cannot
+			// be posted. Keep the dispatch matrix empty and surface the best-effort
+			// notification failure in the Actions log.
+			fmt.Fprintf(os.Stderr, "::warning::could not post authorization-denial comment: %v\n", err)
+		}
+	}
 
 	switch strings.ToLower(opts.outputDriver) {
 	case "gha-matrix", "":
-		data, err := output.WriteGHAMatrix(refs)
+		data, err := output.WriteGHAMatrix(result.Refs)
 		if err != nil {
 			return err
 		}
@@ -124,7 +132,7 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 			fmt.Println()
 		}
 	case "json":
-		if err := output.WriteJSON(os.Stdout, refs); err != nil {
+		if err := output.WriteJSON(os.Stdout, result.Refs); err != nil {
 			return err
 		}
 	default:

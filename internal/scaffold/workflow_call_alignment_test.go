@@ -787,6 +787,14 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 	for _, wc := range cases {
 		t.Run(wc.name, func(t *testing.T) {
 			s := string(wc.content(t))
+			assert.Contains(t, s, "authorization_denied",
+				"unauthorized slash commands must expose a route output for notification")
+			assert.Contains(t, s, "fullsend-authorization-notice-",
+				"authorization notices must be serialized per work item")
+			assert.Contains(t, s, "fullsend:authorization-denied:",
+				"authorization notices must use the shared first-denial marker")
+			assert.Contains(t, s, "issues: write",
+				"the route and notification jobs need issue-comment write access")
 
 			assert.Contains(t, s, "has_repo_permission",
 				"permission helper should be parameterized by min role")
@@ -794,7 +802,7 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 				"triage arm must return explicitly (not rely on [[ ]] exit status)")
 
 			// Observation slash commands (triage min level)
-			assert.Regexp(t, `/fs-triage\)\s*\n\s+if \[\[ "\$\{COMMENT_USER_TYPE\}" != "Bot" \]\] && is_authorized triage;`, s)
+			assert.Regexp(t, `/fs-triage\)\s*\n(?:\s+COMMAND_APPLICABLE=true\s*\n)?\s+if \[\[ "\$\{COMMENT_USER_TYPE\}" != "Bot" \]\] && is_authorized triage;`, s)
 			assert.Regexp(t, `is_authorized triage; then\s*\n\s+STAGE="review"`, s)
 
 			// Mutation slash commands stay at write+ (default is_authorized)

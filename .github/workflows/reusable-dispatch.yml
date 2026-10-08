@@ -107,12 +107,15 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     permissions:
       contents: read
-      issues: read
+      issues: write
       pull-requests: read
     outputs:
       stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
+      authorization_denied: ${{ steps.route.outputs.authorization_denied || 'false' }}
+      authorization_actor: ${{ steps.route.outputs.authorization_actor || '' }}
+      authorization_number: ${{ steps.route.outputs.authorization_number || '' }}
     steps:
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}
@@ -145,6 +148,7 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_USER_TYPE: ${{ github.event.comment.user.type }}
           COMMENT_USER_LOGIN: ${{ github.event.comment.user.login }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
 
           ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
@@ -165,6 +169,7 @@ jobs:
 
           STAGE=""
           TRIGGER_SOURCE=""
+          AUTH_CHECK_FAILED=false
 
           # Report whether the lowercased user is in an OWNERS list. An entry
           # that names an OWNERS_ALIASES key matches only that alias's members,
@@ -236,6 +241,7 @@ jobs:
 
             api_err=$(mktemp) || {
               echo "::warning::Failed to create temp file for permission check of ${username}" >&2
+              AUTH_CHECK_FAILED=true
               return 1
             }
             role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
@@ -253,6 +259,7 @@ jobs:
                     else "none" end
                   else "none" end' 2>"${api_err}") || {
               echo "::warning::Permission API call failed for ${username}: $(cat "${api_err}")" >&2
+              AUTH_CHECK_FAILED=true
               rm -f "${api_err}"
               return 1
             }
@@ -291,16 +298,20 @@ jobs:
             COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
           fi
 
+          COMMAND_APPLICABLE=false
+
           case "${EVENT_NAME}" in
             issue_comment)
               case "${COMMAND}" in
                 /fs-triage)
+                  COMMAND_APPLICABLE=true
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized triage; then
                     STAGE="triage"
                   fi
                   ;;
                 /fs-code)
                   if [[ "${ISSUE_IS_PR}" == "false" ]]; then
+                    COMMAND_APPLICABLE=true
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                       STAGE="code"
                     fi
@@ -308,6 +319,7 @@ jobs:
                   ;;
                 /fs-review)
                   if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                    COMMAND_APPLICABLE=true
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized triage; then
                       STAGE="review"
                     fi
@@ -315,6 +327,7 @@ jobs:
                   ;;
                 /fs-fix)
                   if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                    COMMAND_APPLICABLE=true
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                       STAGE="fix"
                       TRIGGER_SOURCE="${COMMENT_USER_LOGIN}"
@@ -322,11 +335,13 @@ jobs:
                   fi
                   ;;
                 /fs-retro)
+                  COMMAND_APPLICABLE=true
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                     STAGE="retro"
                   fi
                   ;;
                 /fs-prioritize)
+                  COMMAND_APPLICABLE=true
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                     STAGE="prioritize"
                   fi
@@ -410,6 +425,21 @@ jobs:
               fi
               ;;
           esac
+
+          # Keep legacy slash-command denial visible without turning
+          # unrelated comments, bot comments, or inapplicable commands into
+          # authorization notices. The CEL path posts the same marker from
+          # the fullsend binary when its shared gate denies the event.
+          if [[ "${EVENT_NAME}" == "issue_comment" \
+            && "${COMMENT_USER_TYPE}" != "Bot" \
+            && "${COMMAND_APPLICABLE}" == "true" \
+            && -z "${STAGE}" \
+            && "${AUTH_CHECK_FAILED}" != "true" ]]; then
+            echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to launch the requested agent"
+            echo "authorization_denied=true" >> "${GITHUB_OUTPUT}"
+            echo "authorization_actor=${COMMENT_USER_LOGIN}" >> "${GITHUB_OUTPUT}"
+            echo "authorization_number=${ISSUE_NUMBER}" >> "${GITHUB_OUTPUT}"
+          fi
 
           if [[ -z "${STAGE}" ]]; then
             echo "No stage matched — skipping dispatch"
@@ -667,6 +697,52 @@ jobs:
             echo "${EVENT_PAYLOAD}"
             echo "${DELIM}"
           } >> "${GITHUB_OUTPUT}"
+
+  authorization-notice:
+    name: Authorization notice
+    needs: route
+    if: needs.route.outputs.authorization_denied == 'true'
+    runs-on: ${{ inputs.runner_image }}
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    concurrency:
+      group: fullsend-authorization-notice-${{ github.repository }}-${{ needs.route.outputs.authorization_number }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ needs.route.outputs.authorization_number }}
+      ACTOR_LOGIN: ${{ needs.route.outputs.authorization_actor }}
+    steps:
+      - name: Create first-denial comment
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::warning::Skipping authorization notice: invalid issue number"
+            exit 0
+          fi
+          if [[ ! "${ACTOR_LOGIN}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            echo "::warning::Skipping authorization notice: invalid actor login"
+            exit 0
+          fi
+
+          MARKER="<!-- fullsend:authorization-denied:${ACTOR_LOGIN} -->"
+          COMMENTS="$(gh api "repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" --paginate --jq '.[].body')" || {
+            echo "::warning::Could not inspect existing authorization-denial comments"
+            exit 0
+          }
+          if grep -Fq "${MARKER}" <<<"${COMMENTS}"; then
+            echo "Authorization-denial comment already exists for ${ACTOR_LOGIN}"
+            exit 0
+          fi
+
+          BODY="${MARKER}
+
+          @${ACTOR_LOGIN}, this agent launch was blocked because you are not authorized to launch Fullsend agents on this work item. Ask a repository maintainer for access."
+          gh api "repos/${REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            -f body="${BODY}" >/dev/null
 
   triage:
     name: Triage
@@ -1524,6 +1600,7 @@ jobs:
     permissions:
       actions: write
       contents: read
+      issues: write
       pull-requests: read
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}

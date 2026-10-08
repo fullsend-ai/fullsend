@@ -26,23 +26,38 @@ type Options struct {
 	FetchPolicy *fetch.FetchPolicy
 }
 
+// Result describes a dispatch evaluation. AuthorizationDenied is set when
+// the shared authorization gate rejected the event before any harness could
+// run; kill-switch and no-trigger results leave it false.
+type Result struct {
+	Refs                []ExecutionRef
+	AuthorizationDenied bool
+}
+
 // Dispatch evaluates authorization, kill switch, harness triggers, and returns execution refs.
 // Returns empty slice (not error) when denied, kill-switched, or no triggers match.
 // Returns an error when every registered harness fails to resolve or load.
 func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
+	result, err := DispatchResult(ctx, opts)
+	return result.Refs, err
+}
+
+// DispatchResult evaluates authorization, kill switch, harness triggers, and
+// returns execution refs together with the reason an empty result occurred.
+func DispatchResult(ctx context.Context, opts Options) (Result, error) {
 	if opts.Event == nil {
-		return nil, fmt.Errorf("event is required")
+		return Result{}, fmt.Errorf("event is required")
 	}
 	if opts.ConfigDir == "" {
-		return nil, fmt.Errorf("config dir is required")
+		return Result{}, fmt.Errorf("config dir is required")
 	}
 
 	dirCfg, err := config.LoadConfig(opts.ConfigDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 	if dirCfg.IsKillSwitchActive() {
-		return nil, nil
+		return Result{}, nil
 	}
 
 	// Compute the effective role for the auth gate without mutating the
@@ -66,17 +81,17 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 	authCheck := *opts.Event
 	authCheck.Actor.Role = effectiveRole
 	if !IsAuthorized(&authCheck) {
-		return nil, nil
+		return Result{AuthorizationDenied: true}, nil
 	}
 
 	candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, dirCfg, opts.FetchPolicy)
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 
 	matched, err := MatchHarnesses(candidates, opts.Event)
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
 
 	var refs []ExecutionRef
@@ -84,9 +99,9 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		role := m.Harness.Role
 		ref, err := ProjectExecutionRef(m.Name, role, opts.Event)
 		if err != nil {
-			return nil, fmt.Errorf("projecting %s: %w", m.Name, err)
+			return Result{}, fmt.Errorf("projecting %s: %w", m.Name, err)
 		}
 		refs = append(refs, ref)
 	}
-	return refs, nil
+	return Result{Refs: refs}, nil
 }

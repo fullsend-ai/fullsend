@@ -38,6 +38,11 @@ func TestDispatch_AuthDeny(t *testing.T) {
 	assert.Empty(t, refs)
 }
 
+func TestDispatchResult_EmptyConfigDir(t *testing.T) {
+	_, err := DispatchResult(context.Background(), Options{Event: mustEvent(t, "issue-opened.json")})
+	require.EqualError(t, err, "config dir is required")
+}
+
 func TestDispatch_CELIssueMatch(t *testing.T) {
 	dir := t.TempDir()
 	writeHarnessConfig(t, dir, issuePingHarnessYAML())
