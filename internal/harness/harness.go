@@ -370,7 +370,8 @@ type Harness struct {
 	Image                  string                  `yaml:"image,omitempty"`
 	Policy                 string                  `yaml:"policy,omitempty"`
 	Skills                 []SkillEntry            `yaml:"skills,omitempty"`
-	Plugins                []PluginSpec            `yaml:"plugins,omitempty"` // runtime-scoped plugin directories (ADR 0094)
+	Plugins                []PluginSpec            `yaml:"plugins,omitempty"`  // runtime-scoped plugin directories (ADR 0094)
+	Workflow               *WorkflowSpec           `yaml:"workflow,omitempty"` // workflow-definition repository and the workflow to start (ADR 0130)
 	Providers              []string                `yaml:"providers,omitempty"`
 	OpenShell              *OpenShellConfig        `yaml:"openshell,omitempty"`
 	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
@@ -529,6 +530,9 @@ func (h *Harness) Validate() error {
 		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)
 	}
 	if err := h.validatePlugins(); err != nil {
+		return err
+	}
+	if err := h.validateWorkflow(); err != nil {
 		return err
 	}
 	for i, p := range h.Providers {

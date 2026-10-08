@@ -37,6 +37,10 @@ plugins:                             # Directories a runtime loads (ADR 0094)
       FFF_MULTIGREP: "1"             # Exported before the runtime starts (code-loaded entries)
     pi:
       args: ["--fff-mode", "override"] # Flags the extension registers with pi.registerFlag
+workflow:                            # Workflow-definition repository (ADR 0130); claude or pi runtime
+  source: https://github.com/example-org/sample-pipeline/tree/<commit-sha>#sha256=<tree-hash>  # Or a path in this repository ("." is its root)
+  name: run-all                      # Claude plugin only: workflows/run-all.js must exist and declare it
+  args: "triage issue 42"            # Claude plugin only, optional; one literal string the script receives unsplit
 openshell:                           # OpenShell sandbox profiles
   profiles:
     - https://example.com/profile.yaml#sha256=abc...
@@ -192,6 +196,54 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 `plugins` is a top-level field only: it is not part of `ForgeConfig`, so a `plugins:` key under `forge:` or `overlays:` is silently ignored. Walkthrough for the pi side: [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time mechanics: [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
+**`workflow`** — Pins a workflow-definition repository: a Claude Code plugin that ships a workflow script, or a pi extension whose session hook drives the sequence ([ADR 0130](../ADRs/0130-workflow-definition-repos-are-harness-resources.md)). A harness has at most one.
+
+- **`source`** (required) — where the definition is. Two forms:
+  - **A tree URL**: `https://github.com/<owner>/<repo>/tree/<commit sha>[/<path>]#sha256=<tree hash>`, at the repository root or a sub-directory. The ref must be the full 40-character commit sha (a branch or tag is refused) and the `#sha256=` tree hash is required. Only github.com is supported today. The URL must be covered by `allowed_remote_resources` in `config.yaml`, and `fullsend lock` records it with field `workflow`.
+  - **A path** in the repository that holds the harness, `.` being its root: for a harness under `.fullsend/`, the repository that holds `.fullsend/`. The path must be relative, use `/`, and contain no `..`, `.git` or `.fullsend-cache` segment. Only files git tracks under it are read (commit or `git add` a file for it to be delivered), fullsend's configuration directory is never part of it (a path that is that directory or lies inside it is refused), and it has no pin and no lock entry.
+- **`name`** — for a Claude plugin, required: the workflow's `meta.name`, which is the name Claude Code gives the workflow. fullsend finds the script by file name, so it checks that `workflows/<name>.js` exists and that its `meta.name` is `<name>`: keep the file name and `meta.name` identical. A name with no script fails resolution with the list of workflows the definition ships. fullsend allows only letters, digits, `_` and `-` here, which is stricter than Claude Code. For a pi extension, `name` is refused.
+- **`args`** (optional) — for a Claude plugin, one literal string. Claude Code hands the text after the workflow command to the script as a single string, unsplit, in `args`; there is no argument splitting or quoting. No NUL, carriage return or newline, and `args` needs `name`. For a pi extension, `args` is refused.
+
+**Relative sources and `base:`.** A relative `source` in a harness composed through a URL `base:` is resolved in the base harness's repository at the base's commit: `source: pipelines/sample` in a base fetched from `https://raw.githubusercontent.com/example-org/sample-pipeline/<commit-sha>/.fullsend/harness/base.yaml` becomes `https://github.com/example-org/sample-pipeline/tree/<commit-sha>/pipelines/sample`. The path is taken from the repository root, not from the base's `.fullsend/` directory. As for a base plugin, it needs no `#sha256=` fragment: the base's pin covers the path, the definition is fetched at that commit, and `fullsend lock` records its tree hash. The base URL must be pinned at a full commit sha, and `https://raw.githubusercontent.com/<owner>/<repo>/<commit-sha>/<path>/` must be covered by `allowed_remote_resources`, the prefix a base plugin is checked against. Several harnesses of one repository share a pin this way: each is a thin harness with a `base:` that holds the `workflow:`. A relative `source` in a local `base:` file resolves in the git checkout that holds that base file, which may be another checkout than the child's.
+
+**Harnesses added by URL.** A harness registered by URL (`fullsend agent add <url>`, or a `config.yaml` `agents:` entry whose source is a URL) resolves relative paths in your repository, not in the harness's, so a relative `workflow.source` there is refused:
+
+```text
+workflow.source "pipelines/sample" is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness
+```
+
+**The tree's kind decides what runs it.** After the fetch, fullsend classifies the definition the way it classifies a `plugins:` entry, and the kind must match the agent's runtime; a mismatch fails at plan time naming both:
+
+| Definition | Runtime | Delivered as |
+|------------|---------|--------------|
+| Claude Code plugin | `claude` | A plugin directory passed with `--plugin-dir`; `name` and `args` apply |
+| pi extension | `pi` | An extension loaded with `-e`, like a `plugins:` entry; `name` and `args` are refused |
+| either | `dummy`, `dummy-playback` | Accepted, for behaviour tests |
+| either | `codex` and other runtimes | Refused at plan time, before the definition is fetched |
+
+The definition is uploaded under the fixed sandbox directory name `workflow-definition`, so in a harness that declares `workflow:` (its own or composed from `base:`) a `plugins:` entry with that directory name (compared without case) is refused; a harness without `workflow:` may use the name. A Claude plugin's namespace is the `name` in `.claude-plugin/plugin.json`, or `workflow-definition` when that file is absent; a `plugins:` entry with the same Claude Code plugin name is refused. Like every plugin, the definition is injection-scanned before upload when the harness has security enabled (the default; `security.enabled: false` turns the scan off).
+
+A Claude plugin's script must begin with its meta object, as Claude Code requires for listing it: `export const meta = { ... }` is the first statement (comments may precede it) and a plain object literal, with `name` as a single- or double-quoted string. fullsend also needs `;` right after the closing `}`:
+
+```js
+export const meta = { name: 'run-all', description: 'Run every phase' };
+```
+
+fullsend reads this object as text, without running the script, and accepts only strings, numbers, `true`, `false`, `null`, and arrays and objects of these as values. Only spaces or tabs may come between the closing `}` and the `;`; fullsend reads nothing after the `;`. Save the script with LF or CRLF line endings: a lone carriage return, U+2028 or U+2029 before the `;` fails resolution. A meta that is not first, is not a plain object literal (a spread, a computed key, a variable, a template literal or a regular expression as a value), lacks the `;` after its closing `}`, declares `name` more than once or with an escape, or whose `name` differs from the file name fails resolution.
+
+The fetch materializes symlinks whose targets are inside the fetched tree: the target's content is stored under the link's path and counts toward the fetch limits. A symlink that leaves the tree, dangles or loops is refused with its path in the error. The run plan prints the source, its tree hash and how it is delivered:
+
+```text
+Workflow: example-org/sample-pipeline@0123456789ab/pipelines/sample (sha256:<hash>) delivered as claude plugin <namespace>; workflow <name>
+Workflow: pipelines/sample (sha256:<hash>) delivered as pi extension
+```
+
+A remote source is shortened to `<owner>/<repo>@<first 12 characters of the commit>[/<path>]`, a path source is printed as written, and `<hash>` is the first 12 characters of the tree hash.
+
+This release delivers the definition but does not start a Claude workflow: the run still uses the agent's default prompt. Until the runner starts it, the agent prompt must start it, for example by telling the agent to call the `Workflow` tool with name `<namespace>:<name>` and the args string.
+
+`workflow` is a top-level field only: it is not part of `ForgeConfig`, so a `workflow:` key under `forge:` or `overlays:` is silently ignored, as for `plugins`. An older fullsend binary ignores the field too and runs the harness with the default prompt, so a harness that uses it must state the fullsend release it needs.
+
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
 **`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
@@ -232,7 +284,7 @@ More-specific entries go last so they override broader defaults.
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — not a `ForgeConfig` field, so this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
-| `security` | Child replaces entirely |
+| `security`, `workflow` | Child replaces entirely |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution |
 
 ## Referencing resources: local vs. remote
