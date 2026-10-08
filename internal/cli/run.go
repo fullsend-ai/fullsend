@@ -3784,11 +3784,8 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 func stripOIDCEnv(env []string) []string {
 	result := make([]string, 0, len(env))
 	for _, e := range env {
-		if i := strings.IndexByte(e, '='); i > 0 {
-			key := e[:i]
-			if harnessExpansionDenied(key) {
-				continue
-			}
+		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
+			continue
 		}
 		result = append(result, e)
 	}
@@ -4743,14 +4740,11 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 		if strings.HasPrefix(e, "TRACEPARENT=") {
 			continue
 		}
-		if i := strings.IndexByte(e, '='); i > 0 {
-			key := e[:i]
-			// Strip OIDC credential vars, provider-only keys, and the GitHub
-			// workflow token from user-authored child scripts. A minted GH_TOKEN
-			// remains available to the agent through its role-scoped runner environment.
-			if harnessExpansionDenied(key) {
-				continue
-			}
+		// Strip OIDC credential vars, provider-only keys, and the GitHub
+		// workflow token from user-authored child scripts. A minted GH_TOKEN
+		// remains available to the agent through its role-scoped runner environment.
+		if i := strings.IndexByte(e, '='); i > 0 && harnessExpansionDenied(e[:i]) {
+			continue
 		}
 		env = append(env, e)
 	}

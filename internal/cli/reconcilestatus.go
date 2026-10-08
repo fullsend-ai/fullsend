@@ -163,8 +163,8 @@ finalized, this is a no-op.`,
 
 			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
 			guidance := ""
-			if reviewRun && forgePlatform == "github" && trackerSource != "jira" {
-				guidance = builtInGitHubReviewRetryGuidance
+			if reviewRun {
+				guidance = builtInGitHubReviewCancellationGuidance("review", forgePlatform, trackerSource)
 			}
 			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription, guidance)
 		},
