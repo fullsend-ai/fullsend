@@ -159,12 +159,13 @@ references, never secret values.
 | `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` | masked secret | Custom role PAT when `credential` is `own`. Provisioned when the role is registered. |
 | `FULLSEND_GITLAB_ROLE_REGISTRY` | unmasked variable | Administrator registry JSON. Absent or empty = built-ins only. |
 | `FULLSEND_GITLAB_ROLE_ROTATION` | unmasked variable | Version 1 per-role rotation state (lock, token IDs, expiry dates, phase, managed service-account IDs and supplied-account ownership/exclusions). Never stores token values. |
+| `FULLSEND_GITLAB_POLLER_GENERATIONS` | unmasked variable | Version 1 Poller identity-generation state (current, pending, and retiring Poller account IDs and the pending generation's handoff phase). Never stores token values. Not yet written by `repos install`; see [Poller identity generations](#poller-identity-generations). |
 
 Canonical constants live in [`internal/forge/forge.go`](../../internal/forge/forge.go)
 (`SecretForgeToken`, `SecretGitLabPollerToken`,
 `SecretGitLabAnalystToken`, `SecretGitLabCoderToken`,
 `VarGitLabRoleRegistry`,
-`VarGitLabRoleRotation`). Custom secret names
+`VarGitLabRoleRotation`, `VarGitLabPollerGenerations`). Custom secret names
 are derived by `gitlabroles.CustomSecretName`.
 
 Role readiness is checked through the registry/status paths rather than the
@@ -308,6 +309,44 @@ and retains supported legacy/supplied credentials on restricted instances.
 Quota exhaustion or insufficient permissions requires operator action; it
 must not delete unrelated accounts to make space. See the
 [GitLab API contract](https://docs.gitlab.com/api/service_accounts/).
+
+### Poller identity generations
+
+Re-elevating a Poller identity whose runtime credential was ever distributed
+is unsafe, because GitLab has no drain barrier for requests accepted before
+revocation (#8205). The replacement-identity design validated in #8209 instead
+raises a fresh Poller service account that has never held a distributed
+credential. `internal/repos/gitlab_poller_generation.go` implements its
+generation state and handoff sequence (#8210). The live GitLab adapter does not
+implement the `repos.GitLabPollerHandoff` capability yet, so install still
+defers new trigger creation as described below.
+
+The handoff runs under the project lease and records each step in
+`FULLSEND_GITLAB_POLLER_GENERATIONS` before acting:
+
+1. Record the account request, create the fresh service account at Developer,
+   and record its numeric ID. A lost create response leaves no ID, so the
+   generation needs manual reconciliation; fullsend never deletes an account
+   it cannot positively identify. A 404 means project service accounts are
+   unsupported and polling stays the only path.
+2. Verify the account holds no personal access token, create the
+   installer-held bootstrap token, record the elevation, and raise the account
+   to Maintainer.
+3. Record the generation's single trigger-create attempt, then send it. A
+   create request cannot be fenced once sent, so it is never retried.
+4. Revoke the bootstrap token, verify no personal access token is active,
+   demote to Developer, and verify Developer through an independent read.
+5. Require a confirmed trigger owned by the new account, record the generation
+   as verified, and prove the trigger starts a pipeline on the protected
+   default branch at Developer access. Branch protection is never broadened.
+
+A failure after step 3 publishes nothing and quarantines the generation with an
+operator-facing reason. A quarantined generation, a lost account ID, a verified
+generation whose cutover did not complete, or an unresolved retiring Poller
+each block any new generation. The current Poller is never elevated or
+modified, and its polling continues throughout. At most one old/new pair
+exists: cutover makes the verified account current and the old one retiring,
+and no further generation starts until retirement completes.
 
 ### Poller-owned webhook trigger token
 > **Poller elevation safety:** Creating or rotating a Poller-owned trigger
