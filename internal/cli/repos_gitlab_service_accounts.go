@@ -162,16 +162,8 @@ type gitlabPollerTriggerOwner = gitlablifecycle.TriggerOwner
 func newGitLabPollerTriggerOwner(admin *gitlab.LiveClient) *gitlabPollerTriggerOwner {
 	return gitlablifecycle.NewTriggerOwner(admin)
 }
-func pollerCredentialRejected(err error) bool    { return gitlablifecycle.PollerCredentialRejected(err) }
-func roleTokenName(role gitlabroles.Role) string { return gitlablifecycle.RoleTokenName(role) }
-func isManagedPollerTokenName(name string) bool {
-	return gitlablifecycle.IsManagedPollerTokenName(name)
-}
 func resolveProvidedTokenIDs(ctx context.Context, client forge.Client, owner, repo string, provided map[gitlabroles.Role]string) map[gitlabroles.Role]int {
 	return gitlablifecycle.ResolveProvidedTokenIDs(ctx, client, owner, repo, provided)
-}
-func inventoryCoverage(ctx context.Context, c *gitlab.LiveClient, owner, repo string) func(*gitlab.ProjectAccessToken) bool {
-	return gitlablifecycle.InventoryCoverage(ctx, c, owner, repo)
 }
 func resolveProvidedRoleCredentials(ctx context.Context, client forge.Client, owner, repo string, provided map[gitlabroles.Role]string) map[gitlabroles.Role]repos.ProvidedRoleCredential {
 	return gitlablifecycle.ResolveProvidedRoleCredentials(ctx, client, owner, repo, provided)

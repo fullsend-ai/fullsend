@@ -50,7 +50,7 @@ func TestPollerCredentialRejected(t *testing.T) {
 func TestSuppliedProvenanceReadErrorsAreSanitized(t *testing.T) {
 	const sensitive = "opaque credential echoed by remote server"
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v4/projects/g%2Fp/variables/FULLSEND_GITLAB_ROLE_ROTATION", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v4/projects/g%2Fp/variables/"+forge.VarGitLabRoleRotation, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_, err := w.Write([]byte(`{"message":"` + sensitive + `"}`))

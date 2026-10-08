@@ -833,8 +833,11 @@ func cleanupOutgoing(ctx context.Context, cfg RoleRotateConfig, rs *rotationRole
 			var err error
 			inactive, err = verifier.ConfirmOutgoingTokenInactive(ctx, cfg.Owner, cfg.Repo, id)
 			if err != nil {
-				remaining = append(remaining, id)
-				continue
+				// An inventory that cannot prove absence is not a reason to
+				// skip revocation: an ownership-checked revoke through the
+				// available inventory still retires a token that inventory
+				// positively identifies. If it cannot, the obligation stays.
+				inactive = false
 			}
 		}
 		if !inactive {

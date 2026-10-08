@@ -1378,7 +1378,10 @@ func (c *LiveClient) UpdateResourceGroupProcessMode(ctx context.Context, owner, 
 
 // UpdateCIVariable upserts a CI/CD variable (update if exists, create if not).
 func (c *LiveClient) UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error {
-	path := fmt.Sprintf("/projects/%s/variables/%s", projectPath(owner, repo), url.PathEscape(name))
+	// Address the wildcard-scoped variable explicitly: readers use only the
+	// wildcard scope, so an environment-specific variable with the same key
+	// must neither be updated nor satisfy the upsert.
+	path := wildcardVariablePath(owner, repo, name)
 	body := map[string]any{
 		"value":     value,
 		"protected": protected,
@@ -1393,11 +1396,12 @@ func (c *LiveClient) UpdateCIVariable(ctx context.Context, owner, repo, name, va
 	if errors.Is(err, forge.ErrNotFound) {
 		createPath := fmt.Sprintf("/projects/%s/variables", projectPath(owner, repo))
 		createBody := map[string]any{
-			"key":           name,
-			"value":         value,
-			"protected":     protected,
-			"masked":        false,
-			"variable_type": "env_var",
+			"key":               name,
+			"value":             value,
+			"protected":         protected,
+			"masked":            false,
+			"variable_type":     "env_var",
+			"environment_scope": "*",
 		}
 		resp, err = c.post(ctx, createPath, createBody)
 		if err != nil {

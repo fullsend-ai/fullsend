@@ -160,6 +160,7 @@ references, never secret values.
 | `FULLSEND_GITLAB_ROLE_REGISTRY` | unmasked variable | Administrator registry JSON. Absent or empty = built-ins only. |
 | `FULLSEND_GITLAB_ROLE_ROTATION` | unmasked variable | Version 1 per-role rotation state (lock, token IDs, expiry dates, phase, managed service-account IDs and supplied-account ownership/exclusions). Never stores token values. |
 | `FULLSEND_GITLAB_POLLER_GENERATIONS` | unmasked variable | Version 1 Poller identity-generation state (current, pending, and retiring Poller account IDs and the pending generation's handoff phase). Never stores token values. Not yet written by `repos install`; see [Poller identity generations](#poller-identity-generations). |
+| `FULLSEND_GITLAB_INSTALL_LEASE` | unprotected, unmasked variable | Transient lease that serializes `repos install`, role rotation, Poller reconciliation, and `repos uninstall` for one project. Removed when the operation finishes. |
 
 Canonical constants live in [`internal/forge/forge.go`](../../internal/forge/forge.go)
 (`SecretForgeToken`, `SecretGitLabPollerToken`,

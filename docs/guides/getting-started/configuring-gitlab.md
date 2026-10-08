@@ -233,7 +233,12 @@ then converges the project:
   default branch must stay protected. GitLab ties a trigger token to
   the user who creates it, and creating one needs Maintainer. Install
   therefore creates it as the Poller, which is a project service
-  account:
+  account. The live GitLab adapter currently defers this elevation and new
+  trigger creation, because it cannot yet verify that requests accepted
+  before credential revocation have finished (see the Poller elevation
+  safety note in the [`repos` CLI reference](../../cli/repos.md)). The
+  steps below describe the intended procedure once that guarantee is
+  available:
   1. It revokes the Poller's distributed runtime credential
      (`FULLSEND_GITLAB_POLLER_TOKEN` and its personal access token) and the
      managed trigger tokens the Poller already owns, so nothing distributed

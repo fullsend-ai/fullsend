@@ -654,7 +654,10 @@ func TestServiceAccountInvalidAccessClearsReadiness(t *testing.T) {
 }
 
 func TestAbsentOutgoingServiceAccountTokenCleanup(t *testing.T) {
-	for _, inventory := range []string{"complete", "no legacy", "legacy forbidden", "service forbidden", "legacy delete 404", "inactive"} {
+	// When one inventory cannot be listed, absence cannot be proven, but an
+	// outgoing token that the other inventory positively identifies is still
+	// revoked. An outgoing token no reachable inventory knows stays owed.
+	for _, inventory := range []string{"complete", "no legacy", "legacy forbidden", "legacy forbidden active token", "service forbidden", "service forbidden active token", "legacy delete 404", "inactive"} {
 		t.Run(inventory, func(t *testing.T) {
 			ctx := context.Background()
 			sa := newFakeSAAPI()
@@ -665,8 +668,17 @@ func TestAbsentOutgoingServiceAccountTokenCleanup(t *testing.T) {
 				c.Legacy = nil
 			case "legacy forbidden":
 				legacy.failList = forge.ErrForbidden
+				legacy.failRevoke = forge.ErrNotFound
+			case "legacy forbidden active token":
+				legacy.failList = forge.ErrForbidden
+				sa.accounts = []GitLabServiceAccount{{ID: 501, Name: gitlabroles.PollerTokenName}}
+				sa.tokens[501] = []ProjectAccessToken{{ID: 88, Name: gitlabroles.PollerTokenName, Active: true}}
 			case "service forbidden":
 				sa.failList = forge.ErrForbidden
+				legacy.failRevoke = forge.ErrNotFound
+			case "service forbidden active token":
+				sa.failList = forge.ErrForbidden
+				legacy.seed(ProjectAccessToken{ID: 88, Active: true})
 			case "inactive":
 				sa.accounts = []GitLabServiceAccount{{ID: 501, Name: gitlabroles.PollerTokenName}}
 				sa.tokens[501] = []ProjectAccessToken{{ID: 88, Name: gitlabroles.PollerTokenName, Active: false, Revoked: true}}
@@ -678,11 +690,18 @@ func TestAbsentOutgoingServiceAccountTokenCleanup(t *testing.T) {
 			rs := rotationRoleState{Phase: rotationPhaseOverlapping, IncomingID: 99, OutgoingIDs: []int{88}, DistributedAt: now.Add(-48 * time.Hour).Format(time.RFC3339)}
 			listed := []ProjectAccessToken{}
 			cleaned := cleanupOutgoing(ctx, RoleRotateConfig{Owner: "g", Repo: "p", Tokens: c}, &rs, now, 24*time.Hour, &listed)
-			if inventory == "complete" || inventory == "no legacy" || inventory == "inactive" {
+			switch inventory {
+			case "complete", "no legacy", "inactive", "legacy forbidden active token", "service forbidden active token":
 				assert.True(t, cleaned)
 				assert.Empty(t, rs.OutgoingIDs)
 				assert.Equal(t, rotationPhaseIdle, rs.Phase)
-			} else {
+				switch inventory {
+				case "legacy forbidden active token":
+					assert.Equal(t, []int{88}, sa.revoked)
+				case "service forbidden active token":
+					assert.Equal(t, []int{88}, legacy.revoked)
+				}
+			default:
 				assert.False(t, cleaned)
 				assert.Equal(t, []int{88}, rs.OutgoingIDs)
 				assert.Equal(t, rotationPhaseOverlapping, rs.Phase)

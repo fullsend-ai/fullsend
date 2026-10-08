@@ -657,7 +657,9 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 			mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusUnauthorized)
 			})
+			handlerCalled := false
 			mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
 				w.WriteHeader(tc.status)
 			})
 			srv := httptest.NewServer(mux)
@@ -666,6 +668,7 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 			require.NoError(t, err)
 			_, err = NewTriggerOwner(admin).PollerUserID(ctx, "g", "p")
 			require.Error(t, err)
+			assert.True(t, handlerCalled, "service account inventory handler was not invoked")
 			assert.Equal(t, tc.wantNotFound, forge.IsNotFound(err))
 		})
 	}

@@ -353,6 +353,23 @@ func TestHandoffPollerGeneration_InterruptedElevationResumes(t *testing.T) {
 	assert.Contains(t, res.Details[0], "interrupted")
 }
 
+// An interruption after the bootstrap credential is created but before the
+// account is raised leaves the account at Developer with an active bootstrap
+// credential. The elevated phase is recorded before that credential exists,
+// so recovery revokes it before the zero-credential inventory check.
+func TestHandoffPollerGeneration_InterruptedBootstrapResumes(t *testing.T) {
+	f := newHandoffFake()
+	f.c.ProjectMemberAccess[handoffNewUID] = forge.GitLabAccessLevelDeveloper
+	f.seed(t, PollerGenerationState{Pending: &PendingPollerGeneration{UserID: handoffNewUID, Phase: PollerPhaseElevated}})
+
+	res, err := f.run(t)
+	require.NoError(t, err)
+	require.NotNil(t, res.Trigger)
+	assert.Equal(t, []string{"revoke-bootstrap", "inventory", "demote"}, f.events[:3])
+	assert.Zero(t, f.accountCalls, "the recorded account is reused")
+	assert.Equal(t, 1, f.triggerCreates)
+}
+
 func TestHandoffPollerGeneration_InterruptedRecoveryFailureQuarantines(t *testing.T) {
 	f := newHandoffFake()
 	f.restoreFails = true
@@ -525,8 +542,8 @@ func TestHandoffPollerGeneration_StateWriteFailures(t *testing.T) {
 		f.c.failWrite = 3
 		_, err := f.run(t)
 		require.Error(t, err)
+		assert.NotContains(t, f.events, "create-bootstrap", "no bootstrap credential is created before the phase is recorded")
 		assert.NotContains(t, f.events, "elevate")
-		assert.Contains(t, f.events, "revoke-bootstrap")
 	})
 	t.Run("trigger attempt not recorded", func(t *testing.T) {
 		f := newHandoffFake()

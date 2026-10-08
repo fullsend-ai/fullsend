@@ -74,6 +74,7 @@ region there remains an alternative.
 | `FULLSEND_GCP_PROJECT_ID` | CI/CD secret | GCP project ID for inference | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | CI/CD secret | WIF provider resource name for inference | `projects/123456789/locations/global/...` |
 | `FULLSEND_DISPATCH_SECRET` | CI/CD secret | HMAC secret for dispatch variables and poll-state documents; auto-provisioned by `repos install` | (generated) |
+| `FULLSEND_GITLAB_POLLER_GENERATIONS` | CI/CD variable (protected, unmasked) | Version 1 Poller identity-generation state (current, pending, and retiring Poller account IDs and the pending generation's handoff phase). Never stores token values. Not yet written by `repos install`. | `{"version":1,...}` |
 | `FULLSEND_GITLAB_INSTALL_LEASE` | CI/CD variable | Transient lease that serializes `repos install`, role rotation, Poller reconciliation, and `repos uninstall` for one project. It is removed when the operation finishes; if an installer is killed it remains and blocks later operations until you delete it manually in Settings → CI/CD → Variables | (installer-generated holder ID) |
 | `FULLSEND_TRIGGER_TOKEN` | CI/CD secret | GitLab pipeline trigger token for the webhook fast-path dispatcher. Masked and protected; never logged. Provisioned when the fast-path is enabled. | (masked) |
 | `FULLSEND_WEBHOOK_SECRET` | CI/CD secret | GitLab project-webhook secret (`X-Gitlab-Token`) for the webhook fast-path. Masked and protected; never logged. Provisioned when the fast-path is enabled. | (masked) |

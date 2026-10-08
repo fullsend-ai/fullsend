@@ -3172,6 +3172,7 @@ func TestUpdateCIVariable(t *testing.T) {
 
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/CI_VAR", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPut, r.Method)
+		assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"), "must target the wildcard-scoped variable, not a same-named environment variable")
 		var body map[string]any
 		readJSONBody(t, r, &body)
 		assert.Equal(t, "new-val", body["value"])
@@ -3190,6 +3191,7 @@ func TestUpdateCIVariable_MissingFallsBackToCreate(t *testing.T) {
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/NEW_VAR", func(w http.ResponseWriter, r *http.Request) {
 		// PUT returns 404 — variable doesn't exist yet.
 		assert.Equal(t, http.MethodPut, r.Method)
+		assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"))
 		writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Variable Not Found"})
 	})
 
@@ -3203,6 +3205,7 @@ func TestUpdateCIVariable_MissingFallsBackToCreate(t *testing.T) {
 		assert.Equal(t, true, body["protected"])
 		assert.Equal(t, false, body["masked"])
 		assert.Equal(t, "env_var", body["variable_type"])
+		assert.Equal(t, "*", body["environment_scope"])
 		created = true
 		writeJSON(t, w, http.StatusCreated, map[string]any{"key": "NEW_VAR"})
 	})

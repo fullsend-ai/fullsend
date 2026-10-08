@@ -45,8 +45,9 @@ const (
 	// access with its ID recorded and has never been elevated by this
 	// generation's trigger attempt. It is safe to resume.
 	PollerPhaseAccountRecorded PollerGenerationPhase = "account_recorded"
-	// PollerPhaseElevated is recorded before the account is raised to
-	// Maintainer and before any trigger-create request.
+	// PollerPhaseElevated is recorded before the installer-only bootstrap
+	// credential is created, before the account is raised to Maintainer, and
+	// before any trigger-create request.
 	PollerPhaseElevated PollerGenerationPhase = "elevated"
 	// PollerPhaseTriggerRequested is recorded before the generation's only
 	// trigger-create request.
@@ -421,6 +422,14 @@ func (g *pollerGenerationRun) attemptTrigger() (PollerHandoffResult, error) {
 		return PollerHandoffResult{Details: g.details, DeferReason: fmt.Sprintf("webhook fast-path blocked: the replacement GitLab Poller (user ID %d) was not raised to temporary Maintainer access because %s. The polling schedules remain in effect", uid, pollerSafetyReason(safeErr))}, nil
 	}
 
+	// The elevated phase is recorded before the bootstrap credential exists,
+	// so an interruption at any later point is recovered (the bootstrap
+	// credential revoked and Developer access verified) on the next run.
+	p.Phase = PollerPhaseElevated
+	if err := g.setPending(p); err != nil {
+		return PollerHandoffResult{Details: g.details}, err
+	}
+
 	bootstrap, bootErr := g.to.CreatePollerBootstrap(g.ctx, g.owner, g.repo, uid)
 	if bootstrap != nil {
 		g.red.add(bootstrap.Token)
@@ -434,13 +443,12 @@ func (g *pollerGenerationRun) attemptTrigger() (PollerHandoffResult, error) {
 			res, writeErr := g.quarantine(fmt.Sprintf("its installer-only bootstrap credential (%s) could not be accounted for; revoke it, then clear %s", gitlabroles.PollerBootstrapTokenName, forge.VarGitLabPollerGenerations))
 			return res, errors.Join(bootErr, revErr, writeErr)
 		}
-		return PollerHandoffResult{Details: g.details}, bootErr
+		// The bootstrap credential is verifiably gone and the account was
+		// never raised, so it is safe to resume.
+		p.Phase = PollerPhaseAccountRecorded
+		return PollerHandoffResult{Details: g.details}, errors.Join(bootErr, g.setPending(p))
 	}
 
-	p.Phase = PollerPhaseElevated
-	if err := g.setPending(p); err != nil {
-		return PollerHandoffResult{Details: g.details}, errors.Join(err, revokePollerBootstrapDetached(g.ctx, g.to, g.owner, g.repo, uid))
-	}
 	if err := g.to.SetProjectMemberAccessLevel(g.ctx, g.owner, g.repo, uid, forge.GitLabAccessLevelMaintainer); err != nil {
 		if demoteErr := g.demote(uid); demoteErr != nil {
 			res, writeErr := g.quarantine(fmt.Sprintf("a failed elevation could not be verified as reverted to Developer access; an administrator must set its project role to Developer and revoke its personal access tokens, then clear %s", forge.VarGitLabPollerGenerations))
