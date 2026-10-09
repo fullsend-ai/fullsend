@@ -170,8 +170,15 @@ func parseProviderDef(content []byte, index int, source string) (harness.Provide
 // ValidateProviderFile parses and validates one provider definition document
 // with the same rules ResolveHarness applies to local provider files.
 func ValidateProviderFile(content []byte, index int, source string) error {
-	_, _, err := parseProviderDef(content, index, source)
+	_, err := ParseProviderFile(content, index, source)
 	return err
+}
+
+// ParseProviderFile is ValidateProviderFile that also returns the parsed
+// definition, so callers can check it against the declared profiles.
+func ParseProviderFile(content []byte, index int, source string) (harness.ProviderDef, error) {
+	def, _, err := parseProviderDef(content, index, source)
+	return def, err
 }
 
 // MaxLocalResourceBytes bounds ReadContainedFile; provider and profile

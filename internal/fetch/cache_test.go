@@ -753,3 +753,48 @@ func TestCacheGet_RejectsOversizedFile(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds")
 }
+
+func TestReadURLIndex(t *testing.T) {
+	root := t.TempDir()
+	idx := filepath.Join(root, ".fullsend-cache", "url-index.json")
+
+	_, err := ReadURLIndex(root, idx)
+	require.Error(t, err)
+	assert.True(t, os.IsNotExist(err))
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(idx), 0o700))
+	require.NoError(t, os.WriteFile(idx, []byte(`{"u":"h"}`), 0o600))
+	data, err := ReadURLIndex(root, idx)
+	require.NoError(t, err)
+	assert.Equal(t, `{"u":"h"}`, string(data))
+
+	t.Run("escaping symlink", func(t *testing.T) {
+		outside := filepath.Join(t.TempDir(), "outside.json")
+		require.NoError(t, os.WriteFile(outside, []byte(`{}`), 0o600))
+		require.NoError(t, os.Remove(idx))
+		require.NoError(t, os.Symlink(outside, idx))
+		_, err := ReadURLIndex(root, idx)
+		require.Error(t, err)
+	})
+
+	t.Run("special file", func(t *testing.T) {
+		if _, statErr := os.Stat("/dev/zero"); statErr != nil {
+			t.Skip("/dev/zero not available")
+		}
+		require.NoError(t, os.Remove(idx))
+		require.NoError(t, os.Symlink("/dev/zero", idx))
+		_, err := ReadURLIndex(root, idx)
+		require.Error(t, err)
+	})
+
+	t.Run("oversized", func(t *testing.T) {
+		require.NoError(t, os.Remove(idx))
+		f, err := os.OpenFile(idx, os.O_WRONLY|os.O_CREATE, 0o600)
+		require.NoError(t, err)
+		require.NoError(t, f.Truncate(maxURLIndexBytes+1))
+		require.NoError(t, f.Close())
+		_, err = ReadURLIndex(root, idx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exceeds")
+	})
+}

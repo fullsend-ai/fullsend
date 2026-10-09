@@ -92,6 +92,11 @@ func runLintWithFlags(ctx context.Context, fullsendDir, forgeFlag string, strict
 	if info, statErr := os.Stat(absFullsendDir); statErr != nil || !info.IsDir() {
 		return fmt.Errorf("--fullsend-dir: %q is not an existing directory", fullsendDir)
 	}
+	// Canonicalize the root: registered-path resolution returns real paths,
+	// and containment checks compare lexically before resolving symlinks.
+	if realDir, evalErr := filepath.EvalSymlinks(absFullsendDir); evalErr == nil {
+		absFullsendDir = realDir
+	}
 
 	var result lintResult
 
@@ -433,6 +438,14 @@ func lintOneAgent(ctx context.Context, target lintTarget, absFullsendDir, forgeF
 	// No config at all (a nil allowlist means an unusable config instead).
 	requireConfig := orgCfg == nil && orgAllowlist != nil
 
+	// A missing or non-per-repo config reads as an empty map at runtime
+	// (EvaluateOverlay), so config terms are known, not unknown. Only an
+	// unusable config (nil allowlist) leaves them unknown.
+	configMap := harness.BuildConfigMap(orgCfg)
+	if configMap == nil && (orgCfg != nil || orgAllowlist != nil) {
+		configMap = map[string]any{}
+	}
+
 	linted := make(map[string]bool) // dedupe identical diagnostics across forge variants
 	hadError := false
 
@@ -456,7 +469,7 @@ func lintOneAgent(ctx context.Context, target lintTarget, absFullsendDir, forgeF
 				OrgAllowlist:  composeAllowlist,
 				GitToken:      rFlags.gitToken,
 				TreeFetcher:   rFlags.treeFetcher,
-				Config:        harness.BuildConfigMap(orgCfg),
+				Config:        configMap,
 				// Counts overlays across the whole base chain.
 				OverlayCount: &layerCount,
 			}
@@ -552,6 +565,7 @@ func lintResourceFiles(h *harness.Harness, absFullsendDir string) error {
 		return p != "" && !harness.IsURL(p) && harness.IsProviderPath(p) && filepath.IsAbs(p)
 	}
 	hasBare := false
+	var providers []resolve.ResolvedProvider
 	for i, p := range h.Providers {
 		if p != "" && !harness.IsURL(p) && !harness.IsProviderPath(p) && !filepath.IsAbs(p) {
 			hasBare = true
@@ -563,16 +577,26 @@ func lintResourceFiles(h *harness.Harness, absFullsendDir string) error {
 		if err != nil {
 			return fmt.Errorf("providers[%d]: %w", i, err)
 		}
-		if err := resolve.ValidateProviderFile(content, i, p); err != nil {
+		def, err := resolve.ParseProviderFile(content, i, p)
+		if err != nil {
 			return err
 		}
+		providers = append(providers, resolve.ResolvedProvider{Def: def, LocalPath: p})
 	}
 	if hasBare {
 		if err := lintBareProviderDefs(filepath.Join(absFullsendDir, "providers"), absFullsendDir); err != nil {
 			return err
 		}
 	}
+	// The run path rejects providers whose type no declared profile supplies.
+	// Remote profiles are not fetched, so their ids are unknown: skip the
+	// check then. run also adds the generated GitLab forge profile.
+	profiles := []resolve.ResolvedProfile{{ID: "fullsend-gitlab-forge"}}
+	remoteProfile := false
 	for i, p := range h.OpenShellProfiles() {
+		if harness.IsURL(p) {
+			remoteProfile = true
+		}
 		if !local(p) {
 			continue
 		}
@@ -580,11 +604,16 @@ func lintResourceFiles(h *harness.Harness, absFullsendDir string) error {
 		if err != nil {
 			return fmt.Errorf("openshell.profiles[%d]: %w", i, err)
 		}
-		if _, err := resolve.ParseProfileID(content); err != nil {
+		id, err := resolve.ParseProfileID(content)
+		if err != nil {
 			return fmt.Errorf("openshell.profiles[%d]: %w (from %q)", i, err, p)
 		}
+		profiles = append(profiles, resolve.ResolvedProfile{ID: id, LocalPath: p})
 	}
-	return nil
+	if remoteProfile {
+		return nil
+	}
+	return checkProviderProfileIntegrity(providers, profiles)
 }
 
 // lintPluginContainment requires every local plugin directory to lie inside

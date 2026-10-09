@@ -71,6 +71,21 @@ const maxCacheFileBytes = 100 << 20
 // /dev/zero or a FIFO as a cache entry cannot exhaust memory or hang. A missing
 // file is reported with an error satisfying os.IsNotExist.
 func readCacheFile(workspaceRoot, path string) ([]byte, error) {
+	return readBoundedCacheFile(workspaceRoot, path, maxCacheFileBytes)
+}
+
+// maxURLIndexBytes bounds the URL-to-hash index, which holds one short entry
+// per fetched resource.
+const maxURLIndexBytes = 10 << 20
+
+// ReadURLIndex reads the URL-to-hash index file with the same checks as a
+// cache hit (contained in the workspace, regular file, bounded size). A
+// missing file is reported with an error satisfying os.IsNotExist.
+func ReadURLIndex(workspaceRoot, path string) ([]byte, error) {
+	return readBoundedCacheFile(workspaceRoot, path, maxURLIndexBytes)
+}
+
+func readBoundedCacheFile(workspaceRoot, path string, limit int64) ([]byte, error) {
 	if err := CheckWithinWorkspace(workspaceRoot, path); err != nil {
 		return nil, err
 	}
@@ -86,12 +101,12 @@ func readCacheFile(workspaceRoot, path string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxCacheFileBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(data)) > maxCacheFileBytes {
-		return nil, fmt.Errorf("cache file %q exceeds %d bytes", path, int64(maxCacheFileBytes))
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("cache file %q exceeds %d bytes", path, limit)
 	}
 	return data, nil
 }

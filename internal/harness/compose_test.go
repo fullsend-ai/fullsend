@@ -10360,3 +10360,29 @@ func TestSplitWhenTerms_TripleQuotedLiteralIsOpaque(t *testing.T) {
 	assert.Len(t, got, 1)
 	assert.Len(t, got[0], 1)
 }
+
+func TestURLIndexLookup_RejectsUnsafeIndex(t *testing.T) {
+	root := t.TempDir()
+	idx := urlIndexPath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(idx), 0o700))
+	require.NoError(t, os.WriteFile(idx, []byte(`{"https://example.com/a":"abc"}`), 0o600))
+	h, ok := urlIndexLookup(root, "https://example.com/a")
+	require.True(t, ok)
+	assert.Equal(t, "abc", h)
+
+	// A symlink escaping the workspace is not read.
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	require.NoError(t, os.WriteFile(outside, []byte(`{"https://example.com/a":"evil"}`), 0o600))
+	require.NoError(t, os.Remove(idx))
+	require.NoError(t, os.Symlink(outside, idx))
+	_, ok = urlIndexLookup(root, "https://example.com/a")
+	assert.False(t, ok)
+
+	// A special file is not read.
+	if _, err := os.Stat("/dev/zero"); err == nil {
+		require.NoError(t, os.Remove(idx))
+		require.NoError(t, os.Symlink("/dev/zero", idx))
+		_, ok = urlIndexLookup(root, "https://example.com/a")
+		assert.False(t, ok)
+	}
+}

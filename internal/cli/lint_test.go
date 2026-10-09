@@ -763,13 +763,61 @@ func TestRunLint_LocalProviderFileIsParsed(t *testing.T) {
 
 	t.Run("valid", func(t *testing.T) {
 		dir := t.TempDir()
-		writeValidLocalHarness(t, dir, "code", "providers:\n  - providers/p.yaml\n")
+		writeValidLocalHarness(t, dir, "code", "providers:\n  - providers/p.yaml\nopenshell:\n  profiles:\n    - profiles/generic.yaml\n")
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "providers"), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "p.yaml"), []byte("name: example\ntype: generic\n"), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "profiles"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "profiles", "generic.yaml"), []byte("id: generic\n"), 0o644))
 
 		var buf bytes.Buffer
 		require.NoError(t, runLint(context.Background(), dir, "", false, false, ui.New(&buf)), buf.String())
 	})
+}
+
+func TestRunLint_ProviderTypeWithoutDeclaredProfileIsRejected(t *testing.T) {
+	// run rejects a provider whose type no declared profile supplies.
+	dir := t.TempDir()
+	writeValidLocalHarness(t, dir, "code", "providers:\n  - providers/p.yaml\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "providers"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "p.yaml"), []byte("name: example\ntype: generic\n"), 0o644))
+
+	var buf bytes.Buffer
+	err := runLint(context.Background(), dir, "", false, false, ui.New(&buf))
+	require.Error(t, err)
+	assert.Contains(t, buf.String(), "providers reference unknown profile types")
+
+	// A reserved (embedded) profile type needs no declared profile.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "p.yaml"), []byte("name: example\ntype: fullsend-github\n"), 0o644))
+	buf.Reset()
+	require.NoError(t, runLint(context.Background(), dir, "", false, false, ui.New(&buf)), buf.String())
+}
+
+func TestRunLint_NoConfigOverlayOnConfigTermIsUnreachable(t *testing.T) {
+	// With no config file, config reads as an empty map at runtime, so this
+	// overlay never matches and its missing script must not be reported.
+	dir := t.TempDir()
+	writeValidLocalHarness(t, dir, "code",
+		"overlays:\n- when: 'has(config.runtime) && config.runtime == \"openshell\" && has(event.entity)'\n  pre_script: scripts/missing.sh\n")
+
+	var buf bytes.Buffer
+	err := runLintWithFlags(context.Background(), dir, "", false, resolveFlags{offline: true}, ui.New(&buf))
+	require.NoError(t, err, buf.String())
+}
+
+func TestRunLint_SymlinkedFullsendDirWithRegisteredLocalHarness(t *testing.T) {
+	real := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "custom"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(real, "agents"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(real, "agents", "code.md"), []byte("You are a test agent."), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(real, "custom", "code.yaml"), []byte("agent: agents/code.md\nrole: test\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(real, "config.yaml"),
+		[]byte("agents:\n  - name: code\n    source: custom/code.yaml\n"), 0o644))
+	link := filepath.Join(t.TempDir(), "fullsend-link")
+	require.NoError(t, os.Symlink(real, link))
+
+	var buf bytes.Buffer
+	err := runLint(context.Background(), link, "", false, false, ui.New(&buf))
+	require.NoError(t, err, buf.String())
 }
 
 func TestRunLint_LocalProfileFileIsParsed(t *testing.T) {

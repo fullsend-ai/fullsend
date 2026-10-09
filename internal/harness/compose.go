@@ -2607,7 +2607,9 @@ func urlIndexLookup(workspaceRoot, rawURL string) (string, bool) {
 	if workspaceRoot == "" {
 		return "", false
 	}
-	data, err := os.ReadFile(urlIndexPath(workspaceRoot))
+	// The index lives in a checkout-controlled directory: read it with the
+	// containment, regular-file and size checks the cache readers use.
+	data, err := fetch.ReadURLIndex(workspaceRoot, urlIndexPath(workspaceRoot))
 	if err != nil {
 		return "", false
 	}
@@ -2635,7 +2637,7 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 	}
 
 	var index map[string]string
-	data, err := os.ReadFile(idxPath)
+	data, err := fetch.ReadURLIndex(workspaceRoot, idxPath)
 	if err == nil {
 		_ = json.Unmarshal(data, &index)
 	}
