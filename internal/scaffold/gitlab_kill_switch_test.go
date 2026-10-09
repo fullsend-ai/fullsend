@@ -92,6 +92,23 @@ func TestRunAgentJobScript_KillSwitchConsultsConfigBaseYAML(t *testing.T) {
 			wantHalt:       true,
 			wantOutput:     "Kill switch is active",
 		},
+		{
+			name:       "overlay yes (bare) halts dispatch",
+			configYAML: "kill_switch: yes\n",
+			wantHalt:   true,
+			wantOutput: "Kill switch is active",
+		},
+		{
+			name:       `overlay "yes" (quoted) halts dispatch`,
+			configYAML: "kill_switch: \"yes\"\n",
+			wantHalt:   true,
+			wantOutput: "Kill switch is active",
+		},
+		{
+			name:       "overlay no does not halt dispatch",
+			configYAML: "kill_switch: no\n",
+			wantHalt:   false,
+		},
 	}
 
 	for _, tc := range cases {

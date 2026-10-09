@@ -133,6 +133,56 @@ func TestCheckKillSwitchStep_ConsultsConfigBaseYAML(t *testing.T) {
 			configBaseYAML: "kill_switch: true\n",
 			wantHalt:       true,
 		},
+		{
+			name:       "overlay yes (bare) halts dispatch",
+			configYAML: "kill_switch: yes\n",
+			wantHalt:   true,
+		},
+		{
+			name:       "overlay Yes (capital) halts dispatch",
+			configYAML: "kill_switch: Yes\n",
+			wantHalt:   true,
+		},
+		{
+			name:       `overlay "yes" (quoted) halts dispatch`,
+			configYAML: "kill_switch: \"yes\"\n",
+			wantHalt:   true,
+		},
+		{
+			name:           "base yes halts dispatch when overlay is silent",
+			configBaseYAML: "kill_switch: yes\n",
+			wantHalt:       true,
+		},
+		{
+			name:       "overlay no does not halt dispatch",
+			configYAML: "kill_switch: no\n",
+			wantHalt:   false,
+		},
+		{
+			name:       `overlay "no" (quoted) does not halt dispatch`,
+			configYAML: "kill_switch: \"no\"\n",
+			wantHalt:   false,
+		},
+		{
+			name:       "overlay on does not halt dispatch (on/off intentionally unsupported)",
+			configYAML: "kill_switch: on\n",
+			wantHalt:   false,
+		},
+		{
+			name:       "overlay off does not halt dispatch (on/off intentionally unsupported)",
+			configYAML: "kill_switch: off\n",
+			wantHalt:   false,
+		},
+		{
+			name:       "overlay y does not halt dispatch (y/n intentionally unsupported)",
+			configYAML: "kill_switch: y\n",
+			wantHalt:   false,
+		},
+		{
+			name:       "overlay n does not halt dispatch (y/n intentionally unsupported)",
+			configYAML: "kill_switch: n\n",
+			wantHalt:   false,
+		},
 	}
 
 	for _, tc := range cases {

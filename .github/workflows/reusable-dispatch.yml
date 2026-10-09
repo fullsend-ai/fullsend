@@ -500,10 +500,14 @@ jobs:
           # and config.base.yaml is ignored; config.base.yaml is only
           # consulted when config.yaml is silent on the key.
           # -o=json normalizes every YAML null spelling (bare key, ~,
-          # Null, NULL) to the literal "null", and every boolean case
-          # variant (True, FALSE, ...) to lowercase true/false — so the
-          # sentinel check below and the final comparison both work
-          # regardless of source spelling.
+          # Null, NULL) to the literal "null", and the true/false
+          # case variants (True, FALSE, ...) to lowercase. It does not
+          # normalize the YAML 1.1 word booleans yq treats as plain
+          # strings (yes/no/on/off print as quoted JSON strings, e.g.
+          # "yes"), so yes/"yes" is matched explicitly below, where
+          # go-yaml's lenient *bool decoding also treats it as active.
+          # on/off and the single-letter y/n forms are deliberately
+          # not matched.
           KILL_SWITCH="false"
           OVERLAY_KS="null"
           if [[ -f .fullsend/config.yaml ]]; then
@@ -517,7 +521,7 @@ jobs:
               KILL_SWITCH="$BASE_KS"
             fi
           fi
-          if [[ "$KILL_SWITCH" == "true" ]]; then
+          if [[ "${KILL_SWITCH,,}" == "true" || "${KILL_SWITCH,,}" == '"yes"' ]]; then
             echo "::error::Kill switch is active — all agent dispatch halted"
             echo "::error::Set kill_switch: false in .fullsend/config.yaml or .fullsend/config.base.yaml to resume"
             exit 1
