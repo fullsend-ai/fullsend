@@ -390,6 +390,34 @@ The existing design principle is that [the repo is the coordinator](problems/age
   non-label paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md);
   [Authorization Contract v1](normative/authorization/v1/);
   [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
+- Data security boundary (target state): authorization establishes which
+  actor-attributed content may be considered for admission to a run, and
+  authorized content may guide task execution within the configured harness
+  scope; this applies equally to events, polling, snapshots, proactive API
+  reads, and Fullsend-controlled model retrieval capabilities. Each
+  source-system record uses its own actor authorization, which may be
+  co-fetched, supplied in the verified event, or lazily resolved and cached for
+  the logical lifetime of the containing event/entity structure. Re-reading or
+  re-fetching the data, creating a new structure for retry/requeue, or
+  terminating and re-invoking the agent ends that lifetime and requires fresh
+  authorization resolution, even if the same in-memory structure is reused.
+  Only records whose source system can reliably establish record/actor
+  attribution and whose current authorization can be resolved through the
+  applicable source-system or trusted provider are eligible; this includes
+  configured OWNERS-derived permissions and registered-bot roles. Event-carried
+  authorization is re-resolved after event admission and again immediately
+  before sandbox initialization and immediately before first model exposure;
+  mid-run controlled retrievals perform the equivalent fresh check immediately
+  before releasing each result to the model. Quoted or copied text inside an
+  authorized record remains part of that one trusted record.
+  Before model exposure, host-side filtering handles Unicode and hidden
+  characters, redacts sensitive data, scans for prompt injection, and applies
+  size limits; unrecognized or unauthorized records are redacted rather than
+  admitted as data-only. Only filtered, provenance-labelled content reaches the
+  model. Provenance, authorization, or filtering failures omit the content
+  fail-closed, and source text cannot re-dispatch an agent or elevate its
+  identity, permissions, tools, capabilities, or platform-owned instructions
+  ([ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md)).
 - Poll entity-discovery authorization: `fullsend poll` has no prompting event
   actor; verified, non-user-assertable Fullsend invocation provenance authorizes
   entity enumeration and evaluation, and callers without it are denied. Before
