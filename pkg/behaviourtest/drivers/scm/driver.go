@@ -6,6 +6,16 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
+// FileDeleter is an optional Driver extension for drivers that can delete
+// a file. It is kept out of Driver so an existing Driver implementation
+// still satisfies it; a step that deletes files type-asserts it before it
+// changes anything. The github and gitlab drivers implement it.
+type FileDeleter interface {
+	// DeleteFile deletes a file from the repository's default branch in
+	// one commit. Returns forge.ErrNotFound if the file does not exist.
+	DeleteFile(ctx context.Context, owner, repo, path, message string) error
+}
+
 // Driver abstracts SCM operations for behaviour tests.
 //
 // Concurrency: the github.Driver and gitlab.Driver implementations are

@@ -231,6 +231,10 @@ type aggregateMetrics struct {
 	// iteration's result modelUsage. A run on a runtime without sub-agents
 	// keeps metrics.json as it was.
 	PerModelUsage map[string]agentruntime.ModelUsage `json:"per_model_usage,omitempty"`
+	// Workflow records the workflow definition the run delivered and, for
+	// a Claude plugin, the command it started (ADR 0130), on every
+	// runtime; absent without a harness workflow: field.
+	Workflow *workflowLaunch `json:"workflow,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -645,6 +649,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err != nil {
 		printer.StepFail("Failed to load harness")
 		return fmt.Errorf("loading harness: %w", err)
+	}
+	if err := checkWorkflowArgsLiteral(h); err != nil {
+		printer.StepFail("Failed to load harness")
+		return err
 	}
 
 	// Emit the harness-resolved role as a step output so the finalize step
@@ -1116,6 +1124,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
 		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
 	}
+	// Expand ${VAR} references in workflow.args (ADR 0130), so a harness
+	// can hand the work item to the workflow; the result must stay one
+	// line, because it is the tail of the slash command the runner starts,
+	// and is scanned for credentials whether or not it names a variable.
+	if h.Workflow != nil {
+		args, err := expandWorkflowArgs(h.Workflow.Args, lookup)
+		if err != nil {
+			printer.StepFail("Environment validation failed")
+			return err
+		}
+		h.Workflow.Args = args
+	}
 
 	// Check the runtime before resolving the workflow: definition (ADR
 	// 0130), so a codex agent fails before the definition is fetched; the
@@ -1156,6 +1176,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
 		return fmt.Errorf("validating files: %w", err)
+	}
+	if err := checkWorkflowAgentTools(h, agentName, resolvedWorkflow); err != nil {
+		printer.StepFail(err.Error())
+		return err
+	}
+	if err := checkWorkflowToolAllowlist(h, resolvedWorkflow); err != nil {
+		printer.StepFail(err.Error())
+		return err
 	}
 	// Ensure scripts are executable. The GitHub Contents API does not
 	// preserve file permissions, so scripts written via admin install
@@ -2039,6 +2067,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	aggMetrics.RuntimeSource = configSource
 	aggMetrics.RequestedModel = h.Model
 	aggMetrics.OverrideSource = aliasOverrideSource(modelOverrideSource(overrides, h.Model), modelRemapped, runCfg.source)
+	aggMetrics.Workflow = newWorkflowLaunch(resolvedWorkflow)
 	tx := backend.Transcripts
 
 	// The dummy-playback runtime (e2e behaviour tests) reads and updates a
@@ -2382,6 +2411,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// injected into the agent prompt so the agent can self-correct. See #1050.
 	var validationFeedback string
 	feedbackEnabled := h.ValidationLoop != nil && h.ValidationLoop.FeedbackMode == "append"
+	// workflowFeedbackNoted keeps workflowFeedbackNote to once per run.
+	var workflowFeedbackNoted bool
 
 	// Per-iteration sandbox writes follow the run's cancellation.
 	execCtx := func(name, command string, timeout time.Duration) (string, string, int, error) {
@@ -2430,10 +2461,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Build the agent prompt. On retry iterations with feedback_mode:
 		// append, the previous validation failure is injected so the agent
 		// can self-correct instead of re-running blindly (#1050, #6494).
-		agentPrompt := ""
-		if iteration > 1 && feedbackEnabled && validationFeedback != "" {
-			var sanitizedFindings int
-			agentPrompt, sanitizedFindings = buildFeedbackPrompt(validationFeedback)
+		// A workflow harness starts its workflow command on every
+		// iteration instead (ADR 0130 rule 3).
+		agentPrompt, sanitizedFindings, injected, noteFeedback := iterationPrompt(resolvedWorkflow, iteration, feedbackEnabled, validationFeedback, &workflowFeedbackNoted)
+		if noteFeedback {
+			printer.StepWarn(workflowFeedbackNote)
+		}
+		if injected {
 			printer.StepInfo("Injecting validation feedback into agent prompt")
 			if sanitizedFindings > 0 {
 				printer.StepWarn(fmt.Sprintf(
@@ -2449,6 +2483,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Start the agent span before writeIterationEnv so the runtime
 		// TRACEPARENT names this iteration's span, not the run root.
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		if resolvedWorkflow != nil {
+			agentSpan.SetAttributes(workflowSpanAttr(resolvedWorkflow))
+		}
 		agentTraceparent := iterationTraceparent(agentSpan, tid.PropagatedFlags)
 
 		agentStart := time.Now()

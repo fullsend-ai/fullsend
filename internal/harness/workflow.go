@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"regexp"
 	"strings"
@@ -19,8 +20,9 @@ const WorkflowSandboxDir = "workflow-definition"
 // workflow-definition repository: a GitHub tree URL at a full commit sha
 // with a #sha256= tree hash, or a path in the repository that holds the
 // harness ("." is its root). For a Claude plugin definition, Name is the
-// workflow to start (workflows/<name>.js) and Args its optional literal
-// arguments; a pi extension definition takes neither.
+// workflow to start (workflows/<name>.js) and Args its optional
+// arguments, whose ${VAR} references the runner expands from its
+// environment; a pi extension definition takes neither.
 type WorkflowSpec struct {
 	Source string `yaml:"source"`
 	Name   string `yaml:"name,omitempty"`
@@ -75,11 +77,15 @@ var validCommitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 // also whether it is a usable Claude Code plugin namespace for one.
 func ValidWorkflowName(name string) bool { return validWorkflowName.MatchString(name) }
 
-// validateWorkflow is the Validate() check for the workflow: field. It
-// checks shape only: which kind of definition the source holds, and so
-// whether name is required or refused, is known once it is fetched.
+// validateWorkflow is the Validate() check for the workflow: field.
 func (h *Harness) validateWorkflow() error {
-	w := h.Workflow
+	return ValidateWorkflowSpec(h.Workflow)
+}
+
+// ValidateWorkflowSpec checks the shape of a workflow: field; nil passes.
+// Which kind of definition the source holds, and so whether name is
+// required or refused, is known once it is fetched.
+func ValidateWorkflowSpec(w *WorkflowSpec) error {
 	if w == nil {
 		return nil
 	}
@@ -95,7 +101,7 @@ func (h *Harness) validateWorkflow() error {
 	if w.Args != "" && w.Name == "" {
 		return fmt.Errorf("workflow.args is set without workflow.name: args go to the Claude workflow that name starts; set name, or remove args")
 	}
-	return nil
+	return CheckWorkflowArgsVariables(w.Args, nil)
 }
 
 func validateWorkflowSource(w *WorkflowSpec) error {
@@ -213,4 +219,62 @@ func ResolveBaseWorkflowSource(w *WorkflowSpec, baseURL string, allowlist []stri
 	w.Source = treeURL
 	w.baseDirURL = rawDir
 	return nil
+}
+
+// credentialEnvSuffixes extend reservedPluginEnvSuffixes (_PROXY,
+// _API_KEY, _TOKEN) with the other credential-shaped endings. A bare
+// _KEY is not one: ISSUE_KEY names a Jira work item, which args exist to
+// carry.
+var credentialEnvSuffixes = []string{"_PASSWORD", "_CREDENTIALS", "_PRIVATE_KEY", "_ACCESS_KEY", "_SECRET_KEY"}
+
+// CredentialShapedEnvName reports whether an environment variable name
+// looks like it holds a credential, and the rule it matched. It matches
+// the suffixes *_PROXY, *_API_KEY, *_TOKEN (reservedPluginEnvSuffixes),
+// *_PASSWORD, *_CREDENTIALS, *_PRIVATE_KEY, *_ACCESS_KEY and *_SECRET_KEY,
+// any name containing _SECRET, and the OTEL_* prefix, whose exporter
+// headers carry collector tokens. A name equal to a suffix without its
+// underscore (TOKEN, PASSWORD) matches too. A bare *_KEY such as ISSUE_KEY
+// is allowed on purpose: it names a Jira work item, which args exist to
+// carry. Names are compared case-insensitively.
+func CredentialShapedEnvName(name string) (string, bool) {
+	upper := strings.ToUpper(name)
+	if strings.HasPrefix(upper, "OTEL_") {
+		return "the OTEL_* family, whose exporter headers carry collector tokens", true
+	}
+	for _, suffix := range append(append([]string(nil), reservedPluginEnvSuffixes...), credentialEnvSuffixes...) {
+		if strings.HasSuffix(upper, suffix) || upper == suffix[1:] {
+			return "the *" + suffix + " family (credential-shaped names)", true
+		}
+	}
+	if strings.Contains(upper, "_SECRET") || upper == "SECRET" {
+		return "the *_SECRET* family (credential-shaped names)", true
+	}
+	return "", false
+}
+
+// CheckWorkflowArgsVariables refuses workflow.args when a variable the
+// runner would expand in it names a credential: args reach the model
+// prompt, the run plan, metrics.json and traces, so no credential may get
+// in. The runner expands args only when they contain "${", so args
+// without it name no variable. extra, when set, adds the runner's own
+// denied names (runner-only credentials) with the rule to report.
+func CheckWorkflowArgsVariables(args string, extra func(name string) (string, bool)) error {
+	if !strings.Contains(args, "${") {
+		return nil
+	}
+	var refused error
+	os.Expand(args, func(name string) string {
+		if refused != nil {
+			return ""
+		}
+		rule, denied := CredentialShapedEnvName(name)
+		if !denied && extra != nil {
+			rule, denied = extra(name)
+		}
+		if denied {
+			refused = fmt.Errorf("workflow.args references ${%s}, which names a credential (%s); pass work-item identifiers such as ${ISSUE_NUMBER} instead", name, rule)
+		}
+		return ""
+	})
+	return refused
 }

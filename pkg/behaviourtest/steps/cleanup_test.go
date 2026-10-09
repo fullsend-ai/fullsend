@@ -431,6 +431,8 @@ type fakeCleanupSCM struct {
 	deleteRepoErr    error
 	commitFileCalled bool
 	commitFileErr    error
+	deletedFiles     []string
+	deleteFileErr    error
 	fileContent      []byte
 	getFileErr       error
 	openPRs          []forge.ChangeProposal
@@ -554,6 +556,11 @@ func (f *fakeCleanupSCM) CreateFork(context.Context, string, string, string) (st
 
 func (f *fakeCleanupSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
+}
+
+func (f *fakeCleanupSCM) DeleteFile(_ context.Context, _, _, path, _ string) error {
+	f.deletedFiles = append(f.deletedFiles, path)
+	return f.deleteFileErr
 }
 
 func (f *fakeCleanupSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {

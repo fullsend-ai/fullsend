@@ -32,6 +32,8 @@ type agentNewFlags struct {
 	image          string
 	timeoutMinutes int
 	validationLoop bool
+	workflowSource string
+	workflow       string
 	noRegister     bool
 	force          bool
 	dryRun         bool
@@ -90,6 +92,8 @@ Examples:
 	cmd.Flags().IntVar(&f.timeoutMinutes, "timeout-minutes", agentnew.DefaultTimeoutMinutes, "agent timeout in minutes")
 	cmd.Flags().BoolVar(&f.validationLoop, "validation-loop", false,
 		"add a validation_loop that checks agent output against the schema (needs python3 with the jsonschema package on the runner)")
+	cmd.Flags().StringVar(&f.workflowSource, "workflow-source", "", "pin a workflow-definition repository in the harness workflow: field: a GitHub tree URL at a commit sha (#sha256= optional here) or a path in this repository")
+	cmd.Flags().StringVar(&f.workflow, "workflow", "", "the workflow to start from --workflow-source, workflows/<name>.js (claude runtime; omit for a pi extension)")
 	cmd.Flags().BoolVar(&f.noRegister, "no-register", false, "write the files but do not add the agent to config.yaml")
 	cmd.Flags().BoolVar(&f.force, "force", false, "overwrite generated files that already exist (never overwrites shared scaffold assets)")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "validate and report what would be written without writing anything")
@@ -109,6 +113,7 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 	runtimeName = f.runtime
 	on, trigger := f.on, f.trigger
 	slug, image, description := f.slug, f.image, f.description
+	workflowSource, workflow := f.workflowSource, f.workflow
 	modelFromSpec := false
 
 	if f.specFile != "" {
@@ -150,6 +155,12 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 		}
 		if !f.changed("image") {
 			image = spec.Image
+		}
+		if !f.changed("workflow-source") {
+			workflowSource = spec.WorkflowSource
+		}
+		if !f.changed("workflow") {
+			workflow = spec.Workflow
 		}
 		if !f.changed("on") && !f.changed("trigger") {
 			on, trigger = spec.On, spec.Trigger
@@ -208,6 +219,12 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 		image = role.Image
 	}
 	opts.Image = image
+
+	wfSpec, wfErr := agentnew.ParseWorkflow(workflowSource, workflow)
+	if wfErr != nil {
+		return opts, "", "", wfErr
+	}
+	opts.Workflow = wfSpec
 
 	if runtimeName != "" && !slices.Contains(userFacingRuntimes(), runtimeName) {
 		return opts, "", "", fmt.Errorf("runtime %q is not valid (allowed: %s)",
@@ -287,6 +304,7 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 			printer.Raw(string(rf.Data))
 		}
 		printer.StepInfo("Nothing was written and no agent was registered")
+		printWorkflowReminder(opts, f.fullsendDir, printer)
 		return nil
 	}
 
@@ -318,8 +336,22 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 		}
 	}
 
+	printWorkflowReminder(opts, f.fullsendDir, printer)
 	printNextSteps(opts, f, printer)
 	return nil
+}
+
+// printWorkflowReminder tells the user how to pin a remote workflow
+// source given without a #sha256= tree hash: agent new wrote a
+// placeholder, which `fullsend lock` replaces with the real hash in its
+// mismatch error.
+func printWorkflowReminder(opts agentnew.Options, fullsendDir string, printer *ui.Printer) {
+	if !opts.HasPlaceholderPin() {
+		return
+	}
+	printer.StepWarn(fmt.Sprintf("workflow.source has no tree hash yet, so harness/%s.yaml pins #sha256=%s (64 zeros) as a placeholder", opts.Name, agentnew.PlaceholderTreeHash))
+	printer.Raw(fmt.Sprintf("  Run 'fullsend lock %s%s': it fails with \"the fetched tree hashes to sha256=<hash>\"; put that hash after #sha256= and run it again.\n",
+		opts.Name, fullsendDirArg(fullsendDir)))
 }
 
 // printNextSteps tells the user what to edit, how to test locally, and how to
@@ -327,7 +359,11 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 // went into the harness, so the instruction and the CEL cannot disagree.
 func printNextSteps(opts agentnew.Options, f agentNewFlags, printer *ui.Printer) {
 	printer.Raw("\nNext:\n")
-	printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — that file is the agent's prompt.\n", opts.Name))
+	if opts.Workflow != nil && opts.Workflow.Name != "" {
+		printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — the runner starts the workflow; that file sets the main loop's instructions and tools.\n", opts.Name))
+	} else {
+		printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — that file is the agent's prompt.\n", opts.Name))
+	}
 	// The dry-run variable is printed so that following step 2 literally
 	// never posts a real comment on the issue it was pointed at.
 	printer.Raw(fmt.Sprintf("  2. Test locally, printing the result instead of commenting:\n"+

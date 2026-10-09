@@ -98,6 +98,8 @@ fullsend
 │   │   ├── --model <alias|id>               #   Model (opus default; OpenAI id required for codex)
 │   │   ├── -f, --file <spec.yaml>           #   Read the agent definition from a spec file
 │   │   ├── --validation-loop                #   Add a schema validation_loop
+│   │   ├── --workflow-source <url|path>     #   Pin a workflow definition (harness workflow:)
+│   │   ├── --workflow <name>                #   Workflow to start (claude; Workflow in tools:)
 │   │   ├── --no-register                    #   Write files without touching config.yaml
 │   │   ├── --force                          #   Overwrite generated files (never shared assets)
 │   │   └── --dry-run                        #   Validate and print, writing nothing

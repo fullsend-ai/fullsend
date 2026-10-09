@@ -297,6 +297,14 @@ export default defineConfig({
                   text: "Chaining Follow-up Workflows",
                   link: "/guides/user/chaining-follow-up-workflows",
                 },
+                {
+                  text: "Workflow Definition Repositories",
+                  link: "/guides/user/workflow-definitions",
+                },
+                {
+                  text: "Authoring Workflow Definitions",
+                  link: "/guides/user/workflow-definition-authors",
+                },
                 { text: "Config Reference", link: "/reference/config-reference" },
                 { text: "Harness Field Reference", link: "/reference/harness-reference" },
                 { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },

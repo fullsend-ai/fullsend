@@ -89,6 +89,18 @@ Every scenario runs the stage under the dummy runtime selected at install time (
 
 Do not add runtime coverage behind new `fullsend admin` flags. Use the repository config steps above.
 
+### Workflow definition steps
+
+A harness `workflow:` field ([ADR 0130](../../ADRs/0130-workflow-definition-repos-are-harness-resources.md)) is covered on the dummy runtime by `features/dispatch/workflow-definition.feature`. No model runs and the workflow script never executes, so the scenario proves the plan-time path and what the runner records:
+
+- `Given the workflow definition "<name>" is committed at "<dir>"` commits every file under `e2e/behaviour/fixtures/workflow/<name>/` into the leased repo under `<dir>`, keeping relative paths (one commit per file, through the same helper as the playback fixtures, which refuses symlinks and other non-regular fixture entries). `<dir>` must be a sub-directory outside `.fullsend/`: the leased repo's root is not a plugin, and `source: .` would ship the whole repository as the definition. The SCM drivers commit regular files only, so a definition committed this way cannot contain a symlink. The step refuses a `<dir>`, or a file path under it, that already exists in the leased repo (a fresh slot has none), and records each file before committing it; CleanupScenario deletes every recorded file, so a partial commit is removed too. Deleting needs the optional `scm.FileDeleter` interface, which the GitHub and GitLab drivers implement; `scm.Driver` itself does not require it, so an existing driver still compiles. The step refuses a driver without it before committing anything: `this SCM driver cannot delete files, so the definition could not be cleaned up; implement scm.FileDeleter`.
+- `Given an agent "<name>" defined as:` is the runtime-neutral wording of `a pi agent "<name>" defined as:`: it commits a full agent file over the custom-harness step's placeholder. The workflow scenario uses it to commit an agent whose frontmatter `tools:` names `Workflow`, as `fullsend agent new --workflow` generates, so the run goes through the plan-time tools check with a real list. The placeholder has no frontmatter, so it has no tool restriction and the check would have nothing to read.
+- `Then the run started the workflow "<command>" from "<source>"` reads the `workflow` object the runner writes to `metrics.json` on every runtime, and checks that `kind` is `claude-plugin`, `command` and `source` (as the harness `workflow.source` wrote it), and that `pin_sha256` is a full sha256 tree hash.
+
+The scenario's custom harness pins the committed definition with `workflow: {source: pipelines/sample-pipeline, name: triage-fanout, args: "issue 1"}`. A path source resolves in the repository that holds the harness, which for the leased repo is the repository itself.
+
+The custom harness carries no post-script, so the scenario does not assert issue labels. There is no step that waits for a failed harness run on an issue and reads its log, so the plan-time refusals (`lists tools: without Workflow`, a missing workflow script) are covered by unit tests in `internal/cli` and `internal/resolve`, not by a scenario. `TestSampleWorkflowFixtureResolves` in `pkg/behaviourtest/steps` runs the fixture through the runner's resolution as a path source, so a fixture the runner would refuse fails `go test` before it fails a live run.
+
 ### Branch assertion steps
 
 For scenarios that drive a run through the post-scripts to a real push,
@@ -165,6 +177,7 @@ Existing fixtures under `e2e/behaviour/fixtures/`:
 | `dispatch/ok.json` | _(none — dispatch proof)_ | Lightweight proof-of-execution marker for dispatch scenarios |
 | `review/comment.json` | `review-result.schema.json` | Review stage result with `action: "comment"` |
 | `code/implemented.json` | `code-result.schema.json` | Code stage result targeting the default branch |
+| `workflow/sample-pipeline/` | _(none — a workflow definition tree)_ | Claude Code plugin with `workflows/triage-fanout.js`, committed by `the workflow definition ... is committed at ...` |
 
 The `dispatch/ok.json` fixture is not emitted as `output/agent-result.json` — it is used for auxiliary proof-of-execution files (e.g., `output/bash-routing-ok.json`). Scenarios that dispatch a **real agent stage** (triage, review, code, fix) must emit a schema-valid fixture to `output/agent-result.json`.
 

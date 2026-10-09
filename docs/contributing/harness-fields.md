@@ -52,7 +52,7 @@ per-overlay:
 | `image`            | Container images are platform-neutral              |
 | `api_servers`      | REST proxies abstract forge details                |
 | `plugins`          | Plugin directories are forge-agnostic; each entry is a local path or a pinned URL and keeps its own `env`/`pi` options (ADR-0038, ADR-0094). **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (a `plugins:` key there is ignored, not an error) |
-| `workflow`         | Pins a workflow-definition repository (`source`) and, for a Claude plugin, the workflow and its literal args (ADR-0130); forge-agnostic. **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (a `workflow:` key there is ignored, not an error) |
+| `workflow`         | Pins a workflow-definition repository (`source`) and, for a Claude plugin, the workflow and its args, expanded from the runner environment (ADR-0130); forge-agnostic. **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (a `workflow:` key there is ignored, not an error) |
 | `agent_input`      | Agent prompt input is forge-agnostic               |
 | `timeout_minutes`  | Timeouts are operational, not forge-specific        |
 | `sandbox_timeout_seconds` | Sandbox-level timeout, not forge-specific   |
