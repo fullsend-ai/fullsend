@@ -305,6 +305,7 @@ func TestHandoffPollerGeneration_AmbiguousCreateQuarantinesWithoutRetry(t *testi
 	assert.Nil(t, res.Trigger)
 	assert.Contains(t, res.DeferReason, "quarantined")
 	assert.Contains(t, res.DeferReason, "never retried")
+	assert.Contains(t, res.DeferReason, "request canceled or timed out", "the failure class is kept")
 	assert.Equal(t, forge.GitLabAccessLevelDeveloper, f.c.ProjectMemberAccess[handoffNewUID])
 	st := f.state(t)
 	require.NotNil(t, st.Pending)
@@ -319,6 +320,30 @@ func TestHandoffPollerGeneration_AmbiguousCreateQuarantinesWithoutRetry(t *testi
 	assert.Empty(t, f.events)
 	assert.Equal(t, 1, f.triggerCreates)
 	assert.Equal(t, 1, f.accountCalls)
+}
+
+func TestHandoffPollerGeneration_CreateFailureClassIsRecordedWithoutServerText(t *testing.T) {
+	f := newHandoffFake()
+	f.mintErr = fmt.Errorf("secret-server-text: %w", forge.ErrForbidden)
+
+	res, err := f.run(t)
+	require.NoError(t, err)
+	assert.Contains(t, res.DeferReason, "forbidden")
+	assert.NotContains(t, res.DeferReason, "secret-server-text")
+	st := f.state(t)
+	require.NotNil(t, st.Pending)
+	assert.Equal(t, PollerPhaseQuarantined, st.Pending.Phase)
+	assert.Contains(t, st.Pending.Reason, "forbidden")
+	assert.NotContains(t, st.Pending.Reason, "secret-server-text")
+}
+
+func TestHandoffPollerGeneration_MissingTokenValueNamesTheResponseGap(t *testing.T) {
+	f := newHandoffFake()
+	f.mintNoToken = true
+
+	res, err := f.run(t)
+	require.NoError(t, err)
+	assert.Contains(t, res.DeferReason, "lacked a usable trigger token or ID")
 }
 
 func TestHandoffPollerGeneration_QuarantineRecoveryKeepsCurrentPoller(t *testing.T) {

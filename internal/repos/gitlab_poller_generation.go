@@ -783,7 +783,13 @@ func (g *pollerGenerationRun) attemptTrigger() (PollerHandoffResult, error) {
 		if minted != nil {
 			revokeErr = g.revokeTrigger(minted.ID)
 		}
-		res, writeErr := g.quarantineTrigger(triggerIDOf(minted), fmt.Sprintf("its single pipeline trigger creation request returned no confirmed result and is never retried; delete any %q pipeline trigger owned by user ID %d, %sremove the account, then %s", GitLabWebhookTriggerDescription, uid, exactTriggerCleanup(minted), pollerClearPendingAction))
+		// The failure class (not GitLab's response text) is kept so the
+		// operator can diagnose the generation.
+		outcome := "the response lacked a usable trigger token or ID"
+		if mintErr != nil {
+			outcome = safeAPIError("creating the pipeline trigger token", mintErr).Error()
+		}
+		res, writeErr := g.quarantineTrigger(triggerIDOf(minted), fmt.Sprintf("its single pipeline trigger creation request returned no confirmed result (%s) and is never retried; delete any %q pipeline trigger owned by user ID %d, %sremove the account, then %s", outcome, GitLabWebhookTriggerDescription, uid, exactTriggerCleanup(minted), pollerClearPendingAction))
 		return res, errors.Join(revokeErr, writeErr)
 	}
 	if minted.OwnerID != uid {
