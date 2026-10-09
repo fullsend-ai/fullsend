@@ -139,25 +139,39 @@ func ContainGitLabPoller(ctx context.Context, userID int64, inventory GitLabPoll
 			unmanaged++
 			continue
 		}
-		if err := inventory.RevokeToken(revokeCtx, tok.ID); err != nil && !forge.IsNotFound(err) {
-			errs = append(errs, fmt.Errorf("revoking Poller token ID %d: %w", tok.ID, err))
+		// Each revocation has its own bounded context, so one slow request
+		// cannot leave the remaining managed tokens unrevoked.
+		tokCtx, cancelTok := GitLabCleanupContext(ctx)
+		revokeErr := inventory.RevokeToken(tokCtx, tok.ID)
+		cancelTok()
+		if revokeErr != nil && !forge.IsNotFound(revokeErr) {
+			errs = append(errs, fmt.Errorf("revoking Poller token ID %d: %w", tok.ID, revokeErr))
 		}
 	}
 	if err == nil {
 		// A successful DELETE is not proof the token became inactive. Re-list
 		// on a fresh bounded context and report any managed runtime or
-		// bootstrap token that is still active, or an inventory that cannot
-		// be read, as incomplete containment.
+		// bootstrap token that is still active, any active unmanaged token,
+		// or an inventory that cannot be read, as incomplete containment.
 		verifyCtx, cancelVerify := GitLabCleanupContext(ctx)
 		defer cancelVerify()
 		after, verifyErr := inventory.Tokens(verifyCtx)
 		if verifyErr != nil {
 			errs = append(errs, fmt.Errorf("%w: verifying revocation of the Poller service account tokens: %w", ErrPollerContainmentIncomplete, verifyErr))
 		} else {
+			// The final snapshot is authoritative: an unmanaged token that
+			// appeared after the first inventory still keeps the account's
+			// role, and one that went inactive no longer does.
 			var stillActive []int
+			unmanaged = 0
 			for _, tok := range after {
-				if !tok.Revoked && tok.Active && gitlabroles.IsManagedPollerTokenName(tok.Name) {
+				if tok.Revoked || !tok.Active {
+					continue
+				}
+				if gitlabroles.IsManagedPollerTokenName(tok.Name) {
 					stillActive = append(stillActive, tok.ID)
+				} else {
+					unmanaged++
 				}
 			}
 			if len(stillActive) > 0 {
