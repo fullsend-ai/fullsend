@@ -52,15 +52,16 @@ When the harness sets [`workflow:`](../reference/harness-reference.md#field-deta
 block also prints a **Workflow** line. It appears only for such a harness:
 
 ```text
-Workflow: example-org/sample-pipeline@0123456789ab/pipelines/sample (sha256:<hash>) delivered as claude plugin <namespace>; workflow <name>
+Workflow: example-org/sample-pipeline@0123456789ab/pipelines/sample (sha256:<hash>) → /<namespace>:<name> <args>
 Workflow: pipelines/sample (sha256:<hash>) delivered as pi extension
 ```
 
 The source comes first: a remote source shortened to `<owner>/<repo>@<first 12 characters of the
 commit>[/<path>]`, a path source as written in the harness. `<hash>` is the first 12 characters of
-the tree hash. A Claude Code plugin definition then shows its plugin name (the `name` in
-`.claude-plugin/plugin.json`, or `workflow-definition` without that file) and the workflow name;
-a pi extension shows only its kind.
+the tree hash. For a Claude Code plugin definition, the command the runner starts follows the
+arrow: the plugin name (the `name` in `.claude-plugin/plugin.json`, or `workflow-definition`
+without that file), the workflow name, and the expanded `args` (left out when unset). A pi
+extension starts itself from its own session hook, so its line shows only how it is delivered.
 
 `fullsend run` resolves the workflow definition after the harness and its other remote resources
 (`base:`, skills, plugins, providers) and before it checks files and creates the sandbox:
@@ -82,8 +83,10 @@ a pi extension shows only its kind.
    `workflow-definition`: uploaded, injection-scanned, and passed to `claude` with `--plugin-dir`
    or to `pi` with `-e`.
 
-The runner delivers the definition but does not start a Claude workflow yet; the agent prompt has
-to. See [`workflow`](../reference/harness-reference.md#field-details) for sources and pins.
+For a Claude Code plugin the runner then starts the workflow: the command above replaces the
+agent prompt on every iteration. A pi extension runs under the default prompt. `metrics.json`
+records the definition in its `workflow` object either way. See
+[`workflow`](../reference/harness-reference.md#field-details) for sources, pins and `args`.
 
 ## Runtime selection
 
@@ -171,6 +174,7 @@ depend on the process cwd.
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of agent iterations run; an iteration killed at the budget is not retried (see [Budget and deadline](#budget-and-deadline)) |
 | `per_model_usage` | Per-model breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled, and `claude` when Claude Code's result carries `modelUsage`). See below |
+| `workflow` | Present when the harness sets [`workflow:`](../reference/harness-reference.md#field-details): `{source, pin_sha256, kind, command}`, the source (a URL without its `#sha256=` pin, or the path as written), the tree hash, `claude-plugin` or `pi-extension`, and, for a Claude Code plugin only, the command the runner started. Written on every runtime, `dummy` included |
 
 #### Per-model usage
 

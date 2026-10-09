@@ -236,6 +236,7 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 | Attribute | Present on | Description |
 |-----------|------------|-------------|
 | `fullsend.runtime` | `agent` | Harness identity (`claude`, `pi`, …), distinct from `gen_ai.system` (the serving endpoint) |
+| `fullsend.workflow` | `agent` | On a harness with `workflow:` only: the `/<namespace>:<name>` workflow the runner started, without its args, or, for a pi extension definition, its source ([ADR 0130](../../ADRs/0130-workflow-definition-repos-are-harness-resources.md)) |
 | `fullsend.work_item_id` | `run` | Work item identity (e.g. `owner/repo#123`); primary cross-run correlation key |
 | `fullsend.agent` | `run` | Agent name |
 | `fullsend.cost_usd` | `run` (aggregated), `agent` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)) |

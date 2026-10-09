@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -106,7 +107,7 @@ func TestDescribeWorkflow(t *testing.T) {
 		{
 			name: "remote sub-directory, claude",
 			rw:   resolve.ResolvedWorkflow{Kind: pluginformat.KindClaude, Name: "probe", Args: "--issue 7", Owner: "example-org", Repo: "sample-pipeline", Commit: cliWorkflowSHA, Path: "pipelines/sample", TreeHash: hash, PluginName: "wfplug"},
-			want: "example-org/sample-pipeline@0123456789ab/pipelines/sample (sha256:abcdef012345) delivered as claude plugin wfplug; workflow probe",
+			want: "example-org/sample-pipeline@0123456789ab/pipelines/sample (sha256:abcdef012345) → /wfplug:probe --issue 7",
 		},
 		{
 			name: "local root, pi",
@@ -116,7 +117,7 @@ func TestDescribeWorkflow(t *testing.T) {
 		{
 			name: "short values are kept",
 			rw:   resolve.ResolvedWorkflow{Kind: pluginformat.KindClaude, Name: "n", Owner: "o", Repo: "r", Commit: "abc", TreeHash: "def", PluginName: "p"},
-			want: "o/r@abc (sha256:def) delivered as claude plugin p; workflow n",
+			want: "o/r@abc (sha256:def) → /p:n",
 		},
 	}
 	for _, tt := range tests {
@@ -149,7 +150,7 @@ func TestResolveHarnessWorkflow(t *testing.T) {
 		rw, dep, err := resolveHarnessWorkflow(context.Background(), h, loc, resolve.ResolveOpts{WorkspaceRoot: fullsendDir})
 		require.NoError(t, err)
 		assert.Nil(t, dep)
-		assert.Equal(t, "def (sha256:"+rw.TreeHash[:12]+") delivered as claude plugin wfplug; workflow probe", describeWorkflow(rw))
+		assert.Equal(t, "def (sha256:"+rw.TreeHash[:12]+") → /wfplug:probe", describeWorkflow(rw))
 	})
 	// A pi extension definition joins h.Plugins under the fixed sandbox
 	// directory, and the bootstrap input hands it to the pi runtime as a
@@ -306,9 +307,195 @@ func TestRunAgent_WorkflowPlanLine(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating sandbox", "the workflow resolved and the run reached sandbox creation")
 	assert.Contains(t, out, "wfdef (sha256:")
-	assert.Contains(t, out, ") delivered as claude plugin wfplug; workflow probe")
-	assert.NotContains(t, out, "/wfplug:probe", "the plan does not promise a command the runner does not start")
+	assert.Contains(t, out, ") → /wfplug:probe --issue 7")
+	assert.NotContains(t, out, "delivered as")
 	assert.Contains(t, out, "workflow-definition (claude)", "the definition is delivered as a Claude plugin under the fixed sandbox name")
+}
+
+// The tools check runs at plan time, before the sandbox: an agent whose
+// tools: list leaves out Workflow cannot start the command.
+func TestRunAgent_WorkflowAgentToolsWithoutWorkflow(t *testing.T) {
+	usePreScriptStub(t)
+	dir := newWorkflowRunDir(t, "", cliWorkflowTree(), claudeWorkflowSpec)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "code.md"),
+		[]byte("---\nname: code\ntools: Read, Bash(gh)\n---\nYou are a coding agent.\n"), 0o644))
+
+	out, err := runWorkflowAgent(t, dir, resolveFlags{})
+	require.Error(t, err)
+	assert.Equal(t, "workflow: agent \"code\" lists tools: without Workflow, so it cannot start /wfplug:probe; add Workflow to its tools:", err.Error())
+	assert.NotContains(t, out, "Creating sandbox")
+}
+
+// A pi extension definition is started by its own hook, so an agent with
+// a tools: list without Workflow is not refused.
+func TestRunAgent_WorkflowPiExtensionSkipsToolsCheck(t *testing.T) {
+	usePreScriptStub(t)
+	dir := newWorkflowRunDir(t, "runtime: pi\n", cliPiTree(), "")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "code.md"),
+		[]byte("---\nname: code\ntools: Read\n---\nYou are a coding agent.\n"), 0o644))
+
+	_, err := runWorkflowAgent(t, dir, resolveFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating sandbox", "the run reached sandbox creation")
+}
+
+func TestCheckWorkflowAgentTools(t *testing.T) {
+	dir := t.TempDir()
+	agent := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+		return p
+	}
+	rw := &resolve.ResolvedWorkflow{Kind: pluginformat.KindClaude, Name: "probe", Args: "--issue 7", PluginName: "wfplug"}
+	pi := &resolve.ResolvedWorkflow{Kind: pluginformat.KindPi, Local: true, Source: "wfdef"}
+	tests := []struct {
+		name    string
+		agent   string
+		rw      *resolve.ResolvedWorkflow
+		wantErr string
+	}{
+		{name: "tools: names Workflow", agent: agent("with.md", "---\nname: a\ntools: Read, Workflow\n---\nbody"), rw: rw},
+		{name: "tools: names Workflow with arguments", agent: agent("args.md", "---\nname: a\ntools:\n  - Workflow(wfplug:probe)\n---\nbody"), rw: rw},
+		{name: "no tools: inherits every tool", agent: agent("none.md", "---\nname: a\n---\nbody"), rw: rw},
+		{name: "no workflow", agent: agent("no-wf.md", "---\nname: a\ntools: Read\n---\nbody")},
+		{name: "pi extension is not checked", agent: agent("pi.md", "---\nname: a\ntools: Read\n---\nbody"), rw: pi},
+		{
+			name: "tools: without Workflow", agent: agent("without.md", "---\nname: a\ntools: Read, Bash(gh,jq)\n---\nbody"), rw: rw,
+			wantErr: "workflow: agent \"code\" lists tools: without Workflow, so it cannot start /wfplug:probe; add Workflow to its tools:",
+		},
+		{
+			name: "empty tools:", agent: agent("empty.md", "---\nname: a\ntools: []\n---\nbody"), rw: rw,
+			wantErr: "lists tools: without Workflow",
+		},
+		{
+			name: "disallowedTools: names Workflow", agent: agent("disallowed.md", "---\nname: a\ndisallowedTools: Workflow\n---\nbody"), rw: rw,
+			wantErr: "workflow: agent \"code\" lists Workflow in disallowedTools:, so it cannot start /wfplug:probe; remove Workflow from its disallowedTools:",
+		},
+		{
+			name: "disallowedTools: wins over tools:", agent: agent("both.md", "---\nname: a\ntools: Read, Workflow\ndisallowedTools: [Workflow]\n---\nbody"), rw: rw,
+			wantErr: "lists Workflow in disallowedTools:",
+		},
+		{
+			name: "broken tools: entry", agent: agent("broken.md", "---\nname: a\ntools: [Read, 42]\n---\nbody"), rw: rw,
+			wantErr: "workflow: cannot read the tools of agent \"code\" (",
+		},
+		{
+			name: "missing agent file", agent: filepath.Join(dir, "missing.md"), rw: rw,
+			wantErr: "; fix the agent file",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkWorkflowAgentTools(&harness.Harness{Agent: tt.agent}, "code", tt.rw)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestIterationPrompt(t *testing.T) {
+	rw := &resolve.ResolvedWorkflow{Kind: pluginformat.KindClaude, Name: "probe", Args: "--issue 7", PluginName: "wfplug"}
+
+	t.Run("workflow command on every iteration, feedback noted once", func(t *testing.T) {
+		var noted bool
+		prompt, sanitized, inject, note := iterationPrompt(rw, 1, true, "", &noted)
+		assert.Equal(t, "/wfplug:probe --issue 7", prompt)
+		assert.Zero(t, sanitized)
+		assert.False(t, inject)
+		assert.False(t, note)
+
+		prompt, _, inject, note = iterationPrompt(rw, 2, true, "FAIL: missing field", &noted)
+		assert.Equal(t, "/wfplug:probe --issue 7", prompt, "a retry starts the same command, without the feedback")
+		assert.False(t, inject)
+		assert.True(t, note, "the first retry with feedback prints the note")
+
+		prompt, _, _, note = iterationPrompt(rw, 3, true, "FAIL: still missing", &noted)
+		assert.Equal(t, "/wfplug:probe --issue 7", prompt)
+		assert.False(t, note, "the note prints once per run")
+	})
+
+	t.Run("workflow retry without feedback_mode append prints no note", func(t *testing.T) {
+		var noted bool
+		prompt, _, inject, note := iterationPrompt(rw, 2, false, "FAIL", &noted)
+		assert.Equal(t, "/wfplug:probe --issue 7", prompt)
+		assert.False(t, inject)
+		assert.False(t, note)
+	})
+
+	for name, wf := range map[string]*resolve.ResolvedWorkflow{
+		"without a workflow":  nil,
+		"with a pi extension": {Kind: pluginformat.KindPi, Local: true, Source: "wfdef"},
+	} {
+		t.Run(name+" the default and feedback prompts are unchanged", func(t *testing.T) {
+			var noted bool
+			prompt, _, inject, note := iterationPrompt(wf, 1, true, "", &noted)
+			assert.Empty(t, prompt, "empty: the runtime uses its default prompt")
+			assert.False(t, inject)
+			assert.False(t, note)
+
+			prompt, _, inject, _ = iterationPrompt(wf, 2, true, "FAIL: missing field", &noted)
+			want, _ := buildFeedbackPrompt("FAIL: missing field")
+			assert.Equal(t, want, prompt)
+			assert.True(t, inject)
+			assert.False(t, noted)
+		})
+	}
+}
+
+func TestWorkflowLaunchInMetricsJSON(t *testing.T) {
+	hash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	tests := []struct {
+		name string
+		rw   *resolve.ResolvedWorkflow
+		want string
+	}{
+		{
+			name: "remote claude plugin",
+			rw: &resolve.ResolvedWorkflow{
+				Kind: pluginformat.KindClaude, Name: "probe", Args: "--issue 7", PluginName: "wfplug",
+				Source: "https://github.com/example-org/sample-pipeline/tree/" + cliWorkflowSHA, Commit: cliWorkflowSHA, TreeHash: hash,
+			},
+			want: `{"source":"https://github.com/example-org/sample-pipeline/tree/` + cliWorkflowSHA +
+				`","pin_sha256":"` + hash + `","kind":"claude-plugin","command":"/wfplug:probe --issue 7"}`,
+		},
+		{
+			name: "local claude plugin",
+			rw:   &resolve.ResolvedWorkflow{Kind: pluginformat.KindClaude, Name: "probe", PluginName: "wfplug", Local: true, Source: "wfdef", TreeHash: hash},
+			want: `{"source":"wfdef","pin_sha256":"` + hash + `","kind":"claude-plugin","command":"/wfplug:probe"}`,
+		},
+		{
+			name: "pi extension has no command",
+			rw:   &resolve.ResolvedWorkflow{Kind: pluginformat.KindPi, Local: true, Source: "wfdef", TreeHash: hash},
+			want: `{"source":"wfdef","pin_sha256":"` + hash + `","kind":"pi-extension"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, writeMetricsJSON(dir, aggregateMetrics{Runtime: "dummy", Workflow: newWorkflowLaunch(tt.rw)}))
+			data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+			require.NoError(t, err)
+			var got struct {
+				Runtime  string          `json:"runtime"`
+				Workflow json.RawMessage `json:"workflow"`
+			}
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, "dummy", got.Runtime)
+			assert.JSONEq(t, tt.want, string(got.Workflow))
+		})
+	}
+
+	t.Run("absent without a workflow", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, writeMetricsJSON(dir, aggregateMetrics{Workflow: newWorkflowLaunch(nil)}))
+		data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), `"workflow"`)
+	})
 }
 
 func TestRunAgent_WorkflowPiExtension(t *testing.T) {
@@ -319,6 +506,7 @@ func TestRunAgent_WorkflowPiExtension(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating sandbox", "the workflow resolved and the run reached sandbox creation")
 	assert.Contains(t, out, ") delivered as pi extension")
+	assert.NotContains(t, out, ") → /", "the runner starts no command for a pi extension: its own hook does")
 	assert.Contains(t, out, "workflow-definition (pi)", "the definition is delivered as a pi extension")
 }
 
@@ -373,7 +561,7 @@ func TestRunAgent_WorkflowFromLocalBaseInNestedCheckout(t *testing.T) {
 	out, err := runWorkflowAgent(t, dir, resolveFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating sandbox", "the workflow resolved and the run reached sandbox creation")
-	assert.Contains(t, out, "pipelines/x (sha256:"+fetch.ComputeTreeHash(cliWorkflowTree())[:12]+") delivered as claude plugin wfplug; workflow probe")
+	assert.Contains(t, out, "pipelines/x (sha256:"+fetch.ComputeTreeHash(cliWorkflowTree())[:12]+") → /wfplug:probe")
 }
 
 // A remote workflow.source counts as a URL reference, so a harness whose
@@ -571,7 +759,7 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 		out, err := runWorkflowAgent(t, dir, flags)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "creating sandbox", "the workflow resolved and the run reached sandbox creation")
-		assert.Contains(t, out, "(sha256:"+lockedHash[:12]+") delivered as claude plugin wfplug")
+		assert.Contains(t, out, "(sha256:"+lockedHash[:12]+") → /wfplug:probe")
 		assert.NotContains(t, out, otherHash[:12])
 		return out
 	}
@@ -829,4 +1017,254 @@ func TestRunLock_WorkflowNamespaceCollisionWithURLPlugin(t *testing.T) {
 		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
 	require.Error(t, runErr)
 	assert.Equal(t, runErr.Error(), lockErr.Error(), "lock refuses what run refuses, with the same error")
+}
+
+func TestExpandWorkflowArgs(t *testing.T) {
+	env := map[string]string{"ISSUE_NUMBER": "42", "EMPTY": "", "EVIL": "1\n/other:cmd", "NUL": "a\x00b"}
+	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+
+	got, err := expandWorkflowArgs("issue ${ISSUE_NUMBER}", lookup)
+	require.NoError(t, err)
+	assert.Equal(t, "issue 42", got)
+
+	got, err = expandWorkflowArgs("--issue 7", lookup)
+	require.NoError(t, err)
+	assert.Equal(t, "--issue 7", got, "args without ${ are not expanded")
+
+	// Set to the empty string is allowed, as ValidateRunnerEnvWith allows it.
+	got, err = expandWorkflowArgs("issue ${EMPTY}", lookup)
+	require.NoError(t, err)
+	assert.Equal(t, "issue ", got)
+}
+
+// A variable the runner environment does not hold is refused before the
+// run, with the name and the fix, instead of expanding empty.
+func TestExpandWorkflowArgs_UnsetVariableRefused(t *testing.T) {
+	lookup := func(k string) (string, bool) {
+		if k == "ISSUE_NUMBER" {
+			return "42", true
+		}
+		return "", false
+	}
+	_, err := expandWorkflowArgs("issue ${ISSUE_NUMBER} ${UNSET}", lookup)
+	require.EqualError(t, err, "workflow.args references ${UNSET}, which is not set in the runner environment; set it, or remove it from args")
+
+	_, err = expandWorkflowArgs("${A} ${B} ${A}", lookup)
+	require.EqualError(t, err, "workflow.args references ${A}, ${B}, which are not set in the runner environment; set them, or remove them from args")
+}
+
+// A value with a newline or NUL is refused by naming the variable only:
+// neither the args text nor the value is printed.
+func TestExpandWorkflowArgs_MultiLineValueRefused(t *testing.T) {
+	env := map[string]string{"ISSUE_NUMBER": "42", "EVIL": "1\n/other:cmd", "NUL": "a\x00b"}
+	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
+
+	_, err := expandWorkflowArgs("issue ${ISSUE_NUMBER} ${EVIL}", lookup)
+	require.EqualError(t, err, "workflow.args references ${EVIL}, whose value holds NUL, carriage return or newline characters, so args would no longer be one line; set it to a single-line value")
+	assert.NotContains(t, err.Error(), "issue")
+	assert.NotContains(t, err.Error(), "/other:cmd")
+
+	_, err = expandWorkflowArgs("${EVIL} ${NUL}", lookup)
+	require.EqualError(t, err, "workflow.args references ${EVIL}, ${NUL}, whose value holds NUL, carriage return or newline characters, so args would no longer be one line; set them to a single-line value")
+}
+
+// Args reach the model prompt, the plan, metrics.json and traces, so a
+// credential-shaped or runner-only reference is refused before anything
+// is expanded, and the expander is never asked for its value.
+func TestExpandWorkflowArgs_CredentialReferenceRefused(t *testing.T) {
+	expand := func(k string) (string, bool) {
+		t.Errorf("lookup called for %s", k)
+		return "", false
+	}
+	for _, name := range []string{"GH_TOKEN", "OTEL_EXPORTER_OTLP_HEADERS", "MY_API_KEY", "DB_PASSWORD", "X_SECRET_Y", "ACTIONS_ID_TOKEN_REQUEST_URL", "FULLSEND_GCP_OIDC_URL", "GH_WORKFLOW_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := expandWorkflowArgs("issue ${ISSUE_NUMBER} ${"+name+"}", expand)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "workflow.args references ${"+name+"}, which names a credential (")
+			assert.Contains(t, err.Error(), "); pass work-item identifiers such as ${ISSUE_NUMBER} instead")
+		})
+	}
+	_, err := expandWorkflowArgs("issue ${FULLSEND_GCP_OIDC_URL}", expand)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "(a runner-only credential no harness may expand)")
+}
+
+// A value that looks like a credential in an allowed variable is refused
+// after expansion, without printing it.
+func TestExpandWorkflowArgs_CredentialValueRefused(t *testing.T) {
+	secret := "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+	lookup := func(k string) (string, bool) {
+		if k == "ISSUE_NUMBER" {
+			return secret, true
+		}
+		return "", false
+	}
+	_, err := expandWorkflowArgs("issue ${ISSUE_NUMBER}", lookup)
+	require.Error(t, err)
+	assert.Equal(t, "workflow.args expands to a value that looks like a credential (github_pat); pass work-item identifiers only", err.Error())
+	assert.NotContains(t, err.Error(), secret)
+
+	// Literal args are scanned too, with no ${ in them.
+	_, err = expandWorkflowArgs("issue 7 "+secret, lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflow.args expands to a value that looks like a credential (")
+	assert.NotContains(t, err.Error(), secret)
+}
+
+// Literal args that look like a credential are refused right after the
+// harness loads, without printing them; a harness without workflow: or
+// args passes.
+func TestCheckWorkflowArgsLiteral(t *testing.T) {
+	secret := "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+	require.NoError(t, checkWorkflowArgsLiteral(&harness.Harness{}))
+	require.NoError(t, checkWorkflowArgsLiteral(&harness.Harness{Workflow: &harness.WorkflowSpec{Source: "wfdef", Name: "n"}}))
+	require.NoError(t, checkWorkflowArgsLiteral(&harness.Harness{Workflow: &harness.WorkflowSpec{Source: "wfdef", Name: "n", Args: "issue ${ISSUE_NUMBER}"}}))
+
+	err := checkWorkflowArgsLiteral(&harness.Harness{Workflow: &harness.WorkflowSpec{Source: "wfdef", Name: "n", Args: "--token " + secret}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflow.args looks like it holds a credential (")
+	assert.Contains(t, err.Error(), "so remove it and pass work-item identifiers such as ${ISSUE_NUMBER} only")
+	assert.NotContains(t, err.Error(), secret)
+}
+
+// fullsend lock refuses literal token-looking args when it loads the
+// harness, before resolving anything.
+func TestRunLock_WorkflowArgsLiteralCredentialRefused(t *testing.T) {
+	secret := "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+	dir := workflowLockDir(t, "agent: agents/code.md\nrole: test\nworkflow:\n  source: wfdef\n  name: probe\n  args: --token "+secret+"\n")
+	var buf bytes.Buffer
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{}, ui.New(&buf))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflow.args looks like it holds a credential (")
+	assert.NotContains(t, buf.String()+err.Error(), secret)
+}
+
+// writeWorkflowHarness replaces the code harness of a newWorkflowRunDir
+// directory; the harness file is read from disk, not the git index.
+func writeWorkflowHarness(t *testing.T, dir, spec string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\nworkflow:\n  source: wfdef\n"+spec), 0o644))
+}
+
+// fullsend run refuses literal token-looking args at plan time, before
+// the sandbox.
+func TestRunAgent_WorkflowArgsLiteralCredentialRefused(t *testing.T) {
+	usePreScriptStub(t)
+	secret := "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+	dir := newWorkflowRunDir(t, "", cliWorkflowTree(), claudeWorkflowSpec)
+	writeWorkflowHarness(t, dir, "  name: probe\n  args: --token "+secret+"\n")
+
+	out, err := runWorkflowAgent(t, dir, resolveFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflow.args looks like it holds a credential (")
+	assert.NotContains(t, out, "Creating sandbox")
+	assert.NotContains(t, out+err.Error(), secret)
+}
+
+// An args variable the runner environment does not hold fails the run at
+// plan time.
+func TestRunAgent_WorkflowArgsUnsetVariableRefused(t *testing.T) {
+	usePreScriptStub(t)
+	dir := newWorkflowRunDir(t, "", cliWorkflowTree(), claudeWorkflowSpec)
+	writeWorkflowHarness(t, dir, "  name: probe\n  args: issue ${FULLSEND_TEST_SURELY_UNSET_VAR}\n")
+
+	out, err := runWorkflowAgent(t, dir, resolveFlags{})
+	require.EqualError(t, err, "workflow.args references ${FULLSEND_TEST_SURELY_UNSET_VAR}, which is not set in the runner environment; set it, or remove it from args")
+	assert.NotContains(t, out, "Creating sandbox")
+}
+
+// A credential value in an args variable fails the run at plan time,
+// before the sandbox.
+func TestRunAgent_WorkflowArgsCredentialRefused(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("ISSUE_NUMBER", "ghp_"+"abcdefghijklmnopqrstuvwxyz0123456789")
+	dir := newWorkflowRunDir(t, "", cliWorkflowTree(), claudeWorkflowSpec)
+	writeWorkflowHarness(t, dir, "  name: probe\n  args: issue ${ISSUE_NUMBER}\n")
+
+	out, err := runWorkflowAgent(t, dir, resolveFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflow.args expands to a value that looks like a credential (")
+	assert.NotContains(t, out, "Creating sandbox")
+	assert.NotContains(t, out+err.Error(), "abcdefghijklmnopqrstuvwxyz0123456789")
+}
+
+// An expanded args variable reaches the plan line's command.
+func TestRunAgent_WorkflowArgsExpanded(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("ISSUE_NUMBER", "42")
+	dir := newWorkflowRunDir(t, "", cliWorkflowTree(), claudeWorkflowSpec)
+	writeWorkflowHarness(t, dir, "  name: probe\n  args: issue ${ISSUE_NUMBER}\n")
+
+	out, err := runWorkflowAgent(t, dir, resolveFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating sandbox")
+	assert.Contains(t, out, ") → /wfplug:probe issue 42")
+}
+
+func TestWorkflowSpanAttr(t *testing.T) {
+	attr := workflowSpanAttr(&resolve.ResolvedWorkflow{Kind: pluginformat.KindClaude, PluginName: "wfplug", Name: "probe", Args: "issue 7"})
+	assert.Equal(t, "fullsend.workflow", string(attr.Key))
+	assert.Equal(t, "/wfplug:probe", attr.Value.AsString(), "args stay out of traces")
+
+	attr = workflowSpanAttr(&resolve.ResolvedWorkflow{Kind: pluginformat.KindPi, Source: "https://github.com/example-org/sample-pipeline/tree/" + cliWorkflowSHA})
+	assert.Equal(t, "https://github.com/example-org/sample-pipeline/tree/"+cliWorkflowSHA, attr.Value.AsString(), "a pi extension is named by its source")
+}
+
+// With the tool allowlist hook on, an env.sandbox FULLSEND_TOOL_ALLOWLIST
+// that leaves out Workflow is refused at plan time; a list from
+// host_files only (no env.sandbox key), the hook off, security off, a pi
+// extension or no workflow pass.
+func TestCheckWorkflowToolAllowlist(t *testing.T) {
+	rw := &resolve.ResolvedWorkflow{Kind: pluginformat.KindClaude, Name: "probe", PluginName: "wfplug"}
+	pi := &resolve.ResolvedWorkflow{Kind: pluginformat.KindPi, Local: true, Source: "wfdef"}
+	on, off := true, false
+	hooks := func(enabled *bool) *harness.SecurityConfig {
+		return &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{ToolAllowlistPreTool: &harness.ToolAllowlistConfig{Enabled: enabled}}}
+	}
+	sandboxEnv := func(v string) *harness.EnvConfig {
+		return &harness.EnvConfig{Sandbox: map[string]string{"FULLSEND_TOOL_ALLOWLIST": v}}
+	}
+	tests := []struct {
+		name    string
+		h       *harness.Harness
+		rw      *resolve.ResolvedWorkflow
+		wantErr bool
+	}{
+		{name: "list without Workflow", h: &harness.Harness{Security: hooks(&on), Env: sandboxEnv("Read,Bash")}, rw: rw, wantErr: true},
+		{name: "empty list", h: &harness.Harness{Security: hooks(&on), Env: sandboxEnv("")}, rw: rw, wantErr: true},
+		{name: "case variant is not Workflow", h: &harness.Harness{Security: hooks(&on), Env: sandboxEnv("Read, workflow")}, rw: rw, wantErr: true},
+		{name: "list with Workflow", h: &harness.Harness{Security: hooks(&on), Env: sandboxEnv("Read, Workflow ,Bash")}, rw: rw},
+		{name: "list from host_files only", h: &harness.Harness{Security: hooks(&on), Env: &harness.EnvConfig{Sandbox: map[string]string{"OTHER": "x"}}}, rw: rw},
+		{name: "no env block", h: &harness.Harness{Security: hooks(&on)}, rw: rw},
+		{name: "hook off", h: &harness.Harness{Security: hooks(&off), Env: sandboxEnv("Read")}, rw: rw},
+		{name: "hook unset", h: &harness.Harness{Env: sandboxEnv("Read")}, rw: rw},
+		{name: "security off", h: &harness.Harness{Security: &harness.SecurityConfig{Enabled: &off, SandboxHooks: hooks(&on).SandboxHooks}, Env: sandboxEnv("Read")}, rw: rw},
+		{name: "pi extension", h: &harness.Harness{Security: hooks(&on), Env: sandboxEnv("Read")}, rw: pi},
+		{name: "no workflow", h: &harness.Harness{Security: hooks(&on), Env: sandboxEnv("Read")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkWorkflowToolAllowlist(tt.h, tt.rw)
+			if !tt.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, "workflow: security.sandbox_hooks.tool_allowlist_pretool is enabled and env.sandbox FULLSEND_TOOL_ALLOWLIST does not name Workflow, so the hook would block /wfplug:probe; add Workflow to FULLSEND_TOOL_ALLOWLIST")
+		})
+	}
+}
+
+// The allowlist check runs at plan time, after env.sandbox expansion and
+// before the sandbox.
+func TestRunAgent_WorkflowToolAllowlistRefused(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_TEST_ALLOWLIST", "Read,Bash")
+	dir := newWorkflowRunDir(t, "", cliWorkflowTree(), claudeWorkflowSpec)
+	writeWorkflowHarness(t, dir, "  name: probe\nsecurity:\n  sandbox_hooks:\n    tool_allowlist_pretool:\n      enabled: true\nenv:\n  sandbox:\n    FULLSEND_TOOL_ALLOWLIST: ${FULLSEND_TEST_ALLOWLIST}\n")
+
+	out, err := runWorkflowAgent(t, dir, resolveFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "env.sandbox FULLSEND_TOOL_ALLOWLIST does not name Workflow")
+	assert.NotContains(t, out, "Creating sandbox")
 }

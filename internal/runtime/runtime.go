@@ -88,6 +88,8 @@ type RunParams struct {
 	// Prompt overrides DefaultAgentPrompt. The validation loop sets it on a
 	// retry iteration to inject the previous iteration's failure so the agent
 	// can self-correct instead of re-running blindly. See #1050, #6494.
+	// A harness whose workflow: is a Claude plugin sets it to the workflow
+	// command, /<plugin>:<name> [args], on every iteration (ADR 0130).
 	//
 	// Every Runtime implementation MUST honour this field, falling back to
 	// DefaultAgentPrompt when it is empty. A runtime that ignores it turns

@@ -25,6 +25,12 @@ type piAgentDef struct {
 	// BashAllowlist holds the prefixes from `Bash(a,b,c)`; nil when Bash is
 	// unrestricted or absent.
 	BashAllowlist []string
+	// DisallowedTools are the tool names from `disallowedTools:`, with any
+	// `(...)` restriction stripped; nil when the entry is absent.
+	DisallowedTools []string
+	// DisallowedErr reports a disallowedTools: value that is not a string or
+	// a list of strings. Only AgentDefinitionTools returns it.
+	DisallowedErr error
 	Body          string
 }
 
@@ -33,6 +39,10 @@ type piAgentFrontmatter struct {
 	Description string `yaml:"description"`
 	Model       string `yaml:"model"`
 	Tools       any    `yaml:"tools"`
+	// DisallowedTools is Claude Code's exclusion list, in the same forms
+	// as tools:. pi does not apply it; it is read so that a check of what
+	// a Claude agent may call can see it.
+	DisallowedTools any `yaml:"disallowedTools"`
 }
 
 // parsePiAgent splits a `---` YAML frontmatter block from the markdown body
@@ -83,6 +93,13 @@ func parsePiAgent(data []byte) (*piAgentDef, error) {
 	}
 	if specs != nil {
 		def.Tools, def.BashAllowlist = parseClaudeToolSpecs(specs)
+	}
+	// A bad disallowedTools: must not fail the definition for the runtimes
+	// that never read it; the error is kept for the one caller that does.
+	if disallowed, err := piToolSpecs(fm.DisallowedTools); err != nil {
+		def.DisallowedErr = fmt.Errorf("disallowedTools: %s", strings.TrimPrefix(err.Error(), "agent definition: tools "))
+	} else if disallowed != nil {
+		def.DisallowedTools, _ = parseClaudeToolSpecs(disallowed)
 	}
 	return def, nil
 }

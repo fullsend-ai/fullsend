@@ -346,6 +346,20 @@ func TestBuildRunCommand_PromptEscapesQuotes(t *testing.T) {
 	assert.Contains(t, cmd, `'Fix the '\''error'\'' in the code'`)
 }
 
+// A workflow harness's command reaches claude as the prompt, after
+// --agent and the plugin directory that ships it (ADR 0130).
+func TestBuildRunCommand_WorkflowCommandPrompt(t *testing.T) {
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "runner",
+		RepoDir:       "/sandbox/workspace/repo",
+		PluginDirs:    []string{"/sandbox/plugins/sample-pipeline"},
+		Prompt:        "/wfplug:probe --issue 7",
+	})
+	assert.True(t, strings.HasSuffix(cmd, "--agent 'runner' --dangerously-skip-permissions '/wfplug:probe --issue 7'"), cmd)
+	assert.Contains(t, cmd, "--plugin-dir '/sandbox/plugins/sample-pipeline'")
+	assert.NotContains(t, cmd, DefaultAgentPrompt)
+}
+
 func TestBuildRunCommand_EmptyPromptUsesDefault(t *testing.T) {
 	cmd := buildRunCommand(RunParams{
 		AgentBaseName: "agent",

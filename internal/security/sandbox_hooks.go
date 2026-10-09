@@ -28,6 +28,12 @@ func (c SandboxHookConfig) sandboxHooks() *harness.SandboxHooks {
 	return c.hooks
 }
 
+// ToolAllowlistPreToolEnabled reports whether the tool allowlist
+// PreToolUse hook is installed (opt-in, off by default).
+func (c SandboxHookConfig) ToolAllowlistPreToolEnabled() bool {
+	return toolAllowlistPreToolEnabled(c)
+}
+
 // TirithFailOn returns the Tirith severity threshold env value, or empty when unset.
 func (c SandboxHookConfig) TirithFailOn() string {
 	sh := c.sandboxHooks()
