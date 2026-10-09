@@ -55,6 +55,11 @@ which is a stronger check than the trust hash it replaces.
 > against the runner-held digests, and each script run gets only what is left of the 30 s handler
 > budget; a run with too little left is withheld rather than started and killed.
 
+> **Implementation note (October 2026):** Since #8259 Claude Code checks `hooks.json` and the
+> hook scripts before each launch (exit 97), so the script-integrity part of the residue described
+> below no longer applies to it. It still does not pin the hook interpreter or `PATH`, which
+> remain agent-writable between iterations on Claude Code.
+
 Because the hook scripts and their directory stay agent-writable between iterations — the residue
 Claude Code and pi also have — codex additionally **re-verifies every script against runner-held digests
 before each invocation** — digests the runner records outside the sandbox at Bootstrap and injects into the launch command at Run, here carried in the codex process's

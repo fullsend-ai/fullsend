@@ -137,7 +137,28 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 }
 
 func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
-	cmd := buildRunCommand(params)
+	var hookDigests claudeHookDigests
+	if params.HooksSettingsPath != "" {
+		// The guard hashes security.SandboxHooksSettings, so --settings must
+		// load that same file; any other path would be loaded unchecked.
+		if params.HooksSettingsPath != security.SandboxHooksSettings {
+			return -1, fmt.Errorf(
+				"HooksSettingsPath %q is not %s: the hooks integrity guard only covers the default hooks file",
+				params.HooksSettingsPath, security.SandboxHooksSettings)
+		}
+		// The expected digests are runner-held because nothing in the
+		// agent-writable config directory can be trusted to hold them; a miss
+		// means Bootstrap did not install hooks in this process, and the
+		// guard would have nothing to compare against.
+		d, ok := lookupClaudeHookDigests(params.SandboxName)
+		if !ok || d.HooksJSON == "" || d.HookScripts == nil {
+			return -1, fmt.Errorf(
+				"no runner-held hook digests for sandbox %s: ClaudeRuntime.Run with sandbox hooks enabled requires Bootstrap to have installed them in the same process (internal/cli/run.go does), because the expected digests cannot be read back from the agent-writable config directory",
+				params.SandboxName)
+		}
+		hookDigests = d
+	}
+	cmd := buildRunCommand(params, hookDigests)
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {
 		return -1, err
@@ -181,6 +202,11 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
+	}
+	if params.HooksSettingsPath != "" && exitCode == claudeHooksMissingExit {
+		return exitCode, fmt.Errorf(
+			"claude hooks.json or hook scripts in %s are missing or modified; refusing to run (did the agent change them between iterations?)",
+			sandbox.SandboxClaudeConfig)
 	}
 
 	return exitCode, nil
@@ -335,12 +361,17 @@ func remapModel(name string, aliases map[string]string) string {
 	return name
 }
 
-func buildRunCommand(params RunParams) string {
+// buildRunCommand renders the in-sandbox command line. When sandbox hooks are
+// enabled (params.HooksSettingsPath set), hookDigests are the runner-held
+// digests Bootstrap recorded, and the launch refuses to start claude unless
+// hooks.json and the hook scripts still match them (claudeGuardedEnvSource).
+func buildRunCommand(params RunParams, hookDigests claudeHookDigests) string {
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	safe := strings.ReplaceAll(params.AgentBaseName, "'", "'\\''")
 
 	parts := []string{
-		fmt.Sprintf("cd %s && . %s && claude", params.RepoDir, envFile),
+		fmt.Sprintf("cd %s && %s && claude", params.RepoDir,
+			claudeGuardedEnvSource(envFile, params.HooksSettingsPath != "", hookDigests)),
 		"--print",
 		"--verbose",
 		"--output-format stream-json",
@@ -408,7 +439,9 @@ func buildRunCommand(params RunParams) string {
 // The hooks file is loaded via --settings in buildRunCommand, which takes
 // precedence over project/local settings. Hook scripts and wiring are
 // co-located under the runner-owned config directory, outside the
-// agent-writable workspace tree (#6358).
+// agent-writable workspace tree (#6358). That directory is still writable by
+// the agent between iterations, so the digests of what is uploaded here are
+// recorded runner-side for Run's launch guard (claude_integrity.go).
 func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig) error {
 	// security.SandboxHooksDir is the directory the generated hooks.json
 	// commands point at; installHookScripts creates it.
@@ -435,7 +468,11 @@ func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig) er
 		return fmt.Errorf("copying hooks.json to sandbox: %w", err)
 	}
 
-	return appendHookEnv(sandboxName, hooks)
+	if err := appendHookEnv(sandboxName, hooks); err != nil {
+		return err
+	}
+	recordClaudeHookDigests(sandboxName, claudeHookDigestsFor(hooks, hooksJSON))
+	return nil
 }
 
 func bootstrapPlugins(sandboxName, configDir string, plugins []string) error {

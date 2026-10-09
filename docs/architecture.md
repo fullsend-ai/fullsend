@@ -948,7 +948,7 @@ GitHub event ──► SHIM WORKFLOW (.github/workflows/fullsend.yaml in the rep
 
 ### Two runtimes inside the same sandbox
 
-The OpenShell box above is drawn for Claude Code. With `runtime: pi` the outer layers are identical — same dispatch, same sandbox creation, same policy, same scans, same extraction — and only the innermost box changes. The diagram shows the two side by side; the amber step is pi's integrity check on its hook adapter, which has no Claude Code equivalent because Claude loads hooks from a runner-owned `--settings` file.
+The OpenShell box above is drawn for Claude Code. With `runtime: pi` the outer layers are identical — same dispatch, same sandbox creation, same policy, same scans, same extraction — and only the innermost box changes. The diagram shows the two side by side; the amber steps are the pre-launch integrity checks — hooks.json and the hook scripts for Claude Code, the hook adapter for pi. Claude loads hooks from a runner-owned `--settings` file, but that file and the scripts it names sit in an agent-writable directory, so Claude Code verifies them against runner-held digests before each launch.
 
 ```mermaid
 flowchart TB
@@ -957,8 +957,12 @@ flowchart TB
     subgraph CL["runtime: claude"]
       direction TB
       C1["/sandbox/claude-config\nagents/ · skills/ · hooks/ · hooks.json"]
+      C0{"shell guard, before and after .env:\nhooks.json and hook scripts match the\nrunner-held SHA-256 digests?"}
       C2["claude -p --agent code\n--settings hooks.json\n--dangerously-skip-permissions"]
-      C1 --> C2
+      CX["exit 97 — never runs with edited hooks"]
+      C1 --> C0
+      C0 -- yes --> C2
+      C0 -- no --> CX
     end
     subgraph PL["runtime: pi"]
       direction TB
@@ -977,8 +981,8 @@ flowchart TB
   classDef guard fill:#fbf0d6,stroke:#d98e04,color:#1b2230;
   classDef bad fill:#f8e1de,stroke:#c0392b,color:#1b2230;
   classDef opt fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
-  class P0 guard;
-  class PX bad;
+  class C0,P0 guard;
+  class CX,PX bad;
   class P1,P2 opt;
 ```
 
