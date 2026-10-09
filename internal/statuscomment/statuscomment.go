@@ -94,12 +94,19 @@ type Notifier struct {
 	// PostCompletionWithDetail, this ID is lost and the start reaction is
 	// never cleaned up — there is no equivalent out-of-process reconciler
 	// for reactions. See ReconcileOrphaned's doc comment.
-	startReactionID  int64
-	triggerCommentID string
-	startTime        time.Time
-	now              func() time.Time
-	warnf            func(string, ...any)
-	runInfo          *RunInfo
+	startReactionID      int64
+	triggerCommentID     string
+	startTime            time.Time
+	now                  func() time.Time
+	warnf                func(string, ...any)
+	runInfo              *RunInfo
+	cancellationGuidance string
+}
+
+// SetCancellationGuidance sets optional caller-provided text appended to a
+// cancelled completion comment. Presentation policy belongs to the caller.
+func (n *Notifier) SetCancellationGuidance(guidance string) {
+	n.cancellationGuidance = guidance
 }
 
 // New creates a Notifier. The runID becomes either an invisible HTML marker
@@ -530,6 +537,10 @@ func (n *Notifier) buildCompletionBody(description, status, detail string, compl
 		b.WriteString("\n\n")
 		b.WriteString(footer)
 	}
+	if status == "cancelled" && n.cancellationGuidance != "" {
+		b.WriteString("\n\n")
+		b.WriteString(n.cancellationGuidance)
+	}
 	return b.String()
 }
 
@@ -757,6 +768,12 @@ func statusEmoji(status string) string {
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
 func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
+	return ReconcileOrphanedWithCancellationGuidance(ctx, client, project, number, runID, runURL, sha, reason, completionMode, jobStatus, wasSkipped, agentDescription, "")
+}
+
+// ReconcileOrphanedWithCancellationGuidance finalizes an orphaned status
+// comment and appends cancellationGuidance when the run was cancelled.
+func ReconcileOrphanedWithCancellationGuidance(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription, guidance string) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -790,7 +807,7 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 		// Still in "Started" state — finalize it.
 		desc, startTimeStr := parseStartBody(string(matched.Body))
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason)
+		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason, guidance)
 		if err := updateStatusComment(ctx, client, project, number, matched.ID, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("updating orphaned comment: %w", err)
 		}
@@ -827,7 +844,7 @@ func ReconcileOrphaned(ctx context.Context, client tracker.Client, project strin
 
 	if shouldSynthesize {
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason)
+		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason, guidance)
 		if _, err := createStatusComment(ctx, client, project, number, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
 		}
@@ -848,7 +865,7 @@ func parseStartBody(body string) (description, startTime string) {
 
 // buildInterruptedBody constructs the comment body for an orphaned status
 // comment that was interrupted by a hard process kill or job cancellation.
-func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string, endTime time.Time, reason TerminationReason) string {
+func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string, endTime time.Time, reason TerminationReason, cancellationGuidance string) string {
 	statusLabel, heading := reasonLabel(reason, description)
 
 	var b strings.Builder
@@ -872,6 +889,10 @@ func buildInterruptedBody(marker, runURL, sha, description, startTimeStr string,
 	if len(parts) > 0 {
 		b.WriteString("\n\n")
 		b.WriteString(strings.Join(parts, " · "))
+	}
+	if reason == ReasonCancelled && cancellationGuidance != "" {
+		b.WriteString("\n\n")
+		b.WriteString(cancellationGuidance)
 	}
 	return b.String()
 }

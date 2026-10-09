@@ -1045,6 +1045,43 @@ func TestReconcileOrphaned_CancelledReason(t *testing.T) {
 	assert.Contains(t, body, terminalTag)
 }
 
+func TestReconcileOrphaned_CancelledReviewIdentifiesCancelledCommit(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"org/repo/7": {{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Reviewing this PR · Started 2:34 PM UTC",
+			Author: "fullsend-bot[bot]",
+		}},
+	}
+
+	err := ReconcileOrphanedWithCancellationGuidance(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Review", "**Automated review did not complete for this commit. Review the current pull request HEAD before merging. Comment `/fs-review` to retry.**")
+	require.NoError(t, err)
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "Automated review did not complete for this commit")
+	assert.Contains(t, body, "Review the current pull request HEAD before merging")
+	assert.NotContains(t, body, "Do not merge")
+	assert.Contains(t, body, "`/fs-review`")
+}
+
+func TestReconcileOrphaned_CancelledNonReviewDoesNotUseDescriptionAsRole(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"org/repo/7": {{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Review · Started 2:34 PM UTC",
+			Author: "fullsend-bot[bot]",
+		}},
+	}
+
+	err := ReconcileOrphaned(context.Background(), tracker.NewForgeClient(fc), "org/repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "", "cancelled", false, "Review")
+	require.NoError(t, err)
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "Automated review did not complete")
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "`/fs-review`")
+}
+
 func TestReconcileOrphaned_StartTimeNotParseable(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{}
@@ -1496,6 +1533,54 @@ func TestPostCompletionWithDetail_SkippedShowsReason(t *testing.T) {
 
 	require.Len(t, fc.UpdatedComments, 1)
 	assert.Contains(t, fc.UpdatedComments[0].Body, "⏭️ Skipped (PR #123 already addresses this issue)")
+}
+
+func TestPostCompletionWithDetail_CancelledBuiltInReviewShowsRetryGuidance(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+	n.SetCancellationGuidance("**Automated review did not complete for this commit. Review the current pull request HEAD before merging. Comment `/fs-review` to retry.**")
+	require.NoError(t, n.PostStart(context.Background(), "Reviewing this PR"))
+
+	err := n.PostCompletionWithDetail(context.Background(), "Reviewing this PR", "cancelled", "")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "Automated review did not complete for this commit")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "Comment `/fs-review` to retry")
+}
+
+func TestPostCompletionWithDetail_CancelledShowsCallerSuppliedGuidance(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+	n.SetCancellationGuidance("**Retry with the caller's command.**")
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+
+	require.NoError(t, n.PostCompletionWithDetail(context.Background(), "Working", "cancelled", ""))
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "**Retry with the caller's command.**")
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "/fs-review")
+}
+
+func TestPostCompletionWithDetail_CancelledNonReviewDoesNotShowRetryGuidance(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n, fc := newTestNotifier(fc, cfg)
+	require.NoError(t, n.PostStart(context.Background(), "Reviewing this PR"))
+
+	err := n.PostCompletionWithDetail(context.Background(), "Reviewing this PR", "cancelled", "")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.NotContains(t, fc.UpdatedComments[0].Body, "Comment `/fs-review` to retry")
 }
 
 func TestSanitizeDetail(t *testing.T) {

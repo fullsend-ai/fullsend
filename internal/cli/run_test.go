@@ -35,6 +35,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
+	"github.com/fullsend-ai/fullsend/internal/tracker"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -2479,6 +2481,7 @@ func TestStripOIDCEnv(t *testing.T) {
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN=secret",
 		"FULLSEND_GCP_OIDC_URL=https://gcp.example.com",
 		"FULLSEND_GCP_OIDC_AUTH_FILE=/tmp/auth.json",
+		"GITHUB_TOKEN=workflow-token",
 		"SAFE_VAR=value",
 	}
 
@@ -2512,6 +2515,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		// The GitLab webhook fast-path credentials must stay runner-only.
 		"FULLSEND_TRIGGER_TOKEN",
 		"FULLSEND_WEBHOOK_SECRET",
+		// The workflow token must never reach harness-controlled expansions.
+		"GITHUB_TOKEN",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
@@ -8404,4 +8409,33 @@ func TestDoBridgeAgentsMDToHome_ReportsExitAndStderr(t *testing.T) {
 	doBridgeAgentsMDToHome("sb", "/sandbox/workspace/repo", "/sandbox/codex-config/AGENTS.md", ui.New(&buf), execFn)
 	assert.Contains(t, buf.String(), "exit 1: head: write error: No space left on device")
 	assert.NotContains(t, buf.String(), "<nil>")
+}
+
+func TestBuiltInGitHubReview(t *testing.T) {
+	for _, tt := range []struct {
+		name, agent, forge, source string
+		wantRetry                  bool
+	}{
+		{"GitHub review", "review", "github", "github", true},
+		{"GitHub review without source", "review", "github", "", true},
+		{"Jira source with GitHub forge", "review", "github", "jira", false},
+		{"custom review", "custom-review", "github", "github", false},
+		{"GitLab review", "review", "gitlab", "gitlab", false},
+		{"Forgejo review", "review", "forgejo", "forgejo", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// Exercise the cancellation comment consumer, so a routing mistake
+			// is caught as unusable retry guidance in the posted body.
+			fc := forge.NewFakeClient()
+			n := statuscomment.New(tracker.NewForgeClient(fc), config.StatusNotificationConfig{},
+				"org/repo", 7, "", "", "run-42")
+			n.SetCancellationGuidance(builtInGitHubReviewCancellationGuidance(tt.agent, tt.forge, tt.source))
+			require.NoError(t, n.PostStart(context.Background(), "Review"))
+			require.NoError(t, n.PostCompletion(context.Background(), "Review", "cancelled"))
+			require.Len(t, fc.UpdatedComments, 1)
+			body := fc.UpdatedComments[0].Body
+			assert.Contains(t, body, "Cancelled")
+			assert.Equal(t, tt.wantRetry, strings.Contains(body, "/fs-review"), body)
+		})
+	}
 }

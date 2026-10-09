@@ -37,6 +37,16 @@ write or higher.
 
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
 synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
+If a built-in GitHub review run is cancelled, its GitHub status comment identifies that
+cancelled commit and directs maintainers to review the current HEAD or retry
+with `/fs-review` before merging. Status comments routed to Jira omit this
+GitHub-only retry guidance.
+
+GitHub review submissions, including `commented` reviews with an empty summary,
+continue through normal routing. An empty summary can still accompany
+substantive inline review comments, so custom triggers receive the complete
+review event.
+
 On GitLab, automatic review fires when the cron poller sees an MR whose `created_at` is newer than the watermark
 (up to one poll interval of delay). Native `merge_request_event` dispatch was removed. `fullsend repos install`
 provisions a project webhook with merge-request events enabled ([ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md))

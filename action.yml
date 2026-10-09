@@ -12,6 +12,11 @@ inputs:
   agent:
     description: Agent name passed to fullsend run (e.g. triage, code, review).
     required: true
+  role:
+    description: >-
+      Mint role selected by dispatch. Used to reconcile an interrupted run
+      before fullsend can report its resolved harness role.
+    default: ""
   version:
     description: >-
       Release tag, version or long-form SHA: use latest, v0.0.1, 0.0.1 or a 40-char commit SHA.
@@ -428,7 +433,12 @@ runs:
         AGENT: ${{ inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         TARGET_REPO: ${{ inputs.target-repo }}
+        # Keep the workflow token available until Fullsend mints its
+        # role-scoped token: pre-mint private-resource fetches and provider
+        # credentials require it. GITHUB_TOKEN remains blank for child-script
+        # isolation; Fullsend strips it from child environments as well.
         GH_TOKEN: ${{ inputs.github_token }}
+        GITHUB_TOKEN: ""
         STATUS_RUN_URL: ${{ inputs.run-url }}
         STATUS_REPO: ${{ inputs.status-repo }}
         STATUS_NUMBER: ${{ inputs.status-number }}
@@ -542,6 +552,7 @@ runs:
         RUN_URL: ${{ inputs.run-url }}
         JOB_STATUS: ${{ job.status }}
         HARNESS_ROLE: ${{ steps.run.outputs.role }}
+        SUPPLIED_ROLE: ${{ inputs.role }}
         WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
@@ -577,7 +588,7 @@ runs:
 
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
-        RESOLVED_ROLE="${HARNESS_ROLE:-${AGENT}}"
+        RESOLVED_ROLE="${HARNESS_ROLE:-${SUPPLIED_ROLE:-${AGENT}}}"
         RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${RESOLVED_ROLE}")
         RECONCILE_FLAGS+=(--fullsend-dir "${FULLSEND_DIR}")
         RECONCILE_FLAGS+=(--job-status "${JOB_STATUS}")
@@ -592,6 +603,13 @@ runs:
         fi
         if [[ "${JOB_STATUS}" == "cancelled" ]]; then
           RECONCILE_FLAGS+=(--reason cancelled)
+        fi
+        # Older released/vendored CLIs predate --review-run. Keep their
+        # reconciliation path working, but retain built-in-review retry
+        # guidance whenever the installed CLI supports it.
+        if [[ "${AGENT}" == "review" ]] \
+          && fullsend reconcile-status --help 2>&1 | grep -F -- '--review-run' >/dev/null; then
+          RECONCILE_FLAGS+=(--review-run)
         fi
         fullsend reconcile-status "${RECONCILE_FLAGS[@]+"${RECONCILE_FLAGS[@]}"}" || {
           echo "::warning::Could not reconcile orphaned status comment"
