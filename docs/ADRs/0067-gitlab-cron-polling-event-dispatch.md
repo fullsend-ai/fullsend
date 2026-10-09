@@ -457,8 +457,9 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > project-access-token user merge access (not push) on the protected
 > default branch when Developer-class merge/push is absent, and fails
 > closed if that grant is not possible. `repos status` reports
-> `protected-ref-pipeline` drift if the access is later removed. Under
-> #7772 (originating issue #8083) the Poller becomes a project service
+> `protected-ref-pipeline` drift if the access is later removed.
+>
+> **Update (#8083):** under #7772 the Poller becomes a project service
 > account by default once its CLI activation change merges; a project access
 > token remains the fallback.
 >

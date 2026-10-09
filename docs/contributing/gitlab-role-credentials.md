@@ -220,7 +220,9 @@ access token bot cannot change role, but a service account's membership
 can. That lets the Poller own the webhook trigger token (see below).
 
 - When the project has more than one service account with the same role
-  name, the one with the lowest ID wins.
+  name, only durably verified managed, non-supplied candidates participate;
+  among those, the one with the lowest ID wins. Unverified or supplied
+  same-named accounts never participate, whatever their ID.
 - Inventory merges service-account tokens with legacy project access
   tokens. This applies to provisioning, rotation, `repos status`,
   Poller pipeline access, and uninstall token revocation.
@@ -524,9 +526,13 @@ before manually removing a stranded lease.
   credential. If another active token or an unmanaged pipeline trigger
   owned by the Poller remains on the account, containment is reported as
   incomplete: revoke it or have an administrator block the account. A
-  failed install runs the same restoration and containment before it
-  finishes, so an interrupted install cannot leave an elevated Poller
-  behind.
+  failed install attempts the same restoration and containment before it
+  finishes when the failure is handled in-process. Abrupt termination (a kill
+  or power loss between raising and restoring the role) or a failed
+  restoration request can still leave the Poller elevated. In that case the
+  administrator must verify the Poller is Developer, restore it if not, and
+  clean up the bootstrap token before clearing the stranded lease and
+  retrying install.
 - **Poller membership cannot be raised (403/404):** this is the
   project-access-token Poller case. The fast path is deferred nonfatally,
   and an existing compliant fast path is preserved.
