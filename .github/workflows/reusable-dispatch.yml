@@ -114,6 +114,9 @@ jobs:
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
+      - name: Mint provenance reproducer marker
+        run: echo "MINT_PROVENANCE_REPRO_FOREIGN_BRANCH"
+
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}
         run: |
