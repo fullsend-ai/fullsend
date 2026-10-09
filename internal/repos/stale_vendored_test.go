@@ -325,3 +325,77 @@ func findDrift(drifts []Drift, field string) (Drift, bool) {
 	}
 	return Drift{}, false
 }
+
+// putVendoredCallers replaces the fixture's scaffold with callers rendered
+// for a vendored install, which use local ./.github/workflows/reusable-*.yml
+// targets.
+func putVendoredCallers(t *testing.T, fc *forge.FakeClient, owner, repo string) {
+	t.Helper()
+	files, err := BuildScaffoldFiles(InstallConfig{
+		Owner:        owner,
+		Repo:         repo,
+		Forge:        ForgeGitHub,
+		Roles:        []string{"triage"},
+		MintURL:      "https://mint.example.com",
+		UpstreamRef:  "v1.0.0",
+		UpstreamTag:  "v1.0.0",
+		VendorBinary: true,
+	})
+	require.NoError(t, err)
+	for _, f := range files {
+		fc.FileContents[owner+"/"+repo+"/"+f.Path] = f.Content
+	}
+}
+
+func TestConverge_KeepsVendoredAssetsWhenVendoredCallerCannotBeRewritten(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	markFullyInstalled(fc, "acme", "api")
+	putVendoredCallers(t, fc, "acme", "api")
+	putStaleVendoredAssets(fc, "acme", "api")
+	require.Contains(t, string(fc.FileContents["acme/api/.github/workflows/fullsend.yaml"]), "./.github/workflows/reusable-", "fixture caller must be vendored")
+
+	// No manifest fullsend_ref and no build-time ref: nothing rewrites the callers.
+	m := newConvergeManifest("acme/api")
+	m.GitHub.FullsendRef = ""
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
+	spy := &spyScaffoldCommit{}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), spy.fn(), noopProgress)
+	require.NoError(t, err)
+	require.Empty(t, result.Failed())
+
+	assert.Empty(t, deletedPaths(spy.files), "reusable workflows must stay while a caller still uses them")
+	action, ok := findAction(result.Results[0].Actions, staleVendoredComponent)
+	require.True(t, ok)
+	assert.Equal(t, "none", action.Action)
+	assert.Contains(t, action.Detail, "kept stale vendored assets")
+	assert.Contains(t, string(fc.FileContents["acme/api/.github/workflows/fullsend.yaml"]), "./.github/workflows/reusable-", "caller untouched")
+}
+
+func TestConverge_RewritesVendoredCallersBeforeRemovingAssets(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	markFullyInstalled(fc, "acme", "api")
+	putVendoredCallers(t, fc, "acme", "api")
+	putStaleVendoredAssets(fc, "acme", "api")
+
+	// The manifest pins fullsend_ref, so content drift rewrites the callers.
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(newConvergeManifest("acme/api")))
+	spy := &spyScaffoldCommit{}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), spy.fn(), noopProgress)
+	require.NoError(t, err)
+	require.Empty(t, result.Failed())
+
+	assert.Equal(t, staleVendoredOwned, deletedPaths(spy.files))
+	var rewritten int
+	for _, f := range spy.files {
+		if f.Delete {
+			continue
+		}
+		if f.Path == ".github/workflows/fullsend.yaml" || f.Path == ".github/workflows/prioritize.yml" {
+			rewritten++
+			assert.NotContains(t, string(f.Content), "./.github/workflows/reusable-", f.Path)
+		}
+	}
+	assert.Equal(t, 2, rewritten, "shim and thin caller are rewritten to non-vendored targets in the same commit")
+}

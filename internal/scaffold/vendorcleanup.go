@@ -3,6 +3,7 @@ package scaffold
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -24,7 +25,10 @@ const (
 // vendor manifest when present, otherwise — only when the vendored binary
 // is present — the embed-derived legacy layout. Repositories with neither
 // the manifest nor the binary yield nil, so files a user added under the
-// same directories are never claimed.
+// same directories are never claimed. The manifest-less fallback is further
+// limited to the workflowPrefix namespace and the reusable workflow files,
+// because no record proves Fullsend wrote un-prefixed paths such as a root
+// action.yml or .github/actions and .github/scripts entries.
 //
 // Only paths that currently exist on the default branch are returned, so
 // a repeat run after cleanup reports nothing. When the repository tree is
@@ -41,22 +45,25 @@ func PendingVendoredCleanupPaths(ctx context.Context, client forge.Client, owner
 	}
 
 	var existing map[string]struct{}
+	var hasManifest bool
 	if listErr == nil {
 		existing = make(map[string]struct{}, len(allPaths))
 		for _, p := range allPaths {
 			existing[p] = struct{}{}
 		}
-		_, hasManifest := existing[manifestPath]
+		_, hasManifest = existing[manifestPath]
 		_, hasBinary := existing[binaryPath]
 		if !hasManifest && !hasBinary {
 			return nil, nil
 		}
 	} else {
-		present, err := vendoredMarkerPresent(ctx, client, owner, repo, manifestPath, binaryPath)
+		var hasBinary bool
+		var err error
+		hasManifest, hasBinary, err = vendoredMarkersPresent(ctx, client, owner, repo, manifestPath, binaryPath)
 		if err != nil {
 			return nil, err
 		}
-		if !present {
+		if !hasManifest && !hasBinary {
 			return nil, nil
 		}
 	}
@@ -64,6 +71,9 @@ func PendingVendoredCleanupPaths(ctx context.Context, client forge.Client, owner
 	paths, err := ResolveVendoredCleanupPaths(ctx, client, owner, repo, workflowPrefix, binaryPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolving vendored cleanup paths: %w", err)
+	}
+	if !hasManifest {
+		paths = conservativeLegacyPaths(paths, workflowPrefix)
 	}
 	if existing == nil {
 		return paths, nil
@@ -77,22 +87,40 @@ func PendingVendoredCleanupPaths(ctx context.Context, client forge.Client, owner
 	return out, nil
 }
 
-// vendoredMarkerPresent reports whether the vendor manifest or the vendored
-// binary exists, checking each path individually.
-func vendoredMarkerPresent(ctx context.Context, client forge.Client, owner, repo, manifestPath, binaryPath string) (bool, error) {
-	_, err := client.GetFileContent(ctx, owner, repo, manifestPath)
+// conservativeLegacyPaths narrows the embed-derived legacy cleanup set, used
+// when no manifest records what a vendored install wrote, to paths that are
+// unambiguously Fullsend's: everything under workflowPrefix (the .fullsend/
+// namespace) and the reusable workflow files. Un-prefixed paths such as the
+// root action.yml and .github/actions or .github/scripts entries could belong
+// to the user and are kept.
+func conservativeLegacyPaths(paths []string, workflowPrefix string) []string {
+	var out []string
+	for _, p := range paths {
+		inNamespace := workflowPrefix != "" && strings.HasPrefix(p, workflowPrefix)
+		reusable := strings.HasPrefix(p, ".github/workflows/reusable-") && strings.HasSuffix(p, ".yml")
+		if inNamespace || reusable {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// vendoredMarkersPresent reports whether the vendor manifest and the
+// vendored binary exist, checking each path individually.
+func vendoredMarkersPresent(ctx context.Context, client forge.Client, owner, repo, manifestPath, binaryPath string) (hasManifest, hasBinary bool, err error) {
+	_, err = client.GetFileContent(ctx, owner, repo, manifestPath)
 	if err == nil {
-		return true, nil
+		return true, false, nil
 	}
 	if !forge.IsNotFound(err) {
-		return false, fmt.Errorf("checking vendor manifest: %w", err)
+		return false, false, fmt.Errorf("checking vendor manifest: %w", err)
 	}
 	_, err = client.GetFileContent(ctx, owner, repo, binaryPath)
 	if err == nil {
-		return true, nil
+		return false, true, nil
 	}
 	if !forge.IsNotFound(err) {
-		return false, fmt.Errorf("checking vendored binary: %w", err)
+		return false, false, fmt.Errorf("checking vendored binary: %w", err)
 	}
-	return false, nil
+	return false, false, nil
 }

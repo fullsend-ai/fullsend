@@ -41,8 +41,13 @@ For GitHub repos whose effective `vendor` setting is false (manifest
 assets left by a previous vendored install. Fullsend owns only the paths
 recorded in `.fullsend/vendor-manifest.yaml`, plus the manifest and the
 vendored binary `.fullsend/bin/fullsend`. Without a manifest, ownership falls
-back to the legacy vendored layout, and only when the binary is present.
-Files you added under the same directories are kept. The deletions are part
+back to the legacy vendored layout, only when the binary is present, and
+only for files under `.fullsend/` and the `.github/workflows/reusable-*.yml`
+workflows; a root `action.yml`, `.github/actions/*`, and `.github/scripts/*`
+are never removed without a manifest record. Files you added under the same
+directories are kept. When no workflow ref is available (no `fullsend_ref` and
+a development build) and an installed caller still uses a local reusable
+workflow, the cleanup is skipped so the callers keep working. The deletions are part
 of the scaffold commit: pushed directly with `--direct`, or added to the
 install or upgrade PR otherwise. They apply to new and established
 installations alike and to partial installs (`--roles`). `--dry-run` lists

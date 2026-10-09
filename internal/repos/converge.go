@@ -3675,6 +3675,27 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 	// Fullsend-owned files a previous vendored install committed, in the
 	// same scaffold commit as every other change.
 	staleFiles, staleActions := convergeStaleVendoredFiles(ctx, resolved, cfg, progress)
+	if len(staleActions) > 0 && staleActions[0].Action != "error" {
+		// Never delete the reusable workflows while an installed caller
+		// still points at them: vendored callers use local targets and
+		// are only rewritten when a ref is available.
+		stillLocal, checkErr := localReusableCallerRemains(ctx, resolved, allScaffoldFiles)
+		if checkErr != nil {
+			staleFiles = nil
+			staleActions = []ComponentAction{{
+				Component: staleVendoredComponent,
+				Action:    "error",
+				Detail:    fmt.Sprintf("checking callers before removing stale vendored assets: %v", checkErr),
+			}}
+		} else if stillLocal {
+			staleFiles = nil
+			staleActions = []ComponentAction{{
+				Component: staleVendoredComponent,
+				Action:    "none",
+				Detail:    "kept stale vendored assets: an installed caller still references the local reusable workflows and no workflow ref is available to rewrite it; set fullsend_ref (or install a release build) and re-run",
+			}}
+		}
+	}
 	actions = append(actions, staleActions...)
 	for _, a := range staleActions {
 		if a.Action == "error" {
@@ -3683,6 +3704,40 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 	}
 	allScaffoldFiles = append(allScaffoldFiles, withoutQueuedPaths(staleFiles, allScaffoldFiles)...)
 	return allScaffoldFiles, actions, nil
+}
+
+// localReusableCallerRemains reports whether any installed caller workflow
+// (the dispatch shim or a thin stage caller) would still use a local
+// ./.github/workflows/reusable-*.yml target once the planned files land.
+// Planned content takes precedence over what is installed.
+func localReusableCallerRemains(ctx context.Context, resolved ResolvedConfig, planned []forge.TreeFile) (bool, error) {
+	plannedByPath := make(map[string]forge.TreeFile, len(planned))
+	for _, f := range planned {
+		plannedByPath[f.Path] = f
+	}
+	callers := append(append([]string(nil), resolved.ForgeConfig.WorkflowPaths...), scaffold.PerRepoThinCallerPaths()...)
+	for _, path := range callers {
+		var content []byte
+		if f, ok := plannedByPath[path]; ok {
+			if f.Delete {
+				continue
+			}
+			content = f.Content
+		} else {
+			installed, err := resolved.ForgeConfig.Client.GetFileContent(ctx, resolved.Owner, resolved.Repo, path)
+			if err != nil {
+				if forge.IsNotFound(err) {
+					continue
+				}
+				return false, err
+			}
+			content = installed
+		}
+		if strings.Contains(string(content), "./.github/workflows/reusable-") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // staleVendoredComponent is the ComponentAction component reported for

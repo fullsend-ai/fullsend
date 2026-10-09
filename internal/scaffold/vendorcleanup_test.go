@@ -147,3 +147,37 @@ func TestPendingVendoredCleanupPaths_InvalidManifest(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving vendored cleanup paths")
 }
+
+func TestPendingVendoredCleanupPaths_BinaryOnlyKeepsUnprefixedUserFiles(t *testing.T) {
+	for _, truncated := range []bool{false, true} {
+		fc := forge.NewFakeClient()
+		if truncated {
+			fc.Errors["ListRepositoryFiles"] = fmt.Errorf("too large: %w", forge.ErrTreeTruncated)
+		}
+		putRepoFile(fc, ".fullsend/bin/fullsend", "ELF")
+		putRepoFile(fc, "action.yml", "user root action")
+		putRepoFile(fc, ".github/actions/mint-token/action.yml", "user action")
+		putRepoFile(fc, ".github/scripts/install-podman.sh", "user script")
+		putRepoFile(fc, ".defaults/action.yml", "user defaults")
+
+		paths, err := pendingCleanup(t, fc)
+		require.NoError(t, err)
+		for _, p := range paths {
+			assert.NotEqual(t, "action.yml", p)
+			assert.NotContains(t, p, ".github/actions/")
+			assert.NotContains(t, p, ".github/scripts/")
+			assert.NotContains(t, p, ".defaults/action.yml", "un-prefixed .defaults must be kept")
+		}
+		assert.Contains(t, paths, ".fullsend/bin/fullsend")
+	}
+}
+
+func TestPendingVendoredCleanupPaths_ManifestStillOwnsUnprefixedPaths(t *testing.T) {
+	fc := forge.NewFakeClient()
+	putRepoFile(fc, ".fullsend/vendor-manifest.yaml", "version: \"1\"\nbinary_path: .fullsend/bin/fullsend\npaths:\n  - action.yml\n")
+	putRepoFile(fc, "action.yml", "written by vendored install")
+
+	paths, err := pendingCleanup(t, fc)
+	require.NoError(t, err)
+	assert.Contains(t, paths, "action.yml", "an explicit manifest record is ownership proof")
+}
