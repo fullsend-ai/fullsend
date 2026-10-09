@@ -67,6 +67,11 @@ func sanitizeError(err error) string {
 			return fmt.Sprintf("%s: invalid URL escape", urlErr.Op)
 		}
 		if urlErr.Err != nil {
+			// url.Parse quotes the offending port text, which can hold a
+			// secret (e.g. "http://user:pass" with the '@host' missing).
+			if strings.HasPrefix(urlErr.Err.Error(), "invalid port ") {
+				return fmt.Sprintf("%s: invalid port after host", urlErr.Op)
+			}
 			return fmt.Sprintf("%s: %v", urlErr.Op, urlErr.Err)
 		}
 		return urlErr.Op
@@ -178,25 +183,40 @@ func validateEndpoint(envVar, ep string) error {
 		return nil
 	}
 
+	// Errors never echo the endpoint value: a misconfigured endpoint can carry
+	// credentials in userinfo, the query string, or (when the scheme is
+	// missing) a userinfo-like prefix that url.Parse reads as the scheme.
 	u, err := url.Parse(ep)
 	if err != nil {
 		return fmt.Errorf("%s: %s", envVar, sanitizeError(err))
 	}
 
-	redacted := u.Redacted()
 	if u.Scheme == "" {
-		return fmt.Errorf("%s: endpoint %q has no scheme, it is required", envVar, redacted)
+		return fmt.Errorf("%s: endpoint has no scheme, it is required", envVar)
 	}
 
 	if u.Scheme != "https" && u.Scheme != "http" {
-		return fmt.Errorf("%s: endpoint %q uses the %q scheme which is not supported", envVar, redacted, u.Scheme)
+		if wellKnownSchemes[u.Scheme] {
+			return fmt.Errorf("%s: endpoint scheme %q is not supported, use http or https", envVar, u.Scheme)
+		}
+		return fmt.Errorf("%s: endpoint scheme is not supported, use http or https", envVar)
 	}
 
 	if u.Host == "" {
-		return fmt.Errorf("%s: endpoint %q has no host, it is required", envVar, redacted)
+		return fmt.Errorf("%s: endpoint has no host, it is required", envVar)
 	}
 
 	return nil
+}
+
+// wellKnownSchemes lists unsupported schemes that are safe to name in
+// validation errors. Any other parsed scheme may be part of a secret (e.g.
+// the "user" in a schemeless "user:pass@host:port"), so it is not echoed.
+var wellKnownSchemes = map[string]bool{
+	"grpc": true, "grpcs": true,
+	"ws": true, "wss": true,
+	"tcp": true, "udp": true, "unix": true,
+	"ftp": true, "ftps": true, "file": true,
 }
 
 // ValidateOTLPHeaders checks the OTEL header env vars (OTEL_EXPORTER_OTLP_HEADERS
