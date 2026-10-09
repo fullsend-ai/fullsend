@@ -1920,6 +1920,24 @@ scope: workspace
 			want:     false,
 		},
 		{
+			name:     "export has explicit MCP strict_tool_names false the local file omits",
+			local:    "id: p\nendpoints:\n- host: mcp.example.com\n  mcp:\n    allow_all_known_mcp_methods: true\n",
+			exported: "id: p\nendpoints:\n- host: mcp.example.com\n  mcp:\n    allow_all_known_mcp_methods: true\n    strict_tool_names: false\n",
+			want:     false,
+		},
+		{
+			name:     "local sets MCP strict_tool_names false the export omits",
+			local:    "id: p\nendpoints:\n- host: mcp.example.com\n  mcp:\n    strict_tool_names: false\n",
+			exported: "id: p\nendpoints:\n- host: mcp.example.com\n  mcp: {}\n",
+			want:     false,
+		},
+		{
+			name:     "credential secret false only the export has",
+			local:    local,
+			exported: strings.Replace(exported, "  required: true\n", "  required: true\n  secret: false\n", 1),
+			want:     true,
+		},
+		{
 			name:     "export has unknown extra field",
 			local:    "id: p\n",
 			exported: "id: p\nannotations:\n  k: v\n",
@@ -1999,6 +2017,7 @@ func TestImportProfile_AlreadyExists_RemovedNonDefaultScalar(t *testing.T) {
 		{"credential auth_style", "id: my-profile\ncredentials:\n- name: api_token\n  auth_style: bearer\n"},
 		{"credential header_name", "id: my-profile\ncredentials:\n- name: api_token\n  header_name: X-Key\n"},
 		{"endpoint flag", "id: my-profile\nendpoints:\n- host: api.github.com\n  allow_uninspected_credentials: true\n"},
+		{"endpoint mcp strict_tool_names", "id: my-profile\nendpoints:\n- host: api.github.com\n  mcp:\n    strict_tool_names: false\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2010,6 +2029,9 @@ func TestImportProfile_AlreadyExists_RemovedNonDefaultScalar(t *testing.T) {
 			}
 			if strings.HasPrefix(tt.name, "endpoint") {
 				local += "endpoints:\n  - host: api.github.com\n"
+			}
+			if strings.HasSuffix(tt.name, "strict_tool_names") {
+				local += "    mcp: {}\n"
 			}
 			require.NoError(t, os.WriteFile(profilePath, []byte(local), 0o644))
 

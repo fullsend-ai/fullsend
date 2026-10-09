@@ -318,6 +318,17 @@ var gatewayNonZeroDefaults = map[string]any{
 	"scope":    "workspace",
 }
 
+// gatewayDefaultFalseKeys lists the boolean profile fields the gateway's
+// export always writes, so `false` there is a default (OpenShell 0.1.2). Any
+// other boolean the export writes was set explicitly, and `false` can differ
+// from unset: MCP `strict_tool_names` is enforced when unset but off when
+// false. profileValueIsEmpty treats `false` as empty only for these keys.
+var gatewayDefaultFalseKeys = map[string]bool{
+	"inference_capable": true,
+	"required":          true,
+	"secret":            true,
+}
+
 // profileContentEqual reports whether the gateway's export of a profile
 // (exported) still carries the content of the local profile YAML document
 // (local). It is driven by the local file, not by knowledge of what OpenShell
@@ -372,12 +383,12 @@ func profileContentEqual(local, exported []byte) (bool, error) {
 // profileMapMatches reports whether exported holds every key of local with a
 // matching value. A local key the export omits matches only when its value is
 // empty (the export may leave defaults out). A key only exported has matches
-// only when its value is empty (nil, a zero scalar, an empty list or map).
+// only when its value is empty (see profileValueIsEmpty).
 func profileMapMatches(local, exported map[string]any) bool {
 	for k, lv := range local {
 		ev, ok := exported[k]
 		if !ok {
-			if !profileValueIsEmpty(lv) {
+			if !profileValueIsEmpty(k, lv) {
 				return false
 			}
 			continue
@@ -390,7 +401,7 @@ func profileMapMatches(local, exported map[string]any) bool {
 		if _, ok := local[k]; ok {
 			continue
 		}
-		if !profileValueIsEmpty(ev) {
+		if !profileValueIsEmpty(k, ev) {
 			return false
 		}
 	}
@@ -421,12 +432,15 @@ func profileValueMatches(local, exported any) bool {
 	}
 }
 
-// profileValueIsEmpty reports whether v is nil, a zero scalar, or an empty
-// list or map.
-func profileValueIsEmpty(v any) bool {
+// profileValueIsEmpty reports whether v, the value of key, is nil, a zero
+// scalar, or an empty list or map. A `false` counts as empty only for
+// gatewayDefaultFalseKeys.
+func profileValueIsEmpty(key string, v any) bool {
 	switch x := v.(type) {
 	case nil:
 		return true
+	case bool:
+		return !x && gatewayDefaultFalseKeys[key]
 	case []any:
 		return len(x) == 0
 	case map[string]any:
