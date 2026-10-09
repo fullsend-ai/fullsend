@@ -87,7 +87,7 @@ github:
 gitlab:
   url: https://gitlab.example.com
   inference:
-    auth: openai-wif
+    auth: openai
   repos:
     - name: group/project
 `,
@@ -471,9 +471,15 @@ func TestSetDefault_InferenceAuth(t *testing.T) {
 	require.NotNil(t, m.GitLab)
 	assert.Equal(t, InferenceAuthVertexWIF, m.GitLab.Inference.Auth)
 
-	err = SetDefault(path, "github.inference.auth", "openai-wif")
+	err = SetDefault(path, "github.inference.auth", "openai")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "github.inference.auth")
+
+	require.NoError(t, SetDefault(path, "github.inference.auth", InferenceAuthOpenAIWIF))
+	err = SetDefault(path, "gitlab.inference.auth", InferenceAuthOpenAIWIF)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gitlab.inference.auth")
+	assert.Contains(t, err.Error(), "GitHub only")
 
 	require.NoError(t, SetDefault(path, "defaults.inference.auth", ""))
 	require.NoError(t, SetDefault(path, "github.inference.auth", ""))

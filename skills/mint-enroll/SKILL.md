@@ -131,7 +131,7 @@ go run ./cmd/fullsend mint status --mint-url= --project="$GCP_PROJECT" --region=
 
 When `FULLSEND_MINT_URL` is already configured, `mint status --mint-url`
 is available as a lighter diagnostics command (no GCP IAM roles required),
-but it only reports version, commit, org/allowed-orgs, roles, and
+but it only reports version, commit, org, roles, and
 workflow-host repos — it does **not** show PEM health, Cloud Run revision
 info, or the health summary, so it does not replace the `--project`
 pre-check above:
@@ -247,8 +247,8 @@ before the admin triggers a workflow.
 
 ## Rollback
 
-**STOP — unenroll is a destructive operation that removes an org or repo
-from the mint. Always run `--dry-run` first and confirm with the operator
+**STOP — unenroll is a destructive operation that removes a repo from the
+mint. Always run `--dry-run` first and confirm with the operator
 before proceeding.**
 
 Use the CLI to unenroll:
@@ -266,20 +266,23 @@ go run ./cmd/fullsend mint unenroll "$TARGET" \
 Unenroll is interactive — it requires typing the target name to confirm.
 Use `--yolo` to skip confirmation in automated contexts.
 
-Org-scoped unenroll removes the org from mint env vars and the shared WIF
-provider's attribute condition. Role PEM secrets are shared across orgs and
-are not modified. Repo-scoped unenroll disables the repo-specific WIF
-provider — it does not touch PEM secrets.
+`$TARGET` must be `owner/repo`; a bare org is rejected because per-org
+unenrollment was removed. Unenroll removes the repo from
+`PER_REPO_WIF_REPOS` and disables the repo-specific WIF provider — it does
+not touch PEM secrets. Org entries left on older mints (`ALLOWED_ORGS`, org
+entries in the shared WIF provider condition) need manual cleanup; see
+"Cleaning up legacy per-org mint state" in
+`docs/guides/infrastructure/mint-administration.md`.
 
-To permanently delete a repo-scoped WIF provider instead of disabling it,
+To permanently delete the repo's WIF provider instead of disabling it,
 add `--delete-provider` to the unenroll command:
 
 ```bash
-# Preview permanent WIF provider deletion first (repo-scoped only)
+# Preview permanent WIF provider deletion first
 go run ./cmd/fullsend mint unenroll "$TARGET" \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --delete-provider --dry-run
 
-# Permanently delete WIF provider (repo-scoped only, after dry-run confirms)
+# Permanently delete WIF provider (after dry-run confirms)
 go run ./cmd/fullsend mint unenroll "$TARGET" \
   --project="$GCP_PROJECT" --region="$MINT_REGION" --delete-provider
 ```

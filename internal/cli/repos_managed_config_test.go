@@ -108,7 +108,7 @@ func useOpenAIInputs(opts *reposInstallConfig) *reposInstallConfig {
 	return opts
 }
 
-func statusJSON(t *testing.T, manifestPath string, fc *forge.FakeClient) (repos.StatusResult, error) {
+func statusJSON(t *testing.T, manifestPath string, fc forge.Client) (repos.StatusResult, error) {
 	t.Helper()
 	cmd := newReposStatusCmd()
 	cmd.SetContext(context.Background())

@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +21,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// handleTracked registers handler on mux and fails the test when the route
+// was never invoked, so an unmatched path cannot pass by coincidence (an
+// unmatched route answers 404, which several tests expect).
+func handleTracked(t *testing.T, mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
+	t.Helper()
+	var called atomic.Bool
+	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		handler(w, r)
+	})
+	t.Cleanup(func() {
+		assert.True(t, called.Load(), "route %s was never invoked", pattern)
+	})
+}
 
 // readJSONBody unmarshals the JSON body from a request into v.
 func readJSONBody(t *testing.T, r *http.Request, v any) {
@@ -1918,6 +1934,43 @@ func TestGetRepoVariable_Found(t *testing.T) {
 	assert.Equal(t, "hello", value)
 }
 
+// A project variable is looked up by its wildcard scope, the one jobs without
+// an environment see. GitLab answers 404 when the key exists only for a named
+// environment scope, and returns the wildcard definition when several exist.
+func TestGetRepoVariable_RestrictsToWildcardEnvironmentScope(t *testing.T) {
+	scopes := map[string]string{"FULLSEND_OPENAI_AUDIENCE": "production"}
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/api/v4/projects/myorg/myrepo/variables/")
+		if r.URL.Query().Get("filter[environment_scope]") != "*" {
+			// Without the filter GitLab does not say which scope it returns.
+			writeJSON(t, w, http.StatusOK, map[string]string{"key": name, "value": "unfiltered", "environment_scope": scopes[name]})
+			return
+		}
+		if scopes[name] != "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeJSON(t, w, http.StatusOK, map[string]string{"key": name, "value": "wildcard", "environment_scope": "*"})
+	}
+
+	t.Run("environment-only variable does not exist", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/variables/FULLSEND_OPENAI_AUDIENCE", handler)
+		value, found, err := client.GetRepoVariable(context.Background(), "myorg", "myrepo", "FULLSEND_OPENAI_AUDIENCE")
+		require.NoError(t, err)
+		assert.False(t, found)
+		assert.Empty(t, value)
+	})
+	t.Run("wildcard variable is returned", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/variables/PLAIN", handler)
+		value, found, err := client.GetRepoVariable(context.Background(), "myorg", "myrepo", "PLAIN")
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, "wildcard", value)
+	})
+}
+
 func TestGetRepoVariable_NotFound(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1959,8 +2012,145 @@ func TestListGroupVariablesForTriggerSafety(t *testing.T) {
 	})
 	vars, err := client.ListOrgVariables(context.Background(), "myorg/subgroup")
 	require.NoError(t, err)
-	require.Equal(t, []forge.OrgVariable{{Name: "CI_PIPELINE_SOURCE"}}, vars)
+	require.Len(t, vars, 1)
+	require.Equal(t, "CI_PIPELINE_SOURCE", vars[0].Name)
+	require.Empty(t, vars[0].Value)
+	require.NotNil(t, vars[0].NonBlank)
+	require.True(t, *vars[0].NonBlank)
 	require.Equal(t, 1, calls)
+}
+
+func TestListInheritedRepoVariablesUsesGroupVariables(t *testing.T) {
+	client, mux := setupTest(t)
+	handleTracked(t, mux, "/api/v4/groups/myorg/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE", "value": "x"}})
+	})
+	handleTracked(t, mux, "/api/v4/admin/ci/variables", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	vars, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	// The instance scope needs administrator access: the group variables
+	// are still returned, and the instance stays unverified.
+	require.Equal(t, []string{"instance"}, forge.UnverifiedScopes(err))
+	require.Len(t, vars, 1)
+	require.Equal(t, "FULLSEND_OPENAI_AUDIENCE", vars[0].Name)
+	require.Empty(t, vars[0].Value)
+	require.NotNil(t, vars[0].NonBlank)
+	require.True(t, *vars[0].NonBlank)
+}
+
+func TestListInheritedRepoVariablesSkipsEnvironmentScopedGroupVariables(t *testing.T) {
+	client, mux := setupTest(t)
+	handleTracked(t, mux, "/api/v4/groups/myorg/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{
+			{"key": "FULLSEND_OPENAI_AUDIENCE", "environment_scope": "production"},
+			{"key": "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "environment_scope": "*"},
+			{"key": "PLAIN"},
+		})
+	})
+	handleTracked(t, mux, "/api/v4/admin/ci/variables", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	vars, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	require.Equal(t, []string{"instance"}, forge.UnverifiedScopes(err))
+	require.Equal(t, []forge.OrgVariable{
+		{Name: "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"},
+		{Name: "PLAIN"},
+	}, vars)
+}
+
+func TestListInheritedRepoVariablesNestedNamespaceAndInstance(t *testing.T) {
+	client, mux := setupTest(t)
+	handleTracked(t, mux, "/api/v4/groups/top/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE"}, {"key": "SHARED"}})
+	})
+	handleTracked(t, mux, "/api/v4/groups/top%2Fsub/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"}, {"key": "SHARED"}})
+	})
+	handleTracked(t, mux, "/api/v4/admin/ci/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"}})
+	})
+	// owner holds the first path component; repo carries the rest.
+	vars, err := client.ListInheritedRepoVariables(context.Background(), "top", "sub/proj")
+	require.NoError(t, err)
+	require.Equal(t, []forge.OrgVariable{
+		{Name: "FULLSEND_OPENAI_AUDIENCE"},
+		{Name: "SHARED"},
+		{Name: "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"},
+		{Name: "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"},
+	}, vars)
+}
+
+func TestListInheritedRepoVariablesAccessErrors(t *testing.T) {
+	instanceAllowed := func(t *testing.T, mux *http.ServeMux) {
+		handleTracked(t, mux, "/api/v4/admin/ci/variables", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, []map[string]string{})
+		})
+	}
+	t.Run("verified personal namespace has no group variables", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/groups/alice/variables", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		})
+		handleTracked(t, mux, "/api/v4/namespaces/alice", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, map[string]string{"kind": "user"})
+		})
+		instanceAllowed(t, mux)
+		vars, err := client.ListInheritedRepoVariables(context.Background(), "alice", "proj")
+		require.NoError(t, err)
+		require.Empty(t, vars)
+	})
+	t.Run("unverifiable not-found namespace is not assumed personal", func(t *testing.T) {
+		for name, handler := range map[string]http.HandlerFunc{
+			"group kind": func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, http.StatusOK, map[string]string{"kind": "group"})
+			},
+			"lookup fails": func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) },
+		} {
+			t.Run(name, func(t *testing.T) {
+				client, mux := setupTest(t)
+				handleTracked(t, mux, "/api/v4/groups/hidden/variables", func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusNotFound)
+				})
+				handleTracked(t, mux, "/api/v4/namespaces/hidden", handler)
+				instanceAllowed(t, mux)
+				_, err := client.ListInheritedRepoVariables(context.Background(), "hidden", "proj")
+				require.Equal(t, []string{"group hidden"}, forge.UnverifiedScopes(err))
+			})
+		}
+	})
+	t.Run("forbidden group is reported as unverified", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/groups/myorg/variables", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		})
+		instanceAllowed(t, mux)
+		vars, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "proj")
+		require.Equal(t, []string{"group myorg"}, forge.UnverifiedScopes(err))
+		require.Empty(t, vars)
+	})
+	t.Run("inaccessible parent does not hide a readable subgroup", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/groups/top/variables", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		})
+		handleTracked(t, mux, "/api/v4/groups/top%2Fsub/variables", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE"}})
+		})
+		instanceAllowed(t, mux)
+		vars, err := client.ListInheritedRepoVariables(context.Background(), "top", "sub/proj")
+		require.Equal(t, []string{"group top"}, forge.UnverifiedScopes(err))
+		require.Equal(t, []forge.OrgVariable{{Name: "FULLSEND_OPENAI_AUDIENCE"}}, vars)
+	})
+	t.Run("other group errors are fatal", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/groups/myorg/variables", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		_, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "proj")
+		require.Error(t, err)
+		require.Empty(t, forge.UnverifiedScopes(err))
+	})
 }
 
 func TestListGroupVariablesErrors(t *testing.T) {
@@ -1991,7 +2181,11 @@ func TestListInstanceVariables(t *testing.T) {
 		})
 		vars, err := client.ListInstanceVariables(context.Background())
 		require.NoError(t, err)
-		require.Equal(t, []forge.OrgVariable{{Name: "CI_PIPELINE_SOURCE"}}, vars)
+		require.Len(t, vars, 1)
+		require.Equal(t, "CI_PIPELINE_SOURCE", vars[0].Name)
+		require.Empty(t, vars[0].Value)
+		require.NotNil(t, vars[0].NonBlank)
+		require.True(t, *vars[0].NonBlank)
 		require.Equal(t, 1, calls)
 	})
 
@@ -5038,4 +5232,102 @@ func TestListProtectedTags_ErrorStatus(t *testing.T) {
 	_, err := client.ListProtectedTags(ctx, "myorg", "myrepo")
 	require.Error(t, err)
 	assert.Equal(t, 1, handlerCalls)
+}
+
+func TestRepoVariableWildcardLifecyclePreservesNamedScope(t *testing.T) {
+	client, mux := setupTest(t)
+	values := map[string]string{"*": "old", "production": "keep"}
+	handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "*", body["environment_scope"])
+		writeJSON(t, w, http.StatusConflict, map[string]string{"message": "duplicate"})
+	})
+	handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/variables/MY_VAR", func(w http.ResponseWriter, r *http.Request) {
+		scope := r.URL.Query().Get("filter[environment_scope]")
+		require.Equal(t, "*", scope, "ambiguous multi-scope keys must be filtered")
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, http.StatusOK, map[string]string{"key": "MY_VAR", "value": values[scope], "environment_scope": scope})
+		case http.MethodPut:
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			values[scope] = body["value"]
+			writeJSON(t, w, http.StatusOK, map[string]string{"key": "MY_VAR"})
+		case http.MethodDelete:
+			delete(values, scope)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	})
+	ctx := context.Background()
+	value, present, err := client.GetRepoVariable(ctx, "myorg", "myrepo", "MY_VAR")
+	require.NoError(t, err)
+	require.True(t, present)
+	require.Equal(t, "old", value)
+	require.NoError(t, client.CreateOrUpdateRepoVariable(ctx, "myorg", "myrepo", "MY_VAR", "new"))
+	require.Equal(t, "new", values["*"])
+	require.Equal(t, "keep", values["production"])
+	require.NoError(t, client.DeleteRepoVariable(ctx, "myorg", "myrepo", "MY_VAR"))
+	require.Equal(t, map[string]string{"production": "keep"}, values)
+}
+
+func TestInheritedVariableNonBlankMetadataAndPrecedence(t *testing.T) {
+	client, mux := setupTest(t)
+	handleTracked(t, mux, "/api/v4/groups/top/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE", "value": "ancestor"}})
+	})
+	handleTracked(t, mux, "/api/v4/groups/top%2Fsub/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE", "value": " \n"}, {"key": "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "value": "sensitive-placeholder"}})
+	})
+	handleTracked(t, mux, "/api/v4/admin/ci/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE", "value": "instance"}})
+	})
+	vars, err := client.ListInheritedRepoVariables(context.Background(), "top", "sub/proj")
+	require.NoError(t, err)
+	require.Len(t, vars, 2)
+	for _, v := range vars {
+		require.Empty(t, v.Value, "sensitive values must not escape the adapter")
+		require.NotNil(t, v.NonBlank)
+		require.Equal(t, v.Name == "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", *v.NonBlank)
+	}
+}
+
+func TestOpenAIWIFFileVariablePresence(t *testing.T) {
+	for _, value := range []string{"", " \n"} {
+		t.Run(fmt.Sprintf("value=%q", value), func(t *testing.T) {
+			client, mux := setupTest(t)
+			handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/variables/FULLSEND_OPENAI_AUDIENCE", func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"))
+				writeJSON(t, w, http.StatusOK, map[string]string{"value": value, "variable_type": "file"})
+			})
+			variable, exists, err := client.GetRepoVariableInfo(context.Background(), "myorg", "myrepo", forge.VarOpenAIAudience)
+			require.NoError(t, err)
+			assert.True(t, exists)
+			assert.True(t, variable.FileType)
+			assert.Equal(t, value, variable.Value)
+			for _, scope := range []string{"group", "instance"} {
+				path := "/api/v4/groups/myorg/variables"
+				if scope == "instance" {
+					path = "/api/v4/admin/ci/variables"
+				}
+				handleTracked(t, mux, path, func(w http.ResponseWriter, _ *http.Request) {
+					writeJSON(t, w, http.StatusOK, []map[string]string{{"key": forge.VarOpenAIAudience, "value": value, "variable_type": "file", "environment_scope": "*"}})
+				})
+			}
+			vars, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+			require.NoError(t, err)
+			require.Len(t, vars, 1)
+			require.NotNil(t, vars[0].NonBlank)
+			assert.True(t, *vars[0].NonBlank)
+			assert.Empty(t, vars[0].Value)
+			instance, err := client.ListInstanceVariables(context.Background())
+			require.NoError(t, err)
+			require.Len(t, instance, 1)
+			require.NotNil(t, instance[0].NonBlank)
+			assert.True(t, *instance[0].NonBlank)
+		})
+	}
 }

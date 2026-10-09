@@ -278,7 +278,9 @@ independently through the layered config system (an overlay can override
 - **`openai`** — OpenAI Workload Identity Federation identifiers
   ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). The
   `FULLSEND_OPENAI_*` runner variables, when set, replace the resolved block
-  entirely. All three fields must come from one source for a run. See
+  entirely. All three fields must come from one source for a run.
+  `fullsend repos install` checks the same sources for repositories whose
+  `inference.auth` is `openai-wif`. See
   [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
 
 For setup instructions, see

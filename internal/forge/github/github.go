@@ -2792,6 +2792,12 @@ func (c *LiveClient) GetRepoVariable(ctx context.Context, owner, repo, name stri
 	return result.Value, true, nil
 }
 
+// GetRepoVariableInfo returns an Actions variable; GitHub variables are not file-type.
+func (c *LiveClient) GetRepoVariableInfo(ctx context.Context, owner, repo, name string) (forge.RepoVariable, bool, error) {
+	value, exists, err := c.GetRepoVariable(ctx, owner, repo, name)
+	return forge.RepoVariable{Value: value}, exists, err
+}
+
 // DeleteRepoVariable deletes a repository Actions variable. It is idempotent:
 // a 404 (variable already gone) is not treated as an error.
 func (c *LiveClient) DeleteRepoVariable(ctx context.Context, owner, repo, name string) error {
@@ -4565,6 +4571,40 @@ func (c *LiveClient) ListOrgVariables(ctx context.Context, org string) ([]forge.
 		page++
 	}
 	return all, nil
+}
+
+// ListInheritedRepoVariables lists the organization variables available to
+// a repository, honoring each variable's repository visibility (paginated).
+func (c *LiveClient) ListInheritedRepoVariables(ctx context.Context, owner, repo string) ([]forge.OrgVariable, error) {
+	const maxPages = 100
+	var all []forge.OrgVariable
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/actions/organization-variables?per_page=100&page=%d", owner, repo, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			var apiErr *APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden && !IsRateLimitError(err) {
+				return nil, fmt.Errorf("list inherited repo variables page %d: %w: %w", page, forge.ErrForbidden, err)
+			}
+			return nil, fmt.Errorf("list inherited repo variables page %d: %w", page, err)
+		}
+		var body struct {
+			TotalCount int                 `json:"total_count"`
+			Variables  []forge.OrgVariable `json:"variables"`
+		}
+		if err := decodeJSON(resp, &body); err != nil {
+			return nil, fmt.Errorf("decode inherited repo variables page %d: %w", page, err)
+		}
+		for i := range body.Variables {
+			nonblank := strings.TrimSpace(body.Variables[i].Value) != ""
+			body.Variables[i].NonBlank = &nonblank
+		}
+		all = append(all, body.Variables...)
+		if len(all) >= body.TotalCount || len(body.Variables) == 0 {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("list inherited repo variables: pagination exceeded %d pages", maxPages)
 }
 
 // DeleteOrgVariable deletes an org-level variable. It is idempotent: a 404

@@ -55,10 +55,10 @@ type ComposeOpts struct {
 	// If empty, ResolveForge is a no-op.
 	ForgePlatform string
 
-	// OrgAllowlist is the allowed_remote_resources from config.yaml (org-level
-	// or per-repo-level). Base URLs and agent source URLs must match a prefix
-	// in this list. Callers should merge org and per-repo allowlists when both
-	// are available.
+	// OrgAllowlist is the config-level allowed_remote_resources from the
+	// repository's layered .fullsend config (config.yaml over
+	// config.base.yaml), or the built-in defaults when no config is present.
+	// Base URLs and agent source URLs must match a prefix in this list.
 	OrgAllowlist []string
 
 	// TreeFetcher fetches all files under a path in a remote repository.
@@ -192,12 +192,12 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		return child, deps, nil
 	}
 
-	// Org allowlist is the authority for URL bases.
-	// Reject URL bases when no org allowlist is configured to prevent
+	// The config-level allowlist is the authority for URL bases.
+	// Reject URL bases when no config-level allowlist is configured to prevent
 	// self-authorization (child harness declaring its own allowed URLs).
 	allowlist := opts.OrgAllowlist
 	if len(allowlist) == 0 && IsURL(child.Base) && !opts.allowSelfAllowlist {
-		return nil, nil, fmt.Errorf("URL base requires org-level allowed_remote_resources")
+		return nil, nil, fmt.Errorf("URL base requires config-level allowed_remote_resources")
 	}
 	// For testing, allowSelfAllowlist permits using the child's own list.
 	if opts.allowSelfAllowlist && len(allowlist) == 0 {

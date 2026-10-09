@@ -151,7 +151,8 @@ supported, for example `group/subgroup/project`), and `<gcp-project>` is
 the GCP project from [Getting Inference](getting-inference.md).
 
 `--inference-auth` selects the inference authentication method
-(`vertex-wif` or `openai-api-key`) and is persisted as `inference.auth` on
+(`vertex-wif` or `openai-api-key`; `openai-wif` is GitHub only and is
+rejected for GitLab projects) and is persisted as `inference.auth` on
 the project's manifest entry. There is no default: when the manifest does
 not already provide a selection, `repos install` fails before changing the
 project. See
@@ -1027,3 +1028,15 @@ configure WIF. If agent jobs fail token exchange, confirm the
   GitLab CI status-notification variables.
 * Read the [Agents](../../agents/README.md) section to learn about the
   default agents Fullsend ships with.
+
+### Inherited variables and authentication changes
+
+Fullsend agent jobs have no deployment environment, so only wildcard (`*`) CI/CD variables
+participate in installation checks. Fullsend already creates its variables at this scope;
+Fullsend installations require no migration.
+
+On self-managed instances, a project Maintainer token cannot normally read instance CI/CD
+variables. Installation can proceed with unverified inherited scopes, but switching to
+`openai-api-key` retains obsolete inference credentials until those scopes can be checked.
+Confirm that no inherited `FULLSEND_OPENAI_*` identifiers override the key, then manually remove
+credentials that are no longer needed. See [repository status](../../cli/repos.md#repos-status).

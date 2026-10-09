@@ -336,8 +336,8 @@ entries. When no repos are specified, all manifest repos are converged.
 Credentials are required only for the forges of the selected repos.
 
 Every selected repo must resolve an inference authentication method
-(inference.auth: vertex-wif or openai-api-key) from its manifest entry, its
-forge section, or defaults; there is no implicit default. --inference-auth
+(inference.auth: vertex-wif, openai-api-key or openai-wif) from its manifest
+entry, its forge section, or defaults; there is no implicit default. --inference-auth
 records the selection as inference.auth on each selected manifest entry
 (new and existing), never on defaults or forge sections.
 
@@ -351,6 +351,17 @@ them. A repo missing its credentials with no values supplied fails before
 any write. After switching methods, the other method's Fullsend-managed
 secrets are removed once the new ones are written. --openai-api-key is a
 command-line input only; it is never written to repos.yaml.
+
+openai-wif (OpenAI Workload Identity Federation, GitHub only) needs no
+secret. The repo must have a complete set of OpenAI WIF identifiers: the
+FULLSEND_OPENAI_AUDIENCE, FULLSEND_OPENAI_IDENTITY_PROVIDER_ID and
+FULLSEND_OPENAI_SERVICE_ACCOUNT_ID repository variables (which win when any
+is set), else inference.openai from the managed config, existing
+.fullsend/config.yaml, or config base/preset. A missing or partial set fails
+before any write. The GCP secrets stay optional (written when Vertex flags
+are supplied) for Vertex sub-agents; FULLSEND_OPENAI_API_KEY is removed only
+once the identifiers are live on the default branch. openai-wif on a GitLab
+repo is rejected before any write.
 
 GCP infrastructure (WIF, mint) must be provisioned separately via
 'inference provision' and 'mint enroll' before running this command.`,
@@ -384,7 +395,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.appSet, "app-set", "", "GitHub App set prefix (apps named {app-set}-{role}) persisted as FULLSEND_APP_SET for selected repos; GitHub-only")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
-	cmd.Flags().StringVar(&opts.inferenceAuth, "inference-auth", "", "inference authentication method (vertex-wif or openai-api-key) persisted as inference.auth on each selected manifest entry, overriding forge-section and defaults values for those repos")
+	cmd.Flags().StringVar(&opts.inferenceAuth, "inference-auth", "", "inference authentication method (vertex-wif, openai-api-key, or openai-wif) persisted as inference.auth on each selected manifest entry, overriding forge-section and defaults values for those repos")
 	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
@@ -602,6 +613,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					if err := manifest.ResolveConfigForEntry(owner, repo, forgeName, *entry).RequireInferenceAuth(); err != nil {
 						return err
 					}
+				} else if err := repos.ValidateInferenceAuthForForge(forgeName, opts.inferenceAuth); err != nil {
+					return fmt.Errorf("%s: %w", entry.Name, err)
 				}
 				if opts.fullsendRef != "" && (entry.FullsendRef != "" || opts.fullsendRef != platform.FullsendRef) {
 					entry.FullsendRef = opts.fullsendRef
@@ -691,7 +704,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			// New entries must resolve an inference authentication method
 			// before anything is written: either the flag (persisted on the
 			// entry) or an inherited forge-section/defaults value.
-			if opts.inferenceAuth == "" {
+			effectiveAuth := opts.inferenceAuth
+			if effectiveAuth == "" {
 				inherited := manifest.Defaults.Inference.Auth
 				if p := manifest.PlatformFor(forgeName); p != nil && p.Inference.Auth != "" {
 					inherited = p.Inference.Auth
@@ -700,6 +714,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					return fmt.Errorf("no inference authentication selected for %s: pass --inference-auth (%s) or set inference.auth in the %s section or under defaults in the manifest",
 						strings.Join(notInManifest, ", "), strings.Join(repos.ValidInferenceAuths(), " or "), forgeName)
 				}
+				effectiveAuth = inherited
+			}
+			// A selection the forge cannot satisfy (openai-wif on GitLab)
+			// is rejected before anything is persisted or written.
+			if err := repos.ValidateInferenceAuthForForge(forgeName, effectiveAuth); err != nil {
+				return fmt.Errorf("%s: %w", strings.Join(notInManifest, ", "), err)
 			}
 
 			entries := make([]repos.RepoEntry, len(notInManifest))
@@ -929,6 +949,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 	}
 
+	readVendoredWorkflow, vendoredWorkflowCleanup := newVendoredWorkflowReader(opts.fullsendSource)
+	defer vendoredWorkflowCleanup()
+
 	convergeCfg := repos.ConvergeConfig{
 		Manifest:                manifest,
 		DryRun:                  opts.dryRun,
@@ -950,6 +973,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		ReviewAppClientID:       reviewAppClientID,
 		ReviewAppClientIDAppSet: reviewAppSet,
 		VendorOverride:          vendorOverride,
+		ReadVendoredWorkflow:    readVendoredWorkflow,
 	}
 
 	progressFn := func(repo, phase, msg string) {

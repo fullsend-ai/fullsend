@@ -94,11 +94,12 @@ func (c *LiveClient) IsInstallationToken(_ context.Context) (bool, error) {
 func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
 	basePath := fmt.Sprintf("/projects/%s/variables", projectPath(owner, repo))
 	body := map[string]any{
-		"key":           name,
-		"value":         value,
-		"protected":     true,
-		"masked":        true,
-		"variable_type": "env_var",
+		"key":               name,
+		"value":             value,
+		"protected":         true,
+		"masked":            true,
+		"variable_type":     "env_var",
+		"environment_scope": "*",
 	}
 	resp, err := c.post(ctx, basePath, body)
 	if err == nil {
@@ -136,7 +137,7 @@ func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, va
 func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
 	// The update targets the wildcard-scoped variable, so an
 	// environment-specific variable with the same key is left alone.
-	updatePath := wildcardSecretPath(owner, repo, name)
+	updatePath := wildcardVariablePath(owner, repo, name)
 	// variable_type is set explicitly so replacing a file-type variable
 	// converts it to an env var, as jobs read the credential from the
 	// environment.
@@ -192,12 +193,12 @@ func isAlreadyExistsError(err *APIError) bool {
 		strings.Contains(strings.ToLower(err.Message), "has already been taken")
 }
 
-// wildcardSecretPath returns the API path of the wildcard-scoped variable
+// wildcardVariablePath returns the API path of the wildcard-scoped variable
 // with the given key. GitLab rejects a bare key lookup or deletion as
 // ambiguous when the same key also exists for specific environments, so
-// Fullsend-managed secrets, which are always created with the wildcard
-// scope, are addressed with an explicit scope filter.
-func wildcardSecretPath(owner, repo, name string) string {
+// Fullsend-managed variables and secrets are addressed with an explicit
+// wildcard scope filter.
+func wildcardVariablePath(owner, repo, name string) string {
 	query := url.Values{"filter[environment_scope]": {"*"}}
 	return fmt.Sprintf("/projects/%s/variables/%s?%s", projectPath(owner, repo), url.PathEscape(name), query.Encode())
 }
@@ -205,7 +206,7 @@ func wildcardSecretPath(owner, repo, name string) string {
 // RepoSecretExists checks whether a wildcard-scoped CI/CD variable (secret)
 // exists. An environment-specific variable with the same key is ignored.
 func (c *LiveClient) RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error) {
-	path := wildcardSecretPath(owner, repo, name)
+	path := wildcardVariablePath(owner, repo, name)
 	resp, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return false, fmt.Errorf("check secret %s: %w", name, err)
@@ -229,7 +230,7 @@ func (c *LiveClient) RepoSecretExists(ctx context.Context, owner, repo, name str
 // environment; a variable that exists only for specific environments is
 // reported as missing.
 func (c *LiveClient) GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (forge.SecretProtection, error) {
-	path := wildcardSecretPath(owner, repo, name)
+	path := wildcardVariablePath(owner, repo, name)
 	resp, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return forge.SecretProtection{}, fmt.Errorf("check secret %s: %w", name, err)
@@ -265,7 +266,7 @@ func (c *LiveClient) GetRepoSecretProtection(ctx context.Context, owner, repo, n
 // leaving any environment-specific variable with the same key alone. It is
 // idempotent: a 404 (variable already gone) is not treated as an error.
 func (c *LiveClient) DeleteRepoSecret(ctx context.Context, owner, repo, name string) error {
-	path := wildcardSecretPath(owner, repo, name)
+	path := wildcardVariablePath(owner, repo, name)
 	resp, err := c.do(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return fmt.Errorf("delete repo secret %s: %w", name, err)
@@ -288,9 +289,10 @@ func (c *LiveClient) DeleteRepoSecret(ctx context.Context, owner, repo, name str
 func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error {
 	basePath := fmt.Sprintf("/projects/%s/variables", projectPath(owner, repo))
 	createBody := map[string]any{
-		"key":           name,
-		"value":         value,
-		"variable_type": "env_var",
+		"key":               name,
+		"value":             value,
+		"variable_type":     "env_var",
+		"environment_scope": "*",
 	}
 	resp, err := c.post(ctx, basePath, createBody)
 	if err == nil {
@@ -312,7 +314,7 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 		return fmt.Errorf("create variable %s: %w", name, err)
 	}
 
-	updatePath := fmt.Sprintf("%s/%s", basePath, url.PathEscape(name))
+	updatePath := wildcardVariablePath(owner, repo, name)
 	updateBody := map[string]any{
 		"value":         value,
 		"variable_type": "env_var",
@@ -327,7 +329,7 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 
 // RepoVariableExists checks whether a CI/CD variable exists.
 func (c *LiveClient) RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error) {
-	path := fmt.Sprintf("/projects/%s/variables/%s", projectPath(owner, repo), url.PathEscape(name))
+	path := wildcardVariablePath(owner, repo, name)
 	resp, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return false, fmt.Errorf("check variable %s: %w", name, err)
@@ -344,30 +346,40 @@ func (c *LiveClient) RepoVariableExists(ctx context.Context, owner, repo, name s
 	return false, checkStatus(resp, http.StatusOK)
 }
 
-// GetRepoVariable returns the value of a CI/CD variable.
-// Returns ("", false, nil) if the variable does not exist.
+// GetRepoVariable returns the value of a CI/CD variable's wildcard-scoped
+// definition, the one jobs without an environment (Fullsend's agent jobs) see.
+// A variable defined only for a named environment scope does not exist for
+// this lookup, and a name defined for several scopes resolves to the wildcard
+// one. Returns ("", false, nil) if no such variable exists.
 func (c *LiveClient) GetRepoVariable(ctx context.Context, owner, repo, name string) (string, bool, error) {
-	path := fmt.Sprintf("/projects/%s/variables/%s", projectPath(owner, repo), url.PathEscape(name))
+	v, exists, err := c.GetRepoVariableInfo(ctx, owner, repo, name)
+	return v.Value, exists, err
+}
+
+// GetRepoVariableInfo returns stored contents and the GitLab delivery type.
+func (c *LiveClient) GetRepoVariableInfo(ctx context.Context, owner, repo, name string) (forge.RepoVariable, bool, error) {
+	path := wildcardVariablePath(owner, repo, name)
 	resp, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		return "", false, fmt.Errorf("get variable %s: %w", name, err)
+		return forge.RepoVariable{}, false, fmt.Errorf("get variable %s: %w", name, err)
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
 		resp.Body.Close()
-		return "", false, nil
+		return forge.RepoVariable{}, false, nil
 	}
 	if err := checkStatus(resp, http.StatusOK); err != nil {
-		return "", false, fmt.Errorf("get variable %s: %w", name, err)
+		return forge.RepoVariable{}, false, fmt.Errorf("get variable %s: %w", name, err)
 	}
 
 	var result struct {
-		Value string `json:"value"`
+		Value        string `json:"value"`
+		VariableType string `json:"variable_type"`
 	}
 	if err := decodeJSON(resp, &result); err != nil {
-		return "", false, fmt.Errorf("decode variable %s: %w", name, err)
+		return forge.RepoVariable{}, false, fmt.Errorf("decode variable %s: %w", name, err)
 	}
-	return result.Value, true, nil
+	return forge.RepoVariable{Value: result.Value, FileType: result.VariableType == "file"}, true, nil
 }
 
 // ListRepoVariables returns all CI/CD variables for a project as a
@@ -375,7 +387,9 @@ func (c *LiveClient) GetRepoVariable(ctx context.Context, owner, repo, name stri
 // until all variables are fetched. When a key exists for several
 // environment scopes, the wildcard-scoped value wins regardless of list
 // order, so the value always belongs to the same variable that the
-// wildcard-scoped GetRepoSecretProtection and DeleteRepoSecret address.
+// wildcard-scoped individual secret and variable operations address. A key
+// defined only for a named environment is also listed for inventory purposes,
+// but individual wildcard-scoped lookups report it absent.
 func (c *LiveClient) ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error) {
 	const perPage = 100
 	const maxPages = 100
@@ -422,7 +436,7 @@ func (c *LiveClient) ListRepoVariables(ctx context.Context, owner, repo string) 
 // DeleteRepoVariable deletes a CI/CD variable. It is idempotent:
 // a 404 (variable already gone) is not treated as an error.
 func (c *LiveClient) DeleteRepoVariable(ctx context.Context, owner, repo, name string) error {
-	path := fmt.Sprintf("/projects/%s/variables/%s", projectPath(owner, repo), url.PathEscape(name))
+	path := wildcardVariablePath(owner, repo, name)
 	resp, err := c.do(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return fmt.Errorf("delete repo variable %s: %w", name, err)
@@ -465,7 +479,90 @@ func (c *LiveClient) GetOrgVariable(_ context.Context, _, _ string) (string, boo
 
 // ListOrgVariables inspects group variables inherited by a project.
 func (c *LiveClient) ListOrgVariables(ctx context.Context, org string) ([]forge.OrgVariable, error) {
-	return c.listVariableNames(ctx, "/groups/"+url.PathEscape(org)+"/variables", "group")
+	return c.listVariableNames(ctx, "/groups/"+url.PathEscape(org)+"/variables", "group", false)
+}
+
+// ListInheritedRepoVariables lists the variables a project inherits: those of
+// every ancestor group of its namespace (owner may hold only the first path
+// component of a nested project, the rest leading repo) and, on self-managed
+// GitLab, the instance-level variables. Only NonBlank metadata is returned, never values, and a name
+// defined at several levels uses the nearest group before the instance. A namespace counts as personal,
+// with no group variables, only once the Namespaces API reports it as a user
+// namespace. A scope that cannot be inspected (a group the caller cannot
+// read, an unverifiable namespace, or the instance level without
+// administrator access) does not stop the remaining scopes from being read:
+// the variables collected are returned together with a
+// *forge.UnverifiedScopesError naming the unknown scopes.
+func (c *LiveClient) ListInheritedRepoVariables(ctx context.Context, owner, repo string) ([]forge.OrgVariable, error) {
+	namespace := owner
+	if slash := strings.LastIndex(repo, "/"); slash >= 0 {
+		namespace += "/" + repo[:slash]
+	}
+	parts := strings.Split(namespace, "/")
+	var result []forge.OrgVariable
+	var unverified []string
+	seen := map[string]int{}
+	add := func(vars []forge.OrgVariable, override bool) {
+		for _, v := range vars {
+			if index, found := seen[v.Name]; found {
+				if override {
+					result[index] = v
+				}
+			} else {
+				seen[v.Name] = len(result)
+				result = append(result, v)
+			}
+		}
+	}
+	for i := range parts {
+		group := strings.Join(parts[:i+1], "/")
+		// Fullsend's agent jobs declare no environment, so a group variable
+		// scoped to a named environment is never visible to them and does
+		// not count as inherited.
+		vars, err := c.listVariableNames(ctx, "/groups/"+url.PathEscape(group)+"/variables", "group", true)
+		if forge.IsNotFound(err) && len(parts) == 1 && c.isUserNamespace(ctx, group) {
+			continue // personal namespace, verified
+		}
+		if forge.IsNotFound(err) || forge.IsForbidden(err) {
+			unverified = append(unverified, "group "+group)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		add(vars, true)
+	}
+	// The instance endpoint needs administrator access, which most callers
+	// lack; that must not hide the group variables already collected, but
+	// the instance scope stays unverified.
+	instance, err := c.ListInstanceVariables(ctx)
+	if forge.IsForbidden(err) {
+		unverified = append(unverified, "instance")
+	} else if err != nil {
+		return nil, err
+	}
+	add(instance, false)
+	if len(unverified) > 0 {
+		return result, &forge.UnverifiedScopesError{Scopes: unverified}
+	}
+	return result, nil
+}
+
+// isUserNamespace reports whether the Namespaces API positively identifies
+// path as a personal (user) namespace. Any failure to tell leaves it
+// unverified: a group the caller cannot see also answers 404.
+func (c *LiveClient) isUserNamespace(ctx context.Context, path string) bool {
+	resp, err := c.get(ctx, "/namespaces/"+url.PathEscape(path))
+	if err != nil {
+		return false
+	}
+	var ns struct {
+		Kind string `json:"kind"`
+	}
+	if err := decodeJSON(resp, &ns); err != nil {
+		return false
+	}
+	return ns.Kind == "user"
 }
 
 // ListInstanceVariables lists the names of instance-level CI/CD variables,
@@ -477,12 +574,13 @@ func (c *LiveClient) ListInstanceVariables(ctx context.Context) ([]forge.OrgVari
 	if u, err := url.Parse(c.baseURL); err == nil && strings.EqualFold(u.Hostname(), "gitlab.com") {
 		return nil, nil
 	}
-	return c.listVariableNames(ctx, "/admin/ci/variables", "instance")
+	return c.listVariableNames(ctx, "/admin/ci/variables", "instance", false)
 }
 
 // listVariableNames pages through a CI/CD variables endpoint and returns the
-// variable names. scope names the variable level in error messages.
-func (c *LiveClient) listVariableNames(ctx context.Context, path, scope string) ([]forge.OrgVariable, error) {
+// variable names. scope names the variable level in error messages. With
+// wildcardOnly, variables restricted to a named environment scope are skipped.
+func (c *LiveClient) listVariableNames(ctx context.Context, path, scope string, wildcardOnly bool) ([]forge.OrgVariable, error) {
 	const perPage = 100
 	const maxPages = 100
 	var result []forge.OrgVariable
@@ -492,13 +590,24 @@ func (c *LiveClient) listVariableNames(ctx context.Context, path, scope string) 
 			return nil, fmt.Errorf("list %s variables page %d: %w", scope, page, err)
 		}
 		var vars []struct {
-			Key string `json:"key"`
+			Key              string  `json:"key"`
+			Value            *string `json:"value"`
+			EnvironmentScope string  `json:"environment_scope"`
+			VariableType     string  `json:"variable_type"`
 		}
 		if err := decodeJSON(resp, &vars); err != nil {
 			return nil, fmt.Errorf("decode %s variables page %d: %w", scope, page, err)
 		}
 		for _, v := range vars {
-			result = append(result, forge.OrgVariable{Name: v.Key})
+			if wildcardOnly && v.EnvironmentScope != "" && v.EnvironmentScope != "*" {
+				continue
+			}
+			variable := forge.OrgVariable{Name: v.Key}
+			if v.Value != nil || v.VariableType == "file" {
+				nonblank := v.VariableType == "file" || strings.TrimSpace(*v.Value) != ""
+				variable.NonBlank = &nonblank
+			}
+			result = append(result, variable)
 		}
 		if len(vars) < perPage {
 			return result, nil

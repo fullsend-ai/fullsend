@@ -1,5 +1,7 @@
 # Reusable prioritize agent workflow. Called by dispatch workflows via workflow_call.
 # Runs in the caller's repo context (secrets, checkout).
+# GCP secrets are optional: fullsend run prepares credentials for the selected
+# agent/model, including optional Vertex sub-agents of an OpenAI parent.
 #
 # Concurrency: agent-scoped cancel-in-progress group (distinct from dispatch/thin
 # caller groups so workflow_call parent runs are not cancelled).
@@ -49,9 +51,9 @@ on:
         default: "ubuntu-24.04"
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
-        required: true
+        required: false
       FULLSEND_GCP_PROJECT_ID:
-        required: true
+        required: false
       FULLSEND_OPENAI_API_KEY:
         required: false
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
@@ -72,6 +74,10 @@ jobs:
       contents: read
       id-token: write
       issues: write
+
+    env:
+      # Explicit CLI overrides may predate runtime-owned Vertex preparation.
+      FULLSEND_LEGACY_GCP_SETUP: ${{ inputs.fullsend_version != '' && secrets.FULLSEND_GCP_WIF_PROVIDER != '' && secrets.FULLSEND_GCP_PROJECT_ID != '' }}
 
     steps:
       - name: Checkout caller repository
@@ -120,7 +126,8 @@ jobs:
         with:
           source_repo: ${{ inputs.source_repo }}
 
-      - name: Setup GCP and prepare credentials
+      - name: Prepare GCP credentials for an explicit CLI override
+        if: env.FULLSEND_LEGACY_GCP_SETUP == 'true'
         uses: ./.defaults/.github/actions/setup-gcp
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -168,3 +175,5 @@ jobs:
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: .fullsend
           mint-url: ${{ inputs.mint_url }}
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

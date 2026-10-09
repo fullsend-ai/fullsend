@@ -23,6 +23,7 @@ func NewFakeClient() *FakeClient {
 		SecretProtections:        make(map[string]SecretProtection),
 		VariablesExist:           make(map[string]bool),
 		VariableValues:           make(map[string]string),
+		VariableFileTypes:        make(map[string]bool),
 		Errors:                   make(map[string]error),
 		DirContents:              make(map[string][]DirectoryEntry),
 		FileContentsRef:          make(map[string][]byte),
@@ -205,6 +206,7 @@ type FakeClient struct {
 	InstallationToken         bool                        // IsInstallationToken return value
 	VariablesExist            map[string]bool             // key: "owner/repo/name"
 	VariableValues            map[string]string           // key: "owner/repo/name"
+	VariableFileTypes         map[string]bool             // key: "owner/repo/name"; file-type metadata for repository variables
 
 	// ForkOwner controls the return value of CreateFork. When non-empty,
 	// CreateFork returns this value as the fork owner login. When empty,
@@ -1342,6 +1344,7 @@ func (f *FakeClient) CreateOrUpdateRepoVariable(_ context.Context, owner, repo, 
 		f.VariableValues = make(map[string]string)
 	}
 	f.VariableValues[key] = value
+	delete(f.VariableFileTypes, key)
 	if f.VariablesExist == nil {
 		f.VariablesExist = make(map[string]bool)
 	}
@@ -1385,6 +1388,20 @@ func (f *FakeClient) GetRepoVariable(_ context.Context, owner, repo, name string
 	return "", false, nil
 }
 
+func (f *FakeClient) GetRepoVariableInfo(_ context.Context, owner, repo, name string) (RepoVariable, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetRepoVariableInfo"); e != nil {
+		return RepoVariable{}, false, e
+	}
+	key := owner + "/" + repo + "/" + name
+	value, exists := f.VariableValues[key]
+	if !exists {
+		return RepoVariable{}, false, nil
+	}
+	return RepoVariable{Value: value, FileType: f.VariableFileTypes[key]}, exists, nil
+}
+
 func (f *FakeClient) ListRepoVariables(_ context.Context, owner, repo string) (map[string]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1413,6 +1430,7 @@ func (f *FakeClient) DeleteRepoVariable(_ context.Context, owner, repo, name str
 	}
 
 	key := owner + "/" + repo + "/" + name
+	delete(f.VariableFileTypes, key)
 	if f.VariableValues != nil {
 		delete(f.VariableValues, key)
 	}
@@ -2320,6 +2338,27 @@ func (f *FakeClient) ListOrgVariables(_ context.Context, org string) ([]OrgVaria
 			val = f.OrgVariableValues[key]
 		}
 		out = append(out, OrgVariable{Name: name, Value: val})
+	}
+	return out, nil
+}
+
+// ListInheritedRepoVariables returns the organization variables of owner,
+// which the fake treats as visible to every repository in the organization.
+func (f *FakeClient) ListInheritedRepoVariables(_ context.Context, owner, _ string) ([]OrgVariable, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListInheritedRepoVariables"); e != nil {
+		return nil, e
+	}
+
+	prefix := owner + "/"
+	var out []OrgVariable
+	for key, ok := range f.OrgVariables {
+		if !ok || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		out = append(out, OrgVariable{Name: strings.TrimPrefix(key, prefix), Value: f.OrgVariableValues[key]})
 	}
 	return out, nil
 }

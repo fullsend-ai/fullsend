@@ -20,7 +20,7 @@ fullsend
 │   ├── add-role       <role>                # Register role PEM + ROLE_APP_IDS entry
 │   ├── remove-role    <role>                # Remove role from mint
 │   ├── enroll       <owner/repo>            # Register repo in mint
-│   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
+│   ├── unenroll     <owner/repo>            # Remove repo from mint
 │   ├── status       [org]                   # Inspect mint state and PEM health
 │   │   ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
 │   │   ├── --project <id>                   #   GCP project ID (direct infra queries)
@@ -68,7 +68,7 @@ fullsend
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
 │   │   ├── --app-set <prefix>               #   GitHub App set prefix override ($FULLSEND_APP_SET); GitHub-only
 │   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
-│   │   ├── --inference-auth <method>        #   vertex-wif or openai-api-key; persisted as inference.auth on each selected manifest entry (a repo covered only by a glob gets its own copied entry); never changes defaults or forge sections
+│   │   ├── --inference-auth <method>        #   vertex-wif, openai-api-key or openai-wif (GitHub only); persisted as inference.auth on each selected manifest entry (a repo covered only by a glob gets its own copied entry); never changes defaults or forge sections
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
@@ -296,7 +296,7 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 │  │ Phase 3: Mint provisioning                                 │ │
 │  │                                                            │ │
 │  │  If mint not found → deploy GCF (Provision)                │ │
-│  │  If mint exists    → register org (EnsureOrgInMint)        │ │
+│  │  If mint exists    → verify mint URL (verifyMintURL)       │ │
 │  │                    → store PEMs in Secret Manager          │ │
 │  │                                                            │ │
 │  │  Uses gcf.NewProvisioner with a shared Config{}            │ │
@@ -357,7 +357,7 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 |-------|------|-------------------|
 | **1. Discover** | `DiscoverMint()`, resolve app IDs | Single repo validation |
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | Excludes "fullsend" role |
-| **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | Deploys the mint if absent, otherwise registers the owner in it (use `mint enroll <owner/repo>` separately to add repositories later) |
+| **3. Mint** | `gcf.Provision()` | Deploys the mint if absent, otherwise verifies the existing mint's URL; no org is registered (use `mint enroll <owner/repo>` separately to add repositories) |
 | **4. WIF** | `ProvisionWIF()` | `mintcore.BuildRepoProviderID()` (repo-scoped, GitHub only; GitLab uses shared `gitlab-oidc` provider) |
 | **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Writes `.fullsend/` dir + shim workflow + thin caller workflows + optional binary in target repo (committed after secrets, see #6122) |
 | **6. Secrets** | Repository secret and variable writes | Target repo + `FULLSEND_PER_REPO_INSTALL` (written before scaffold commit, see #6122) |

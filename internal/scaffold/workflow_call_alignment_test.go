@@ -1415,9 +1415,10 @@ func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
 
 // TestGCPSetupOccursInsideSingleRun pins the per-agent route: dispatch passes
 // optional GCP inputs to the action, which invokes fullsend run once and lets
-// that process prepare credentials only when it resolves Vertex.
+// that process prepare credentials only when it resolves Vertex. Prioritize
+// retains guarded preparation for explicit legacy CLI overrides with GCP inputs.
 func TestGCPSetupOccursInsideSingleRun(t *testing.T) {
-	stages := []string{"dispatch"}
+	stages := []string{"dispatch", "prioritize"}
 	for _, stage := range stages {
 		t.Run("reusable-"+stage, func(t *testing.T) {
 			path := filepath.Join("..", "..", ".github", "workflows", fmt.Sprintf("reusable-%s.yml", stage))
@@ -1425,6 +1426,33 @@ func TestGCPSetupOccursInsideSingleRun(t *testing.T) {
 			require.NoError(t, err)
 			var wf reusableWorkflow
 			require.NoError(t, yaml.Unmarshal(content, &wf))
+			var execution struct {
+				Jobs map[string]struct {
+					Env   map[string]any `yaml:"env"`
+					Steps []struct {
+						Uses string            `yaml:"uses"`
+						If   any               `yaml:"if"`
+						With map[string]string `yaml:"with"`
+					} `yaml:"steps"`
+				} `yaml:"jobs"`
+			}
+			require.NoError(t, yaml.Unmarshal(content, &execution))
+			found := false
+			for _, job := range execution.Jobs {
+				for _, step := range job.Steps {
+					if strings.Contains(step.Uses, "setup-gcp") {
+						require.Equal(t, "prioritize", stage, "dispatch must use runtime-owned preparation")
+						assert.Equal(t, "env.FULLSEND_LEGACY_GCP_SETUP == 'true'", step.If)
+						assert.Equal(t, "${{ inputs.fullsend_version != '' && secrets.FULLSEND_GCP_WIF_PROVIDER != '' && secrets.FULLSEND_GCP_PROJECT_ID != '' }}", job.Env["FULLSEND_LEGACY_GCP_SETUP"])
+					}
+					if step.Uses == "./.defaults/" {
+						found = true
+						assert.Equal(t, "${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}", step.With["gcp_wif_provider"])
+						assert.Equal(t, "${{ secrets.FULLSEND_GCP_PROJECT_ID }}", step.With["gcp_project_id"])
+					}
+				}
+			}
+			require.True(t, found, "runtime action must receive optional GCP inputs")
 			for _, name := range []string{"FULLSEND_GCP_WIF_PROVIDER", "FULLSEND_GCP_PROJECT_ID"} {
 				decl, ok := wf.On.WorkflowCall.Secrets[name]
 				require.True(t, ok, "%s must still declare secret %s", path, name)

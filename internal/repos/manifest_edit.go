@@ -285,6 +285,18 @@ func UpdateInferenceAuth(ctx context.Context, cfg ManifestEditConfig, filters []
 	if len(updated) == 0 {
 		return nil, nil
 	}
+	// Refuse to persist a selection the entry's forge cannot satisfy
+	// (openai-wif on GitLab) before the manifest is written.
+	if m.GitLab != nil {
+		for _, e := range m.GitLab.Repos {
+			if !slices.ContainsFunc(updated, func(u string) bool { return strings.EqualFold(u, e.Name) }) {
+				continue
+			}
+			if err := ValidateInferenceAuthForForge(ForgeGitLab, e.Inference.Auth); err != nil {
+				return nil, fmt.Errorf("%s: %w", e.Name, err)
+			}
+		}
+	}
 	if cfg.ManifestPath != "" && !cfg.DryRun {
 		if err := writeManifest(cfg.ManifestPath, m); err != nil {
 			return nil, err
@@ -981,7 +993,7 @@ func validateDefaultValue(key, value string) error {
 			return err
 		}
 	case "defaults.inference.auth", "github.inference.auth", "gitlab.inference.auth":
-		if err := ValidateInferenceAuth(key, value); err != nil {
+		if err := validateManifestInferenceAuth(key, value); err != nil {
 			return err
 		}
 	case "defaults.config_base.source":

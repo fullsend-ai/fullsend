@@ -208,9 +208,9 @@ Mode is inferred from `PER_REPO_WIF_REPOS` — there is no separate trust-mode f
 - **PER_REPO_WIF_REPOS**: Any repository may mint (cross-org isolation still enforced at installation lookup). For the GCF mint, all repos use `WIF_PROVIDER_NAME`
 - **job_workflow_ref validation**: Same as tight mode — the upstream plus repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`). `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2, revised 2026-08-05)
 - **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
-- **mint enroll**: Succeeds without changing mint configuration (repository registration is unnecessary); **mint unenroll** for individual orgs is rejected
+- **mint enroll**: Succeeds without changing mint configuration (repository registration is unnecessary); **mint unenroll** for individual repositories is not supported in public mode
 
-**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `PER_REPO_WIF_REPOS=*` and permissive WIF together; in tight mode (default), `mint deploy` provisions an org-scoped WIF provider and `mint enroll` creates a dedicated repo-scoped WIF provider for each enrolled repository. Redeploys must match the mint mode (`--public` for public, omit for tight).
+**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `PER_REPO_WIF_REPOS=*` and permissive WIF together; in tight mode (default), `mint deploy` provisions the shared WIF provider with a placeholder-only condition (it does not scope the provider to any org) and `mint enroll` creates a dedicated repo-scoped WIF provider for each enrolled repository. Redeploys must match the mint mode (`--public` for public, omit for tight).
 
 **Standalone mint (JWKS verification):** `cmd/mint` uses `JWKSVerifier` — direct GitHub JWKS signature checks with no STS or WIF. Public mode is fully determined by `PER_REPO_WIF_REPOS` and workflow provenance in `mintcore`; WIF provisioning is not applicable.
 
@@ -306,7 +306,7 @@ During installation, the GCF provisioner creates:
 1. **Service Account** — For the Cloud Function identity
 2. **WIF Pool** — `fullsend-inference` for inference, `fullsend-pool` for mint
 3. **WIF Provider** — Maps GitHub OIDC claims to GCP attributes
-4. **IAM Bindings** — Grants `roles/aiplatform.user` to federated identities
+4. **IAM Bindings** — Grants `roles/aiplatform.user` to federated identities (created only by inference provisioning, `ProvisionWIF` / `fullsend inference provision`; mint deployment does not create these bindings)
 5. **Per-repo providers** (per-repo mode) — Scoped WIF provider per repository via `mintcore.BuildRepoProviderID()` (GitHub only; GitLab uses a shared `gitlab-oidc` provider scoped via attribute conditions on the WIF pool)
 
 ---
@@ -325,6 +325,8 @@ Secrets and variables are deployed on the target repository.
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
 - `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for repos whose `inference.auth` is `openai-api-key` (written by `repos install --openai-api-key`; not set by `github setup`)
+
+Repos whose `inference.auth` is `openai-wif` need no Fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
@@ -439,12 +441,6 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │
-│  │ Grant Agent       │ roles/aiplatform.user                    │
-│  │ Platform access   │ on the inference project                 │
-│  │ to federated IDs  │                                          │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
 │  │ Store PEMs in     │ fullsend-{role}-app-pem                  │
 │  │ Secret Manager    │ once per agent role (shared)             │
 │  └─────────┬─────────┘                                          │
@@ -454,7 +450,6 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  │ Function          │ SHA256 hash comparison to skip           │
 │  │                   │ redundant deploys                        │
 │  │                   │ Env vars:                                │
-│  │                   │   ALLOWED_ORGS                           │
 │  │                   │   GCP_PROJECT_NUMBER                     │
 │  │                   │   WIF_POOL_NAME                          │
 │  │                   │   WIF_PROVIDER_NAME                      │

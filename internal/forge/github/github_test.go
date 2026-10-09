@@ -3792,6 +3792,39 @@ func TestListOrgVariables(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, vars, 2)
 }
+
+func TestListInheritedRepoVariables(t *testing.T) {
+	pages := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/myorg/myrepo/actions/organization-variables", r.URL.Path)
+		pages++
+		vars := []map[string]string{{"name": "A", "value": "1"}}
+		if r.URL.Query().Get("page") == "2" {
+			vars = []map[string]string{{"name": "B", "value": "2"}}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 2, "variables": vars})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	vars, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	require.NoError(t, err)
+	nonblank := true
+	assert.Equal(t, []forge.OrgVariable{{Name: "A", Value: "1", NonBlank: &nonblank}, {Name: "B", Value: "2", NonBlank: &nonblank}}, vars)
+	assert.Equal(t, 2, pages)
+}
+
+func TestListInheritedRepoVariables_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	require.Error(t, err)
+	assert.True(t, forge.IsForbidden(err))
+}
+
 func TestGetIssue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/issues/7", r.URL.Path)
@@ -6269,4 +6302,58 @@ func TestCreateBlobFromFile_RedirectReplaysBody(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "blobsha", sha)
 	assert.Equal(t, int32(1), hits.Load())
+}
+
+func TestListInheritedRepoVariables_BlankValuePresence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 3, "variables": []map[string]string{{"name": "EMPTY", "value": ""}, {"name": "SPACE", "value": " \t"}, {"name": "SET", "value": "identifier"}}})
+	}))
+	defer srv.Close()
+	vars, err := newTestClient(t, srv).ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	require.NoError(t, err)
+	require.Len(t, vars, 3)
+	for i, expected := range []bool{false, false, true} {
+		require.NotNil(t, vars[i].NonBlank)
+		assert.Equal(t, expected, *vars[i].NonBlank)
+	}
+}
+
+func TestListInheritedRepoVariables_RateLimitIsNotForbidden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"message": "API rate limit exceeded"})
+	}))
+	defer srv.Close()
+	client := newTestClient(t, srv)
+	client.afterFunc = noWaitAfter
+	_, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	require.Error(t, err)
+	assert.True(t, IsRateLimitError(err))
+	assert.False(t, forge.IsForbidden(err))
+}
+
+func TestGetRepoVariableInfo(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusNotFound, http.StatusForbidden} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/repos/acme/api/actions/variables/IDENTIFIER", r.URL.Path)
+				w.WriteHeader(status)
+				json.NewEncoder(w).Encode(map[string]string{"value": "identifier"})
+			}))
+			defer srv.Close()
+			v, exists, err := newTestClient(t, srv).GetRepoVariableInfo(context.Background(), "acme", "api", "IDENTIFIER")
+			assert.False(t, v.FileType)
+			if status == http.StatusForbidden {
+				require.Error(t, err)
+				assert.False(t, exists)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, status == http.StatusOK, exists)
+			}
+			if exists {
+				assert.Equal(t, "identifier", v.Value)
+			}
+		})
+	}
 }

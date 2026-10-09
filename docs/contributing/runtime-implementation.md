@@ -1156,7 +1156,10 @@ cannot be overridden, so it cannot follow the mid-run refresh a short-lived WIF 
 `$CODEX_HOME/hooks.json` from `security.HookPlan`, and uploads the embedded
 `fullsend-codex-hook.py` beside the scripts. Each plan group becomes one handler,
 `python3 <adapter> <phase> <script...>`, so the scripts still run in plan order inside one process —
-the ordering the PostToolUse chain depends on.
+the ordering the PostToolUse chain depends on. `PreToolUse` element 0 is not a plan group but the
+spawn guard, `python3 <adapter> SpawnGuard`, the policy of
+[ADR 0126](../ADRs/0126-fullsend-owned-codex-subagents.md); it is written whenever `hooks.json`
+is, even with every sandbox hook off.
 
 Matcher translation, per group:
 
@@ -1168,6 +1171,7 @@ Matcher translation, per group:
 | `Read`, `Glob`, `Grep`, `LS`, `WebFetch`, `WebSearch` | *dropped, with a note* | no codex tool; the `Bash` groups cover this work |
 | `*` (`security.AllTools`) | *matcher key omitted* | an absent matcher matches every tool |
 | `PostToolUseFailure` (any tools) | *not wired* | codex has no such event and does not need one — see below |
+| *(the spawn guard, not a plan group)* | `^(multi_agent_v1\|collaboration)\|(spawn\|resume)_agent$` — a regex (a character outside `[A-Za-z0-9_\|]` makes it one) that reaches both multi-agent namespaces plus the bare V1 `spawn_agent` | `PreToolUse` element 0; admits a V1 `spawn_agent` from the root thread of a registered role, with `fork_context: false` and no `model` or `reasoning_effort`, after re-checking the files in `FULLSEND_CODEX_SPAWN_DIGESTS`; passes the parent's wait, close and send-input calls through; everything else, its own errors included, exits 2 with a reason. Every admit and deny is logged to `security/findings.jsonl` |
 
 Tokens are joined with `|` and stay within `[A-Za-z0-9_|]`, which is the character set codex treats
 as an **exact alternation** rather than a regex, so there is no anchoring question and no substring
@@ -1229,6 +1233,7 @@ as the place its expected value comes from. There are two trustworthy places —
 | hook adapter, auth script | **compile-time** — `go:embed`ed, so the digest is a literal in the run command | SHA-256, exit 97 |
 | the shared hook scripts | **compile-time** for the bytes, **runner-held** for which names — Bootstrap records the name → digest map for the set the harness enabled | SHA-256 per filename, plus an exhaustive directory check, exit 97 |
 | `config.toml`, `hooks.json` | **runner-held** — rendered per run, so Bootstrap records what it uploaded outside the sandbox and Run injects it into the launch command (`codex_integrity.go`) | whole-file SHA-256, exit 98 |
+| `agents/<role>.toml` (role files; none written yet) | **runner-held** — Bootstrap records name → digest in `RoleFiles`; Run exports it with `hooks.json`'s digest as `FULLSEND_CODEX_SPAWN_DIGESTS` | SHA-256 per filename plus an exhaustive `agents/` check, by the spawn guard before every spawn; exit 2 |
 | `fullsend-manifest.json` | none — it is a file in the same agent-writable directory | information only; never authority |
 
 The hook-script check makes codex **stricter than Claude Code and pi**, where the scripts stay
@@ -1255,6 +1260,11 @@ the codex process's environment after `.env` and before launch, and a running pr
 is not something the agent can reach, so **the adapter re-reads and re-verifies each script
 immediately before spawning it** and blocks on a mismatch. A missing or malformed map is itself a
 block, since the adapter only ever runs when the runner enabled hooks.
+
+The spawn guard closes the same window for children. Codex re-reads `hooks.json` and the role's
+file when a child starts, so Run exports their digests as `FULLSEND_CODEX_SPAWN_DIGESTS` and the
+handler re-hashes them, and lists `agents/`, before applying the policy, on its own deadline below
+the hook timeout at which codex kills a handler and lets the call through. No role, no spawn.
 
 **PATH is pinned across `.env` for the same reason the interpreter is.** The hook scripts resolve
 their tools by name — `tirith_check.py` runs a bare `tirith` — so a `.env` that prepends a directory
@@ -1409,3 +1419,4 @@ Two artefacts of the run are worth knowing about:
 | `ConfigToml` keys and the `ReasoningEffort` enum | a renamed or removed key silently changes behaviour; `--strict-config` reports it | `codex-rs/config/src/config_toml.rs`, `codex-rs/protocol/src/openai_models.rs` |
 | Project trust and `AGENTS.md` | the pinned untrusted entry must still stop codex recording its own trust level, the repo's `.codex/` layer must stay unloaded, and `$CODEX_HOME/AGENTS.md` must still load while the project is untrusted, or the bridge stops reaching the agent | `codex-rs/app-server/src/request_processors/thread_processor.rs` (trust write), `codex-rs/config/src/loader/mod.rs`, `codex-rs/core/src/agents_md.rs`, `codex-rs/codex-home/src/instructions/mod.rs` |
 | JSONL event structs, rollout line types and rollout file naming | the stream parser and transcript extraction; a rollout line type missing from `codexRolloutEnvelopes` discards the whole transcript | `codex-rs/exec/src/exec_events.rs`, `codex-rs/history/src/rollout_payload.rs` (`RolloutItemWire`), `codex-rs/thread-store/src/local/helpers.rs` |
+| The multi-agent tool names (`multi_agent_v1*`, `collaboration*`, the bare V1 `spawn_agent`), the block contract (exit 2 with non-empty stderr blocks; a timeout kills the handler and lets the call through), `agent_id` and `agent_type` in a child's payload, the spawn arguments, and what a child start rereads (`hooks.json` and the role file) | the spawn guard's matcher, pass-through set, policy, digest set and deadline rest on them; a renamed tool is denied (loud), but a payload without `agent_id`, a new model or effort argument, a changed block contract or a child that rereads another file turns a deny into a pass | `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`, `codex-rs/core/src/tools/registry.rs` (`function_hook_tool_name`), `codex-rs/hooks/src/engine/command_runner.rs` (the timeout branch), `codex-rs/core/src/agent/role.rs` (the role file, read at spawn) |

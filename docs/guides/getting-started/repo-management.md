@@ -137,8 +137,9 @@ field (an app set is always required to resolve App slugs).
 ### Inference authentication
 
 Every repo must resolve an explicit inference authentication method,
-`inference.auth`: either `vertex-wif` (Vertex AI through GCP Workload
-Identity Federation) or `openai-api-key`. There is no implicit default. A
+`inference.auth`: `vertex-wif` (Vertex AI through GCP Workload Identity
+Federation), `openai-api-key`, or `openai-wif` (OpenAI through Workload
+Identity Federation, GitHub only). There is no implicit default. A
 repo with no selection is reported as a configuration error by
 `repos install` and `repos status`, before any forge change is made for
 that repo. Uninstall does not need the setting: it removes every
@@ -175,6 +176,14 @@ supplied separately on the command line (`--vertex-project` for
 a valid value. `repos install` provisions only the credentials of each
 repo's selected method; see
 [Inference credentials](../../cli/repos.md#inference-credentials).
+
+`openai-wif` needs no Fullsend-managed secret. Instead, each repo needs a
+complete set of OpenAI WIF identifiers: the `FULLSEND_OPENAI_*` repository
+variables, or `inference.openai` in its layered `.fullsend/config.yaml`
+(see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md#4-tell-fullsend-the-three-identifiers)).
+`repos install` fails before any write when the identifiers are missing
+or partial. GCP secrets are optional and kept for Vertex sub-agents.
+GitLab repos cannot select `openai-wif`.
 
 `fullsend repos install <repo> --inference-auth <value>` persists the
 selection as `inference.auth` on each selected manifest entry, for repos
@@ -687,7 +696,7 @@ the command.
 ### No inference authentication selected
 
 ```
-no inference authentication selected for acme/api: set inference.auth (vertex-wif or openai-api-key) on the repository entry, in the github section, or under defaults in repos.yaml, or pass --inference-auth to repos install
+no inference authentication selected for acme/api: set inference.auth (vertex-wif or openai-api-key or openai-wif) on the repository entry, in the github section, or under defaults in repos.yaml, or pass --inference-auth to repos install
 ```
 
 The repo resolves no `inference.auth` from its entry, its forge section,
@@ -742,7 +751,7 @@ infrastructure, coordinate between roles:
 |------|------|---------|
 | 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
 | 2 | GCP Admin (Inference) | GitHub: `fullsend inference deprovision <org>` (WIF cleanup). GitLab: `inference deprovision` does not cover the shared `gitlab-oidc` provider — see [Operations § Per-repo teardown](operations.md#per-repo-teardown) step 6 to revoke each repo's WIF trust instead. |
-| 3 | GCP Admin (Mint) | `fullsend mint unenroll <owner/repo>` for each enrolled repository, adding `--delete-provider` to permanently delete its dedicated WIF provider (self-hosted mints only; not needed for the hosted community mint). Bare-org `mint unenroll <org>` is optional legacy cleanup of `ALLOWED_ORGS` and the shared WIF condition; it does not remove `PER_REPO_WIF_REPOS` entries or repo providers. |
+| 3 | GCP Admin (Mint) | `fullsend mint unenroll <owner/repo>` for each enrolled repository, adding `--delete-provider` to permanently delete its dedicated WIF provider (self-hosted mints only; not needed for the hosted community mint). Org entries left by the removed per-org enrollment need manual cleanup — see [Cleaning up legacy per-org mint state](../infrastructure/mint-administration.md#cleaning-up-legacy-per-org-mint-state). |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
 flag: `--yes` for `repos` commands, `--yolo` for `github` and `mint`

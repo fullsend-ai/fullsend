@@ -32,10 +32,18 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | Key | Storage Type | Description | Example value |
 |-----|-------------|-------------|---------------|
 | `FULLSEND_GCP_REGION` | Repo variable | GCP region for Agent Platform inference | `global` |
+| `FULLSEND_OPENAI_AUDIENCE` | Repo variable | OpenAI WIF audience; use with the two identifiers below | `openai` |
+| `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID` | Repo variable | OpenAI WIF identity-provider ID | `idp-example` |
+| `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` | Repo variable | OpenAI WIF service-account ID | `sa-example` |
 | `FULLSEND_REVIEW_CLIENT_ID` | Repo variable | OAuth client ID of the review agent's GitHub App (best-effort, auto-set by installer) | `Iv23li1nIorNLIQy6NWK` |
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 | `FULLSEND_OPENAI_API_KEY` | Repo secret | OpenAI API key for repos whose `inference.auth` is `openai-api-key`, written by `repos install --openai-api-key` (exported as `OPENAI_API_KEY`; unused when the WIF trio is set) | `sk-...` |
+
+Repositories selecting `inference.auth: openai-wif` need no inference secrets unless
+Vertex sub-agents require GCP credentials. See [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)
+for identifier sources and precedence. These three WIF variables are user-owned;
+edit them in GitHub's repository Actions variables settings rather than using `fullsend github set`.
 
 `FULLSEND_APP_SET` (GitHub App set prefix; apps named `{app-set}-{role}`,
 defaulting to `fullsend-ai`) is not one of the keys `fullsend github set`
@@ -141,7 +149,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
 | GCP Admin (Mint) | `fullsend mint remove-role <role>` | Remove a role from the mint (deletes PEM secret by default) |
 | GCP Admin (Mint) | `fullsend mint enroll <owner/repo>` | Register a repo in the mint (does not grant Agent Platform access — use `inference provision`) |
-| GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
+| GCP Admin (Mint) | `fullsend mint unenroll <owner/repo>` | Remove a repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
 | Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, repair component drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access, GitLab pipeline-variable override-role inspection — typed jobs require verified `no_one_allowed` before template delivery; legacy upgrades need maintenance-window preparation; legacy variable-based wrappers are exempt), repair scaffold content drift, refresh a declared configuration preset, rewrite a drifted managed `.fullsend/config.yaml`, upgrade refs |

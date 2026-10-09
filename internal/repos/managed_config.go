@@ -232,7 +232,7 @@ func validateManagedMintAndWIF(r config.PerRepoConfigReader) error {
 // MatchingAllowedPrefixInList does a plain strings.HasPrefix match and a
 // prefix missing its trailing slash can therefore match sibling
 // hosts/paths it should not. It does not check coverage against an
-// org-level allowlist — that requires the harness, which is not loaded
+// config-level allowlist — that requires the harness, which is not loaded
 // here. Exported so repos.yaml write paths outside this package (the CLI's
 // --allowed-remote-resources flag, `repos set-default`) can reject a
 // malformed prefix before it is ever persisted, matching the check

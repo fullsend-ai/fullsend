@@ -788,6 +788,7 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		name string
 		call func(fc *FakeClient) error
 	}{
+		{"GetRepoVariableInfo", func(fc *FakeClient) error { _, _, err := fc.GetRepoVariableInfo(ctx, "o", "r", "n"); return err }},
 		{"ListOrgRepos", func(fc *FakeClient) error { _, err := fc.ListOrgRepos(ctx, "org", false); return err }},
 		{"CreateRepo", func(fc *FakeClient) error { _, err := fc.CreateRepo(ctx, "o", "r", "d", false); return err }},
 		{"DeleteRepo", func(fc *FakeClient) error { return fc.DeleteRepo(ctx, "o", "r") }},
@@ -856,6 +857,10 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		}},
 		{"GetOrgVariable", func(fc *FakeClient) error { _, _, err := fc.GetOrgVariable(ctx, "o", "n"); return err }},
 		{"ListOrgVariables", func(fc *FakeClient) error { _, err := fc.ListOrgVariables(ctx, "o"); return err }},
+		{"ListInheritedRepoVariables", func(fc *FakeClient) error {
+			_, err := fc.ListInheritedRepoVariables(ctx, "o", "r")
+			return err
+		}},
 		{"ListInstanceVariables", func(fc *FakeClient) error { _, err := fc.ListInstanceVariables(ctx); return err }},
 		{"IsInstallationToken", func(fc *FakeClient) error { _, err := fc.IsInstallationToken(ctx); return err }},
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
@@ -2562,4 +2567,49 @@ func TestFakeClient_ForceCommitFileToBranch_ConcurrentLastWriteWins(t *testing.T
 	sha, err := fc.GetBranchRef(ctx, "o", "r", "state")
 	require.NoError(t, err)
 	assert.NotEmpty(t, sha)
+}
+
+func TestFakeClient_GetRepoVariableInfo(t *testing.T) {
+	f := NewFakeClient()
+	ctx := context.Background()
+	f.VariableFileTypes["acme/api/IDENTIFIER"] = true
+	v, exists, err := f.GetRepoVariableInfo(ctx, "acme", "api", "IDENTIFIER")
+	require.NoError(t, err)
+	assert.False(t, exists)
+	assert.Equal(t, RepoVariable{}, v)
+	f.VariableValues["acme/api/IDENTIFIER"] = "contents"
+	f.VariableFileTypes["acme/api/IDENTIFIER"] = true
+	v, exists, err = f.GetRepoVariableInfo(ctx, "acme", "api", "IDENTIFIER")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, RepoVariable{Value: "contents", FileType: true}, v)
+	f.Errors["GetRepoVariableInfo"] = errors.New("read failed")
+	v, exists, err = f.GetRepoVariableInfo(ctx, "acme", "api", "IDENTIFIER")
+	require.ErrorContains(t, err, "read failed")
+	assert.False(t, exists)
+	assert.Equal(t, RepoVariable{}, v)
+}
+
+func TestFakeClient_VariableFileTypeLifecycle(t *testing.T) {
+	for _, remove := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deleteBeforeRewrite=%t", remove), func(t *testing.T) {
+			f := NewFakeClient()
+			ctx := context.Background()
+			variablePath := "acme/api/IDENTIFIER"
+			f.VariableValues[variablePath] = "old contents"
+			f.VariableFileTypes[variablePath] = true
+			if remove {
+				require.NoError(t, f.DeleteRepoVariable(ctx, "acme", "api", "IDENTIFIER"))
+				assert.NotContains(t, f.VariableFileTypes, variablePath)
+				_, exists, err := f.GetRepoVariableInfo(ctx, "acme", "api", "IDENTIFIER")
+				require.NoError(t, err)
+				assert.False(t, exists)
+			}
+			require.NoError(t, f.CreateOrUpdateRepoVariable(ctx, "acme", "api", "IDENTIFIER", "new value"))
+			value, exists, err := f.GetRepoVariableInfo(ctx, "acme", "api", "IDENTIFIER")
+			require.NoError(t, err)
+			assert.True(t, exists)
+			assert.Equal(t, RepoVariable{Value: "new value"}, value)
+		})
+	}
 }

@@ -300,10 +300,7 @@ func truncateBody(b []byte, max int) string {
 
 // StatusResult holds the response from GET /v1/status.
 type StatusResult struct {
-	Org string `json:"org,omitempty"`
-	// AllowedOrgs is no longer emitted by the mint; it is decoded only so
-	// responses from older mints remain readable.
-	AllowedOrgs       []string `json:"allowed_orgs,omitempty"`
+	Org               string   `json:"org,omitempty"`
 	Roles             []string `json:"roles,omitempty"`
 	WorkflowHostRepos []string `json:"workflow_host_repos,omitempty"`
 	Version           string   `json:"version,omitempty"`
