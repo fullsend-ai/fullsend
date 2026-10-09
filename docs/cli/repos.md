@@ -426,11 +426,12 @@ consumers must not rely on the previous bot user ID. Status JSON adds
 drift. Successful uninstall preserves supplied account exclusions, and
 incomplete managed-account cleanup retains ownership. Once the live handoff
 ([#8243](https://github.com/fullsend-ai/fullsend/issues/8243)) enables it,
-Poller-owned trigger rotation revokes existing managed triggers before minting,
-with temporary installer-only Maintainer elevation and verified Developer
-restoration. The webhook is then unavailable between revocation and update;
-polling provides catch-up once its replacement runtime credential is
-published, and in-flight Poller-authenticated jobs may be interrupted.
+trigger creation uses a fresh replacement Poller service account that is
+temporarily raised to Maintainer with an installer-only bootstrap credential,
+creates the trigger, and is verified back at Developer before any cutover; the
+current Poller is never elevated or modified and keeps polling throughout.
+Polling provides catch-up until the replacement runtime credential is
+published.
 
 ### Common workflows
 

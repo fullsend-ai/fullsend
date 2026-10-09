@@ -159,12 +159,13 @@ references, never secret values.
 | `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` | masked secret | Custom role PAT when `credential` is `own`. Provisioned when the role is registered. |
 | `FULLSEND_GITLAB_ROLE_REGISTRY` | unmasked variable | Administrator registry JSON. Absent or empty = built-ins only. |
 | `FULLSEND_GITLAB_ROLE_ROTATION` | unmasked variable | Per-role rotation state (lock, token IDs, expiry dates, phase). Never stores token values. |
+| `FULLSEND_GITLAB_POLLER_GENERATIONS` | unmasked variable | Version 1 Poller identity-generation state (current, pending, and retiring Poller account IDs and the pending generation's handoff phase). Never stores token values. Not yet written by any command; see [Poller identity generations](#poller-identity-generations). |
 
 Canonical constants live in [`internal/forge/forge.go`](../../internal/forge/forge.go)
 (`SecretForgeToken`, `SecretGitLabPollerToken`,
 `SecretGitLabAnalystToken`, `SecretGitLabCoderToken`,
 `VarGitLabRoleRegistry`,
-`VarGitLabRoleRotation`). Custom secret names
+`VarGitLabRoleRotation`, `VarGitLabPollerGenerations`). Custom secret names
 are derived by `gitlabroles.CustomSecretName`.
 
 Role readiness is checked through the registry/status paths rather than the
@@ -217,7 +218,9 @@ service account with the same name, `api` scope, and expiry. The
 service account is a direct project member at Developer (30). Install
 refuses to provision any role identity above Developer. A project
 access token bot cannot change role, but a service account's membership
-can. That lets the Poller own the webhook trigger token (see below).
+can. That lets a Poller service account own the webhook trigger token (see
+below); the target is a fresh replacement identity, not re-elevation of the
+current Poller.
 
 - When the project has more than one service account with the same role
   name, only durably verified managed, non-supplied candidates participate;
@@ -382,29 +385,81 @@ Quota exhaustion or insufficient permissions requires operator action; it
 must not delete unrelated accounts to make space. See the
 [GitLab API contract](https://docs.gitlab.com/api/service_accounts/).
 
+### Poller identity generations
+
+Re-elevating a Poller identity whose runtime credential was ever distributed
+is unsafe, because GitLab has no drain barrier for requests accepted before
+revocation (#8205). The replacement-identity design validated in #8209 instead
+raises a fresh Poller service account that has never held a distributed
+credential. `internal/repos/gitlab_poller_generation.go` implements its
+generation state and handoff sequence (#8210). No adapter implements the
+`repos.GitLabPollerHandoff` capability yet, so nothing writes
+`FULLSEND_GITLAB_POLLER_GENERATIONS` and install still defers new trigger
+creation as described below.
+
+The handoff refuses to run unless the caller passes the lease capability
+issued by `LockGitLabProjectLease` after a successful non-dry-run remote
+acquisition (a dry-run lock never yields one, and it is invalid once released),
+and it rejects a generation document that is not exactly one JSON object
+(trailing content, duplicate or non-lowercase keys, or inconsistent phase and trigger fields).
+It records each step in `FULLSEND_GITLAB_POLLER_GENERATIONS` before acting:
+
+1. Record the account request, create the fresh service account at Developer,
+   and record its numeric ID. A lost create response leaves no ID, so the
+   generation needs manual reconciliation; fullsend never deletes an account
+   it cannot positively identify. A 404 means project service accounts are
+   unsupported and polling stays the only path.
+2. Verify the account holds no personal access token, record the elevation,
+   create the installer-held bootstrap token, and raise the account to
+   Maintainer.
+3. Record the generation's single trigger-create attempt, then send it. A
+   create request cannot be fenced once sent, so it is never retried.
+4. Revoke the bootstrap token, verify no personal access token is active,
+   demote to Developer, and verify Developer through an independent read.
+5. Require a confirmed trigger owned by the new account, record the generation
+   as verified, and prove the trigger starts a pipeline on the protected
+   default branch at Developer access. Branch protection is never broadened.
+
+A failure after step 3 publishes nothing and quarantines the generation with an
+operator-facing reason. A quarantined generation, a lost account ID, a verified
+generation whose cutover did not complete, or an unresolved retiring Poller
+each block any new generation. The current Poller is never elevated or
+modified, and its polling continues throughout. At most one old/new pair
+exists: cutover makes the verified account current and the old one retiring,
+and no further generation starts until retirement completes.
+
 ### Poller-owned webhook trigger token
 
-> **Poller elevation safety:** Creating or rotating a Poller-owned trigger
-> requires a verified server-side guarantee that requests accepted before
-> credential revocation, including asynchronous credential and job creation,
-> have finished. The current GitLab adapter cannot establish that guarantee,
-> so it defers temporary Maintainer elevation and new trigger creation. Polling
-> continues with Developer credentials; compliant existing triggers can still
-> be reused. Revocation and empty resource inventories alone do not prove that
-> requests have drained.
+> **Poller elevation safety:** Re-elevating a Poller identity that ever held a
+> distributed runtime credential requires a verified server-side guarantee
+> that requests accepted before credential revocation, including asynchronous
+> credential and job creation, have finished. The current GitLab adapter
+> cannot establish that guarantee, so it defers temporary Maintainer elevation
+> and new trigger creation. Polling continues with Developer credentials;
+> compliant existing triggers can still be reused. Revocation and empty
+> resource inventories alone do not prove that requests have drained.
 
 This lifecycle is part of the rolling-out contract described under
-[Project service accounts](#project-service-accounts); the live handoff
-that enables it is [#8243](https://github.com/fullsend-ai/fullsend/issues/8243).
+[Project service accounts](#project-service-accounts). The target way to
+obtain a Poller-owned trigger is the fresh replacement identity described in
+[Poller identity generations](#poller-identity-generations), which never
+elevates a Poller that held a distributed credential; the live handoff that
+enables it is [#8243](https://github.com/fullsend-ai/fullsend/issues/8243).
+Until that handoff merges, no command creates a replacement identity. The
+steps below describe the existing-identity elevation lifecycle that the
+current code implements behind the quiescence-verifier gate. The current
+adapter does not implement that gate, so it defers at step 2 and never
+runs steps 3 onward.
 
 GitLab binds a pipeline trigger token to its creator, and creating one
 needs Maintainer. A Poller that is raised to Maintainer raises every
 credential that authenticates as it, including the distributed runtime
 credential that running protected-branch jobs hold. So `repos install`
 never raises the Poller while a distributed runtime credential is valid.
-When an adapter can verify server-side request draining, it creates the
-token **authenticated as the Poller** through the following lifecycle, all
-under installer authority and inside one project lease:
+Only an adapter that can verify server-side request draining may create the
+token **authenticated as the existing Poller**. It does so through the
+following lifecycle, all under installer authority and inside one project
+lease:
 
 1. Identify the managed `fullsend-poller` service account from the
    administrator's service-account inventory and its durable `managed_user_id`

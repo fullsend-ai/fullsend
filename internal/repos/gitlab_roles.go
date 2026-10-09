@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -167,6 +168,36 @@ func LockGitLabProject(ctx context.Context, client forge.Client, owner, repo str
 		if relErr := leaser.ReleaseProjectLease(releaseCtx, owner, repo, GitLabProjectLeaseVar, holder); relErr != nil && errp != nil {
 			*errp = errors.Join(*errp, safeAPIError(fmt.Sprintf("releasing the project lease; delete CI/CD variable %s manually", GitLabProjectLeaseVar), relErr))
 		}
+	}, nil
+}
+
+// GitLabProjectLease is an opaque capability proving that its holder took the
+// cross-process project lease for one project. It is issued only by
+// LockGitLabProjectLease after a successful non-dry-run remote acquisition and
+// stops being valid when the lease is released.
+type GitLabProjectLease struct {
+	owner, repo string
+	held        atomic.Bool
+}
+
+// holds reports whether the lease is still held for owner/repo.
+func (l *GitLabProjectLease) holds(owner, repo string) bool {
+	return l != nil && l.owner == owner && l.repo == repo && l.held.Load()
+}
+
+// LockGitLabProjectLease is LockGitLabProject for a non-dry-run transaction
+// that must prove it holds the project lease: it also returns the lease
+// capability, which is invalidated before the lease is released.
+func LockGitLabProjectLease(ctx context.Context, client forge.Client, owner, repo string) (*GitLabProjectLease, func(errp *error), error) {
+	release, err := LockGitLabProject(ctx, client, owner, repo, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	lease := &GitLabProjectLease{owner: owner, repo: repo}
+	lease.held.Store(true)
+	return lease, func(errp *error) {
+		lease.held.Store(false)
+		release(errp)
 	}, nil
 }
 
