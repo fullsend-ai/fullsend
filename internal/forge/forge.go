@@ -769,6 +769,14 @@ type Client interface {
 	// with the target name and return ErrNotFork when found.
 	CreateForkInOrg(ctx context.Context, owner, repo, org, forkName string) (forkRepo string, err error)
 
+	// DeleteProjectServiceAccount deletes a project-owned service account,
+	// preserving its contributions. The caller must verify Fullsend ownership.
+	// This destructive uninstall operation stays on Client so all forge writes
+	// use the shared abstraction; the other GitLab service-account methods
+	// (creation, personal access tokens, project members) are concrete
+	// gitlab.LiveClient methods and are not part of Client.
+	DeleteProjectServiceAccount(ctx context.Context, owner, repo string, userID int) error
+
 	// File operations
 	CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 
@@ -926,13 +934,6 @@ type Client interface {
 	// masking/protection controls applied to it. It never returns the value.
 	GetRepoSecretProtection(ctx context.Context, owner, repo, name string) (SecretProtection, error)
 	DeleteRepoSecret(ctx context.Context, owner, repo, name string) error
-	// DeleteProjectServiceAccount deletes a project-owned service account,
-	// preserving its contributions. The caller must verify Fullsend ownership.
-	// This destructive uninstall operation stays on Client so all forge writes
-	// use the shared abstraction; the other GitLab service-account methods
-	// (creation, personal access tokens, project members) are concrete
-	// gitlab.LiveClient methods and are not part of Client.
-	DeleteProjectServiceAccount(ctx context.Context, owner, repo string, userID int) error
 	// CreateOrUpdateRepoVariable writes an ordinary repository variable. On
 	// GitLab it creates or updates only the wildcard-scoped definition, leaving
 	// same-named variables in named environments untouched.

@@ -61,6 +61,26 @@ func TestSafetyInventoriesRejectMalformedResponses(t *testing.T) {
 	}
 }
 
+func TestListProjectPipelineSchedules(t *testing.T) {
+	client, mux := setupTest(t)
+	called := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.Header().Set("Content-Type", "application/json")
+		_, err := io.WriteString(w, `[{"id":1,"owner":{"id":77}},{"id":2},{"id":3,"owner":{"id":88}}]`)
+		require.NoError(t, err)
+	})
+
+	got, err := client.ListProjectPipelineSchedules(context.Background(), "myorg", "myrepo")
+	require.NoError(t, err)
+	assert.True(t, called)
+	assert.Equal(t, []PipelineScheduleOwner{
+		{ID: 1, OwnerID: 77},
+		{ID: 2, OwnerID: 0},
+		{ID: 3, OwnerID: 88},
+	}, got)
+}
+
 // A malformed later page must discard earlier results rather than turn a
 // partial inventory into evidence that an account or member is absent.
 func TestIdentityInventoriesRejectMalformedLaterPages(t *testing.T) {

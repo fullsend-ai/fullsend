@@ -5204,10 +5204,6 @@ func TestUnsupportedMethods(t *testing.T) {
 		err := client.UpdatePipelineSchedule(ctx, "o", "r", 1, true)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
-	t.Run("DeleteProjectServiceAccount", func(t *testing.T) {
-		err := client.DeleteProjectServiceAccount(ctx, "g", "p", 77)
-		assert.ErrorIs(t, err, forge.ErrNotSupported)
-	})
 	t.Run("UpdateCIVariable", func(t *testing.T) {
 		err := client.UpdateCIVariable(ctx, "o", "r", "KEY", "val", false)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
@@ -5254,6 +5250,10 @@ func TestUnsupportedMethods(t *testing.T) {
 	})
 	t.Run("ForceCommitFileToBranch", func(t *testing.T) {
 		err := client.ForceCommitFileToBranch(ctx, "o", "r", "b", "p", "m", []byte("c"))
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("DeleteProjectServiceAccount", func(t *testing.T) {
+		err := client.DeleteProjectServiceAccount(ctx, "g", "p", 77)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 }
