@@ -127,6 +127,7 @@ func (c *JiraClient) GetIssue(ctx context.Context, project string, number int) (
 		Labels:       issue.Fields.Labels,
 		IssueType:    issueType,
 		CustomFields: issue.Fields.CustomFields,
+		Key:          key,
 	}, nil
 }
 

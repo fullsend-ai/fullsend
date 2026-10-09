@@ -71,9 +71,10 @@ type Issue struct {
 	// client; nil for GitHub and GitLab.
 	CustomFields map[string]json.RawMessage
 
-	// Key is the tracker-assigned issue key (e.g. "PROJ-43"). It is only
-	// populated by JiraClient.CreateIssue, carrying the key exactly as
-	// Jira returned it; it is empty for other trackers and operations.
+	// Key is the tracker-assigned issue key (e.g. "PROJ-43"). It is
+	// populated by JiraClient.GetIssue and JiraClient.CreateIssue (the
+	// latter carries the key exactly as Jira returned it); it is empty
+	// for other trackers.
 	Key string
 }
 

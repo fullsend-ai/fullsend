@@ -74,6 +74,9 @@ func TestJiraClient_GetIssue(t *testing.T) {
 	if issue.URL != "https://acme.atlassian.net/browse/PROJ-42" {
 		t.Errorf("issue.URL = %q, want %q", issue.URL, "https://acme.atlassian.net/browse/PROJ-42")
 	}
+	if issue.Key != "PROJ-42" {
+		t.Errorf("issue.Key = %q, want %q", issue.Key, "PROJ-42")
+	}
 }
 
 func TestJiraClient_GetIssue_IssueTypeAndCustomFields(t *testing.T) {
