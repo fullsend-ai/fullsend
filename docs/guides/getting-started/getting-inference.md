@@ -98,6 +98,4 @@ are written by `repos install --vertex-project`, not by this command.
 
 To run agents on the pi runtime through an OpenAI/Anthropic-compatible inference gateway instead,
 see [Using an inference gateway (experimental)](../user/running-agents-locally.md#using-an-inference-gateway-experimental).
-It is experimental, covers local runs only, and is not available until
-[#8271](https://github.com/fullsend-ai/fullsend/pull/8271) and the
-[#7480](https://github.com/fullsend-ai/fullsend/issues/7480) runner support merge.
+It covers local runs only for now.
