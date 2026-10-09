@@ -68,6 +68,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 
 Guides for contributors developing and testing fullsend itself.
 
+- [Pre-submit review](../contributing/pre-submit-review.md) — Interim recommendation to run the local review squad before opening a PR
 - [E2E testing](dev/e2e-testing.md) — Local and CI e2e runs, including PR authorization and `ok-to-test`
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
 - [Behaviour testing](dev/behaviour-testing.md) — Write Gherkin scenarios for end-to-end agent behaviour
