@@ -245,6 +245,15 @@ func RecordManagedServiceAccount(ctx context.Context, client forge.Client, owner
 	if sa.ID <= 0 {
 		return fmt.Errorf("created service account has no user ID")
 	}
+	return updateServiceAccountRoleState(ctx, client, owner, repo, sa.Name, func(rs *rotationRoleState) {
+		rs.ManagedUserID = sa.ID
+		rs.AccountRequested = false
+	})
+}
+
+// updateServiceAccountRoleState applies update to the rotation-state entry of
+// the role whose service account is named name. Callers hold the project lease.
+func updateServiceAccountRoleState(ctx context.Context, client forge.Client, owner, repo, name string, update func(*rotationRoleState)) error {
 	raw, _, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleRegistry)
 	if err != nil {
 		return err
@@ -255,26 +264,73 @@ func RecordManagedServiceAccount(ctx context.Context, client forge.Client, owner
 	}
 	var role gitlabroles.Role
 	for _, rec := range reg.Registrations() {
-		name := rec.Credential.TokenName
-		if name == "" {
-			name = gitlabroles.CustomTokenName(rec.Name)
+		tokenName := rec.Credential.TokenName
+		if tokenName == "" {
+			tokenName = gitlabroles.CustomTokenName(rec.Name)
 		}
-		if rec.Credential.Kind != gitlabroles.CredentialReuse && name == sa.Name {
+		if rec.Credential.Kind != gitlabroles.CredentialReuse && tokenName == name {
 			role = rec.Name
 			break
 		}
 	}
 	if role == "" {
-		return fmt.Errorf("created service account %q has no registered role", sa.Name)
+		return fmt.Errorf("service account %q has no registered role", name)
 	}
 	state, _, err := loadRotationState(ctx, client, owner, repo)
 	if err != nil {
 		return err
 	}
 	rs := state.Roles[string(role)]
-	rs.ManagedUserID = sa.ID
+	update(&rs)
 	state.Roles[string(role)] = rs
 	return writeRotationState(ctx, client, owner, repo, state)
+}
+
+// RecordServiceAccountCreateIntent durably records, before the create request,
+// that a service account named name is about to be created. The marker stays
+// until the created account's ID is recorded or the account is shown not to
+// exist, so an ambiguous create response cannot be retried into a second
+// account. Callers hold the project lease.
+func RecordServiceAccountCreateIntent(ctx context.Context, client forge.Client, owner, repo, name string) error {
+	return updateServiceAccountRoleState(ctx, client, owner, repo, name, func(rs *rotationRoleState) {
+		rs.AccountRequested = true
+	})
+}
+
+// ClearServiceAccountCreateIntent removes the creation marker once no
+// unrecorded account can exist. Callers hold the project lease.
+func ClearServiceAccountCreateIntent(ctx context.Context, client forge.Client, owner, repo, name string) error {
+	return updateServiceAccountRoleState(ctx, client, owner, repo, name, func(rs *rotationRoleState) {
+		rs.AccountRequested = false
+	})
+}
+
+// ServiceAccountCreateIntentPending reports whether an earlier creation of the
+// account named name was attempted without its account ID being recorded.
+func ServiceAccountCreateIntentPending(ctx context.Context, client forge.Client, owner, repo, name string) (bool, error) {
+	var pending bool
+	state, _, err := loadRotationState(ctx, client, owner, repo)
+	if err != nil {
+		return false, err
+	}
+	raw, _, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleRegistry)
+	if err != nil {
+		return false, err
+	}
+	reg, err := gitlabroles.ParseRegistry(raw)
+	if err != nil {
+		return false, err
+	}
+	for _, rec := range reg.Registrations() {
+		tokenName := rec.Credential.TokenName
+		if tokenName == "" {
+			tokenName = gitlabroles.CustomTokenName(rec.Name)
+		}
+		if rec.Credential.Kind != gitlabroles.CredentialReuse && tokenName == name && state.Roles[string(rec.Name)].AccountRequested {
+			pending = true
+		}
+	}
+	return pending, nil
 }
 
 // DeleteManagedServiceAccounts removes durably owned accounts after token

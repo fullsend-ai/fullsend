@@ -75,6 +75,7 @@ func TestGitLabRoleTokenClient_ProvisionsServiceAccount(t *testing.T) {
 	c := newGitLabRoleTokenClient(glClient).(repos.ServiceAccountTokenClient)
 	// Durable creation ownership is exercised separately from this API adapter.
 	c.AccountCreated = nil
+	c.CreateIntent = repos.AccountCreateIntent{}
 	tok, err := c.CreateProjectAccessToken(ctx, "group", "project", "fullsend-poller", []string{"api"}, 30, "2027-01-01")
 	require.NoError(t, err)
 	assert.Equal(t, 9, tok.ID)

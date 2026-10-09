@@ -962,7 +962,7 @@ func TestEnrichGitLabRoleStatusUnconfirmedSuppliedPublicationIsUnverified(t *tes
 		require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
 	}
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{
-"poller":{"phase":"failed","error":"unconfirmed","distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_user_id":10,"supplied_token_id":7,"excluded_user_ids":[10,80]},
+"poller":{"phase":"failed","error":"unconfirmed","distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_user_id":10,"supplied_token_id":7,"supplied_publishing":true,"excluded_user_ids":[10,80]},
 "analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
 "coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
 }}`
@@ -974,6 +974,125 @@ func TestEnrichGitLabRoleStatusUnconfirmedSuppliedPublicationIsUnverified(t *tes
 		{ID: 7, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2030-01-01"},
 	}, now, status)
 	assert.False(t, status.GitLabRolesReady, "the previous token's health does not vouch for the installed credential")
+}
+
+// An unconfirmed supplied publication fails readiness closed whatever the
+// previous credential's provenance (managed, or supplied without a recorded
+// token ID) and whatever its name-based lifecycle (healthy, expiring, or
+// overlapping). The same state without the marker is ready.
+func TestEnrichGitLabRoleStatusUnconfirmedSuppliedPublicationFailsClosed(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	healthy := []ProjectAccessToken{{ID: 7, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2030-01-01"}}
+	expiring := []ProjectAccessToken{{ID: 7, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-09-22"}}
+	overlapping := []ProjectAccessToken{
+		{ID: 7, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2030-01-01"},
+		{ID: 8, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2030-01-01"},
+	}
+	managed := `{"phase":"failed","error":"unconfirmed","incoming_id":7,"distributed_at":"2026-09-20T00:00:00Z","excluded_user_ids":[80]%s}`
+	suppliedNoToken := `{"phase":"failed","error":"unconfirmed","distributed_at":"2026-09-20T00:00:00Z","supplied":true,"supplied_user_id":10,"excluded_user_ids":[10,80]%s}`
+	for _, tc := range []struct {
+		name   string
+		poller string
+		tokens []ProjectAccessToken
+	}{
+		{"managed to supplied, healthy", managed, healthy},
+		{"managed to supplied, expiring", managed, expiring},
+		{"managed to supplied, overlapping", managed, overlapping},
+		{"supplied without token ID, healthy", suppliedNoToken, healthy},
+		{"supplied without token ID, expiring", suppliedNoToken, expiring},
+		{"supplied without token ID, overlapping", suppliedNoToken, overlapping},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ready := func(marker string) bool {
+				fc := provisionClient(t)
+				for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+					require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "installedXXXX"))
+				}
+				fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{"poller":` + fmt.Sprintf(tc.poller, marker) + `,
+"analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
+"coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
+}}`
+				fc.VariablesExist["group/project/"+forge.VarGitLabRoleRotation] = true
+				status := &RepoStatus{}
+				EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", tc.tokens, now, status)
+				return status.GitLabRolesReady
+			}
+			assert.False(t, ready(`,"supplied_publishing":true`), "an unconfirmed publication must not report ready")
+			assert.True(t, ready(""), "control: the same state without the marker is ready")
+		})
+	}
+}
+
+// A supplied replacement whose store commits and then errors keeps the
+// unconfirmed marker durable even when the owner is resolved; a completed
+// publication clears it.
+func TestRotateGitLabRoleCredentials_ProvidedReplacementUnconfirmedMarker(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		commit bool
+		marker bool
+	}{
+		{name: "store commits then errors", commit: true, marker: true},
+		{name: "success clears the marker"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			base := seededRoleClient(t, gitlabroles.RolePoller)
+			var client forge.Client = base
+			if tc.commit {
+				client = &commitThenErrorSecretClient{Client: base, name: forge.SecretGitLabPollerToken}
+			}
+			result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
+				Owner: "group", Repo: "project", Client: client, Tokens: &fakeTokens{},
+				Registry: gitlabroles.BuiltinRegistry(),
+				Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now,
+				ProvidedCredentials: map[gitlabroles.Role]ProvidedRoleCredential{
+					gitlabroles.RolePoller: {Token: "suppliedValue123", OwnerID: 42},
+				},
+			})
+			require.NoError(t, err)
+			state, _, err := loadRotationState(context.Background(), base, "group", "project")
+			require.NoError(t, err)
+			rs := state.Roles[string(gitlabroles.RolePoller)]
+			assert.Equal(t, tc.marker, rs.SuppliedPublishing)
+			if tc.marker {
+				assert.NotEmpty(t, result.Failed)
+				assert.False(t, rs.SuppliedDistributed)
+				assert.Contains(t, rs.ExcludedUserIDs, 42)
+			} else {
+				assert.True(t, rs.SuppliedDistributed)
+			}
+		})
+	}
+}
+
+// commitThenErrorSecretClient stores the named secret and then reports a
+// failure, as a lost response after the forge committed the write.
+type commitThenErrorSecretClient struct {
+	forge.Client
+	name string
+}
+
+func (c *commitThenErrorSecretClient) CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
+	if err := c.Client.CreateRepoSecret(ctx, owner, repo, name, value); err != nil {
+		return err
+	}
+	if name == c.name {
+		return fmt.Errorf("response lost")
+	}
+	return nil
+}
+
+func (c *commitThenErrorSecretClient) AcquireProjectLease(ctx context.Context, owner, repo, name, holder string) (bool, error) {
+	return c.Client.(forge.ProjectLeaser).AcquireProjectLease(ctx, owner, repo, name, holder)
+}
+
+func (c *commitThenErrorSecretClient) ReleaseProjectLease(ctx context.Context, owner, repo, name, holder string) error {
+	return c.Client.(forge.ProjectLeaser).ReleaseProjectLease(ctx, owner, repo, name, holder)
 }
 
 // An ordinary user's enrolled PAT is outside the project inventory, so no

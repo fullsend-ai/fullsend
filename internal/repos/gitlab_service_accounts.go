@@ -60,6 +60,10 @@ type ServiceAccountTokenClient struct {
 	// AccountCreated durably records accounts created by this installer. Minting
 	// a PAT on an existing same-named account is not ownership of that account.
 	AccountCreated func(ctx context.Context, owner, repo string, account GitLabServiceAccount) error
+	// CreateIntent durably brackets account creation so an ambiguous create
+	// response cannot be retried into a second account. All three callbacks are
+	// set together by live adapters; a nil Begin disables the guard.
+	CreateIntent AccountCreateIntent
 	// ManagedAccountIDs supplies durable creation provenance for existing
 	// account reuse and lifecycle inventories. Live adapters must set it;
 	// nil is retained for callers that supply an independently trusted API.
@@ -100,6 +104,18 @@ type ServiceAccountTokenClient struct {
 	// nil, every supplied owner is treated as current. An error fails the
 	// operation closed.
 	CurrentSuppliedAccountIDs func(ctx context.Context, owner, repo string) ([]int, error)
+}
+
+// AccountCreateIntent persists a marker around service-account creation.
+type AccountCreateIntent struct {
+	// Begin records the marker before the create request. A failure stops
+	// creation.
+	Begin func(ctx context.Context, owner, repo, name string) error
+	// Pending reports whether an earlier attempt left the marker without
+	// recording an account ID.
+	Pending func(ctx context.Context, owner, repo, name string) (bool, error)
+	// Clear removes the marker once no unrecorded account can exist.
+	Clear func(ctx context.Context, owner, repo, name string) error
 }
 
 // SuppliedTokenRef is an enrolled administrator-supplied credential's GitLab
@@ -272,11 +288,27 @@ func (c ServiceAccountTokenClient) CreateProjectAccessToken(ctx context.Context,
 	}
 	sa, ok := accounts[name]
 	if !ok {
+		if c.CreateIntent.Begin != nil {
+			if err := c.reconcileCreateIntent(ctx, owner, repo, name); err != nil {
+				return nil, err
+			}
+			if err := c.CreateIntent.Begin(ctx, owner, repo, name); err != nil {
+				return nil, safeAPIError(fmt.Sprintf("recording the intent to create GitLab service account %q", name), err)
+			}
+		}
 		created, createErr := c.SA.CreateProjectServiceAccount(ctx, owner, repo, name)
 		if createErr != nil {
 			if serviceAccountsUnavailable(createErr) {
+				// The instance does not offer service accounts, so none was
+				// created. A failed clear is harmless: the next attempt
+				// reconciles the marker against the inventory.
+				if c.CreateIntent.Clear != nil {
+					_ = c.CreateIntent.Clear(ctx, owner, repo, name)
+				}
 				return c.legacyCreate(ctx, owner, repo, name, scopes, accessLevel, expiresAt, createErr)
 			}
+			// The marker stays: GitLab may have committed the account before
+			// the response was lost.
 			return nil, fmt.Errorf("creating GitLab project service account %q: %w", name, createErr)
 		}
 		sa = created
@@ -332,6 +364,58 @@ func (c ServiceAccountTokenClient) CreateProjectAccessToken(ctx context.Context,
 		}
 	}
 	return tok, nil
+}
+
+// reconcileCreateIntent resolves a creation marker left by an earlier attempt
+// whose outcome is unknown. Accounts are never adopted by name: while an
+// unrecorded account with the requested name exists, creation stays blocked
+// until an administrator deletes it. When none exists the earlier create did
+// not commit, and the marker is cleared.
+func (c ServiceAccountTokenClient) reconcileCreateIntent(ctx context.Context, owner, repo, name string) error {
+	if c.CreateIntent.Pending == nil || c.CreateIntent.Clear == nil {
+		return fmt.Errorf("service-account creation intent requires pending and clear callbacks")
+	}
+	pending, err := c.CreateIntent.Pending(ctx, owner, repo, name)
+	if err != nil {
+		return safeAPIError(fmt.Sprintf("reading the creation state of GitLab service account %q", name), err)
+	}
+	if !pending {
+		return nil
+	}
+	accounts, err := c.SA.ListProjectServiceAccounts(ctx, owner, repo)
+	if err != nil {
+		return safeAPIError(fmt.Sprintf("listing GitLab service accounts to reconcile an interrupted creation of %q", name), err)
+	}
+	recorded := map[int]bool{}
+	if c.ManagedAccountIDs != nil {
+		ids, err := c.ManagedAccountIDs(ctx, owner, repo)
+		if err != nil {
+			return fmt.Errorf("%w: %s", ErrPollerSuppliedUnresolved, safeAPIError("resolving managed account ownership", err))
+		}
+		for _, id := range ids {
+			recorded[id] = true
+		}
+	}
+	supplied, err := c.suppliedOwnerIDs(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+	for _, id := range supplied {
+		recorded[id] = true
+	}
+	var unrecorded []int
+	for _, sa := range accounts {
+		if sa.Name == name && !recorded[sa.ID] {
+			unrecorded = append(unrecorded, sa.ID)
+		}
+	}
+	if len(unrecorded) > 0 {
+		return fmt.Errorf("an earlier attempt to create GitLab service account %q did not record its result and %d unrecorded account(s) with that name exist (user IDs %v); Fullsend does not adopt accounts by name, so delete them in GitLab, then re-run", name, len(unrecorded), unrecorded)
+	}
+	if err := c.CreateIntent.Clear(ctx, owner, repo, name); err != nil {
+		return safeAPIError(fmt.Sprintf("clearing the reconciled creation state of GitLab service account %q", name), err)
+	}
+	return nil
 }
 
 // ensureMemberLevel makes the service account a direct project member at

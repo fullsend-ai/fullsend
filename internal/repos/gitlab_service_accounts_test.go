@@ -1053,3 +1053,124 @@ func TestServiceAccountTokenClient_HistoricalSuppliedOwnerListingFailureDoesNotF
 	_, err = c.ListProjectAccessTokens(ctx, "g", "p")
 	require.Error(t, err)
 }
+
+// lostResponseSAAPI commits each service-account creation and then reports an
+// error, the way a response lost after GitLab committed the account looks.
+type lostResponseSAAPI struct {
+	*fakeSAAPI
+	commitThenFail bool
+	failBeforeSave bool
+}
+
+func (l *lostResponseSAAPI) CreateProjectServiceAccount(ctx context.Context, owner, repo, name string) (GitLabServiceAccount, error) {
+	if l.failBeforeSave {
+		return GitLabServiceAccount{}, errors.New("connection reset")
+	}
+	sa, err := l.fakeSAAPI.CreateProjectServiceAccount(ctx, owner, repo, name)
+	if err != nil {
+		return sa, err
+	}
+	if l.commitThenFail {
+		return GitLabServiceAccount{}, errors.New("response lost")
+	}
+	return sa, nil
+}
+
+func newCreateIntentClient(fc *forge.FakeClient, sa GitLabServiceAccountAPI) ServiceAccountTokenClient {
+	return ServiceAccountTokenClient{
+		SA: sa,
+		ManagedAccountIDs: func(ctx context.Context, owner, repo string) ([]int, error) {
+			return ManagedGitLabRoleAccountIDs(ctx, fc, owner, repo)
+		},
+		ManagedAccountNames: func(ctx context.Context, owner, repo string) (map[int]string, error) {
+			return ManagedGitLabRoleAccountNames(ctx, fc, owner, repo)
+		},
+		AccountCreated: func(ctx context.Context, owner, repo string, account GitLabServiceAccount) error {
+			return RecordManagedServiceAccount(ctx, fc, owner, repo, account)
+		},
+		CreateIntent: AccountCreateIntent{
+			Begin: func(ctx context.Context, owner, repo, name string) error {
+				return RecordServiceAccountCreateIntent(ctx, fc, owner, repo, name)
+			},
+			Pending: func(ctx context.Context, owner, repo, name string) (bool, error) {
+				return ServiceAccountCreateIntentPending(ctx, fc, owner, repo, name)
+			},
+			Clear: func(ctx context.Context, owner, repo, name string) error {
+				return ClearServiceAccountCreateIntent(ctx, fc, owner, repo, name)
+			},
+		},
+	}
+}
+
+func TestServiceAccountCreationLostResponseBlocksSecondAccount(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	sa := &lostResponseSAAPI{fakeSAAPI: newFakeSAAPI(), commitThenFail: true}
+	c := newCreateIntentClient(fc, sa)
+	create := func() error {
+		_, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.CoderTokenName, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, "2027-01-01")
+		return err
+	}
+
+	// GitLab commits the account but the response is lost: the attempt is
+	// durably recorded even though no account ID is known.
+	require.Error(t, create())
+	require.Len(t, sa.accounts, 1)
+	state, _, err := loadRotationState(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.True(t, state.Roles[string(gitlabroles.RoleCoder)].AccountRequested)
+	assert.Zero(t, state.Roles[string(gitlabroles.RoleCoder)].ManagedUserID)
+
+	// Retries stay blocked and never create another account or adopt the
+	// unrecorded one by name.
+	sa.commitThenFail = false
+	for range 2 {
+		err = create()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unrecorded")
+		assert.Len(t, sa.createdSAs, 1)
+		assert.Empty(t, sa.tokens)
+	}
+
+	// Once the administrator deletes the stray account the marker is
+	// reconciled, one account is created, and ownership is recorded.
+	sa.accounts = nil
+	require.NoError(t, create())
+	assert.Len(t, sa.createdSAs, 2)
+	state, _, err = loadRotationState(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.False(t, state.Roles[string(gitlabroles.RoleCoder)].AccountRequested)
+	assert.Equal(t, 502, state.Roles[string(gitlabroles.RoleCoder)].ManagedUserID)
+}
+
+func TestServiceAccountCreationUncommittedFailureRetries(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	sa := &lostResponseSAAPI{fakeSAAPI: newFakeSAAPI(), failBeforeSave: true}
+	c := newCreateIntentClient(fc, sa)
+	create := func() error {
+		_, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.CoderTokenName, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, "2027-01-01")
+		return err
+	}
+	require.Error(t, create())
+	assert.Empty(t, sa.accounts)
+
+	// The inventory shows no account, so the earlier create did not commit.
+	sa.failBeforeSave = false
+	require.NoError(t, create())
+	assert.Equal(t, []string{gitlabroles.CoderTokenName}, sa.createdSAs)
+	state, _, err := loadRotationState(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.False(t, state.Roles[string(gitlabroles.RoleCoder)].AccountRequested)
+}
+
+func TestServiceAccountCreationIntentFailureStopsCreation(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	sa := newFakeSAAPI()
+	c := newCreateIntentClient(fc, sa)
+	fc.Errors = map[string]error{"UpdateCIVariable": errors.New("state write failed")}
+	_, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.CoderTokenName, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, "2027-01-01")
+	require.Error(t, err)
+	assert.Empty(t, sa.createdSAs, "no account is created without a durable record of the attempt")
+}

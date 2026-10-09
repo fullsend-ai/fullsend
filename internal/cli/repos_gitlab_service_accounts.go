@@ -28,6 +28,17 @@ func newGitLabRoleTokenClient(c *gitlab.LiveClient) repos.ProjectAccessTokenClie
 		AccountCreated: func(ctx context.Context, owner, repo string, sa repos.GitLabServiceAccount) error {
 			return repos.RecordManagedServiceAccount(ctx, c, owner, repo, sa)
 		},
+		CreateIntent: repos.AccountCreateIntent{
+			Begin: func(ctx context.Context, owner, repo, name string) error {
+				return repos.RecordServiceAccountCreateIntent(ctx, c, owner, repo, name)
+			},
+			Pending: func(ctx context.Context, owner, repo, name string) (bool, error) {
+				return repos.ServiceAccountCreateIntentPending(ctx, c, owner, repo, name)
+			},
+			Clear: func(ctx context.Context, owner, repo, name string) error {
+				return repos.ClearServiceAccountCreateIntent(ctx, c, owner, repo, name)
+			},
+		},
 		VerifyToken: func(ctx context.Context, owner, repo string, tok *repos.ProjectAccessToken) error {
 			client, err := gitlab.New(tok.Token, gitlab.WithBaseURL(c.BaseURL()))
 			if err != nil {

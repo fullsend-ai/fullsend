@@ -102,15 +102,22 @@ const gitLabRoleRotationStateVersion = 1
 type rotationRoleState struct {
 	// ManagedUserID records a service account positively created by Fullsend.
 	// It survives token revocation so uninstall retries can verify ownership.
-	ManagedUserID int    `json:"managed_user_id,omitempty"`
-	Phase         string `json:"phase,omitempty"`
-	Holder        string `json:"holder,omitempty"`
-	LockUntil     string `json:"lock_until,omitempty"`
-	IncomingID    int    `json:"incoming_id,omitempty"`
-	OutgoingIDs   []int  `json:"outgoing_ids,omitempty"`
-	DistributedAt string `json:"distributed_at,omitempty"`
-	ExpiresAt     string `json:"expires_at,omitempty"`
-	Error         string `json:"error,omitempty"`
+	ManagedUserID int `json:"managed_user_id,omitempty"`
+	// AccountRequested records that creating the role's service account was
+	// attempted but its account ID is not yet in ManagedUserID. It is written
+	// before the create request and kept after an ambiguous response, so a
+	// retry cannot create a second account while an unrecorded one may exist.
+	// Recording ManagedUserID, or positively finding no unrecorded account,
+	// clears it.
+	AccountRequested bool   `json:"account_requested,omitempty"`
+	Phase            string `json:"phase,omitempty"`
+	Holder           string `json:"holder,omitempty"`
+	LockUntil        string `json:"lock_until,omitempty"`
+	IncomingID       int    `json:"incoming_id,omitempty"`
+	OutgoingIDs      []int  `json:"outgoing_ids,omitempty"`
+	DistributedAt    string `json:"distributed_at,omitempty"`
+	ExpiresAt        string `json:"expires_at,omitempty"`
+	Error            string `json:"error,omitempty"`
 	// SuppliedUserID is the GitLab user that owns an administrator-supplied
 	// credential, resolved when the credential was enrolled. It keeps the
 	// owner's account out of fullsend's management after the credential
@@ -134,6 +141,13 @@ type rotationRoleState struct {
 	// when a replacement enrollment starts or fails to publish, so that attempt
 	// is retried.
 	SuppliedDistributed bool `json:"supplied_distributed,omitempty"`
+	// SuppliedPublishing records that a supplied replacement is being published
+	// and its outcome is unconfirmed: the installed secret may be the
+	// replacement even though the entry still names the previous credential's
+	// provenance and token. Status reports the role unverified, whatever the
+	// previous token's health, until a completed supplied or managed
+	// publication clears it.
+	SuppliedPublishing bool `json:"supplied_publishing,omitempty"`
 	// ExcludedUserIDs are the GitLab users that own administrator-supplied
 	// credentials this role has ever had. They are append-only: a managed
 	// replacement or another supplied owner never erases an earlier exclusion,
@@ -154,7 +168,8 @@ func (rs rotationRoleState) clone() rotationRoleState {
 func (rs rotationRoleState) exclusionsOnly() bool {
 	return rs.Phase == "" && rs.Holder == "" && rs.LockUntil == "" && rs.IncomingID == 0 &&
 		len(rs.OutgoingIDs) == 0 && rs.DistributedAt == "" && rs.ExpiresAt == "" && rs.Error == "" &&
-		rs.SuppliedUserID == 0 && rs.SuppliedTokenID == 0 && !rs.Supplied && !rs.SuppliedDistributed && rs.ManagedUserID == 0
+		rs.SuppliedUserID == 0 && rs.SuppliedTokenID == 0 && !rs.Supplied && !rs.SuppliedDistributed && !rs.SuppliedPublishing &&
+		rs.ManagedUserID == 0 && !rs.AccountRequested
 }
 
 // excludeOwner records an administrator-owned account as permanently excluded
@@ -194,6 +209,7 @@ func (rs *rotationRoleState) markManaged() {
 	rs.excludeOwner(rs.SuppliedUserID)
 	rs.Supplied = false
 	rs.SuppliedDistributed = false
+	rs.SuppliedPublishing = false
 	rs.SuppliedUserID = 0
 	rs.SuppliedTokenID = 0
 }
@@ -743,6 +759,10 @@ func rotateProvided(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.R
 	// complete is retried by the next run rather than trusted. The failed phase
 	// is cleared only when the completed state is written below.
 	pre.SuppliedDistributed = false
+	// Mark the unconfirmed publication explicitly: a resolved owner leaves the
+	// previous credential's provenance and token ID in place, and status must
+	// not vouch for the installed credential from them.
+	pre.SuppliedPublishing = true
 	pre.Phase = rotationPhaseFailed
 	pre.Error = "administrator-provided replacement publication in progress or unconfirmed"
 	if err := mergeRoleState(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, holder, now, pre, state); err != nil {
@@ -784,6 +804,7 @@ func rotateProvided(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.R
 	rs.markSupplied(cfg.ProvidedCredentials[rec.Name].OwnerID)
 	rs.setSuppliedToken(cfg.ProvidedCredentials[rec.Name].OwnerID, cfg.ProvidedCredentials[rec.Name].TokenID)
 	rs.SuppliedDistributed = true
+	rs.SuppliedPublishing = false
 	result.Rotated = append(result.Rotated, rec.Name)
 	// Do not imply that grace cleanup will retire any other active
 	// same-named PAT: OutgoingIDs is nil above (its own ID cannot be
@@ -1166,6 +1187,7 @@ func mergeRoleState(ctx context.Context, client forge.Client, owner, repo string
 	// mint must not overwrite it with the pre-creation lifecycle snapshot.
 	// Only creation recording or state retirement changes account ownership.
 	rs.ManagedUserID = state.Roles[string(role)].ManagedUserID
+	rs.AccountRequested = state.Roles[string(role)].AccountRequested
 	state.Roles[string(role)] = rs
 	return writeRotationState(ctx, client, owner, repo, *state)
 }
@@ -1290,6 +1312,7 @@ func recordSuppliedEnrollment(ctx context.Context, client forge.Client, owner, r
 	// The caller has already stored the secret, so the supplied publication is
 	// proven independently of any surviving managed-token state.
 	cur.SuppliedDistributed = true
+	cur.SuppliedPublishing = false
 	if cur.DistributedAt == "" {
 		cur.DistributedAt = now.UTC().Format(time.RFC3339)
 	}
@@ -1375,13 +1398,14 @@ func recordReplacementDistribution(ctx context.Context, client forge.Client, own
 	// The replacement is fullsend-minted, but the exclusion of any
 	// administrator-owned account the previous entry recorded must survive.
 	replacement := rotationRoleState{
-		ManagedUserID:   previous.ManagedUserID,
-		Phase:           phase,
-		IncomingID:      tokenID,
-		OutgoingIDs:     outgoing,
-		DistributedAt:   now.UTC().Format(time.RFC3339),
-		ExpiresAt:       expiresAt,
-		ExcludedUserIDs: previous.ExcludedUserIDs,
+		ManagedUserID:    previous.ManagedUserID,
+		AccountRequested: previous.AccountRequested,
+		Phase:            phase,
+		IncomingID:       tokenID,
+		OutgoingIDs:      outgoing,
+		DistributedAt:    now.UTC().Format(time.RFC3339),
+		ExpiresAt:        expiresAt,
+		ExcludedUserIDs:  previous.ExcludedUserIDs,
 	}
 	replacement.excludeOwner(previous.SuppliedUserID)
 	state.Roles[string(role)] = replacement
@@ -1837,14 +1861,19 @@ func applyAdministratorEnrollmentProof(report *gitlabroles.Report, reg gitlabrol
 		}
 		state, ok := rotation.Roles[string(proofRole)]
 		enrolledIdx := -1
-		if ok && state.SuppliedTokenID > 0 && state.Supplied && !state.SuppliedDistributed && state.Phase == rotationPhaseFailed {
+		if ok && state.SuppliedPublishing {
 			// A replacement publication is in progress or unconfirmed: the
-			// recorded token names the previous credential, but the installed
+			// entry still describes the previous credential (managed, or
+			// supplied with or without a recorded token), but the installed
 			// one may already be the replacement. Do not report the role
-			// healthy on the previous token's state until the next run
-			// reconciles the installed credential.
-			if current == gitlabroles.LifecycleOK {
+			// ready on the previous token's state until a later run completes
+			// the publication. Expiring and overlapping roles count as ready,
+			// so they are downgraded too; expired and revoked stay as they are.
+			switch current {
+			case gitlabroles.LifecycleOK, gitlabroles.LifecycleExpiring, gitlabroles.LifecycleOverlapping:
 				report.Roles[i].Lifecycle = gitlabroles.LifecycleUnverified
+				report.Roles[i].ExpiresAt = ""
+				report.Roles[i].Overlapping = false
 			}
 			continue
 		}
