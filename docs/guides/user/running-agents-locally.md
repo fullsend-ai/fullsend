@@ -502,6 +502,9 @@ Replace each id with the one your gateway serves.
      provider entry that has neither `baseUrl` nor `baseUrlEnv`.
    - Leave out every credential key (`apiKeyEnv`, `tokenFile`, `passwordEnv`, `passwordFile`). The
      runner supplies the key and refuses a file that names a credential source.
+   - **Match your gateway's auth header.** The extension sends the key as `x-api-key` on Messages
+     and as `authorization: Bearer` on the other two APIs. If your gateway wants a bearer token on
+     Messages too, add `"authHeader": { "anthropic-messages": "bearer" }` to the provider entry.
    - **Pick the API per model.** A model's `api` always wins. Without one, the extension's
      [routing rules](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.0/docs/routing.md)
      choose, and its [Which API to pick](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.0/docs/routing.md#which-api-to-pick)
@@ -527,7 +530,7 @@ Replace each id with the one your gateway serves.
 
 4. **Allow egress to the gateway.** Add `gateway` to the harness's `providers:` list. Its profile
    lets pi's `node` binary send `POST` requests to the three API paths on the gateway host, with
-   bearer auth, and nothing else.
+   the key in the auth header the extension sends, and nothing else.
 
 5. **Run with a `gateway/` model.**
 
@@ -545,7 +548,7 @@ Replace each id with the one your gateway serves.
 
    Repeat with `--model gateway/gpt-5.6-luna` and `--model gateway/example-open-model` to try the
    other two APIs. Always write the full `gateway/<model>`: a bare id gets the
-   `FULLSEND_PI_PROVIDER` prefix (default `anthropic-vertex`) and never reaches the gateway.
+   `FULLSEND_PI_PROVIDER` prefix, so by default it resolves to `anthropic-vertex/<id>`.
 
 ### What success looks like
 
