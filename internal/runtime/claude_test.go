@@ -812,6 +812,15 @@ func fakeOpenshellBootstrap(t *testing.T, logPath, sentinelPath string) {
 		"    *.tar.gz) cp \"$4\" '" + sentinelPath + "' ;;\n" +
 		"  esac\n" +
 		"fi\n" +
+		// The probes Bootstrap makes for the Claude hook interpreter.
+		"if [ \"$2\" = \"exec\" ]; then\n" +
+		"  for last; do :; done\n" +
+		"  case \"$last\" in\n" +
+		"    \"command -v python3\") echo /usr/bin/python3 ;;\n" +
+		"    *sys.version_info*) echo 3.12 ;;\n" +
+		"    *'\"$PATH\"'*) printf '%s' /usr/local/bin:/usr/bin:/bin ;;\n" +
+		"  esac\n" +
+		"fi\n" +
 		"exit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1082,6 +1091,32 @@ func TestClaudeRuntimeSystem(t *testing.T) {
 	assert.Equal(t, "anthropic", ClaudeRuntime{}.System())
 }
 
+// claudeHooksStubScript is a stub openshell for installClaudeHooks: every call
+// succeeds, and the sandbox probes Bootstrap makes for the hook interpreter
+// answer like a sandbox image would. logPath, when set, records each call;
+// failOn, when set, is a case pattern over the whole argument list that makes
+// the call fail.
+func claudeHooksStubScript(logPath, failOn string) string {
+	script := "#!/bin/sh\n"
+	if logPath != "" {
+		script += "echo \"$@\" >> '" + logPath + "'\n"
+	}
+	if failOn != "" {
+		script += "case \"$*\" in " + failOn + ") exit 1 ;; esac\n"
+	}
+	script += `if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    "command -v python3") echo /usr/bin/python3 ;;
+    *sys.version_info*) echo 3.12 ;;
+    *'"$PATH"'*) printf '%s' /usr/local/bin:/usr/bin:/bin ;;
+  esac
+fi
+exit 0
+`
+	return script
+}
+
 // TestInstallClaudeHooks_HappyPath verifies that installClaudeHooks writes
 // hook scripts and the hooks.json wiring to the runner-owned config
 // directory. Uses a stub openshell so sandbox.Exec/Upload succeed without a
@@ -1089,8 +1124,7 @@ func TestClaudeRuntimeSystem(t *testing.T) {
 func TestInstallClaudeHooks_HappyPath(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "openshell.log")
 	stubDir := t.TempDir()
-	script := "#!/bin/sh\necho \"$@\" >> '" + logPath + "'\nexit 0\n"
-	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(claudeHooksStubScript(logPath, "")), 0o755))
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{} // default hooks (all enabled)
@@ -1103,13 +1137,47 @@ func TestInstallClaudeHooks_HappyPath(t *testing.T) {
 	assert.Contains(t, log, security.SandboxHooksSettings)
 }
 
+// TestInstallClaudeHooks_PinsInterpreter verifies the hooks.json Bootstrap
+// uploads names the absolute interpreter and the sandbox PATH it resolved.
+func TestInstallClaudeHooks_PinsInterpreter(t *testing.T) {
+	uploadDir := t.TempDir()
+	stubDir := t.TempDir()
+	script := claudeHooksStubScript("", "") // upload copies are inspected below
+	script = strings.Replace(script, `if [ "$2" = "exec" ]`, `if [ "$2" = "upload" ]; then case "$4" in */hooks.json) /bin/cp "$4" '`+uploadDir+`/hooks.json' ;; esac; fi
+if [ "$2" = "exec" ]`, 1)
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	require.NoError(t, installClaudeHooks("test-pin", security.SandboxHookConfig{}))
+	got, err := os.ReadFile(filepath.Join(uploadDir, "hooks.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "PATH='/usr/local/bin:/usr/bin:/bin' '/usr/bin/python3' -E -s -B "+security.SandboxHooksDir+"/tirith_check.py")
+	assert.NotContains(t, string(got), `"python3 `)
+}
+
+// TestInstallClaudeHooks_FailsWithoutInterpreter: no resolvable python3 means
+// no hooks.json, rather than a bare `python3` the agent could shadow.
+func TestInstallClaudeHooks_FailsWithoutInterpreter(t *testing.T) {
+	const name = "claude-no-python"
+	t.Cleanup(func() { forgetClaudeHookDigests(name) })
+	stubDir := t.TempDir()
+	script := strings.Replace(claudeHooksStubScript("", ""), `"command -v python3") echo /usr/bin/python3 ;;`, `"command -v python3") exit 1 ;;`, 1)
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	err := installClaudeHooks(name, security.SandboxHookConfig{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving python3")
+	_, ok := lookupClaudeHookDigests(name)
+	assert.False(t, ok)
+}
+
 // TestInstallClaudeHooks_SettingsUploadError verifies that installClaudeHooks
 // returns a descriptive error when the hooks.json wiring upload fails.
 func TestInstallClaudeHooks_SettingsUploadError(t *testing.T) {
 	stubDir := t.TempDir()
 	// Stub that succeeds for all operations except the hooks.json upload.
-	script := "#!/bin/sh\ncase \"$*\" in *hooks.json*) exit 1 ;; esac\nexit 0\n"
-	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(claudeHooksStubScript("", "*hooks.json*")), 0o755))
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{}
@@ -1134,7 +1202,7 @@ func TestInstallClaudeHooks_OpenshellNotInPath(t *testing.T) {
 // a regular file makes it fail.
 func TestInstallClaudeHooks_TempFileError(t *testing.T) {
 	stubDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(claudeHooksStubScript("", "")), 0o755))
 	t.Setenv("PATH", stubDir)
 	notADir := filepath.Join(t.TempDir(), "file")
 	require.NoError(t, os.WriteFile(notADir, []byte("x"), 0o644))

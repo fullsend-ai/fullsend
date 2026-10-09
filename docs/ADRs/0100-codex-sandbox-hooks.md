@@ -57,8 +57,10 @@ which is a stronger check than the trust hash it replaces.
 
 > **Implementation note (October 2026):** Since #8259 Claude Code checks `hooks.json` and the
 > hook scripts before each launch (exit 97), so the script-integrity part of the residue described
-> below no longer applies to it. It still does not pin the hook interpreter or `PATH`, which
-> remain agent-writable between iterations on Claude Code.
+> below no longer applies to it. Bootstrap also resolves an absolute `python3` and the sandbox
+> `PATH` and renders them into `hooks.json` (covered by its digest) with `-E -s -B`, so the hook
+> interpreter and its `PATH` no longer come from the agent-writable `.env`. Claude Code does not use
+> `-I`, because its scripts import `hook_io` from their own directory.
 
 Because the hook scripts and their directory stay agent-writable between iterations — the residue
 Claude Code and pi also have — codex additionally **re-verifies every script against runner-held digests

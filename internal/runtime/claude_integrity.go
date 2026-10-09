@@ -27,6 +27,10 @@ import (
 //
 // Nothing inside the sandbox contributes an expected value.
 //
+// The interpreter and PATH the hooks run with are pinned by Bootstrap into
+// hooks.json (claudePreflightInterpreter), so the hooks.json digest covers
+// them.
+//
 // Out of scope here, and unchanged: Claude Code's own settings.json under the
 // config directory (plugin enablement written by bootstrapPlugins), and the
 // target repo's <repo>/.claude/settings.json. Both are settings sources Claude
@@ -112,7 +116,14 @@ func claudeHooksGuard(d claudeHookDigests) string {
 // the real utilities before that pass, and LD_* are cleared so a library
 // exported by .env cannot load into the dynamically linked sha256sum, find or
 // wc and make them report the expected digest (codex_run.go does the same
-// before its second guard).
+// before its second guard). PYTHON* are cleared too: claude and its hook
+// subprocesses inherit them. The hooks themselves do not depend on this —
+// hooks.json names an absolute interpreter with -E and a pinned PATH
+// (security.GenerateHooksConfigPinned) — so this is the second layer.
+//
+// PATH is deliberately not restored here: .env legitimately prepends the
+// workspace bin directory that holds fullsend and fullsend-check-output for
+// the agent. The hook commands carry their own PATH instead.
 //
 // With hooks enabled the guard is always emitted: empty digests produce a
 // guard that can never pass, so a caller that skipped the lookup fails closed
@@ -126,7 +137,7 @@ func claudeGuardedEnvSource(envFile string, hooksEnabled bool, d claudeHookDiges
 	return strings.Join([]string{
 		guard,
 		source,
-		"unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT",
+		"unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT",
 		"unset -f test command cut wc sha256sum find echo",
 		guard,
 	}, " && ")

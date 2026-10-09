@@ -186,6 +186,30 @@ func HookPlan(hooks SandboxHookConfig) []HookGroup {
 // wiring comes from HookPlan; this function only renders it in Claude Code's
 // settings format.
 func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
+	return GenerateHooksConfigPinned(hooks, "python3", "")
+}
+
+// GenerateHooksConfigPinned is GenerateHooksConfig with the interpreter and
+// the hooks' PATH fixed by the caller. Claude Code runs a hook through the
+// shell it inherits *after* the agent-writable workspace .env is sourced, so a
+// bare `python3`, or a bare `tirith` inside tirith_check.py, resolves through
+// a PATH an earlier iteration controls: a fake that exits 0 skips the check
+// while hooks.json and the scripts stay byte-identical. The runtime therefore
+// resolves an absolute python (and a trusted PATH) at Bootstrap, on a shell
+// the agent has not touched, and renders them here so the hooks.json digest
+// covers both. An empty path leaves PATH as inherited.
+//
+// -E ignores every PYTHON* variable (PYTHONPATH, PYTHONHOME, PYTHONSTARTUP,
+// ...) and -s drops the user site directory. -I is not used: it would also
+// drop the script's own directory from sys.path, and the scripts import
+// hook_io and load the chain's stages from SandboxHooksDir. That directory is
+// covered by the runtime's exhaustive launch guard, so no sitecustomize.py or
+// shadowing module can sit in it.
+func GenerateHooksConfigPinned(hooks SandboxHookConfig, python, path string) ([]byte, error) {
+	prefix := ""
+	if path != "" {
+		prefix = "PATH=" + shellSingleQuote(path) + " "
+	}
 	cfg := hooksConfig{
 		Hooks: make(map[string][]hookMatcher),
 	}
@@ -198,7 +222,7 @@ func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
 				// stages from SandboxHooksDir, so without it Python writes
 				// hooks/__pycache__/ during iteration 1 and the runtime's
 				// exhaustive hooks-directory guard refuses iteration 2.
-				Type: "command", Command: "python3 -B " + SandboxHooksDir + "/" + script,
+				Type: "command", Command: prefix + shellSingleQuote(python) + " -E -s -B " + SandboxHooksDir + "/" + script,
 				Timeout: HookTimeoutSeconds,
 			})
 		}
@@ -342,4 +366,9 @@ func toolAllowlistPreToolEnabled(hooks SandboxHookConfig) bool {
 		return false
 	}
 	return boolDefault(sh.ToolAllowlistPreTool.Enabled, false)
+}
+
+// shellSingleQuote quotes s as one POSIX sh word.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

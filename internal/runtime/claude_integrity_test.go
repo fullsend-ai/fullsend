@@ -102,10 +102,10 @@ func TestBuildRunCommand_HooksGuardPlacement(t *testing.T) {
 		}, d)
 		guard := claudeHooksGuard(d)
 		want := "cd /repo && " + guard + " && " + envSource +
-			" && unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT" +
+			" && unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT" +
 			" && unset -f test command cut wc sha256sum find echo && " + guard + " && claude --print"
 		assert.True(t, strings.HasPrefix(cmd, want), cmd)
-		assert.Greater(t, strings.Index(cmd, "unset LD_PRELOAD"), strings.Index(cmd, envSource),
+		assert.Greater(t, strings.Index(cmd, "unset PYTHONPATH"), strings.Index(cmd, envSource),
 			"the LD_* unset must come after .env is sourced")
 		assert.Contains(t, guard, "'"+d.HooksJSON+"'")
 	})
@@ -123,6 +123,8 @@ type claudeGuardFixture struct {
 	digests   claudeHookDigests
 	binDir    string
 	repoDir   string
+	hookPath  string // the PATH pinned into hooks.json
+	extraEnv  []string
 }
 
 func newClaudeGuardFixture(t *testing.T) *claudeGuardFixture {
@@ -138,7 +140,12 @@ func newClaudeGuardFixture(t *testing.T) *claudeGuardFixture {
 	hooks := security.SandboxHookConfigFromHarness(&harness.Harness{})
 	f.files = security.HookFiles(hooks)
 	var err error
-	f.hooksJSON, err = security.GenerateHooksConfig(hooks)
+	python := "/usr/bin/python3"
+	if p, lookErr := exec.LookPath("python3"); lookErr == nil {
+		python = p
+	}
+	f.hookPath = os.Getenv("PATH")
+	f.hooksJSON, err = security.GenerateHooksConfigPinned(hooks, python, f.hookPath)
 	require.NoError(t, err)
 	f.digests = claudeHookDigestsFor(hooks, f.hooksJSON)
 
@@ -175,6 +182,7 @@ func (f *claudeGuardFixture) launch(t *testing.T, d claudeHookDigests) (string, 
 	cmd = strings.ReplaceAll(cmd, sandbox.SandboxClaudeConfig, f.configDir)
 	c := exec.Command("/bin/sh", "-c", cmd)
 	c.Env = append(os.Environ(), "PATH="+f.binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	c.Env = append(c.Env, f.extraEnv...)
 	out, err := c.CombinedOutput()
 	return string(out), err
 }
@@ -303,6 +311,61 @@ func TestClaudeLaunch_ClearsLDVariablesSetByEnv(t *testing.T) {
 	assert.Contains(t, out, "CLAUDE_RAN LD=[]")
 }
 
+// The hook commands must keep running the real interpreter and the real hook
+// when an earlier iteration's .env puts a fake python3 first on PATH and
+// plants a sitecustomize.py via PYTHONPATH. Both leave hooks.json and the
+// scripts byte-identical, so the digests cannot catch them.
+func TestClaudeLaunch_HooksIgnorePathAndPythonPathFromEnv(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	f := newClaudeGuardFixture(t)
+
+	evil := t.TempDir()
+	marker := filepath.Join(evil, "marker")
+	require.NoError(t, os.WriteFile(filepath.Join(evil, "python3"),
+		[]byte("#!/bin/sh\necho fake-python >> '"+marker+"'\nexit 0\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(evil, "sitecustomize.py"),
+		[]byte("open('"+marker+"', 'a').write('sitecustomize\\n')\n"), 0o644))
+	require.NoError(t, os.WriteFile(f.envFile, []byte(
+		"export PATH='"+evil+"':\"$PATH\"\nexport PYTHONPATH='"+evil+"'\nexport PYTHONSTARTUP='"+filepath.Join(evil, "sitecustomize.py")+"'\n"), 0o644))
+
+	var cfg struct {
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	require.NoError(t, json.Unmarshal(f.hooksJSON, &cfg))
+	require.NotEmpty(t, cfg.Hooks["PostToolUse"])
+	command := strings.ReplaceAll(cfg.Hooks["PostToolUse"][0].Hooks[0].Command, security.SandboxHooksDir, f.hooksDir)
+
+	// claude stub: run the hook command the way Claude Code would, from the
+	// environment the launch left behind.
+	require.NoError(t, os.WriteFile(filepath.Join(f.binDir, "claude"), []byte(
+		"#!/bin/sh\nprintf '%s' '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"},\"tool_response\":{\"stdout\":\"ok\",\"stderr\":\"\"}}' | sh -c \"$FS_HOOK_CMD\"\necho HOOK_EXIT=$?\n"), 0o755))
+	f.extraEnv = []string{"FS_HOOK_CMD=" + command}
+
+	out, err := f.launch(t, f.digests)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "HOOK_EXIT=0")
+	_, statErr := os.Stat(marker)
+	assert.True(t, os.IsNotExist(statErr), "neither the fake python3 nor sitecustomize.py may run: %s", out)
+}
+
+func TestClaudeLaunch_ClearsPythonVariablesSetByEnv(t *testing.T) {
+	f := newClaudeGuardFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(f.binDir, "claude"),
+		[]byte("#!/bin/sh\necho \"CLAUDE_RAN PY=[$PYTHONPATH$PYTHONHOME$PYTHONSTARTUP$PYTHONUSERBASE]\"\n"), 0o755))
+	require.NoError(t, os.WriteFile(f.envFile,
+		[]byte("export PYTHONPATH=/tmp/p PYTHONHOME=/tmp/h PYTHONSTARTUP=/tmp/s.py PYTHONUSERBASE=/tmp/u\n"), 0o644))
+
+	out, err := f.launch(t, f.digests)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "CLAUDE_RAN PY=[]")
+}
+
 // The hooks run with -B, so running them does not itself leave a
 // __pycache__ behind that would lock out the next iteration.
 func TestClaudeLaunch_HookRunDoesNotTripTheGuard(t *testing.T) {
@@ -411,7 +474,7 @@ func TestInstallClaudeHooks_RecordsDigests(t *testing.T) {
 	const name = "claude-install-records"
 	t.Cleanup(func() { forgetClaudeHookDigests(name) })
 	stubDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(claudeHooksStubScript("", "")), 0o755))
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{}
@@ -419,7 +482,7 @@ func TestInstallClaudeHooks_RecordsDigests(t *testing.T) {
 
 	got, ok := lookupClaudeHookDigests(name)
 	require.True(t, ok)
-	hooksJSON, err := security.GenerateHooksConfig(hooks)
+	hooksJSON, err := security.GenerateHooksConfigPinned(hooks, "/usr/bin/python3", "/usr/local/bin:/usr/bin:/bin")
 	require.NoError(t, err)
 	assert.Equal(t, claudeHookDigestsFor(hooks, hooksJSON), got)
 }
@@ -428,8 +491,7 @@ func TestInstallClaudeHooks_NoDigestsOnFailure(t *testing.T) {
 	const name = "claude-install-fails"
 	t.Cleanup(func() { forgetClaudeHookDigests(name) })
 	stubDir := t.TempDir()
-	script := "#!/bin/sh\ncase \"$*\" in *hooks.json*) exit 1 ;; esac\nexit 0\n"
-	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(claudeHooksStubScript("", "*hooks.json*")), 0o755))
 	t.Setenv("PATH", stubDir)
 
 	require.Error(t, installClaudeHooks(name, security.SandboxHookConfig{}))
