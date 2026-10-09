@@ -155,7 +155,17 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory.
 
-**`env.runner`** — Variables passed to host-side scripts (`pre_script`, `post_script`, `validation_loop.script` and `validation_loop.preflight_check`), layered over the `fullsend run` process environment. A few named workflow secrets are **not** inherited from that environment: `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` / `OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under `env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export. Earlier releases passed them to every script unconditionally; a harness whose scripts read `JIRA_TOKEN` or `JIRA_USER_EMAIL` without declaring them must add them to `env.runner`.
+**`env.runner`** — Variables passed to host-side scripts (`pre_script`, `post_script`,
+`validation_loop.script` and `validation_loop.preflight_check`), layered over the `fullsend run`
+process environment. A few named workflow secrets are **not** inherited from that environment:
+`JIRA_TOKEN`, `JIRA_USER_EMAIL`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
+`OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
+receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under
+`env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.
+Earlier releases passed them to every script unconditionally; a harness whose scripts read
+`JIRA_TOKEN` or `JIRA_USER_EMAIL` without declaring them must add them to `env.runner`. Scripts
+always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, so bytecode never
+breaks the hash-verified fetch cache.
 
 **`agent_input`** — A local directory, not a file. When a URL `base:` harness declares it, the inherited value is cleared rather than fetched; supply the directory in the child harness if needed. See [Harness field semantic types](../contributing/harness-fields.md#semantic-types-adr-0127).
 
