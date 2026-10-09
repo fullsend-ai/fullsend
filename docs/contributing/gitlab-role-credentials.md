@@ -478,8 +478,10 @@ published. Run install or `--rotate-gitlab-trigger-token` when a short
 polling gap is acceptable.
 
 **One installer at a time per project, across processes and hosts.** The
-whole transaction above, plus role provisioning, rotation, cleanup, and
-Poller reconciliation, holds a project lease: the CI/CD variable
+whole transaction above, plus role provisioning, rotation, cleanup, Poller
+reconciliation, and the full GitLab repository uninstall (webhook teardown,
+scaffold removal, role cleanup, and the variable, secret, and branch
+deletions), holds a project lease: the CI/CD variable
 `FULLSEND_GITLAB_INSTALL_LEASE`, created atomically (GitLab rejects a second
 variable with the same key and scope) and deleted when the operation ends,
 even after a failure or cancellation. A second installer waits up to two
@@ -887,8 +889,9 @@ replacement from CI.
 **Failed rotation does not strand a role.** If creation fails, nothing
 is written. If distribution fails, only the unused replacement PAT is
 revoked and the previous CI secret is left in place. Concurrent
-attempts for the same role are serialized (in-process lock plus a
-protected rotation-state document) and idempotent within a five-minute
+attempts for the same role are serialized (in-process lock, the
+cross-process project lease described under "One installer at a time per
+project", and a protected rotation-state document) and idempotent within a five-minute
 window: a retry adopts the already-distributed replacement rather than
 minting another. A crash after create where distribution is unproven
 (state stuck at `distributing`/`failed` with an incoming ID) is
