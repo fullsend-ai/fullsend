@@ -18,9 +18,8 @@ var httpClient HTTPDoer = &http.Client{Timeout: 30 * time.Second}
 
 // MaxMintDuration is a practical upper bound on how long a single
 // MintToken call can take, informed by its retry schedule: fetchOIDCJWT
-// retries within oidcRetry (up to 10 attempts with exponential backoff
-// capped at 8s, and no new attempt started more than 60s after the first —
-// see oidcRetry), and callMint retries up to 5 times (1s+2s+4s+8s
+// retries within oidcRetry (exponential backoff capped at 8s, and no new
+// attempt started more than 60s after the first — see oidcRetry), and callMint retries up to 5 times (1s+2s+4s+8s
 // backoff). Each HTTP round trip is individually bounded by httpClient's
 // 30s timeout (see doWithRetryPolicy, fetchOIDCJWT, callMint).
 //
@@ -282,23 +281,49 @@ type retryPolicy struct {
 	maxAttempts int
 	// maxDelay caps a single backoff delay. Zero leaves it uncapped.
 	maxDelay time.Duration
-	// window, when positive, stops retrying once the next attempt would
-	// start more than window after the first attempt began, so the total
-	// retry time stays bounded even when each attempt is slow (e.g. an
-	// upstream proxy that takes ~10s to report a connection timeout).
+	// window, when positive, starts no attempt more than window after the
+	// first attempt began, so the total retry time stays bounded even when
+	// each attempt is slow (e.g. an upstream proxy that takes ~10s to
+	// report a connection timeout). The last backoff is shortened so one
+	// final attempt starts at the window boundary (see nextDelay).
 	window time.Duration
 }
 
 // oidcRetry is the retry policy for fetching the GitHub Actions OIDC JWT.
 // The token endpoint has been seen returning 503s for about a minute at a
 // time (#8276), so retries span roughly that long instead of the few
-// seconds callMint's schedule gives. With fast failures this is about 10
-// attempts over ~55s; with attempts that each take ~10s it is about 5
-// attempts over ~65s. A variable so tests can shorten the window.
+// seconds callMint's schedule gives. The window is what ends retries:
+// with fast failures, attempts start at 0, 1, 3, 7, 15, 23, ..., 55 and a
+// final one at 60s (11 attempts); with attempts that each take ~10s it is
+// about 5 attempts over ~65s. maxAttempts sits above the 11 the window
+// allows, as a backstop for when retryBaseDelay is zero (tests). A
+// variable so tests can shorten the window.
 var oidcRetry = retryPolicy{
-	maxAttempts: 10,
+	maxAttempts: 15,
 	maxDelay:    8 * time.Second,
 	window:      60 * time.Second,
+}
+
+// nextDelay returns the backoff before the next attempt, given how many
+// attempts have been made and how long ago the first one began. ok is
+// false once the window has run out. A delay that would carry the next
+// attempt past the window is shortened to end at the window, so the last
+// attempt starts at the window boundary instead of up to maxDelay before it.
+func (p retryPolicy) nextDelay(attempts int, elapsed time.Duration) (delay time.Duration, ok bool) {
+	delay = time.Duration(1<<uint(attempts-1)) * retryBaseDelay
+	if p.maxDelay > 0 && delay > p.maxDelay {
+		delay = p.maxDelay
+	}
+	if p.window > 0 {
+		remaining := p.window - elapsed
+		if remaining <= 0 {
+			return 0, false
+		}
+		if delay > remaining {
+			delay = remaining
+		}
+	}
+	return delay, true
 }
 
 func doWithRetry(ctx context.Context, maxAttempts int, fn func() error) error {
@@ -324,11 +349,8 @@ func doWithRetryPolicy(ctx context.Context, p retryPolicy, fn func() error) erro
 		if attempts >= p.maxAttempts {
 			break
 		}
-		delay := time.Duration(1<<uint(attempts-1)) * retryBaseDelay
-		if p.maxDelay > 0 && delay > p.maxDelay {
-			delay = p.maxDelay
-		}
-		if p.window > 0 && time.Since(start)+delay > p.window {
+		delay, ok := p.nextDelay(attempts, time.Since(start))
+		if !ok {
 			break
 		}
 		select {

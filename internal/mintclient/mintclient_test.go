@@ -1288,21 +1288,26 @@ func TestOIDCRetryFitsMaxMintDuration(t *testing.T) {
 		t.Errorf("oidcRetry.window = %s, want about a minute (>= 55s)", oidcRetry.window)
 	}
 
-	// Backoff-only time of oidcRetry with fast failures, at the
-	// production base delay of 1s.
-	var oidcBackoff time.Duration
-	for i := 0; i < oidcRetry.maxAttempts-1; i++ {
-		d := time.Duration(1<<uint(i)) * time.Second
-		if oidcRetry.maxDelay > 0 && d > oidcRetry.maxDelay {
-			d = oidcRetry.maxDelay
-		}
-		if oidcBackoff+d > oidcRetry.window {
+	// Walk oidcRetry's schedule with fast failures at the production base
+	// delay of 1s: the last attempt must start at the window boundary, and
+	// the window, not maxAttempts, must be what ends the retries.
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Second
+	defer func() { retryBaseDelay = origDelay }()
+	var lastStart time.Duration
+	attempts := 1
+	for ; attempts < oidcRetry.maxAttempts; attempts++ {
+		d, ok := oidcRetry.nextDelay(attempts, lastStart)
+		if !ok {
 			break
 		}
-		oidcBackoff += d
+		lastStart += d
 	}
-	if oidcBackoff < 45*time.Second {
-		t.Errorf("fast-failing OIDC retries span %s, want close to a minute", oidcBackoff)
+	if lastStart != oidcRetry.window {
+		t.Errorf("fast-failing OIDC retries start their last attempt at %s, want the window boundary %s", lastStart, oidcRetry.window)
+	}
+	if attempts >= oidcRetry.maxAttempts {
+		t.Errorf("fast-failing OIDC retries used all %d attempts; maxAttempts, not the window, ended them", oidcRetry.maxAttempts)
 	}
 
 	var mintBackoff time.Duration
@@ -1393,5 +1398,69 @@ func TestDoWithRetryPolicy_ContextCancelDuringBackoff(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("doWithRetryPolicy took %s after cancel, want prompt return", elapsed)
+	}
+}
+
+func TestRetryPolicyNextDelay(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Second
+	defer func() { retryBaseDelay = origDelay }()
+
+	tests := []struct {
+		name     string
+		p        retryPolicy
+		attempts int
+		elapsed  time.Duration
+		want     time.Duration
+		wantOK   bool
+	}{
+		{"doubles from base", oidcRetry, 3, 3 * time.Second, 4 * time.Second, true},
+		{"capped at maxDelay", oidcRetry, 6, 23 * time.Second, 8 * time.Second, true},
+		// The #8276 review finding: after the attempt at ~55s the full 8s
+		// backoff would overshoot the window, so it is shortened to 5s.
+		{"shortened to reach window", oidcRetry, 10, 55 * time.Second, 5 * time.Second, true},
+		{"window reached", oidcRetry, 11, 60 * time.Second, 0, false},
+		{"window passed by slow attempt", oidcRetry, 5, 65 * time.Second, 0, false},
+		{"no window never shortens", retryPolicy{maxAttempts: 5}, 4, time.Hour, 8 * time.Second, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := tt.p.nextDelay(tt.attempts, tt.elapsed)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("nextDelay(%d, %s) = (%s, %v), want (%s, %v)", tt.attempts, tt.elapsed, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+// TestDoWithRetryPolicy_RecoversAtWindowEnd runs oidcRetry's schedule at
+// 1/100 scale (1s -> 10ms) against an endpoint that recovers between the
+// ~55s attempt and the 60s window end. Before the final backoff was
+// shortened to the window, this outage failed the mint.
+func TestDoWithRetryPolicy_RecoversAtWindowEnd(t *testing.T) {
+	const scale = 100
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Second / scale
+	defer func() { retryBaseDelay = origDelay }()
+
+	p := retryPolicy{
+		maxAttempts: oidcRetry.maxAttempts,
+		maxDelay:    oidcRetry.maxDelay / scale,
+		window:      oidcRetry.window / scale,
+	}
+	recoverAt := 58 * time.Second / scale
+
+	start := time.Now()
+	attempts := 0
+	err := doWithRetryPolicy(context.Background(), p, func() error {
+		attempts++
+		if time.Since(start) < recoverAt {
+			return &retryableError{errors.New("503")}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("doWithRetryPolicy() error = %v after %d attempts, want success once the endpoint recovers at %s (window %s)",
+			err, attempts, recoverAt, p.window)
 	}
 }
