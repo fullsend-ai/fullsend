@@ -194,7 +194,11 @@ func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
 		entries := make([]hookEntry, 0, len(g.Scripts))
 		for _, script := range g.Scripts {
 			entries = append(entries, hookEntry{
-				Type: "command", Command: "python3 " + SandboxHooksDir + "/" + script,
+				// -B: the scripts import hook_io and the chain loads its
+				// stages from SandboxHooksDir, so without it Python writes
+				// hooks/__pycache__/ during iteration 1 and the runtime's
+				// exhaustive hooks-directory guard refuses iteration 2.
+				Type: "command", Command: "python3 -B " + SandboxHooksDir + "/" + script,
 				Timeout: HookTimeoutSeconds,
 			})
 		}

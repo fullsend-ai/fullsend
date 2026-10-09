@@ -96,7 +96,7 @@ func testRunCommandWithEffort(agentName, model, effort, repoDir string, pluginDi
 		RepoDir:       repoDir,
 		PluginDirs:    pluginDirs,
 		Debug:         debug,
-	})
+	}, claudeHookDigests{})
 }
 
 func TestAgentDestName(t *testing.T) {
@@ -304,7 +304,7 @@ func TestBuildRunCommand_WithHooksSettings(t *testing.T) {
 		AgentBaseName:     "agent",
 		RepoDir:           "/sandbox/workspace/repo",
 		HooksSettingsPath: "/sandbox/claude-config/hooks.json",
-	})
+	}, claudeHookDigests{})
 	assert.Contains(t, cmd, "--settings '/sandbox/claude-config/hooks.json'")
 }
 
@@ -318,7 +318,7 @@ func TestBuildRunCommand_HooksSettingsEscapesQuotes(t *testing.T) {
 		AgentBaseName:     "agent",
 		RepoDir:           "/sandbox/workspace/repo",
 		HooksSettingsPath: "/sandbox/path'with'quotes/hooks.json",
-	})
+	}, claudeHookDigests{})
 	assert.Contains(t, cmd, `--settings '/sandbox/path'\''with'\''quotes/hooks.json'`)
 }
 
@@ -332,7 +332,7 @@ func TestBuildRunCommand_CustomPrompt(t *testing.T) {
 		AgentBaseName: "agent",
 		RepoDir:       "/sandbox/workspace/repo",
 		Prompt:        "Run the agent task\n\nThe previous iteration failed.",
-	})
+	}, claudeHookDigests{})
 	assert.Contains(t, cmd, "The previous iteration failed.")
 	assert.NotContains(t, cmd, "'Run the agent task'")
 }
@@ -342,7 +342,7 @@ func TestBuildRunCommand_PromptEscapesQuotes(t *testing.T) {
 		AgentBaseName: "agent",
 		RepoDir:       "/sandbox/workspace/repo",
 		Prompt:        "Fix the 'error' in the code",
-	})
+	}, claudeHookDigests{})
 	assert.Contains(t, cmd, `'Fix the '\''error'\'' in the code'`)
 }
 
@@ -351,7 +351,7 @@ func TestBuildRunCommand_EmptyPromptUsesDefault(t *testing.T) {
 		AgentBaseName: "agent",
 		RepoDir:       "/sandbox/workspace/repo",
 		Prompt:        "",
-	})
+	}, claudeHookDigests{})
 	assert.Contains(t, cmd, "'Run the agent task'")
 }
 
@@ -398,7 +398,7 @@ func TestBuildRunCommand_NoDoubleSpaces(t *testing.T) {
 				PluginDirs:        tc.pluginDirs,
 				Debug:             tc.debug,
 				HooksSettingsPath: "/sandbox/claude-config/hooks.json",
-			})
+			}, claudeHookDigests{})
 			assert.NotContains(t, cmd, "  ", "command should not contain double spaces")
 		})
 	}
@@ -414,7 +414,7 @@ func TestBuildRunCommand_WithConfigAlias(t *testing.T) {
 		Model:         "sonnet",
 		RepoDir:       "/sandbox/workspace/repo",
 		ModelAliases:  map[string]string{"sonnet": "claude-sonnet-5"},
-	})
+	}, claudeHookDigests{})
 	assert.Contains(t, cmd, "--model 'claude-sonnet-5'",
 		"config alias remaps the model")
 	assert.NotContains(t, cmd, "'sonnet'",
@@ -428,7 +428,7 @@ func TestBuildRunCommand_WithConfigAliasNoMatch(t *testing.T) {
 		Model:         "opus",
 		RepoDir:       "/sandbox/workspace/repo",
 		ModelAliases:  map[string]string{"sonnet": "claude-sonnet-5"},
-	})
+	}, claudeHookDigests{})
 	assert.Contains(t, cmd, "--model 'opus'",
 		"unmatched model passes through")
 }
@@ -440,7 +440,7 @@ func TestBuildRunCommand_WithConfigAliasNilMap(t *testing.T) {
 		Model:         "sonnet",
 		RepoDir:       "/sandbox/workspace/repo",
 		ModelAliases:  nil,
-	})
+	}, claudeHookDigests{})
 	assert.Contains(t, cmd, "--model 'sonnet'",
 		"nil aliases passes the model through")
 }
@@ -454,7 +454,7 @@ func TestBuildRunCommand_FallbackModelsUseConfigAlias(t *testing.T) {
 		FallbackModels: []string{"sonnet", "claude-haiku-4-5"},
 		RepoDir:        "/sandbox/workspace/repo",
 		ModelAliases:   map[string]string{"sonnet": "claude-sonnet-5"},
-	})
+	}, claudeHookDigests{})
 	assert.Contains(t, cmd, "--fallback-model 'claude-sonnet-5,claude-haiku-4-5'",
 		"aliased fallback entries are remapped, bare ids pass through")
 	assert.Contains(t, cmd, "--model 'opus'", "unmapped primary passes through")

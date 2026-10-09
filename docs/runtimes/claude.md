@@ -79,6 +79,11 @@ override is visible after the fact.
 inside the sandbox. A blocked tool reports its reason in the transcript; an allowlist mismatch names
 the offending tool and the expected vocabulary.
 
+**The run refused to start with exit 97.** Before every launch the runtime checks that
+`/sandbox/claude-config/hooks.json` and the hook scripts under `/sandbox/claude-config/hooks/` are
+exactly what `Bootstrap` installed. A file that was changed, deleted or added, usually by an earlier
+iteration, fails the run instead of loading altered hooks.
+
 **A harness plugin did not load.** When Claude Code reports a plugin in the `plugin_errors` of its
 startup `system`/`init` event, the run output prints one `Plugin <name> failed to load …` warning per
 entry, with the error category and message. It also shows the plugin directory when Claude Code
