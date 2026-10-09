@@ -308,18 +308,36 @@ func gatewayProfileMatches(ctx context.Context, id, profilePath string) (bool, e
 	return profileContentEqual(local, exported)
 }
 
+// gatewayNonZeroDefaults lists the top-level profile fields whose default
+// value in the gateway's export is not a zero value (OpenShell 0.1.2). The
+// export writes them even when the local file omits them (see #8211), and
+// profileContentEqual accepts them only when they hold exactly this value.
+var gatewayNonZeroDefaults = map[string]any{
+	"category": "other",
+	"source":   "user",
+	"scope":    "workspace",
+}
+
 // profileContentEqual reports whether the gateway's export of a profile
 // (exported) still carries the content of the local profile YAML document
 // (local). It is driven by the local file, not by knowledge of what OpenShell
 // writes: every key in local must be present in exported with the same value,
 // and keys only the export has (gateway metadata and fields OpenShell filled
-// in with defaults, see #8211) are ignored. Maps are compared the same way
+// in with zero-value defaults, see #8211) are ignored. Maps are compared the same way
 // recursively, and lists must have the same length with matching entries.
 //
-// One guard keeps #7973 working without a table of OpenShell defaults: a key
-// only the export has still counts as a mismatch when it holds a non-empty
-// list or map (e.g. `credentials` or `endpoints` the local file dropped, or
-// unknown `annotations`).
+// Two guards keep #7973 working without a table of OpenShell defaults. A key
+// only the export has still counts as a mismatch when it holds any non-empty
+// value: a non-empty list or map (e.g. `credentials` or `endpoints` the
+// local file dropped, or unknown `annotations`) or a non-zero scalar (e.g. a
+// dropped `inference_capable: true`, or a credential `query_param: token`
+// or `auth_style`). The gateway keeps such a value when a blocked delete
+// leaves the old profile in place, so it must not look like an applied edit.
+// Zero values are the only export-only content tolerated, which needs no
+// knowledge of what OpenShell writes. The exception is
+// gatewayNonZeroDefaults, the few top-level fields the export fills in with
+// a non-zero default; a new non-zero default OpenShell adds fails closed
+// rather than hiding a stale value.
 //
 // Unparseable input is an error, not a mismatch.
 func profileContentEqual(local, exported []byte) (bool, error) {
@@ -337,13 +355,24 @@ func profileContentEqual(local, exported []byte) (bool, error) {
 	delete(localDoc, "resource_version")
 	delete(exportedDoc, "resource_version")
 
+	// Top-level fields the export fills in with a non-zero default when the
+	// local file omits them. Only the exact default value is tolerated.
+	for k, def := range gatewayNonZeroDefaults {
+		if _, declared := localDoc[k]; declared {
+			continue
+		}
+		if ev, ok := exportedDoc[k]; ok && reflect.DeepEqual(ev, def) {
+			delete(exportedDoc, k)
+		}
+	}
+
 	return profileMapMatches(localDoc, exportedDoc), nil
 }
 
 // profileMapMatches reports whether exported holds every key of local with a
 // matching value. A local key the export omits matches only when its value is
 // empty (the export may leave defaults out). A key only exported has matches
-// unless it holds a non-empty list or map.
+// only when its value is empty (nil, a zero scalar, an empty list or map).
 func profileMapMatches(local, exported map[string]any) bool {
 	for k, lv := range local {
 		ev, ok := exported[k]
@@ -361,15 +390,8 @@ func profileMapMatches(local, exported map[string]any) bool {
 		if _, ok := local[k]; ok {
 			continue
 		}
-		switch v := ev.(type) {
-		case []any:
-			if len(v) > 0 {
-				return false
-			}
-		case map[string]any:
-			if len(v) > 0 {
-				return false
-			}
+		if !profileValueIsEmpty(ev) {
+			return false
 		}
 	}
 	return true

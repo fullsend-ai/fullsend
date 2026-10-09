@@ -1830,10 +1830,58 @@ scope: workspace
 			want:     false,
 		},
 		{
-			name:     "scalar fields only the export has are ignored whatever their value",
+			name:     "export has non-default inference_capable",
 			local:    local,
-			exported: strings.Replace(strings.Replace(exported, "source: user", "source: builtin", 1), "category: source_control", "category: source_control\nfuture_field: x", 1),
-			want:     true,
+			exported: strings.Replace(exported, "inference_capable: false", "inference_capable: true", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default credential query_param",
+			local:    local,
+			exported: strings.Replace(exported, "query_param: ''", "query_param: token", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default credential auth_style",
+			local:    local,
+			exported: strings.Replace(exported, "auth_style: ''", "auth_style: bearer", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default credential header_name",
+			local:    local,
+			exported: strings.Replace(exported, "header_name: ''", "header_name: X-Key", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default endpoint scalar",
+			local:    local,
+			exported: strings.Replace(exported, "  port: 443\nbinaries", "  port: 443\n  allow_uninspected_credentials: true\nbinaries", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default source",
+			local:    local,
+			exported: strings.Replace(exported, "source: user", "source: builtin", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default scope",
+			local:    local,
+			exported: strings.Replace(exported, "scope: workspace", "scope: global", 1),
+			want:     false,
+		},
+		{
+			name:     "category dropped locally while export has non-default category",
+			local:    "id: p\n",
+			exported: "id: p\ncategory: inference\n",
+			want:     false,
+		},
+		{
+			name:     "unknown non-zero scalar only the export has",
+			local:    local,
+			exported: strings.Replace(exported, "category: source_control", "category: source_control\nfuture_field: x", 1),
+			want:     false,
 		},
 		{
 			name:     "new gateway default the local file never heard of",
@@ -1936,6 +1984,49 @@ func TestImportProfile_AlreadyExists_StaleContent(t *testing.T) {
 
 	_, readErr := os.ReadFile(cachePath)
 	assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+}
+
+// TestImportProfile_AlreadyExists_RemovedNonDefaultScalar covers a local edit
+// that removes a non-default scalar the gateway still has after a blocked
+// delete: it must fail loudly and must not cache a false success.
+func TestImportProfile_AlreadyExists_RemovedNonDefaultScalar(t *testing.T) {
+	tests := []struct {
+		name     string
+		exported string
+	}{
+		{"inference_capable", "id: my-profile\ninference_capable: true\n"},
+		{"credential query_param", "id: my-profile\ncredentials:\n- name: api_token\n  query_param: token\n"},
+		{"credential auth_style", "id: my-profile\ncredentials:\n- name: api_token\n  auth_style: bearer\n"},
+		{"credential header_name", "id: my-profile\ncredentials:\n- name: api_token\n  header_name: X-Key\n"},
+		{"endpoint flag", "id: my-profile\nendpoints:\n- host: api.github.com\n  allow_uninspected_credentials: true\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			profilePath := filepath.Join(dir, "my-profile.yaml")
+			local := "id: my-profile\n"
+			if strings.HasPrefix(tt.name, "credential") {
+				local += "credentials:\n  - name: api_token\n"
+			}
+			if strings.HasPrefix(tt.name, "endpoint") {
+				local += "endpoints:\n  - host: api.github.com\n"
+			}
+			require.NoError(t, os.WriteFile(profilePath, []byte(local), 0o644))
+
+			alreadyExistsThenExportStub(t, dir, tt.exported)
+			t.Setenv("PATH", dir)
+
+			cachePath := profileFileCachePath("my-profile")
+			t.Cleanup(func() { os.Remove(cachePath) })
+
+			err := ImportProfile(context.Background(), "my-profile", profilePath)
+			require.Error(t, err, "a stale non-default scalar left on the gateway must fail loudly")
+			assert.Contains(t, err.Error(), "does not match")
+
+			_, readErr := os.ReadFile(cachePath)
+			assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+		})
+	}
 }
 
 // TestImportProfile_AlreadyExists_RemovedCredentials covers a local profile
