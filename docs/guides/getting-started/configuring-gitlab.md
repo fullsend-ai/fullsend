@@ -425,14 +425,14 @@ cleanup of those. See [Operations § Uninstalling](operations.md#uninstalling).
 > ([#8243](https://github.com/fullsend-ai/fullsend/issues/8243)) merges and is
 > validated.
 
-> **Poller elevation safety:** Creating or rotating a Poller-owned trigger
-> requires a verified server-side guarantee that requests accepted before
-> credential revocation, including asynchronous credential and job creation,
-> have finished. The current GitLab adapter cannot establish that guarantee,
-> so it defers temporary Maintainer elevation and new trigger creation. Polling
-> continues with Developer credentials; compliant existing triggers can still
-> be reused. Revocation and empty resource inventories alone do not prove that
-> requests have drained.
+> **Poller elevation safety:** Re-elevating a Poller identity that ever held a
+> distributed runtime credential requires a verified server-side guarantee
+> that requests accepted before credential revocation, including asynchronous
+> credential and job creation, have finished. The current GitLab adapter
+> cannot establish that guarantee, so it defers temporary Maintainer elevation
+> and new trigger creation. Polling continues with Developer credentials;
+> compliant existing triggers can still be reused. Revocation and empty
+> resource inventories alone do not prove that requests have drained.
 
 Once activated, fresh installs create a separate project service account for
 the Poller, Analyst, and Coder roles where the instance supports project

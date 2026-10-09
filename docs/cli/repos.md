@@ -320,28 +320,34 @@ authorize destructive legacy-token cleanup.
 
 #### Poller-owned trigger token (deferred)
 
-> **Poller elevation safety:** Creating or rotating a Poller-owned trigger
-> requires a verified server-side guarantee that requests accepted before
-> credential revocation, including asynchronous credential and job creation,
-> have finished. The current GitLab adapter cannot establish that guarantee,
-> so it defers temporary Maintainer elevation and new trigger creation. Polling
-> continues with Developer credentials; compliant existing triggers can still
-> be reused. Revocation and empty resource inventories alone do not prove that
-> requests have drained.
+> **Poller elevation safety:** Re-elevating a Poller identity that ever held a
+> distributed runtime credential requires a verified server-side guarantee
+> that requests accepted before credential revocation, including asynchronous
+> credential and job creation, have finished. The current GitLab adapter
+> cannot establish that guarantee, so it defers temporary Maintainer elevation
+> and new trigger creation. Polling continues with Developer credentials;
+> compliant existing triggers can still be reused. Revocation and empty
+> resource inventories alone do not prove that requests have drained.
 
 GitLab binds a trigger token to the user who creates it and only Maintainers
-can create one. The target design therefore creates the token as the managed
-Poller service account rather than the installing Maintainer, which never owns
-the token. When an adapter can verify server-side request draining, install
-first revokes the Poller's distributed runtime credential and the existing
-managed trigger tokens owned by the Poller. It then creates an installer-only
-bootstrap credential, grants the Poller Maintainer only for the create call,
-restores Developer and verifies it, revokes the bootstrap credential, and
-publishes a replacement runtime credential before the webhook is enabled or
-updated. Polling and in-flight jobs that authenticate as the Poller are
-interrupted while the trigger is created or rotated. If that restore or check
-fails, install disables the managed fast path and reports an error. A Poller
-that is still a project access token bot leaves the fast path deferred.
+can create one. The target design therefore creates the token as a fresh
+replacement Poller service account that has never held a distributed runtime
+credential, rather than the installing Maintainer or the current Poller.
+Neither of those owns the token, and the current Poller is never elevated. When
+the live handoff
+([#8243](https://github.com/fullsend-ai/fullsend/issues/8243)) is wired to an
+adapter, install records the replacement account in
+`FULLSEND_GITLAB_POLLER_GENERATIONS`, creates an installer-only bootstrap
+credential for it, grants it Maintainer only for the create call, restores
+Developer and verifies it, and revokes the bootstrap credential. It then
+publishes the replacement runtime credential and cuts over before the webhook
+is enabled or updated, and the previous Poller is retired. The current Poller
+keeps polling throughout, so polling and in-flight jobs that authenticate as it
+are not interrupted. If any step after the trigger-create request fails,
+install publishes nothing and quarantines the generation, which blocks any new
+generation until an administrator reconciles it. A Poller that is still a
+project access token bot leaves the fast path deferred. See
+[Poller identity generations](../contributing/gitlab-role-credentials.md#poller-identity-generations).
 
 Until such an adapter exists, re-runs reuse compliant existing credentials and
 reconcile webhook configuration; new trigger creation and rotation stay

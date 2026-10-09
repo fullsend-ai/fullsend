@@ -310,6 +310,18 @@ func TestExtraGitLabRoleUninstallVars_SkipsEmptyAndInvalidRegistry(t *testing.T)
 	assert.Equal(t, []string{forge.VarGitLabRoleRegistry}, got)
 }
 
+// The Poller generation document records quarantine obligations, so uninstall
+// discovery must not select it for deletion even though it is a recognized
+// role-state variable.
+func TestExtraGitLabRoleUninstallVars_RetainsPollerGenerations(t *testing.T) {
+	t.Parallel()
+	fc := forge.NewFakeClient()
+	fc.VariableValues["o/r/"+forge.VarGitLabPollerGenerations] = `{"version":1}`
+	fc.VariablesExist["o/r/"+forge.VarGitLabPollerGenerations] = true
+	got := extraGitLabRoleUninstallVars(context.Background(), fc, "o", "r", nil)
+	assert.NotContains(t, got, forge.VarGitLabPollerGenerations)
+}
+
 func TestIsGitLabIdentityUninstallVar(t *testing.T) {
 	t.Parallel()
 	assert.True(t, isGitLabIdentityUninstallVar(forge.SecretForgeToken))

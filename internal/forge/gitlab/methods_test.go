@@ -3212,6 +3212,33 @@ func TestUpdateCIVariable_MissingFallsBackToCreate(t *testing.T) {
 	assert.True(t, created, "should have created the variable via POST")
 }
 
+// A variable defined only for a named environment must not be updated in
+// place: the update targets the wildcard scope, misses, and creates the
+// wildcard definition that GetRepoVariable reads.
+func TestUpdateCIVariable_TargetsWildcardScope(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var created bool
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/SCOPED_VAR", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"))
+		writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Variable Not Found"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, "*", body["environment_scope"])
+		created = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"key": "SCOPED_VAR"})
+	})
+
+	err := client.UpdateCIVariable(ctx, "myorg", "myrepo", "SCOPED_VAR", "val", true)
+	require.NoError(t, err)
+	assert.True(t, created, "should create the wildcard definition independently")
+}
+
 func TestUpdateCIVariable_NonNotFoundErrorPropagates(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

@@ -307,7 +307,7 @@ func GitLabPATExpiresAt(now time.Time) string {
 func IsGitLabRoleManagedVar(name string) bool {
 	switch name {
 	case forge.SecretForgeToken, forge.VarGitLabRoleRegistry,
-		forge.VarGitLabRoleRotation,
+		forge.VarGitLabRoleRotation, forge.VarGitLabPollerGenerations,
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken,
 		forge.SecretGitLabCoderToken:
 		return true
@@ -613,6 +613,14 @@ func extraGitLabRoleUninstallVars(ctx context.Context, client forge.Client, owne
 		// though IsGitLabRoleManagedVar still recognizes the name for
 		// orphan-detection purposes elsewhere.
 		if name == forge.SecretForgeToken {
+			return
+		}
+		// The Poller generation document records quarantine and retirement
+		// obligations for replacement Poller accounts and triggers.
+		// Deleting it would forget them, so uninstall retains it until an
+		// operator has reconciled those obligations; the live handoff
+		// (#8243) and uninstall cleanup (#8210) may revisit this.
+		if name == forge.VarGitLabPollerGenerations {
 			return
 		}
 		if !IsGitLabRoleManagedVar(name) {
