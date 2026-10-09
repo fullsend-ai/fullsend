@@ -422,6 +422,12 @@ Status comment behavior is configured via `status_notifications` in
 > runs follow the [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) design and may
 > differ.
 
+> **Warning: not available yet.** Steps 1 to 5 need the sandbox image from
+> [#8271](https://github.com/fullsend-ai/fullsend/pull/8271) and the runner support planned in
+> [#7480](https://github.com/fullsend-ai/fullsend/issues/7480). Neither has merged. Until both do,
+> the key handling, config guard and egress limits described below do not exist. Do not use a real
+> gateway key with these steps.
+
 On the [pi](../../runtimes/pi.md) runtime, an agent can reach its model through an
 OpenAI/Anthropic-compatible inference gateway (Praxis, LiteLLM, agentgateway, ...) instead of the
 provider's own API. fullsend loads the
@@ -467,10 +473,11 @@ Replace each id with the one your gateway serves.
 
    Pass this file to `fullsend run` with `--env-file`. Never put the key in the harness YAML, under
    `env.sandbox`, or in a file the harness copies into the sandbox: the sandbox's `.env` is
-   agent-writable. The runner owns every `INFERENCE_GATEWAY_*` variable. It drops any that the
-   sandbox's `.env` sets, refuses a plugin `env` that names one, and exports only its own values.
-   The agent sees a placeholder instead of your key. Without `INFERENCE_GATEWAY_BASE_URL`, the
-   runner refuses to start a `gateway/` run.
+   agent-writable. As planned in [#7480](https://github.com/fullsend-ai/fullsend/issues/7480), the
+   runner owns every `INFERENCE_GATEWAY_*` variable. It drops any that the sandbox's `.env` sets,
+   refuses a plugin `env` that names one, and exports only its own values. The agent sees a
+   placeholder instead of your key. Without `INFERENCE_GATEWAY_BASE_URL`, the runner refuses to
+   start a `gateway/` run.
 
 2. **Declare every model in an `inference-gateway.json` file.** The sandbox runs pi with
    `PI_OFFLINE=1`, so the extension never asks the gateway for its model list (`GET /v1/models`).
@@ -523,10 +530,11 @@ Replace each id with the one your gateway serves.
 
 3. **Hand the file to the runner.** pi reads it as `/sandbox/pi-config/inference-gateway.json`. You
    cannot place it there yourself: `host_files` refuses any destination under `/sandbox/pi-config`
-   (`is reserved for the runner`), and nothing inside the sandbox may write it. Set it through the
-   config key the [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) route adds under
-   `inference:` in `.fullsend/config.yaml`. The runner seeds the file and checks that it is
-   unchanged before and after the sandbox's `.env` is sourced.
+   (`is reserved for the runner`). Set it through the config key the
+   [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) route adds under `inference:` in
+   `.fullsend/config.yaml`. The runner seeds the file and checks that it is unchanged before and
+   after the sandbox's `.env` is sourced. The directory stays writable by the agent, so this check
+   detects a change and stops the run. It does not prevent the change.
 
 4. **Allow egress to the gateway.** Add `gateway` to the harness's `providers:` list. Its profile
    lets pi's `node` binary send `POST` requests to the three API paths on the gateway host, with
@@ -556,17 +564,18 @@ The run's model line names the gateway model you selected, and the agent writes 
 passes schema validation. `metrics.json` in the run directory records the model spec you
 selected.
 
-> Not yet executed: waits on the #7480 route.
+> **Note:** Not yet executed: waits on the
+> [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) route.
 
 ### Troubleshooting the gateway
 
 | Error | Cause | Fix |
 |---|---|---|
-| The run is refused before the sandbox starts because no gateway base URL is set. Exact text: not yet executed, waits on the #7480 route | `INFERENCE_GATEWAY_BASE_URL` is missing from the runner's environment | Add it to the env file you pass with `--env-file` |
-| The `inference-gateway.json` guard stops the run. Exact text: not yet executed, waits on the #7480 route | The file names a credential source, or something in the sandbox changed it | Remove `apiKeyEnv`, `tokenFile`, `passwordEnv` and `passwordFile` from the file. If you did not change it, treat it as tampering |
+| The run is refused before the sandbox starts because no gateway base URL is set. Exact text: not yet executed, waits on the [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) route | `INFERENCE_GATEWAY_BASE_URL` is missing from the runner's environment | Add it to the env file you pass with `--env-file` |
+| The `inference-gateway.json` guard stops the run. Exact text: not yet executed, waits on the [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) route | The file names a credential source, or something in the sandbox changed it | Remove `apiKeyEnv`, `tokenFile`, `passwordEnv` and `passwordFile` from the file. If you did not change it, treat it as tampering |
 | Warning `Model "<id>" not found for provider "gateway". Using custom model id.` The run goes on with another gateway model's settings, so its requests may use the wrong API | The model is not in `inference-gateway.json`, or its entry has no `api`. Under `PI_OFFLINE=1` the gateway's own list is never read | Add the model with its `api` ([step 2](#steps)) |
 | `Model "gateway/<id>" not found. Use --list-models to see available models.` | No gateway model is configured at all | Add your models to `inference-gateway.json` ([step 2](#steps)) |
-| Egress to the gateway host is denied. Exact text: not yet executed, waits on the #7480 route. `grep DENIED <run-dir>/logs/openshell-sandbox.log` names the host | The harness does not declare the `gateway` provider, or the request went to a path or host the profile does not allow | Add `gateway` to `providers:` ([step 4](#steps)) and check the host in `INFERENCE_GATEWAY_BASE_URL` |
+| Egress to the gateway host is denied. Exact text: not yet executed, waits on the [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) route. `grep DENIED <run-dir>/logs/openshell-sandbox.log` names the host | The harness does not declare the `gateway` provider, or the request went to a path or host the profile does not allow | Add `gateway` to `providers:` ([step 4](#steps)) and check the host in `INFERENCE_GATEWAY_BASE_URL` |
 | Claude: `400 ... messages.1.output_config: Extra inputs are not permitted` | The gateway's Claude backend (for example Vertex) rejects pi's mid-conversation effort message | Set `"compat": { "supportsMidConvoEffort": false }` on that model |
 | Claude: `400 ... disallowed feature ...` naming structured output or strict tools | Your cloud project restricts this feature for partner models | Set `"compat": { "supportsStrictTools": false }` on that model |
 
