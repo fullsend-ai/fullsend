@@ -323,6 +323,7 @@ export default defineConfig({
             { text: "Vision", link: "/vision" },
             { text: "Architecture", link: "/architecture" },
             { text: "Glossary", link: "/glossary" },
+            { text: "Migrating Workloads", link: "/guides/dev/migrating-workloads" },
           ],
         },
         {
