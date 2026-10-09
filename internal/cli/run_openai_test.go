@@ -955,6 +955,135 @@ func TestRunOpenAIRefresh_GivesUpAfterRetries(t *testing.T) {
 	assert.Contains(t, buf.String(), "gave up")
 }
 
+// simulateOpenAIHostSleep shrinks the wall-clock watchdog interval and
+// replaces the refresher's wall clock with one that runs ahead of the real
+// (monotonic) clock by the returned offset, the way it does after the host
+// slept. The offset starts at zero.
+func simulateOpenAIHostSleep(t *testing.T, watchdog time.Duration) *atomic.Int64 {
+	t.Helper()
+	var slept atomic.Int64
+	prevWatchdog, prevNow := openAIRefreshWatchdog, openAIWallNowFn
+	openAIRefreshWatchdog = watchdog
+	openAIWallNowFn = func() time.Time { return time.Now().Round(0).Add(time.Duration(slept.Load())) }
+	t.Cleanup(func() { openAIRefreshWatchdog, openAIWallNowFn = prevWatchdog, prevNow })
+	return &slept
+}
+
+func TestWaitOpenAIRefresh_WallClockPastDueReleasesTheWait(t *testing.T) {
+	slept := simulateOpenAIHostSleep(t, 5*time.Millisecond)
+	dueAt := openAIWallNowFn().Add(time.Hour)
+	// The monotonic timer still has an hour to go; the wall clock says the
+	// host slept past the deadline.
+	slept.Store(int64(2 * time.Hour))
+
+	done := make(chan bool, 1)
+	go func() { done <- waitOpenAIRefresh(context.Background(), time.Hour, dueAt) }()
+	select {
+	case ok := <-done:
+		assert.True(t, ok, "a wall-clock deadline that has passed releases the wait")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watchdog did not release a wait whose wall-clock deadline had passed")
+	}
+}
+
+func TestWaitOpenAIRefresh_WatchdogDoesNotFireAheadOfTheTimer(t *testing.T) {
+	simulateOpenAIHostSleep(t, time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	// An awake host: the watchdog ticks many times before ctx ends, but the
+	// wall-clock deadline is still an hour out.
+	assert.False(t, waitOpenAIRefresh(ctx, time.Hour, openAIWallNowFn().Add(time.Hour)), "only ctx ends the wait")
+}
+
+func TestWaitOpenAIRefresh_TimerReleasesTheWait(t *testing.T) {
+	simulateOpenAIHostSleep(t, time.Hour)
+	assert.True(t, waitOpenAIRefresh(context.Background(), 10*time.Millisecond, openAIWallNowFn().Add(10*time.Millisecond)))
+}
+
+func TestWaitOpenAIRefresh_StopsOnCancel(t *testing.T) {
+	simulateOpenAIHostSleep(t, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.False(t, waitOpenAIRefresh(ctx, time.Hour, openAIWallNowFn().Add(time.Hour)))
+}
+
+func TestRunOpenAIRefresh_RefreshesAfterHostSleep(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	slept := simulateOpenAIHostSleep(t, 5*time.Millisecond)
+	argsLog, _ := fakeOpenshellRecorder(t)
+	var buf syncBuffer
+	// time.Now carries a monotonic reading, as the expiry ensureOpenAIProvider
+	// records does.
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "static", expiresAt: time.Now().Add(time.Hour)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(ctx, h, ui.New(&buf))
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	assert.NotContains(t, buf.String(), "OpenAI credential refreshed", "an awake host waits for the scheduled refresh")
+
+	slept.Store(int64(2 * time.Hour))
+	require.Eventually(t, func() bool {
+		return strings.Contains(buf.String(), "OpenAI credential refreshed for openai-abc")
+	}, 5*time.Second, 10*time.Millisecond, "the first wall-clock check after wake refreshes a credential the host slept past")
+	assert.Contains(t, strings.Join(readArgLines(t, argsLog), "\n"), "--credential-expires-at")
+}
+
+func TestRunOpenAIRefresh_HostSleepRefreshesOncePerDeadline(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	slept := simulateOpenAIHostSleep(t, 5*time.Millisecond)
+	fakeOpenshellRecorder(t)
+	t.Setenv("FULLSEND_OPENAI_AUDIENCE", "aud")
+	t.Setenv("FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "idp")
+	t.Setenv("FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "sa")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example/token")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-token")
+	t.Setenv("GITHUB_ACTIONS", "")
+	var calls int32
+	// The renewed expiry is an hour past the simulated wall clock, as the
+	// issuer's would be, so a refresher that kept its old schedule would
+	// see it as already expired and refresh again on every watchdog tick.
+	stubOpenAIExchange(t, func(context.Context, openaiwif.Config) (*openaiwif.Token, error) {
+		n := atomic.AddInt32(&calls, 1)
+		return &openaiwif.Token{Value: fmt.Sprintf("tok-refreshed-%d-abcdef", n), ExpiresAt: openAIWallNowFn().Add(time.Hour), Scope: "api.model.request"}, nil
+	})
+	var buf syncBuffer
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "wif", expiresAt: time.Now().Add(time.Hour)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(ctx, h, ui.New(&buf))
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	slept.Store(int64(2 * time.Hour))
+	require.Eventually(t, func() bool { return atomic.LoadInt32(&calls) >= 1 }, 5*time.Second, 5*time.Millisecond, "the first wall-clock check after wake refreshes")
+
+	// Many watchdog ticks later the renewed deadline is still an hour out on
+	// the wall clock, so no second refresh happens.
+	time.Sleep(200 * time.Millisecond)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "one refresh per deadline, not one per watchdog tick")
+
+	// A second sleep past the renewed deadline refreshes again.
+	slept.Store(int64(4 * time.Hour))
+	require.Eventually(t, func() bool { return atomic.LoadInt32(&calls) >= 2 }, 5*time.Second, 5*time.Millisecond, "sleeping past the renewed deadline refreshes again")
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, int32(2), atomic.LoadInt32(&calls), "the second deadline also refreshes once")
+}
+
 func TestStartOpenAIRefreshers_NoHandles(t *testing.T) {
 	stops := startOpenAIRefreshers(nil, ui.New(io.Discard))
 	assert.Empty(t, stops, "no handles means no stop funcs")
