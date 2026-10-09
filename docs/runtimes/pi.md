@@ -57,6 +57,12 @@ actually called.
 > has no live run yet; `features/runtime/pi-openai.feature` stays gated on `runtime-pi-openai`
 > until an OpenAI organization is mapped to the pool repositories.
 
+> **Any model through an inference gateway (experimental, local runs only).** A `gateway/<model>`
+> spec sends the model call through an OpenAI/Anthropic-compatible gateway (Praxis, LiteLLM,
+> agentgateway, ...) with the [pi-inference-gateway](https://github.com/fullsend-ai/pi-inference-gateway)
+> extension, which the harness ships as a plugin. Setup and troubleshooting are in [Running agents
+> locally › Using an inference gateway](../guides/user/running-agents-locally.md#using-an-inference-gateway-experimental).
+
 Harness `model:` and `agents:` entry `model:` values accept the `provider/id` form directly
 (`xai-vertex/xai/grok-4.6`); a harness can also select a provider with a bare `model:` plus
 `FULLSEND_PI_PROVIDER`.
