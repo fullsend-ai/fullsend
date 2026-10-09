@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
@@ -588,4 +591,233 @@ func TestCodexRun_IgnoresATamperedManifestModel(t *testing.T) {
 	log := readFileString(t, logPath)
 	assert.Contains(t, log, "--model 'gpt-5.6-luna'")
 	assert.NotContains(t, log, "gpt-9-tampered")
+}
+
+func TestCodexChildTranscriptName(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "review-sub1-correctness.jsonl", codexChildTranscriptName("review", 1, "correctness"))
+	assert.Equal(t, "review-sub2-style-conventions.jsonl", codexChildTranscriptName("review", 2, "style-conventions"),
+		"a hyphenated role keeps its hyphens")
+	assert.Equal(t, "retro-sub12-generic.jsonl", codexChildTranscriptName("retro", 12, codexGenericRole),
+		"no zero padding")
+}
+
+// TestCodexReadSessionMeta pins the two fields ExtractTranscripts names a
+// child by. The child and root lines are from a real run, trimmed to the
+// keys that matter plus `source`, whose type differs between root (a
+// string) and child (an object) and must not trip the decoder.
+func TestCodexReadSessionMeta(t *testing.T) {
+	t.Parallel()
+
+	const root = "01a0eeb4-5338-7fe0-9d39-3c882b63090a"
+	const kid = "01a0eeb4-73f8-7a52-95cc-0116d80bf9f9"
+	childLine := `{"type":"session_meta","payload":{"session_id":"` + root + `","id":"` + kid + `",` +
+		`"parent_thread_id":"` + root + `","source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + root + `",` +
+		`"depth":1,"agent_path":null,"agent_nickname":"Faraday","agent_role":"probe_ok"}}},` +
+		`"thread_source":"subagent","agent_nickname":"Faraday","agent_role":"probe_ok","multi_agent_version":"v1"},` +
+		`"timestamp":"2026-09-29T19:46:38.712Z","ordinal":0}`
+	rootLine := `{"type":"session_meta","payload":{"session_id":"` + root + `","id":"` + root + `",` +
+		`"source":"exec","thread_source":"user"},"timestamp":"2026-09-29T19:46:30.334Z","ordinal":0}`
+
+	tests := []struct {
+		name    string
+		body    string
+		want    codexSessionMeta
+		wantErr string
+	}{
+		{name: "a child names its parent and role", body: childLine + "\n",
+			want: codexSessionMeta{ID: kid, ParentThreadID: root, AgentRole: "probe_ok"}},
+		{name: "the root has no parent", body: rootLine + "\n",
+			want: codexSessionMeta{ID: root}},
+		{name: "a null role decodes to empty",
+			body: `{"type":"session_meta","payload":{"id":"c","parent_thread_id":"` + root + `","agent_role":null}}` + "\n",
+			want: codexSessionMeta{ID: "c", ParentThreadID: root}},
+		{name: "a leading blank line is skipped", body: "\n" + rootLine + "\n",
+			want: codexSessionMeta{ID: root}},
+		{name: "another envelope first is an error", body: `{"type":"response_item","payload":{}}` + "\n" + childLine + "\n",
+			wantErr: "not session_meta"},
+		{name: "not JSON is an error", body: "not json at all\n", wantErr: "not JSON"},
+		{name: "an empty file is an error", body: "", wantErr: "no session_meta line"},
+		{name: "an overlong first line is an error", body: strings.Repeat("x", maxTranscriptLineSize+1) + "\n",
+			wantErr: "cannot read the first line"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "rollout.jsonl")
+			require.NoError(t, os.WriteFile(path, []byte(tt.body), 0o644))
+
+			got, err := codexReadSessionMeta(path)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	_, err := codexReadSessionMeta(filepath.Join(t.TempDir(), "absent.jsonl"))
+	assert.Error(t, err, "a missing file is an error, not an empty meta")
+}
+
+// codexFakeRollout is one entry the fake below serves: the remote path `find`
+// prints and the body `download` writes for it.
+type codexFakeRollout struct {
+	remote string
+	body   string
+}
+
+// fakeOpenshellCodexRollouts installs a fake "openshell" whose `find` lists
+// the given remote paths in the given order and whose `download` serves each
+// path's own body (fakeOpenshellCodex serves one body for every path). Bodies
+// are copied from files so no body byte goes through shell quoting.
+func fakeOpenshellCodexRollouts(t *testing.T, logPath string, rollouts []codexFakeRollout) {
+	t.Helper()
+	bodyDir := t.TempDir()
+	var finds, cases strings.Builder
+	for i, ro := range rollouts {
+		bodyPath := filepath.Join(bodyDir, fmt.Sprintf("body-%d", i))
+		require.NoError(t, os.WriteFile(bodyPath, []byte(ro.body), 0o644))
+		finds.WriteString(" '" + ro.remote + "'")
+		cases.WriteString("    *'" + filepath.Base(ro.remote) + "') cp '" + bodyPath + `' "$5/$(basename "$4")" ;;` + "\n")
+	}
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+echo "$@" >> '` + logPath + `'
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    find\ *) printf '%s\n'` + finds.String() + `; exit 0 ;;
+  esac
+  exit 0
+fi
+if [ "$2" = "download" ]; then
+  mkdir -p "$5"
+  case "$4" in
+` + cases.String() + `  esac
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestCodexExtractTranscripts_NamesChildrenByRole covers the #6970 naming: a
+// rollout whose session_meta names a parent thread is a child and is saved
+// as <agent>-sub<seq>-<role>.jsonl; the root keeps <agent>-<basename>.
+func TestCodexExtractTranscripts_NamesChildrenByRole(t *testing.T) {
+	r := CodexRuntime{}
+	day := r.codexSessionsDir() + "/2026/09/29/"
+	const root = "01a0eeb4-5338-7fe0-9d39-3c882b63090a"
+	meta := func(payload string) string {
+		return `{"type":"session_meta","payload":{` + payload + `}}` + "\n"
+	}
+	// A child rollout: the first line names the parent and the role (roleJSON
+	// is a JSON value, so null is a null role), followed by tool output that
+	// carries a secret, to show a child goes through the same redaction.
+	child := func(id, roleJSON string) string {
+		return meta(`"id":"`+id+`","parent_thread_id":"`+root+`","agent_role":`+roleJSON) +
+			`{"type":"response_item","payload":{"output":"token ` + codexTestSecret + `"}}` + "\n"
+	}
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	require.True(t, config.ValidSubagentKey("sk-abcdefghijklmnopqrstuvwxyz"),
+		"the credential-shaped role passes the key check, so only the redactor turns it generic")
+	// Listed out of basename order on purpose: `find` prints directory
+	// order, and <seq> must follow the rollout's start time, which leads
+	// the basename.
+	fakeOpenshellCodexRollouts(t, logPath, []codexFakeRollout{
+		{day + "rollout-2026-09-29T15-46-44-0004.jsonl", child("0004", `"../correctness"`)}, // invalid role
+		{day + "rollout-2026-09-29T15-46-30-" + root + ".jsonl", meta(`"id":"` + root + `"`)},
+		{day + "rollout-2026-09-29T15-46-42-0003.jsonl", child("0003", `null`)}, // null role
+		{day + "rollout-2026-09-29T15-46-38-0001.jsonl", child("0001", `"correctness"`)},
+		{day + "rollout-2026-09-29T15-46-40-0002.jsonl", child("0002", `"correctness"`)},
+		// A first line that is a rollout envelope but not a session_meta: the
+		// file is kept under its own basename; the session_meta on line 2 does
+		// not make it a child.
+		{day + "rollout-2026-09-29T15-46-46-0005.jsonl", `{"type":"response_item","payload":{}}` + "\n" + child("0005", `"security"`)},
+		// Not a rollout at all: discarded.
+		{day + "rollout-2026-09-29T15-46-48-0006.jsonl", "not a rollout\n"},
+		{day + "rollout-2026-09-29T15-46-50-0007.jsonl", child("0007", `"default"`)},                       // reserved name
+		{day + "rollout-2026-09-29T15-46-52-0008.jsonl", child("0008", `"sk-abcdefghijklmnopqrstuvwxyz"`)}, // credential-shaped
+		// A crafted basename equal to a child name, listed after that child
+		// was saved: skipped, so the saved transcript is not truncated.
+		{day + "sub1-correctness.jsonl", meta(`"id":"planted"`)},
+	})
+
+	outDir := filepath.Join(t.TempDir(), "transcripts")
+	require.NoError(t, r.ExtractTranscripts("sb", "review", outDir))
+
+	entries, err := os.ReadDir(outDir)
+	require.NoError(t, err)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	assert.ElementsMatch(t, []string{
+		"review-rollout-2026-09-29T15-46-30-" + root + ".jsonl",
+		"review-sub1-correctness.jsonl",
+		"review-sub2-correctness.jsonl",
+		"review-sub3-generic.jsonl",
+		"review-sub4-generic.jsonl",
+		"review-rollout-2026-09-29T15-46-46-0005.jsonl",
+		"review-sub5-generic.jsonl",
+		"review-sub6-generic.jsonl",
+	}, names, "the root keeps its basename; children are numbered in basename order and named by their validated role, generic otherwise")
+	assert.Equal(t, 9, strings.Count(readFileString(t, logPath), " download "),
+		"every listed rollout is fetched, except one whose name was already saved; naming happens after validation, not before the download")
+
+	got, err := os.ReadFile(filepath.Join(outDir, "review-sub1-correctness.jsonl"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(got), codexTestSecret, "a child rollout is redacted like the root's")
+	assert.Contains(t, string(got), `"parent_thread_id"`, "the whole rollout is saved, not only renamed")
+	assert.Contains(t, string(got), `"id":"0001"`, "sub1 is the earliest child")
+}
+
+// TestCodexExtractTranscripts_ChildNameRejected covers a child name the
+// output root refuses: the child is skipped and nothing in outputDir changes.
+func TestCodexExtractTranscripts_ChildNameRejected(t *testing.T) {
+	r := CodexRuntime{}
+	day := r.codexSessionsDir() + "/2026/09/29/"
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	fakeOpenshellCodexRollouts(t, logPath, []codexFakeRollout{
+		{day + "rollout-2026-09-29T15-46-38-0001.jsonl",
+			`{"type":"session_meta","payload":{"id":"0001","parent_thread_id":"root","agent_role":"correctness"}}` + "\n"},
+	})
+	outDir := filepath.Join(t.TempDir(), "transcripts")
+	blocker := filepath.Join(outDir, "review-sub1-correctness.jsonl")
+	require.NoError(t, os.MkdirAll(blocker, 0o755))
+
+	require.NoError(t, r.ExtractTranscripts("sb", "review", outDir))
+
+	entries, err := os.ReadDir(outDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.True(t, entries[0].IsDir(), "the directory at the child name is untouched and nothing else was saved")
+}
+
+// TestCodexExtractTranscripts_DownloadLandingNameSaved covers the download's
+// landing path: a file lands at outputDir/<remote basename> before it is
+// renamed to the staging name, so a remote basename equal to a saved name
+// must be skipped before the download, or the saved transcript is lost.
+func TestCodexExtractTranscripts_DownloadLandingNameSaved(t *testing.T) {
+	r := CodexRuntime{}
+	day := r.codexSessionsDir() + "/2026/09/29/"
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	fakeOpenshellCodexRollouts(t, logPath, []codexFakeRollout{
+		{day + "rollout-2026-09-29T15-46-38-0001.jsonl",
+			`{"type":"session_meta","payload":{"id":"0001","parent_thread_id":"root","agent_role":"correctness"}}` + "\n"},
+		// Sorts after the rollout, so it is listed once the child is saved.
+		{day + "triage-sub1-correctness.jsonl", "not a rollout\n"},
+	})
+	outDir := filepath.Join(t.TempDir(), "transcripts")
+	require.NoError(t, r.ExtractTranscripts("sb", "triage", outDir))
+
+	got, err := os.ReadFile(filepath.Join(outDir, "triage-sub1-correctness.jsonl"))
+	require.NoError(t, err, "the saved child survives a later file whose basename is its name")
+	assert.Contains(t, string(got), `"id":"0001"`)
+	assert.Equal(t, 1, strings.Count(readFileString(t, logPath), " download "), "the colliding file is skipped before the download")
 }
