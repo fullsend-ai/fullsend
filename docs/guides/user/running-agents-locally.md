@@ -440,27 +440,31 @@ The steps edit the agents clone from [Clone repositories](#clone-repositories)
 (`/tmp/fullsend-agents/`) and use `https://gateway.example.com` as the gateway.
 
 1. **Add the extension to the harness repository.** Download the release, check it, and keep only
-   the code:
+   the code. The block stops before extracting anything if the checksum does not match:
 
    ```bash
-   cd /tmp/fullsend-agents
-   ver=0.1.0
-   curl -fsSL -o /tmp/pi-inference-gateway.tgz \
-     "https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v$ver.tar.gz"
-   echo "db5a172d8621eff1be244c4cfc3401c4d9198a997f2c32b04d551fa518cb3df3  /tmp/pi-inference-gateway.tgz" \
-     | shasum -a 256 -c -
-   mkdir -p extensions/inference-gateway
-   tar xzf /tmp/pi-inference-gateway.tgz -C extensions/inference-gateway --strip-components=1 \
-     "pi-inference-gateway-$ver/package.json" "pi-inference-gateway-$ver/LICENSE" \
-     "pi-inference-gateway-$ver/src"
-   rm extensions/inference-gateway/src/*.test.ts extensions/inference-gateway/src/test-fixtures.ts
+   (
+     set -eu
+     ver=0.1.0
+     dest=/tmp/fullsend-agents/extensions/inference-gateway
+     cd "$(mktemp -d)"
+     curl -fsSL -o pi-inference-gateway.tgz \
+       "https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v$ver.tar.gz"
+     echo "db5a172d8621eff1be244c4cfc3401c4d9198a997f2c32b04d551fa518cb3df3  pi-inference-gateway.tgz" \
+       | shasum -a 256 -c -
+     mkdir -p "$dest"
+     tar xzf pi-inference-gateway.tgz -C "$dest" --strip-components=1 \
+       "pi-inference-gateway-$ver/package.json" "pi-inference-gateway-$ver/LICENSE" \
+       "pi-inference-gateway-$ver/src"
+     rm "$dest"/src/*.test.ts "$dest"/src/test-fixtures.ts
+   )
    ```
 
    ```text
-   /tmp/pi-inference-gateway.tgz: OK
+   pi-inference-gateway.tgz: OK
    ```
 
-2. **Add a provider for the key** as `providers/gateway.yaml`:
+2. **Add a provider for the key** as `/tmp/fullsend-agents/providers/gateway.yaml`:
 
    ```yaml
    ---
@@ -470,7 +474,7 @@ The steps edit the agents clone from [Clone repositories](#clone-repositories)
      INFERENCE_GATEWAY_API_KEY: "${INFERENCE_GATEWAY_API_KEY}"
    ```
 
-3. **Allow the gateway host** with `profiles/gateway-inference.yaml`:
+3. **Allow the gateway host** with `/tmp/fullsend-agents/profiles/gateway-inference.yaml`:
 
    ```yaml
    ---
@@ -508,7 +512,7 @@ The steps edit the agents clone from [Clone repositories](#clone-repositories)
    The sandbox only ever holds a placeholder for the key. OpenShell puts the real key on requests
    to this host and blocks the agent from reaching any other host with it.
 
-4. **Wire them into the harness.** In `harness/triage.yaml`, add the provider, the profile and the
+4. **Wire them into the harness.** In `/tmp/fullsend-agents/harness/triage.yaml`, add the provider, the profile and the
    plugin:
 
    ```yaml
@@ -573,8 +577,9 @@ The same setup passed with an open-weight model on Chat Completions and with `cl
   sandbox yet ([pi-inference-gateway#15](https://github.com/fullsend-ai/pi-inference-gateway/issues/15)).
   A model that needs one of them fails, and open-weight models run with pi's default limits, which
   may exceed what your deployment allows on long runs.
-- **The agent can edit `.env`**, so it can change the base URL or the model list for later
-  iterations. It cannot take the key elsewhere: the key is only sent to the profile's host.
+- **The base URL and model list come from the harness.** The runner exports the plugin's `env`
+  after the agent-writable `.env`, on every launch, so the agent cannot change them. The key is only
+  sent to the profile's host.
 
 ### Troubleshooting the gateway
 
