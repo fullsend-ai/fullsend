@@ -1066,7 +1066,15 @@ func reconcileGitLabTriggerSafety(ctx context.Context, client forge.Client, owne
 // nothing — it never provisions. Callers use it for repositories whose
 // installation or convergence failed, where an existing credential must not
 // outlive a weakened restriction but provisioning must not proceed.
-func ReconcileGitLabWebhookSafety(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) (GitLabWebhookResult, error) {
+//
+// It runs under the project lease (see LockGitLabProject) and fails closed,
+// changing nothing, when the lease cannot be taken.
+func ReconcileGitLabWebhookSafety(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) (_ GitLabWebhookResult, err error) {
+	release, lockErr := LockGitLabProject(ctx, client, owner, repo, dryRun)
+	if lockErr != nil {
+		return GitLabWebhookResult{Action: "deferred"}, lockErr
+	}
+	defer release(&err)
 	project, err := client.GetRepo(ctx, owner, repo)
 	if err != nil {
 		return failClosedOnProjectLookup(ctx, client, owner, repo, dryRun, err)
@@ -1122,7 +1130,8 @@ func revokeGitLabWebhookFastPath(ctx context.Context, client forge.Client, owner
 	if dryRun {
 		return []string{"Would revoke any Fullsend-managed pipeline trigger token and delete any Fullsend-owned project webhook"}, nil
 	}
-	td, err := TeardownGitLabWebhookFastPath(ctx, client, owner, repo)
+	// Every caller already holds the project lease.
+	td, err := TeardownGitLabWebhookFastPathLocked(ctx, client, owner, repo)
 	var details []string
 	if td.TriggersRevoked > 0 {
 		details = append(details, fmt.Sprintf("Revoked %d Fullsend-managed pipeline trigger token(s)", td.TriggersRevoked))
@@ -1574,10 +1583,23 @@ func generateGitLabWebhookSecret() (string, error) {
 // Nothing is changed while a readiness gate is unmet (Action
 // "deferred"); see gitlabWebhookReadiness. dryRun performs the same
 // probes and gates and reports the planned changes without making them.
-func EnsureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseURL, owner, repo string, rotate, dryRun bool) (GitLabWebhookResult, error) {
+//
+// The whole transaction runs under the project lease (see
+// LockGitLabProject), so installers in other processes cannot interleave
+// inventory, minting, publication, or revocation on the same project. When
+// the lease cannot be taken nothing is changed (Action "deferred") and the
+// error is returned.
+func EnsureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseURL, owner, repo string, rotate, dryRun bool) (res GitLabWebhookResult, err error) {
+	release, lockErr := LockGitLabProject(ctx, client, owner, repo, dryRun)
+	if lockErr != nil {
+		return GitLabWebhookResult{Action: "deferred"}, lockErr
+	}
 	red := &credentialRedactor{}
-	res, err := ensureGitLabWebhookFastPath(ctx, client, baseURL, owner, repo, rotate, dryRun, red)
-	return res, red.redact(err)
+	defer func() {
+		err = red.redact(err)
+		release(&err)
+	}()
+	return ensureGitLabWebhookFastPath(ctx, client, baseURL, owner, repo, rotate, dryRun, red)
 }
 
 func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseURL, owner, repo string, rotate, dryRun bool, red *credentialRedactor) (GitLabWebhookResult, error) {
@@ -1949,7 +1971,26 @@ func triggerURLToken(hookURL string) string {
 // stored token. Deleting an already-absent hook or token is not an error,
 // so a retry after a partial failure converges. Errors never include
 // credential values.
-func TeardownGitLabWebhookFastPath(ctx context.Context, client forge.Client, owner, repo string) (GitLabWebhookTeardownResult, error) {
+//
+// The teardown runs under the project lease that serializes installers, so
+// an installer cannot publish a replacement hook and trigger between the
+// resource discovery and deletion below. Callers that already hold the lease
+// (for example an uninstall that also cleans up role credentials) use
+// TeardownGitLabWebhookFastPathLocked instead.
+func TeardownGitLabWebhookFastPath(ctx context.Context, client forge.Client, owner, repo string) (_ GitLabWebhookTeardownResult, err error) {
+	release, lockErr := LockGitLabProject(ctx, client, owner, repo, false)
+	if lockErr != nil {
+		return GitLabWebhookTeardownResult{}, lockErr
+	}
+	defer release(&err)
+	return TeardownGitLabWebhookFastPathLocked(ctx, client, owner, repo)
+}
+
+// TeardownGitLabWebhookFastPathLocked is TeardownGitLabWebhookFastPath for a
+// caller that already holds the project lease from LockGitLabProject. The
+// lease is not reentrant, so calling the unlocked variant while holding it
+// would wait on itself.
+func TeardownGitLabWebhookFastPathLocked(ctx context.Context, client forge.Client, owner, repo string) (GitLabWebhookTeardownResult, error) {
 	var res GitLabWebhookTeardownResult
 	red := &credentialRedactor{}
 	var errs []error

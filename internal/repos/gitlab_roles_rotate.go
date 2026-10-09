@@ -163,14 +163,16 @@ type rotationRoleState struct {
 // the unused replacement) and leaves the last known-good secret in
 // place. Concurrent callers for the same role are serialized and
 // idempotent within gitlabroles.IdempotentRotationWindow.
-func RotateGitLabRoleCredentials(ctx context.Context, cfg RoleRotateConfig) (RoleRotateResult, error) {
+func RotateGitLabRoleCredentials(ctx context.Context, cfg RoleRotateConfig) (_ RoleRotateResult, err error) {
 	result := RoleRotateResult{DryRun: cfg.DryRun}
 	if cfg.Client == nil {
 		return result, fmt.Errorf("GitLab role rotation requires a forge client")
 	}
-	operationLock := gitlabRoleOperationLock(cfg.Owner, cfg.Repo)
-	operationLock.Lock()
-	defer operationLock.Unlock()
+	release, lockErr := LockGitLabProject(ctx, cfg.Client, cfg.Owner, cfg.Repo, cfg.DryRun)
+	if lockErr != nil {
+		return result, lockErr
+	}
+	defer release(&err)
 	reg := cfg.Registry
 	if len(reg.Registrations()) == 0 {
 		reg = gitlabroles.BuiltinRegistry()

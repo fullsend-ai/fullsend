@@ -353,14 +353,40 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	// dispatcher is being removed, and revokes the separately minted
 	// trigger token. A failure stops uninstall here so the manifest entry
 	// is retained and a retry repeats the (idempotent) teardown.
+	//
+	// The project lease serializes this whole resource transaction (webhook
+	// teardown through the final GitLab deletions) against concurrent
+	// installers, so none can publish a replacement hook, trigger, or role
+	// credential between discovery and deletion and leave it behind after a
+	// successful uninstall. A lease that cannot be taken stops uninstall
+	// before anything is removed. The lease is not reentrant, so the steps
+	// below call the already-locked helpers.
 	var triggersRevoked int
+	unlockProject := func() error { return nil }
 	if cfg.Forge == ForgeGitLab {
+		release, lockErr := LockGitLabProject(ctx, client, owner, repo, false)
+		if lockErr != nil {
+			result.Error = fmt.Errorf("serializing uninstall with other installers: %w", lockErr)
+			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", lockErr))
+			return result
+		}
+		var leaseErr error
+		held := true
+		unlockProject = func() error {
+			if held {
+				held = false
+				release(&leaseErr)
+			}
+			return leaseErr
+		}
+		defer func() { _ = unlockProject() }()
+
 		progress(fullName, "cleanup", "Removing GitLab webhook fast-path")
-		teardown, teardownErr := TeardownGitLabWebhookFastPath(ctx, client, owner, repo)
+		teardown, teardownErr := TeardownGitLabWebhookFastPathLocked(ctx, client, owner, repo)
 		triggersRevoked = teardown.TriggersRevoked
 		if teardownErr != nil {
 			result.TokensRevoked = triggersRevoked
-			result.Error = fmt.Errorf("removing webhook fast-path: %w", teardownErr)
+			result.Error = errors.Join(fmt.Errorf("removing webhook fast-path: %w", teardownErr), unlockProject())
 			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", teardownErr))
 			return result
 		}
@@ -368,7 +394,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 
 	progress(fullName, "workflow", "Removing scaffold files")
 	if err := commitScaffold(ctx, owner, repo, files, direct, true); err != nil {
-		result.Error = fmt.Errorf("removing scaffold files: %w", err)
+		result.Error = errors.Join(fmt.Errorf("removing scaffold files: %w", err), unlockProject())
 		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
 		return result
 	}
@@ -379,7 +405,10 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	var identityErr error
 	if cfg.Forge == ForgeGitLab {
 		progress(fullName, "cleanup", "Removing GitLab role identity state")
-		cleanup, cleanupErr := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
+		// The lease taken before webhook teardown is still held, and stays
+		// held through the remaining variable, webhook credential secret,
+		// and poll-state branch deletions below.
+		cleanup, cleanupErr := CleanupGitLabRoleIdentityLocked(ctx, GitLabRoleCleanupConfig{
 			Owner: owner, Repo: repo, Client: client, Tokens: tokens,
 		})
 		result.TokensRevoked = cleanup.TokensRevoked + triggersRevoked
@@ -441,7 +470,9 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		branchErr = deleteGitLabPollStateBranches(ctx, client, owner, repo)
 	}
 
-	if joined := errors.Join(identityErr, varErr, secretErr, branchErr); joined != nil {
+	// Release the project lease only after every GitLab resource deletion;
+	// a failed release is reported with the cleanup result.
+	if joined := errors.Join(identityErr, varErr, secretErr, branchErr, unlockProject()); joined != nil {
 		result.Error = joined
 		progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", joined))
 		return result
