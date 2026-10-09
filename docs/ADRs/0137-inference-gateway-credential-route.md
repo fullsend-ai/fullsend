@@ -106,7 +106,7 @@ The route is configured by one `inference.gateway` block in the committed
 inference:
   gateway:
     url: https://gateway.example.com
-    audience: https://gateway.example.com
+    audience: fullsend-inference
     models:
       gpt-6-luna: { api: openai-responses }
       claude-haiku-4-5: { api: anthropic-messages }
@@ -114,8 +114,12 @@ inference:
 ```
 
 - **Fields.** `url` is https only; loopback is allowed only under test.
-  `audience` is the OIDC audience the runner requests, and the token is valid
-  only at the gateway. There is no `providers` field: for pi, the `gateway/`
+  `audience` is the `aud` value the runner requests and the gateway requires.
+  It is a string the two agree on, not necessarily the URL. A stable,
+  purpose-specific value lets `url` change (a custom domain, a load balancer,
+  another region) without reconfiguring the gateway, and keeps the token from
+  being accepted by another service on the same host that uses its own URL as
+  audience. There is no `providers` field: for pi, the `gateway/`
   model prefix opts a model into this route. A field for other runtimes comes
   with their own decisions.
 - **The model list takes exactly one of two forms.** Setting both is an error;
