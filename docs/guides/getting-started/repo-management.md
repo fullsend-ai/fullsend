@@ -435,6 +435,21 @@ Install a subset of agent roles (defaults to
 fullsend repos install -f repos.yaml --roles triage,coder,review
 ```
 
+For repositories that enforce DCO, set `signoff: true` under `defaults`,
+a forge section, or a repo entry, or pass `--signoff`. Install then adds
+a `Signed-off-by` trailer for the authenticated installing user to every
+scaffold commit, on GitHub and GitLab, whether delivered directly or by
+PR/MR. A repo entry overrides its forge section, which overrides
+`defaults`, and an explicit `false` disables an inherited `true`.
+`--signoff` or `--signoff=false` overrides the manifest for that run only.
+Install fails before committing anything if the token's user identity
+cannot be resolved. See
+[DCO sign-off](../../cli/repos.md#dco-sign-off).
+
+```bash
+fullsend repos install -f repos.yaml --signoff
+```
+
 ## Day-2 operations
 
 ### Checking installation status

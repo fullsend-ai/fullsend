@@ -149,7 +149,11 @@ type PlatformConfig struct {
 	// Inference holds the forge-wide inference authentication selection,
 	// overriding defaults.inference and overridden by repository entries.
 	Inference InferenceSettings `yaml:"inference,omitempty"`
-	Repos     []RepoEntry       `yaml:"repos"`
+	// Signoff, when non-nil, enables or disables a Signed-off-by trailer
+	// on scaffold commits for every repository in this forge section,
+	// overriding defaults.signoff and overridden by repository entries.
+	Signoff *bool       `yaml:"signoff,omitempty"`
+	Repos   []RepoEntry `yaml:"repos"`
 }
 
 // ConfigBase is the nested config_base object in repos.yaml. Source is
@@ -203,6 +207,10 @@ type RepoEntry struct {
 	// Vendor overrides the default vendor setting for this repo.
 	// nil inherits defaults.vendor; non-nil overrides it.
 	Vendor *bool `yaml:"vendor,omitempty"`
+	// Signoff overrides the forge-section and defaults signoff setting
+	// for this repository. nil inherits; an explicit false disables an
+	// inherited true.
+	Signoff *bool `yaml:"signoff,omitempty"`
 	// ConfigBase configures the configuration preset written as
 	// .fullsend/config.base.yaml. Empty Source inherits
 	// defaults.config_base; source "none" disables inheritance. SHA256
@@ -229,6 +237,10 @@ type DefaultsConfig struct {
 	// Vendor, when true, vendors the fullsend binary and content into
 	// each repo so CI does not need network access to fetch them.
 	Vendor *bool `yaml:"vendor,omitempty"`
+	// Signoff, when true, adds a Signed-off-by trailer for the
+	// authenticated installing user to every scaffold commit created by
+	// repos install. Forge sections and repository entries override it.
+	Signoff *bool `yaml:"signoff,omitempty"`
 	// ConfigBase is the default configuration preset, written as
 	// .fullsend/config.base.yaml. Empty Source disables the default;
 	// source "none" disables inheritance for entries that reference it.
@@ -283,6 +295,10 @@ type ResolvedConfig struct {
 	// Vendor is true when the fullsend binary and content should be
 	// vendored into the repo for offline CI.
 	Vendor bool
+	// Signoff is true when scaffold commits for this repository carry a
+	// Signed-off-by trailer for the authenticated installing user
+	// (entry, then forge section, then defaults; default false).
+	Signoff bool
 	// Config is the resolved preset source; empty means no preset is
 	// declared and an existing base file is preserved without comparison.
 	Config string
@@ -1101,6 +1117,13 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 	cfg.InferenceAuth = firstNonEmpty(entry.Inference.Auth, platform.Inference.Auth, m.Defaults.Inference.Auth)
 	// Vendor: per-repo *bool overrides defaults *bool; default is false.
 	cfg.Vendor = resolveBoolField(entry.Vendor, m.Defaults.Vendor, false)
+	// Signoff: entry, then forge section, then defaults; default false.
+	// An explicit false at a narrower level overrides an inherited true.
+	inheritedSignoff := platform.Signoff
+	if inheritedSignoff == nil {
+		inheritedSignoff = m.Defaults.Signoff
+	}
+	cfg.Signoff = resolveBoolField(entry.Signoff, inheritedSignoff, false)
 	// ConfigBase: per-repo overrides defaults; source "none" disables
 	// the preset. A resolved empty source drops the hash so callers do
 	// not validate a digest against an unspecified document. configSource()
@@ -1278,38 +1301,80 @@ func platformEntriesMatchFilter(cfg *PlatformConfig, filter []string) (bool, err
 	if cfg == nil || len(cfg.Repos) == 0 {
 		return false, nil
 	}
-	if len(filter) == 0 {
-		return true, nil
-	}
 	for _, e := range cfg.Repos {
-		entryIsGlob := isGlob(e.Name)
-		for _, pattern := range filter {
-			ok, err := matchesPattern(pattern, e.Name)
-			if err != nil {
-				return false, fmt.Errorf("matching filter %q against manifest entry %q: %w", pattern, e.Name, err)
-			}
-			if ok {
-				return true, nil
-			}
-			if !entryIsGlob {
-				continue
-			}
-			if isGlob(pattern) {
-				// Both sides are globs: conservative match (see doc comment).
-				return true, nil
-			}
-			// A glob manifest entry ("acme/*") counts as selected when the
-			// filter names a concrete repo that would expand from it.
-			ok, err = matchesPattern(e.Name, pattern)
-			if err != nil {
-				return false, fmt.Errorf("matching manifest entry %q against filter %q: %w", e.Name, pattern, err)
-			}
-			if ok {
-				return true, nil
-			}
+		ok, err := entryMatchesFilter(e, filter)
+		if err != nil || ok {
+			return ok, err
 		}
 	}
 	return false, nil
+}
+
+// entryMatchesFilter reports whether a single manifest entry is selected
+// by filter, using the conservative glob semantics described on
+// platformEntriesMatchFilter. An empty filter selects every entry.
+func entryMatchesFilter(e RepoEntry, filter []string) (bool, error) {
+	if len(filter) == 0 {
+		return true, nil
+	}
+	entryIsGlob := isGlob(e.Name)
+	for _, pattern := range filter {
+		ok, err := matchesPattern(pattern, e.Name)
+		if err != nil {
+			return false, fmt.Errorf("matching filter %q against manifest entry %q: %w", pattern, e.Name, err)
+		}
+		if ok {
+			return true, nil
+		}
+		if !entryIsGlob {
+			continue
+		}
+		if isGlob(pattern) {
+			// Both sides are globs: conservative match (see doc comment).
+			return true, nil
+		}
+		// A glob manifest entry ("acme/*") counts as selected when the
+		// filter names a concrete repo that would expand from it.
+		ok, err = matchesPattern(e.Name, pattern)
+		if err != nil {
+			return false, fmt.Errorf("matching manifest entry %q against filter %q: %w", e.Name, pattern, err)
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// SignoffForgesFor returns the forges (in DistinctForgesFor order) that
+// have at least one manifest entry selected by filter whose resolved
+// signoff setting is true. Callers use it to resolve the installing
+// user's identity once per forge before any scaffold commit is made.
+// Glob/filter matching is conservative, so a forge may be reported when
+// no concrete repository it expands to ends up needing a trailer.
+func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
+	var forges []string
+	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
+		platform := m.PlatformFor(forgeName)
+		if platform == nil {
+			continue
+		}
+		for _, e := range platform.Repos {
+			ok, err := entryMatchesFilter(e, filter)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
+			owner, repo, _ := strings.Cut(e.Name, "/")
+			if m.ResolveConfigForEntry(owner, repo, forgeName, e).Signoff {
+				forges = append(forges, forgeName)
+				break
+			}
+		}
+	}
+	return forges, nil
 }
 
 // HasForge reports whether any repo in the manifest resolves to the

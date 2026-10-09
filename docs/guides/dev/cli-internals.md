@@ -70,6 +70,7 @@ fullsend
 │   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
 │   │   ├── --inference-auth <method>        #   vertex-wif, openai-api-key or openai-wif (GitHub only); persisted as inference.auth on each selected manifest entry (a repo covered only by a glob gets its own copied entry); never changes defaults or forge sections
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
+│   │   ├── --signoff                        #   Signed-off-by trailer on scaffold commits; overrides manifest signoff for this run
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
 │   │   ├── --gitlab-role-token role=token   #   Administrator-provided GitLab role PAT (repeatable)
