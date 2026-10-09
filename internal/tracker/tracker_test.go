@@ -409,3 +409,15 @@ func TestForgeClient_AuthenticatedUser(t *testing.T) {
 		t.Fatal("AuthenticatedUser() must return the forge error")
 	}
 }
+
+func TestIsNotSupported(t *testing.T) {
+	if !IsNotSupported(ErrNotSupported) {
+		t.Error("IsNotSupported(ErrNotSupported) = false, want true")
+	}
+	if !IsNotSupported(errors.Join(errors.New("wrapped"), ErrNotSupported)) {
+		t.Error("IsNotSupported must see through wrapped errors")
+	}
+	if IsNotSupported(errors.New("other")) {
+		t.Error("IsNotSupported(other) = true, want false")
+	}
+}

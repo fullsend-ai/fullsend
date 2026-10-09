@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -72,6 +73,45 @@ func TestJiraClient_GetIssue(t *testing.T) {
 	}
 	if issue.URL != "https://acme.atlassian.net/browse/PROJ-42" {
 		t.Errorf("issue.URL = %q, want %q", issue.URL, "https://acme.atlassian.net/browse/PROJ-42")
+	}
+}
+
+func TestJiraClient_GetIssue_IssueTypeAndCustomFields(t *testing.T) {
+	custom := map[string]json.RawMessage{
+		"customfield_10875": json.RawMessage(`"https://github.com/acme/widgets/pull/7"`),
+	}
+	fc := &FakeJiraClient{
+		Issues: map[string]*jira.Issue{
+			"PROJ-7": {
+				Key: "PROJ-7",
+				Fields: jira.IssueFields{
+					Summary:      "Typed",
+					IssueType:    &jira.IssueType{ID: "10001", Name: "Story"},
+					CustomFields: custom,
+				},
+			},
+			"PROJ-8": {Key: "PROJ-8", Fields: jira.IssueFields{Summary: "Untyped"}},
+		},
+	}
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+
+	issue, err := c.GetIssue(context.Background(), "PROJ", 7)
+	if err != nil {
+		t.Fatalf("GetIssue returned error: %v", err)
+	}
+	if issue.IssueType != "Story" {
+		t.Errorf("issue.IssueType = %q, want %q", issue.IssueType, "Story")
+	}
+	if got := string(issue.CustomFields["customfield_10875"]); got != `"https://github.com/acme/widgets/pull/7"` {
+		t.Errorf("issue.CustomFields[customfield_10875] = %s, want the PR URL", got)
+	}
+
+	issue, err = c.GetIssue(context.Background(), "PROJ", 8)
+	if err != nil {
+		t.Fatalf("GetIssue returned error: %v", err)
+	}
+	if issue.IssueType != "" || issue.CustomFields != nil {
+		t.Errorf("issue without type/custom fields: IssueType = %q, CustomFields = %v; want empty", issue.IssueType, issue.CustomFields)
 	}
 }
 
@@ -604,6 +644,7 @@ func TestNewFakeJiraClient(t *testing.T) {
 
 var _ Client = (*JiraClient)(nil)
 var _ StatusCommentClient = (*JiraClient)(nil)
+var _ Linker = (*JiraClient)(nil)
 
 func TestJiraClient_AuthenticatedUser(t *testing.T) {
 	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
@@ -624,5 +665,34 @@ func TestJiraClient_AuthenticatedUser(t *testing.T) {
 	fj.MyselfError = errors.New("401")
 	if _, err := jc.AuthenticatedUser(context.Background()); err == nil {
 		t.Fatal("AuthenticatedUser() must return the GetMyself error")
+	}
+}
+
+func TestJiraClient_LinkIssues(t *testing.T) {
+	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jc.LinkIssues(context.Background(), "PROJ", 123, "OTHER", 456, "Blocks"); err != nil {
+		t.Fatalf("LinkIssues returned error: %v", err)
+	}
+	want := FakeJiraLink{Type: "Blocks", InwardIssue: "PROJ-123", OutwardIssue: "OTHER-456"}
+	if len(fj.Links) != 1 || fj.Links[0] != want {
+		t.Fatalf("Links = %+v, want [%+v] (from issue as inward, to issue as outward)", fj.Links, want)
+	}
+}
+
+func TestJiraClient_LinkIssues_NotFound(t *testing.T) {
+	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fj.LinkError = fmt.Errorf("link PROJ-1 to PROJ-2 (Blocks): %w", forge.ErrNotFound)
+	err = jc.LinkIssues(context.Background(), "PROJ", 1, "PROJ", 2, "Blocks")
+	if !IsNotFound(err) {
+		t.Fatalf("LinkIssues error = %v, want one satisfying IsNotFound", err)
+	}
+	if len(fj.Links) != 0 {
+		t.Fatalf("Links = %+v, want none recorded on error", fj.Links)
 	}
 }

@@ -94,6 +94,16 @@ and compatibility details belong in the
 > rejects and revokes a token owned by a Maintainer or Owner (or whose
 > owner cannot be verified) and leaves the fast path disabled rather than
 > raise any runtime credential above Developer.
+>
+> **Update (#8083):** the Poller service-account lifecycle is being
+> delivered incrementally under #7772 and is not active until its CLI
+> activation change merges. New trigger creation and rotation as the Poller
+> remain deferred in the live adapter even then. Temporary Maintainer
+> elevation requires a server-side guarantee that requests authenticated
+> before credential revocation have finished; credential inventories alone
+> do not establish that guarantee. Existing compliant triggers can be reused,
+> and polling remains available when enabled. See the Poller-owned trigger
+> lifecycle in [`docs/cli/repos.md`](../cli/repos.md#poller-owned-trigger-token-deferred).
 
 ## References
 
