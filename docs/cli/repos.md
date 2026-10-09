@@ -211,7 +211,7 @@ The values, validation, WIF provider derivation, and the `FULLSEND_GCP_*` secret
 
 ### GitLab role credentials
 
-For GitLab repos, `repos install` provisions the built-in Poller, Analyst, and Coder role credentials (`FULLSEND_GITLAB_*_TOKEN`) and any registered custom roles. Runtime and CI routing always select the registered role credential and fail closed if it is missing; the legacy `FULLSEND_FORGE_TOKEN` is never used, and there is no migration gate. Install does not remove a leftover legacy shared secret or revoke the `fullsend-bot` project token — a repository installed before the role-only rollout requires manual cleanup of those. Custom roles are registered with `--gitlab-role-registry`; a custom role may reuse another registered credential or enroll its own token via `--gitlab-role-token`. The same `repos install` run rotates any own-credential role whose project access token is expiring, expired, revoked, or unverified. `--rotate-gitlab-roles` force-rotates every own-credential role; `--rotate-gitlab-role=poller` limits the run to one role. A failed rotation leaves the previous secret in place. There is no public rollback to the shared token. See [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md) and [Configuring GitLab § Role identity model and credential lifecycle](../guides/getting-started/configuring-gitlab.md#role-identity-model-and-credential-lifecycle). Developer is sufficient because poller state lives on dedicated unprotected branches rather than Maintainer-only CI/CD variables. Creating project access tokens requires GitLab Premium or Ultimate. The token expiry is computed in UTC so a local-timezone date cannot produce a token that GitLab already considers expired (`active: false`).
+For GitLab repos, `repos install` provisions the built-in Poller, Analyst, and Coder role credentials (`FULLSEND_GITLAB_*_TOKEN`) and any registered custom roles. Runtime and CI routing always select the registered role credential and fail closed if it is missing; the legacy `FULLSEND_FORGE_TOKEN` is never used, and there is no migration gate. Install does not remove a leftover legacy shared secret or revoke the `fullsend-bot` project token — a repository installed before the role-only rollout requires manual cleanup of those. Custom roles are registered with `--gitlab-role-registry`; a custom role may reuse another registered credential or enroll its own token via `--gitlab-role-token`. The same `repos install` run rotates any own-credential role whose project access token is expiring, expired, revoked, or unverified. `--rotate-gitlab-roles` force-rotates every own-credential role; `--rotate-gitlab-role=poller` limits the run to one role. A failed rotation leaves the previous secret in place. There is no public rollback to the shared token. See [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md) and [Configuring GitLab § Role identity model and credential lifecycle](../guides/getting-started/configuring-gitlab.md#role-identity-model-and-credential-lifecycle). Developer is sufficient because poller state lives on dedicated unprotected branches rather than Maintainer-only CI/CD variables. Creating project access tokens requires GitLab Premium or Ultimate on gitlab.com; self-managed instances, including Community Edition, can create them without a paid tier. The token expiry is computed in UTC so a local-timezone date cannot produce a token that GitLab already considers expired (`active: false`).
 
 For GitLab repos, `repos install` also provisions the [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) webhook fast path: a pipeline trigger token (`FULLSEND_TRIGGER_TOKEN`) and webhook secret (`FULLSEND_WEBHOOK_SECRET`), both stored as protected, masked CI/CD variables, plus a project webhook for issue, merge request, and comment events that triggers a pipeline on the protected default branch. The step is deferred (and reported) until the dispatcher is on the default branch, that branch is protected, and `ci_pipeline_variables_minimum_override_role=no_one_allowed` is verified. Re-runs are no-ops when everything is in place and repair a missing or drifted webhook or token. `--rotate-gitlab-trigger-token` mints a new token, updates the webhook, and then revokes the old token. Token, secret, and webhook URL values are never printed.
 
@@ -258,7 +258,9 @@ for the normal rotation grace period. Administrator-supplied credentials are
 preserved; no separate migration command is required.
 
 Install provisions project service-account PATs where supported; legacy project
-access tokens are a fallback and require GitLab Premium or Ultimate. The same
+access tokens are a fallback and require GitLab Premium or Ultimate on
+gitlab.com; self-managed instances, including Community Edition, can create them
+without a paid tier. The same
 `repos install` run rotates any own-credential role whose service-account PAT or
 legacy project access token is expiring, expired, revoked, or unverified. A
 failed replacement validation leaves the previous secret in place. If a managed
@@ -381,9 +383,14 @@ Use the upgraded CLI consistently for install, rotation, status and uninstall
 after service-account convergence. Mixed-version lifecycle operations and
 downgrading the CLI after convergence are unsupported: older versions cannot
 interpret the managed-account ownership and supplied-account exclusions.
-To downgrade, stop lifecycle operations, uninstall using the upgraded CLI,
-confirm managed cleanup succeeded, then reinstall with the older version.
-Administrator-supplied accounts remain untouched.
+Downgrading is unavailable while any administrator-supplied account exclusion
+remains. Successful uninstall preserves that exclusion in the rotation document,
+and the older CLI rejects the document because it does not recognize the
+version or exclusion fields. Do not delete the ownership protections to work
+around this. Where no supplied-account exclusions exist, stop lifecycle
+operations, uninstall using the upgraded CLI, confirm managed cleanup
+succeeded, then reinstall with the older version. Administrator-supplied
+accounts remain untouched.
 
 Upgrade notes for when convergence activates: Convergence replaces managed
 project-access-token bot identities with project service-account identities;
