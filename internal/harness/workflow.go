@@ -77,11 +77,15 @@ var validCommitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 // also whether it is a usable Claude Code plugin namespace for one.
 func ValidWorkflowName(name string) bool { return validWorkflowName.MatchString(name) }
 
-// validateWorkflow is the Validate() check for the runtime_workflow: field. It
-// checks shape only: which kind of definition the source holds, and so
-// whether name is required or refused, is known once it is fetched.
+// validateWorkflow is the Validate() check for the runtime_workflow: field.
 func (h *Harness) validateWorkflow() error {
-	w := h.RuntimeWorkflow
+	return ValidateRuntimeWorkflowSpec(h.RuntimeWorkflow)
+}
+
+// ValidateRuntimeWorkflowSpec checks the shape of a runtime_workflow: field; nil passes.
+// Which kind of definition the source holds, and so whether name is
+// required or refused, is known once it is fetched.
+func ValidateRuntimeWorkflowSpec(w *RuntimeWorkflowSpec) error {
 	if w == nil {
 		return nil
 	}

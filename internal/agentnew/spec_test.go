@@ -20,6 +20,8 @@ runtime: claude
 slug: my-org-lint-docs
 timeout_minutes: 20
 validation_loop: true
+workflow_source: pipelines/sample-pipeline
+workflow: run-all
 `))
 	if err != nil {
 		t.Fatalf("ParseSpec: %v", err)
@@ -29,6 +31,9 @@ validation_loop: true
 	}
 	if spec.TimeoutMinutes == nil || *spec.TimeoutMinutes != 20 || !spec.ValidationLoop {
 		t.Errorf("unexpected spec: %+v", spec)
+	}
+	if spec.WorkflowSource != "pipelines/sample-pipeline" || spec.Workflow != "run-all" {
+		t.Errorf("workflow_source: %q, workflow: %q", spec.WorkflowSource, spec.Workflow)
 	}
 	if spec.Description != "Check docs changes for broken links" {
 		t.Errorf("description: %q", spec.Description)
