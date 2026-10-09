@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v1/actor-state.schema.json",
+  "title": "ActorState",
+  "type": "object",
+  "required": ["actors"],
+  "properties": {
+    "actors": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "login", "role", "role_verified"],
+        "properties": {
+          "id": { "$ref": "common.schema.json#/$defs/structural_id" },
+          "kind": { "enum": ["human", "bot"] },
+          "login": { "type": ["string", "null"], "minLength": 1 },
+          "role": {
+            "oneOf": [
+              { "$ref": "common.schema.json#/$defs/actor_role" },
+              { "const": "bot" },
+              { "type": "null" }
+            ]
+          },
+          "role_verified": { "type": "boolean" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "kind": { "const": "bot" } }, "required": ["kind"] },
+            "then": {
+              "properties": {
+                "role": { "const": "bot" },
+                "role_verified": { "const": false }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
+            "then": { "properties": { "role": { "not": { "const": "bot" } } } }
+          },
+          {
+            "if": { "properties": { "role_verified": { "const": true } }, "required": ["role_verified"] },
+            "then": { "properties": { "role": { "$ref": "common.schema.json#/$defs/actor_role" } } },
+            "else": {
+              "properties": {
+                "role": { "oneOf": [{ "const": "bot" }, { "type": "null" }] }
+              }
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

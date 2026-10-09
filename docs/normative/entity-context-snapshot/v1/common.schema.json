@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v1/common.schema.json",
+  "title": "EntityContextSnapshotCommonDefinitions",
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{9}Z$"
+    },
+    "git_oid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "record_key": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "structural_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=-]*$",
+      "description": "Forge or receipt identifier. Structural IDs use a printable, separator-safe ASCII alphabet and are never rewritten. Forge-specific mappings further restrict this alphabet."
+    },
+    "github_node_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_=-]*$",
+      "description": "GitHub GraphQL node_id. Every GitHub-sourced structural ID uses this adapter mapping before schema validation."
+    },
+    "finding_code": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "repository_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._/~!$&()+,;=:@#\\[\\]{} -]+$",
+      "allOf": [
+        { "not": { "pattern": "^/" } },
+        { "not": { "pattern": "/$" } },
+        { "not": { "pattern": "//" } },
+        { "not": { "pattern": "(^|/)\\.{1,2}(/|$)" } },
+        { "not": { "pattern": "%" } },
+        { "not": { "pattern": "[\u200b-\u200d\u202a-\u202e\u2066-\u2069\ufeff\ufe00-\ufe0f\ufff9-\ufffb]" } }
+      ]
+    },
+    "actor_role": {
+      "enum": ["admin", "maintain", "write", "triage", "read", "none", "external"]
+    }
+  }
+}
