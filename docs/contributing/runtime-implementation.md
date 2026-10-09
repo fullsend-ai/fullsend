@@ -316,17 +316,18 @@ exit=0
 | `[ -n "$X" ]`, `[[ -d .git ]]`, and any `if`/`while` built on them | `test -n "$X"`, `test -d .git` | the bracket form, in every position |
 | `ELAPSED=$(( $(date +%s) - AGENT_START ))` | `NOW=$(date +%s); ELAPSED=$(( NOW - AGENT_START ))` | a `$( )` substitution inside `$(( ))` |
 | `case "$X" in a) echo a;; *) echo b;; esac` | all-literal arms, or `if`/`elif` | any glob arm (`*)`, `z*)`, `?)`) after the first. A lone or leading catch-all is fine |
+| `git commit -m "$(cat <<EOF …)"`, `gh pr create --body "$(cat <<'EOF' … EOF)"`, or a nested `$(cmd1 && cmd2)` / `$(cmd1; cmd2)` substitution | write the text to `/tmp/commit-msg-<id>.txt`, then `git commit -F <file>` / `gh pr create --body-file <file>`; split a nested `$(cmd1 && cmd2)`-style substitution into separate tool calls — a top-level `;`-chain such as `NOW=$(date +%s); ELAPSED=$(( NOW - AGENT_START ))` is unaffected | a heredoc nested inside `$(...)`, or a nested multi-command substitution |
 | `curl -H "Authorization: Bearer $TOKEN" https://host/…` | `curl -K creds.cfg https://host/…`, header in the config file | a variable expanded inside a header argument |
 
-The last row is **deliberately missing from the block message**, which carries only the syntax rewrites. That text reaches the caller at the moment its command was blocked; an agent acting on an injected instruction, whose exfiltration just tripped the credential rule, must not be handed the form that passes. You are reading a contributing guide, which is a different audience.
+The curl / `-H` row is **deliberately missing from the block message**, which carries only the first three syntax rewrites (the bracket test, two-step arithmetic, and case-glob-arm rows) — see `DIALECT_HINT` in `tirith_check.py`. The heredoc/nested-substitution row is guide-only for a different reason: `DIALECT_HINT` has not been extended to mirror it yet. That block-message text reaches the caller at the moment its command was blocked; an agent acting on an injected instruction, whose exfiltration just tripped the credential rule, must not be handed the form that passes. You are reading a contributing guide, which is a different audience.
 
-Two notes on that row. Tirith reports it as `analysis_incomplete` too, titled `Could not resolve wrapped command for sensitive upload analysis`, so the block still carries the syntax hint even though the config file is the fix. Write that file under `umask 077`.
+Two notes on the curl / `-H` row. Tirith reports it as `analysis_incomplete` too, titled `Could not resolve wrapped command for sensitive upload analysis`, so the block still carries the syntax hint even though the config file is the fix. Write that file under `umask 077`.
 
 What tirith keys on is a variable it cannot resolve inside a **header, data or form argument** — `-H`, `-d`, `-F`, `--data-binary` — whether or not it holds a credential. `curl -H "X-Trace: $ID" …` blocks; `curl -o "$OUT" …`, `curl --user "$U" …` and `curl "$URL"` all pass. So `-K` works here only because it removes the inline `-H` altogether: leave a variable in a `-d` or `--data-binary` argument and the command still blocks with `-K` present.
 
 #### Checking a pin bump
 
-`TestRealTirithBinary` in `internal/security/hooks/tirith_check_test.py` asserts the blocked forms above, their rewrites, and that applying each rewrite to an attacker shape still blocks. It skips unless the installed tirith matches `ARG TIRITH_VERSION` in `images/sandbox/Containerfile`.
+`TestRealTirithBinary` in `internal/security/hooks/tirith_check_test.py` asserts the bracket-test, nested-arithmetic, double-bracket, case-glob-arm, and curl-K forms from the table above, their rewrites, and that applying each rewrite to an attacker shape still blocks. It does not yet cover the heredoc / nested-substitution row. It skips unless the installed tirith matches `ARG TIRITH_VERSION` in `images/sandbox/Containerfile`.
 
 Run it after a bump and before rebuilding the image — **CI does not run it for you.** `make script-test` (`lint.yml`) runs `python3 -m pytest internal/security/hooks/ -q`, but that runner has no tirith installed, so `TestRealTirithBinary` skips there: a green `script-test` says nothing about the pin.
 
@@ -340,6 +341,7 @@ Two traps when reproducing by hand:
 | Symptom | Cause | Action |
 |---------|-------|--------|
 | `analysis_incomplete: Nested executable body could not be resolved` | a bracket test, a late glob `case` arm, or `$( )` inside `$(( ))` | rewrite per the table above |
+| `analysis_incomplete: Nested executable body could not be resolved`, from a heredoc or nested substitution | multi-line text in `$(cat <<'EOF' …)` (commit messages, PR bodies) or several commands nested in one substitution, e.g. `$(cmd1 && cmd2)` | write `/tmp/commit-msg-<id>.txt`, then `git commit -F <file>` / `gh pr create --body-file <file>`; split the nested substitution into separate tool calls — a top-level `;`-chain is not the trigger |
 | `analysis_incomplete: Could not resolve wrapped command for sensitive upload analysis`, from a `-H` header | a variable expanded inside a header argument | move the header into a `curl -K` config file, so no `-H` remains |
 | the same message, from a `-d`, `-F` or `--data-binary` argument | a variable expanded inside a data or form argument | resolve it first and pass the value literally; `-K` does not help |
 | `Tirith blocked command (exit code 1): ... expected a list` / `an object` / `a string` | the installed tirith reports a shape this hook does not know | check `tirith --version` against the pin; a bumped pin needs `tirith_check.py` updated before it ships |
