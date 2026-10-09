@@ -550,8 +550,8 @@ Replace each id with the one your gateway serves.
 ### What success looks like
 
 The run's model line names the gateway model you selected, and the agent writes a result that
-passes schema validation. `metrics.json` in the run directory records the model that served the
-run.
+passes schema validation. `metrics.json` in the run directory records the model spec you
+selected.
 
 > Not yet executed: waits on the #7480 route.
 
@@ -561,7 +561,8 @@ run.
 |---|---|---|
 | The run is refused before the sandbox starts because no gateway base URL is set. Exact text: not yet executed, waits on the #7480 route | `INFERENCE_GATEWAY_BASE_URL` is missing from the runner's environment | Add it to the env file you pass with `--env-file` |
 | The `inference-gateway.json` guard stops the run. Exact text: not yet executed, waits on the #7480 route | The file names a credential source, or something in the sandbox changed it | Remove `apiKeyEnv`, `tokenFile`, `passwordEnv` and `passwordFile` from the file. If you did not change it, treat it as tampering |
-| `Model "<id>" not found for provider "gateway"` | The model is not in `inference-gateway.json`, or its entry has no `api`. Under `PI_OFFLINE=1` the gateway's own list is never read | Add the model with its `api` ([step 2](#steps)) |
+| Warning `Model "<id>" not found for provider "gateway". Using custom model id.` The run goes on with another gateway model's settings, so its requests may use the wrong API | The model is not in `inference-gateway.json`, or its entry has no `api`. Under `PI_OFFLINE=1` the gateway's own list is never read | Add the model with its `api` ([step 2](#steps)) |
+| `Model "gateway/<id>" not found. Use --list-models to see available models.` | No gateway model is configured at all | Add your models to `inference-gateway.json` ([step 2](#steps)) |
 | Egress to the gateway host is denied. Exact text: not yet executed, waits on the #7480 route. `grep DENIED <run-dir>/logs/openshell-sandbox.log` names the host | The harness does not declare the `gateway` provider, or the request went to a path or host the profile does not allow | Add `gateway` to `providers:` ([step 4](#steps)) and check the host in `INFERENCE_GATEWAY_BASE_URL` |
 | Claude: `400 ... messages.1.output_config: Extra inputs are not permitted` | The gateway's Claude backend (for example Vertex) rejects pi's mid-conversation effort message | Set `"compat": { "supportsMidConvoEffort": false }` on that model |
 | Claude: `400 ... disallowed feature ...` naming structured output or strict tools | Your cloud project restricts this feature for partner models | Set `"compat": { "supportsStrictTools": false }` on that model |
