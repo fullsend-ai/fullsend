@@ -162,6 +162,66 @@ github:
 	}
 }
 
+func TestSignoffForgesFor_ShadowedGlobs(t *testing.T) {
+	input := `
+version: 1
+github:
+  repos:
+    - name: "shadow/*"
+    - name: "shadow/team-*"
+      signoff: true
+`
+	var m Manifest
+	require.NoError(t, parseManifestBytes([]byte(input), &m))
+
+	// Reversed order: the signed glob comes first, so it is not shadowed.
+	reversed := `
+version: 1
+github:
+  repos:
+    - name: "shadow/team-*"
+      signoff: true
+    - name: "shadow/*"
+`
+	var r Manifest
+	require.NoError(t, parseManifestBytes([]byte(reversed), &r))
+
+	tests := []struct {
+		name   string
+		m      *Manifest
+		filter []string
+		want   []string
+	}{
+		{"unfiltered ignores shadowed signed glob", &m, nil, nil},
+		{"glob filter ignores shadowed signed glob", &m, []string{"shadow/*"}, nil},
+		{"unfiltered keeps unshadowed signed glob", &r, nil, []string{ForgeGitHub}},
+		{"glob filter keeps unshadowed signed glob", &r, []string{"shadow/*"}, []string{ForgeGitHub}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.m.SignoffForgesFor(tt.filter)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestGlobShadowedByEarlier(t *testing.T) {
+	entries := func(names ...string) []RepoEntry {
+		var out []RepoEntry
+		for _, n := range names {
+			out = append(out, RepoEntry{Name: n})
+		}
+		return out
+	}
+	assert.True(t, globShadowedByEarlier(entries("acme/*"), RepoEntry{Name: "acme/team-*"}))
+	assert.True(t, globShadowedByEarlier(entries("acme/*"), RepoEntry{Name: "acme/*"}))
+	assert.False(t, globShadowedByEarlier(entries("acme/team-*"), RepoEntry{Name: "acme/*"}))
+	assert.False(t, globShadowedByEarlier(entries("acme/?"), RepoEntry{Name: "acme/*"}))
+	assert.False(t, globShadowedByEarlier(entries("acme/*"), RepoEntry{Name: "acme/api"}), "concrete entries are never shadowed by globs")
+	assert.False(t, globShadowedByEarlier(nil, RepoEntry{Name: "acme/*"}))
+}
+
 func TestSignoffForgesFor_InvalidPattern(t *testing.T) {
 	m := Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}}}
 	_, err := m.SignoffForgesFor([]string{"acme/[invalid"})

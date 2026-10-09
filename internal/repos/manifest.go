@@ -1364,7 +1364,9 @@ func patternSelectsEntry(e RepoEntry, pattern string) (bool, error) {
 // an earlier unsigned glob is not overridden by a signed glob that also
 // matches. Glob filter patterns and unfiltered runs stay conservative, so
 // a forge may be reported when no concrete repository it expands to ends
-// up needing a trailer.
+// up needing a trailer. Even so, a glob entry that an earlier glob entry
+// fully covers can never win resolution, so it is ignored (see
+// globShadowedByEarlier).
 func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
 	var forges []string
 	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
@@ -1372,7 +1374,10 @@ func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
 		if platform == nil {
 			continue
 		}
-		for _, e := range platform.Repos {
+		for i, e := range platform.Repos {
+			if globShadowedByEarlier(platform.Repos[:i], e) {
+				continue
+			}
 			needed, err := m.entryNeedsSignoff(forgeName, e, filter)
 			if err != nil {
 				return nil, err
@@ -1384,6 +1389,29 @@ func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
 		}
 	}
 	return forges, nil
+}
+
+// globShadowedByEarlier reports whether e is a glob entry that an earlier
+// glob entry in the same platform section is guaranteed to cover, so
+// ResolveConfigWithGlobs (first matching glob wins) never selects e. The
+// check is sound but not complete: it only considers earlier globs whose
+// sole wildcard is "*", and matches them against e's pattern text with
+// e's own wildcards treated as literal characters. Each such wildcard
+// must then be consumed by a "*" in the earlier pattern, which would
+// equally consume anything the wildcard expands to.
+func globShadowedByEarlier(earlier []RepoEntry, e RepoEntry) bool {
+	if !isGlob(e.Name) {
+		return false
+	}
+	for _, prev := range earlier {
+		if !isGlob(prev.Name) || strings.ContainsAny(prev.Name, "?[\\") {
+			continue
+		}
+		if ok, err := matchesPattern(prev.Name, e.Name); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // entryNeedsSignoff reports whether manifest entry e on forgeName is
