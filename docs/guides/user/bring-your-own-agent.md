@@ -219,7 +219,7 @@ you would add or change it by hand.
 | `harness/<name>.yaml` | `timeout_minutes:` | always | `--timeout-minutes` / spec `timeout_minutes` | — |
 | `harness/<name>.yaml` | `trigger:` | always | `--on` / `--trigger` or spec `on`/`trigger` | — |
 | `harness/<name>.yaml` | `validation_loop:` | only when asked for | `--validation-loop` / spec `validation_loop` | — |
-| `harness/<name>.yaml` | `workflow:` | only when asked for | `--workflow-source` and `--workflow` / spec `workflow_source` and `workflow` | `args:`, and the real `#sha256=` for a remote source — see [Starting a workflow](../../cli/agent.md#starting-a-workflow) |
+| `harness/<name>.yaml` | `workflow:` | only when asked for | `--workflow-source` and `--workflow` / spec `workflow_source` and `workflow` | `args:`, and the real `#sha256=` for a remote source — see [Starting a workflow](../../cli/agent.md#starting-a-workflow) and [Run a workflow definition repository](workflow-definitions.md) |
 | `harness/<name>.yaml` | `overlays:` (commented) | only for pi on an `openai/` model | — | uncomment for Vertex sub-agents ([Pick a route](#pick-a-route)); write your own for other conditional fields |
 | `harness/<name>.yaml` | `skills:`, `base:` | never | — | see [Skills](#skills), [Harness composition with `base`](#harness-composition-with-base) |
 | `agents/<name>.md` | `name:`, `model:` | always | `<name>` / resolved model | — |

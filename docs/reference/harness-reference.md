@@ -250,6 +250,8 @@ A `validation_loop` retry starts the same command again. A Claude Code workflow 
 
 `workflow` is a top-level field only: it is not part of `ForgeConfig`, so a `workflow:` key under `forge:` or `overlays:` is silently ignored, as for `plugins`. An older fullsend binary ignores the field too and runs the harness with the default prompt, so a harness that uses it must state the fullsend release it needs.
 
+Walkthroughs: [Run a workflow definition repository](../guides/user/workflow-definitions.md) (pin, scaffold, run, troubleshoot) and [Make your pipeline repository loadable by fullsend](../guides/user/workflow-definition-authors.md) (the definition's layout and rules).
+
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
 **`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
