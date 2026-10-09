@@ -226,8 +226,8 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # carry the tarball SHA256) and set the two ARGs below:
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v<ver>.tar.gz)
 # The last extension install locks the parent directory (see pi-xai-vertex).
-ARG PI_INFERENCE_GATEWAY_VERSION=0.1.0
-ARG PI_INFERENCE_GATEWAY_SHA256=db5a172d8621eff1be244c4cfc3401c4d9198a997f2c32b04d551fa518cb3df3
+ARG PI_INFERENCE_GATEWAY_VERSION=0.1.1
+ARG PI_INFERENCE_GATEWAY_SHA256=9d4a9446842f27aa51de99be4f61b6cbc2a6de009ddf04f2dc712c1fb1417d29
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v${PI_INFERENCE_GATEWAY_VERSION}.tar.gz" \
       -o /tmp/pi-inference-gateway.tar.gz \
