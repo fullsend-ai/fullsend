@@ -152,6 +152,25 @@ Agent roles determine which GitHub Apps (and their associated credentials and
 permissions) are provisioned for the repository. Valid roles: `fullsend`,
 `triage`, `coder`, `review`, `fix`, `retro`, `prioritize`, `e2e`.
 
+Roles also gate dispatch. When `roles` is set, a stage is skipped unless its
+role is listed (the `code` and `fix` stages map to the `coder` role). When
+`roles` is omitted or empty, no stage is skipped on role grounds.
+
+**`fullsend` implies `retro` and `prioritize`.** For backward compatibility,
+the `retro` and `prioritize` stages still dispatch when `fullsend` is in
+`roles`, even if `retro` or `prioritize` is not listed. Leaving `retro` out of
+`roles` therefore does **not** disable retro while `fullsend` is listed. To
+turn off one of these agents, add a suppression entry under
+[`agents`](#agents) instead:
+
+```yaml
+agents:
+  - name: retro
+    enabled: false
+```
+
+See [Disabling agents](../guides/user/customizing-agents.md#disabling-agents).
+
 In the layered config system, `roles` uses replace-if-set semantics — an
 overlay that sets `roles` replaces the parent list entirely (no union).
 Omitting the key inherits the parent's roles. See

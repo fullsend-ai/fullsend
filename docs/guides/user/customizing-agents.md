@@ -568,6 +568,11 @@ This prevents the agent from dispatching and from resolving via
 is suppressed. Omitting `enabled` (or setting it to `true`) keeps the
 agent active (backward compatible).
 
+Use `enabled: false` for `retro` and `prioritize` rather than removing
+them from `roles`. While `fullsend` is in `roles`, those two stages
+still dispatch even when their own role is not listed (see
+[`roles`](../../reference/config-reference.md#roles)).
+
 When multiple entries share a name, the last writer wins. This allows a
 disable-then-enable pattern to replace a default agent with a custom one:
 
