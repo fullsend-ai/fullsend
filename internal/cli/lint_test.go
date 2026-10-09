@@ -829,6 +829,19 @@ func TestRunLint_GitLabForgeProfileOnlyDeclaredForGitLab(t *testing.T) {
 	require.NoError(t, runLint(context.Background(), dir, "gitlab", false, false, ui.New(&buf)), buf.String())
 }
 
+func TestRunLint_GitLabForgeProfileFromConfigForge(t *testing.T) {
+	// With no --forge flag, run takes the platform from config.forge, so a
+	// simple harness (no overlays or base) must lint under it too.
+	dir := t.TempDir()
+	writeValidLocalHarness(t, dir, "code", "providers:\n  - providers/p.yaml\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "providers"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "p.yaml"), []byte("name: example\ntype: fullsend-gitlab-forge\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("forge: gitlab\n"), 0o644))
+
+	var buf bytes.Buffer
+	require.NoError(t, runLint(context.Background(), dir, "", false, false, ui.New(&buf)), buf.String())
+}
+
 func TestRunLint_NoConfigOverlayOnConfigTermIsUnreachable(t *testing.T) {
 	// With no config file, config reads as an empty map at runtime, so this
 	// overlay never matches and its missing script must not be reported.

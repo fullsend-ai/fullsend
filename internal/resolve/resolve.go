@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -193,18 +194,20 @@ func ReadContainedFile(p, root string) ([]byte, error) {
 	if !isContainedPath(p, root) {
 		return nil, fmt.Errorf("path %q is outside workspace root", p)
 	}
-	info, err := os.Stat(p)
+	// Open non-blocking (a FIFO cannot hang the open), then check the opened
+	// descriptor so a path swapped after the check cannot yield a special file.
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("path %q is not a regular file", p)
 	}
-	f, err := os.Open(p)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, MaxLocalResourceBytes+1))
 	if err != nil {
 		return nil, err

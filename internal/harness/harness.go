@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 
@@ -502,18 +503,20 @@ func LoadRaw(path string) (*Harness, error) {
 const MaxHarnessFileBytes = 1 << 20
 
 func readBoundedHarnessFile(path string) ([]byte, error) {
-	info, err := os.Stat(path)
+	// Open non-blocking (a FIFO cannot hang the open), then check the opened
+	// descriptor so a path swapped after the check cannot yield a special file.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%q is not a regular file", path)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, MaxHarnessFileBytes+1))
 	if err != nil {
 		return nil, err

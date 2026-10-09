@@ -446,7 +446,15 @@ func lintOneAgent(ctx context.Context, target lintTarget, absFullsendDir, forgeF
 		configMap = map[string]any{}
 	}
 
-	linted := make(map[string]bool) // dedupe identical diagnostics across forge variants
+	lc := &lintAgentContext{
+		agentName:      agentName,
+		absFullsendDir: absFullsendDir,
+		orgAllowlist:   orgAllowlist,
+		requireConfig:  requireConfig,
+		linted:         make(map[string]bool), // dedupe identical diagnostics across forge variants
+		result:         result,
+		printer:        printer,
+	}
 	hadError := false
 
 	for _, platform := range forgePlatforms {
@@ -491,7 +499,7 @@ func lintOneAgent(ctx context.Context, target lintTarget, absFullsendDir, forgeF
 				variantLabel = fmt.Sprintf("%s [overlay %d]", label, variant)
 			}
 
-			ok, deferred := lintLoadedHarness(ctx, harnessPath, opts, variantLabel, agentName, absFullsendDir, orgAllowlist, requireConfig, linted, result, printer)
+			ok, deferred := lintLoadedHarness(ctx, harnessPath, opts, variantLabel, lc)
 			if variant < 0 {
 				overlayCount = layerCount
 				if deferred {
@@ -516,9 +524,10 @@ func lintOneAgent(ctx context.Context, target lintTarget, absFullsendDir, forgeF
 }
 
 // lintForgePlatforms selects the forge platform(s) to lint under: --forge
-// wins, then lockForgePlatforms. A harness with overlays or a base is linted
-// under the config's forge, or every platform if config names none, since
-// composition drops forge-conditioned config for an empty platform.
+// wins, then lockForgePlatforms. Otherwise the config's forge applies, as in
+// run. With no config forge, a harness with overlays or a base is linted under
+// every platform, since composition drops forge-conditioned config for an
+// empty platform.
 func lintForgePlatforms(harnessPath, forgeFlag string, orgCfg config.ConfigReader) ([]string, error) {
 	platforms, err := lockForgePlatforms(harnessPath, forgeFlag)
 	if err != nil || forgeFlag != "" || len(platforms) != 1 || platforms[0] != "" {
@@ -529,14 +538,15 @@ func lintForgePlatforms(harnessPath, forgeFlag string, orgCfg config.ConfigReade
 	if err != nil {
 		return nil, fmt.Errorf("loading harness for forge discovery: %w", err)
 	}
-	if len(raw.Overlays) == 0 && raw.Base == "" {
-		return platforms, nil
-	}
-
+	// run takes the platform from config.forge, which also decides whether
+	// the generated GitLab forge profile is declared, so consult it first.
 	if pr, ok := orgCfg.(config.PerRepoConfigReader); ok {
 		if f := pr.ConfigForge(); f != "" && harness.ValidForgePlatform(f) {
 			return []string{f}, nil
 		}
+	}
+	if len(raw.Overlays) == 0 && raw.Base == "" {
+		return platforms, nil
 	}
 	return harness.ValidForgePlatforms(), nil
 }
@@ -680,13 +690,27 @@ func anyOverlayPossible(whens []string, opts harness.ComposeOpts) bool {
 	return false
 }
 
+// lintAgentContext carries the per-agent settings and accumulators shared by
+// every composed variant of one harness.
+type lintAgentContext struct {
+	agentName      string
+	absFullsendDir string
+	orgAllowlist   []string
+	requireConfig  bool
+	linted         map[string]bool
+	result         *lintResult
+	printer        *ui.Printer
+}
+
 // lintLoadedHarness composes one harness variant and reports errors and
 // diagnostics (skipping those already in linted). passed is false on error.
 // deferred is true when a missing validation_loop.script was not reported
 // because the composition has overlays (and no forced overlay): the empty
 // event drops event-conditioned overlays that may supply the script, so the
 // caller's forced-overlay variants decide instead.
-func lintLoadedHarness(ctx context.Context, harnessPath string, opts harness.ComposeOpts, label, agentName, absFullsendDir string, orgAllowlist []string, requireConfig bool, linted map[string]bool, result *lintResult, printer *ui.Printer) (passed, deferred bool) {
+func lintLoadedHarness(ctx context.Context, harnessPath string, opts harness.ComposeOpts, label string, lc *lintAgentContext) (passed, deferred bool) {
+	printer, result, linted := lc.printer, lc.result, lc.linted
+	absFullsendDir, orgAllowlist := lc.absFullsendDir, lc.orgAllowlist
 	h, _, loadErr := harness.LoadWithBase(ctx, harnessPath, opts)
 	if loadErr != nil {
 		if errors.Is(loadErr, harness.ErrValidationLoopScriptRequired) && opts.ForceOverlays == nil && opts.OverlayWhens != nil && anyOverlayPossible(*opts.OverlayWhens, opts) {
@@ -708,7 +732,7 @@ func lintLoadedHarness(ctx context.Context, harnessPath string, opts harness.Com
 
 	// Like run and lock, any URL reference (not just a URL base) needs a
 	// config to authorize it.
-	if requireConfig && h.HasURLReferences() {
+	if lc.requireConfig && h.HasURLReferences() {
 		printer.StepFail(lintDiagLine(label, "URL resources require config.yaml or config.base.yaml with allowed_remote_resources"))
 		result.errors++
 		return false, false
@@ -751,7 +775,7 @@ func lintLoadedHarness(ctx context.Context, harnessPath string, opts harness.Com
 			continue
 		}
 		linted[key] = true
-		emitDiagnosticWithContext(printer, agentName, diag)
+		emitDiagnosticWithContext(printer, lc.agentName, diag)
 		if diag.Severity == harness.SeverityError {
 			result.errors++
 		} else {
