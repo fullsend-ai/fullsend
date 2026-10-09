@@ -29,7 +29,7 @@ Such a gateway is an OpenAI- and Anthropic-compatible front door, such as
 agentgateway, Praxis, LiteLLM or APISIX. It checks the job's CI OIDC token against the
 forge's JWKS and holds the provider key server-side.
 
-This decision builds on four earlier ones:
+This decision builds on four earlier ones and answers part of a fifth:
 
 - [ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md):
   credential delivery tiers.
@@ -39,6 +39,10 @@ This decision builds on four earlier ones:
   stay runner-only (`oidcDenyKeys`).
 - [ADR 0092](0092-openai-wif-credential-delivery.md): run-scoped provider,
   endpoint-bound placeholder, refresh path.
+- [ADR 0069](0069-ready-made-configuration-presets.md): leaves the inference
+  authorization model for shared presets open. Here a preset can carry the
+  gateway's `url` and `audience`, and the gateway's `repository` check does
+  the per-repository enrollment.
 
 A gateway is not a base-URL knob on an existing route. It moves the trust
 boundary, so it gets a record of its own.
@@ -302,20 +306,18 @@ These are deferred and named:
   through a gateway, without WIF admin access or a stored provider key.
 - Deleting `FULLSEND_OPENAI_API_KEY` is safe once a repository's runs use the
   gateway, because a configured gateway never falls back to it.
-- A gateway outage fails runs for every repository behind it. This is by
-  design.
-- Every gateway model must be listed, either in `inference.gateway.models` or
-  in the file named by `models_file`, because pi cannot discover models
-  offline.
-- Rotating the placeholder within a single running iteration before the
-  token's `exp` is the main behaviour still to prove live. The runner, CLI, image and
-  egress work is tracked in
+- A gateway outage fails runs for every repository behind it, by design.
+- Every gateway model must be listed, inline or in `models_file`, because pi
+  cannot discover models offline.
+- Rotating the placeholder inside one running iteration before the token's
+  `exp` is still to be proven live, in the implementation tracked in
   [#8280](https://github.com/fullsend-ai/fullsend/issues/8280).
 
 ## Related
 
 - ADR 0025: credential delivery tiers
 - ADR 0033: base-branch config reads
+- ADR 0069: shared presets; inference authorization left open
 - ADR 0073: `oidcDenyKeys`
 - ADR 0092: OpenAI WIF and static-key routes; the refresh path this route
   reuses
