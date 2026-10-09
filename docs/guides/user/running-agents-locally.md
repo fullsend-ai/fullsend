@@ -531,8 +531,9 @@ Replace each id with the one your gateway serves.
 3. **Hand the file to the runner.** pi reads it as `/sandbox/pi-config/inference-gateway.json`. You
    cannot place it there yourself: `host_files` refuses any destination under `/sandbox/pi-config`
    (`is reserved for the runner`). Set it through the config key the
-   [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) route adds under `inference:` in
-   `.fullsend/config.yaml`. The runner seeds the file and checks that it is unchanged before and
+   [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) route adds under `inference:` in the
+   `config.yaml` at the root of `--fullsend-dir` (`/tmp/fullsend-agents/config.yaml` in step 5). The
+   runner seeds the file and checks that it is unchanged before and
    after the sandbox's `.env` is sourced. The directory stays writable by the agent, so this check
    detects a change and stops the run. It does not prevent the change.
 
