@@ -134,6 +134,17 @@ repo baseline and overrides)
   the sandbox `.env` file from `env.sandbox` at bootstrap. `runner_env` is
   deprecated ([ADR 0055](ADRs/0055-unified-env-var-delivery.md), amending
   [ADR 0024](ADRs/0024-harness-definitions.md)).
+- Runner secrets on GitHub: user secrets reach host-side scripts through one
+  optional stored secret, `FULLSEND_RUNNER_SECRETS` (a JSON object of name →
+  value), staged by the composite action in a mode 0600 file that
+  `fullsend run` deletes after reading, and filtered by the resolved
+  `env.runner`. The bundle is never in the environment of `fullsend run` or
+  its children. `fullsend run` refuses runner-owned names, values too short
+  to redact, and references from `env.sandbox`, provider credentials,
+  expanded `host_files`, and overlays guarded by anything other than
+  `runtime.forge` or `config` (interim until ADR 0112's guarded-field check).
+  GitLab is unchanged: one masked CI/CD variable per secret, none of these
+  rules ([ADR 0136](ADRs/0136-runner-secrets-through-one-stored-secret.md)).
 - Agent configuration env vars: behavioral knobs use `{AGENT}_{SETTING_NAME}`
   naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via `env.runner` and
   `env.sandbox` in the harness YAML. Each agent documents its config vars in

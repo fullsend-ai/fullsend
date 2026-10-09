@@ -106,7 +106,7 @@ The `admin` command group's `uninstall`/`analyze`/`enable`/`disable` subcommands
 |----------|-------|
 | CLI reference | `docs/cli/run.md` |
 | Guides | `docs/guides/user/running-agents-locally.md`, `docs/guides/user/building-custom-agents.md`, `docs/guides/dev/cli-internals.md` |
-| ADRs | `docs/ADRs/0036-agent-execution-sandbox.md` |
+| ADRs | `docs/ADRs/0036-agent-execution-sandbox.md`, `docs/ADRs/0136-runner-secrets-through-one-stored-secret.md` |
 | Contributing | `docs/contributing/sandbox-topology.md` |
 | Go source | `internal/cli/run.go` |
 

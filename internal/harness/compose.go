@@ -87,6 +87,12 @@ type ComposeOpts struct {
 	// CEL when expressions as the config variable (ADR 0088).
 	Config map[string]any
 
+	// RunnerSecretNames are the names the run's FULLSEND_RUNNER_SECRETS
+	// object carries (ADR 0136). An overlay that references one of them is
+	// refused unless its when: reads only runtime.forge and config. Nil or
+	// empty disables the check.
+	RunnerSecretNames map[string]bool
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
@@ -178,6 +184,9 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
 		if err := child.validateOverlays(); err != nil {
+			return nil, nil, fmt.Errorf("invalid harness: %w", err)
+		}
+		if err := ValidateOverlayRunnerSecretRefs(child.Overlays, opts.RunnerSecretNames); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
 		if err := child.ResolveForge(opts.ForgePlatform); err != nil {
@@ -281,6 +290,9 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
 	}
 	if err := child.validateOverlays(); err != nil {
+		return nil, nil, fmt.Errorf("invalid harness: %w", err)
+	}
+	if err := ValidateOverlayRunnerSecretRefs(child.Overlays, opts.RunnerSecretNames); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
 	}
 	if err := child.ResolveForge(opts.ForgePlatform); err != nil {
@@ -543,6 +555,9 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// Resolve overlays: evaluate CEL conditions and merge matching
 	// entries into top-level fields.
 	if len(base.Overlays) > 0 {
+		if err := ValidateOverlayRunnerSecretRefs(base.Overlays, opts.RunnerSecretNames); err != nil {
+			return fmt.Errorf("invalid base harness: %w", err)
+		}
 		if err := base.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
 			return fmt.Errorf("resolving base overlays: %w", err)
 		}

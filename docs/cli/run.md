@@ -364,6 +364,18 @@ receives one only when the harness declares it under `env.runner`; see
 Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 [Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).
 
+## Runner secrets
+
+`fullsend run` reads a JSON object of name → value for host-side scripts
+([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md)) from one of two variables:
+
+| Runner environment | Effect |
+|---|---|
+| `FULLSEND_RUNNER_SECRETS_FILE` | Path to a file holding the object. The composite action writes the `FULLSEND_RUNNER_SECRETS` secret to a mode 0600 file and passes only this path. `fullsend run` deletes the file as soon as it has read it, even when the content is invalid, so for a local run point it at a copy. An empty value means no bundle. |
+| `FULLSEND_RUNNER_SECRETS` | The object inline. Use it for local runs only: in CI the value would stay readable in `/proc/<pid>/environ` for the life of the process. |
+
+Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process. Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
+
 ## Related
 
 - [Running Agents Locally](../guides/user/running-agents-locally.md) for a step-by-step walkthrough
