@@ -43,12 +43,28 @@ type GitLabRoleCleanupResult struct {
 // manifest entry for retry.
 //
 // This function never reads or returns secret values.
-func CleanupGitLabRoleIdentity(ctx context.Context, cfg GitLabRoleCleanupConfig) (GitLabRoleCleanupResult, error) {
+func CleanupGitLabRoleIdentity(ctx context.Context, cfg GitLabRoleCleanupConfig) (_ GitLabRoleCleanupResult, err error) {
 	result := GitLabRoleCleanupResult{DryRun: cfg.DryRun}
 	if cfg.Client == nil {
 		return result, fmt.Errorf("GitLab role identity cleanup requires a forge client")
 	}
-	defer LockGitLabRoleOperation(cfg.Owner, cfg.Repo)()
+	release, lockErr := LockGitLabProject(ctx, cfg.Client, cfg.Owner, cfg.Repo, cfg.DryRun)
+	if lockErr != nil {
+		return result, lockErr
+	}
+	defer release(&err)
+	return CleanupGitLabRoleIdentityLocked(ctx, cfg)
+}
+
+// CleanupGitLabRoleIdentityLocked is CleanupGitLabRoleIdentity for a caller
+// that already holds the project lease from LockGitLabProject, such as an
+// uninstall that serializes webhook teardown and role cleanup in one
+// transaction. The lease is not reentrant.
+func CleanupGitLabRoleIdentityLocked(ctx context.Context, cfg GitLabRoleCleanupConfig) (GitLabRoleCleanupResult, error) {
+	result := GitLabRoleCleanupResult{DryRun: cfg.DryRun}
+	if cfg.Client == nil {
+		return result, fmt.Errorf("GitLab role identity cleanup requires a forge client")
+	}
 
 	names := gitlabRoleIdentityVarNames(ctx, cfg.Client, cfg.Owner, cfg.Repo)
 	if cfg.DryRun {
