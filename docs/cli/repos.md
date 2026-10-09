@@ -75,6 +75,32 @@ fullsend repos install acme/new-repo --forge github --inference-auth vertex-wif 
 
 When repos are specified as positional arguments, only those repos are processed. Glob patterns (e.g. `acme/*`) are matched against manifest entries. When no repos are specified, all manifest repos are converged. Credentials are required only for the forges of the selected repos: a GitLab-only selection does not need `GH_TOKEN`, and a GitHub-only selection does not need `GITLAB_TOKEN`. An unfiltered run still requires credentials for every forge present in the manifest.
 
+### DCO sign-off
+
+Repositories that enforce the [Developer Certificate of Origin](https://developercertificate.org/) reject commits without a `Signed-off-by` trailer. `repos install` can add one to every scaffold commit it creates or updates — fresh installs, re-runs of an open initialization PR/MR, drift repair, and upgrades — on GitHub and GitLab, for both direct (`--direct`) and PR/MR delivery. The trailer names the user who owns the installing token, resolved from the forge's authenticated-user API (`Signed-off-by: Name <email>`). When the profile has no name, the login is used. When it has no public email, the forge's noreply address is used.
+
+Enable it with a boolean `signoff` in `repos.yaml`, at any of three levels:
+
+```yaml
+version: 1
+defaults:
+  signoff: true              # every repo
+github:
+  signoff: false             # overrides defaults for GitHub repos
+  repos:
+    - name: acme/api         # inherits github.signoff (false)
+    - name: acme/dco-repo
+      signoff: true          # repo entry wins over its forge section
+gitlab:
+  repos:
+    - name: group/project    # inherits defaults.signoff (true)
+      signoff: false         # explicit false disables an inherited true
+```
+
+A repo entry (or the glob entry that matches the repo) takes precedence over its forge section (`github` or `gitlab`), which takes precedence over `defaults`. Signoff is off when no level sets it. Passing `--signoff` or `--signoff=false` on the command line overrides every manifest level for that run only and is never written to `repos.yaml`.
+
+When signoff is enabled for any selected repo, the identity is resolved once per forge before anything is committed. A missing identity, such as a GitHub App installation token that cannot read `/user`, or an identity without a name or email fails the install before any scaffold commit is made. `--dry-run` runs the same identity check and reports the trailer that would be added. When signoff is disabled, no trailer is added and no identity lookup is made. Uninstall commits (file deletions) do not add a trailer.
+
 ### Inference authentication selection
 
 Every repo that `repos install` converges or `repos status` checks must resolve an explicit inference authentication method, `inference.auth`. Three values are accepted:
@@ -202,6 +228,7 @@ The values, validation, WIF provider derivation, and the `FULLSEND_GCP_*` secret
 | `--vendor` | `false` | Vendor binary, reusable workflows, actions, and agent content into each repo for offline CI. Can also be set via `defaults.vendor` or per-repo `vendor` in the manifest. By default, the binary is auto-resolved from `--fullsend-ref`; use `--fullsend-binary` or `--fullsend-source` to provide it explicitly. |
 | `--fullsend-binary` | | Path to a pre-built Linux fullsend binary to upload when vendoring instead of auto-resolving (requires `--vendor`) |
 | `--fullsend-source` | | Path to a fullsend source checkout for content and cross-compile instead of auto-detecting or fetching from GitHub (requires `--vendor`) |
+| `--signoff` | `false` | Add a `Signed-off-by` trailer for the authenticated installing user to every scaffold commit (GitHub and GitLab, direct or PR/MR). When passed (`--signoff` or `--signoff=false`) it overrides the manifest `signoff` settings for this run only. Otherwise the per-repo, forge-section, and `defaults` `signoff` values apply. See [DCO sign-off](#dco-sign-off). |
 | `--gitlab-url` | | GitLab instance URL (e.g. `https://gitlab.example.com`); sets `gitlab.url` in the manifest and implies `--forge=gitlab` when no forge is specified. Private-CA instances also need runner `tls-ca-file` / `CI_SERVER_TLS_CA_FILE` — see [Private CA (self-hosted GitLab)](../guides/getting-started/operations.md#private-ca-self-hosted-gitlab) |
 | `--gitlab-role-registry` | | Path to administrator GitLab role registry JSON (custom roles: credential references and policy, never secret values). Written as the protected unmasked `FULLSEND_GITLAB_ROLE_REGISTRY` variable. |
 | `--gitlab-role-token` | | Administrator-provided GitLab role PAT (`role=token`, repeatable) for free-tier enrollment or a custom `own` credential. Values are never logged. |

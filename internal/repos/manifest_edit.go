@@ -414,6 +414,10 @@ func carveOutGlobEntry(platforms []*PlatformConfig, name string, skipGlobs map[s
 				v := *entry.Vendor
 				explicit.Vendor = &v
 			}
+			if entry.Signoff != nil {
+				s := *entry.Signoff
+				explicit.Signoff = &s
+			}
 			platform.Repos = append(platform.Repos, explicit)
 			return &platform.Repos[len(platform.Repos)-1], nil
 		}

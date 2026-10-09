@@ -463,16 +463,9 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// trailer would cause the DCO check to fail with a confusing error.
 	var signOffTrailer string
 	if cfg.signoff {
-		id, idErr := client.GetAuthenticatedUserIdentity(ctx)
-		if idErr != nil {
-			return fmt.Errorf("--signoff requires a GitHub user identity (name and email) — this is not available for GitHub App tokens: %w", idErr)
-		}
-		if id.Name == "" || id.Email == "" {
-			return fmt.Errorf("--signoff requires a GitHub user identity with both name and email set (got name=%q, email=%q)", id.Name, id.Email)
-		}
-		trailer, trailerErr := id.SignOffTrailer()
+		trailer, trailerErr := resolveSignOffTrailer(ctx, client, "--signoff", "GitHub")
 		if trailerErr != nil {
-			return fmt.Errorf("--signoff: %w", trailerErr)
+			return trailerErr
 		}
 		signOffTrailer = trailer
 	}

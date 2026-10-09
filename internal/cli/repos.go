@@ -304,6 +304,13 @@ type reposInstallConfig struct {
 	fullsendSource string
 	vendorChanged  bool
 
+	// signoff adds a Signed-off-by trailer for the authenticated
+	// installing user to scaffold commits. When signoffChanged is true
+	// (--signoff or --signoff=false was passed), it overrides the
+	// manifest's signoff settings for this run; it is never persisted.
+	signoff        bool
+	signoffChanged bool
+
 	// Test overrides
 	testClient               forge.Client
 	testFactory              repos.ForgeClientFactory
@@ -373,6 +380,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 				return err
 			}
 			opts.vendorChanged = cmd.Flags().Changed("vendor")
+			opts.signoffChanged = cmd.Flags().Changed("signoff")
 			opts.rolesChanged = cmd.Flags().Changed("roles")
 			return runReposInstall(cmd.Context(), opts)
 		},
@@ -403,6 +411,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringArrayVar(&opts.rotateGitLabRoleNames, "rotate-gitlab-role", nil, "rotate a specific GitLab role (repeatable); default is all own-credential roles that are due")
 	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerToken, "rotate-gitlab-trigger-token", false, "force-rotate the GitLab webhook fast-path pipeline trigger token (FULLSEND_TRIGGER_TOKEN); the previous token is revoked after the webhook is updated")
 	addVendorFlags(cmd, &opts.vendor, &opts.fullsendBinary, &opts.fullsendSource)
+	cmd.Flags().BoolVar(&opts.signoff, "signoff", false, "add a Signed-off-by trailer for the authenticated user to scaffold commits; --signoff and --signoff=false override the manifest signoff settings for this run")
 
 	return cmd
 }
@@ -882,6 +891,20 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		vendorOverride = &opts.vendor
 	}
 
+	// When --signoff is explicitly set on the CLI (true or false), it
+	// overrides the manifest signoff settings for this run. Trailers are
+	// resolved once per forge before convergence (including dry runs) so
+	// a missing identity fails before any scaffold commit is made.
+	var signoffOverride *bool
+	if opts.signoffChanged {
+		signoffOverride = &opts.signoff
+	}
+	signOffTrailers, err := resolveRepoSignOffTrailers(ctx, clients, printer, manifest,
+		opts.repoFilter, targetedForges, signoffOverride, opts.dryRun)
+	if err != nil {
+		return err
+	}
+
 	upstreamRef, upstreamTag := resolveUpstreamRef()
 
 	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, installed bool) error {
@@ -922,6 +945,19 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		if rc.Forge == repos.ForgeGitLab {
 			meta.CommitMsg += " [skip ci]"
 			meta.PRTitle += " [skip ci]"
+		}
+		// The trailer goes after [skip ci] so it stays the last paragraph
+		// of the commit message, where git trailer parsing expects it.
+		repoSignoff := rc.Signoff
+		if signoffOverride != nil {
+			repoSignoff = *signoffOverride
+		}
+		if repoSignoff {
+			trailer, ok := signOffTrailers[rc.Forge]
+			if !ok {
+				return fmt.Errorf("signoff is enabled for %s/%s but no %s user identity was resolved", owner, repo, rc.Forge)
+			}
+			meta.CommitMsg += "\n\n" + trailer
 		}
 		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
 			targetRepo.DefaultBranch, meta, files, direct, nil)
@@ -1662,6 +1698,52 @@ func checkAllForgeScopes(ctx context.Context, clients repos.ForgeClientFactory, 
 		}
 	}
 	return nil
+}
+
+// resolveRepoSignOffTrailers returns the Signed-off-by trailer to use for
+// scaffold commits on each forge that needs one, keyed by forge name. When
+// override is non-nil (an explicit --signoff or --signoff=false), it
+// applies to every targeted forge; otherwise a forge needs a trailer when
+// any selected manifest entry resolves signoff to true (entry, then forge
+// section, then defaults). The authenticated user's identity is resolved
+// once per forge and a missing or incomplete identity is an error. In a
+// dry run the trailer that would be added is reported for each forge.
+func resolveRepoSignOffTrailers(ctx context.Context, clients repos.ForgeClientFactory, printer *ui.Printer,
+	manifest *repos.Manifest, filter, targetedForges []string, override *bool, dryRun bool) (map[string]string, error) {
+	var forges []string
+	switch {
+	case override != nil && !*override:
+		return nil, nil
+	case override != nil:
+		forges = targetedForges
+	default:
+		var err error
+		forges, err = manifest.SignoffForgesFor(filter)
+		if err != nil {
+			return nil, fmt.Errorf("determining signoff settings: %w", err)
+		}
+	}
+
+	trailers := make(map[string]string, len(forges))
+	for _, forgeName := range forges {
+		fc, err := clients.ConfigFor(forgeName)
+		if err != nil {
+			return nil, err
+		}
+		label := "GitHub"
+		if forgeName == repos.ForgeGitLab {
+			label = "GitLab"
+		}
+		trailer, err := resolveSignOffTrailer(ctx, fc.Client, "signoff", label)
+		if err != nil {
+			return nil, err
+		}
+		trailers[forgeName] = trailer
+		if dryRun {
+			printer.StepDone(fmt.Sprintf("Would add trailer to %s scaffold commits: %s", label, trailer))
+		}
+	}
+	return trailers, nil
 }
 
 // announceGitLabURLDryRun prints a dry-run preview message for --gitlab-url
