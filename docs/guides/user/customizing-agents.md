@@ -485,7 +485,7 @@ When `status_notifications` is omitted entirely, both start and completion comme
 
 `on_failure` is useful when you want to reduce notification noise — successful runs leave no trace, but failures still surface. When `completion` is set to `on_failure`, the start comment is automatically suppressed regardless of the `start` setting, because posting and then deleting a start comment would still trigger a GitHub notification pointing to a deleted comment.
 
-In `enabled` mode (the default), a hard crash or cancellation that happens before the agent could post anything at all is also surfaced after the fact: a post-job cleanup step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
+In `enabled` mode (the default), a hard crash or cancellation that happens before the agent could post anything at all is also surfaced after the fact: a post-job cleanup step synthesizes an "Interrupted" comment so the run doesn't silently vanish. If the agent finishes successfully but the completion-status update itself fails (for example an OIDC timeout while minting a fresh token), the leftover start comment is finalized as "Completed (status update failed)" rather than "Terminated", so a successful review is not misread as a crash.
 
 ### Reactions
 
