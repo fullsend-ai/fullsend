@@ -10341,10 +10341,22 @@ func TestOverlayWhenPossible(t *testing.T) {
 		{"config false", `config.flag == false`, "github", cfg, false},
 		{"config unknown", `config.flag == false`, "github", nil, true},
 		{"unconditional", `true`, "gitlab", nil, true},
+		{"event in string literal, config false", `config.flag == "event-handler"`, "github", cfg, false},
+		{"event in string literal, config true", `config.flag == true || config.name == "event"`, "github", map[string]any{"flag": true, "name": "x"}, true},
+		{"event in field name, config false", `config.event_flag == false`, "github", map[string]any{"event_flag": true}, false},
+		{"triple-quoted literal with operators", `config.flag == """a && b || c"""`, "github", map[string]any{"flag": "a && b || c"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, OverlayWhenPossible(tt.when, tt.forge, tt.config))
 		})
 	}
+}
+
+func TestSplitWhenTerms_TripleQuotedLiteralIsOpaque(t *testing.T) {
+	got := splitWhenTerms(`config.flag == """a && b || c"""`)
+	assert.Equal(t, [][]string{{`config.flag == """a && b || c"""`}}, got)
+	got = splitWhenTerms(`config.flag == '''a && b'''`)
+	assert.Len(t, got, 1)
+	assert.Len(t, got[0], 1)
 }

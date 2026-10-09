@@ -711,3 +711,45 @@ func TestCheckWithinWorkspace(t *testing.T) {
 	assert.Error(t, CheckWithinWorkspace(root, filepath.Join(root, "out")))
 	assert.Error(t, CheckWithinWorkspace(root, outside))
 }
+
+func TestCacheGet_RejectsSpecialFileSymlinks(t *testing.T) {
+	if _, err := os.Stat("/dev/zero"); err != nil {
+		t.Skip("/dev/zero not available")
+	}
+	for _, name := range []string{"content", "metadata.json"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			content := []byte("hello")
+			require.NoError(t, CachePut(root, "https://example.com/r", content))
+			hash := ComputeSHA256(content)
+			dir, err := CachePath(root, hash)
+			require.NoError(t, err)
+
+			planted := filepath.Join(dir, name)
+			require.NoError(t, os.Remove(planted))
+			require.NoError(t, os.Symlink("/dev/zero", planted))
+
+			_, _, err = CacheGet(root, hash)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestCacheGet_RejectsOversizedFile(t *testing.T) {
+	root := t.TempDir()
+	content := []byte("hello")
+	require.NoError(t, CachePut(root, "https://example.com/r", content))
+	hash := ComputeSHA256(content)
+	dir, err := CachePath(root, hash)
+	require.NoError(t, err)
+
+	big := filepath.Join(dir, "content")
+	f, err := os.OpenFile(big, os.O_WRONLY|os.O_TRUNC, 0o600)
+	require.NoError(t, err)
+	require.NoError(t, f.Truncate(maxCacheFileBytes+1))
+	require.NoError(t, f.Close())
+
+	_, _, err = CacheGet(root, hash)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
+}

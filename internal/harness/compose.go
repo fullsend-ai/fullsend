@@ -436,7 +436,7 @@ func OverlayWhenPossible(when, forgePlatform string, config map[string]any) bool
 // whenTermImpossible reports whether a single && term is known false from the
 // forge platform and config alone.
 func whenTermImpossible(term, forgePlatform string, config map[string]any) bool {
-	if strings.Contains(term, "event") {
+	if whenReadsEvent(term) {
 		return false
 	}
 	if strings.Contains(term, "runtime") && forgePlatform == "" {
@@ -502,6 +502,13 @@ func whenImplies(child, base string) bool {
 // normalized && terms. Splitting respects parentheses, brackets and quoted
 // strings; a term wrapped in a single pair of parentheses is unwrapped.
 func splitWhenTerms(expr string) [][]string {
+	// The lexical scanners below only know single-line quoted strings. A CEL
+	// triple-quoted literal can hold quotes and operators, so treat any
+	// expression containing one as a single opaque term rather than risk a
+	// split inside the literal.
+	if strings.Contains(expr, `"""`) || strings.Contains(expr, "'''") {
+		return [][]string{{strings.TrimSpace(expr)}}
+	}
 	// Unwrap enclosing parentheses first so `(a || b)` yields alternatives.
 	expr = normalizeWhenTerm(expr)
 	// A top-level ternary binds looser than || and &&; treat it as opaque.

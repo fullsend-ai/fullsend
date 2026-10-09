@@ -583,7 +583,7 @@ func TestRunLint_InvalidForgeWithMalformedAllowlistNeverFetches(t *testing.T) {
 	err := runLint(context.Background(), dir, "", false, false, ui.New(&buf))
 	require.Error(t, err)
 	assert.Contains(t, buf.String(), "not a valid forge platform")
-	assert.Contains(t, buf.String(), "URL base requires org-level allowed_remote_resources")
+	assert.Contains(t, buf.String(), "URL base requires config-level allowed_remote_resources")
 	assert.NoDirExists(t, filepath.Join(dir, ".fullsend-cache"))
 }
 
@@ -599,7 +599,7 @@ func TestRunLint_MalformedConfigNeverFetches(t *testing.T) {
 	var buf bytes.Buffer
 	err := runLint(context.Background(), dir, "", false, false, ui.New(&buf))
 	require.Error(t, err)
-	assert.Contains(t, buf.String(), "URL base requires org-level allowed_remote_resources")
+	assert.Contains(t, buf.String(), "URL base requires config-level allowed_remote_resources")
 	assert.NoDirExists(t, filepath.Join(dir, ".fullsend-cache"))
 }
 

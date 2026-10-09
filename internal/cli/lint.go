@@ -275,7 +275,7 @@ func lintGitToken(explicit string, canFetch bool, printer *ui.Printer) string {
 // lintConfig validates the layered config (config.yaml over config.base.yaml)
 // and reports config-level deprecations. It returns the loaded config (nil if
 // absent or unreadable) and whether it is usable for agent discovery.
-func lintConfig(absFullsendDir string, result *lintResult, printer *ui.Printer) (config.ConfigReader, bool) {
+func lintConfig(absFullsendDir string, result *lintResult, printer *ui.Printer) (loaded config.ConfigReader, usable bool) {
 	// config.base.yaml alone is a supported configuration, so check both.
 	label := config.OverlayConfigFile
 	haveAny := false
@@ -373,7 +373,7 @@ func lintOneAgent(ctx context.Context, target lintTarget, absFullsendDir, forgeF
 		err         error
 	)
 	if target.fromConfig {
-		harnessPath, fetchDeps, err = resolveRegisteredForLock(ctx, absFullsendDir, target.name, orgCfg, rFlags, policy, printer)
+		harnessPath, fetchDeps, err = resolveRegisteredAgent(ctx, absFullsendDir, target.name, orgCfg, rFlags, policy, printer)
 	} else {
 		harnessPath, err = resolveHarnessPath(absFullsendDir, target.name, printer)
 	}
@@ -646,12 +646,12 @@ func anyOverlayPossible(whens []string, opts harness.ComposeOpts) bool {
 }
 
 // lintLoadedHarness composes one harness variant and reports errors and
-// diagnostics (skipping those already in linted). It returns false on error.
+// diagnostics (skipping those already in linted). passed is false on error.
 // deferred is true when a missing validation_loop.script was not reported
 // because the composition has overlays (and no forced overlay): the empty
 // event drops event-conditioned overlays that may supply the script, so the
 // caller's forced-overlay variants decide instead.
-func lintLoadedHarness(ctx context.Context, harnessPath string, opts harness.ComposeOpts, label, agentName, absFullsendDir string, orgAllowlist []string, requireConfig bool, linted map[string]bool, result *lintResult, printer *ui.Printer) (bool, bool) {
+func lintLoadedHarness(ctx context.Context, harnessPath string, opts harness.ComposeOpts, label, agentName, absFullsendDir string, orgAllowlist []string, requireConfig bool, linted map[string]bool, result *lintResult, printer *ui.Printer) (passed, deferred bool) {
 	h, _, loadErr := harness.LoadWithBase(ctx, harnessPath, opts)
 	if loadErr != nil {
 		if errors.Is(loadErr, harness.ErrValidationLoopScriptRequired) && opts.ForceOverlays == nil && opts.OverlayWhens != nil && anyOverlayPossible(*opts.OverlayWhens, opts) {

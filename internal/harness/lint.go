@@ -26,7 +26,8 @@ func (s DiagnosticSeverity) String() string {
 	}
 }
 
-// Diagnostic represents a non-fatal issue found by Lint.
+// Diagnostic represents an issue found by Lint. Severity distinguishes
+// warnings from errors.
 type Diagnostic struct {
 	Severity DiagnosticSeverity
 	Field    string
@@ -49,8 +50,8 @@ const ImplicitRuntimeFetchWarning = "allowed_remote_resources is set without all
 const DeprecatedIssueURLWarning = "GITHUB_ISSUE_URL is deprecated; use FULLSEND_WORK_ITEM_URL instead (see #6610); " +
 	"keep GITHUB_ISSUE_URL for harnesses run by the reusable prioritize workflow, which does not export FULLSEND_WORK_ITEM_URL yet"
 
-// Lint returns non-fatal diagnostics, or nil. Call only after a successful
-// Validate.
+// Lint returns diagnostics (warnings or errors), or nil. Call only after a
+// successful Validate.
 func (h *Harness) Lint() []Diagnostic {
 	var diags []Diagnostic
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -61,6 +62,49 @@ func validateHash(hash string) error {
 	return nil
 }
 
+// maxCacheFileBytes bounds how much readCacheFile reads from one cache file.
+const maxCacheFileBytes = 100 << 20
+
+// readCacheFile reads one cache file for a cache hit. Before opening it, it
+// verifies the symlink-resolved path stays inside the workspace and is a
+// regular file, and it bounds the read, so a checkout that plants a symlink to
+// /dev/zero or a FIFO as a cache entry cannot exhaust memory or hang. A missing
+// file is reported with an error satisfying os.IsNotExist.
+func readCacheFile(workspaceRoot, path string) ([]byte, error) {
+	if err := CheckWithinWorkspace(workspaceRoot, path); err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("cache file %q is not a regular file", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxCacheFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxCacheFileBytes {
+		return nil, fmt.Errorf("cache file %q exceeds %d bytes", path, int64(maxCacheFileBytes))
+	}
+	return data, nil
+}
+
+// validateExistingCacheDir runs validateCachePath when the cache entry
+// directory exists; a missing entry is a cache miss and is left to the caller.
+func validateExistingCacheDir(workspaceRoot, dir string) error {
+	if _, err := os.Lstat(dir); err != nil {
+		return nil
+	}
+	return validateCachePath(workspaceRoot, dir)
+}
+
 // CacheGet retrieves a previously cached resource by its content hash.
 // It returns (nil, nil, nil) on a cache miss (directory or files missing).
 // If the cached content fails integrity re-verification, it returns an error.
@@ -70,7 +114,12 @@ func CacheGet(workspaceRoot, hash string) ([]byte, *CacheEntry, error) {
 		return nil, nil, err
 	}
 
-	metadataBytes, err := os.ReadFile(filepath.Join(dir, "metadata.json"))
+	// Validate containment before opening any file inside an existing entry.
+	if err := validateExistingCacheDir(workspaceRoot, dir); err != nil {
+		return nil, nil, err
+	}
+
+	metadataBytes, err := readCacheFile(workspaceRoot, filepath.Join(dir, "metadata.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil
@@ -83,7 +132,7 @@ func CacheGet(workspaceRoot, hash string) ([]byte, *CacheEntry, error) {
 		return nil, nil, fmt.Errorf("unmarshaling cache metadata: %w", err)
 	}
 
-	content, err := os.ReadFile(filepath.Join(dir, "content"))
+	content, err := readCacheFile(workspaceRoot, filepath.Join(dir, "content"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil
@@ -190,7 +239,7 @@ func CheckWithinWorkspace(workspaceRoot, p string) error {
 	}
 	rel, err := filepath.Rel(resolvedRoot, resolved)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("path escapes workspace: %s", resolved)
+		return fmt.Errorf("path escapes workspace: %s (the cache must resolve inside the workspace; replace the symlink with a real directory or point it at a path inside the workspace)", resolved)
 	}
 	return nil
 }
@@ -360,8 +409,13 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 		return "", nil, err
 	}
 
+	// Validate containment before opening any file inside an existing entry.
+	if err := validateExistingCacheDir(workspaceRoot, dir); err != nil {
+		return "", nil, err
+	}
+
 	// Read metadata.
-	metadataBytes, err := os.ReadFile(filepath.Join(dir, "metadata.json"))
+	metadataBytes, err := readCacheFile(workspaceRoot, filepath.Join(dir, "metadata.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil, nil // cache miss
@@ -410,7 +464,7 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 		if err != nil {
 			return err
 		}
-		content, err := os.ReadFile(path)
+		content, err := readCacheFile(workspaceRoot, path)
 		if err != nil {
 			return skipVanished(err)
 		}

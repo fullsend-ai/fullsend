@@ -619,12 +619,12 @@ func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string
 	}
 
 	// Local file not found — try config-driven resolution.
-	return resolveRegisteredForLock(ctx, absFullsendDir, agentName, orgCfg, rFlags, policy, printer)
+	return resolveRegisteredAgent(ctx, absFullsendDir, agentName, orgCfg, rFlags, policy, printer)
 }
 
-// resolveRegisteredForLock resolves agentName through its config registration
+// resolveRegisteredAgent resolves agentName through its config registration
 // only (not the local harness directory), as runAgent does.
-func resolveRegisteredForLock(ctx context.Context, absFullsendDir, agentName string, orgCfg config.ConfigReader, rFlags resolveFlags, policy fetch.FetchPolicy, printer *ui.Printer) (string, []resolve.Dependency, error) {
+func resolveRegisteredAgent(ctx context.Context, absFullsendDir, agentName string, orgCfg config.ConfigReader, rFlags resolveFlags, policy fetch.FetchPolicy, printer *ui.Printer) (string, []resolve.Dependency, error) {
 	if orgCfg == nil {
 		return "", nil, fmt.Errorf("agent %q: harness file not found locally and no config.yaml for fallback resolution", agentName)
 	}

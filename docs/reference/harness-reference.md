@@ -263,6 +263,8 @@ agent: agents/triage.md              # → {base}/agents/triage.md
 agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=abc...
 ```
 
+**Harness file limits** — Every harness file `fullsend` reads (including each layer of a `base:` chain) must be a regular file of at most 1 MiB. A symlink to a special file (a FIFO, `/dev/zero`) or an oversized file is rejected rather than read; this applies to `fullsend run`, `lock` and `lint`.
+
 **Scripts are local-only** — `pre_script`, `post_script`, and `validation_loop.script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed.
 
 **`validation_loop.preflight_check` is a command, not a script resource** — The runner expands `${VAR}` references from its permitted host environment, then passes the result to `sh -c` on the host; it does not fetch or stage a file named by the command. Do not interpolate untrusted values or credentials, even within shell quotes: on failure or timeout the expanded command currently appears in diagnostics.

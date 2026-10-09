@@ -385,6 +385,8 @@ resolution and prints a warning suggesting you re-run `fullsend lock`.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
 
+The fetch cache (`.fullsend-cache/` in the workspace root) must resolve inside the workspace. If it is a symlink to a location outside the workspace (for example a shared CI volume), `run`, `lock` and `lint` fail with a "path escapes workspace" error; replace the symlink with a real directory or point it at a path inside the workspace. Cache files are also read only when they are regular files of at most 100 MiB.
+
 ### Status notification flags
 
 When running agents locally you can optionally enable status comments on the
