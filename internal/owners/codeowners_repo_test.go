@@ -4,6 +4,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -35,6 +36,22 @@ func repoCodeowners(t *testing.T) (content string, loc string) {
 	t.Fatal("no CODEOWNERS file in .github/, root, or docs/: GitHub " +
 		"would assign no code owners at all (issue #6082)")
 	return "", ""
+}
+
+// GitHub owner tokens: @user or @org/team (alphanumerics with interior
+// hyphens), or an email address added to the user's account.
+var (
+	codeownerUserRe  = regexp.MustCompile(`^@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:/[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)?$`)
+	codeownerEmailRe = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$`)
+)
+
+// codeownerTokenValid reports whether an owner field has the syntax
+// GitHub accepts. GitHub skips any CODEOWNERS line containing invalid
+// syntax (the repo code-owners-errors API reports an "Invalid owner"
+// kind), so a line with a malformed owner token neither grants nor
+// revokes review.
+func codeownerTokenValid(token string) bool {
+	return codeownerUserRe.MatchString(token) || codeownerEmailRe.MatchString(token)
 }
 
 // codeownersPatternMatches reports whether a CODEOWNERS pattern matches a
@@ -118,12 +135,20 @@ func matchSegments(patternSegs, pathSegs []string) bool {
 // codeownersOwners resolves the effective owners for a repo-relative path
 // from CODEOWNERS content using GitHub's last-match-wins precedence: the
 // *last* rule whose pattern matches wins, and a matched rule with no
-// owners means "no review required". Inline comments are stripped first:
-// GitHub documents "pattern @owner # comment" syntax (its own example is
-// "*.js @js-owner #This is an inline comment."), so any whitespace-
-// separated field starting with "#" ends the owner list; without this a
-// rule like ".gitmodules # ok" would read as having owners while GitHub
-// sees none and drops the review gate.
+// owners means "no review required".
+//
+// Two documented dialect rules are applied before matching:
+//   - Inline comments are stripped. GitHub documents "pattern @owner #
+//     comment" syntax (its own example is "*.js @js-owner #This is an
+//     inline comment."), so any whitespace-separated field starting with
+//     "#" ends the owner list; without this a rule like ".gitmodules #
+//     ok" would read as having owners while GitHub sees none.
+//   - Lines whose owner tokens are not @user, @org/team, or an email
+//     are skipped entirely, as GitHub skips lines with invalid syntax
+//     (Invalid owner errors in the code-owners-errors API). Skipping
+//     matters in both directions: an invalid co-owner line must not
+//     mask an earlier blank-owner revocation, and it must not fail the
+//     guard when GitHub simply ignores the line.
 func codeownersOwners(content, relPath string) []string {
 	var owners []string
 	for _, line := range strings.Split(content, "\n") {
@@ -141,6 +166,16 @@ func codeownersOwners(content, relPath string) []string {
 		if len(fields) == 0 {
 			continue
 		}
+		valid := true
+		for _, owner := range fields[1:] {
+			if !codeownerTokenValid(owner) {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
 		if codeownersPatternMatches(fields[0], relPath) {
 			owners = fields[1:]
 		}
@@ -155,21 +190,26 @@ func codeownersOwners(content, relPath string) []string {
 // names to fetch URLs. GitHub CODEOWNERS is last-match-wins, so a
 // blank-owner rule matching ".gitmodules" after the "* @fullsend-ai/core"
 // wildcard removes the human-review gate for submodule URL swaps.
-// .gitmodules must therefore keep @fullsend-ai/core specifically: when
-// code-owner review is required, an approval from ANY listed owner
-// suffices, and a nonexistent or under-privileged owner assigns no code
-// owner at all, so a substitute or ghost owner is a revocation in
-// disguise. The sibling entries (experiments, eval/.agent-eval-harness)
-// are intentional and are not asserted on here.
+//
+// The effective owner list must equal exactly @fullsend-ai/core, not
+// merely contain it: when code-owner review is required, an approval from
+// ANY listed owner suffices, so an extra co-owner ("@some-user" listed
+// after core) can approve a submodule URL swap alone. A nonexistent or
+// under-privileged owner likewise assigns no code owner at all, which a
+// syntactic guard cannot detect locally (GitHub surfaces it via the
+// code-owners-errors API); exact-list matching at least flags it on
+// every edit. The sibling entries (experiments,
+// eval/.agent-eval-harness) are intentional and are not asserted on here.
 func TestRepoCodeownersRetainsOwnerForGitmodules(t *testing.T) {
 	content, loc := repoCodeowners(t)
 
 	owners := codeownersOwners(content, ".gitmodules")
 
-	require.Contains(t, owners, "@fullsend-ai/core",
-		"effective CODEOWNERS (%s) does not resolve .gitmodules to "+
-			"@fullsend-ai/core (got %v), so PRs swapping submodule fetch "+
-			"URLs can merge without core review (issue #6082)", loc, owners)
+	require.Equal(t, []string{"@fullsend-ai/core"}, owners,
+		"effective CODEOWNERS (%s) must resolve .gitmodules to exactly "+
+			"[@fullsend-ai/core] (got %v): an extra co-owner can approve "+
+			"submodule fetch URL swaps alone, and a blank or invalid list "+
+			"removes the review gate entirely (issue #6082)", loc, owners)
 }
 
 // TestCodeownersOwnersMatchesGitignoreVariants proves the guard resolves
@@ -178,39 +218,46 @@ func TestRepoCodeownersRetainsOwnerForGitmodules(t *testing.T) {
 // match the target path (bare, root-anchored, globbed, globstar, or with
 // a trailing inline comment) must be detected as removing the review
 // gate, while rules that do not match must leave the wildcard owner in
-// place.
+// place. Invalid-syntax lines resolve as GitHub resolves them: skipped.
 func TestCodeownersOwnersMatchesGitignoreVariants(t *testing.T) {
 	const wildcard = "* @fullsend-ai/core"
+	core := []string{"@fullsend-ai/core"}
+	revoked := []string{} // matched rule with no owners
 	cases := []struct {
 		name      string
-		extraRule string // one CODEOWNERS line appended after the wildcard; "" = none
+		extraRule string // CODEOWNERS line(s) appended after the wildcard; "" = none
 		relPath   string // target path the rules are resolved against
-		wantOwner bool   // true = target keeps @fullsend-ai/core
+		want      []string
 	}{
-		{"wildcard only keeps owner", "", ".gitmodules", true},
-		{"bare .gitmodules revokes", ".gitmodules", ".gitmodules", false},
-		{"root-anchored /.gitmodules revokes", "/.gitmodules", ".gitmodules", false},
-		{"glob .git* revokes", ".git*", ".gitmodules", false},
-		{"glob *.gitmodules revokes", "*.gitmodules", ".gitmodules", false},
-		{"catch-all * revokes", "*", ".gitmodules", false},
-		{"globstar ** revokes", "**", ".gitmodules", false},
-		{"globstar **/.gitmodules revokes", "**/.gitmodules", ".gitmodules", false},
-		{"globstar /**/.gitmodules revokes", "/**/.gitmodules", ".gitmodules", false},
-		{"globstar **/* revokes", "**/*", ".gitmodules", false},
-		{"globstar **/sub/.gitmodules misses root file", "**/sub/.gitmodules", ".gitmodules", true},
-		{"inside-only .gitmodules/** misses the file itself", ".gitmodules/**", ".gitmodules", true},
-		{"dir-only .gitmodules/ cannot match a file", ".gitmodules/", ".gitmodules", true},
-		{"anchored sub/.gitmodules misses root file", "sub/.gitmodules", ".gitmodules", true},
-		{"unrelated experiments keeps owner", "experiments", ".gitmodules", true},
-		{"anchored /experiments keeps owner", "/experiments", ".gitmodules", true},
-		{"inline comment blanks owners revokes", ".gitmodules # auto-merge ok", ".gitmodules", false},
-		{"character class skipped by GitHub dialect", "[.]gitmodules", ".gitmodules", true},
-		{"anchored /.git* does not leak to depth", "/.git*", "sub/.gitmodules", true},
-		{"basename rule still matches at depth", ".gitmodules", "sub/.gitmodules", false},
-		{"interior globstar zero dirs revokes at depth", "sub/**/.gitmodules", "sub/.gitmodules", false},
-		{"interior globstar needs the named dir", "a/**/b", "a", true},
-		{"trailing globstar matches inside", "a/**", "a/b/c/x", false},
-		{"trailing globstar misses the dir itself", "a/**", "a", true},
+		{"wildcard only keeps owner", "", ".gitmodules", core},
+		{"bare .gitmodules revokes", ".gitmodules", ".gitmodules", revoked},
+		{"root-anchored /.gitmodules revokes", "/.gitmodules", ".gitmodules", revoked},
+		{"glob .git* revokes", ".git*", ".gitmodules", revoked},
+		{"glob *.gitmodules revokes", "*.gitmodules", ".gitmodules", revoked},
+		{"catch-all * revokes", "*", ".gitmodules", revoked},
+		{"globstar ** revokes", "**", ".gitmodules", revoked},
+		{"globstar **/.gitmodules revokes", "**/.gitmodules", ".gitmodules", revoked},
+		{"globstar /**/.gitmodules revokes", "/**/.gitmodules", ".gitmodules", revoked},
+		{"globstar **/* revokes", "**/*", ".gitmodules", revoked},
+		{"globstar **/sub/.gitmodules misses root file", "**/sub/.gitmodules", ".gitmodules", core},
+		{"inside-only .gitmodules/** misses the file itself", ".gitmodules/**", ".gitmodules", core},
+		{"dir-only .gitmodules/ cannot match a file", ".gitmodules/", ".gitmodules", core},
+		{"anchored sub/.gitmodules misses root file", "sub/.gitmodules", ".gitmodules", core},
+		{"unrelated experiments keeps owner", "experiments", ".gitmodules", core},
+		{"anchored /experiments keeps owner", "/experiments", ".gitmodules", core},
+		{"inline comment blanks owners revokes", ".gitmodules # auto-merge ok", ".gitmodules", revoked},
+		{"character class skipped by GitHub dialect", "[.]gitmodules", ".gitmodules", core},
+		{"anchored /.git* does not leak to depth", "/.git*", "sub/.gitmodules", core},
+		{"basename rule still matches at depth", ".gitmodules", "sub/.gitmodules", revoked},
+		{"interior globstar zero dirs revokes at depth", "sub/**/.gitmodules", "sub/.gitmodules", revoked},
+		{"interior globstar needs the named dir", "a/**/b", "a", core},
+		{"trailing globstar matches inside", "a/**", "a/b/c/x", revoked},
+		{"trailing globstar misses the dir itself", "a/**", "a", core},
+		{"invalid owner token line is skipped like GitHub", ".gitmodules core-team", ".gitmodules", core},
+		{"blank revokes when later invalid co-owner line is skipped", ".gitmodules\n.gitmodules @fullsend-ai/core core-team", ".gitmodules", revoked},
+		{"invalid co-owner falls back to wildcard without false red", ".gitmodules @fullsend-ai/core core-team", ".gitmodules", core},
+		{"extra valid co-owner resolves as the pair", ".gitmodules @fullsend-ai/core @rival", ".gitmodules", []string{"@fullsend-ai/core", "@rival"}},
+		{"email owner parses", ".gitmodules ops@example.com", ".gitmodules", []string{"ops@example.com"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,13 +265,8 @@ func TestCodeownersOwnersMatchesGitignoreVariants(t *testing.T) {
 			if tc.extraRule != "" {
 				content += tc.extraRule + "\n"
 			}
-			owners := codeownersOwners(content, tc.relPath)
-			if tc.wantOwner {
-				assert.Equal(t, []string{"@fullsend-ai/core"}, owners)
-			} else {
-				assert.Empty(t, owners,
-					"blank-owner rule %q must resolve %s to no owners", tc.extraRule, tc.relPath)
-			}
+			assert.Equal(t, tc.want, codeownersOwners(content, tc.relPath),
+				"rule %q resolved against %s", tc.extraRule, tc.relPath)
 		})
 	}
 }
