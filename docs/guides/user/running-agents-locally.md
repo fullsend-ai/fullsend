@@ -413,6 +413,22 @@ an agent fetched from a URL that was written before fullsend recorded these
 files does not pin them; run `fullsend lock --update` to add them. `fullsend run`
 warns when a current lock entry leaves any of these files unpinned.
 
+A harness's `workflow.source` pin is part of the harness file, so changing it
+makes the lock entry out of date like any other change to the harness. A
+definition that a harness inherits through a URL `base:` is pinned by the base's
+commit, which the child's `base:` URL and `#sha256=` pin, so moving that pin also
+re-locks. A local `base:` file is not part of the child's hash: after changing a
+local base, run `fullsend lock --update`.
+
+`workflow:` in a harness needs the fullsend release that introduced it. Older
+releases silently ignore the key and run the agent without the definition. A
+lock file that records a workflow definition is written as `version: 2`, and
+older releases refuse to read it instead of replaying the definition as a skill:
+`fullsend run` warns `Could not load lock file: unsupported lock file version 2
+(expected 1)` and resolves without the lock file, and `fullsend lock` stops with
+`uses version 2; this fullsend understands version 1. Upgrade fullsend` (releases before v0.53.0 wrote a new file in its place). A lock file
+without a workflow definition stays `version: 1`.
+
 Use `--update` to force re-resolution even if the lock entry appears current.
 A current entry is also not composed, so `fullsend lock` does not check it for
 reserved `env.sandbox` keys; see

@@ -47,7 +47,18 @@ type FileEntry struct {
 	SHA256 string `yaml:"sha256"`
 }
 
-const currentVersion = 1
+// WorkflowField is the dependency field of a workflow definition
+// (ADR 0130).
+const WorkflowField = "workflow"
+
+// Lock file versions. A file that records a workflow definition is written
+// as version 2, so a release that predates workflow definitions refuses it
+// ("unsupported lock file version 2") instead of replaying the definition
+// as a skill; every other file stays version 1, readable by older releases.
+const (
+	baseVersion     = 1
+	workflowVersion = 2
+)
 
 // ParseError is returned by Load when path exists but is not valid YAML.
 type ParseError struct {
@@ -63,17 +74,22 @@ func (e *ParseError) Unwrap() error { return e.Err }
 // UnsupportedVersionError is returned by Load when path declares a lock
 // format version this binary does not understand.
 type UnsupportedVersionError struct {
-	Version  int
+	Version int
+	// Expected is the newest version this binary reads; every version
+	// from 1 up to it is supported.
 	Expected int
 }
 
 func (e *UnsupportedVersionError) Error() string {
+	if e.Expected > baseVersion {
+		return fmt.Sprintf("unsupported lock file version %d (expected %d to %d)", e.Version, baseVersion, e.Expected)
+	}
 	return fmt.Sprintf("unsupported lock file version %d (expected %d)", e.Version, e.Expected)
 }
 
 // Load reads a lock file from path. Returns nil (no error) if the file
 // does not exist. Parse failures return *ParseError. A version other than
-// currentVersion returns *UnsupportedVersionError. Callers that would
+// baseVersion or workflowVersion returns *UnsupportedVersionError. Callers that would
 // rewrite the file must abort on any error so an unreadable lock is not
 // replaced.
 func Load(path string) (*LockFile, error) {
@@ -90,8 +106,8 @@ func Load(path string) (*LockFile, error) {
 		return nil, &ParseError{Err: err}
 	}
 
-	if lf.Version != currentVersion {
-		return nil, &UnsupportedVersionError{Version: lf.Version, Expected: currentVersion}
+	if lf.Version != baseVersion && lf.Version != workflowVersion {
+		return nil, &UnsupportedVersionError{Version: lf.Version, Expected: workflowVersion}
 	}
 
 	return &lf, nil
@@ -102,11 +118,10 @@ func Load(path string) (*LockFile, error) {
 // permissions (world-readable) because lock files are meant to be committed
 // to version control, unlike cache files which use 0o600.
 //
-// Save mutates lf.Version to currentVersion when it is zero.
+// Save sets lf.Version from the content: 2 when any harness records a
+// dependency with field WorkflowField, otherwise 1.
 func Save(path string, lf *LockFile) error {
-	if lf.Version == 0 {
-		lf.Version = currentVersion
-	}
+	lf.Version = requiredVersion(lf)
 
 	data, err := yaml.Marshal(lf)
 	if err != nil {
@@ -154,6 +169,28 @@ func Save(path string, lf *LockFile) error {
 		return fmt.Errorf("renaming temp file: %w", err)
 	}
 	return nil
+}
+
+// requiredVersion is the lowest version that can hold lf's content.
+func requiredVersion(lf *LockFile) int {
+	for _, hl := range lf.Harnesses {
+		if hasWorkflowDep(hl.Dependencies, 0) {
+			return workflowVersion
+		}
+	}
+	return baseVersion
+}
+
+func hasWorkflowDep(deps []DependencyEntry, depth int) bool {
+	if depth >= maxLookupDepth {
+		return false
+	}
+	for _, d := range deps {
+		if d.Field == WorkflowField || hasWorkflowDep(d.TransitiveDeps, depth+1) {
+			return true
+		}
+	}
+	return false
 }
 
 // Lookup returns the HarnessLock entry for the named harness, or nil if

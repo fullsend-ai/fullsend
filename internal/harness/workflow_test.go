@@ -340,3 +340,18 @@ func TestWorkflowUnderForgeOrOverlaysIsIgnored(t *testing.T) {
 		})
 	}
 }
+
+func TestURLIndexWrappers(t *testing.T) {
+	ws := t.TempDir()
+	_, ok := LookupURLIndex(ws, "workflow:https://github.com/o/r/tree/"+testWorkflowSHA)
+	assert.False(t, ok)
+	require.NoError(t, RecordURLIndex(ws, "workflow:https://github.com/o/r/tree/"+testWorkflowSHA, testWorkflowHash))
+	got, ok := LookupURLIndex(ws, "workflow:https://github.com/o/r/tree/"+testWorkflowSHA)
+	assert.True(t, ok)
+	assert.Equal(t, testWorkflowHash, got)
+}
+
+func TestHasURLReferences_WorkflowSource(t *testing.T) {
+	assert.False(t, (&Harness{Workflow: &WorkflowSpec{Source: "pipelines/sample"}}).HasURLReferences())
+	assert.True(t, (&Harness{Workflow: &WorkflowSpec{Source: "https://github.com/o/r/tree/" + testWorkflowSHA + "#sha256=" + testWorkflowHash}}).HasURLReferences())
+}
