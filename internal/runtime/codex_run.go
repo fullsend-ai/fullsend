@@ -178,17 +178,13 @@ func translateCodexModel(model string) (string, error) {
 	return id, nil
 }
 
-// codexBinaryPin is the POSIX sh fragment that records where codex is.
-// `command -v` is a builtin; `readonly` is a special builtin, so a later
-// assignment in a sourced file is an error: under a POSIX sh such as dash
-// (what `sh -c` is in the sandbox image) it aborts the sourcing shell, and
-// under any shell the assignment fails and the pinned value stands. The launch
-// below uses the path, which no function or alias can shadow. This matters
-// more on codex than on pi: `codex` on PATH is npm's node launcher, so a
-// planted shim would run before the native binary ever starts.
+// codexBinaryPin is the POSIX sh fragment that records where codex is; see
+// binaryPin for why it holds. The launch below uses the path, which no
+// function or alias can shadow. This matters more on codex than on pi:
+// `codex` on PATH is npm's node launcher, so a planted shim would run before
+// the native binary ever starts.
 func codexBinaryPin() string {
-	return `readonly ` + codexBinaryVar + `="$(command -v codex)" && test -n "$` + codexBinaryVar +
-		`" || { echo 'fullsend: codex not found on PATH' >&2; exit 127; }`
+	return binaryPin(codexBinaryVar, "codex")
 }
 
 // codexAssetGuard is the POSIX sh fragment run before codex: the runner-owned

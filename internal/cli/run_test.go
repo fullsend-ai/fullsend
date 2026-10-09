@@ -1026,7 +1026,7 @@ func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
 	cmd := buildScanContextCommand("/sandbox/workspace/repo", traceID)
 	assert.Contains(t, cmd, ". /sandbox/workspace/.env &&")
 	assert.Contains(t, cmd, "FULLSEND_TRACE_ID='"+traceID+"'")
-	assert.Contains(t, cmd, "-exec fullsend scan context")
+	assert.Contains(t, cmd, "-exec /sandbox/workspace/bin/fullsend scan context")
 }
 
 func TestBuildScanContextCommand_AcceptsAdoptedTraceID(t *testing.T) {

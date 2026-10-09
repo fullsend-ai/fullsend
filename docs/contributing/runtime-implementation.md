@@ -463,6 +463,13 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
     ├── .env                            Environment variables (sourced before claude)
     ├── .env.d/                         Additional env files (host_files expand)
     │
+    │   claude is resolved on PATH before .env and launched by that path
+    │   (FULLSEND_CLAUDE_BIN), like codex and pi. .env puts workspace/bin
+    │   last on PATH and restores the runner's PATH in front after .env.d
+    │   (what claude and pi run under; codex restores its pre-.env PATH);
+    │   host_files may only target /sandbox/ or /tmp/ and not the runner's
+    │   paths (harness.ValidateHostFileDest).
+    │
     └── <repo-name>/                 ← Claude Code's working directory (cd target)
         ├── CLAUDE.md                   Project instructions (repo's own or injected bridge)
         ├── AGENTS.md                   Project rules (repo's own or org default injected)

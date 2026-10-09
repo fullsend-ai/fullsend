@@ -445,18 +445,22 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │  └── plugins/ directory                  │                   │
 │  │                                          │                   │
 │  │  Upload (single file):                   │                   │
-│  │  ├── agent definition file               │                   │
-│  │  ├── host_files (expanded ${VAR} paths)  │                   │
 │  │  ├── .env file (bootstrapEnv)            │                   │
+│  │  ├── host_files (expanded ${VAR} paths)  │                   │
+│  │  ├── agent definition file               │                   │
 │  │  └── security hooks                      │                   │
 │  │                                          │                   │
 │  │  bootstrapEnv() writes:                  │                   │
-│  │  ├── PATH=/sandbox/workspace/bin:$PATH   │                   │
+│  │  ├── PATH=/usr/local/go/bin:             │                   │
+│  │  │     $HOME/go/bin:$PATH:               │                   │
+│  │  │     /sandbox/workspace/bin (last)     │                   │
+│  │  ├── readonly FULLSEND_RUNNER_PATH       │                   │
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
 │  │  ├── FULLSEND_FETCH_URL=... (if allow_runtime_fetch)│        │
 │  │  ├── FULLSEND_FETCH_TOKEN=<run token> (if above)│            │
 │  │  ├── sources .env.d/*.env files          │                   │
+│  │  ├── PATH=$FULLSEND_RUNNER_PATH:$PATH    │                   │
 │  │  └── sources .fullsend/iteration.env     │                   │
 │  │      (FULLSEND_TIMEOUT_MINUTES +         │                   │
 │  │       FULLSEND_ITERATION_DEADLINE +      │                   │
@@ -478,8 +482,14 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                                          │                   │
 │  │ Command built by buildRunCommand():      │                   │
 │  │  cd {repoDir} &&                         │                   │
+│  │  { readonly FULLSEND_CLAUDE_BIN=         │                   │
+│  │    "$(command -v claude)" (absolute,     │                   │
+│  │    else exit 127); } &&                  │                   │
 │  │  . {envFile} &&                          │                   │
-│  │  claude --print --verbose                │                   │
+│  │  unset -f claude &&                      │                   │
+│  │  unset LD_* PYTHON* NODE_* BUN_OPTIONS &&│                   │
+│  │  "$FULLSEND_CLAUDE_BIN" --print          │                   │
+│  │    --verbose                             │                   │
 │  │    --output-format stream-json           │                   │
 │  │    [--settings {hooksSettingsPath}]      │                   │
 │  │    --model {model}                       │                   │

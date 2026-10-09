@@ -117,7 +117,7 @@ overlays:
     profiles: [profiles/myorg-github.yaml]  # Concatenated with top-level
   host_files:                         # Overlay-specific host files
     - src: env/github.env
-      dest: /run/secrets/forge.env
+      dest: /sandbox/workspace/.env.d/forge.env
   env:
     runner:
       GH_TOKEN: "${GH_TOKEN}"
@@ -168,6 +168,10 @@ always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, 
 breaks the hash-verified fetch cache.
 
 **`agent_input`** — A local directory, not a file. When a URL `base:` harness declares it, the inherited value is cleared rather than fetched; supply the directory in the child harness if needed. See [Harness field semantic types](../contributing/harness-fields.md#semantic-types-adr-0127).
+
+**`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths the runner writes or puts on `PATH` ahead of the image are refused when the harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in `/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`, `fullsend-check-output`), and anything under `/sandbox/claude-config`, `/sandbox/codex-config`, `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path component is refused as well. The same rule applies to `host_files` under `overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs `/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a command but does not replace one the image provides. Codex runs restore the `PATH` from before `.env`, so `/sandbox/workspace/bin` and `.env.d` additions are not on the codex agent's `PATH`. See [Adding executables](../guides/user/customizing-agents.md#adding-executables).
+
+**`.env.d` host files** — A `host_files` entry with a `dest` in `/sandbox/workspace/.env.d/` ending in `.env` is sourced as shell in the agent launch shell, before the runtime starts. Treat these files like `pre_script`: they run whatever they contain. `host_files` can also place configuration that tools load, such as git config or shell rc files; that is trusted like `pre_script` too. After the `.env.d` files run, on Claude and pi runs the runner puts its own `PATH` back in front. Claude runs then unset `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `NODE_OPTIONS`, `NODE_PATH` and `BUN_OPTIONS`; codex runs unset the same names except `BUN_OPTIONS`. Setting those there has no effect on the agent of those runtimes.
 
 **`timeout_minutes`** — Wall-clock budget for one agent iteration, default 30. The runner ends the iteration and sweeps the processes the agent left running in the sandbox (best effort) when it is spent, and a killed iteration ends the run with `agent timed out after <elapsed> without completing (timeout: <budget>)` unless its output validates anyway. Before every iteration the runner writes the budget as `FULLSEND_TIMEOUT_MINUTES`, the kill time as `FULLSEND_ITERATION_DEADLINE` (Unix seconds), and the current agent span as `TRACEPARENT` into the agent's environment — see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline). Those names are reserved: an `env.sandbox` entry with any of them is dropped.
 
