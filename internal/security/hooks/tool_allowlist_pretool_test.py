@@ -320,3 +320,23 @@ def test_vocabulary_sets_are_disjoint_and_well_formed():
         assert name.strip() == name and name
         assert "(" not in name and "," not in name, name
         assert not name.startswith(module.MCP_PREFIX), name
+
+
+# The PreToolUse event Claude Code sends when the main loop starts a
+# workflow (ADR 0130): the hook matches it by tool_name like any other tool.
+WORKFLOW_EVENT = json.dumps(
+    {"tool_name": "Workflow", "tool_input": {"name": "wfplug:probe", "args": "x"}},
+)
+
+
+def test_allowlist_naming_workflow_allows_workflow_call():
+    code, stdout = _run_hook(WORKFLOW_EVENT, {"FULLSEND_TOOL_ALLOWLIST": "Bash,Read,Workflow"})
+    assert code == 0
+    assert stdout == ""
+
+
+def test_allowlist_without_workflow_blocks_workflow_call():
+    code, stdout = _run_hook(WORKFLOW_EVENT, {"FULLSEND_TOOL_ALLOWLIST": "Bash,Read,Write"})
+    assert code == 1
+    response = json.loads(stdout)
+    assert response == {"decision": "block", "reason": "Tool 'Workflow' is NOT in the allowlist"}
