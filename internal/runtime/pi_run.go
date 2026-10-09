@@ -684,13 +684,10 @@ func piLoaderEnvUnset() string {
 	return "unset " + strings.Join(piLoaderEnvNames, " ")
 }
 
-// piBinaryPin is the POSIX sh fragment that records where pi is. `command
-// -v` is a builtin; `readonly` is a special builtin, so a later assignment
-// in a sourced file is an error: under a POSIX sh such as dash (what
-// `sh -c` is in the sandbox image) it aborts the sourcing shell, and under
-// any shell the assignment fails and the pinned value stands.
+// piBinaryPin is the POSIX sh fragment that records where pi is; see
+// binaryPin for why it holds.
 func piBinaryPin() string {
-	return `readonly ` + piBinaryVar + `="$(command -v pi)" && test -n "$` + piBinaryVar + `" || { echo 'fullsend: pi not found on PATH' >&2; exit 127; }`
+	return binaryPin(piBinaryVar, "pi")
 }
 
 // piPlaceholderPrefix is the namespace of OpenShell gateway placeholders,

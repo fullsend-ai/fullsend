@@ -333,18 +333,18 @@ agent: agents/test.md
 role: test
 host_files:
   - src: base-src1
-    dest: /dest1
+    dest: /tmp/dest1
   - src: base-src2
-    dest: /dest2
+    dest: /tmp/dest2
 `)
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 base: base.yaml
 host_files:
   - src: child-src2
-    dest: /dest2
+    dest: /tmp/dest2
   - src: child-src3
-    dest: /dest3
+    dest: /tmp/dest3
 `)
 
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
@@ -353,11 +353,11 @@ host_files:
 	// HostFiles: base + child, child overrides same Dest
 	require.Len(t, h.HostFiles, 3)
 	assert.Equal(t, "base-src1", h.HostFiles[0].Src)
-	assert.Equal(t, "/dest1", h.HostFiles[0].Dest)
+	assert.Equal(t, "/tmp/dest1", h.HostFiles[0].Dest)
 	assert.Equal(t, "child-src2", h.HostFiles[1].Src) // overridden
-	assert.Equal(t, "/dest2", h.HostFiles[1].Dest)
+	assert.Equal(t, "/tmp/dest2", h.HostFiles[1].Dest)
 	assert.Equal(t, "child-src3", h.HostFiles[2].Src)
-	assert.Equal(t, "/dest3", h.HostFiles[2].Dest)
+	assert.Equal(t, "/tmp/dest3", h.HostFiles[2].Dest)
 }
 
 func TestLoadWithBase_LocalBase_ValidationLoopReplace(t *testing.T) {
@@ -1836,23 +1836,23 @@ allowed_remote_resources:
 
 func TestMergeHostFiles(t *testing.T) {
 	base := []HostFile{
-		{Src: "base1", Dest: "/dest1"},
-		{Src: "base2", Dest: "/dest2"},
+		{Src: "base1", Dest: "/tmp/dest1"},
+		{Src: "base2", Dest: "/tmp/dest2"},
 	}
 	child := []HostFile{
-		{Src: "child2", Dest: "/dest2"}, // override
-		{Src: "child3", Dest: "/dest3"}, // new
+		{Src: "child2", Dest: "/tmp/dest2"}, // override
+		{Src: "child3", Dest: "/tmp/dest3"}, // new
 	}
 
 	result := mergeHostFiles(base, child)
 
 	require.Len(t, result, 3)
 	assert.Equal(t, "base1", result[0].Src)
-	assert.Equal(t, "/dest1", result[0].Dest)
+	assert.Equal(t, "/tmp/dest1", result[0].Dest)
 	assert.Equal(t, "child2", result[1].Src) // overridden
-	assert.Equal(t, "/dest2", result[1].Dest)
+	assert.Equal(t, "/tmp/dest2", result[1].Dest)
 	assert.Equal(t, "child3", result[2].Src)
-	assert.Equal(t, "/dest3", result[2].Dest)
+	assert.Equal(t, "/tmp/dest3", result[2].Dest)
 }
 
 func TestMergeForgeBlocks(t *testing.T) {
@@ -4768,7 +4768,7 @@ forge:
   gitlab:
     host_files:
       - src: env/gitlab/triage.env
-        dest: /run/env/forge.env
+        dest: /tmp/run/env/forge.env
 `)
 
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
@@ -4798,7 +4798,7 @@ allowed_remote_resources:
 	require.NotEmpty(t, h.HostFiles)
 	var found bool
 	for _, hf := range h.HostFiles {
-		if hf.Dest == "/run/env/forge.env" {
+		if hf.Dest == "/tmp/run/env/forge.env" {
 			found = true
 			assert.True(t, filepath.IsAbs(hf.Src),
 				"forge host_file src should be resolved to absolute cache path")
@@ -4808,7 +4808,7 @@ allowed_remote_resources:
 			assert.Equal(t, envContent, data)
 		}
 	}
-	assert.True(t, found, "forge host_file with dest /run/env/forge.env should exist")
+	assert.True(t, found, "forge host_file with dest /tmp/run/env/forge.env should exist")
 
 	// Verify the forge host_file was fetched as a dependency
 	var foundDep bool
@@ -4831,11 +4831,11 @@ forge:
   github:
     host_files:
       - src: env/github/base.env
-        dest: /run/env/forge.env
+        dest: /tmp/run/env/forge.env
   gitlab:
     host_files:
       - src: env/gitlab/base.env
-        dest: /run/env/forge.env
+        dest: /tmp/run/env/forge.env
 `)
 
 	path := writeTestHarness(t, dir, "child.yaml", `
@@ -4844,7 +4844,7 @@ forge:
   github:
     host_files:
       - src: env/github/child.env
-        dest: /run/env/forge.env
+        dest: /tmp/run/env/forge.env
 `)
 
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
@@ -4855,7 +4855,7 @@ forge:
 	// GitHub forge merged (child overrides base by dest), then resolved
 	require.Len(t, h.HostFiles, 1)
 	assert.Equal(t, "env/github/child.env", h.HostFiles[0].Src)
-	assert.Equal(t, "/run/env/forge.env", h.HostFiles[0].Dest)
+	assert.Equal(t, "/tmp/run/env/forge.env", h.HostFiles[0].Dest)
 }
 
 func TestMergeForgeConfigInto_ProvidersInherited(t *testing.T) {
@@ -4915,7 +4915,7 @@ func TestMergeForgeConfigInto_OpenShellConcatenated(t *testing.T) {
 func TestMergeForgeConfigInto_HostFilesInherited(t *testing.T) {
 	base := &ForgeConfig{
 		HostFiles: []HostFile{
-			{Src: "env/base.env", Dest: "/run/env/forge.env"},
+			{Src: "env/base.env", Dest: "/tmp/run/env/forge.env"},
 		},
 	}
 	child := &ForgeConfig{
@@ -4931,12 +4931,12 @@ func TestMergeForgeConfigInto_HostFilesInherited(t *testing.T) {
 func TestMergeForgeConfigInto_HostFilesOverriddenByChild(t *testing.T) {
 	base := &ForgeConfig{
 		HostFiles: []HostFile{
-			{Src: "env/base.env", Dest: "/run/env/forge.env"},
+			{Src: "env/base.env", Dest: "/tmp/run/env/forge.env"},
 		},
 	}
 	child := &ForgeConfig{
 		HostFiles: []HostFile{
-			{Src: "env/child.env", Dest: "/run/env/forge.env"},
+			{Src: "env/child.env", Dest: "/tmp/run/env/forge.env"},
 		},
 	}
 
@@ -5198,7 +5198,7 @@ forge:
   gitlab:
     host_files:
       - src: ../../../etc/shadow
-        dest: /run/secret
+        dest: /tmp/run/secret
 `)
 	baseHash := computeHash(baseContent)
 
@@ -9653,7 +9653,7 @@ overlays:
 - when: 'runtime.forge == "github"'
   host_files:
     - src: env/overlay.env
-      dest: /run/secrets/overlay.env
+      dest: /tmp/run/secrets/overlay.env
 `)
 
 	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{

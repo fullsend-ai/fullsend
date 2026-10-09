@@ -1,6 +1,6 @@
 cd '/sandbox/workspace/repo' &&
-readonly FULLSEND_CODEX_BIN="$(command -v codex)" &&
-test -n "$FULLSEND_CODEX_BIN" || { echo 'fullsend: codex not found on PATH' >&2; exit 127; } &&
+{ readonly FULLSEND_CODEX_BIN="$(command -v codex)" &&
+case "$FULLSEND_CODEX_BIN" in /*) ;; *) false ;; esac || { echo 'fullsend: codex not found on PATH' >&2; exit 127; }; } &&
 readonly FULLSEND_CODEX_PATH="$PATH" &&
 { test -f '/sandbox/codex-config/config.toml' &&
 test -f '/sandbox/codex-config/openai-token.sh' &&

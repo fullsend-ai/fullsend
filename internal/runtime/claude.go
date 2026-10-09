@@ -19,6 +19,30 @@ import (
 
 const claudeDebugLog = "claude-debug.log"
 
+// claudeBinaryVar holds the absolute path of the claude binary, resolved before
+// .env is sourced and marked read-only.
+const claudeBinaryVar = "FULLSEND_CLAUDE_BIN"
+
+// claudeBinaryPin is the POSIX sh fragment that records where claude is; see
+// binaryPin for why it holds. The pin runs before .env, which adds the
+// harness-owned /sandbox/workspace/bin to PATH and sources harness .env.d
+// files, so neither a `claude` file there nor a PATH change in an env file
+// decides which binary the run starts.
+func claudeBinaryPin() string {
+	return binaryPin(claudeBinaryVar, "claude")
+}
+
+// claudeLoaderEnvUnset clears, after .env, the variables that load code into
+// a process before its own entry point runs, mirroring the codex launch.
+// LD_* would load code into any dynamically linked binary the run starts —
+// git, tirith, the hooks' python3 — before its main runs; PYTHON* would do
+// the same to the interpreter the security hooks run under; NODE_* to any
+// node program the agent's tools start; BUN_OPTIONS to claude itself, a
+// Bun-compiled binary that honours e.g. `--preload x.js` from it. `unset` is
+// a special builtin, so a function a sourced file defined cannot stand in
+// for it.
+const claudeLoaderEnvUnset = "unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHONPATH PYTHONHOME PYTHONSTARTUP NODE_OPTIONS NODE_PATH BUN_OPTIONS"
+
 // ClaudeRuntime implements Runtime using the Claude Code CLI.
 type ClaudeRuntime struct{}
 
@@ -340,7 +364,12 @@ func buildRunCommand(params RunParams) string {
 	safe := strings.ReplaceAll(params.AgentBaseName, "'", "'\\''")
 
 	parts := []string{
-		fmt.Sprintf("cd %s && . %s && claude", params.RepoDir, envFile),
+		// The pin comes before `. .env`; `unset -f` is a special builtin, which a
+		// function defined in .env (or an .env.d file it sources) cannot
+		// shadow, and the launch goes through the pinned path, which no
+		// function or alias can shadow either.
+		fmt.Sprintf("cd %s && %s && . %s && unset -f claude && %s && \"$%s\"",
+			params.RepoDir, claudeBinaryPin(), envFile, claudeLoaderEnvUnset, claudeBinaryVar),
 		"--print",
 		"--verbose",
 		"--output-format stream-json",

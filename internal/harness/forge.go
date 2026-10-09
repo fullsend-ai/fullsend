@@ -118,6 +118,9 @@ func (h *Harness) validateForge() error {
 			if hf.Dest == "" {
 				return fmt.Errorf("forge.%s.host_files[%d]: dest is required", key, i)
 			}
+			if err := ValidateHostFileDest(hf.Dest); err != nil {
+				return fmt.Errorf("forge.%s.host_files[%d]: %w", key, i, err)
+			}
 			if IsURL(hf.Src) {
 				return fmt.Errorf("forge.%s.host_files[%d].src must be a local path, not a URL", key, i)
 			}
@@ -195,6 +198,9 @@ func validateOverlayForgeConfigInherit(idx int, fc *ForgeConfig, inheritScript b
 		}
 		if hf.Dest == "" {
 			return fmt.Errorf("%s.host_files[%d]: dest is required", prefix, i)
+		}
+		if err := ValidateHostFileDest(hf.Dest); err != nil {
+			return fmt.Errorf("%s.host_files[%d]: %w", prefix, i, err)
 		}
 		if IsURL(hf.Src) {
 			return fmt.Errorf("%s.host_files[%d].src must be a local path, not a URL", prefix, i)

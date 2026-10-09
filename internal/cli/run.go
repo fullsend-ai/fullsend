@@ -3128,6 +3128,7 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_TIMEOUT_MINUTES":    true,
 	"FULLSEND_ITERATION_DEADLINE": true,
 	"TRACEPARENT":                 true,
+	runnerPathVar:                 true,
 	// OPENAI_API_KEY is reserved through oidcDenyKeys (merged by init()).
 	// GH_WORKFLOW_TOKEN is reserved through providerOnlyKeys (merged by init()).
 }
@@ -3255,6 +3256,79 @@ const (
 	iterationEnvFile = iterationEnvDir + "/iteration.env"
 )
 
+// hostFileChmodCommand is the sandbox command that marks an uploaded host file
+// executable. dest is harness text, so it is quoted: unquoted, a dest holding
+// `;` or a space would run as shell after validation already passed it.
+// ValidateHostFileDest requires an absolute path, so it cannot start with "-".
+func hostFileChmodCommand(dest string) string {
+	return "chmod +x " + shellQuote(dest)
+}
+
+// runnerPathVar holds the PATH .env builds, captured before the .env.d loop
+// and marked read-only, so runnerPathRestoreLine can put it back in front
+// after every harness-controlled entry.
+const runnerPathVar = "FULLSEND_RUNNER_PATH"
+
+// runnerPathCaptureLine records the PATH .env has just exported. `readonly`
+// is a special builtin, so an .env.d file that assigns the same name is an
+// error: under a POSIX sh such as dash it aborts the sourcing shell, and under
+// any shell the pinned value stands. The subshell probe asks whether the name
+// is already read-only — true only on a second `. .env` in the same shell —
+// rather than whether it is set, so a value inherited from the exec
+// environment (never read-only: the attribute does not cross exec) is
+// overwritten, not trusted.
+func runnerPathCaptureLine() string {
+	return fmt.Sprintf(`if ( %s= ) 2>/dev/null; then %s="$PATH"; readonly %s; fi`, runnerPathVar, runnerPathVar, runnerPathVar)
+}
+
+// runnerPathRestoreLine puts the runner's PATH back in front after the .env.d
+// files and env.sandbox exports. This enforces reservedSandboxKeys' PATH entry
+// for host_files env files too: a directory an .env.d file prepends cannot
+// come before the runner's entries, so it cannot change which binary a name
+// the runner's PATH already provides resolves to. Directories it adds still
+// follow, so an extra toolchain directory keeps working for names not found
+// earlier.
+//
+// ${PATH:+:$PATH} appends nothing when an .env.d file left PATH empty, rather
+// than a trailing empty entry, which the shell reads as the current directory.
+func runnerPathRestoreLine() string {
+	return fmt.Sprintf(`export PATH="$%s${PATH:+:$PATH}"`, runnerPathVar)
+}
+
+// runnerPathLines are the first lines of .env: the runner's PATH, then its
+// read-only copy. /sandbox/workspace/bin comes last, after the image's own
+// PATH: host_files can drop files there, so it may add commands (my-tool.sh,
+// and the runner's own fullsend and fullsend-check-output, which exist only
+// there) but not replace one the image provides — python3 and tirith for the
+// security hooks, node for codex and pi, git, find.
+func runnerPathLines() []string {
+	pathExport := "export PATH=/usr/local/go/bin"
+	pathExport += ":$HOME/go/bin"
+	pathExport += ":$PATH"
+	pathExport += fmt.Sprintf(":%s/bin", sandbox.SandboxWorkspace)
+	return []string{pathExport, runnerPathCaptureLine()}
+}
+
+// harnessEnvLines are the last lines of .env: the harness-controlled entries,
+// then the runner-owned lines that must come after them.
+func harnessEnvLines(h *harness.Harness) []string {
+	// Source all env files from .env.d/ (populated by host_files with expand: true).
+	lines := []string{fmt.Sprintf("for f in %s/.env.d/*.env; do [ -f \"$f\" ] && . \"$f\"; done", sandbox.SandboxWorkspace)}
+
+	// ADR 0055: export env.sandbox vars. Placed after .env.d sourcing so
+	// env.sandbox takes precedence on collision — the common use case is
+	// overriding a single var from a shared host_files .env file.
+	lines = append(lines, buildSandboxEnvLines(h)...)
+
+	// The runner's PATH goes back in front after every harness-controlled
+	// entry, the same ordering rule as iteration.env below.
+	lines = append(lines, runnerPathRestoreLine())
+
+	// Runner-owned budget, deadline, and TRACEPARENT come after every
+	// harness-controlled entry so none of them can shadow the values (#7042).
+	return append(lines, iterationEnvSourceLine())
+}
+
 // iterationEnvSourceLine is the last line bootstrapEnv writes to .env. The
 // `if` keeps .env's exit status 0 while the file is absent.
 func iterationEnvSourceLine() string {
@@ -3352,15 +3426,19 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	remoteEnvFile := sandbox.SandboxWorkspace + "/.env"
 	outputDir := sandbox.SandboxWorkspace + "/output"
 
+	// Validate already refuses runner-owned dests; checked again before
+	// anything is uploaded so a harness that reached bootstrap by another
+	// route cannot overwrite the .env written below or a runner binary.
+	for i, hf := range h.HostFiles {
+		if err := harness.ValidateHostFileDest(hf.Dest); err != nil {
+			return fmt.Errorf("host_files[%d]: %w", i, err)
+		}
+	}
+
 	var lines []string
 
 	// Infrastructure vars.
-	pathExport := fmt.Sprintf("export PATH=%s/bin", sandbox.SandboxWorkspace)
-	pathExport += ":/usr/local/go/bin"
-	pathExport += ":$HOME/go/bin"
-	pathExport += ":$PATH"
-
-	lines = append(lines, pathExport)
+	lines = append(lines, runnerPathLines()...)
 	lines = append(lines, runtimeEnvExports...)
 	lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_DIR=%s", outputDir))
 	lines = append(lines, fmt.Sprintf("export FULLSEND_TARGET_REPO_DIR=%s", remoteRepositoryDir))
@@ -3407,17 +3485,7 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 		lines = append(lines, fmt.Sprintf("export FULLSEND_FETCH_TOKEN='%s'", escToken))
 	}
 
-	// Source all env files from .env.d/ (populated by host_files with expand: true).
-	lines = append(lines, fmt.Sprintf("for f in %s/.env.d/*.env; do [ -f \"$f\" ] && . \"$f\"; done", sandbox.SandboxWorkspace))
-
-	// ADR 0055: export env.sandbox vars. Placed after .env.d sourcing so
-	// env.sandbox takes precedence on collision — the common use case is
-	// overriding a single var from a shared host_files .env file.
-	lines = append(lines, buildSandboxEnvLines(h)...)
-
-	// Runner-owned budget, deadline, and TRACEPARENT come after every
-	// harness-controlled entry so none of them can shadow the values (#7042).
-	lines = append(lines, iterationEnvSourceLine())
+	lines = append(lines, harnessEnvLines(h)...)
 
 	content := strings.Join(lines, "\n") + "\n"
 
@@ -3486,8 +3554,7 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 		// landing in a bin/ directory.
 		// https://github.com/fullsend-ai/fullsend/issues/345#issuecomment-4300740512
 		if strings.Contains(hf.Dest, "/bin/") {
-			chmodCmd := fmt.Sprintf("chmod +x %s", hf.Dest)
-			if _, _, _, execErr := sandbox.Exec(sandboxName, chmodCmd, 10*time.Second); execErr != nil {
+			if _, _, _, execErr := sandbox.Exec(sandboxName, hostFileChmodCommand(hf.Dest), 10*time.Second); execErr != nil {
 				return fmt.Errorf("chmod host file %s in sandbox: %w", hf.Dest, execErr)
 			}
 		}
@@ -5200,12 +5267,15 @@ func buildScanContextCommand(repoDir, traceID string) string {
 	sort.Strings(inames) // deterministic ordering
 	inameExpr := strings.Join(inames, " -o ")
 
-	// Source .env to get PATH where fullsend is installed
+	// Source .env for the run's environment. The scanner is the binary
+	// bootstrapCommon uploaded, named by its absolute path so the version
+	// that runs matches the runner whatever PATH .env ends up with.
 	envFile := sandbox.SandboxWorkspace + "/.env"
+	scanner := sandbox.SandboxWorkspace + "/bin/fullsend"
 
 	return fmt.Sprintf(
-		". %s && FULLSEND_TRACE_ID='%s' find '%s' -maxdepth %d -type f \\( %s \\) -exec fullsend scan context {} +",
-		envFile, traceID, escapedDir, maxContextScanDepth, inameExpr,
+		". %s && FULLSEND_TRACE_ID='%s' find '%s' -maxdepth %d -type f \\( %s \\) -exec %s scan context {} +",
+		envFile, traceID, escapedDir, maxContextScanDepth, inameExpr, scanner,
 	)
 }
 

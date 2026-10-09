@@ -131,7 +131,7 @@ host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /sandbox/workspace/.gcp-credentials.json
   - src: /etc/ssl/certs/ca-certificates.crt
-    dest: /etc/ssl/certs/ca-certificates.crt
+    dest: /sandbox/workspace/ca-certificates.crt
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
@@ -148,7 +148,7 @@ host_files:
 	assert.Equal(t, "/sandbox/workspace/.gcp-credentials.json", h.HostFiles[0].Dest)
 	assert.False(t, h.HostFiles[0].Expand)
 	assert.Equal(t, "/etc/ssl/certs/ca-certificates.crt", h.HostFiles[1].Src)
-	assert.Equal(t, "/etc/ssl/certs/ca-certificates.crt", h.HostFiles[1].Dest)
+	assert.Equal(t, "/sandbox/workspace/ca-certificates.crt", h.HostFiles[1].Dest)
 	assert.False(t, h.HostFiles[1].Expand)
 	assert.Equal(t, "env/gcp-vertex.env", h.HostFiles[2].Src)
 	assert.Equal(t, "/sandbox/workspace/.env.d/gcp-vertex.env", h.HostFiles[2].Dest)
