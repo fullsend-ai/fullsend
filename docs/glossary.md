@@ -61,7 +61,7 @@ See [architecture.md](architecture.md).
 
 ### Agent Runtime
 
-The agent itself in execution — the LLM, its tool-use loop, and the interface to the model provider. This is the thing that actually reasons and acts; everything else in the architecture exists to support, constrain, or coordinate it. Claude Code is the default runtime; [pi](https://github.com/earendil-works/pi) and [Codex](https://github.com/openai/codex) are available as opt-in runtimes (`runtime: pi`, `runtime: codex`), and OpenCode is a stub. Other projects call this layer a [harness](#harness); see that entry for the naming difference. See [runtimes.md](runtimes.md).
+The agent itself in execution — the LLM, its tool-use loop, and the interface to the model provider. This is the thing that actually reasons and acts; everything else in the architecture exists to support, constrain, or coordinate it. Claude Code is the default runtime; [pi](https://github.com/earendil-works/pi) and [Codex](https://github.com/openai/codex) are available as opt-in runtimes (`runtime: pi`, `runtime: codex`), and [OpenCode](https://opencode.ai) is an experimental opt-in runtime limited to read-only agents until the security-hook adapter lands (`runtime: opencode`). Other projects call this layer a [harness](#harness); see that entry for the naming difference. See [runtimes.md](runtimes.md).
 See [architecture.md](architecture.md) and [agent-infrastructure.md](problems/agent-infrastructure.md).
 
 ### AGENTS.md

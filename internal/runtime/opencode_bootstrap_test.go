@@ -1,0 +1,651 @@
+package runtime
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// fakeOpenshellOpenCode installs a fake "openshell" that records every argv
+// line to logPath, stores each "sandbox upload <name> <local> <remote>"
+// payload under storeDir keyed by the remote path, and answers
+// `opencode --version` execs. Everything else succeeds silently. Mirrors
+// fakeOpenshellPi.
+func fakeOpenshellOpenCode(t *testing.T, logPath, storeDir string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(storeDir, 0o755))
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+echo "$@" >> '` + logPath + `'
+if [ "$2" = "upload" ]; then
+  case "$5" in /tmp/fs-upload-*/) cp -- "$4" "$5/"; exit $? ;; esac
+  cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
+  exit 0
+fi
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    "mkdir -m 700 -- /tmp/"*|"mkdir -m 700 -- '/tmp/"*|"rm -f -- '/tmp/fs-upload-"*) sh -c "$last"; exit $? ;;
+    "test -f '/tmp/fs-upload-"*)
+      sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
+      exit $? ;;
+    *"opencode debug agent"*) printf '{"name":"triage","mode":"primary","permission":{"bash":"allow","read":"allow"}}'; exit 0 ;;
+    "opencode --version") echo "0.1.0"; exit 0 ;;
+    *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"bash":"allow","read":"allow","glob":"allow","grep":"allow","skill":"allow","*":"deny"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
+  esac
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
+}
+
+const openCodeTestAgentDef = `---
+name: triage
+description: Inspect an issue.
+tools: Bash(gh,jq),Read,Skill
+model: opus
+---
+You are the triage agent. Use gh.
+`
+
+func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	skillDir := filepath.Join(t.TempDir(), "issue-labels")
+	require.NoError(t, os.MkdirAll(skillDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: issue-labels\n---\n# labels"), 0o644))
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "triage",
+		skillDirs:   []string{skillDir},
+		plugins:     claudePlugins("/tmp/some-plugin"),
+	}
+	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+
+	r := OpenCodeRuntime{}
+	agentMD := string(storedUpload(t, store, r.openCodeAgentPath("triage")))
+	assert.Contains(t, agentMD, `"mode": "primary"`)
+	assert.Contains(t, agentMD, `"description": "Inspect an issue."`)
+	assert.Contains(t, agentMD, `"model": "opus"`)
+	assert.Contains(t, agentMD, `"bash": "allow"`)
+	assert.Contains(t, agentMD, `"read": "allow"`)
+	assert.Contains(t, agentMD, `"skill": "allow"`)
+	assert.Contains(t, agentMD, "You are the triage agent. Use gh.")
+
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	logStr := string(log)
+	cfg := r.ConfigDir()
+	assert.Contains(t, logStr, "mkdir -p '"+cfg+"/agent' '"+cfg+"/skills' '"+cfg+"/plugins'")
+	assert.Contains(t, logStr, "opencode --version")
+	// Skills go through the upload/tar path; the archive lands under skills/.
+	assert.Contains(t, logStr, cfg+"/skills/")
+	trustedEnv, ok := lookupOpenCodeTrustedEnv("sb")
+	require.True(t, ok)
+	assert.Equal(t, `{"permission":{"bash":"allow","read":"allow","glob":"allow","grep":"allow","skill":"allow","*":"deny"}}`, trustedEnv.ConfigContent)
+	assert.Equal(t, "/runner/adc.json", trustedEnv.CredentialsPath)
+}
+
+func TestOpenCodeBashAllowlistWarning(t *testing.T) {
+	t.Parallel()
+
+	warning := openCodeBashAllowlistWarning([]string{"gh", "jq"})
+	assert.Contains(t, warning, "Bash allowlist (gh, jq) is recorded but not enforced")
+	assert.Contains(t, warning, "bare bash: \"allow\"")
+	assert.Contains(t, warning, "unbound-force/unbound-force#515")
+}
+
+func TestOpenCodeRuntimeBootstrap_EmptyAgentPath(t *testing.T) {
+	err := OpenCodeRuntime{}.Bootstrap(bootstrapInput{sandboxName: "sb"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent path is required")
+}
+
+func TestOpenCodeRuntimeBootstrap_NilInput(t *testing.T) {
+	err := OpenCodeRuntime{}.Bootstrap(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bootstrap input is required")
+}
+
+func TestOpenCodeRuntimeBootstrap_AgentNameFallback(t *testing.T) {
+	// When agentName is empty but the frontmatter has a name, use the
+	// frontmatter name; when both are empty, derive from the file path.
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	// Case 1: agentName empty → falls back to frontmatter name "triage".
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+	}
+	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+	r := OpenCodeRuntime{}
+	agentMD := string(storedUpload(t, store, r.openCodeAgentPath("triage")))
+	assert.Contains(t, agentMD, `"description": "Inspect an issue."`)
+}
+
+func TestOpenCodeRuntimeBootstrap_AgentNameFromPath(t *testing.T) {
+	// When both agentName and the frontmatter name are empty, the bootstrap
+	// derives the agent name from the file path.
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	namelessDef := `---
+description: A nameless agent
+tools: Read
+model: sonnet
+---
+Do something.
+`
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, namelessDef),
+	}
+	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+	r := OpenCodeRuntime{}
+	agentMD := string(storedUpload(t, store, r.openCodeAgentPath("triage")))
+	assert.Contains(t, agentMD, "Do something.")
+	assert.Contains(t, agentMD, `"read": "allow"`)
+}
+
+func TestOpenCodeRuntimeBootstrap_BadAgentFile(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   filepath.Join(t.TempDir(), "noexist.md"),
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading agent definition")
+}
+
+func TestOpenCodeRuntimeBootstrap_BodyOnlyAgent(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	// parsePiAgent treats a file without frontmatter fences as body-only;
+	// the bootstrap should still succeed with the agent name from input.
+	bodyOnly := `No frontmatter, just a prompt.`
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, bodyOnly),
+		agentName:   "test",
+	}
+	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+	r := OpenCodeRuntime{}
+	agentMD := string(storedUpload(t, store, r.openCodeAgentPath("test")))
+	assert.Contains(t, agentMD, "No frontmatter, just a prompt.")
+}
+
+func TestOpenCodeRuntimeBootstrap_InvalidTrustedEnvFailsClosed(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	storeDir := filepath.Join(work, "store")
+	require.NoError(t, os.MkdirAll(storeDir, 0o755))
+	binDir := t.TempDir()
+	// Fake openshell that returns an invalid (empty) permission policy.
+	script := `#!/bin/sh
+echo "$@" >> '` + logPath + `'
+if [ "$2" = "upload" ]; then
+  cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
+  exit 0
+fi
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    "opencode --version") echo "0.1.0"; exit 0 ;;
+    *fullsend-opencode-env-sep*) printf '%s' '{}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
+  esac
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "triage",
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err, "Bootstrap must fail with an invalid permission policy")
+	assert.Contains(t, err.Error(), "no permission policy")
+	// The invalid state must NOT be recorded for Run.
+	_, ok := lookupOpenCodeTrustedEnv("sb")
+	assert.False(t, ok, "invalid trustedEnv must not be recorded")
+}
+
+func TestOpenCodeRuntimeBootstrap_AgentNameSanitizationFailure(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	// An agent name with shell metacharacters will be sanitized differently
+	// by openCodeValidatedArg, causing a mismatch.
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "agent;rm",
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openCodeValidatedArg strips")
+}
+
+func TestOpenCodeRuntimeBootstrap_DuplicateSkillName(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	// Two different skill paths that both resolve to the same sandbox
+	// basename should fail (duplicateDestinationNameError checks base != p).
+	skillDir1 := filepath.Join(t.TempDir(), "my-skill")
+	skillDir2 := filepath.Join(t.TempDir(), "my-skill")
+	require.NoError(t, os.MkdirAll(skillDir1, 0o755))
+	require.NoError(t, os.MkdirAll(skillDir2, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(skillDir1, "SKILL.md"), []byte("---\nname: a\n---\n# a"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(skillDir2, "SKILL.md"), []byte("---\nname: b\n---\n# b"), 0o644))
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "triage",
+		skillDirs:   []string{skillDir1, skillDir2},
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "my-skill")
+}
+
+func TestOpenCodeRuntimeBootstrap_SkillEmptyPath(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	// An empty skill path should be skipped (not cause an error).
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "triage",
+		skillDirs:   []string{""},
+	}
+	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+}
+
+func TestOpenCodePreflightVersionFailure(t *testing.T) {
+	work := t.TempDir()
+	binDir := t.TempDir()
+	// A fake openshell whose `opencode --version` exec exits non-zero.
+	script := `#!/bin/sh
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    "opencode --version") echo "boom" >&2; exit 1 ;;
+  esac
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "triage",
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "opencode preflight")
+	_ = work
+}
+
+func TestOpenCodeExtractTranscripts_NoneFound(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	// The fake's default exec returns empty stdout for the `test -f ... && echo
+	// found` probe, so no transcript is reported and the call is a clean no-op.
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	outDir := filepath.Join(work, "out")
+	err := OpenCodeRuntime{}.ExtractTranscripts("sb", "triage", outDir)
+	require.NoError(t, err)
+	// The output dir is created even when nothing is downloaded.
+	_, statErr := os.Stat(outDir)
+	require.NoError(t, statErr)
+	entries, _ := os.ReadDir(outDir)
+	assert.Empty(t, entries, "no transcript files when none are found")
+}
+
+func TestOpenCodeExtractTranscripts_DownloadsTeedStream(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	binDir := t.TempDir()
+	// The `test -f <transcript> && echo found` probe reports the sandbox tee'd
+	// transcript exists; download writes an ndjson stream into the requested
+	// destination dir (openshell sandbox download always treats the last arg as
+	// a directory), which DownloadFile renames to the requested local name.
+	script := `#!/bin/sh
+echo "$@" >> '` + logPath + `'
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    *"echo found"*) echo found; exit 0 ;;
+  esac
+  exit 0
+fi
+if [ "$2" = "download" ]; then
+  printf '{"type":"step_finish","timestamp":1,"sessionID":"s1","part":{"reason":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}\n' > "$5/$(basename "$4")"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := filepath.Join(work, "transcripts")
+	require.NoError(t, OpenCodeRuntime{}.ExtractTranscripts("sb", "triage", out))
+
+	// The tee'd transcript is downloaded as <agentLabel>-output.jsonl.
+	saved := filepath.Join(out, "triage-"+openCodeOutputFile)
+	data, err := os.ReadFile(saved)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"type":"step_finish"`)
+
+	// The probe and download targeted the sandbox tee path Run writes to.
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), openCodeSandboxTranscriptPath())
+
+	// A clean (non-error) stream produces no error annotations.
+	assert.Empty(t, OpenCodeRuntime{}.ParseTranscriptErrors(out))
+}
+
+func TestOpenCodePathHelpers(t *testing.T) {
+	t.Parallel()
+	r := OpenCodeRuntime{}
+	assert.Equal(t, "/sandbox/opencode-config/agent/triage.md", r.openCodeAgentPath("triage"))
+	assert.Equal(t, "/sandbox/opencode-config/skills", r.openCodeSkillsPath())
+	assert.True(t, strings.HasPrefix(r.openCodeHooksExtensionPath(), r.ConfigDir()+"/plugins/"))
+}
+
+// fakeOpenshellOpenCodeStream installs a fake openshell that streams
+// streamFixture for the `opencode run` command and otherwise succeeds.
+func fakeOpenshellOpenCodeStream(t *testing.T, streamFixture string) {
+	t.Helper()
+	recordOpenCodeTrustedEnv("sb", openCodeTrustedEnv{
+		ConfigContent:   `{"permission":{"*":"deny"}}`,
+		CredentialsPath: "/runner/adc.json",
+	})
+	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    *"--format json"*) cat '` + streamFixture + `'; exit 0 ;;
+  esac
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestOpenCodeRuntimeRun_HappyPath(t *testing.T) {
+	t.Setenv(openCodeProviderEnv, "")
+	work := t.TempDir()
+	fixture := filepath.Join(work, "stream.jsonl")
+	stream := strings.Join([]string{
+		`{"type":"tool_use","timestamp":1,"sessionID":"s1","part":{"tool":"bash","state":{"status":"completed","title":"ls"}}}`,
+		`{"type":"text","timestamp":2,"sessionID":"s1","part":{"text":"all done"}}`,
+		`{"type":"step_finish","timestamp":3,"sessionID":"s1","part":{"reason":"stop","cost":0.02,"tokens":{"input":100,"output":50,"reasoning":0,"cache":{"read":0,"write":0}}}}`,
+	}, "\n") + "\n"
+	require.NoError(t, os.WriteFile(fixture, []byte(stream), 0o644))
+	fakeOpenshellOpenCodeStream(t, fixture)
+
+	var events []AgentEvent
+	printer := ui.New(&strings.Builder{})
+	metrics := &RunMetrics{}
+	params := RunParams{
+		SandboxName:   "sb",
+		AgentBaseName: "triage",
+		Model:         "opus",
+		RepoDir:       "/sandbox/workspace/repo",
+		Timeout:       30 * time.Second,
+		OnEvent:       func(e AgentEvent) { events = append(events, e) },
+	}
+	exit, err := OpenCodeRuntime{}.Run(context.Background(), params, printer, time.Now(), metrics)
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+
+	// InitEvent emitted from RunParams.Model (bare id), since the wire carries
+	// no model metadata.
+	require.NotEmpty(t, events)
+	init, ok := events[0].(InitEvent)
+	require.True(t, ok, "first event should be InitEvent")
+	assert.Equal(t, "claude-opus-4-6@default", init.Model)
+	assert.Equal(t, "claude-opus-4-6@default", metrics.Model)
+
+	// Metrics captured from the stream.
+	assert.Equal(t, 1, metrics.NumTurns)
+	assert.InDelta(t, 0.02, metrics.TotalCostUSD, 1e-9)
+	assert.Equal(t, 100, metrics.InputTokens)
+	assert.Equal(t, 50, metrics.OutputTokens)
+	assert.EqualValues(t, 1, metrics.ToolCalls.Load())
+}
+
+func TestOpenCodeRuntimeRun_TeesToOutputPath(t *testing.T) {
+	t.Setenv(openCodeProviderEnv, "")
+	work := t.TempDir()
+	fixture := filepath.Join(work, "stream.jsonl")
+	stream := `{"type":"step_finish","timestamp":1,"sessionID":"s1","part":{"reason":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}` + "\n"
+	require.NoError(t, os.WriteFile(fixture, []byte(stream), 0o644))
+	fakeOpenshellOpenCodeStream(t, fixture)
+
+	out := filepath.Join(work, "output.jsonl")
+	printer := ui.New(&strings.Builder{})
+	params := RunParams{
+		SandboxName:   "sb",
+		AgentBaseName: "triage",
+		RepoDir:       "/repo",
+		Timeout:       30 * time.Second,
+		OutputPath:    out,
+		OnEvent:       func(AgentEvent) {},
+	}
+	exit, err := OpenCodeRuntime{}.Run(context.Background(), params, printer, time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	// The stream was tee'd to OutputPath.
+	data, readErr := os.ReadFile(out)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), `"type":"step_finish"`)
+}
+
+func TestOpenCodeRuntimeClearIterationArtifacts(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	store := filepath.Join(work, "store")
+	fakeOpenshellOpenCode(t, logPath, store)
+
+	err := OpenCodeRuntime{}.ClearIterationArtifacts("sb")
+	require.NoError(t, err)
+	log, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(log), "rm -rf")
+	assert.Contains(t, string(log), openCodeRunnerSubdir)
+	assert.Contains(t, string(log), openCodeDebugLogFile)
+}
+
+func TestOpenCodeRuntimeClearIterationArtifactsReportsExitFailure(t *testing.T) {
+	binDir := t.TempDir()
+	script := "#!/bin/sh\necho 'rm failed' >&2\nexit 4\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := (OpenCodeRuntime{}).ClearIterationArtifacts("sb")
+	require.ErrorContains(t, err, "exited 4")
+	assert.Contains(t, err.Error(), "rm failed")
+}
+
+func TestOpenCodeRuntimeRun_RequiresAgentBaseName(t *testing.T) {
+	printer := ui.New(&strings.Builder{})
+	_, err := OpenCodeRuntime{}.Run(context.Background(), RunParams{}, printer, time.Now(), &RunMetrics{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent base name is required")
+}
+
+func TestOpenCodeRuntimeRun_StreamErrorOverridesExit(t *testing.T) {
+	t.Setenv(openCodeProviderEnv, "")
+	work := t.TempDir()
+	fixture := filepath.Join(work, "err.jsonl")
+	stream := `{"type":"error","timestamp":1,"sessionID":"s1","error":{"name":"ProviderError","data":{"message":"quota exhausted"}}}` + "\n"
+	require.NoError(t, os.WriteFile(fixture, []byte(stream), 0o644))
+	fakeOpenshellOpenCodeStream(t, fixture)
+
+	printer := ui.New(&strings.Builder{})
+	params := RunParams{
+		SandboxName:   "sb",
+		AgentBaseName: "triage",
+		RepoDir:       "/repo",
+		Timeout:       30 * time.Second,
+		OnEvent:       func(AgentEvent) {},
+	}
+	// opencode exits 0 but the stream reports an error → Run returns 1.
+	exit, err := OpenCodeRuntime{}.Run(context.Background(), params, printer, time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, exit)
+}
+
+func TestOpenCodeRuntimeRun_FallbackModelsWarning(t *testing.T) {
+	t.Setenv(openCodeProviderEnv, "")
+	work := t.TempDir()
+	fixture := filepath.Join(work, "stream.jsonl")
+	stream := `{"type":"step_finish","timestamp":1,"sessionID":"s1","part":{"reason":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}` + "\n"
+	require.NoError(t, os.WriteFile(fixture, []byte(stream), 0o644))
+	fakeOpenshellOpenCodeStream(t, fixture)
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	params := RunParams{
+		SandboxName:    "sb",
+		AgentBaseName:  "triage",
+		RepoDir:        "/repo",
+		Timeout:        30 * time.Second,
+		FallbackModels: []string{"sonnet", "haiku"},
+		OnEvent:        func(AgentEvent) {},
+	}
+	exit, err := OpenCodeRuntime{}.Run(context.Background(), params, printer, time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	// The printer output should contain a warning about unsupported fallbacks.
+	assert.Contains(t, buf.String(), "fallback models")
+}
+
+func TestOpenCodeRuntimeRun_DefaultHandler(t *testing.T) {
+	// When OnEvent is nil, Run creates a default EventRenderer handler.
+	t.Setenv(openCodeProviderEnv, "")
+	work := t.TempDir()
+	fixture := filepath.Join(work, "stream.jsonl")
+	stream := `{"type":"step_finish","timestamp":1,"sessionID":"s1","part":{"reason":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}` + "\n"
+	require.NoError(t, os.WriteFile(fixture, []byte(stream), 0o644))
+	fakeOpenshellOpenCodeStream(t, fixture)
+
+	printer := ui.New(&strings.Builder{})
+	params := RunParams{
+		SandboxName:   "sb",
+		AgentBaseName: "triage",
+		RepoDir:       "/repo",
+		Timeout:       30 * time.Second,
+		// OnEvent intentionally nil — tests default handler creation.
+	}
+	exit, err := OpenCodeRuntime{}.Run(context.Background(), params, printer, time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+}
+
+func TestOpenCodeRuntimeRun_ErrorSubtypeEmptyMessage(t *testing.T) {
+	// When the stream reports an error with an empty ErrorMessage, the
+	// warning should include the subtype instead.
+	t.Setenv(openCodeProviderEnv, "")
+	work := t.TempDir()
+	fixture := filepath.Join(work, "err.jsonl")
+	stream := `{"type":"error","timestamp":1,"sessionID":"s1","error":{"name":"UnknownError","data":{}}}` + "\n"
+	require.NoError(t, os.WriteFile(fixture, []byte(stream), 0o644))
+	fakeOpenshellOpenCodeStream(t, fixture)
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	params := RunParams{
+		SandboxName:   "sb",
+		AgentBaseName: "triage",
+		RepoDir:       "/repo",
+		Timeout:       30 * time.Second,
+		OnEvent:       func(AgentEvent) {},
+	}
+	exit, err := OpenCodeRuntime{}.Run(context.Background(), params, printer, time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, exit)
+	assert.Contains(t, buf.String(), "subtype")
+}
+
+func TestOpenCodeVerifyAgent_FallbackDetected(t *testing.T) {
+	binDir := t.TempDir()
+	// Fake openshell that reports a non-primary agent.
+	script := `#!/bin/sh
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    *"opencode debug agent"*) printf '{"name":"default","mode":"agent","permission":{"*":"allow"}}'; exit 0 ;;
+    "opencode --version") echo "0.1.0"; exit 0 ;;
+    *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"bash":"allow","*":"deny"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
+  esac
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, openCodeTestAgentDef),
+		agentName:   "triage",
+	}
+	err := OpenCodeRuntime{}.Bootstrap(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did not load as mode:primary")
+}

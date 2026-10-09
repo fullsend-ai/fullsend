@@ -137,7 +137,7 @@ for the four-step migration to the bare built-in names above.
 | `--trigger` | | A trigger written by hand, in CEL (the expression language dispatch evaluates); mutually exclusive with `--on` |
 | `--model` | `opus` | Model for the agent. With `--runtime codex` there is no default: pass an OpenAI id such as `openai/<id>`, or the command refuses |
 | `--effort` | `high` | Effort level (`low`, `medium`, `high`, `xhigh`, `max`) |
-| `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi` or `codex`); when omitted, the repo's `runtime:` default applies. The runtime and model decide which credentials the harness asks for: see [Picking a route](#picking-a-route) |
+| `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi`, `codex` or `opencode`); when omitted, the repo's `runtime:` default applies. The runtime and model decide which credentials the harness asks for: see [Picking a route](#picking-a-route) |
 | `--slug` | `<owner>-<name>` | Names the GitHub App to look for when the agent is installed; `<owner>` comes from the `origin` remote |
 | `--image` | per-role pin | Container image the agent runs inside |
 | `--timeout-minutes` | `15` | Agent timeout in minutes |
@@ -424,7 +424,7 @@ fullsend agent set review --subagent correctness=opus --subagent default=haiku
 | Flag | Description |
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`) |
-| `--runtime` | Agent runtime for this agent (`claude`, `pi` or `codex`) |
+| `--runtime` | Agent runtime for this agent (`claude`, `pi`, `codex` or `opencode`) |
 | `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi and codex (codex takes OpenAI ids only) |
 | `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
 | `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference. Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (its frontmatter model, then `subagents.default`). On pi, a value that resolves to `openai/` prints a warning when the agent's local harness declares no `openai` provider; see [pi § Route a persona to OpenAI](../runtimes/pi.md#route-a-persona-to-openai) |

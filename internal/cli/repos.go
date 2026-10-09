@@ -402,7 +402,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringVar(&opts.appSet, "app-set", "", "GitHub App set prefix (apps named {app-set}-{role}) persisted as FULLSEND_APP_SET for selected repos; GitHub-only")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
-	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex); repos already in the manifest keep their entry/defaults.runtime")
+	cmd.Flags().StringVar(&opts.runtime, "runtime", "", "agent runtime written to the per-repo config for repos added by this command (claude, pi, codex, opencode); repos already in the manifest keep their entry/defaults.runtime")
 	cmd.Flags().StringVar(&opts.inferenceAuth, "inference-auth", "", "inference authentication method (vertex-wif, openai-api-key, or openai-wif) persisted as inference.auth on each selected manifest entry, overriding forge-section and defaults values for those repos")
 	cmd.Flags().StringVar(&opts.gitlabURL, "gitlab-url", "", "GitLab instance URL (e.g. https://gitlab.example.com); sets gitlab.url in the manifest and implies --forge=gitlab when no forge is specified")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")

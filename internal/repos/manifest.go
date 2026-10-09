@@ -198,7 +198,7 @@ type RepoEntry struct {
 	// sentinel "none" resets back to the built-in default.
 	AppSet string `yaml:"app_set,omitempty"`
 	// Runtime is the agent runtime written as the repo's `runtime:` at
-	// install time (claude, pi, codex); empty inherits defaults.runtime,
+	// install time (claude, pi, codex, opencode); empty inherits defaults.runtime,
 	// and an empty resolved value keeps the code default (claude).
 	Runtime string `yaml:"runtime,omitempty"`
 	// Inference overrides the inference authentication selection for this
@@ -227,7 +227,7 @@ type RepoEntry struct {
 // across all platforms.
 type DefaultsConfig struct {
 	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
-	// Runtime is the default agent runtime for every repo (claude, pi, codex).
+	// Runtime is the default agent runtime for every repo (claude, pi, codex, opencode).
 	Runtime string `yaml:"runtime,omitempty"`
 	// Inference is the operator-provided default inference authentication
 	// selection for every repository. It is not a built-in fallback: when

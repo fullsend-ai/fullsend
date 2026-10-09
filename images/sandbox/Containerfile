@@ -10,6 +10,9 @@
 #   - Codex (npm, version-pinned via CODEX_VERSION ARG; replaces the copy
 #     the OpenShell base image ships, with the same shadow-proof symlink
 #     and build-time assertion as Claude Code — stub runtime, see #6920)
+#   - OpenCode (GitHub release, SHA256-verified static musl build via
+#     OPENCODE_VERSION + per-arch checksum ARGs; opt-in runtime, see
+#     unbound-force#510)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - ripgrep + fd (backends of pi's built-in grep/find tools; SHA256-verified
 #     static builds, versions asserted at build time)
@@ -325,6 +328,52 @@ RUN mkdir -p /etc/codex \
       'enabled = false' \
       > /etc/codex/config.toml \
     && chmod 0644 /etc/codex/config.toml
+
+# ---------------------------------------------------------------------------
+# OpenCode — opt-in agent runtime (anomalyco/opencode, unbound-force#510).
+# glibc builds (the musl tarballs dynamically link libc.musl — absent in the
+# Debian-based OpenShell base image).  The base image may ship its own
+# opencode at /usr/local/bin; rm -f before extract so the pinned version wins
+# (same shadow-proof pattern as Claude Code above).
+# To update: bump OPENCODE_VERSION and OPENCODE_SHA256_{AMD64,ARM64} from:
+#   https://github.com/anomalyco/opencode/releases
+ARG OPENCODE_VERSION=1.18.30
+ARG OPENCODE_SHA256_AMD64=55007246858165496ff85ba1c2b648f7421e8e2013bf4189a680c9ff8e699d17
+ARG OPENCODE_SHA256_ARM64=4111a55c2a02c0fac314bd51e9a2330280e6d29d2b85b9554fff6d62612566ed
+RUN case "$TARGETARCH" in \
+      amd64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+             EXPECTED="${OPENCODE_SHA256_AMD64}" ;; \
+      arm64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz" \
+             EXPECTED="${OPENCODE_SHA256_ARM64}" ;; \
+      *)     echo "unsupported TARGETARCH=$TARGETARCH for opencode" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --retry 3 --retry-delay 5 "${OPENCODE_URL}" -o /tmp/opencode.tar.gz \
+    && GOT="$(sha256sum /tmp/opencode.tar.gz | cut -d' ' -f1)" \
+    && if [ "${GOT}" != "${EXPECTED}" ]; then \
+         echo "opencode checksum mismatch: got ${GOT}, expected ${EXPECTED}" >&2; \
+         exit 1; \
+       fi \
+    && rm -f /usr/local/bin/opencode \
+    && tar xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode \
+    && chmod 0755 /usr/local/bin/opencode \
+    && rm -f /tmp/opencode.tar.gz \
+    && GOT_VER="$(opencode --version)" \
+    && if [ "${GOT_VER}" != "${OPENCODE_VERSION}" ]; then \
+         echo "opencode version mismatch: got '${GOT_VER}', expected version ${OPENCODE_VERSION}" >&2; \
+         exit 1; \
+       fi
+
+# OpenCode hygiene defaults. OPENCODE_CONFIG_DIR must match
+# sandbox.SandboxOpenCodeConfig (internal/sandbox/sandbox.go).
+# Root-owned, group-writable (0775): Bootstrap and the run prelude create
+# subdirectories and write opencode.json as the sandbox user (gid sandbox).
+# The run prelude re-pins OPENCODE_CONFIG_DIR after sourcing .env so the
+# agent cannot redirect the config path; per-run agent tampering with
+# opencode.json is overwritten at the next iteration. Full config-dir
+# lockdown is deferred to the hook adapter (#7824).
+RUN install -d -o root -g sandbox -m 0775 /sandbox/opencode-config
+ENV OPENCODE_CONFIG_DIR="/sandbox/opencode-config" \
+    OPENCODE_DISABLE_PROJECT_CONFIG="true"
 
 # ---------------------------------------------------------------------------
 # ProtectAI DeBERTa-v3 ONNX model and ONNX Runtime — REMOVED (#6522).

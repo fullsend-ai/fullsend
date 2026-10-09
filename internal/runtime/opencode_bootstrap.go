@@ -1,0 +1,445 @@
+package runtime
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
+)
+
+// Files and layout OpenCodeRuntime.Bootstrap writes under ConfigDir
+// (OPENCODE_CONFIG_DIR).
+const (
+	// openCodeAgentDir is the subdirectory OpenCode scans for agent
+	// definitions ("{agent,agents}/**/*.md", config/agent.ts:13). Bootstrap
+	// writes the translated agent there and Run selects it with --agent.
+	openCodeAgentDir = "agent"
+	// openCodeSkillsDir mirrors the layout OpenCode's skill tool discovers
+	// under a config dir.
+	openCodeSkillsDir = "skills"
+	// openCodePluginsDir is where #515's hook plugin adapter lives; reserved
+	// here so the integrity gate and ConfigDir move agree on the path. #510
+	// does not install the adapter — it only fixes the location.
+	openCodePluginsDir = "plugins"
+	// openCodeHooksExtensionFile is the runner-owned, SHA-256-gated hook
+	// plugin adapter file #515 installs under openCodePluginsDir. Reserved by
+	// #510 (path convention) so #515 lands without reworking ConfigDir.
+	openCodeHooksExtensionFile = "fullsend-hooks.ts"
+	// openCodeDebugLogFile captures OpenCode's stderr when --debug is set;
+	// ExtractDebugLog downloads it.
+	openCodeDebugLogFile = "opencode-debug.log"
+	// openCodeConfigFile is the runner-owned opencode.json written to
+	// ConfigDir by the run prelude. It carries config.instructions entries
+	// that re-attach workspace AGENTS.md after OPENCODE_DISABLE_PROJECT_CONFIG
+	// suppresses project-level discovery (instruction.ts:81-133). The file
+	// loads at config step 5 (config.ts:424-466) and its instructions array
+	// is concatenated with OPENCODE_CONFIG_CONTENT's via
+	// mergeConfigConcatArrays, so there is no conflict.
+	openCodeConfigFile = "opencode.json"
+)
+
+// openCodeAgentPath is the sandbox path of the translated agent definition.
+func (r OpenCodeRuntime) openCodeAgentPath(agentName string) string {
+	return r.ConfigDir() + "/" + openCodeAgentDir + "/" + agentName + ".md"
+}
+
+// openCodeSkillsPath is the sandbox path of the skills directory.
+func (r OpenCodeRuntime) openCodeSkillsPath() string {
+	return r.ConfigDir() + "/" + openCodeSkillsDir
+}
+
+// openCodeHooksExtensionPath is the reserved, runner-owned path of #515's hook
+// plugin adapter. Its SHA-256 is verified before .env is sourced (see the
+// guard in opencode_run.go), fail-closed, mirroring pi's piHooksGuard.
+func (r OpenCodeRuntime) openCodeHooksExtensionPath() string {
+	return r.ConfigDir() + "/" + openCodePluginsDir + "/" + openCodeHooksExtensionFile
+}
+
+// Bootstrap prepares the runner-owned OpenCode config directory for one agent
+// run: the Claude-style agent definition translated into an OpenCode agent
+// under agent/<name>.md, harness skills, and the directory scaffold. It
+// preflights the pinned opencode binary so a broken image fails here rather
+// than as a silent zero-turn run.
+//
+// It deliberately does NOT install a ClaudeHooksBootstrap-style hook wiring:
+// OpenCode has no PreToolUse/PostToolUse hooks of its own, and the plugin
+// adapter that bridges security.HookPlan into OpenCode's
+// tool.execute.before/after is owned by #515. The type-assert for
+// SandboxHooksBootstrap is intentionally omitted here; when #515 lands it
+// adds the adapter install and the manifest, keyed off the pinned plugin path
+// reserved above.
+func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
+	if input == nil {
+		return fmt.Errorf("bootstrap input is required")
+	}
+	sandboxName := input.SandboxName()
+	forgetOpenCodeTrustedEnv(sandboxName)
+	agentPath := input.AgentPath()
+	if agentPath == "" {
+		return fmt.Errorf("agent path is required")
+	}
+	data, err := os.ReadFile(agentPath)
+	if err != nil {
+		return fmt.Errorf("reading agent definition: %w", err)
+	}
+	// Reuse the shared Claude-style agent parser (frontmatter + body); the
+	// same translation pi uses.
+	def, err := parsePiAgent(data)
+	if err != nil {
+		return err
+	}
+	agentName := input.AgentName()
+	if agentName == "" {
+		agentName = def.Name
+	}
+	if agentName == "" {
+		agentName = strings.TrimSuffix(agentDestName("", agentPath), ".md")
+	}
+	// Verify the agent name Bootstrap writes to disk matches what Run will
+	// pass to `--agent` (via openCodeValidatedArg). A divergence causes
+	// OpenCode to silently fall back to its default agent with the full
+	// default tool set, bypassing the translated permission record.
+	if validated := openCodeValidatedArg(agentName); validated != agentName {
+		return fmt.Errorf("agent name %q contains characters openCodeValidatedArg strips (sanitized to %q); the Run command would pass a different name than Bootstrap wrote", agentName, validated)
+	}
+
+	cfg := r.ConfigDir()
+
+	mkdirCmd := fmt.Sprintf("mkdir -p %s %s %s",
+		shellQuote(cfg+"/"+openCodeAgentDir),
+		shellQuote(r.openCodeSkillsPath()),
+		shellQuote(cfg+"/"+openCodePluginsDir))
+	if _, _, _, err := sandbox.Exec(sandboxName, mkdirCmd, 10*time.Second); err != nil {
+		return fmt.Errorf("creating opencode config dirs: %w", err)
+	}
+
+	// Preflight and read the trusted environment before generating the agent
+	// definition so the trusted permission policy is available for
+	// intersection with the agent-level permission record. This ensures
+	// agent frontmatter can only narrow, never widen, the global gate
+	// (OpenCode's findLast merge means agent rules evaluated after global
+	// rules would otherwise win; see permission/index.ts:28-32).
+	if err := openCodePreflightVersion(sandboxName); err != nil {
+		return err
+	}
+	trustedEnv, err := openCodeReadTrustedEnv(sandboxName)
+	if err != nil {
+		return err
+	}
+
+	trustedPolicy, patternMapTools := parseTrustedPermissionPolicy(trustedEnv.ConfigContent)
+	agentMD, err := openCodeAgentMarkdown(agentName, def, trustedPolicy, patternMapTools)
+	if err != nil {
+		return err
+	}
+	if err := uploadBytes(sandboxName, r.openCodeAgentPath(agentName), agentMD); err != nil {
+		return fmt.Errorf("writing opencode agent definition: %w", err)
+	}
+	if err := openCodeVerifyAgent(sandboxName, agentName, r); err != nil {
+		return err
+	}
+
+	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {
+		return err
+	}
+	for _, skillPath := range input.SkillDirs() {
+		if skillPath == "" {
+			continue
+		}
+		if err := sandbox.Upload(sandboxName, skillPath, r.openCodeSkillsPath()+"/"); err != nil {
+			return fmt.Errorf("copying skill %q: %w", skillPath, err)
+		}
+		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
+	}
+
+	for _, p := range input.Plugins() {
+		if p.Path != "" {
+			fmt.Fprintf(os.Stderr, "Plugin %q (%s): skipped — OpenCode does not support harness plugins (see docs/runtimes.md)\n", p.SandboxName(), p.Kind)
+		}
+	}
+
+	if len(def.BashAllowlist) > 0 {
+		fmt.Fprintln(os.Stderr, openCodeBashAllowlistWarning(def.BashAllowlist))
+	}
+
+	// Hook wiring is #515's responsibility (OpenCode has no native hooks); the
+	// plugin adapter path is reserved at openCodeHooksExtensionPath(). Nothing
+	// is installed here.
+
+	recordOpenCodeTrustedEnv(sandboxName, trustedEnv)
+	return nil
+}
+
+// openCodeAgentFrontmatter is the OpenCode agent frontmatter subset Bootstrap
+// emits (config/core/v1/config/agent.ts AgentSchema). OpenCode uses its own
+// schema, so the Claude-style frontmatter is translated rather than copied:
+// the body becomes the prompt, `permission:` becomes OpenCode's
+// {toolname: "allow"|"deny"} record, and `model:`/`description` map across.
+// mode is pinned to "primary" so `--agent` selects it as the top-level agent.
+//
+// The deprecated `tools:` key is not emitted; `permission:` is the current
+// upstream schema (agent.ts).
+type openCodeAgentFrontmatter struct {
+	Description string            `json:"description,omitempty"`
+	Mode        string            `json:"mode"`
+	Model       string            `json:"model,omitempty"`
+	Permission  map[string]string `json:"permission"`
+}
+
+// openCodeAgentMarkdown renders the translated agent definition as a markdown
+// file with YAML-compatible JSON frontmatter (OpenCode parses frontmatter as
+// YAML; JSON is valid YAML) followed by the Claude body as the prompt.
+//
+// trustedPolicy is the parsed permission section from OPENCODE_CONFIG_CONTENT.
+// patternMapTools is the set of tools that have pattern-map rules in the
+// global config. The agent-level permission record is intersected with the
+// trusted policy so that agent frontmatter can only narrow, never widen, the
+// global gate.
+func openCodeAgentMarkdown(agentName string, def *piAgentDef, trustedPolicy map[string]string, patternMapTools map[string]bool) ([]byte, error) {
+	rec := openCodePermissionRecord(def.Tools)
+	rec = intersectPermissionRecord(rec, trustedPolicy, patternMapTools)
+	fm := openCodeAgentFrontmatter{
+		Description: def.Description,
+		Mode:        "primary",
+		Model:       def.Model,
+		Permission:  rec,
+	}
+	front, err := json.MarshalIndent(fm, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encoding opencode agent frontmatter: %w", err)
+	}
+	var b strings.Builder
+	b.WriteString("---\n")
+	b.Write(front)
+	b.WriteString("\n---\n\n")
+	b.WriteString(def.Body)
+	b.WriteString("\n")
+	return []byte(b.String()), nil
+}
+
+// openCodeAllToolIDs is the canonical set of OpenCode permission keys
+// (packages/opencode/src/cli/cmd/agent.ts AVAILABLE_PERMISSIONS plus "write"
+// from the tool registry). Keep in sync with upstream — a missing entry here
+// means that tool silently stays at its default rather than being explicitly
+// denied.
+var openCodeAllToolIDs = []string{
+	"bash", "edit", "glob", "grep", "lsp", "read", "skill",
+	"task", "todowrite", "webfetch", "websearch", "write",
+}
+
+// openCodePermissionRecord translates the Claude tool-name allowlist into
+// OpenCode's {toolID: "allow"|"deny"} permission record. A non-nil list
+// allows only the mapped tools and explicitly denies every other known tool;
+// Claude names without an OpenCode counterpart are dropped with a warning.
+// Per-argument Bash restrictions (e.g. Bash(gh,jq)) cannot be represented in
+// OpenCode's permission model and collapse to a bare bash: "allow".
+//
+// A nil claudeTools (no restriction in the agent frontmatter) returns an
+// empty map (serialised as `"permission": {}`). OpenCode treats an empty
+// permission record as "use defaults" — every tool is available, which is
+// the correct behaviour for unrestricted agents. The caller
+// (openCodeAgentMarkdown) intersects the returned record with the trusted
+// policy so the agent frontmatter can only narrow, never widen, the
+// global gate.
+func openCodePermissionRecord(claudeTools []string) map[string]string {
+	if claudeTools == nil {
+		return map[string]string{}
+	}
+
+	// Start with every known tool denied; allowed tools are overwritten below.
+	rec := make(map[string]string, len(openCodeAllToolIDs))
+	for _, id := range openCodeAllToolIDs {
+		rec[id] = "deny"
+	}
+
+	for _, ct := range claudeTools {
+		ot, ok := openCodeToolForClaude[ct]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Agent tool %q has no OpenCode equivalent and is dropped from the allowlist\n", ct)
+			continue
+		}
+		rec[ot] = "allow"
+	}
+	return rec
+}
+
+// openCodeToolForClaude maps the Claude Code tool names an agent definition
+// may list to OpenCode's permission keys (packages/opencode/src/tool: bash,
+// read, edit, grep, glob, webfetch, task). OpenCode's tool IDs are
+// lowercase, like pi's. The shell tool's exposed ID is "bash"
+// (tool/shell/id.ts). Task maps to OpenCode's task (sub-agent) tool.
+// Write maps to "edit" because OpenCode's write tool checks the "edit"
+// permission (write.ts:55, permission/index.ts groups edit/write/apply_patch
+// under "edit"). Claude tools without an OpenCode counterpart are reported
+// as unsupported.
+var openCodeToolForClaude = map[string]string{
+	"Bash":      "bash",
+	"Read":      "read",
+	"Write":     "edit", // OpenCode's write tool checks the "edit" permission (write.ts:55)
+	"Edit":      "edit",
+	"MultiEdit": "edit",
+	"Grep":      "grep",
+	"Glob":      "glob",
+	"LS":        "read", // OpenCode's read tool handles both files and directories
+	"WebFetch":  "webfetch",
+	"Skill":     "skill",
+	"Task":      "task",
+	"Agent":     "task", // Agent is the current name; Task is the legacy alias
+}
+
+// openCodeToolNamesSorted returns the allowed tool IDs in a stable order (for
+// deterministic tests and logs).
+func openCodeToolNamesSorted(rec map[string]string) []string {
+	out := make([]string, 0, len(rec))
+	for k, v := range rec {
+		if v == "allow" {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// parseTrustedPermissionPolicy extracts the flat tool→action map from the
+// trusted OPENCODE_CONFIG_CONTENT JSON. The config has already been validated
+// by validateOpenCodeTrustedEnv, so parse errors return an empty map (the
+// intersection becomes a no-op and the global policy still applies at
+// runtime). Pattern-map values (e.g. bash: {"gh *": "allow", "*": "deny"})
+// are omitted from the flat result and their tool names are returned in
+// patternMapTools so intersectPermissionRecord can skip wildcard fallback
+// for them — the global config-level pattern map is the source of truth at
+// runtime. Collapsing pattern maps to "deny" would override the global
+// pattern-map's per-command allowances in the agent frontmatter; falling
+// back to a wildcard deny for them would have the same over-deny effect.
+func parseTrustedPermissionPolicy(configContent string) (policy map[string]string, patternMapTools map[string]bool) {
+	var config struct {
+		Permission map[string]json.RawMessage `json:"permission"`
+	}
+	if err := json.Unmarshal([]byte(configContent), &config); err != nil {
+		return nil, nil
+	}
+	policy = make(map[string]string, len(config.Permission))
+	patternMapTools = make(map[string]bool)
+	for tool, raw := range config.Permission {
+		var action string
+		if err := json.Unmarshal(raw, &action); err == nil {
+			policy[tool] = action
+		} else {
+			// Pattern map — record the tool name so the intersection
+			// skips wildcard fallback for it. The global config-level
+			// rule (which carries the full pattern map) applies at
+			// runtime via findLast ordering.
+			patternMapTools[tool] = true
+		}
+	}
+	return policy, patternMapTools
+}
+
+// intersectPermissionRecord caps the agent-level permission record so that any
+// tool the trusted policy denies or asks stays capped in the agent frontmatter.
+// OpenCode's permission/index.ts evaluate uses findLast, so without this step
+// the agent rules (evaluated after the global policy) would win. The
+// intersection makes the global policy the ceiling:
+//   - If the trusted policy says "deny" for a tool, the agent gets "deny".
+//   - If the trusted policy says "ask" for a tool, the agent gets "ask" — in
+//     headless mode OpenCode auto-rejects "ask" requests, so agent "allow"
+//     must not override a trusted "ask".
+//   - If the trusted policy says "allow" (or is absent), the agent's value
+//     is preserved (it can narrow to "deny" but not widen to "allow" if the
+//     tool isn't in its allowlist).
+//   - The wildcard "*" entry in the trusted policy applies to any tool not
+//     explicitly listed in the policy and not in patternMapTools.
+//   - Tools in patternMapTools are governed by a global pattern-map rule
+//     (e.g. bash: {"gh *": "allow", "*": "deny"}). The wildcard fallback
+//     must not apply to them — the global pattern map is the source of truth
+//     at runtime, and a flat deny/ask from the wildcard would override the
+//     per-command allows the pattern map defines.
+//
+// An empty rec (unrestricted agent) is left empty — the global policy applies.
+func intersectPermissionRecord(rec map[string]string, trustedPolicy map[string]string, patternMapTools map[string]bool) map[string]string {
+	if len(rec) == 0 || len(trustedPolicy) == 0 {
+		return rec
+	}
+	for tool, agentAction := range rec {
+		policyAction, ok := trustedPolicy[tool]
+		if !ok {
+			// Tools with a pattern-map rule in the global config must
+			// not fall back to the wildcard — the per-command pattern
+			// map is more specific and applies at runtime.
+			if patternMapTools[tool] {
+				continue
+			}
+			// Fall back to the wildcard entry.
+			policyAction = trustedPolicy["*"]
+		}
+		if (policyAction == "deny" || policyAction == "ask") && agentAction == "allow" {
+			rec[tool] = policyAction
+		}
+	}
+	return rec
+}
+
+// openCodeInstructionsConfig returns the JSON body of a runner-owned
+// opencode.json whose only key is `instructions`. The array tells OpenCode
+// to load AGENTS.md from the workspace, restoring the project instruction
+// that OPENCODE_DISABLE_PROJECT_CONFIG=true suppressed (instruction.ts uses
+// absolute paths directly — no flag check). The resulting file merges with
+// OPENCODE_CONFIG_CONTENT at load time via mergeConfigConcatArrays
+// (config.ts:45-51) so the two sources never conflict.
+func openCodeInstructionsConfig(repoDir string) string {
+	data, _ := json.Marshal(struct {
+		Instructions []string `json:"instructions"`
+	}{Instructions: []string{repoDir + "/AGENTS.md"}})
+	return string(data)
+}
+
+func openCodeBashAllowlistWarning(allowlist []string) string {
+	return fmt.Sprintf(
+		"Agent Bash allowlist (%s) is recorded but not enforced on opencode — per-argument restrictions collapse to bare bash: \"allow\" until the hook adapter in unbound-force/unbound-force#515 enforces them (see docs/contributing/runtime-implementation.md)",
+		strings.Join(allowlist, ", "))
+}
+
+// openCodeVerifyAgent runs `opencode debug agent <name>` in the sandbox and
+// verifies the agent loaded as mode "primary" with the expected permission
+// record. This catches cases where OpenCode silently falls back to its default
+// agent (*:allow) due to frontmatter parse failures, file deletion, or
+// redefinition as mode:subagent — scenarios the name-mismatch guard does not
+// cover.
+func openCodeVerifyAgent(sandboxName, agentName string, r OpenCodeRuntime) error {
+	cmd := fmt.Sprintf("cd %s && OPENCODE_CONFIG_DIR=%s opencode debug agent %s 2>/dev/null",
+		shellQuote(r.WorkspaceDir()),
+		shellQuote(r.ConfigDir()),
+		shellQuote(openCodeValidatedArg(agentName)))
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("verifying opencode agent %q: %w", agentName, err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("opencode debug agent %q exited %d: %s", agentName, exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
+	}
+	out := strings.TrimSpace(sanitizeOutput(stdout))
+	if !strings.Contains(out, `"mode":"primary"`) && !strings.Contains(out, `"mode": "primary"`) {
+		return fmt.Errorf("opencode agent %q did not load as mode:primary (got: %s); OpenCode may have fallen back to its default agent", agentName, out)
+	}
+	return nil
+}
+
+// openCodePreflightVersion runs `opencode --version` in the sandbox. Failure
+// here means the pinned binary is missing or broken in the image, which is
+// reported before any iteration rather than as an empty transcript. Phase 0
+// (unbound-force#509) confirmed opencode runs headless in the sandbox.
+func openCodePreflightVersion(sandboxName string) error {
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, "opencode --version", 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("opencode preflight: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("opencode preflight: `opencode --version` exited %d: %s", exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
+	}
+	_ = stdout
+	return nil
+}

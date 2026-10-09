@@ -102,7 +102,12 @@ type ocErrorEvent struct {
 
 // parseOpenCodeStream reads NDJSON from OpenCode's --format json output and
 // emits normalized AgentEvent values via the onEvent callback. It returns
-// the sessionID captured from the ndjson envelope (needed for opencode export).
+// the sessionID captured from the ndjson envelope (needed for opencode export)
+// and the count of malformed lines that were silently skipped (invalid JSON
+// envelopes and per-type unmarshal failures). Empty lines, oversized lines,
+// and unknown event types are not counted as malformed — they are expected
+// edge cases. The caller should treat malformedLines > 0 on an exit-0 run
+// as a stream-corruption signal.
 //
 // Unlike parseClaudeStream, OpenCode emits complete text/reasoning blocks
 // (not incremental deltas), so the parser is largely stateless. The only
@@ -111,7 +116,7 @@ type ocErrorEvent struct {
 // The parser does NOT emit an InitEvent because OpenCode's wire format does
 // not carry model/version metadata. The caller (OpenCodeRuntime.Run) must
 // emit InitEvent and set RunMetrics.Model from RunParams.Model.
-func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err error) {
+func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, malformedLines int, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
@@ -134,7 +139,7 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 			break
 		}
 		if err != nil {
-			return sessionID, err
+			return sessionID, malformedLines, err
 		}
 		// Skip lines exceeding the buffer (same pattern as parseClaudeStream).
 		if isPrefix {
@@ -149,6 +154,7 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 
 		var env ocEnvelope
 		if jsonErr := json.Unmarshal(line, &env); jsonErr != nil {
+			malformedLines++
 			continue
 		}
 
@@ -161,6 +167,7 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 		case "tool_use":
 			var evt ocToolEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
+				malformedLines++
 				continue
 			}
 			// Only emit for terminal states; pending/running are intermediate.
@@ -174,6 +181,7 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 		case "text":
 			var evt ocTextEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
+				malformedLines++
 				continue
 			}
 			onEvent(TextEvent{Text: evt.Part.Text})
@@ -185,6 +193,7 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 			// this path to fire.
 			var evt ocReasoningEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
+				malformedLines++
 				continue
 			}
 			onEvent(ThinkingEvent{Text: evt.Part.Text})
@@ -192,6 +201,7 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 		case "step_finish":
 			var evt ocStepFinishEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
+				malformedLines++
 				continue
 			}
 			numTurns++
@@ -212,11 +222,15 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 			})
 
 		case "error":
+			// Set sawError before attempting unmarshal: if the envelope
+			// says type=="error" we know an error was signalled even if
+			// the payload is truncated or malformed.
+			sawError = true
 			var evt ocErrorEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
+				malformedLines++
 				continue
 			}
-			sawError = true
 			msg := redactSummary(evt.Error.Data.Message)
 			lastErrorMsg = msg
 			onEvent(ErrorEvent{
@@ -253,5 +267,5 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 		CacheReadInputTokens:     totalCacheRead,
 	})
 
-	return sessionID, nil
+	return sessionID, malformedLines, nil
 }

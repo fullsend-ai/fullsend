@@ -95,7 +95,9 @@ func (o *Options) Validate() error {
 
 // UsesVertex reports whether the agent calls Vertex, and so whether its
 // harness carries the Vertex provider, GCP credentials and Vertex env. codex
-// never does; pi does unless its model has an explicit openai/ prefix.
+// never does; pi does unless its model has an explicit openai/ prefix;
+// opencode always does (its OPENCODE_CONFIG_CONTENT carries the Vertex
+// provider registration).
 //
 // Not agentruntime.NeedsOpenAIProvider: that reads FULLSEND_PI_PROVIDER from
 // the environment of the run, and the generator runs elsewhere, so the
@@ -106,6 +108,8 @@ func (o Options) UsesVertex() bool {
 		return false
 	case "pi":
 		return !hasOpenAIPrefix(o.Model)
+	case "opencode":
+		return true
 	default:
 		return true
 	}
