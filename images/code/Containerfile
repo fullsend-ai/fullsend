@@ -63,7 +63,7 @@ RUN git config --system gpg.format x509 \
 #
 # Pinned version + SHA256 checksum for supply chain safety.
 # To update: get the latest linux-{amd64,arm64} archive + sha256 from https://go.dev/dl/?mode=json
-ARG GO_VERSION=1.26.0
+ARG GO_VERSION=1.27.2
 ARG GO_SHA256_AMD64=aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235
 ARG GO_SHA256_ARM64=bd03b743eb6eb4193ea3c3fd3956546bf0e3ca5b7076c8226334afe6b75704cd
 
