@@ -333,6 +333,25 @@ func IsNotSupported(err error) bool {
 	return errors.Is(err, ErrNotSupported)
 }
 
+// ProjectLeaser is implemented by clients that can take a project-scoped
+// lease shared by every installer process, whatever host it runs on. A lease
+// is a named record the forge creates atomically only when it is absent, so
+// two holders can never both succeed. Callers use it to serialize
+// multi-request transactions that a process-local mutex cannot protect.
+type ProjectLeaser interface {
+	// AcquireProjectLease creates the lease named name with the given holder
+	// value. It reports false, without error, when the lease already exists.
+	AcquireProjectLease(ctx context.Context, owner, repo, name, holder string) (bool, error)
+	// ReleaseProjectLease removes the lease only while it still carries
+	// holder. A lease that is gone or held by someone else is left alone.
+	// The holder check and the removal are not guaranteed to be atomic: a
+	// backend without a conditional delete (GitLab CI variables) can remove a
+	// newer holder's lease if the lease is replaced and re-acquired between
+	// the check and the removal. Callers must therefore never take over a
+	// lease while a previous holder may still release it.
+	ReleaseProjectLease(ctx context.Context, owner, repo, name, holder string) error
+}
+
 // SecretProtection describes the exposure controls on an existing repo
 // secret. Forges that always encrypt and mask secrets report both true.
 type SecretProtection struct {
@@ -749,6 +768,14 @@ type Client interface {
 	// name. Implementations must check for existing non-fork repos
 	// with the target name and return ErrNotFork when found.
 	CreateForkInOrg(ctx context.Context, owner, repo, org, forkName string) (forkRepo string, err error)
+
+	// DeleteProjectServiceAccount deletes a project-owned service account,
+	// preserving its contributions. The caller must verify Fullsend ownership.
+	// This destructive uninstall operation stays on Client so all forge writes
+	// use the shared abstraction; the other GitLab service-account methods
+	// (creation, personal access tokens, project members) are concrete
+	// gitlab.LiveClient methods and are not part of Client.
+	DeleteProjectServiceAccount(ctx context.Context, owner, repo string, userID int) error
 
 	// File operations
 	CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
