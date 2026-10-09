@@ -457,7 +457,10 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > project-access-token user merge access (not push) on the protected
 > default branch when Developer-class merge/push is absent, and fails
 > closed if that grant is not possible. `repos status` reports
-> `protected-ref-pipeline` drift if the access is later removed.
+> `protected-ref-pipeline` drift if the access is later removed. Under
+> #7772 (originating issue #8083) the Poller becomes a project service
+> account by default once its CLI activation change merges; a project access
+> token remains the fallback.
 >
 > **Update (#7667):** a failed `CreatePipeline` (including that 403) now
 > fails the poll cycle after persisting retry state. The permission gap
