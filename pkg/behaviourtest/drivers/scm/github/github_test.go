@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 )
 
 func TestCreateFork(t *testing.T) {
@@ -733,4 +734,27 @@ func TestListOpenIssues(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, issues, 1)
 	assert.Equal(t, 1, issues[0].Number)
+}
+
+func TestDeleteFile(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+	deleter, ok := d.(scm.FileDeleter)
+	if !ok {
+		t.Fatal("driver does not implement scm.FileDeleter")
+	}
+	ctx := context.Background()
+	if err := d.CommitFile(ctx, "owner", "repo", "dir/file.txt", "add", []byte("x")); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if err := deleter.DeleteFile(ctx, "owner", "repo", "dir/file.txt", "remove"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fc.DeletedFiles) != 1 || fc.DeletedFiles[0].Path != "dir/file.txt" || fc.DeletedFiles[0].Message != "remove" {
+		t.Fatalf("deleted files = %+v", fc.DeletedFiles)
+	}
+	if err := deleter.DeleteFile(ctx, "owner", "repo", "dir/file.txt", "remove"); !forge.IsNotFound(err) {
+		t.Fatalf("second delete: want not found, got %v", err)
+	}
 }

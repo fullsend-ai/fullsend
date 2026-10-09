@@ -538,6 +538,8 @@ type fakeCleanupSCM struct {
 	commitFileCalled bool
 	commitFileErr    error
 	commits          []committedFileRecord
+	deletedFiles     []string
+	deleteFileErr    error
 	fileContent      []byte
 	getFileErr       error
 	// baseFileConfigured, when true, makes GetFileContent answer
@@ -691,6 +693,11 @@ func (f *fakeCleanupSCM) CreateUserFork(context.Context, string, string) (string
 
 func (f *fakeCleanupSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
+}
+
+func (f *fakeCleanupSCM) DeleteFile(_ context.Context, _, _, path, _ string) error {
+	f.deletedFiles = append(f.deletedFiles, path)
+	return f.deleteFileErr
 }
 
 func (f *fakeCleanupSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {

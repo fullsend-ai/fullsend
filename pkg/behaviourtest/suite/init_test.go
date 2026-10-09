@@ -90,6 +90,10 @@ func (p *panickingSCM) CreateUserFork(context.Context, string, string) (string, 
 func (p *panickingSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
+
+func (p *panickingSCM) DeleteFile(context.Context, string, string, string, string) error {
+	return nil
+}
 func (p *panickingSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
