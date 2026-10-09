@@ -1335,6 +1335,54 @@ display_name: repository copy
 	assert.NotContains(t, escapedHint, "\n", "untrusted path newlines are escaped")
 }
 
+// Composition leaves duplicate resolution to runAgent, so migration guidance
+// should name the winning child copies rather than their shadowed base copies.
+func TestRunAgent_ComposedProviderAndProfileCopies_CreateFailureNamesChildCopies(t *testing.T) {
+	provider := harness.ProviderDef{
+		Name: "github", Type: "fullsend-github", Credentials: map[string]string{"_NOOP_GITHUB": ""},
+	}
+	runErr, _, dir := runProviderCreateFailure(t, provider, map[string]string{
+		"harness/base.yaml": `role: test
+providers:
+  - providers/base-github.yaml
+openshell:
+  profiles:
+    - profiles/base-fullsend-github.yaml
+`,
+		"harness/code.yaml": `base: base.yaml
+agent: agents/code.md
+role: test
+providers:
+  - providers/child-github.yaml
+openshell:
+  profiles:
+    - profiles/child-fullsend-github.yaml
+`,
+		"providers/base-github.yaml": `name: github
+type: fullsend-github
+credentials:
+  _NOOP_BASE_GITHUB: ""
+`,
+		"providers/child-github.yaml": `name: github
+type: fullsend-github
+credentials:
+  _NOOP_GITHUB: ""
+`,
+		"profiles/base-fullsend-github.yaml": `id: fullsend-github
+display_name: base copy
+`,
+		"profiles/child-fullsend-github.yaml": `id: fullsend-github
+display_name: child copy
+`,
+	})
+
+	errText := runErr.Error()
+	assert.Contains(t, errText, fmt.Sprintf("provider %q", filepath.Join(dir, "providers", "child-github.yaml")))
+	assert.Contains(t, errText, fmt.Sprintf("profile %q", filepath.Join(dir, "profiles", "child-fullsend-github.yaml")))
+	assert.NotContains(t, errText, filepath.Join(dir, "providers", "base-github.yaml"))
+	assert.NotContains(t, errText, filepath.Join(dir, "profiles", "base-fullsend-github.yaml"))
+}
+
 func TestRunAgent_CustomProvider_CreateFailureHasNoMigrationHint(t *testing.T) {
 	provider := harness.ProviderDef{
 		Name: "custom-github", Type: "custom-profile", Credentials: map[string]string{"CUSTOM_TOKEN": ""},
