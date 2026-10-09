@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -89,18 +90,21 @@ func readBoundedCacheFile(workspaceRoot, path string, limit int64) ([]byte, erro
 	if err := CheckWithinWorkspace(workspaceRoot, path); err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(path)
+	// Open first (non-blocking, so a FIFO cannot hang the open), then check
+	// the opened descriptor: a path swapped after the containment check
+	// cannot turn a validated regular file into a special one.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("cache file %q is not a regular file", path)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err

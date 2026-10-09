@@ -2638,8 +2638,12 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 
 	var index map[string]string
 	data, err := fetch.ReadURLIndex(workspaceRoot, idxPath)
-	if err == nil {
+	switch {
+	case err == nil:
 		_ = json.Unmarshal(data, &index)
+	case !os.IsNotExist(err):
+		// An unsafe index (FIFO, oversized, escaping) must not be written to.
+		return err
 	}
 	if index == nil {
 		index = make(map[string]string)
@@ -2650,7 +2654,32 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(idxPath, out, 0o600)
+	// Write a temp file and rename it into place so a symlink at the
+	// destination is replaced rather than followed.
+	tmp, err := os.CreateTemp(filepath.Dir(idxPath), "url-index.json.tmp.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, idxPath); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // mergeSkills concatenates base and child skill entries, with child entries

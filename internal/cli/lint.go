@@ -559,8 +559,9 @@ func lintDiagLine(scope, message string) string {
 // harness references, using the runtime's parsing and required-field checks.
 // Files must lie inside absFullsendDir (symlinks resolved), be regular and
 // bounded in size, as in ResolveHarness. URLs are skipped; bare provider names
-// are checked against providers/ the way run loads them.
-func lintResourceFiles(h *harness.Harness, absFullsendDir string) error {
+// are checked against providers/ the way run loads them. forgePlatform selects
+// whether the generated GitLab forge profile counts as declared, as in run.
+func lintResourceFiles(h *harness.Harness, absFullsendDir, forgePlatform string) error {
 	local := func(p string) bool {
 		return p != "" && !harness.IsURL(p) && harness.IsProviderPath(p) && filepath.IsAbs(p)
 	}
@@ -590,8 +591,11 @@ func lintResourceFiles(h *harness.Harness, absFullsendDir string) error {
 	}
 	// The run path rejects providers whose type no declared profile supplies.
 	// Remote profiles are not fetched, so their ids are unknown: skip the
-	// check then. run also adds the generated GitLab forge profile.
-	profiles := []resolve.ResolvedProfile{{ID: "fullsend-gitlab-forge"}}
+	// check then. run adds the generated GitLab forge profile only on GitLab.
+	var profiles []resolve.ResolvedProfile
+	if forgePlatform == "gitlab" {
+		profiles = append(profiles, resolve.ResolvedProfile{ID: "fullsend-gitlab-forge"})
+	}
 	remoteProfile := false
 	for i, p := range h.OpenShellProfiles() {
 		if harness.IsURL(p) {
@@ -613,7 +617,9 @@ func lintResourceFiles(h *harness.Harness, absFullsendDir string) error {
 	if remoteProfile {
 		return nil
 	}
-	return checkProviderProfileIntegrity(providers, profiles)
+	// run dedupes providers by name (last wins) first, so a shadowed provider
+	// never reaches the integrity check.
+	return checkProviderProfileIntegrity(dedupResolvedProviders(providers), profiles)
 }
 
 // lintPluginContainment requires every local plugin directory to lie inside
@@ -733,7 +739,7 @@ func lintLoadedHarness(ctx context.Context, harnessPath string, opts harness.Com
 		printer.StepFail(lintDiagLine(label, checkErr.Error()))
 		result.errors++
 		ok = false
-	} else if err := lintResourceFiles(h, absFullsendDir); err != nil {
+	} else if err := lintResourceFiles(h, absFullsendDir, opts.ForgePlatform); err != nil {
 		printer.StepFail(lintDiagLine(label, err.Error()))
 		result.errors++
 		ok = false

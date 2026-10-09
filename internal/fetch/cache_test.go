@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -785,6 +787,25 @@ func TestReadURLIndex(t *testing.T) {
 		require.NoError(t, os.Symlink("/dev/zero", idx))
 		_, err := ReadURLIndex(root, idx)
 		require.Error(t, err)
+	})
+
+	t.Run("fifo does not block", func(t *testing.T) {
+		require.NoError(t, os.Remove(idx))
+		if err := syscall.Mkfifo(idx, 0o600); err != nil {
+			t.Skipf("mkfifo not available: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := ReadURLIndex(root, idx)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not a regular file")
+		case <-time.After(5 * time.Second):
+			t.Fatal("ReadURLIndex blocked on a FIFO")
+		}
 	})
 
 	t.Run("oversized", func(t *testing.T) {

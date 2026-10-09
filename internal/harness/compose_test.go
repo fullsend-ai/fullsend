@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
@@ -10134,6 +10136,42 @@ func TestURLIndexPut_RejectsSymlinkEscape(t *testing.T) {
 		require.NoError(t, os.WriteFile(victim, []byte("keep"), 0o600))
 		require.NoError(t, os.Symlink(victim, filepath.Join(ws, ".fullsend-cache", "url-index.json")))
 		require.Error(t, urlIndexPut(ws, "https://example.com/x", hash))
+		got, err := os.ReadFile(victim)
+		require.NoError(t, err)
+		assert.Equal(t, "keep", string(got))
+	})
+}
+
+func TestURLIndexPut_UnsafeIndex(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+
+	t.Run("fifo index is refused without blocking", func(t *testing.T) {
+		ws := t.TempDir()
+		idx := urlIndexPath(ws)
+		require.NoError(t, os.MkdirAll(filepath.Dir(idx), 0o700))
+		if err := syscall.Mkfifo(idx, 0o600); err != nil {
+			t.Skipf("mkfifo not available: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- urlIndexPut(ws, "https://example.com/x", hash) }()
+		select {
+		case err := <-done:
+			require.Error(t, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("urlIndexPut blocked on a FIFO index")
+		}
+	})
+
+	t.Run("in-workspace symlink target is not overwritten", func(t *testing.T) {
+		ws := t.TempDir()
+		idx := urlIndexPath(ws)
+		require.NoError(t, os.MkdirAll(filepath.Dir(idx), 0o700))
+		victim := filepath.Join(ws, "victim.txt")
+		require.NoError(t, os.WriteFile(victim, []byte("keep"), 0o600))
+		require.NoError(t, os.Symlink(victim, idx))
+		// Refused because the target is not a valid index, or replaced
+		// atomically; either way the symlink target is left intact.
+		_ = urlIndexPut(ws, "https://example.com/x", hash)
 		got, err := os.ReadFile(victim)
 		require.NoError(t, err)
 		assert.Equal(t, "keep", string(got))
