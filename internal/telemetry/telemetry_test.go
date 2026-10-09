@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -38,6 +39,8 @@ func pinOTELEnv(t *testing.T) {
 	t.Setenv("OTEL_SDK_DISABLED", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
 	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 	t.Setenv(ContentCaptureEnvVar, "")
@@ -795,9 +798,33 @@ func TestValidateEndpoints(t *testing.T) {
 			tracesEndpoint: "https://backend:4318/v1/traces",
 		},
 		{
-			name:           "traces endpoint takes precedence over endpoint",
+			name:           "both endpoint and traces endpoint valid",
+			endpoint:       "http://localhost:4318",
+			tracesEndpoint: "https://backend:4318/v1/traces",
+		},
+		{
+			name:           "invalid endpoint rejected even when traces endpoint is valid",
 			endpoint:       "not-a-url",
 			tracesEndpoint: "https://backend:4318/v1/traces",
+			wantErr:        "no scheme",
+		},
+		{
+			name:           "invalid traces endpoint rejected even when endpoint is valid",
+			endpoint:       "http://localhost:4318",
+			tracesEndpoint: "not-a-url",
+			wantErr:        "no scheme",
+		},
+		{
+			name:           "malformed endpoint with credentials does not leak password",
+			endpoint:       "https://user:CANARYPW@host/p%zz",
+			tracesEndpoint: "https://backend:4318/v1/traces",
+			wantErr:        "invalid URL escape",
+		},
+		{
+			name:           "endpoint with unsupported scheme redacts password",
+			endpoint:       "ftp://user:CANARYPW@localhost:4318",
+			tracesEndpoint: "",
+			wantErr:        "not supported",
 		},
 		{
 			name:           "endpoint used when traces endpoint empty",
@@ -848,6 +875,7 @@ func TestValidateEndpoints(t *testing.T) {
 			} else {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.NotContains(t, err.Error(), "CANARYPW")
 			}
 		})
 	}
@@ -914,7 +942,7 @@ func TestSetup_SchemelessEndpointsFailed(t *testing.T) {
 	assert.False(t, called, "schemeless string fails validation")
 }
 
-func TestSetup_InvalidEndpointValidTracesEndpoint(t *testing.T) {
+func TestSetup_InvalidEndpointFailsEvenWithValidTracesEndpoint(t *testing.T) {
 	pinOTELEnv(t)
 	sink := newOTLPSink(t)
 
@@ -928,8 +956,8 @@ func TestSetup_InvalidEndpointValidTracesEndpoint(t *testing.T) {
 	span.End()
 	cleanup(context.Background())
 
-	assert.Contains(t, sink.spanNames(), "precedence-bypass-span",
-		"valid TRACES_ENDPOINT must not be blocked by an invalid generic ENDPOINT")
+	assert.NotContains(t, sink.spanNames(), "precedence-bypass-span",
+		"invalid generic ENDPOINT must fail validation to prevent SDK parse errors")
 }
 
 // spyProcessor records span names forwarded to OnEnd.
@@ -1009,4 +1037,310 @@ func TestOTLPEnabledAndValidate(t *testing.T) {
 
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "not-a-url")
 	require.Error(t, ValidateOTLPEndpoints())
+}
+
+func TestOTELHeaderMalformedFailClosed(t *testing.T) {
+	pinOTELEnv(t)
+	sink := newOTLPSink(t)
+
+	const secretCredential = "CANARY_SECRET_dXNlcjpwYXNzMTIzNDU=" // gitleaks:allow
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	// Malformed: HTTP header-line syntax ("Key: Value") instead of OTel "Key=Value" syntax
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "Authorization: Basic "+secretCredential)
+
+	dir := t.TempDir()
+	tracer, cleanup := Setup(dir, "1.0.0-reproduce")
+	_, span := tracer.Start(context.Background(), "reproduce-span")
+	span.End()
+	cleanup(context.Background())
+
+	require.Equal(t, 0, sink.requestCount())
+	require.Empty(t, sink.spanNames())
+}
+
+func TestValidateOTLPHeaders(t *testing.T) {
+	tests := []struct {
+		name        string
+		headers     string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "empty",
+			headers: "",
+			wantErr: false,
+		},
+		{
+			name:    "valid key-value with empty segments",
+			headers: "k1=v1, ,k2=v2,",
+			wantErr: false,
+		},
+		{
+			name:    "valid key-value",
+			headers: "Authorization=Bearer token,X-Custom=value",
+			wantErr: false,
+		},
+		{
+			name:    "valid with colon in value",
+			headers: "X-Url=https://example.com:4318,X-Auth=user:pass",
+			wantErr: false,
+		},
+		{
+			name:        "invalid colon syntax without equals",
+			headers:     "Authorization: Bearer my-secret-token",
+			wantErr:     true,
+			errContains: "OTLP headers must use 'key=value' format, found ':' separator",
+		},
+		{
+			name:        "invalid colon syntax with base64 padding equals",
+			headers:     "Authorization: Basic dXNlcjpwYXNz=",
+			wantErr:     true,
+			errContains: "OTLP headers must use 'key=value' format, found ':' separator",
+		},
+		{
+			name:        "mixed valid and invalid",
+			headers:     "X-Valid=foo,Authorization: Basic canary",
+			wantErr:     true,
+			errContains: "OTLP headers must use 'key=value' format, found ':' separator",
+		},
+		{
+			name:        "missing equals without colon",
+			headers:     "Authorization Bearer my-secret-token",
+			wantErr:     true,
+			errContains: "missing '=' separator",
+		},
+		{
+			name:        "empty key",
+			headers:     "=my-secret-token",
+			wantErr:     true,
+			errContains: "invalid header key",
+		},
+		{
+			name:        "invalid character in key",
+			headers:     "Bad Key=my-secret-token",
+			wantErr:     true,
+			errContains: "invalid header key",
+		},
+		{
+			name:        "invalid url escape in value",
+			headers:     "Authorization=Bearer%20token%zz",
+			wantErr:     true,
+			errContains: "invalid URL escape in header value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateHeaders("OTEL_EXPORTER_OTLP_HEADERS", tt.headers)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.errContains)
+				require.NotContains(t, err.Error(), "my-secret-token")
+				require.NotContains(t, err.Error(), "dXNlcjpwYXNz")
+				require.NotContains(t, err.Error(), "canary")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateOTLPHeaders_Env(t *testing.T) {
+	pinOTELEnv(t)
+
+	// Both empty
+	require.NoError(t, ValidateOTLPHeaders())
+
+	// General headers invalid
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "k: v")
+	err := ValidateOTLPHeaders()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "OTEL_EXPORTER_OTLP_HEADERS")
+
+	// Traces headers invalid
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "k=v")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "k: v")
+	err = ValidateOTLPHeaders()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+
+	// Both valid
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "t=v")
+	require.NoError(t, ValidateOTLPHeaders())
+}
+
+func TestOTELRedactingLogger_DropsKeysAndValues(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewRedactingLogger(&buf)
+
+	const secretCredential = "CANARY_SECRET_dXNlcjpwYXNzMTIzNDU=" // gitleaks:allow
+	logger.Error(fmt.Errorf("missing '='"), "parse headers", "input", "Authorization: Basic "+secretCredential)
+
+	out := buf.String()
+	require.Contains(t, out, "fullsend: otel: parse headers: missing '='")
+	require.NotContains(t, out, secretCredential)
+	require.NotContains(t, out, "Authorization")
+
+	// Exercise Error without err, Info, and WithValues/WithName/Init
+	buf.Reset()
+	logger.Error(nil, "something happened", "secret", "value")
+	require.Equal(t, "fullsend: otel: something happened\n", buf.String())
+
+	logger.Info("info message", "secret", "value")
+	logger.V(1).Info("v1 message")
+	child := logger.WithValues("k", "v").WithName("sub")
+	require.NotNil(t, child)
+}
+
+func TestNewOTLPExporterBounded(t *testing.T) {
+	pinOTELEnv(t)
+	exp, err := NewOTLPExporterBounded(context.Background(), 2*time.Second)
+	require.NoError(t, err)
+	require.NotNil(t, exp)
+	_ = exp.Shutdown(context.Background())
+}
+
+func TestOTELRedactingLogger_SDKHeaderLeakRedacted(t *testing.T) {
+	pinOTELEnv(t)
+
+	InstallOTELRedactingLogger()
+	var buf bytes.Buffer
+	otel.SetLogger(NewRedactingLogger(&buf))
+	t.Cleanup(func() {
+		otel.SetLogger(NewRedactingLogger(nil))
+	})
+
+	const secretCredentialWithPadding = "CANARY_SECRET_dXNlcjpwYXNzMTIzNDU=" // gitleaks:allow
+	const secretCredentialNoPadding = "CANARY_SECRET_dXNlcjpwYXNz"           // gitleaks:allow
+	// Pass headers that trigger different SDK parser error branches directly to NewOTLPExporter
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization: Basic "+secretCredentialWithPadding+",X-Malformed "+secretCredentialNoPadding)
+
+	// Call NewOTLPExporter directly to exercise SDK parser without ValidateOTLPHeaders aborting first.
+	_, _ = NewOTLPExporter(context.Background())
+
+	out := buf.String()
+	require.Contains(t, out, "fullsend: otel: parse headers: invalid header key")
+	require.Contains(t, out, "fullsend: otel: parse headers: missing '=")
+	require.NotContains(t, out, secretCredentialWithPadding)
+	require.NotContains(t, out, secretCredentialNoPadding)
+	require.NotContains(t, out, "Basic")
+}
+
+func TestOTELRedactingLogger_PreservesSDKErrorMessages(t *testing.T) {
+	pinOTELEnv(t)
+
+	InstallOTELRedactingLogger()
+	var buf bytes.Buffer
+	otel.SetLogger(NewRedactingLogger(&buf))
+	t.Cleanup(func() {
+		otel.SetLogger(NewRedactingLogger(nil))
+	})
+
+	t.Setenv("OTEL_EXPORTER_OTLP_TIMEOUT", "invalid-duration-value")
+
+	_, _ = NewOTLPExporter(context.Background())
+
+	out := buf.String()
+	require.Contains(t, out, "fullsend: otel: parse duration:")
+}
+
+func TestOTELRedactingLogger_SDKURLLeakRedacted(t *testing.T) {
+	pinOTELEnv(t)
+
+	InstallOTELRedactingLogger()
+	var buf bytes.Buffer
+	otel.SetLogger(NewRedactingLogger(&buf))
+	t.Cleanup(func() {
+		otel.SetLogger(NewRedactingLogger(nil))
+	})
+
+	const canaryPassword = "CANARY_PW_s3cr3t!" // gitleaks:allow
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://user:"+canaryPassword+"@host/p%zz")
+
+	// Call NewOTLPExporter directly so SDK parser runs without ValidateOTLPEndpoints aborting first.
+	_, _ = NewOTLPExporter(context.Background())
+
+	out := buf.String()
+	require.Contains(t, out, "fullsend: otel: parse url: parse: invalid URL escape")
+	require.NotContains(t, out, canaryPassword)
+	require.NotContains(t, out, "user")
+}
+
+func TestSetup_NonEffectiveEndpointWithUserInfoRedacted(t *testing.T) {
+	pinOTELEnv(t)
+
+	const canaryPassword = "CANARY_PW_s3cr3t!" // gitleaks:allow
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:1/v1/traces")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://user:"+canaryPassword+"@host/p%zz")
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = r.Close()
+		_ = w.Close()
+	})
+
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	dir := t.TempDir()
+	tracer, cleanup := Setup(dir, "1.0.0-test")
+	_, span := tracer.Start(context.Background(), "span")
+	span.End()
+	cleanup(context.Background())
+
+	_ = w.Close()
+	os.Stderr = oldStderr
+	stderrOutput := <-done
+
+	require.NotContains(t, stderrOutput, canaryPassword)
+	require.NotContains(t, stderrOutput, "user")
+	require.Contains(t, stderrOutput, "fullsend: OTLP endpoints validation failed: OTEL_EXPORTER_OTLP_ENDPOINT: parse: invalid URL escape")
+}
+
+func TestOTELHeaderLeakSilenced(t *testing.T) {
+	pinOTELEnv(t)
+	sink := newOTLPSink(t)
+
+	const secretCredential = "CANARY_SECRET_dXNlcjpwYXNzMTIzNDU=" // gitleaks:allow
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "Authorization: Basic "+secretCredential)
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = r.Close()
+		_ = w.Close()
+	})
+
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	dir := t.TempDir()
+	tracer, cleanup := Setup(dir, "1.0.0-test")
+	_, span := tracer.Start(context.Background(), "span")
+	span.End()
+	cleanup(context.Background())
+
+	_ = w.Close()
+	os.Stderr = oldStderr
+	stderrOutput := <-done
+
+	require.NotContains(t, stderrOutput, secretCredential)
+	require.Contains(t, stderrOutput, "fullsend: OTLP headers validation failed:")
 }

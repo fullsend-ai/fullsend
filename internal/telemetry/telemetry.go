@@ -12,7 +12,9 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -20,7 +22,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
+	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -50,10 +55,74 @@ func OTLPEnabled() bool {
 		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")) != ""
 }
 
+// sanitizeError strips raw URLs and escape sequences from errors to avoid leaking credentials.
+func sanitizeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		var escErr url.EscapeError
+		if errors.As(urlErr.Err, &escErr) {
+			return fmt.Sprintf("%s: invalid URL escape", urlErr.Op)
+		}
+		if urlErr.Err != nil {
+			return fmt.Sprintf("%s: %v", urlErr.Op, urlErr.Err)
+		}
+		return urlErr.Op
+	}
+	var escErr url.EscapeError
+	if errors.As(err, &escErr) {
+		return "invalid URL escape"
+	}
+	return err.Error()
+}
+
+// redactingLogSink is a logr.LogSink that drops keysAndValues when logging errors,
+// ensuring secret headers and credentials are never emitted to stderr while still
+// surfacing real misconfiguration errors like invalid TLS certificates or durations.
+type redactingLogSink struct {
+	out io.Writer
+}
+
+func (s *redactingLogSink) Init(info logr.RuntimeInfo)                       {}
+func (s *redactingLogSink) Enabled(level int) bool                           { return true }
+func (s *redactingLogSink) Info(level int, msg string, keysAndValues ...any) {}
+func (s *redactingLogSink) Error(err error, msg string, keysAndValues ...any) {
+	w := s.out
+	if w == nil {
+		w = os.Stderr
+	}
+	if err != nil {
+		fmt.Fprintf(w, "fullsend: otel: %s: %s\n", msg, sanitizeError(err))
+	} else {
+		fmt.Fprintf(w, "fullsend: otel: %s\n", msg)
+	}
+}
+func (s *redactingLogSink) WithValues(keysAndValues ...any) logr.LogSink { return s }
+func (s *redactingLogSink) WithName(name string) logr.LogSink            { return s }
+
+var installLoggerOnce sync.Once
+
+// InstallOTELRedactingLogger configures the global OpenTelemetry logger with a
+// redacting sink that emits error messages without keysAndValues context.
+// Safe for concurrent use and runs at most once per process.
+func InstallOTELRedactingLogger() {
+	installLoggerOnce.Do(func() {
+		otel.SetLogger(NewRedactingLogger(nil))
+	})
+}
+
+// NewRedactingLogger returns a logr.Logger backed by a redactingLogSink writing to w.
+func NewRedactingLogger(w io.Writer) logr.Logger {
+	return logr.New(&redactingLogSink{out: w})
+}
+
 // NewOTLPExporter builds the HTTP OTLP span exporter from OTEL_* env
 // (same path Setup uses for agent traces). Callers must validate endpoints
 // first with ValidateOTLPEndpoints when they want fail-closed setup.
 func NewOTLPExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
+	InstallOTELRedactingLogger()
 	retryOption := otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
 		Enabled:         true,
 		InitialInterval: 250 * time.Millisecond,
@@ -65,6 +134,7 @@ func NewOTLPExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
 // NewOTLPExporterBounded is NewOTLPExporter with MaxElapsedTime set so
 // post-hoc exporters (eval scores) cannot retry forever on a flaky collector.
 func NewOTLPExporterBounded(ctx context.Context, maxElapsed time.Duration) (sdktrace.SpanExporter, error) {
+	InstallOTELRedactingLogger()
 	retryOption := otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
 		Enabled:         true,
 		InitialInterval: 250 * time.Millisecond,
@@ -84,8 +154,9 @@ func BuildResource(serviceVersion string) *resource.Resource {
 	return buildResource(serviceVersion)
 }
 
-// ValidateOTLPEndpoints checks the OTEL endpoint env vars that the SDK
-// will use for traces export.
+// ValidateOTLPEndpoints checks all configured OTEL endpoint env vars
+// (OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)
+// that the SDK will parse for traces export.
 func ValidateOTLPEndpoints() error {
 	return validateEndpoints(
 		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
@@ -94,33 +165,97 @@ func ValidateOTLPEndpoints() error {
 }
 
 func validateEndpoints(endpoint, tracesEndpoint string) error {
-	// The SDK uses TRACES_ENDPOINT when set, falling back to ENDPOINT.
-	// Validate only the value that will actually be used.
-	ep := tracesEndpoint
-	if ep == "" {
-		ep = endpoint
+	// The SDK parses both endpoint env vars; validate both to prevent SDK-level leaks.
+	if err := validateEndpoint("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint); err != nil {
+		return err
 	}
+	return validateEndpoint("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", tracesEndpoint)
+}
+
+func validateEndpoint(envVar, ep string) error {
+	ep = strings.TrimSpace(ep)
 	if ep == "" {
 		return nil
 	}
 
 	u, err := url.Parse(ep)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %s", envVar, sanitizeError(err))
 	}
 
+	redacted := u.Redacted()
 	if u.Scheme == "" {
-		return fmt.Errorf("endpoint %q has no scheme, it is required", ep)
+		return fmt.Errorf("%s: endpoint %q has no scheme, it is required", envVar, redacted)
 	}
 
 	if u.Scheme != "https" && u.Scheme != "http" {
-		return fmt.Errorf("endpoint %q uses the %q scheme which is not supported", ep, u.Scheme)
+		return fmt.Errorf("%s: endpoint %q uses the %q scheme which is not supported", envVar, redacted, u.Scheme)
 	}
 
 	if u.Host == "" {
-		return fmt.Errorf("endpoint %q has no host, it is required", ep)
+		return fmt.Errorf("%s: endpoint %q has no host, it is required", envVar, redacted)
 	}
 
+	return nil
+}
+
+// ValidateOTLPHeaders checks the OTEL header env vars (OTEL_EXPORTER_OTLP_HEADERS
+// and OTEL_EXPORTER_OTLP_TRACES_HEADERS) for syntax errors like missing '=',
+// invalid RFC 7230 token characters in keys, or invalid URL-escapes in values.
+func ValidateOTLPHeaders() error {
+	if err := validateHeaders("OTEL_EXPORTER_OTLP_HEADERS", os.Getenv("OTEL_EXPORTER_OTLP_HEADERS")); err != nil {
+		return err
+	}
+	return validateHeaders("OTEL_EXPORTER_OTLP_TRACES_HEADERS", os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"))
+}
+
+func isTokenChar(c rune) bool {
+	return c <= unicode.MaxASCII && (unicode.IsLetter(c) ||
+		unicode.IsDigit(c) ||
+		c == '!' || c == '#' || c == '$' || c == '%' || c == '&' || c == '\'' || c == '*' ||
+		c == '+' || c == '-' || c == '.' || c == '^' || c == '_' || c == '`' || c == '|' || c == '~')
+}
+
+func isValidHeaderKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, c := range key {
+		if !isTokenChar(c) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateHeaders(envVar, raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	for i, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		key, val, found := strings.Cut(entry, "=")
+		if !found {
+			if strings.Contains(entry, ":") {
+				return fmt.Errorf("%s: entry %d: OTLP headers must use 'key=value' format, found ':' separator", envVar, i)
+			}
+			return fmt.Errorf("%s: entry %d: missing '=' separator", envVar, i)
+		}
+		key = strings.TrimSpace(key)
+		if !isValidHeaderKey(key) {
+			if strings.Contains(key, ":") {
+				return fmt.Errorf("%s: entry %d: OTLP headers must use 'key=value' format, found ':' separator", envVar, i)
+			}
+			return fmt.Errorf("%s: entry %d: invalid header key", envVar, i)
+		}
+		if _, err := url.PathUnescape(strings.TrimSpace(val)); err != nil {
+			return fmt.Errorf("%s: entry %d: invalid URL escape in header value", envVar, i)
+		}
+	}
 	return nil
 }
 
@@ -241,6 +376,8 @@ func warnContentCaptureAttrLimit() {
 // context that has enough budget for the OTLP flush (typically
 // context.Background() with a 5s timeout).
 func Setup(dir string, serviceVersion string) (trace.Tracer, func(context.Context)) {
+	InstallOTELRedactingLogger()
+
 	noop := func(context.Context) {}
 
 	if sdkDisable := os.Getenv("OTEL_SDK_DISABLED"); strings.EqualFold(strings.TrimSpace(sdkDisable), "true") {
@@ -267,6 +404,8 @@ func Setup(dir string, serviceVersion string) (trace.Tracer, func(context.Contex
 	if endpoint != "" || tracesEndpoint != "" {
 		if err := validateEndpoints(endpoint, tracesEndpoint); err != nil {
 			fmt.Fprintf(os.Stderr, "fullsend: OTLP endpoints validation failed: %v\n", err)
+		} else if err := ValidateOTLPHeaders(); err != nil {
+			fmt.Fprintf(os.Stderr, "fullsend: OTLP headers validation failed: %v\n", err)
 		} else {
 			exp, err := newOTLPExporter(context.Background())
 			if err != nil {
