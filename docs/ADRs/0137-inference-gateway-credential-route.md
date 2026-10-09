@@ -77,16 +77,19 @@ forge stores no reusable provider key.
   token file that the extension re-reads on every request
   (`INFERENCE_GATEWAY_TOKEN_FILE`, which wins over
   `INFERENCE_GATEWAY_API_KEY`).
-- **The refresh margin is derived from the token, not shared with ADR 0092.**
-  The ADR 0092 margin and settle constants are sized for a longer-lived
-  access token and do not fit a 300 s one. The gateway route uses its own
-  margin, about half of `exp − iat`, and refresh, placeholder settle and
-  re-seed must all finish inside it. With a 300 s token, any run longer than
-  five minutes depends on this re-seed.
-- **The real token stays on the host side of the OpenShell proxy.** The
-  sandbox sees only the placeholder. The proxy substitutes it only on requests
-  to the gateway host and its model API paths: `POST /v1/responses`,
-  `POST /v1/messages` and `POST /v1/chat/completions`.
+- **The refresh margin already adapts to the token lifetime.** ADR 0092's
+  `openAIRefreshDelay` caps the refresh lead at half the remaining lifetime
+  (`min(margin, remaining/2)`), so for a 300 s token the lead is 150 s, about
+  half of `exp − iat`. The gateway route reuses it. What must fit inside that
+  lead is the placeholder settle wait (90 s) plus any retries. With a 300 s
+  token, any run longer than five minutes depends on this re-seed.
+- **The real token stays on the host side of the OpenShell proxy.** This is
+  outbound credential isolation: the sandbox sees only the placeholder, and
+  the proxy substitutes it only on requests to the gateway host and its model
+  API paths: `POST /v1/responses`, `POST /v1/messages` and
+  `POST /v1/chat/completions`. It does not cover the gateway's responses,
+  which is why the gateway must never reflect caller credentials (see
+  Gateway-side requirements).
 
 ### Config shape
 
@@ -182,9 +185,9 @@ This choice has two consequences:
   `--no-extensions`, so the runner adds the pi-inference-gateway extension
   when the model prefix is `gateway`. Sub-agent model resolution also learns
   the `gateway` provider and takes its model ids from the block.
-- **The `anthropic-messages` auth header is `authorization`.** Gateways that
-  validate JWTs read `Authorization: Bearer`. The runner sets this in the
-  rendered file, so the token never travels in pi's native `x-api-key`
+- **The `anthropic-messages` auth header is `authorization`.** agentgateway
+  reads `Authorization: Bearer` by default, and the header is configurable
+  with `location`. The runner sets this in the rendered file, so the token never travels in pi's native `x-api-key`
   header.
 
 ### Request flow
@@ -224,6 +227,15 @@ responsible for them, and each was verified live:
   repository's token is refused for another
 - the caller's `Authorization` header is never forwarded upstream
 - the `x-api-key` request header is stripped
+
+The gateway also meets these requirements, which the live verification did not
+cover:
+
+- caller credentials are never reflected in responses, in the body or in a
+  header, because a reflected token would be a replayable credential for the
+  rest of its lifetime
+- the rules fail closed: no policy admits no caller, and malformed
+  configuration, missing claims or an unverifiable signature are rejected
 
 Deploying and operating the gateway are out of scope.
 
