@@ -445,12 +445,12 @@ The steps edit the agents clone from [Clone repositories](#clone-repositories)
    ```bash
    (
      set -eu
-     ver=0.1.0
+     ver=0.1.1
      dest=/tmp/fullsend-agents/extensions/inference-gateway
      cd "$(mktemp -d)"
      curl -fsSL -o pi-inference-gateway.tgz \
        "https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v$ver.tar.gz"
-     echo "db5a172d8621eff1be244c4cfc3401c4d9198a997f2c32b04d551fa518cb3df3  pi-inference-gateway.tgz" \
+     echo "9d4a9446842f27aa51de99be4f61b6cbc2a6de009ddf04f2dc712c1fb1417d29  pi-inference-gateway.tgz" \
        | shasum -a 256 -c -
      mkdir -p "$dest"
      tar xzf pi-inference-gateway.tgz -C "$dest" --strip-components=1 \
@@ -512,8 +512,8 @@ The steps edit the agents clone from [Clone repositories](#clone-repositories)
    The sandbox only ever holds a placeholder for the key. OpenShell puts the real key on requests
    to this host and blocks the agent from reaching any other host with it.
 
-4. **Wire them into the harness.** In `/tmp/fullsend-agents/harness/triage.yaml`, add the provider, the profile and the
-   plugin:
+4. **Wire them into the harness.** In `/tmp/fullsend-agents/harness/triage.yaml`, add the provider,
+   the profile and the plugin:
 
    ```yaml
    providers:
@@ -533,7 +533,45 @@ The steps edit the agents clone from [Clone repositories](#clone-repositories)
    List every model you will use in `INFERENCE_GATEWAY_EXTRA_MODELS`, as `id=api`. pi never asks
    the gateway for its model list inside the sandbox, so a model missing here is unknown to pi.
 
-5. **Run with a `gateway/` model** from the directory that holds your env files from
+5. **Add per-model settings (optional).** Only needed for a model that needs `compat`,
+   `contextWindow` / `maxTokens` or `exclude`. Write
+   `/tmp/fullsend-agents/extensions/inference-gateway/inference-gateway.json`:
+
+   ```json
+   {
+     "providers": {
+       "gateway": {
+         "baseUrlEnv": "INFERENCE_GATEWAY_BASE_URL",
+         "models": {
+           "claude-opus-5-5": {
+             "api": "anthropic-messages",
+             "compat": { "supportsMidConvoEffort": false, "supportsStrictTools": false }
+           },
+           "example-org/open-model": {
+             "api": "openai-completions",
+             "contextWindow": 262144,
+             "maxTokens": 65536
+           }
+         }
+       }
+     }
+   }
+   ```
+
+   - Keep `"baseUrlEnv": "INFERENCE_GATEWAY_BASE_URL"` in the `gateway` entry. Without it the
+     extension skips the entry with a warning.
+   - Put no credential keys in the file (`apiKey*`, `tokenFile`, `password*`). The key comes from
+     the provider.
+   - Keep every model in `INFERENCE_GATEWAY_EXTRA_MODELS` as well.
+   - `contextWindow` / `maxTokens` are your deployment's limits; the values above are examples.
+
+   See the extension's
+   [per-model keys](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file)
+   and [`compat` reference](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/compat.md).
+   The file ships inside the plugin directory, and the runner checks that directory is unchanged
+   before every iteration, so the agent cannot edit it.
+
+6. **Run with a `gateway/` model** from the directory that holds your env files from
    [Run default agents](#run-default-agents):
 
    ```bash
@@ -571,13 +609,25 @@ PASS: output validated against schema (0.5s)
 The same setup passed with an open-weight model on Chat Completions and with `claude-haiku-4-5` and
 `claude-sonnet-5` on Messages.
 
+`claude-opus-5-5` passed with the per-model file from step 5:
+
+```text
+    Model: gateway/claude-opus-5-5 (from --model flag)
+    Plugins: /tmp/fullsend-agents/extensions/inference-gateway (pi)
+  ✓ Profile imported: gateway-inference (0.1s)
+  ✓ Provider ready: gateway (0.1s)
+Extension "inference-gateway": uploaded to sandbox
+    Turns: 6
+  ✓ Agent exited with code 0 (32.8s)
+PASS: output validated against schema (0.2s)
+    Validation: passed
+```
+
 ### Limits
 
-- **No per-model settings yet.** The extension's `compat`, `contextWindow` / `maxTokens` and
-  `exclude` settings live in `inference-gateway.json`, and fullsend cannot place that file in the
-  sandbox yet ([pi-inference-gateway#15](https://github.com/fullsend-ai/pi-inference-gateway/issues/15)).
-  A model that needs one of them fails, and open-weight models run with pi's default limits, which
-  may exceed what your deployment allows on long runs.
+- **Per-model settings go in the plugin's file.** The extension's `compat`,
+  `contextWindow` / `maxTokens` and `exclude` settings live in the `inference-gateway.json` from
+  step 5, not in the harness `env`.
 - **The base URL and model list come from the harness.** The runner exports the plugin's `env` on
   every launch, after the agent-writable `.env`, so plain assignments in `.env` do not change them.
   The key is only sent to the profile's host.
@@ -586,9 +636,10 @@ The same setup passed with an open-weight model on Chat Completions and with `cl
 
 | Error | Cause | Fix |
 |---|---|---|
-| `WARNING: plugin ".../extensions/inference-gateway" has 1 injection finding(s) in src/config.ts` (and `src/discovery.ts`) | The content scan flags patterns in the extension's code | Expected for v0.1.0; the run continues |
+| `WARNING: plugin ".../extensions/inference-gateway" has 1 injection finding(s) in src/config.ts` (and `src/discovery.ts`) | The content scan flags patterns in the extension's code | Expected for v0.1.1; the run continues |
 | `Warning: Model "<id>" not found for provider "gateway". Using custom model id.`, then an error such as `` 404: {"message":"The model `<id>` does not exist ...","code":"model_not_found"} `` | The model is not in `INFERENCE_GATEWAY_EXTRA_MODELS`, so pi sends it on another listed model's API | Add `<id>=<api>` to `INFERENCE_GATEWAY_EXTRA_MODELS` |
-| Claude: `400 ... messages.1.output_config: Extra inputs are not permitted` | The gateway's Claude backend (for example Vertex) rejects pi's mid-conversation effort setting. The fix is `compat.supportsMidConvoEffort: false`, a per-model setting this setup cannot deliver yet | Use another model until per-model settings are supported |
+| Claude: `400 ... messages.1.output_config: Extra inputs are not permitted` | The gateway's Claude backend (for example Vertex) rejects pi's mid-conversation effort setting | Set `"compat": { "supportsMidConvoEffort": false }` on that model in `inference-gateway.json` (step 5) |
+| `` 400 ... disallowed feature structured_outputs for Partner model <id> `` | Your cloud project's policy disallows that feature for the partner model | Set `"compat": { "supportsStrictTools": false }` on that model in `inference-gateway.json` (step 5) |
 
 ## Run from a container
 
