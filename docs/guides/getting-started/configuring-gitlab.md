@@ -257,7 +257,9 @@ fullsend repos install <group/project> \
 
 ### Choosing a runtime
 
-`repos install` records the agent runtime in `.fullsend/config.yaml`.
+`repos install` records the agent runtime in `.fullsend/config.yaml`
+(an unmanaged repo that already has that file keeps it unchanged,
+including its existing runtime).
 Pass `--runtime` to set it (`claude` is the stable default; `pi` and
 `codex` are experimental):
 

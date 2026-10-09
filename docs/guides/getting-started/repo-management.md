@@ -382,8 +382,13 @@ Install runs in two phases:
 2. **Convergence** — every repo flows through a single probe → diff →
    apply pipeline. Repos whose shim workflow is not yet on the default
    branch are treated as new and fully provisioned (scaffold files,
-   variables, secrets) onto the initialization branch. That includes a
-   re-run while the initialization PR/MR is still open: variables and
+   variables, secrets) onto the initialization branch. An unmanaged
+   repo that already has a `.fullsend/config.yaml` keeps it
+   byte-for-byte, so `--roles` and `--runtime` are not applied to it;
+   the generated overlay is written only when no file exists (an empty
+   file counts as missing). If that existing file does not parse as a
+   per-repo config, the repo fails before anything is written. That
+   includes a re-run while the initialization PR/MR is still open: variables and
    secrets may already exist from the first run, but the installer
    still updates the same initialization PR/MR rather than opening a
    separate upgrade PR. Repos whose workflow is already on the default
