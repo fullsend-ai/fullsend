@@ -75,10 +75,33 @@ type RoleRotateResult struct {
 	Diagnostics []string
 }
 
+// rotationStateFile is the in-memory rotation-state document and the
+// shape writeRotationState persists. The writer intentionally still
+// emits the legacy unversioned form ({"roles":...}, no "version" key)
+// so binaries that predate the tolerant reader keep decoding it; the
+// versioned writer lands separately once every converging operator
+// carries this reader (#8242).
 type rotationStateFile struct {
 	Roles map[string]rotationRoleState `json:"roles"`
 }
 
+// rotationStateEnvelope is the read-side view of the persisted
+// rotation-state document. Version zero is the legacy unversioned form;
+// version gitLabRoleRotationStateVersion is the versioned form a later
+// writer emits. The version is wire metadata only and is not carried
+// into rotationStateFile.
+type rotationStateEnvelope struct {
+	Version int                          `json:"version"`
+	Roles   map[string]rotationRoleState `json:"roles"`
+}
+
+// gitLabRoleRotationStateVersion is the highest rotation-state format
+// version this binary understands.
+const gitLabRoleRotationStateVersion = 1
+
+// rotationRoleState is the persisted per-role rotation state. Every
+// field is omitempty so a state that only uses the legacy fields
+// serializes byte-identically to the legacy format.
 type rotationRoleState struct {
 	Phase         string `json:"phase,omitempty"`
 	Holder        string `json:"holder,omitempty"`
@@ -88,6 +111,46 @@ type rotationRoleState struct {
 	DistributedAt string `json:"distributed_at,omitempty"`
 	ExpiresAt     string `json:"expires_at,omitempty"`
 	Error         string `json:"error,omitempty"`
+
+	// CreatedTokenIDs records only token IDs returned by a successful
+	// creation by Fullsend, so cleanup never revokes a token it did not
+	// mint.
+	CreatedTokenIDs []int `json:"created_token_ids,omitempty"`
+	// ManagedUserID records a service account positively created by
+	// Fullsend for this role.
+	ManagedUserID int `json:"managed_user_id,omitempty"`
+	// SuppliedUserID is the GitLab user that owns an administrator-
+	// supplied credential for this role.
+	SuppliedUserID int `json:"supplied_user_id,omitempty"`
+	// SuppliedTokenID is the GitLab token ID of the enrolled
+	// administrator-supplied credential.
+	SuppliedTokenID int `json:"supplied_token_id,omitempty"`
+	// Supplied records that the installed credential was enrolled by an
+	// administrator rather than minted by Fullsend.
+	Supplied bool `json:"supplied,omitempty"`
+	// SuppliedDistributed records that the enrolled supplied credential
+	// was distributed to the role secret.
+	SuppliedDistributed bool `json:"supplied_distributed,omitempty"`
+	// ExcludedUserIDs are GitLab users that owned administrator-supplied
+	// credentials and must never be treated as Fullsend-managed.
+	ExcludedUserIDs []int `json:"excluded_user_ids,omitempty"`
+
+	// Poller identity generations (#8210). Accounts are recorded by
+	// numeric ID only, never by name and never with token material.
+	//
+	// GenerationCurrentUserID is the Poller account whose runtime
+	// credential is published.
+	GenerationCurrentUserID int `json:"generation_current_user_id,omitempty"`
+	// GenerationPendingUserID is the fresh Poller account being handed
+	// off, if any.
+	GenerationPendingUserID int `json:"generation_pending_user_id,omitempty"`
+	// GenerationPendingPhase is the handoff phase of the pending
+	// generation. It is distinct from Phase, which is the credential
+	// rotation phase.
+	GenerationPendingPhase string `json:"generation_pending_phase,omitempty"`
+	// GenerationRetiringUserID is the superseded Poller account still
+	// being retired.
+	GenerationRetiringUserID int `json:"generation_retiring_user_id,omitempty"`
 }
 
 // RotateGitLabRoleCredentials replaces due (or Force) own-credential
@@ -624,12 +687,19 @@ func loadRotationState(ctx context.Context, client forge.Client, owner, repo str
 	if !exists || strings.TrimSpace(raw) == "" {
 		return out, nil, nil
 	}
+	// Unknown fields are tolerated (no DisallowUnknownFields) during the
+	// rotation-state format transition so this binary can read state
+	// written by a newer one. Unknown fields are dropped if this binary
+	// rewrites the state.
 	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
-	dec.DisallowUnknownFields()
-	var file rotationStateFile
-	if err := dec.Decode(&file); err != nil {
+	var envelope rotationStateEnvelope
+	if err := dec.Decode(&envelope); err != nil {
 		return out, nil, fmt.Errorf("decode GitLab role rotation state: %w", err)
 	}
+	if envelope.Version < 0 || envelope.Version > gitLabRoleRotationStateVersion {
+		return out, nil, fmt.Errorf("unsupported GitLab role rotation state version %d; use a compatible CLI", envelope.Version)
+	}
+	file := rotationStateFile{Roles: envelope.Roles}
 	if file.Roles == nil {
 		file.Roles = map[string]rotationRoleState{}
 	}
