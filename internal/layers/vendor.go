@@ -14,7 +14,7 @@ import (
 
 const (
 	// VendoredBinaryPathPerRepo is the upload path inside a per-repo target repo.
-	VendoredBinaryPathPerRepo = ".fullsend/bin/fullsend"
+	VendoredBinaryPathPerRepo = scaffold.PerRepoVendoredBinaryPath
 )
 
 // VendorBinary uploads a pre-built fullsend binary to the given destPath.

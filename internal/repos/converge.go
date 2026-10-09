@@ -1461,7 +1461,19 @@ func convergeRepo(ctx context.Context,
 			}
 		}
 
+		// A partial earlier installation can leave vendored assets behind
+		// even without the workflow; remove them with the install commit.
+		staleVendoredFiles, staleVendoredActions := convergeStaleVendoredFiles(ctx, resolved, cfg, progress)
+		for _, a := range staleVendoredActions {
+			if a.Action == "error" {
+				cr.Actions = append(cr.Actions, staleVendoredActions...)
+				cr.Error = fmt.Errorf("convergence errors: %s", a.Detail)
+				return cr
+			}
+		}
+
 		if cfg.DryRun {
+			cr.Actions = append(cr.Actions, staleVendoredActions...)
 			cr.Installed = true
 			if resolved.Forge == ForgeGitLab {
 				if err := gitlabFreshInstallDryRunPreflight(ctx, resolved, installCfg); err != nil {
@@ -1532,7 +1544,15 @@ func convergeRepo(ctx context.Context,
 			return cr
 		}
 
-		installResult, installErr := Install(ctx, installCfg, resolved.ForgeConfig.Client, commitScaffold, progress)
+		installCommit := commitScaffold
+		if len(staleVendoredFiles) > 0 {
+			installCommit = func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, installed bool) error {
+				files = append(files, withoutQueuedPaths(staleVendoredFiles, files)...)
+				return commitScaffold(ctx, owner, repo, files, direct, installed)
+			}
+		}
+
+		installResult, installErr := Install(ctx, installCfg, resolved.ForgeConfig.Client, installCommit, progress)
 		if installErr != nil {
 			cr.Error = installErr
 			if installResult != nil {
@@ -1549,6 +1569,7 @@ func convergeRepo(ctx context.Context,
 			Action:    "add",
 			Detail:    "Installed",
 		})
+		cr.Actions = append(cr.Actions, staleVendoredActions...)
 		// The selected method's credentials were written before the
 		// scaffold commit; only now remove the other method's secrets.
 		// This runs on every successful install, including a retry after an
@@ -3649,7 +3670,96 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 		return allScaffoldFiles, actions, fmt.Errorf("convergence errors: %s", strings.Join(configErrors, "; "))
 	}
 	allScaffoldFiles = append(allScaffoldFiles, configFiles...)
+
+	// 2d-v: Stale vendored assets — when vendoring is off, delete the
+	// Fullsend-owned files a previous vendored install committed, in the
+	// same scaffold commit as every other change.
+	staleFiles, staleActions := convergeStaleVendoredFiles(ctx, resolved, cfg, progress)
+	actions = append(actions, staleActions...)
+	for _, a := range staleActions {
+		if a.Action == "error" {
+			return allScaffoldFiles, actions, fmt.Errorf("convergence errors: %s", a.Detail)
+		}
+	}
+	allScaffoldFiles = append(allScaffoldFiles, withoutQueuedPaths(staleFiles, allScaffoldFiles)...)
 	return allScaffoldFiles, actions, nil
+}
+
+// staleVendoredComponent is the ComponentAction component reported for
+// stale vendored assets.
+const staleVendoredComponent = "vendored-assets"
+
+// convergeStaleVendoredFiles plans removal of the vendored binary, content,
+// and manifest left by an earlier vendored install once a GitHub repo's
+// effective vendor setting is false, matching the cleanup `github setup`
+// runs without --vendor. Ownership comes from
+// scaffold.PendingVendoredCleanupPaths, so files not written by a vendored
+// install are kept. A live run returns delete entries for the scaffold
+// commit; a dry run returns only the planned action.
+func convergeStaleVendoredFiles(ctx context.Context, resolved ResolvedConfig, cfg ConvergeConfig, progress ProgressFunc) ([]forge.TreeFile, []ComponentAction) {
+	if resolved.Forge != ForgeGitHub {
+		return nil, nil
+	}
+	vendor := resolved.Vendor
+	if cfg.VendorOverride != nil {
+		vendor = *cfg.VendorOverride
+	}
+	if vendor {
+		return nil, nil
+	}
+	repoFullName := resolved.Owner + "/" + resolved.Repo
+	paths, err := scaffold.PendingVendoredCleanupPaths(ctx, resolved.ForgeConfig.Client, resolved.Owner, resolved.Repo,
+		scaffold.PerRepoVendorPrefix, scaffold.PerRepoVendoredBinaryPath)
+	if err != nil {
+		return nil, []ComponentAction{{
+			Component: staleVendoredComponent,
+			Action:    "error",
+			Detail:    fmt.Sprintf("checking stale vendored assets: %v", err),
+		}}
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	summary := fmt.Sprintf("%d stale vendored file(s): %s", len(paths), strings.Join(paths, ", "))
+	if cfg.DryRun {
+		progress(repoFullName, "dry-run", "Would remove "+summary)
+		return nil, []ComponentAction{{
+			Component: staleVendoredComponent,
+			Action:    "delete",
+			Detail:    "would remove " + summary,
+		}}
+	}
+	progress(repoFullName, "vendor", "Removing "+summary)
+	files := make([]forge.TreeFile, 0, len(paths))
+	for _, p := range paths {
+		files = append(files, forge.TreeFile{Path: p, Delete: true})
+	}
+	return files, []ComponentAction{{
+		Component: staleVendoredComponent,
+		Action:    "delete",
+		Detail:    "remove " + summary,
+	}}
+}
+
+// withoutQueuedPaths drops deletions for paths the same commit writes, so a
+// stale-vendored cleanup can never remove a file the scaffold delivers.
+func withoutQueuedPaths(deletes, queued []forge.TreeFile) []forge.TreeFile {
+	if len(deletes) == 0 {
+		return nil
+	}
+	writing := make(map[string]bool, len(queued))
+	for _, f := range queued {
+		if !f.Delete {
+			writing[f.Path] = true
+		}
+	}
+	out := make([]forge.TreeFile, 0, len(deletes))
+	for _, f := range deletes {
+		if !writing[f.Path] {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // convergeEstablishedPhases collects scaffold changes once, preserving the
