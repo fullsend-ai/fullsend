@@ -526,14 +526,18 @@ even when enforcement is requested; legacy variable-based wrappers are exempt), 
 removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs
 predating #7707),
 declared configuration-preset drift, managed `.fullsend/config.yaml` drift,
-and scaffold workflow refs against the manifest. Missing or drifted
+GitHub `vendored-assets` drift (stale Fullsend-owned vendored files left
+behind when effective `vendor` is false), and scaffold workflow refs against
+the manifest. Missing or drifted
 components are repaired automatically (disabled pipeline schedules are the
 exception — see above); a changed preset replaces only
 `.fullsend/config.base.yaml` and leaves the managed configuration intact. A
 drifted managed configuration file is rewritten wholesale, unless the
 existing file predates managed-configuration adoption (missing the
 ownership marker) — that case is reported as adoption required and left
-untouched instead of rewritten; unmanaged files are left intact. Ref
+untouched instead of rewritten; unmanaged files are left intact. For GitHub
+repos with effective `vendor: false`, stale Fullsend-owned vendored files from
+a previous vendored install are removed in the same commit. Ref
 updates are committed as PRs (or direct pushes with `--direct`).
 
 Use `repos status` for a read-only drift report (no changes applied). For

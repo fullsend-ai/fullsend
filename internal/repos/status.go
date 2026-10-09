@@ -9,6 +9,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // RepoState holds the installation state of a single repo as read
@@ -318,6 +319,10 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		// Leftover credentials of an unselected method are drift even
 		// when none of the selected method's components exist.
 		checkObsoleteInferenceConfig(ctx, client, cfg, &status)
+		if status.Error == "" {
+			// A partial installation can leave vendored assets behind.
+			checkStaleVendoredAssets(ctx, client, cfg, &status)
+		}
 		return status
 	}
 	status.Installed = true
@@ -414,6 +419,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		return status
 	}
 
+	checkStaleVendoredAssets(ctx, client, cfg, &status)
+	if status.Error != "" {
+		return status
+	}
+
 	// Read display-only variable not covered by required vars.
 	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, forge.VarGCPRegion)
 	if regionErr != nil {
@@ -456,6 +466,30 @@ func checkObsoleteInferenceConfig(ctx context.Context, client forge.Client, cfg 
 			Actual:   fmt.Sprintf("obsolete variable (inference.auth is %s)", cfg.InferenceAuth),
 		})
 	}
+}
+
+// checkStaleVendoredAssets reports Fullsend-owned vendored files left by an
+// earlier vendored install on a GitHub repo whose vendor setting is false.
+// `repos install` removes them (see convergeStaleVendoredFiles), so status
+// reports them as drift until that cleanup lands.
+func checkStaleVendoredAssets(ctx context.Context, client forge.Client, cfg ResolvedConfig, status *RepoStatus) {
+	if cfg.Forge != ForgeGitHub || cfg.Vendor {
+		return
+	}
+	paths, err := scaffold.PendingVendoredCleanupPaths(ctx, client, cfg.Owner, cfg.Repo,
+		scaffold.PerRepoVendorPrefix, scaffold.PerRepoVendoredBinaryPath)
+	if err != nil {
+		status.Error = fmt.Sprintf("checking stale vendored assets for %s/%s: %v", cfg.Owner, cfg.Repo, err)
+		return
+	}
+	if len(paths) == 0 {
+		return
+	}
+	status.Drifts = append(status.Drifts, Drift{
+		Field:    staleVendoredComponent,
+		Expected: "absent",
+		Actual:   fmt.Sprintf("%d stale vendored file(s) pending removal", len(paths)),
+	})
 }
 
 // checkObsoleteInferenceSecrets reports the secret half of

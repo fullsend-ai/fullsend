@@ -21,7 +21,7 @@ const vendorArch = binary.DefaultArch
 
 // vendorPathPrefix is the in-repo directory that holds vendored assets in a
 // per-repo install.
-const vendorPathPrefix = ".fullsend/"
+const vendorPathPrefix = scaffold.PerRepoVendorPrefix
 
 // Vendor install flags replaced the removed --vendor-fullsend-binary flag (binary-only
 // upload). A hidden --vendor-fullsend-binary alias sets --vendor and prints a deprecation

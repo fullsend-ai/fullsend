@@ -36,6 +36,24 @@ vendored binary. Legacy variable-based wrappers retain their compatible
 project setting. Typed activation migrates managed schedules off pipeline
 variables while preserving disabled schedules and unrelated user settings.
 
+For GitHub repos whose effective `vendor` setting is false (manifest
+`defaults.vendor`/`vendor`, or `--vendor=false`), install removes vendored
+assets left by a previous vendored install. Fullsend owns only the paths
+recorded in `.fullsend/vendor-manifest.yaml`, plus the manifest and the
+vendored binary `.fullsend/bin/fullsend`. Without a manifest, ownership falls
+back to the legacy vendored layout, only when the binary is present, and
+only for files under `.fullsend/` and the `.github/workflows/reusable-*.yml`
+workflows; a root `action.yml`, `.github/actions/*`, and `.github/scripts/*`
+are never removed without a manifest record. Files you added under the same
+directories are kept. When no workflow ref is available (no `fullsend_ref` and
+a development build) and an installed caller still uses a local reusable
+workflow, the cleanup is skipped so the callers keep working. The deletions are part
+of the scaffold commit: pushed directly with `--direct`, or added to the
+install or upgrade PR otherwise. They apply to new and established
+installations alike and to partial installs (`--roles`). `--dry-run` lists
+the files it would remove. Once the cleanup lands, re-runs report nothing to
+do. GitLab repos are not affected.
+
 When the manifest file does not exist and positional repo arguments are
 provided, `repos install` bootstraps a new manifest (`version: 1`),
 adds the specified repos, and writes the file. The `--forge` flag is
@@ -503,6 +521,8 @@ fullsend repos status --repo "acme/*" --json
 - **REF** — Current workflow ref. Named refs (tags, branches) display as-is (e.g., `v2.3.0`, `main`). When the ref is a commit SHA, shows a truncated 7-character SHA with the expected ref in parentheses (e.g., `6f8b968 (main)`).
 - **STATUS** — `installed`, `not installed`, or `error`. A repo with no resolved [inference authentication selection](#inference-authentication-selection) is reported as `error` with a configuration message, and its forge state is not inspected.
 - **DRIFT** — Fields that differ from the manifest, scaffold files whose template content has changed, orphan files or variables no longer in the managed set, or `none`
+
+On GitHub repos whose effective `vendor` setting is false, status reports `vendored-assets` drift (`N stale vendored file(s) pending removal`) when a previous vendored install left Fullsend-owned vendored files that `repos install` would remove. This is reported even when the repo is otherwise not installed.
 
 Inference credentials are checked against each repo's own effective `inference.auth`, so a mixed fleet is evaluated repo by repo (see [Inference credentials](#inference-credentials)):
 

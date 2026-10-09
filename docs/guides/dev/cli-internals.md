@@ -384,7 +384,7 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
-Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `.fullsend/bin/fullsend` when `--vendor` is not set.
+Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `.fullsend/bin/fullsend` when `--vendor` is not set. For GitHub repos with an effective `vendor: false`, `repos install` uses the same ownership rules (`scaffold.PendingVendoredCleanupPaths`, backed by `ResolveVendoredCleanupPaths`) to queue deletions of existing owned paths in the scaffold commit, and `repos status` reports them as `vendored-assets` drift.
 
 ---
 
