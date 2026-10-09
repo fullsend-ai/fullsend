@@ -201,7 +201,43 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
     && npm ci --omit=dev --omit=peer --ignore-scripts --no-audit --no-fund \
     && find node_modules -type d -empty -delete \
     && npm cache clean --force \
-    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}/xai-vertex" \
+    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}/xai-vertex"
+
+# ---------------------------------------------------------------------------
+# pi-inference-gateway — OpenAI-/Anthropic-compatible inference gateway
+# provider for pi (github.com/fullsend-ai/pi-inference-gateway). Fronts
+# LiteLLM, agentgateway, APISIX and similar gateways: registers one provider
+# (default id "gateway"), discovers models from the gateway's /v1/models and
+# routes each to the API it needs (Anthropic Messages, OpenAI Responses or
+# OpenAI Chat Completions). Mirrors no pi internals; with no base URL
+# configured it registers nothing and makes no request (#8262).
+#
+# Installed but not loaded by any run yet: PiRuntime.Run does not pass it
+# with -e until models can route to a gateway (#7480), which also adds the
+# INFERENCE_GATEWAY_* unset and the inference-gateway.json guard.
+#
+# Pinned by git tag + SHA256 of the GitHub tag tarball. Installed under
+# PI_EXTENSIONS_DIR (sandbox.SandboxPiExtensionsDir), root-owned and outside
+# PI_CODING_AGENT_DIR, so pi never auto-loads it. It has no runtime
+# dependencies (only pi peers and dev tools), so there is no npm ci step.
+#
+# To update: pick a tag from
+# https://github.com/fullsend-ai/pi-inference-gateway/releases (the notes
+# carry the tarball SHA256) and set the two ARGs below:
+#   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v<ver>.tar.gz)
+# The last extension install locks the parent directory (see pi-xai-vertex).
+ARG PI_INFERENCE_GATEWAY_VERSION=0.1.0
+ARG PI_INFERENCE_GATEWAY_SHA256=db5a172d8621eff1be244c4cfc3401c4d9198a997f2c32b04d551fa518cb3df3
+RUN curl -fsSL --retry 3 --retry-delay 5 \
+      "https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v${PI_INFERENCE_GATEWAY_VERSION}.tar.gz" \
+      -o /tmp/pi-inference-gateway.tar.gz \
+    && echo "${PI_INFERENCE_GATEWAY_SHA256}  /tmp/pi-inference-gateway.tar.gz" | sha256sum -c - \
+    && mkdir -p "${PI_EXTENSIONS_DIR}/inference-gateway" \
+    && tar xzf /tmp/pi-inference-gateway.tar.gz -C "${PI_EXTENSIONS_DIR}/inference-gateway" --strip-components=1 \
+    && rm /tmp/pi-inference-gateway.tar.gz \
+    && cd "${PI_EXTENSIONS_DIR}/inference-gateway" \
+    && rm -rf .github .fullsend scripts AGENTS.md CLAUDE.md CONTRIBUTING.md PLAN.md \
+    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}/inference-gateway" \
     && chmod a+rX,a-w "${PI_EXTENSIONS_DIR}"
 
 # ---------------------------------------------------------------------------
