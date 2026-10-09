@@ -225,10 +225,12 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 	// Seed dependencies with the agent source fetch (if harness was
 	// resolved from a config URL rather than a local file).
+	// Dependencies are deduplicated by URL, except the workflow
+	// definition (see lockDepKey).
 	var allDeps []resolve.Dependency
 	seen := make(map[string]bool)
 	for _, dep := range agentSourceDeps {
-		seen[dep.URL] = true
+		seen[lockDepKey(dep.Field, dep.URL)] = true
 		allDeps = append(allDeps, dep)
 	}
 	linted := make(map[string]bool) // track reported lint diagnostics to avoid duplicates across forge variants
@@ -274,8 +276,8 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 		newBaseDeps := 0
 		for _, bd := range baseDeps {
-			if !seen[bd.URL] {
-				seen[bd.URL] = true
+			if key := lockDepKey(bd.Field, bd.URL); !seen[key] {
+				seen[key] = true
 				newBaseDeps++
 				allDeps = append(allDeps, resolve.Dependency{
 					Field:     bd.Field,
@@ -288,6 +290,25 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 					Warning:   bd.Warning,
 				})
 			}
+		}
+
+		// The workflow: definition is resolved on its own step (ADR 0130),
+		// as fullsend run does; a path source has no dependency to lock.
+		resolvedWorkflow, workflowDep, wfErr := resolveHarnessWorkflow(ctx, h, workflowLocation(harnessPath, absFullsendDir, len(agentSourceDeps) > 0), resolve.ResolveOpts{
+			WorkspaceRoot: absFullsendDir,
+			FetchPolicy:   policy,
+			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+			OrgAllowlist:  orgAllowlist,
+			TreeFetcher:   rFlags.treeFetcher,
+			GitToken:      composeGitToken,
+		})
+		if wfErr != nil {
+			printer.StepFail("Workflow definition resolution failed")
+			return nil, fmt.Errorf("resolving workflow definition: %w", wfErr)
+		}
+		if workflowDep != nil && !seen[lockDepKey(workflowDep.Field, workflowDep.URL)] {
+			seen[lockDepKey(workflowDep.Field, workflowDep.URL)] = true
+			allDeps = append(allDeps, *workflowDep)
 		}
 
 		if !h.HasURLReferences() {
@@ -367,8 +388,8 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			if dep.Warning != "" {
 				printer.StepWarn(dep.Warning)
 			}
-			if !seen[dep.URL] {
-				seen[dep.URL] = true
+			if key := lockDepKey(dep.Field, dep.URL); !seen[key] {
+				seen[key] = true
 				allDeps = append(allDeps, dep)
 			}
 		}
@@ -381,6 +402,15 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		if err := h.ValidatePluginDirs(); err != nil {
 			printer.StepFail("Plugin validation failed")
 			return nil, err
+		}
+		// URL plugins had no Claude Code plugin name to compare when the
+		// workflow definition resolved above; compare it now that they
+		// are fetched, as fullsend run does.
+		if resolvedWorkflow != nil {
+			if err := resolve.CheckWorkflowNamespace(h, resolvedWorkflow); err != nil {
+				printer.StepFail("Workflow definition resolution failed")
+				return nil, fmt.Errorf("resolving workflow definition: %w", err)
+			}
 		}
 	}
 
@@ -400,7 +430,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			FetchedAt: dep.FetchedAt,
 		}
 		if dep.Type == "directory" {
-			_, dirEntry, err := fetch.CacheGetDir(absFullsendDir, dep.SHA256)
+			_, dirEntry, err := cachedDirFor(dep.Field, absFullsendDir, dep.SHA256)
 			if err != nil {
 				return nil, fmt.Errorf("reading cached directory for %s: %w", dep.Field, err)
 			}
@@ -775,6 +805,15 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			return resolve.ResolveResult{}, fmt.Errorf(
 				"locked dependency %s (%s) is no longer in allowed_remote_resources — run 'fullsend lock' to update",
 				lockDep.Field, lockDep.URL)
+		}
+		// The workflow definition is not replayed here: runAgent reads its
+		// hash from the entry (lockedWorkflowSHA256) and
+		// resolve.ResolveWorkflowDefinition reads the cache by it, or
+		// refetches and verifies against it, so a definition missing from
+		// the cache does not send every other dependency to normal
+		// resolution.
+		if lockDep.Field == resolve.WorkflowDependencyField {
+			continue
 		}
 
 		var localPath string

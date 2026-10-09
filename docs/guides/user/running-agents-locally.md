@@ -381,6 +381,21 @@ resolved from the local cache without network access. If the harness has changed
 or a cached artifact is missing, `fullsend run` falls back to normal network
 resolution and prints a warning suggesting you re-run `fullsend lock`.
 
+A harness's `workflow.source` pin is part of the harness file, so changing it
+makes the lock entry out of date like any other change to the harness. A
+definition that a harness inherits through a URL `base:` is pinned by the base's
+commit, which the child's `base:` URL and `#sha256=` pin, so moving that pin also
+re-locks. A local `base:` file is not part of the child's hash: after changing a
+local base, run `fullsend lock --update`.
+
+`workflow:` in a harness needs the fullsend release that introduced it. Older
+releases silently ignore the key and run the agent without the definition. A
+lock file that records a workflow definition is written as `version: 2`, and
+older releases refuse to read it instead of replaying the definition as a skill:
+they warn `unsupported lock file version 2 (expected 1)` and resolve without the
+lock file, and an older `fullsend lock` writes a new file in its place. A lock
+file without a workflow definition stays `version: 1`.
+
 Use `--update` to force re-resolution even if the lock entry appears current.
 
 ### Status notification flags

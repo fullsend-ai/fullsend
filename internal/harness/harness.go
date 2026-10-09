@@ -1139,7 +1139,7 @@ func (h *Harness) HasURLDirResources() bool {
 }
 
 // HasURLReferences reports whether any declarative field (agent, policy, skills,
-// plugins, profiles, providers) contains a URL reference. Used to skip remote
+// plugins, profiles, providers, workflow.source) contains a URL reference. Used to skip remote
 // resource validation and resolution when the harness references only local paths.
 func (h *Harness) HasURLReferences() bool {
 	if IsURL(h.Agent) || IsURL(h.Policy) {
@@ -1169,6 +1169,11 @@ func (h *Harness) HasURLReferences() bool {
 		if IsURL(p) {
 			return true
 		}
+	}
+	// A remote workflow: source is resolved in its own step, but it needs
+	// the config-level allowlist like every URL resource.
+	if h.Workflow != nil && h.Workflow.IsRemote() {
+		return true
 	}
 	return false
 }

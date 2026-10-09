@@ -2258,6 +2258,19 @@ func urlIndexLookup(workspaceRoot, rawURL string) (string, bool) {
 	return hash, ok
 }
 
+// LookupURLIndex returns the tree hash the URL-to-hash index records for
+// key. Base composition keeps the index; a workflow: source that
+// composition pinned to a base's commit (ADR 0130) is resolved after
+// composition and uses it the same way a base plugin does.
+func LookupURLIndex(workspaceRoot, key string) (string, bool) {
+	return urlIndexLookup(workspaceRoot, key)
+}
+
+// RecordURLIndex records key→hash in the URL-to-hash index.
+func RecordURLIndex(workspaceRoot, key, hash string) error {
+	return urlIndexPut(workspaceRoot, key, hash)
+}
+
 // urlIndexPut records a URL→SHA256 mapping in the index file.
 func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 	if workspaceRoot == "" {
