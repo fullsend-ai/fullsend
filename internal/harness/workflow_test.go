@@ -67,6 +67,16 @@ func TestWorkflowSpec_ParseAndValidate(t *testing.T) {
 		{name: "newline in args", yaml: "runtime_workflow:\n  source: .\n  name: probe\n  args: \"a\\nb\"\n", wantErr: "runtime_workflow.args must be a single line"},
 		{name: "carriage return in args", yaml: "runtime_workflow:\n  source: .\n  name: probe\n  args: \"a\\rb\"\n", wantErr: "runtime_workflow.args must be a single line"},
 		{name: "args without name", yaml: "runtime_workflow:\n  source: .\n  args: x\n", wantErr: "runtime_workflow.args is set without runtime_workflow.name"},
+		{
+			name: "work-item variable in args",
+			yaml: "runtime_workflow:\n  source: .\n  name: probe\n  args: issue ${ISSUE_NUMBER}\n",
+			want: &RuntimeWorkflowSpec{Source: ".", Name: "probe", Args: "issue ${ISSUE_NUMBER}"},
+		},
+		{
+			name:    "credential variable in args",
+			yaml:    "runtime_workflow:\n  source: .\n  name: probe\n  args: issue ${ISSUE_NUMBER} ${GH_TOKEN}\n",
+			wantErr: "runtime_workflow.args references ${GH_TOKEN}, which names a credential (the *_TOKEN family (credential-shaped names)); pass work-item identifiers such as ${ISSUE_NUMBER} instead",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -440,4 +450,36 @@ func TestURLIndexWrappers(t *testing.T) {
 func TestHasURLReferences_WorkflowSource(t *testing.T) {
 	assert.False(t, (&Harness{RuntimeWorkflow: &RuntimeWorkflowSpec{Source: "pipelines/sample"}}).HasURLReferences())
 	assert.True(t, (&Harness{RuntimeWorkflow: &RuntimeWorkflowSpec{Source: "https://github.com/o/r/tree/" + testWorkflowSHA + "#sha256=" + testWorkflowHash}}).HasURLReferences())
+}
+
+func TestCredentialShapedEnvName(t *testing.T) {
+	for _, name := range []string{
+		"GH_TOKEN", "GITHUB_TOKEN", "OTEL_EXPORTER_OTLP_HEADERS", "otel_service_name", "MY_API_KEY", "SIGNING_PRIVATE_KEY", "AWS_ACCESS_KEY", "APP_SECRET_KEY",
+		"DB_PASSWORD", "GOOGLE_APPLICATION_CREDENTIALS", "X_SECRET_Y", "WEBHOOK_SECRET", "HTTPS_PROXY", "https_proxy",
+		"TOKEN", "PASSWORD", "SECRET",
+	} {
+		rule, ok := CredentialShapedEnvName(name)
+		assert.True(t, ok, name)
+		assert.NotEmpty(t, rule, name)
+	}
+	for _, name := range []string{"ISSUE_NUMBER", "ISSUE_KEY", "PR_NUMBER", "REPO_FULL_NAME", "KEYWORDS", "TOKENIZER", "FULLSEND_DIR"} {
+		_, ok := CredentialShapedEnvName(name)
+		assert.False(t, ok, name)
+	}
+}
+
+func TestCheckWorkflowArgsVariables(t *testing.T) {
+	for _, name := range []string{"GH_TOKEN", "OTEL_EXPORTER_OTLP_HEADERS", "MY_API_KEY", "DB_PASSWORD", "X_SECRET_Y"} {
+		err := CheckWorkflowArgsVariables("issue ${"+name+"}", nil)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "runtime_workflow.args references ${"+name+"}, which names a credential (")
+	}
+	require.NoError(t, CheckWorkflowArgsVariables("issue ${ISSUE_NUMBER}", nil))
+	require.NoError(t, CheckWorkflowArgsVariables("literal $GH_TOKEN text", nil), "args without ${ are not expanded")
+
+	extra := func(name string) (string, bool) { return "runner-only", name == "RUNNER_ONLY" }
+	err := CheckWorkflowArgsVariables("${ISSUE_NUMBER} ${RUNNER_ONLY}", extra)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "${RUNNER_ONLY}, which names a credential (runner-only)")
+	require.NoError(t, CheckWorkflowArgsVariables("${ISSUE_NUMBER}", extra))
 }

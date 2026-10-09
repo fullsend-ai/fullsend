@@ -257,6 +257,10 @@ type aggregateMetrics struct {
 	// at the same index (see agentruntime.RunMetrics.FallbackReasons), from
 	// the same iteration. Absent when none fell back.
 	FallbackReasons []string `json:"fallback_reasons,omitempty"`
+	// RuntimeWorkflow records the runtime workflow the run delivered and, for
+	// a Claude plugin, the command it started (ADR 0130), on every
+	// runtime; absent without a harness runtime_workflow: field.
+	RuntimeWorkflow *workflowLaunch `json:"runtime_workflow,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -738,6 +742,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run 'fullsend lock --update%s %s%s' to pin them",
 				agentName, len(unpinned), noun, unpinned[0], forgeArg, agentName, fullsendDirArg(fullsendDir)))
 		}
+	}
+	if err := checkWorkflowArgsLiteral(h); err != nil {
+		printer.StepFail("Failed to load harness")
+		return err
 	}
 
 	// Emit the harness-resolved role as a step output so the finalize step
@@ -1308,6 +1316,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
 		h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, expander)
 	}
+	// Expand ${VAR} references in workflow.args (ADR 0130), so a harness
+	// can hand the work item to the workflow; the result must stay one
+	// line, because it is the tail of the slash command the runner starts,
+	// and is scanned for credentials whether or not it names a variable.
+	if h.RuntimeWorkflow != nil {
+		args, err := expandWorkflowArgs(h.RuntimeWorkflow.Args, lookup)
+		if err != nil {
+			printer.StepFail("Environment validation failed")
+			return err
+		}
+		h.RuntimeWorkflow.Args = args
+	}
 
 	// Check the runtime before resolving the runtime workflow (ADR
 	// 0130), so a codex agent fails before the runtime workflow is fetched; the
@@ -1359,6 +1379,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	if err := validateRunnerSecretHostFiles(h, runnerSecrets); err != nil {
 		printer.StepFail("Runner secret validation failed")
+		return err
+	}
+	if err := checkWorkflowAgentTools(h, agentName, resolvedWorkflow); err != nil {
+		printer.StepFail(err.Error())
+		return err
+	}
+	if err := checkWorkflowToolAllowlist(h, resolvedWorkflow); err != nil {
+		printer.StepFail(err.Error())
 		return err
 	}
 	// Ensure scripts are executable. The GitHub Contents API does not
@@ -2439,6 +2467,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	aggMetrics.RuntimeSource = configSource
 	aggMetrics.RequestedModel = h.Model
 	aggMetrics.OverrideSource = aliasOverrideSource(modelOverrideSource(overrides, h.Model), modelRemapped, runCfg.source)
+	aggMetrics.RuntimeWorkflow = newWorkflowLaunch(resolvedWorkflow)
 	tx := backend.Transcripts
 
 	// The dummy-playback runtime (e2e behaviour tests) reads and updates a
@@ -2788,6 +2817,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// injected into the agent prompt so the agent can self-correct. See #1050.
 	var validationFeedback string
 	feedbackEnabled := h.ValidationLoop != nil && h.ValidationLoop.FeedbackMode == "append"
+	// workflowFeedbackNoted keeps workflowFeedbackNote to once per run.
+	var workflowFeedbackNoted bool
 
 	// Per-iteration sandbox writes follow the run's cancellation.
 	execCtx := func(name, command string, timeout time.Duration) (string, string, int, error) {
@@ -2837,10 +2868,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Build the agent prompt. On retry iterations with feedback_mode:
 		// append, the previous validation failure is injected so the agent
 		// can self-correct instead of re-running blindly (#1050, #6494).
-		agentPrompt := ""
-		promptSanitized := 0
-		if iteration > 1 && feedbackEnabled && validationFeedback != "" {
-			agentPrompt, promptSanitized = buildFeedbackPrompt(validationFeedback)
+		// A workflow harness starts its workflow command on every
+		// iteration instead (ADR 0130 rule 3).
+		agentPrompt, promptSanitized, injected, noteFeedback := iterationPrompt(resolvedWorkflow, iteration, feedbackEnabled, validationFeedback, &workflowFeedbackNoted)
+		if noteFeedback {
+			printer.StepWarn(workflowFeedbackNote)
+		}
+		if injected {
 			printer.StepInfo("Injecting validation feedback into agent prompt")
 			if promptSanitized > 0 {
 				printer.StepWarn(fmt.Sprintf(
@@ -2856,6 +2890,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Start the agent span before writeIterationEnv so the runtime
 		// TRACEPARENT names this iteration's span, not the run root.
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		if resolvedWorkflow != nil {
+			agentSpan.SetAttributes(workflowSpanAttr(resolvedWorkflow))
+		}
 		agentTraceparent := iterationTraceparent(agentSpan, tid.PropagatedFlags)
 
 		agentStart := time.Now()
