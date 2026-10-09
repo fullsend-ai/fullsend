@@ -96,7 +96,7 @@ The key distinction: **transient failures** (network timeout, flaky test, rate l
 
 Without an explicit retry budget, agents can retry the same task across multiple runs without any cumulative limit, even though each individual run is bounded by its own per-run constraints. A retry budget is distinct from per-run limits:
 
-- **Per-run limit:** max turns and max cost for a single attempt (already enforced via `max_turns` and `max_cost_usd` in the functional test framework, PR #1682)
+- **Per-run limit:** max turns and max cost for a single attempt (already recorded and checked via `max_turns` and `max_cost_usd` in the functional test framework, PR #1682)
 - **Retry budget:** max total attempts across runs for the same task, and max total cost across all attempts
 
 A task might allow 3 retries with a total budget of $10. Each individual run stays within its per-run limits, but the system tracks cumulative spend and attempt count.
@@ -109,6 +109,17 @@ When should the system stop retrying and ask a human?
 - **After budget exhaustion.** When the retry budget is consumed, escalate regardless of failure type.
 - **On novel failure types.** If each retry fails for a different reason, the task may be beyond the agent's current capability. Escalate after 2-3 distinct failure types.
 - **On regression.** If a retry makes things worse (introduces new test failures that the previous attempt did not have), stop immediately.
+
+### Where escalation thresholds would live
+
+The triggers above are stated qualitatively ("after N identical failures", "2-3 distinct failure types"). Today the only live limit is an attempt count: the fix pipeline derives the iteration number itself from the PR's history and stops at a cap, and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md) places the per-run time budget with the runner rather than the sandbox. Nothing distinguishes identical from distinct failures, and nothing accumulates cost across attempts. Making the triggers tunable per repository needs somewhere to put the values, and each candidate surface has a trade-off:
+
+- **Per-agent harness config.** Closest to where the fix loop already lives, but values declared for the sandbox are visible to the agent, not enforced by the runner. ADR 0105 is the precedent: enforcement belongs on the runner side.
+- **Existing per-run budget fields, extended.** `max_turns` / `max_cost_usd` already exist per attempt in the functional test framework (PR #1682). Reusing their names for a cumulative cross-run budget conflates a single-attempt cap with a total unless the names stay distinct.
+- **A dedicated block in `.fullsend/config.yaml`.** Pipeline policy, which [ADR 0080](../ADRs/0080-config-yaml-vs-agent-env-var-scope.md) assigns to `config.yaml`. Inspectable and tunable without a code change. It would need a name that does not collide with the harness `security.escalation` field, and per-agent tuning would follow the existing agent-keyed layout rather than a role-keyed one ([ADR 0091](../ADRs/0091-per-agent-runtime-model-effort.md)).
+- **CEL conditions** ([cel-triggers.md](../contributing/cel-triggers.md)). Most expressive, but the evaluated event carries no prior-run outcomes, cost, or failure history, so none of the four triggers can be written as a CEL trigger today.
+
+Kubernetes Jobs (`backoffLimit`, `podFailurePolicy`), GitLab CI (`retry: max`, `retry:when`) and Argo Workflows (`retryStrategy`, `retryPolicy`) all cap retries and gate them on failure class, which covers the regression and distinct-failure legs. None counts consecutive identical failures. That leg needs a stable failure signature (for example, the failing check name plus a normalized error line). The signature must be computed by the pipeline from system-derived signals, not reported by the agent: an agent that produces its own signature can vary the failure text and never reach the limit, the same evasion the [memory attack surface](#memory-as-an-attack-surface) section describes for cross-run memory.
 
 ### Interaction with cross-run memory
 
@@ -135,3 +146,4 @@ Retry loops can become flapping when the system does not converge. See [flapping
 - What retention model prevents stale memory from dominating: time-based, count-based, outcome-based, or explicit supersession?
 - Should the retro agent curate memory by pruning stale entries and proposing durable skill additions, or would that give it too much influence over future runs?
 - How should memory interact with structured agent output? Should agent output include an "observations" field that post-scripts can validate and classify?
+- What is the stable failure signature that makes "N identical failures" countable across runs, given that the pipeline, not the agent, has to compute it?
