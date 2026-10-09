@@ -2,19 +2,32 @@
 
 All git forge operations (GitHub API calls, PR comments, issue creation, workflow dispatch, etc.) **must** go through the `forge.Client` interface defined in `internal/forge/forge.go`. This is a fundamental architectural rule — the codebase supports multiple forges (GitHub, GitLab, Forgejo) and direct coupling to any single forge breaks the abstraction.
 
-**Prohibited outside `internal/forge/github/`:**
+**Prohibited outside the matching `forge.Client` implementation** (`internal/forge/github/`, `internal/forge/gitlab/`, and any future Forgejo client):
 
-- `exec.Command("gh", ...)` — shelling out to the GitHub CLI
-- Direct GitHub REST or GraphQL API calls (e.g., raw `net/http` to `api.github.com`)
+- `exec.Command("gh", ...)` — shelling out to the GitHub CLI (a GitHub-specific illustration of the general rule)
+- Direct forge REST or GraphQL API calls (e.g., raw `net/http` to `api.github.com`)
 - Any other forge-specific operation that bypasses `forge.Client`
 
-**Where forge-specific code belongs:** Only the `internal/forge/github/` package (the GitHub implementation of `forge.Client`) should contain GitHub-specific logic. All other packages must use the `forge.Client` interface, which is injected as a dependency.
+**Where forge-specific code belongs:** Only the matching `forge.Client` implementation (e.g. `internal/forge/github/`, `internal/forge/gitlab/`) should contain that forge's specific logic. All other packages must use the `forge.Client` interface, which is injected as a dependency.
 
-**When writing code:** If you need a forge operation that `forge.Client` does not yet support, add a new method to the interface and implement it in the GitHub client — do not work around the interface.
+**When writing code:** If you need a forge operation that `forge.Client` does not yet support, add a new method to the interface and implement it in each live forge client (`internal/forge/github/`, `internal/forge/gitlab/`, and future Forgejo) — do not work around the interface.
 
-**When reviewing PRs:** Flag any direct `exec.Command("gh", ...)`, raw GitHub API calls, or other forge-specific operations outside `internal/forge/github/` as a medium-severity or higher finding. This is an architectural violation, not a style preference.
+**When reviewing PRs:** Flag any direct `exec.Command("gh", ...)`, raw forge API calls, or other forge-specific operations outside the matching `forge.Client` implementation as a medium-severity or higher finding. This is an architectural violation, not a style preference.
 
-**Composite action (`action.yml`):** The forge abstraction extends to `action.yml` bash scripts. New GitHub API operations in action steps should be implemented as `fullsend` CLI subcommands (under `internal/cli/`) that use `forge.Client`, not as inline `gh api` calls. Existing `gh api` calls in `action.yml` that predate this rule are grandfathered but should be migrated when touched.
+**CI scaffold scripts (`action.yml`, `.gitlab/ci/scripts/*.sh`):** The forge abstraction extends to CI scaffold scripts across every forge, not only the GitHub composite action. New forge API operations added to `action.yml`, GitHub scaffold scripts under `internal/scaffold/fullsend-repo/`, GitLab scaffold scripts under `internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/`, or any future Forgejo scaffold must be implemented as `fullsend` CLI subcommands (under `internal/cli/`) that use `forge.Client`. Do not add inline `gh api`, `glab`, or authenticated `curl`/`wget` calls that talk to a forge API.
+
+**Negative example (PR #7793):** a closed PR added this lookup inside `run-agent-job.sh` to read an MR's source branch:
+
+```bash
+curl "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${MR_IID}" \
+  -H "PRIVATE-TOKEN: ${FULLSEND_JOB_TOKEN}"
+```
+
+That is a new direct forge API path in the GitLab scaffold. Route the lookup through a `fullsend` CLI subcommand backed by `forge.Client` instead of adding another inline `curl`.
+
+Existing `gh api` calls in `action.yml` (currently none) and under `internal/scaffold/fullsend-repo/` (GitHub scaffold scripts and workflow templates), and existing authenticated `curl` calls in `internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/`, that predate this rule are grandfathered but should be migrated when touched. Adding another call of the same shape is not grandfathered.
+
+**When reviewing PRs:** Flag any new inline `gh api`, `glab`, or authenticated `curl`/`wget` call to a forge API in a CI scaffold script as a medium-severity or higher finding — the same class as a Go-side `exec.Command("gh", ...)` bypass.
 
 ## Security considerations for destructive operations
 
