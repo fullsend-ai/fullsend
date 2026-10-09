@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -866,6 +867,51 @@ func TestValidateEndpoints(t *testing.T) {
 			endpoint:       "https://collector:4318",
 			tracesEndpoint: "",
 		},
+		{
+			name:     "canary in userinfo with invalid escape is not echoed",
+			endpoint: "https://user:" + endpointCanary + "@collector/p%zz",
+			wantErr:  "OTEL_EXPORTER_OTLP_ENDPOINT: parse: invalid URL escape",
+		},
+		{
+			name:     "canary in userinfo with unsupported scheme is not echoed",
+			endpoint: "ftp://user:" + endpointCanary + "@collector:4318",
+			wantErr:  `OTEL_EXPORTER_OTLP_ENDPOINT: endpoint scheme "ftp" is not supported`,
+		},
+		{
+			name:     "canary in query string with unsupported scheme is not echoed",
+			endpoint: "ftp://collector:4318/?token=" + endpointCanary,
+			wantErr:  `OTEL_EXPORTER_OTLP_ENDPOINT: endpoint scheme "ftp" is not supported`,
+		},
+		{
+			name:           "canary in query string with no host is not echoed",
+			tracesEndpoint: "http:///v1?api_key=" + endpointCanary,
+			wantErr:        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint has no host",
+		},
+		{
+			name:     "schemeless userinfo canary is not echoed",
+			endpoint: "user:" + endpointCanary + "@collector:4318",
+			wantErr:  "OTEL_EXPORTER_OTLP_ENDPOINT: endpoint scheme is not supported",
+		},
+		{
+			name:     "schemeless userinfo-like scheme is not echoed",
+			endpoint: endpointCanary + ":pass@collector:4318",
+			wantErr:  "OTEL_EXPORTER_OTLP_ENDPOINT: endpoint scheme is not supported",
+		},
+		{
+			name:     "canary in invalid port is not echoed",
+			endpoint: "http://user:" + endpointCanary,
+			wantErr:  "OTEL_EXPORTER_OTLP_ENDPOINT: parse: invalid port after host",
+		},
+		{
+			name:     "canary in malformed bracketed host is not echoed",
+			endpoint: "https://[" + endpointCanary + "]:4318",
+			wantErr:  "OTEL_EXPORTER_OTLP_ENDPOINT: parse: invalid URL",
+		},
+		{
+			name:           "canary in malformed bracketed host of traces endpoint is not echoed",
+			tracesEndpoint: "https://[" + endpointCanary + "]:4318",
+			wantErr:        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: parse: invalid URL",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -876,9 +922,31 @@ func TestValidateEndpoints(t *testing.T) {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
 				assert.NotContains(t, err.Error(), "CANARYPW")
+				assert.NotContains(t, err.Error(), endpointCanary)
+				for _, raw := range []string{tt.endpoint, tt.tracesEndpoint} {
+					if raw != "" {
+						assert.NotContains(t, err.Error(), raw, "error must not echo the endpoint value")
+					}
+				}
 			}
 		})
 	}
+}
+
+// endpointCanary marks secret material in TestValidateEndpoints inputs; it
+// must never appear in a validation error.
+const endpointCanary = "s3cr3t-canary"
+
+func TestSanitizeError_InvalidPortNotEchoed(t *testing.T) {
+	_, err := url.Parse("http://collector:" + endpointCanary)
+	require.Error(t, err)
+	assert.Equal(t, "parse: invalid port after host", sanitizeError(err))
+}
+
+func TestSanitizeError_BracketedHostNotEchoed(t *testing.T) {
+	_, err := url.Parse("https://[" + endpointCanary + "]:4318")
+	require.Error(t, err)
+	assert.Equal(t, "parse: invalid URL", sanitizeError(err))
 }
 
 func TestSetup_SchemelessEndpointFailed(t *testing.T) {

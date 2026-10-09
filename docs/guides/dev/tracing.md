@@ -88,8 +88,10 @@ respects upstream sampling.
 
 `validateEndpoints` checks all non-empty endpoint variables
 (`OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`),
-rejecting non-http(s) URLs and unsupported protocols; passwords in URL userinfo
-are redacted from error messages.
+rejecting non-http(s) URLs and unsupported protocols. Error messages never
+echo the endpoint value (which may carry credentials in userinfo or the query
+string): they name the env var and the problem, and include the parsed scheme
+only when it is a well-known non-http(s) scheme such as `grpc` or `ftp`.
 
 `ValidateOTLPHeaders` checks `OTEL_EXPORTER_OTLP_HEADERS` and
 `OTEL_EXPORTER_OTLP_TRACES_HEADERS` to ensure headers strictly follow
