@@ -55,6 +55,18 @@ func OTLPEnabled() bool {
 		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")) != ""
 }
 
+// valueFreeParseErrors lists fixed net/url parse error messages that never
+// quote any part of the input.
+var valueFreeParseErrors = map[string]bool{
+	"missing protocol scheme": true,
+	"empty url":               true,
+	"first path segment in URL cannot contain colon": true,
+	"net/url: invalid control character in URL":      true,
+	"net/url: invalid userinfo":                      true,
+	"invalid IP-literal":                             true,
+	"missing ']' in host":                            true,
+}
+
 // sanitizeError strips raw URLs and escape sequences from errors to avoid leaking credentials.
 func sanitizeError(err error) string {
 	if err == nil {
@@ -71,6 +83,16 @@ func sanitizeError(err error) string {
 			// secret (e.g. "http://user:pass" with the '@host' missing).
 			if strings.HasPrefix(urlErr.Err.Error(), "invalid port ") {
 				return fmt.Sprintf("%s: invalid port after host", urlErr.Op)
+			}
+			// Other url.Parse failures (e.g. "invalid host: ParseAddr(...)"
+			// for a bracketed host) can quote part of the input, so only
+			// verified value-free messages are kept; the rest are reduced
+			// to a generic reason.
+			if urlErr.Op == "parse" {
+				if valueFreeParseErrors[urlErr.Err.Error()] {
+					return fmt.Sprintf("%s: %v", urlErr.Op, urlErr.Err)
+				}
+				return fmt.Sprintf("%s: invalid URL", urlErr.Op)
 			}
 			return fmt.Sprintf("%s: %v", urlErr.Op, urlErr.Err)
 		}

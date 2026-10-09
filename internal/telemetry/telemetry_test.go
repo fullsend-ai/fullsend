@@ -902,6 +902,16 @@ func TestValidateEndpoints(t *testing.T) {
 			endpoint: "http://user:" + endpointCanary,
 			wantErr:  "OTEL_EXPORTER_OTLP_ENDPOINT: parse: invalid port after host",
 		},
+		{
+			name:     "canary in malformed bracketed host is not echoed",
+			endpoint: "https://[" + endpointCanary + "]:4318",
+			wantErr:  "OTEL_EXPORTER_OTLP_ENDPOINT: parse: invalid URL",
+		},
+		{
+			name:           "canary in malformed bracketed host of traces endpoint is not echoed",
+			tracesEndpoint: "https://[" + endpointCanary + "]:4318",
+			wantErr:        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: parse: invalid URL",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -931,6 +941,12 @@ func TestSanitizeError_InvalidPortNotEchoed(t *testing.T) {
 	_, err := url.Parse("http://collector:" + endpointCanary)
 	require.Error(t, err)
 	assert.Equal(t, "parse: invalid port after host", sanitizeError(err))
+}
+
+func TestSanitizeError_BracketedHostNotEchoed(t *testing.T) {
+	_, err := url.Parse("https://[" + endpointCanary + "]:4318")
+	require.Error(t, err)
+	assert.Equal(t, "parse: invalid URL", sanitizeError(err))
 }
 
 func TestSetup_SchemelessEndpointFailed(t *testing.T) {
