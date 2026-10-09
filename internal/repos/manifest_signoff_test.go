@@ -220,6 +220,39 @@ func TestGlobShadowedByEarlier(t *testing.T) {
 	assert.False(t, globShadowedByEarlier(entries("acme/?"), RepoEntry{Name: "acme/*"}))
 	assert.False(t, globShadowedByEarlier(entries("acme/*"), RepoEntry{Name: "acme/api"}), "concrete entries are never shadowed by globs")
 	assert.False(t, globShadowedByEarlier(nil, RepoEntry{Name: "acme/*"}))
+	assert.False(t, globShadowedByEarlier(entries("acme/*a*"), RepoEntry{Name: "acme/[ab]*"}), "character classes are never proven shadowed")
+	assert.False(t, globShadowedByEarlier(entries("acme/*"), RepoEntry{Name: `acme/\a*`}), "escapes are never proven shadowed")
+}
+
+func TestSignoffForgesFor_CharacterClassNotShadowed(t *testing.T) {
+	input := `
+version: 1
+github:
+  repos:
+    - name: "acme/*a*"
+    - name: "acme/[ab]*"
+      signoff: true
+`
+	var m Manifest
+	require.NoError(t, parseManifestBytes([]byte(input), &m))
+
+	tests := []struct {
+		name   string
+		filter []string
+		want   []string
+	}{
+		{"unfiltered", nil, []string{ForgeGitHub}},
+		{"glob filter", []string{"acme/*"}, []string{ForgeGitHub}},
+		{"concrete repo only the class glob matches", []string{"acme/b"}, []string{ForgeGitHub}},
+		{"concrete repo the unsigned glob wins", []string{"acme/a"}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := m.SignoffForgesFor(tt.filter)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestSignoffForgesFor_InvalidPattern(t *testing.T) {

@@ -1398,9 +1398,13 @@ func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
 // sole wildcard is "*", and matches them against e's pattern text with
 // e's own wildcards treated as literal characters. Each such wildcard
 // must then be consumed by a "*" in the earlier pattern, which would
-// equally consume anything the wildcard expands to.
+// equally consume anything the wildcard expands to. That holds for "*"
+// and "?" but not for character classes or escapes: the characters inside
+// a class like "[ab]" can be matched literally by the earlier pattern even
+// though the class expands to other characters, so entries containing "["
+// or "\" are never treated as shadowed.
 func globShadowedByEarlier(earlier []RepoEntry, e RepoEntry) bool {
-	if !isGlob(e.Name) {
+	if !isGlob(e.Name) || strings.ContainsAny(e.Name, "[\\") {
 		return false
 	}
 	for _, prev := range earlier {
