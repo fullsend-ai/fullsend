@@ -44,8 +44,18 @@ CATALOG="${TMP}/node_modules/@earendil-works/pi-ai/dist/providers/data/google-ve
 # Upstream ids, sorted.
 node -e '
   const d = require(process.argv[1]);
-  const inner = d[Object.keys(d)[0]];
-  console.log(Object.keys(inner).sort().join("\n"));
+  // Read every top-level section rather than assuming the first one holds the
+  // models. pi-ai 1.1.0 keys entries as "<type>:<id>" (e.g.
+  // "chat:gemini-2.5-flash") and carries the bare id in the entry; older pins
+  // keyed by the id itself.
+  const ids = Object.values(d)
+    .filter((section) => section && typeof section === "object")
+    .flatMap((section) => Object.entries(section).map(([k, v]) => (v && v.id) || k));
+  if (ids.length === 0) {
+    console.error("check-vertex-catalog.sh: no model entries found in " + process.argv[1]);
+    process.exit(1);
+  }
+  console.log([...new Set(ids)].sort().join("\n"));
 ' "${CATALOG}" >"${TMP}/upstream.txt"
 
 # The Go slice literal, sorted.
