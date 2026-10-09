@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1160,4 +1161,237 @@ func TestHasOIDCEnv(t *testing.T) {
 			t.Error("hasOIDCEnv() = true, want false")
 		}
 	})
+}
+
+// useOIDCServer points the OIDC env vars at oidcURL for the duration of t.
+func useOIDCServer(t *testing.T, oidcURL string) {
+	t.Helper()
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcURL + "?d=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "tok"
+		default:
+			return ""
+		}
+	}
+	t.Cleanup(func() { envLookup = origEnv })
+}
+
+func newMintServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestMintToken_OIDCRetriesThroughLongOutage covers #8276: the OIDC
+// endpoint returning 503 for most of the retry budget must not fail the
+// mint as long as it recovers before the budget runs out.
+func TestMintToken_OIDCRetriesThroughLongOutage(t *testing.T) {
+	var oidcAttempts atomic.Int32
+	failures := int32(oidcRetry.maxAttempts - 1)
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if oidcAttempts.Add(1) <= failures {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "jwt"})
+	}))
+	defer oidcServer.Close()
+	useOIDCServer(t, oidcServer.URL)
+
+	result, err := MintToken(context.Background(), MintRequest{
+		MintURL: newMintServer(t).URL,
+		Role:    "triage",
+		Repos:   []string{"r"},
+	})
+	if err != nil {
+		t.Fatalf("MintToken() error = %v, want success after %d OIDC 503s", err, failures)
+	}
+	if result.Token != "tok" {
+		t.Errorf("token = %q, want %q", result.Token, "tok")
+	}
+	if got := oidcAttempts.Load(); got != failures+1 {
+		t.Errorf("oidcAttempts = %d, want %d", got, failures+1)
+	}
+}
+
+func TestMintToken_OIDCPersistent503ReportsAttempts(t *testing.T) {
+	var oidcAttempts atomic.Int32
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		oidcAttempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer oidcServer.Close()
+	useOIDCServer(t, oidcServer.URL)
+
+	_, err := MintToken(context.Background(), MintRequest{
+		MintURL: newMintServer(t).URL,
+		Role:    "triage",
+		Repos:   []string{"r"},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := int(oidcAttempts.Load()); got != oidcRetry.maxAttempts {
+		t.Errorf("oidcAttempts = %d, want %d", got, oidcRetry.maxAttempts)
+	}
+	wantAttempts := fmt.Sprintf("after %d attempts", oidcRetry.maxAttempts)
+	if !strings.Contains(err.Error(), wantAttempts) {
+		t.Errorf("error = %q, want to contain %q", err.Error(), wantAttempts)
+	}
+	if !strings.Contains(err.Error(), "HTTP 503") {
+		t.Errorf("error = %q, want to contain last status HTTP 503", err.Error())
+	}
+}
+
+func TestMintToken_OIDC4xxNotRetried(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var oidcAttempts atomic.Int32
+			oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				oidcAttempts.Add(1)
+				w.WriteHeader(status)
+			}))
+			defer oidcServer.Close()
+			useOIDCServer(t, oidcServer.URL)
+
+			_, err := MintToken(context.Background(), MintRequest{
+				MintURL: newMintServer(t).URL,
+				Role:    "triage",
+				Repos:   []string{"r"},
+			})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := oidcAttempts.Load(); got != 1 {
+				t.Errorf("oidcAttempts = %d, want 1 (no retry on HTTP %d)", got, status)
+			}
+			if want := fmt.Sprintf("HTTP %d", status); !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want to contain %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+// TestOIDCRetryFitsMaxMintDuration checks the production schedules: the
+// OIDC retry window covers about a minute, and that window plus one final
+// OIDC attempt hanging for the full client timeout plus callMint's
+// backoff stays under MaxMintDuration.
+func TestOIDCRetryFitsMaxMintDuration(t *testing.T) {
+	if oidcRetry.window < 55*time.Second {
+		t.Errorf("oidcRetry.window = %s, want about a minute (>= 55s)", oidcRetry.window)
+	}
+
+	// Backoff-only time of oidcRetry with fast failures, at the
+	// production base delay of 1s.
+	var oidcBackoff time.Duration
+	for i := 0; i < oidcRetry.maxAttempts-1; i++ {
+		d := time.Duration(1<<uint(i)) * time.Second
+		if oidcRetry.maxDelay > 0 && d > oidcRetry.maxDelay {
+			d = oidcRetry.maxDelay
+		}
+		if oidcBackoff+d > oidcRetry.window {
+			break
+		}
+		oidcBackoff += d
+	}
+	if oidcBackoff < 45*time.Second {
+		t.Errorf("fast-failing OIDC retries span %s, want close to a minute", oidcBackoff)
+	}
+
+	var mintBackoff time.Duration
+	for i := 0; i < callMintMaxAttempts-1; i++ {
+		mintBackoff += time.Duration(1<<uint(i)) * time.Second
+	}
+
+	clientTimeout := httpClient.(*http.Client).Timeout
+	total := oidcRetry.window + clientTimeout + mintBackoff
+	if total >= MaxMintDuration {
+		t.Errorf("OIDC window %s + client timeout %s + callMint backoff %s = %s, want < MaxMintDuration (%s)",
+			oidcRetry.window, clientTimeout, mintBackoff, total, MaxMintDuration)
+	}
+}
+
+func TestDoWithRetryPolicy_WindowStopsSlowRetries(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Millisecond
+	defer func() { retryBaseDelay = origDelay }()
+
+	attempts := 0
+	start := time.Now()
+	// 10ms attempts with backoff doubling from 1ms fit about 8 attempts in
+	// a 200ms window; maxAttempts is far higher so only the window stops
+	// the loop.
+	err := doWithRetryPolicy(context.Background(), retryPolicy{maxAttempts: 100, window: 200 * time.Millisecond}, func() error {
+		attempts++
+		time.Sleep(10 * time.Millisecond)
+		return &retryableError{errors.New("slow 503")}
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if attempts < 2 || attempts >= 20 {
+		t.Errorf("attempts = %d, want 2-19 within a 200ms window of 10ms attempts", attempts)
+	}
+	if want := fmt.Sprintf("giving up after %d attempts", attempts); !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %q, want to contain %q", err.Error(), want)
+	}
+	if !strings.Contains(err.Error(), "slow 503") {
+		t.Errorf("error = %q, want to wrap last error", err.Error())
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("doWithRetryPolicy took %s, want the window to bound it", elapsed)
+	}
+}
+
+func TestDoWithRetryPolicy_MaxDelayCapsBackoff(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Hour
+	defer func() { retryBaseDelay = origDelay }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	attempts := 0
+	err := doWithRetryPolicy(ctx, retryPolicy{maxAttempts: 3, maxDelay: time.Millisecond}, func() error {
+		attempts++
+		return &retryableError{errors.New("503")}
+	})
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("doWithRetryPolicy() error = %v; maxDelay did not cap the 1h base delay", err)
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
+	}
+	if err == nil || !strings.Contains(err.Error(), "giving up after 3 attempts") {
+		t.Errorf("error = %v, want 'giving up after 3 attempts'", err)
+	}
+}
+
+func TestDoWithRetryPolicy_ContextCancelDuringBackoff(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Hour
+	defer func() { retryBaseDelay = origDelay }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(10*time.Millisecond, cancel)
+
+	start := time.Now()
+	err := doWithRetryPolicy(ctx, oidcRetry, func() error {
+		return &retryableError{errors.New("503")}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("doWithRetryPolicy took %s after cancel, want prompt return", elapsed)
+	}
 }

@@ -119,13 +119,13 @@ var preflightCheckTimeout = 30 * time.Second
 // outage from hanging teardown indefinitely; remint failure is non-fatal.
 //
 // Set to mintclient.MaxMintDuration rather than an unrelated fixed number:
-// mintclient.MintToken has its own retry schedule (fetchOIDCJWT up to 3
-// attempts, callMint up to 5, both with exponential backoff — see that
-// const's doc for the full accounting), which can already take longer
-// than a shorter, arbitrarily-chosen bound. A bound shorter than the
-// client's own schedule would routinely cut retries short mid-backoff and
-// fall through to the expired token this remint exists to replace — the
-// exact failure this remint exists to fix (#7231).
+// mintclient.MintToken has its own retry schedule (fetchOIDCJWT for up to
+// about a minute, callMint up to 5 attempts, both with exponential
+// backoff — see that const's doc for the full accounting), which can
+// already take longer than a shorter, arbitrarily-chosen bound. A bound
+// shorter than the client's own schedule would routinely cut retries
+// short mid-backoff and fall through to the expired token this remint
+// exists to replace — the exact failure this remint exists to fix (#7231).
 var remintForPostScriptTimeout = mintclient.MaxMintDuration
 
 // defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses

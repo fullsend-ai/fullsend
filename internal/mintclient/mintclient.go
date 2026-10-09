@@ -18,20 +18,23 @@ var httpClient HTTPDoer = &http.Client{Timeout: 30 * time.Second}
 
 // MaxMintDuration is a practical upper bound on how long a single
 // MintToken call can take, informed by its retry schedule: fetchOIDCJWT
-// retries up to 3 times (1s+2s backoff between attempts) and callMint
-// retries up to 5 times (1s+2s+4s+8s backoff), for 18s of backoff spread
-// across up to 8 HTTP round trips — each individually bounded by
-// httpClient's 30s timeout (see doWithRetry, fetchOIDCJWT, callMint).
+// retries within oidcRetry (up to 10 attempts with exponential backoff
+// capped at 8s, and no new attempt started more than 60s after the first —
+// see oidcRetry), and callMint retries up to 5 times (1s+2s+4s+8s
+// backoff). Each HTTP round trip is individually bounded by httpClient's
+// 30s timeout (see doWithRetryPolicy, fetchOIDCJWT, callMint).
 //
-// The literal worst case — every one of the 8 attempts hanging for the
-// full 30s client timeout — is 258s, unrealistically long for a caller
-// to wait out during teardown. In practice a mint-service outage produces
-// fast failing responses dominated by the backoff schedule, not attempts
-// that each hang the full client timeout, so MaxMintDuration is a
-// documented practical ceiling rather than that literal worst case:
-// comfortably above the ~18s backoff-only estimate — leaving headroom for
-// real per-request latency across up to 8 round trips, including a slow
-// attempt or two — while remaining well inside a CI job's own timeout.
+// The OIDC phase therefore ends within about 60s plus one attempt (at most
+// 90s even if that final attempt hangs for the full client timeout), and
+// callMint adds 15s of backoff on top. The literal worst case — every
+// callMint attempt also hanging for the full 30s client timeout — is far
+// longer, unrealistically long for a caller to wait out during teardown.
+// In practice an outage produces fast failing responses dominated by the
+// backoff schedule, not attempts that each hang the full client timeout,
+// so MaxMintDuration is a documented practical ceiling rather than that
+// literal worst case: comfortably above the ~75s backoff-dominated
+// estimate (a minute-long OIDC endpoint outage followed by a few mint
+// retries), while remaining well inside a CI job's own timeout.
 //
 // Callers that bound MintToken with a context deadline (e.g. the
 // post-script remint in internal/cli, #7231) should use at least this
@@ -137,7 +140,7 @@ func fetchOIDCJWT(ctx context.Context, audience string) (string, error) {
 
 	var body []byte
 	var statusCode int
-	err = doWithRetry(ctx, 3, func() error {
+	err = doWithRetryPolicy(ctx, oidcRetry, func() error {
 		httpReq, rerr := http.NewRequestWithContext(ctx, http.MethodGet, oidcURL, nil)
 		if rerr != nil {
 			return fmt.Errorf("creating request: %w", rerr)
@@ -209,7 +212,7 @@ func callMint(ctx context.Context, mintURL, oidcJWT string, req MintRequest) (*M
 
 	var body []byte
 	var statusCode int
-	err = doWithRetry(ctx, 5, func() error {
+	err = doWithRetry(ctx, callMintMaxAttempts, func() error {
 		httpReq, rerr := http.NewRequestWithContext(ctx, http.MethodPost, mintEndpoint, bytes.NewReader(bodyBytes))
 		if rerr != nil {
 			return fmt.Errorf("creating request: %w", rerr)
@@ -268,26 +271,73 @@ func (e *retryableError) Unwrap() error { return e.error }
 
 var retryBaseDelay = time.Second
 
+// callMintMaxAttempts is how many times callMint tries the mint service
+// before giving up on retryable (5xx or transport) failures.
+const callMintMaxAttempts = 5
+
+// retryPolicy bounds how long doWithRetryPolicy keeps retrying retryable
+// failures. Backoff doubles from retryBaseDelay after each failed attempt.
+type retryPolicy struct {
+	// maxAttempts is the most attempts made, including the first.
+	maxAttempts int
+	// maxDelay caps a single backoff delay. Zero leaves it uncapped.
+	maxDelay time.Duration
+	// window, when positive, stops retrying once the next attempt would
+	// start more than window after the first attempt began, so the total
+	// retry time stays bounded even when each attempt is slow (e.g. an
+	// upstream proxy that takes ~10s to report a connection timeout).
+	window time.Duration
+}
+
+// oidcRetry is the retry policy for fetching the GitHub Actions OIDC JWT.
+// The token endpoint has been seen returning 503s for about a minute at a
+// time (#8276), so retries span roughly that long instead of the few
+// seconds callMint's schedule gives. With fast failures this is about 10
+// attempts over ~55s; with attempts that each take ~10s it is about 5
+// attempts over ~65s. A variable so tests can shorten the window.
+var oidcRetry = retryPolicy{
+	maxAttempts: 10,
+	maxDelay:    8 * time.Second,
+	window:      60 * time.Second,
+}
+
 func doWithRetry(ctx context.Context, maxAttempts int, fn func() error) error {
+	return doWithRetryPolicy(ctx, retryPolicy{maxAttempts: maxAttempts}, fn)
+}
+
+// doWithRetryPolicy calls fn until it succeeds, returns a non-retryable
+// error, or p is exhausted. When retries run out on a retryable error, the
+// returned error wraps it and states how many attempts were made.
+func doWithRetryPolicy(ctx context.Context, p retryPolicy, fn func() error) error {
+	start := time.Now()
 	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	attempts := 0
+	for attempts < p.maxAttempts {
 		lastErr = fn()
+		attempts++
 		if lastErr == nil {
 			return nil
 		}
 		if _, ok := lastErr.(*retryableError); !ok {
 			return lastErr
 		}
-		if attempt < maxAttempts-1 {
-			delay := time.Duration(1<<uint(attempt)) * retryBaseDelay
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
-			}
+		if attempts >= p.maxAttempts {
+			break
+		}
+		delay := time.Duration(1<<uint(attempts-1)) * retryBaseDelay
+		if p.maxDelay > 0 && delay > p.maxDelay {
+			delay = p.maxDelay
+		}
+		if p.window > 0 && time.Since(start)+delay > p.window {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
 		}
 	}
-	return lastErr
+	return fmt.Errorf("giving up after %d attempts: %w", attempts, lastErr)
 }
 
 func truncateBody(b []byte, max int) string {
