@@ -318,15 +318,20 @@ var gatewayNonZeroDefaults = map[string]any{
 	"scope":    "workspace",
 }
 
-// gatewayDefaultFalseKeys lists the boolean profile fields the gateway's
-// export always writes, so `false` there is a default (OpenShell 0.1.2). Any
-// other boolean the export writes was set explicitly, and `false` can differ
-// from unset: MCP `strict_tool_names` is enforced when unset but off when
-// false. profileValueIsEmpty treats `false` as empty only for these keys.
+// gatewayDefaultFalseKeys lists the boolean profile fields where `false`
+// means the same as unset (plain bools in OpenShell 0.1.2). The export always
+// writes some of them and omits others when false. Any other boolean is
+// optional, and `false` can differ from unset: MCP `strict_tool_names` is
+// enforced when unset but off when false. profileValueIsEmpty treats `false`
+// as empty only for these keys.
 var gatewayDefaultFalseKeys = map[string]bool{
-	"inference_capable": true,
-	"required":          true,
-	"secret":            true,
+	"inference_capable":               true,
+	"required":                        true,
+	"secret":                          true,
+	"allow_encoded_slash":             true,
+	"websocket_credential_rewrite":    true,
+	"request_body_credential_rewrite": true,
+	"allow_uninspected_credentials":   true,
 }
 
 // profileContentEqual reports whether the gateway's export of a profile

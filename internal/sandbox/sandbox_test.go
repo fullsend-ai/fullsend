@@ -1932,6 +1932,12 @@ scope: workspace
 			want:     false,
 		},
 		{
+			name:     "local sets endpoint flag false the export omits",
+			local:    strings.Replace(local, "    port: 443\n", "    port: 443\n    allow_uninspected_credentials: false\n", 1),
+			exported: exported,
+			want:     true,
+		},
+		{
 			name:     "credential secret false only the export has",
 			local:    local,
 			exported: strings.Replace(exported, "  required: true\n", "  required: true\n  secret: false\n", 1),
