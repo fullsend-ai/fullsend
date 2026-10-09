@@ -26,8 +26,8 @@ WIF exchange, which needs admin access to the OpenAI organization. The second
 is a static `OPENAI_API_KEY`, which is a long-lived provider key kept in forge
 secret storage. Neither route can put an LLM gateway in front of the provider.
 Such a gateway is an OpenAI- and Anthropic-compatible front door, such as
-agentgateway, Praxis, LiteLLM or APISIX. It checks the job's CI OIDC token against the
-forge's JWKS and holds the provider key server-side.
+agentgateway, Praxis, LiteLLM or APISIX. It checks the job's CI OIDC token
+against the forge's JWKS and holds the provider key server-side.
 
 This decision builds on four earlier ones and answers part of a fifth:
 
@@ -47,21 +47,16 @@ This decision builds on four earlier ones and answers part of a fifth:
 A gateway is not a base-URL knob on an existing route. It moves the trust
 boundary, so it gets a record of its own.
 
-The route was validated live on 2026-10-09 against two gateways (see
-[#7480](https://github.com/fullsend-ai/fullsend/issues/7480)). The client was
-pi with [pi-inference-gateway](https://github.com/fullsend-ai/pi-inference-gateway)
-v0.1.1, authenticating with a GitHub Actions OIDC token. Each gateway was
-configured with remote JWKS, a fixed audience and an exact match on
-`repository`:
-
-| Gateway | Models served | Result |
-|---|---|---|
-| [agentgateway](https://github.com/agentgateway/agentgateway) v1.6.0 | GPT, Claude, Gemini | every API answered |
-| [Praxis](https://github.com/praxis-proxy/ai) 0.6.0 | GPT (Responses and Chat Completions) | every API answered |
-
-On both, the negative cases returned 401/403 with no credential echoed:
+The route was validated live on 2026-10-09 (see
+[#7480](https://github.com/fullsend-ai/fullsend/issues/7480)) against two
+gateways, [agentgateway](https://github.com/agentgateway/agentgateway) v1.6.0
+and [Praxis](https://github.com/praxis-proxy/ai) 0.6.0. The client was pi with
+[pi-inference-gateway](https://github.com/fullsend-ai/pi-inference-gateway)
+v0.1.1, authenticating with a GitHub Actions OIDC token. agentgateway served
+GPT, Claude and Gemini; Praxis served GPT, its only configured upstream. On
+both gateways the negative cases returned 401/403 with no credential echoed:
 wrong audience, wrong issuer, an expired token, another repository's token,
-and `x-api-key`-only auth. Prompt-cache reads came through both gateways.
+and `x-api-key`-only auth.
 
 ## Decision
 
@@ -243,15 +238,9 @@ responsible for them, and each was verified live on agentgateway and Praxis:
   every path and toward every upstream, including bodyless requests such as
   `GET /v1/models`
 
-The two gateways default in opposite directions, so none of these rules can
-be left to a default:
-
-| | agentgateway | Praxis |
-|---|---|---|
-| Authentication | optional unless set to strict | strict |
-| Caller `Authorization` upstream | dropped | forwarded unless stripped |
-| Other caller headers (`x-api-key`) | forwarded unless removed | forwarded unless stripped |
-| Per-model rules on bodyless requests | applied (the model list is filtered per caller) | skipped, so only a global policy holds |
+Gateways differ in their defaults for these rules (optional authentication,
+or forwarding caller headers unless stripped), so none of them can be left to
+a default.
 
 The gateway also meets these requirements, which the live verification did not
 cover:
