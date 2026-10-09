@@ -139,6 +139,13 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
 	var hookDigests claudeHookDigests
 	if params.HooksSettingsPath != "" {
+		// The guard hashes security.SandboxHooksSettings, so --settings must
+		// load that same file; any other path would be loaded unchecked.
+		if params.HooksSettingsPath != security.SandboxHooksSettings {
+			return -1, fmt.Errorf(
+				"HooksSettingsPath %q is not %s: the hooks integrity guard only covers the default hooks file",
+				params.HooksSettingsPath, security.SandboxHooksSettings)
+		}
 		// The expected digests are runner-held because nothing in the
 		// agent-writable config directory can be trusted to hold them; a miss
 		// means Bootstrap did not install hooks in this process, and the
@@ -196,7 +203,7 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
 	}
-	if params.HooksSettingsPath != "" && exitCode == claudeHooksTamperedExit {
+	if params.HooksSettingsPath != "" && exitCode == claudeHooksMissingExit {
 		return exitCode, fmt.Errorf(
 			"claude hooks.json or hook scripts in %s are missing or modified; refusing to run (did the agent change them between iterations?)",
 			sandbox.SandboxClaudeConfig)

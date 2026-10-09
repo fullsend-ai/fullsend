@@ -102,8 +102,11 @@ func TestBuildRunCommand_HooksGuardPlacement(t *testing.T) {
 		}, d)
 		guard := claudeHooksGuard(d)
 		want := "cd /repo && " + guard + " && " + envSource +
+			" && unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT" +
 			" && unset -f test command cut wc sha256sum find echo && " + guard + " && claude --print"
 		assert.True(t, strings.HasPrefix(cmd, want), cmd)
+		assert.Greater(t, strings.Index(cmd, "unset LD_PRELOAD"), strings.Index(cmd, envSource),
+			"the LD_* unset must come after .env is sourced")
 		assert.Contains(t, guard, "'"+d.HooksJSON+"'")
 	})
 }
@@ -187,7 +190,7 @@ func (f *claudeGuardFixture) assertRefused(t *testing.T, mentions string) {
 	t.Helper()
 	out, err := f.launch(t, f.digests)
 	require.Error(t, err, out)
-	assert.Equal(t, claudeHooksTamperedExit, exitCodeOf(t, err))
+	assert.Equal(t, claudeHooksMissingExit, exitCodeOf(t, err))
 	assert.NotContains(t, out, "CLAUDE_RAN", "claude must not start")
 	assert.Contains(t, out, mentions)
 }
@@ -281,9 +284,23 @@ func TestClaudeLaunch_RefusesHooksChangedBetweenIterations(t *testing.T) {
 		f.install(t)
 		out, err := f.launch(t, claudeHookDigests{})
 		require.Error(t, err, out)
-		assert.Equal(t, claudeHooksTamperedExit, exitCodeOf(t, err))
+		assert.Equal(t, claudeHooksMissingExit, exitCodeOf(t, err))
 		assert.NotContains(t, out, "CLAUDE_RAN")
 	})
+}
+
+// A .env that exports a preload library must not reach the second guard's
+// hashing tools, nor claude itself.
+func TestClaudeLaunch_ClearsLDVariablesSetByEnv(t *testing.T) {
+	f := newClaudeGuardFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(f.binDir, "claude"),
+		[]byte("#!/bin/sh\necho \"CLAUDE_RAN LD=[$LD_PRELOAD$LD_LIBRARY_PATH$LD_AUDIT]\"\n"), 0o755))
+	require.NoError(t, os.WriteFile(f.envFile,
+		[]byte("export LD_PRELOAD=/tmp/x.so LD_LIBRARY_PATH=/tmp/lib LD_AUDIT=/tmp/audit.so\n"), 0o644))
+
+	out, err := f.launch(t, f.digests)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "CLAUDE_RAN LD=[]")
 }
 
 // The hooks run with -B, so running them does not itself leave a
@@ -347,6 +364,20 @@ func TestClaudeRuntime_Run_FailsClosedWithoutRecordedDigests(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "nothing may run in the sandbox without the digests")
 }
 
+func TestClaudeRuntime_Run_RejectsNonDefaultHooksSettingsPath(t *testing.T) {
+	var metrics RunMetrics
+	exitCode, err := ClaudeRuntime{}.Run(context.Background(), RunParams{
+		SandboxName:       "claude-other-settings",
+		AgentBaseName:     "agent",
+		RepoDir:           "/sandbox/workspace/repo",
+		HooksSettingsPath: "/sandbox/elsewhere/hooks.json",
+		Timeout:           10 * time.Second,
+	}, ui.New(io.Discard), time.Now(), &metrics)
+	require.Error(t, err)
+	assert.Equal(t, -1, exitCode)
+	assert.Contains(t, err.Error(), "only covers the default hooks file")
+}
+
 func TestClaudeRuntime_Run_ReportsTamperedHooks(t *testing.T) {
 	const name = "claude-tampered"
 	t.Cleanup(func() { forgetClaudeHookDigests(name) })
@@ -368,7 +399,7 @@ func TestClaudeRuntime_Run_ReportsTamperedHooks(t *testing.T) {
 		Timeout:           10 * time.Second,
 	}, ui.New(io.Discard), time.Now(), &metrics)
 	require.Error(t, err)
-	assert.Equal(t, claudeHooksTamperedExit, exitCode)
+	assert.Equal(t, claudeHooksMissingExit, exitCode)
 	assert.Contains(t, err.Error(), "hooks.json or hook scripts")
 
 	sent, readErr := os.ReadFile(cmdPath)

@@ -32,10 +32,10 @@ import (
 // target repo's <repo>/.claude/settings.json. Both are settings sources Claude
 // Code reads beneath --settings; neither is pinned by this guard.
 
-// claudeHooksTamperedExit is the exit code the run command uses when hooks.json
+// claudeHooksMissingExit is the exit code the run command uses when hooks.json
 // or the hook scripts are not what Bootstrap installed. It matches the codex
-// and pi hook-guard code; codexHookScriptsGuard emits it for the scripts.
-const claudeHooksTamperedExit = codexHooksMissingExit
+// and pi hook-guard code (97); codexHookScriptsGuard emits it for the scripts.
+const claudeHooksMissingExit = 97
 
 // claudeHookDigests is what Bootstrap recorded for a sandbox's hooks.
 type claudeHookDigests struct {
@@ -97,7 +97,7 @@ func claudeHooksGuard(d claudeHookDigests) string {
 		`{ test -f %s && %s || { echo 'fullsend: claude hooks.json is not the file fullsend wrote; refusing to run' >&2; exit %d; }; }`,
 		shellQuote(security.SandboxHooksSettings),
 		codexSHACheck(security.SandboxHooksSettings, d.HooksJSON),
-		claudeHooksTamperedExit)
+		claudeHooksMissingExit)
 	return hooksJSON + " && " + codexHookScriptsGuard(security.SandboxHooksDir, d.HookScripts)
 }
 
@@ -107,9 +107,12 @@ func claudeHooksGuard(d claudeHookDigests) string {
 // The guard runs twice. Before .env, nothing the agent wrote can shadow the
 // tools it uses. After .env, because sourcing it runs arbitrary shell in this
 // process — it could rewrite a hook script after the first pass — so the
-// second pass is the one that sees the files claude will load. `unset -f` is
-// a special builtin a .env-defined function cannot shadow, so it restores the
-// real utilities before that pass.
+// second pass is the one that sees the files claude will load. `unset` is a
+// special builtin a .env-defined function cannot shadow: `unset -f` restores
+// the real utilities before that pass, and LD_* are cleared so a library
+// exported by .env cannot load into the dynamically linked sha256sum, find or
+// wc and make them report the expected digest (codex_run.go does the same
+// before its second guard).
 //
 // With hooks enabled the guard is always emitted: empty digests produce a
 // guard that can never pass, so a caller that skipped the lookup fails closed
@@ -123,6 +126,7 @@ func claudeGuardedEnvSource(envFile string, hooksEnabled bool, d claudeHookDiges
 	return strings.Join([]string{
 		guard,
 		source,
+		"unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT",
 		"unset -f test command cut wc sha256sum find echo",
 		guard,
 	}, " && ")
