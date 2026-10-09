@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -643,6 +644,7 @@ func TestNewFakeJiraClient(t *testing.T) {
 
 var _ Client = (*JiraClient)(nil)
 var _ StatusCommentClient = (*JiraClient)(nil)
+var _ Linker = (*JiraClient)(nil)
 
 func TestJiraClient_AuthenticatedUser(t *testing.T) {
 	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
@@ -663,5 +665,34 @@ func TestJiraClient_AuthenticatedUser(t *testing.T) {
 	fj.MyselfError = errors.New("401")
 	if _, err := jc.AuthenticatedUser(context.Background()); err == nil {
 		t.Fatal("AuthenticatedUser() must return the GetMyself error")
+	}
+}
+
+func TestJiraClient_LinkIssues(t *testing.T) {
+	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jc.LinkIssues(context.Background(), "PROJ", 123, "OTHER", 456, "Blocks"); err != nil {
+		t.Fatalf("LinkIssues returned error: %v", err)
+	}
+	want := FakeJiraLink{Type: "Blocks", InwardIssue: "PROJ-123", OutwardIssue: "OTHER-456"}
+	if len(fj.Links) != 1 || fj.Links[0] != want {
+		t.Fatalf("Links = %+v, want [%+v] (from issue as inward, to issue as outward)", fj.Links, want)
+	}
+}
+
+func TestJiraClient_LinkIssues_NotFound(t *testing.T) {
+	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fj.LinkError = fmt.Errorf("link PROJ-1 to PROJ-2 (Blocks): %w", forge.ErrNotFound)
+	err = jc.LinkIssues(context.Background(), "PROJ", 1, "PROJ", 2, "Blocks")
+	if !IsNotFound(err) {
+		t.Fatalf("LinkIssues error = %v, want one satisfying IsNotFound", err)
+	}
+	if len(fj.Links) != 0 {
+		t.Fatalf("Links = %+v, want none recorded on error", fj.Links)
 	}
 }

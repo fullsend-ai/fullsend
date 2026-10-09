@@ -35,6 +35,16 @@ func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
 }
 
+// ErrNotSupported indicates the tracker backend does not support the
+// requested operation (e.g. typed issue links on GitHub or GitLab).
+var ErrNotSupported = errors.New("not supported by this tracker")
+
+// IsNotSupported reports whether err indicates the tracker backend does
+// not support the requested operation.
+func IsNotSupported(err error) bool {
+	return errors.Is(err, ErrNotSupported)
+}
+
 // Body is Markdown-formatted issue/comment text, as produced by GitHub and
 // GitLab. Jira doesn't speak Markdown — its v3 API requires comment and
 // description bodies in Atlassian Document Format (ADF) and rejects plain
@@ -128,4 +138,18 @@ type Reactor interface {
 	AddCommentReaction(ctx context.Context, project string, number int, commentID string, content string) (id int64, err error)
 	// DeleteCommentReaction removes a previously added comment reaction by ID.
 	DeleteCommentReaction(ctx context.Context, project string, number int, commentID string, reactionID int64) error
+}
+
+// Linker is an optional capability for creating typed links between
+// issues. Jira implements it with issue links; GitHub and GitLab have no
+// first-class typed issue links and do not implement it. Consumers should
+// type-assert their tracker.Client to Linker and report ErrNotSupported
+// when the tracker does not implement it.
+type Linker interface {
+	// LinkIssues creates a link of type linkType from the issue
+	// (fromProject, fromNumber) to the issue (toProject, toNumber).
+	// linkType is passed through verbatim; its valid values and
+	// direction semantics are tracker-specific (for Jira, link type
+	// names such as "Blocks" are instance-specific).
+	LinkIssues(ctx context.Context, fromProject string, fromNumber int, toProject string, toNumber int, linkType string) error
 }

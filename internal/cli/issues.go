@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ pointing at the directory containing it.`,
 	}
 	cmd.AddCommand(newIssuesGetCmd())
 	cmd.AddCommand(newIssuesPostCommentCmd())
+	cmd.AddCommand(newIssuesLinkCmd())
 	return cmd
 }
 
@@ -535,6 +537,146 @@ func parseCustomFieldIDs(raw []string) ([]string, error) {
 		}
 	}
 	return ids, nil
+}
+
+// issuesLinkConfig holds the flags and test overrides for
+// "fullsend issues link".
+type issuesLinkConfig struct {
+	trackerName string
+	from        string
+	to          string
+	linkType    string
+	token       string
+	jiraURL     string
+	jiraEmail   string
+	fullsendDir string
+
+	// Test overrides — when non-nil, used instead of creating a real
+	// tracker client. Not set by CLI flag parsing.
+	testClient       tracker.Client
+	testPrinter      *ui.Printer
+	testConfigReader config.PerRepoConfigReader
+}
+
+func newIssuesLinkCmd() *cobra.Command {
+	var cfg issuesLinkConfig
+
+	cmd := &cobra.Command{
+		Use:   "link",
+		Short: "Create a typed link between two issues",
+		Long: `Creates a typed link from the --from issue to the --to issue
+(e.g. a bug that Blocks a task).
+
+Only Jira supports typed issue links. GitHub and GitLab have no
+first-class typed links, so --tracker github or gitlab fails with a
+"not supported" error.
+
+For Jira, --from and --to are issue keys (e.g. PROJ-123); the two
+issues may be in different projects. --type is the Jira link type name
+(e.g. "Blocks", "Relates", "Cloners"). Link type names are
+instance-specific, so --type is passed through to Jira without
+validation. The link is created in the type's outward direction:
+--from PROJ-123 --to PROJ-456 --type Blocks records that PROJ-123
+blocks PROJ-456.
+
+--tracker is required unless a default is supplied via config: set
+"tracker: github|gitlab|jira" in config.yaml and pass --fullsend-dir
+pointing at the directory containing it.`,
+		Example: `  fullsend issues link --tracker jira --from PROJ-123 --to PROJ-456 --type Blocks`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runIssuesLink(cmd.Context(), &cfg)
+		},
+	}
+
+	cmd.Flags().StringVar(&cfg.trackerName, "tracker", "", "tracker backend: github, gitlab, or jira (required unless a default is set via config; only jira supports links)")
+	cmd.Flags().StringVar(&cfg.from, "from", "", "source issue key, e.g. PROJ-123 (required)")
+	cmd.Flags().StringVar(&cfg.to, "to", "", "target issue key, e.g. PROJ-456 (required)")
+	cmd.Flags().StringVar(&cfg.linkType, "type", "", "link type name, e.g. Blocks, Relates, Cloners (required; passed through verbatim)")
+	cmd.Flags().StringVar(&cfg.token, "token", "", "API token (default: env var per tracker)")
+	cmd.Flags().StringVar(&cfg.jiraURL, "jira-url", "", "Jira instance URL (default: $JIRA_BASE_URL)")
+	cmd.Flags().StringVar(&cfg.jiraEmail, "jira-email", "", "Jira user email for Basic auth (default: $JIRA_USER_EMAIL)")
+	cmd.Flags().StringVar(&cfg.fullsendDir, "fullsend-dir", "", "path to .fullsend config directory (sources a default --tracker from its config.yaml when --tracker is omitted)")
+	_ = cmd.MarkFlagRequired("from")
+	_ = cmd.MarkFlagRequired("to")
+	_ = cmd.MarkFlagRequired("type")
+
+	return cmd
+}
+
+func runIssuesLink(ctx context.Context, cfg *issuesLinkConfig) error {
+	printer := cfg.testPrinter
+	if printer == nil {
+		printer = ui.New(os.Stdout)
+	}
+
+	from := strings.TrimSpace(cfg.from)
+	to := strings.TrimSpace(cfg.to)
+	if from == "" {
+		return fmt.Errorf("--from must not be empty")
+	}
+	if to == "" {
+		return fmt.Errorf("--to must not be empty")
+	}
+	// Trim only to reject blank input; the link type is passed through
+	// to Jira exactly as given.
+	if strings.TrimSpace(cfg.linkType) == "" {
+		return fmt.Errorf("--type must not be empty")
+	}
+
+	trackerName, err := resolveTracker(cfg.trackerName, cfg.fullsendDir, cfg.testConfigReader)
+	if err != nil {
+		return err
+	}
+
+	// Reject trackers without link support before building a client, so
+	// the error does not depend on credentials being configured.
+	if trackerName != trackerJira {
+		return fmt.Errorf("--tracker %s cannot create typed issue links (only jira can): %w", trackerName, tracker.ErrNotSupported)
+	}
+
+	fromProject, fromNumber, err := parseIssueKey(from)
+	if err != nil {
+		return fmt.Errorf("invalid --from: %w", err)
+	}
+	toProject, toNumber, err := parseIssueKey(to)
+	if err != nil {
+		return fmt.Errorf("invalid --to: %w", err)
+	}
+
+	tc := cfg.testClient
+	if tc == nil {
+		tc, err = newTrackerClient(trackerName, cfg.token, cfg.jiraURL, cfg.jiraEmail)
+		if err != nil {
+			return err
+		}
+	}
+
+	linker, ok := tc.(tracker.Linker)
+	if !ok {
+		return fmt.Errorf("tracker %s client does not support typed issue links: %w", trackerName, tracker.ErrNotSupported)
+	}
+
+	printer.Header("Link Issues")
+	if err := linker.LinkIssues(ctx, fromProject, fromNumber, toProject, toNumber, cfg.linkType); err != nil {
+		return fmt.Errorf("linking issues: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Linked %s to %s (%s)", from, to, cfg.linkType))
+	return nil
+}
+
+// parseIssueKey splits a Jira-style issue key ("PROJ-123") into its
+// project key and positive issue number. Jira project keys cannot contain
+// "-", so the key must contain exactly one, followed only by digits.
+func parseIssueKey(key string) (string, int, error) {
+	project, digits, ok := strings.Cut(key, "-")
+	if !ok || project == "" || digits == "" || strings.ContainsFunc(digits, func(r rune) bool { return r < '0' || r > '9' }) {
+		return "", 0, fmt.Errorf("issue key %q must have the form PROJECT-NUMBER (e.g. PROJ-123)", key)
+	}
+	number, err := strconv.Atoi(digits)
+	if err != nil || number <= 0 {
+		return "", 0, fmt.Errorf("issue key %q must end in a positive issue number (e.g. PROJ-123)", key)
+	}
+	return project, number, nil
 }
 
 // resolveTracker returns trackerFlag if it is non-empty (the --tracker

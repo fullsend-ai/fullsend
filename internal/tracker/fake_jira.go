@@ -45,6 +45,18 @@ type FakeJiraClient struct {
 	// non-nil, is returned by GetMyself.
 	Myself      jira.User
 	MyselfError error
+
+	// Links records every LinkIssues call in order. LinkError, when
+	// non-nil, is returned by LinkIssues instead of recording the link.
+	Links     []FakeJiraLink
+	LinkError error
+}
+
+// FakeJiraLink is an issue link recorded by FakeJiraClient.LinkIssues.
+type FakeJiraLink struct {
+	Type         string
+	InwardIssue  string
+	OutwardIssue string
 }
 
 // FakeJiraBot is the account a FakeJiraClient posts as by default.
@@ -179,6 +191,14 @@ func (f *FakeJiraClient) DeleteComment(_ context.Context, issueIDOrKey, commentI
 		}
 	}
 	return fmt.Errorf("delete comment %s on %s: %w", commentID, issueIDOrKey, forge.ErrNotFound)
+}
+
+func (f *FakeJiraClient) LinkIssues(_ context.Context, inwardIssueKey, outwardIssueKey, linkTypeName string) error {
+	if f.LinkError != nil {
+		return f.LinkError
+	}
+	f.Links = append(f.Links, FakeJiraLink{Type: linkTypeName, InwardIssue: inwardIssueKey, OutwardIssue: outwardIssueKey})
+	return nil
 }
 
 var _ jiraClient = (*FakeJiraClient)(nil)
