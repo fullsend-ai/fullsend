@@ -39,6 +39,12 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a codex agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
 	})
+	// The runtime-neutral wording, for a scenario on the install runtime
+	// (dummy) whose plan-time checks read the agent file, such as the
+	// workflow harness's tools: check.
+	sc.Step(`^an agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
+	})
 	sc.Step(`^the repository agents are configured with:$`, func(ctx context.Context, doc string) (context.Context, error) {
 		return ctx, givenRepositoryAgentSettings(world.FromContext(ctx), doc)
 	})
@@ -123,9 +129,9 @@ var fixturePlaceholder = regexp.MustCompile(`\{\{fixture:([^}]+)\}\}`)
 // this step runs after it and replaces the placeholder with a body whose
 // tool use is deliberate, so the transcript assertions are grounded.
 //
-// Nothing here is runtime-specific: the "a pi agent" and "a codex agent"
-// steps both land here, and the step wording only says which runtime the
-// scenario is exercising.
+// Nothing here is runtime-specific: the "a pi agent", "a codex agent" and
+// "an agent" steps all land here, and the step wording only says which
+// runtime the scenario is exercising.
 func givenRuntimeAgent(w *world.World, name, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before agent operations")
@@ -291,6 +297,21 @@ type runMetrics struct {
 		Input  int `json:"input"`
 		Output int `json:"output"`
 	} `json:"token_usage"`
+	// Workflow is the definition a harness with workflow: delivered and
+	// started (ADR 0130), recorded on every runtime; nil for any other
+	// harness.
+	Workflow *runWorkflow `json:"workflow"`
+}
+
+// runWorkflow is metrics.json's workflow object: the harness
+// workflow.source without its #sha256= pin (or the path as written), the
+// definition's tree hash, its kind (claude-plugin or pi-extension) and,
+// for a Claude plugin, the command the runner started.
+type runWorkflow struct {
+	Source    string `json:"source"`
+	PinSHA256 string `json:"pin_sha256"`
+	Kind      string `json:"kind"`
+	Command   string `json:"command"`
 }
 
 func readRunMetrics(w *world.World) (runMetrics, error) {
