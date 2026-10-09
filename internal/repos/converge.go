@@ -1222,6 +1222,37 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	return result, nil
 }
 
+// readExistingUnmanagedOverlay returns the .fullsend/config.yaml already
+// on the default branch of an unmanaged repository so a fresh install can
+// deliver it unchanged, or nil when there is none (missing or empty).
+// The file must parse as a per-repo configuration layered on the base the
+// install leaves in effect (presetData when this run delivers a preset,
+// otherwise the committed config.base.yaml); a malformed or leftover
+// per-org file is reported as an error rather than silently replaced.
+func readExistingUnmanagedOverlay(ctx context.Context, client forge.Client, owner, repo string, presetData []byte) ([]byte, error) {
+	existing, err := readOptionalFile(ctx, client, owner, repo, preset.OverlayPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) == 0 {
+		return nil, nil
+	}
+	if !config.IsPerRepoYAML(existing) {
+		return nil, fmt.Errorf("existing %s in %s/%s is not a valid per-repo config; fix or remove it before installing", preset.OverlayPath, owner, repo)
+	}
+	base := presetData
+	if len(base) == 0 {
+		base, err = readOptionalFile(ctx, client, owner, repo, preset.BasePath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if _, err := config.ParsePerRepoConfigWriterLayered(existing, base); err != nil {
+		return nil, fmt.Errorf("existing %s in %s/%s: %w; fix or remove it before installing", preset.OverlayPath, owner, repo, err)
+	}
+	return existing, nil
+}
+
 // convergeRepo processes a single repo through the convergence pipeline.
 // It determines what action each component needs and applies only the
 // necessary changes.
@@ -1355,18 +1386,24 @@ func convergeRepo(ctx context.Context,
 			}
 			configAdoptionRequired = len(existing) > 0 && !hasManagedConfigMarker(existing)
 			configSafetyRejected = checkManagedConfigSafetyGate(ctx, resolved, existing)
-		} else if auth == InferenceAuthOpenAIWIF {
-			// Readiness above may have been satisfied by identifiers in an
-			// unmanaged config.yaml already on the default branch. The
-			// generated installer overlay would replace it and drop them,
-			// so deliver the existing file unchanged.
-			existing, readErr := readOptionalFile(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo, preset.OverlayPath)
+		} else {
+			// An unmanaged repository owns its .fullsend/config.yaml: a
+			// hand-authored file already on the default branch (custom
+			// agents, settings, allowlists, comments — or, for openai-wif,
+			// the identifiers readiness above may rely on) is delivered
+			// unchanged instead of being replaced by the generated
+			// installer overlay. Opting into managed configuration
+			// (ADR-0122) is the explicit replacement/adoption path. This
+			// runs before the DryRun branch so a preview and a live
+			// install make the same decision.
+			existing, readErr := readExistingUnmanagedOverlay(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo, d.preset)
 			if readErr != nil {
 				cr.Error = readErr
 				return cr
 			}
-			if len(existing) > 0 {
-				existingUnmanagedConfig = existing
+			existingUnmanagedConfig = existing
+			if existing != nil {
+				progress(repoFullName, "install", "Keeping existing "+preset.OverlayPath+" unchanged")
 			}
 		}
 		// Obsolete inference credentials must outlive a blocked
@@ -1502,6 +1539,13 @@ func convergeRepo(ctx context.Context,
 					Component: preset.BasePath,
 					Action:    "add",
 					Detail:    "would write config preset as " + preset.BasePath,
+				})
+			}
+			if existingUnmanagedConfig != nil {
+				cr.Actions = append(cr.Actions, ComponentAction{
+					Component: preset.OverlayPath,
+					Action:    "none",
+					Detail:    "would keep existing " + preset.OverlayPath + " unchanged",
 				})
 			}
 			if d.resolved.ConfigManaged {
