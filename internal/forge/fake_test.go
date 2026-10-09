@@ -142,6 +142,15 @@ func TestFakeClient_CreateFile(t *testing.T) {
 	assert.Empty(t, rec.Branch)
 }
 
+func TestFakeClient_DeleteProjectServiceAccount(t *testing.T) {
+	fc := NewFakeClient()
+	require.NoError(t, fc.DeleteProjectServiceAccount(context.Background(), "g", "p", 77))
+	assert.Equal(t, []int{77}, fc.DeletedProjectServiceAccounts)
+	fc.Errors["DeleteProjectServiceAccount"] = errors.New("refused")
+	require.Error(t, fc.DeleteProjectServiceAccount(context.Background(), "g", "p", 88))
+	assert.Equal(t, []int{77}, fc.DeletedProjectServiceAccounts)
+}
+
 func TestFakeClient_CreateFileOnBranch(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{}
@@ -2612,4 +2621,30 @@ func TestFakeClient_VariableFileTypeLifecycle(t *testing.T) {
 			assert.Equal(t, RepoVariable{Value: "new value"}, value)
 		})
 	}
+}
+
+func TestFakeClient_ProjectLease(t *testing.T) {
+	ctx := context.Background()
+	f := NewFakeClient()
+
+	ok, err := f.AcquireProjectLease(ctx, "o", "r", "L", "a")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	ok, err = f.AcquireProjectLease(ctx, "o", "r", "L", "b")
+	require.NoError(t, err)
+	assert.False(t, ok, "a held lease cannot be taken again")
+
+	require.NoError(t, f.ReleaseProjectLease(ctx, "o", "r", "L", "b"))
+	ok, _ = f.AcquireProjectLease(ctx, "o", "r", "L", "b")
+	assert.False(t, ok, "another holder's release leaves the lease in place")
+
+	require.NoError(t, f.ReleaseProjectLease(ctx, "o", "r", "L", "a"))
+	ok, _ = f.AcquireProjectLease(ctx, "o", "r", "L", "b")
+	assert.True(t, ok)
+
+	f.Errors["AcquireProjectLease"] = errors.New("boom")
+	_, err = f.AcquireProjectLease(ctx, "o", "r", "M", "a")
+	require.Error(t, err)
+	f.Errors["ReleaseProjectLease"] = errors.New("boom")
+	require.Error(t, f.ReleaseProjectLease(ctx, "o", "r", "L", "b"))
 }

@@ -900,12 +900,13 @@ Confirm:
   above). Role-aware installs also provision
   `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, and
   `FULLSEND_GITLAB_CODER_TOKEN`; custom role enrollments may add
-  `FULLSEND_GITLAB_ROLE_*_TOKEN`. Secrets are requested as masked, but GitLab
-  silently falls back to unmasked if it rejects a value (for example, one
-  that doesn't meet its masking character-set rules). If any credential
-  secret is unmasked, rotate it or restrict job-log visibility before running
-  agents against untrusted content; revoke old personal PATs on their
-  issuing accounts.
+  `FULLSEND_GITLAB_ROLE_*_TOKEN`. Secrets are requested as masked. For
+  the role tokens above, storing one fails if GitLab rejects masking (for
+  example, a value that doesn't meet its masking character-set rules); it is
+  never stored unmasked. For other secrets, GitLab silently falls back to
+  unmasked if it rejects a value. If any credential secret is unmasked, rotate
+  it or restrict job-log visibility before running agents against untrusted
+  content; revoke old personal PATs on their issuing accounts.
 
 ## Testing Fullsend
 

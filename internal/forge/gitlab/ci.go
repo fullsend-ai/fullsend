@@ -174,10 +174,12 @@ func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, va
 // error rather than a reason to retry with masked=false.
 func maskingRequired(name string) bool {
 	switch name {
-	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret:
+	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret,
+		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
 		return true
 	}
-	return false
+	// Custom role credentials (gitlabroles.CustomSecretName).
+	return strings.HasPrefix(name, "FULLSEND_GITLAB_ROLE_") && strings.HasSuffix(name, "_TOKEN")
 }
 
 func isMaskingError(err *APIError) bool {
@@ -431,6 +433,64 @@ func (c *LiveClient) ListRepoVariables(ctx context.Context, owner, repo string) 
 	}
 
 	return nil, fmt.Errorf("list repo variables: pagination exceeded %d pages", maxPages)
+}
+
+// AcquireProjectLease takes a project-wide lease implemented as a
+// wildcard-scoped CI/CD variable. GitLab rejects a second variable with the
+// same key and scope, so creation succeeds for exactly one caller across all
+// installer processes. It reports false, without error, when the lease is
+// already held. The variable is neither masked nor protected: it carries no
+// secret, only the holder's identity.
+func (c *LiveClient) AcquireProjectLease(ctx context.Context, owner, repo, name, holder string) (bool, error) {
+	body := map[string]any{
+		"key":               name,
+		"value":             holder,
+		"variable_type":     "env_var",
+		"environment_scope": "*",
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/projects/%s/variables", projectPath(owner, repo)), body)
+	if err == nil {
+		resp.Body.Close()
+		return true, nil
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && isAlreadyExistsError(apiErr) {
+		return false, nil
+	}
+	return false, fmt.Errorf("create project lease %q: %w", name, err)
+}
+
+// ReleaseProjectLease deletes the lease variable only while it still holds
+// holder, so a lease taken over by an operator or another installer is never
+// removed by a stale holder.
+//
+// The holder check and the DELETE are separate requests: GitLab offers no
+// conditional delete for CI/CD variables. If the lease is deleted and
+// re-acquired by another holder between the two, the DELETE removes that
+// newer holder's lease. Callers must therefore never take over a lease (for
+// example by deleting it manually) while a previous holder may still release
+// it.
+func (c *LiveClient) ReleaseProjectLease(ctx context.Context, owner, repo, name, holder string) error {
+	current, found, err := c.GetRepoVariable(ctx, owner, repo, name)
+	if err != nil {
+		return err
+	}
+	if !found || current != holder {
+		return nil
+	}
+	// The DELETE is sent exactly once. If it removed this holder's lease but
+	// the response was lost, a retry could run after another installer has
+	// acquired the variable and delete that installer's lease. An ambiguous
+	// failure is reported instead so the operator can inspect the variable.
+	resp, err := c.doAttempts(ctx, http.MethodDelete, wildcardVariablePath(owner, repo, name), nil, 1)
+	if err != nil {
+		return fmt.Errorf("delete project lease %q: %w", name, err)
+	}
+	defer resp.Body.Close()
+	if err := checkStatus(resp, http.StatusOK, http.StatusAccepted, http.StatusNoContent); err != nil && !errors.Is(err, forge.ErrNotFound) {
+		return fmt.Errorf("delete project lease %q: %w", name, err)
+	}
+	return nil
 }
 
 // DeleteRepoVariable deletes a CI/CD variable. It is idempotent:
@@ -1693,13 +1753,14 @@ func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error)
 
 // ProjectAccessToken represents a GitLab project access token.
 type ProjectAccessToken struct {
-	ID        int    `json:"id"`
-	Name      string `json:"name"`
-	Active    bool   `json:"active"`
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expires_at,omitempty"`
-	Revoked   bool   `json:"revoked,omitempty"`
-	UserID    int    `json:"user_id,omitempty"`
+	Scopes    []string `json:"scopes,omitempty"`
+	ID        int      `json:"id"`
+	Name      string   `json:"name"`
+	Active    bool     `json:"active"`
+	Token     string   `json:"token"`
+	ExpiresAt string   `json:"expires_at,omitempty"`
+	Revoked   bool     `json:"revoked,omitempty"`
+	UserID    int      `json:"user_id,omitempty"`
 }
 
 // CreateProjectAccessToken creates a project access token with the given name,
@@ -1725,6 +1786,10 @@ func (c *LiveClient) CreateProjectAccessToken(ctx context.Context, owner, repo, 
 }
 
 // ListProjectAccessTokens lists all project access tokens.
+// Capability errors on the first page retain their forge classification.
+// After any successful page, not-found, forbidden, or not-supported failures
+// are returned without that classification: an incomplete inventory must not
+// be mistaken for an unavailable capability or an empty cleanup inventory.
 func (c *LiveClient) ListProjectAccessTokens(ctx context.Context, owner, repo string) ([]ProjectAccessToken, error) {
 	const perPage = 100
 	const maxPages = 100
@@ -1734,6 +1799,12 @@ func (c *LiveClient) ListProjectAccessTokens(ctx context.Context, owner, repo st
 		path := fmt.Sprintf("/projects/%s/access_tokens?per_page=%d&page=%d", proj, perPage, page)
 		resp, err := c.get(ctx, path)
 		if err != nil {
+			if page > 1 && (forge.IsNotFound(err) || forge.IsForbidden(err) || forge.IsNotSupported(err)) {
+				// Earlier pages already found tokens, so the listing is
+				// incomplete rather than unavailable. Drop the capability
+				// classification so no caller reads it as "nothing to revoke".
+				return nil, fmt.Errorf("list project access tokens page %d failed after %d tokens were discovered on earlier pages; the listing is incomplete: %v", page, len(result), err)
+			}
 			return nil, fmt.Errorf("list project access tokens page %d: %w", page, err)
 		}
 		var tokens []ProjectAccessToken

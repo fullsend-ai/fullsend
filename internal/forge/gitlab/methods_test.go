@@ -2242,7 +2242,7 @@ func TestListRepoVariables_WildcardScopeWinsOverEnvironmentScope(t *testing.T) {
 }
 
 func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
-	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret} {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
 		t.Run(name, func(t *testing.T) {
 			client, mux := setupTest(t)
 			ctx := context.Background()
@@ -2265,7 +2265,7 @@ func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
 }
 
 func TestUpdateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
-	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret} {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
 		t.Run(name, func(t *testing.T) {
 			client, mux := setupTest(t)
 			ctx := context.Background()
@@ -5330,4 +5330,166 @@ func TestOpenAIWIFFileVariablePresence(t *testing.T) {
 			assert.True(t, *instance[0].NonBlank)
 		})
 	}
+}
+
+func TestProjectLease(t *testing.T) {
+	ctx := context.Background()
+	const collection = "/api/v4/projects/myorg%2Fmyrepo/variables"
+	const item = collection + "/LEASE"
+
+	t.Run("acquire creates the variable", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(collection, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			assert.Equal(t, http.MethodPost, r.Method)
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "LEASE", body["key"])
+			assert.Equal(t, "holder-a", body["value"])
+			writeJSON(t, w, http.StatusCreated, map[string]any{"key": "LEASE"})
+		})
+		ok, err := client.AcquireProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a")
+		require.NoError(t, err)
+		assert.True(t, called, "the registered handler must serve the request")
+		assert.True(t, ok)
+	})
+
+	for name, status := range map[string]int{"conflict": http.StatusConflict, "already taken": http.StatusBadRequest} {
+		t.Run("acquire reports a held lease ("+name+")", func(t *testing.T) {
+			client, mux := setupTest(t)
+			called := false
+			mux.HandleFunc(collection, func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				writeJSON(t, w, status, map[string]any{"message": map[string]any{"key": []string{"has already been taken"}}})
+			})
+			ok, err := client.AcquireProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-b")
+			require.NoError(t, err)
+			assert.True(t, called, "the registered handler must serve the request")
+			assert.False(t, ok)
+		})
+	}
+
+	t.Run("acquire reports other failures", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(collection, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusForbidden)
+		})
+		ok, err := client.AcquireProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a")
+		require.Error(t, err)
+		assert.True(t, called, "the registered handler must serve the request")
+		assert.False(t, ok)
+	})
+
+	t.Run("release deletes only the holder's own lease", func(t *testing.T) {
+		client, mux := setupTest(t)
+		var current = "holder-a"
+		deleted := false
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"))
+			switch r.Method {
+			case http.MethodGet:
+				writeJSON(t, w, http.StatusOK, map[string]any{"key": "LEASE", "value": current})
+			case http.MethodDelete:
+				deleted = true
+				w.WriteHeader(http.StatusNoContent)
+			}
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-b"))
+		assert.False(t, deleted, "another holder's lease is left alone")
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		assert.True(t, deleted)
+	})
+
+	t.Run("release of a missing lease is a no-op", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			assert.Equal(t, http.MethodGet, r.Method)
+			w.WriteHeader(http.StatusNotFound)
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		assert.True(t, called, "the registered handler must serve the request")
+	})
+
+	t.Run("release reports lookup and delete failures", func(t *testing.T) {
+		client, mux := setupTest(t)
+		fail := http.MethodGet
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && fail == http.MethodGet {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if r.Method == http.MethodGet {
+				writeJSON(t, w, http.StatusOK, map[string]any{"value": "holder-a"})
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		})
+		require.Error(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		fail = http.MethodDelete
+		require.Error(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+	})
+
+	t.Run("release never retries an ambiguously completed delete", func(t *testing.T) {
+		client, mux := setupTest(t)
+		// A's first DELETE removes its lease server-side but the response is
+		// an error. B then acquires the variable. A must not retry the DELETE
+		// and thereby remove B's lease.
+		current := "holder-a"
+		deletes := 0
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				writeJSON(t, w, http.StatusOK, map[string]any{"key": "LEASE", "value": current})
+			case http.MethodDelete:
+				deletes++
+				current = "holder-b"
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+		})
+		err := client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a")
+		require.Error(t, err)
+		assert.Equal(t, 1, deletes, "the lease DELETE is sent exactly once")
+		assert.Equal(t, "holder-b", current, "the new holder's lease is left alone")
+	})
+
+	// Documents the known limitation of a CI-variable backend: GitLab has no
+	// conditional delete, so a lease replaced between the holder check and the
+	// DELETE is removed. See the ReleaseProjectLease doc comment.
+	t.Run("release removes a lease replaced between the check and the delete", func(t *testing.T) {
+		client, mux := setupTest(t)
+		current := "holder-a"
+		deleted := false
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				writeJSON(t, w, http.StatusOK, map[string]any{"key": "LEASE", "value": current})
+				// Between the GET and the DELETE, holder-a's lease is replaced
+				// by holder-b's.
+				current = "holder-b"
+			case http.MethodDelete:
+				deleted = true
+				w.WriteHeader(http.StatusNoContent)
+			}
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		assert.True(t, deleted, "the unconditional DELETE removes whichever lease is present")
+		assert.Equal(t, "holder-b", current)
+	})
+
+	t.Run("release tolerates a lease deleted concurrently", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				writeJSON(t, w, http.StatusOK, map[string]any{"value": "holder-a"})
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+	})
 }
