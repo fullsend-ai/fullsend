@@ -39,7 +39,7 @@ func TestReviewWorkflowKeepsThreadFetchAgentOwned(t *testing.T) {
 		section = section[:end]
 	}
 
-	assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}")
+	assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}")
 	assert.NotContains(t, section, "HUMAN_RESOLVED_FILE:")
 	assert.NotContains(t, section, "HUMAN_RESOLVED_FETCH_SCRIPT:")
 }
@@ -714,7 +714,7 @@ func TestCustomAppSetReviewBotWiring(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := string(tc.content(t))
-			assert.Contains(t, s, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}")
+			assert.Contains(t, s, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}")
 			if tc.assertCustom {
 				assert.Contains(t, s, `CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"`)
 			}
@@ -730,7 +730,7 @@ func TestCustomAppSetReviewBotWiring(t *testing.T) {
 		t.Run(tc.name+"-route", func(t *testing.T) {
 			s := string(tc.content(t))
 			section := extractStepSection(t, s, "Determine stage")
-			assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}")
+			assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}")
 			assert.Contains(t, section, `CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"`)
 			assert.Regexp(t,
 				regexp.QuoteMeta(`"${REVIEW_USER_LOGIN}" == "${CUSTOM_REVIEW_BOT}"`),
@@ -747,14 +747,14 @@ func TestCustomAppSetReviewBotWiring(t *testing.T) {
 		{
 			"reusable-dispatch",
 			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
-			[]string{"Pre-fetch prior review context", "Check fix eligibility", "Pre-fetch review body"},
+			[]string{"Pre-fetch prior review context", "Check fix eligibility", "Pre-fetch review body", "Run harness agent"},
 		},
 	} {
 		t.Run(tc.name+"-consumers", func(t *testing.T) {
 			s := string(tc.content(t))
 			for _, stepName := range tc.steps {
 				section := extractStepSection(t, s, stepName)
-				assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}",
+				assert.Contains(t, section, "FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}",
 					"%s must receive the configured app-set prefix", stepName)
 				if stepName == "Pre-fetch review body" {
 					assert.Contains(t, section, `--arg custom_bot "${CUSTOM_REVIEW_BOT}"`)
