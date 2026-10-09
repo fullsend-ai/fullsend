@@ -361,7 +361,7 @@ fullsend agent add harness/custom-review.yaml --name my-review
 | `--fullsend-dir` | `.fullsend` | Path to the `.fullsend` configuration directory |
 | `--name` | derived from filename | Explicit agent name |
 
-GitHub blob URLs are resolved to pinned `raw.githubusercontent.com` URLs. Non-GitHub URLs must already contain a commit SHA in the path. Local paths must be relative, must not contain path traversal (`..`), and the file must exist. If an agent with the same name already exists, the command fails.
+GitHub blob URLs are resolved to pinned `raw.githubusercontent.com` URLs. Branch names containing `/` (for example `.../blob/user/feature/harness/lint.yaml`) are resolved by probing successively longer branch candidates. If no candidate matches, the default branch is used. Non-GitHub URLs must already contain a commit SHA in the path. Local paths must be relative, must not contain path traversal (`..`), and the file must exist. If an agent with the same name already exists, the command fails.
 
 ## `agent list`
 

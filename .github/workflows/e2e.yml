@@ -269,7 +269,7 @@ jobs:
 
       - name: Upload behaviour debug artifacts
         if: always() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
           path: ${{ runner.temp }}/behaviour-artifacts/
@@ -446,7 +446,7 @@ jobs:
 
       - name: Upload playback debug artifacts
         if: always() && steps.tests.outcome == 'failure' && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playback-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
           path: ${{ runner.temp }}/playback-artifacts/
