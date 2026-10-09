@@ -430,3 +430,72 @@ harnesses: {}
 	require.NotNil(t, lf)
 	assert.Empty(t, lf.Harnesses)
 }
+
+func TestSave_VersionFollowsWorkflowDependency(t *testing.T) {
+	skillDep := DependencyEntry{Field: "skills[0]", URL: "https://example.com/skills/a", SHA256: "aaa", Type: "directory"}
+	workflowDep := DependencyEntry{Field: WorkflowField, URL: "https://example.com/defs/sample", SHA256: "bbb", Type: "directory"}
+	tests := []struct {
+		name string
+		deps []DependencyEntry
+		want int
+	}{
+		{"no workflow dependency", []DependencyEntry{skillDep}, 1},
+		{"workflow dependency", []DependencyEntry{skillDep, workflowDep}, 2},
+		{"workflow dependency nested", []DependencyEntry{{Field: "skills[1]", URL: "https://example.com/skills/b", TransitiveDeps: []DependencyEntry{workflowDep}}}, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// A stale version on the struct is overwritten from the content.
+			lf := &LockFile{Version: 2, GeneratedAt: testTime}
+			lf.SetHarness("triage", HarnessLock{Source: "harness/triage.yaml", Dependencies: tt.deps})
+			path := filepath.Join(t.TempDir(), "lock.yaml")
+			require.NoError(t, Save(path, lf))
+			assert.Equal(t, tt.want, lf.Version)
+
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Contains(t, string(data), fmt.Sprintf("\nversion: %d\n", tt.want))
+			loaded, err := Load(path)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, loaded.Version)
+		})
+	}
+
+	t.Run("dropping the workflow harness writes version 1 again", func(t *testing.T) {
+		lf := &LockFile{GeneratedAt: testTime}
+		lf.SetHarness("triage", HarnessLock{Dependencies: []DependencyEntry{skillDep}})
+		lf.SetHarness("pipeline", HarnessLock{Dependencies: []DependencyEntry{workflowDep}})
+		path := filepath.Join(t.TempDir(), "lock.yaml")
+		require.NoError(t, Save(path, lf))
+		loaded, err := Load(path)
+		require.NoError(t, err)
+		assert.Equal(t, 2, loaded.Version)
+
+		delete(loaded.Harnesses, "pipeline")
+		require.NoError(t, Save(path, loaded))
+		reloaded, err := Load(path)
+		require.NoError(t, err)
+		assert.Equal(t, 1, reloaded.Version)
+	})
+}
+
+func TestLoad_AcceptedVersions(t *testing.T) {
+	for _, tt := range []struct {
+		version int
+		wantErr bool
+	}{{1, false}, {2, false}, {3, true}, {0, true}} {
+		t.Run(fmt.Sprintf("version %d", tt.version), func(t *testing.T) {
+			content := fmt.Sprintf("version: %d\ngenerated_at: 2026-06-08T12:00:00Z\nharnesses: {}\n", tt.version)
+			path := filepath.Join(t.TempDir(), "lock.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+			lf, err := Load(path)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), fmt.Sprintf("unsupported lock file version %d (expected 1 or 2)", tt.version))
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.version, lf.Version)
+		})
+	}
+}

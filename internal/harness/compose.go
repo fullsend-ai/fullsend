@@ -392,6 +392,13 @@ func loadBaseChain(
 		}
 		deps = append(deps, pluginDeps...)
 
+		// A relative workflow.source names a path in the base's own
+		// repository (ADR 0130 rule 1): pin it to the base's commit here,
+		// before the child sees it. Resolution fetches it at run time.
+		if err := ResolveBaseWorkflowSource(base.Workflow, baseRef, allowlist); err != nil {
+			return nil, nil, fmt.Errorf("resolving base workflow from %s: %w", cleanURL, err)
+		}
+
 		baseDir = childDir
 	} else {
 		// Local path base
@@ -466,6 +473,10 @@ func loadBaseChain(
 		if err != nil {
 			return nil, nil, fmt.Errorf("loading base harness %s: %w", resolvedBasePath, err)
 		}
+		// A relative workflow.source names a path in the checkout that
+		// holds this base file (ADR 0130 rule 1), which may not be the
+		// child's: record where it was declared.
+		markLocalBaseWorkflow(base.Workflow, filepath.Dir(resolvedBasePath))
 
 		baseDir = filepath.Dir(absBasePath)
 	}
@@ -729,6 +740,11 @@ func mergeBaseIntoChild(base, child *Harness) {
 	// child harnesses to override built-in skills via base: composition.
 	if base.Skills != nil || child.Skills != nil {
 		child.Skills = mergeSkills(base.Skills, child.Skills)
+	}
+	// Workflow: child replaces base wholesale (if non-nil).
+	if child.Workflow == nil && base.Workflow != nil {
+		w := *base.Workflow
+		child.Workflow = &w
 	}
 	if base.Plugins != nil {
 		merged := make([]PluginSpec, 0, len(base.Plugins)+len(child.Plugins))
@@ -2240,6 +2256,19 @@ func urlIndexLookup(workspaceRoot, rawURL string) (string, bool) {
 	}
 	hash, ok := index[rawURL]
 	return hash, ok
+}
+
+// LookupURLIndex returns the tree hash the URL-to-hash index records for
+// key. Base composition keeps the index; a workflow: source that
+// composition pinned to a base's commit (ADR 0130) is resolved after
+// composition and uses it the same way a base plugin does.
+func LookupURLIndex(workspaceRoot, key string) (string, bool) {
+	return urlIndexLookup(workspaceRoot, key)
+}
+
+// RecordURLIndex records key→hash in the URL-to-hash index.
+func RecordURLIndex(workspaceRoot, key, hash string) error {
+	return urlIndexPut(workspaceRoot, key, hash)
 }
 
 // urlIndexPut records a URL→SHA256 mapping in the index file.

@@ -76,7 +76,7 @@ warning.
 | Unattended | Approvals off; codex's own sandbox off, because OpenShell is the boundary. A missing credential exits before the agent starts |
 | Artifacts | `output.jsonl` (the `codex exec --json` stream), `transcripts/<agent>-<rollout>.jsonl`, `metrics.json` with `runtime: codex`, plus `codex-debug.log` with `--debug`. Only uncompressed rollouts are extracted — codex compresses older sessions, so a `.jsonl.zst` is never the run's own transcript. The agent's final message is in the stream; `--output-last-message` also drops it in the runner-owned config directory inside the sandbox, which is a convenience when inspecting a kept sandbox rather than a downloaded artifact |
 | Extra knobs | `FULLSEND_CODEX_MODEL` (the runner-side model default for codex runs; see [Models](#models)) |
-| Not supported | Sub-agents, `plugins:`, fallback chains, non-OpenAI providers |
+| Not supported | Sub-agents, `plugins:`, `workflow:` (refused at plan time), fallback chains, non-OpenAI providers |
 
 Cost is **not** in `metrics.json` on codex: the `codex exec --json` stream carries no cost field, so
 the value stays `0`. Token counts are recorded normally.

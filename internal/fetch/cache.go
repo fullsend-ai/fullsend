@@ -1,6 +1,7 @@
 package fetch
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +48,22 @@ func CachePath(workspaceRoot, hash string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(workspaceRoot, ".fullsend-cache", "resources", "sha256", hash), nil
+}
+
+// MaterializedCachePath returns the cache directory for a directory tree
+// read with its symlinks replaced by their targets (a workflow definition,
+// ADR 0130), keyed by its tree hash:
+//
+//	<workspaceRoot>/.fullsend-cache/resources/materialized/sha256/<hash>/
+//
+// It is a namespace of its own beside CachePath's: CacheGetDir never
+// returns a tree stored here, and CachePutDir never writes here, whatever
+// the hash.
+func MaterializedCachePath(workspaceRoot, hash string) (string, error) {
+	if err := validateHash(hash); err != nil {
+		return "", err
+	}
+	return filepath.Join(workspaceRoot, ".fullsend-cache", "resources", "materialized", "sha256", hash), nil
 }
 
 func validateHash(hash string) error {
@@ -213,12 +230,48 @@ type DirCachePutOpts struct {
 //
 // Uses atomic file writes within the tree directory.
 func CachePutDir(workspaceRoot, url string, files map[string][]byte, opts ...DirCachePutOpts) (string, error) {
+	var putOpts DirCachePutOpts
+	if len(opts) > 0 {
+		putOpts = opts[0]
+	}
+	// Only a replacing write takes the entry lock, so this one never
+	// waits and needs no caller context.
+	return cachePutDirAt(context.Background(), workspaceRoot, CachePath, url, files, putOpts, false)
+}
+
+// CachePutMaterializedDir is CachePutDir for a tree read with its symlinks
+// materialized: it stores the tree under MaterializedCachePath. The whole
+// tree is uploaded to the sandbox, so the cached directory must hold
+// exactly the given files: unless the tree already there is exactly that
+// set of files, a fresh tree is built beside it and swapped into place,
+// which drops any file left in the old one. A file named like the cache's
+// own temporary files is refused, because CacheGetMaterializedDir treats
+// such a file as a stray and would never hit. Waiting for another
+// writer's lock on the entry stops when ctx is done.
+func CachePutMaterializedDir(ctx context.Context, workspaceRoot, url string, files map[string][]byte) (string, error) {
+	for relPath := range files {
+		if atomicWriteTmpRe.MatchString(filepath.Base(relPath)) {
+			return "", fmt.Errorf("%s is named like a cache temporary file (<name>.tmp.<digits>), which the cache cannot store; rename the file", relPath)
+		}
+	}
+	return cachePutDirAt(ctx, workspaceRoot, MaterializedCachePath, url, files, DirCachePutOpts{}, true)
+}
+
+// cachePathFunc maps a hash to its cache directory in one namespace.
+type cachePathFunc func(workspaceRoot, hash string) (string, error)
+
+// cachePutDirAt stores files under cachePath. With replace false the files
+// are written into the existing tree/ in place; with replace true tree/ is
+// replaced as a whole unless it already holds exactly the given files (see
+// CachePutMaterializedDir); ctx bounds the wait for the entry lock a
+// replacing write takes.
+func cachePutDirAt(ctx context.Context, workspaceRoot string, cachePath cachePathFunc, url string, files map[string][]byte, putOpts DirCachePutOpts, replace bool) (string, error) {
 	if len(files) == 0 {
 		return "", fmt.Errorf("cannot cache empty directory")
 	}
 
 	treeHash := ComputeTreeHash(files)
-	dir, err := CachePath(workspaceRoot, treeHash)
+	dir, err := cachePath(workspaceRoot, treeHash)
 	if err != nil {
 		return "", err
 	}
@@ -233,22 +286,12 @@ func CachePutDir(workspaceRoot, url string, files map[string][]byte, opts ...Dir
 
 	// Build the tree directory.
 	treeDir := filepath.Join(dir, "tree")
-
-	// Write each file.
-	for relPath, content := range files {
-		fullPath := filepath.Join(treeDir, relPath)
-		cleanFull := filepath.Clean(fullPath)
-		cleanTree := filepath.Clean(treeDir) + string(filepath.Separator)
-		if !strings.HasPrefix(cleanFull, cleanTree) {
-			return "", fmt.Errorf("path traversal in file path: %s", relPath)
+	if replace {
+		if err := replaceTree(ctx, dir, treeDir, treeHash, files); err != nil {
+			return "", err
 		}
-		fileDir := filepath.Dir(fullPath)
-		if err := os.MkdirAll(fileDir, 0o700); err != nil {
-			return "", fmt.Errorf("creating directory for %s: %w", relPath, err)
-		}
-		if err := atomicWrite(fileDir, filepath.Base(fullPath), content); err != nil {
-			return "", fmt.Errorf("writing %s: %w", relPath, err)
-		}
+	} else if err := writeTreeFiles(treeDir, files); err != nil {
+		return "", err
 	}
 
 	// Build file manifest for metadata.
@@ -264,17 +307,13 @@ func CachePutDir(workspaceRoot, url string, files map[string][]byte, opts ...Dir
 	})
 
 	// Write metadata.
-	var fullListing bool
-	if len(opts) > 0 {
-		fullListing = opts[0].FullListing
-	}
 	entry := DirCacheEntry{
 		URL:         url,
 		FetchTime:   time.Now().UTC(),
 		SHA256:      treeHash,
 		Type:        "directory",
 		Files:       fileEntries,
-		FullListing: fullListing,
+		FullListing: putOpts.FullListing,
 	}
 	metadataBytes, err := json.MarshalIndent(entry, "", "  ")
 	if err != nil {
@@ -287,12 +326,173 @@ func CachePutDir(workspaceRoot, url string, files map[string][]byte, opts ...Dir
 	return treeHash, nil
 }
 
+// writeTreeFiles writes each file under treeDir with atomic writes.
+func writeTreeFiles(treeDir string, files map[string][]byte) error {
+	for relPath, content := range files {
+		fullPath := filepath.Join(treeDir, relPath)
+		cleanFull := filepath.Clean(fullPath)
+		cleanTree := filepath.Clean(treeDir) + string(filepath.Separator)
+		if !strings.HasPrefix(cleanFull, cleanTree) {
+			return fmt.Errorf("path traversal in file path: %s", relPath)
+		}
+		fileDir := filepath.Dir(fullPath)
+		if err := os.MkdirAll(fileDir, 0o700); err != nil {
+			return fmt.Errorf("creating directory for %s: %w", relPath, err)
+		}
+		if err := atomicWrite(fileDir, filepath.Base(fullPath), content); err != nil {
+			return fmt.Errorf("writing %s: %w", relPath, err)
+		}
+	}
+	return nil
+}
+
+// replaceTree makes treeDir hold exactly files. A tree that already does
+// is left alone, so concurrent readers of a good tree are not disturbed.
+// Otherwise the files are written to a fresh directory beside treeDir and
+// swapped in under the entry's cross-process lock: the tree is checked
+// again while the lock is held, so a writer never replaces a tree another
+// writer has just installed, and treeDir is always either complete or
+// absent (a reader then misses and refetches).
+func replaceTree(ctx context.Context, dir, treeDir, treeHash string, files map[string][]byte) error {
+	if ok, err := treeIsExact(treeDir, treeHash); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+	newTree, err := os.MkdirTemp(dir, "tree.new-")
+	if err != nil {
+		return fmt.Errorf("creating cache tree: %w", err)
+	}
+	defer os.RemoveAll(newTree)
+	if err := writeTreeFiles(newTree, files); err != nil {
+		return err
+	}
+	unlock, err := lockCacheEntry(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if ok, err := treeIsExact(treeDir, treeHash); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+	const maxSwaps = 5
+	for attempt := 0; ; attempt++ {
+		// os.MkdirTemp only reserves a unique name: not every platform
+		// renames a directory over an empty one, so the placeholder is
+		// removed before the old tree takes its name.
+		oldTree, err := os.MkdirTemp(dir, "tree.old-")
+		if err != nil {
+			return fmt.Errorf("replacing cache tree: %w", err)
+		}
+		if err := os.Remove(oldTree); err != nil {
+			return fmt.Errorf("replacing cache tree: %w", err)
+		}
+		if err := os.Rename(treeDir, oldTree); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("replacing cache tree: %w", err)
+		}
+		renameErr := os.Rename(newTree, treeDir)
+		_ = os.RemoveAll(oldTree)
+		if renameErr == nil {
+			return nil
+		}
+		if attempt+1 >= maxSwaps {
+			return fmt.Errorf("replacing cache tree: %w", renameErr)
+		}
+	}
+}
+
+// treeIsExact reports whether treeDir holds exactly the files whose tree
+// hash is treeHash: only regular files and the directories that lead to
+// them, none named like a temporary file.
+func treeIsExact(treeDir, treeHash string) (bool, error) {
+	files, exact, err := readCacheTree(treeDir, true)
+	if err != nil || !exact {
+		return false, err
+	}
+	return ComputeTreeHash(files) == treeHash, nil
+}
+
+// readCacheTree reads every regular file under treeDir, keyed by its path
+// relative to treeDir. Entries that vanish mid-walk are tolerated (a
+// concurrent writer renaming its temp file away). With strict false,
+// files named like atomicWrite's temp files are skipped (a crashed
+// writer's leftover would otherwise poison the tree hash forever). With
+// strict true, exact is false as soon as the tree holds such a file, an
+// entry that is neither a regular file nor a directory, or an empty
+// directory: none of these is in the hashed file set, yet each would be
+// delivered with the tree.
+func readCacheTree(treeDir string, strict bool) (files map[string][]byte, exact bool, err error) {
+	files = make(map[string][]byte)
+	exact = true
+	errInexact := errors.New("inexact tree")
+	err = filepath.WalkDir(treeDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return skipVanished(err)
+		}
+		if d.IsDir() {
+			if strict {
+				entries, readErr := os.ReadDir(path)
+				if readErr != nil {
+					return skipVanished(readErr)
+				}
+				if len(entries) == 0 {
+					return errInexact
+				}
+			}
+			return nil
+		}
+		if atomicWriteTmpRe.MatchString(d.Name()) {
+			if strict {
+				return errInexact
+			}
+			return nil
+		}
+		if strict && !d.Type().IsRegular() {
+			return errInexact
+		}
+		relPath, err := filepath.Rel(treeDir, path)
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return skipVanished(err)
+		}
+		files[relPath] = content
+		return nil
+	})
+	if errors.Is(err, errInexact) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return files, true, nil
+}
+
 // CacheGetDir retrieves a previously cached directory resource by its tree hash.
 // Returns ("", nil, nil) on a cache miss. On a hit, returns the path to the
 // tree/ subdirectory and the cache metadata. Re-verifies integrity by recomputing
 // the tree hash from the cached files.
 func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
-	dir, err := CachePath(workspaceRoot, hash)
+	return cacheGetDirAt(workspaceRoot, CachePath, hash, false)
+}
+
+// CacheGetMaterializedDir is CacheGetDir for trees stored by
+// CachePutMaterializedDir, with a stricter check: the whole tree is
+// uploaded to the sandbox, so it must hold exactly the hashed files. A
+// file named like a temporary file, an entry that is neither a regular
+// file nor a directory, or an empty directory makes the lookup a miss
+// (the caller refetches and CachePutMaterializedDir replaces the tree)
+// instead of being skipped.
+func CacheGetMaterializedDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
+	return cacheGetDirAt(workspaceRoot, MaterializedCachePath, hash, true)
+}
+
+func cacheGetDirAt(workspaceRoot string, cachePath cachePathFunc, hash string, strict bool) (string, *DirCacheEntry, error) {
+	dir, err := cachePath(workspaceRoot, hash)
 	if err != nil {
 		return "", nil, err
 	}
@@ -331,31 +531,15 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 	// otherwise poison the tree hash forever) and tolerate entries vanishing
 	// mid-walk (a concurrent writer renaming its temp file away). The tree-hash
 	// comparison below backstops both tolerances: skipping or losing a
-	// legitimate file still fails the integrity check.
-	files := make(map[string][]byte)
-	err = filepath.Walk(treeDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return skipVanished(err)
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if atomicWriteTmpRe.MatchString(filepath.Base(path)) {
-			return nil
-		}
-		relPath, err := filepath.Rel(treeDir, path)
-		if err != nil {
-			return err
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return skipVanished(err)
-		}
-		files[relPath] = content
-		return nil
-	})
+	// legitimate file still fails the integrity check. A strict lookup
+	// (materialized trees) misses on a temp-named file instead of skipping
+	// it; see CacheGetMaterializedDir.
+	files, exact, err := readCacheTree(treeDir, strict)
 	if err != nil {
 		return "", nil, fmt.Errorf("walking cache tree: %w", err)
+	}
+	if !exact {
+		return "", nil, nil // stray entries: refetch and replace the tree
 	}
 
 	actualHash := ComputeTreeHash(files)

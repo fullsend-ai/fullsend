@@ -6,6 +6,7 @@ package gitfetch
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -27,11 +28,28 @@ const (
 // fetch is unauthenticated (sufficient for public repos).
 type TreeFetchFunc func(ctx context.Context, cloneURL, path, ref, token string) (map[string][]byte, error)
 
+// Options tunes FetchTreeWithOptions.
+type Options struct {
+	// MaterializeSymlinks replaces each symlink whose target is inside the
+	// fetched tree with the target's content (ADR 0130): a file link is
+	// stored as the target's bytes under the link's path, and a directory
+	// link as the target's files under the link's path. A link that leaves
+	// the tree, dangles or loops is refused with a *LinkError. When false,
+	// the tree is read exactly as FetchTree reads it.
+	MaterializeSymlinks bool
+}
+
 // FetchTree fetches all files under path in a repository at ref using
 // git sparse checkout. It creates a temporary shallow clone with only
 // tree objects, configures sparse checkout for the target path, then
 // reads the materialized files from disk.
 func FetchTree(ctx context.Context, cloneURL, subpath, ref, token string) (map[string][]byte, error) {
+	return FetchTreeWithOptions(ctx, cloneURL, subpath, ref, token, Options{})
+}
+
+// FetchTreeWithOptions is FetchTree with Options. An empty subpath fetches
+// the repository root.
+func FetchTreeWithOptions(ctx context.Context, cloneURL, subpath, ref, token string, opts Options) (map[string][]byte, error) {
 	if cloneURL == "" {
 		return nil, fmt.Errorf("gitfetch: clone URL is required")
 	}
@@ -106,6 +124,26 @@ func FetchTree(ctx context.Context, cloneURL, subpath, ref, token string) (map[s
 	absWalk, _ := filepath.Abs(walkRoot)
 	if absWalk != absTmp && !strings.HasPrefix(absWalk, absTmp+string(os.PathSeparator)) {
 		return nil, fmt.Errorf("gitfetch: path %q escapes repository root", subpath)
+	}
+
+	if opts.MaterializeSymlinks {
+		// A workflow source path must not pass through a symlink (ADR
+		// 0130 rule 2); sourceRoot checks it before anything is read.
+		root, err := sourceRoot(tmpDir, subpath)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("gitfetch: path %q not found in repository at ref %s", subpath, ref)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gitfetch: %w", err)
+		}
+		files, err := materializeTree(root, "the fetched tree", []string{".git", localCacheDirName})
+		if err != nil {
+			return nil, fmt.Errorf("gitfetch: %w", err)
+		}
+		if len(files) == 0 {
+			return nil, fmt.Errorf("gitfetch: path %q contains no files at ref %s", subpath, ref)
+		}
+		return files, nil
 	}
 
 	info, err := os.Stat(walkRoot)
