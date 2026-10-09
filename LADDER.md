@@ -48,7 +48,8 @@ repository.
 - Ability to label, close, and reopen issues. A triage user can apply
   labels such as `ready-to-code`, but that label only dispatches the code
   agent when applied by a user with `write` access or by an agent bot.
-- Automatic e2e CI triggering on your PRs (no maintainer label needed)
+- Triage contributors do not receive automatic e2e CI runs; non-write
+  contributors require an `ok-to-test` label from maintainers with `write` access.
 
 **Criteria:**
 

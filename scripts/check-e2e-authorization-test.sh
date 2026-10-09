@@ -37,8 +37,14 @@ write_pr() {
   local assoc="$1"
   local labels_json="$2"
   local updated_at="${3:-2026-06-01T10:00:00Z}"
-  jq -n --arg assoc "${assoc}" --argjson labels "${labels_json}" --arg updated_at "${updated_at}" \
-    '{author_association: $assoc, labels: $labels, updated_at: $updated_at}' >"${PR_JSON}"
+  local author_login="${4:-}"
+  if [[ -n "${author_login}" ]]; then
+    jq -n --arg assoc "${assoc}" --argjson labels "${labels_json}" --arg updated_at "${updated_at}" --arg login "${author_login}" \
+      '{author_association: $assoc, labels: $labels, updated_at: $updated_at, user: {login: $login}}' >"${PR_JSON}"
+  else
+    jq -n --arg assoc "${assoc}" --argjson labels "${labels_json}" --arg updated_at "${updated_at}" \
+      '{author_association: $assoc, labels: $labels, updated_at: $updated_at}' >"${PR_JSON}"
+  fi
 }
 
 write_events() {
@@ -131,40 +137,31 @@ run_case() {
   echo "PASS: ${name}"
 }
 
+# --- Author permission tests (trust based on collaborator API, not author_association) ---
+
+export PR_AUTHOR_LOGIN="author"
+
+set_role "author" "write"
 write_pr "MEMBER" '[]'
-run_case "trusted member author" "true" "trusted_author" "false"
+run_case "author with write permission is authorized" "true" "trusted_author" "false"
 
-export PR_AUTHOR_ASSOCIATION="MEMBER"
-write_pr "NONE" '[]'
-run_case "event payload trusted author overrides API NONE" "true" "trusted_author" "false"
-if grep -q '/pulls/' "${GH_LOG}"; then
-  echo "FAIL: trusted event payload should not call pulls API"
-  FAILURES=$((FAILURES + 1))
-else
-  echo "PASS: trusted event payload skips pulls API"
-fi
-unset PR_AUTHOR_ASSOCIATION
+set_role "author" "maintain"
+write_pr "MEMBER" '[]'
+run_case "author with maintain permission is authorized" "true" "trusted_author" "false"
 
-export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
-export EVENT_ACTION="synchronize"
-export PR_UPDATED_AT="2026-06-01T10:00:00Z"
-write_pr "NONE" '[{"name":"ok-to-test"}]'
-write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "untrusted event payload falls through to ok-to-test label check" "true" "ok_to_test" "false"
-if ! grep -q '/pulls/' "${GH_LOG}"; then
-  echo "FAIL: untrusted event payload should fetch pulls API for labels"
-  FAILURES=$((FAILURES + 1))
-else
-  echo "PASS: untrusted event payload fetches pulls API for labels"
-fi
-unset PR_AUTHOR_ASSOCIATION EVENT_ACTION PR_UPDATED_AT
+set_role "author" "admin"
+write_pr "MEMBER" '[]'
+run_case "author with admin permission is authorized" "true" "trusted_author" "false"
 
-write_pr "OWNER" '[]'
-run_case "trusted owner author" "true" "trusted_author" "false"
+set_role "author" "triage"
+write_pr "MEMBER" '[]'
+run_case "author with triage permission denied (even if MEMBER)" "false" "unauthorized" "false"
 
+set_role "author" "read"
 write_pr "COLLABORATOR" '[]'
-run_case "trusted collaborator author" "true" "trusted_author" "false"
+run_case "author with read permission denied (even if COLLABORATOR)" "false" "unauthorized" "false"
 
+echo "" >"${ROLES_DIR}/author"
 write_pr "CONTRIBUTOR" '[]'
 run_case "contributor author denied" "false" "unauthorized" "false"
 
@@ -184,16 +181,29 @@ export PR_AUTHOR_LOGIN="some-other-bot[bot]"
 write_pr "NONE" '[]'
 run_case "unknown bot not authorized" "false" "unauthorized" "false"
 
-unset PR_AUTHOR_ASSOCIATION PR_AUTHOR_LOGIN
-
+export PR_AUTHOR_LOGIN="author"
+set_role "author" "write"
 write_pr "MEMBER" '[{"name":"ok-to-test"}]'
-run_case "trusted member ignores stale ok-to-test label" "true" "trusted_author" "false"
+run_case "author with write permission ignores stale ok-to-test label" "true" "trusted_author" "false"
+echo "" >"${ROLES_DIR}/author"
+unset PR_AUTHOR_LOGIN
 
+# --- ok-to-test and synchronize tests ---
+
+# Commit B pushed (synchronize) with existing ok-to-test -> denied until re-approved
 export EVENT_ACTION="synchronize"
 export PR_UPDATED_AT="2026-06-01T10:00:00Z"
 write_pr "NONE" '[{"name":"ok-to-test"}]'
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
-run_case "fresh ok-to-test label after push" "true" "ok_to_test" "false"
+run_case "synchronize with existing ok-to-test invalidates approval" "false" "stale_ok_to_test" "true"
+unset EVENT_ACTION PR_UPDATED_AT
+
+# Reopened PR with fresh ok-to-test label after push is authorized
+export EVENT_ACTION="reopened"
+export PR_UPDATED_AT="2026-06-01T10:00:00Z"
+write_pr "NONE" '[{"name":"ok-to-test"}]'
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
+run_case "fresh ok-to-test label after push on reopened PR" "true" "ok_to_test" "false"
 
 export PR_UPDATED_AT="2026-06-01T12:00:00Z"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
@@ -272,8 +282,8 @@ else
   echo "PASS: frozen sender path skips events API"
 fi
 
-# The sender of a non-labeled event (e.g. the pusher) is not the labeler.
-export EVENT_ACTION="synchronize"
+# The sender of a non-labeled event (e.g. the reopener) is not the labeler.
+export EVENT_ACTION="reopened"
 export PR_UPDATED_AT="2026-06-01T10:00:00Z"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z","actor":{"login":"triager"}}]'
 run_case "sender ignored outside labeled events" "false" "untrusted_labeler" "true"
@@ -300,17 +310,21 @@ run_case "label removal failure returns error" "false" "error" "false"
 export GH_FAIL="false"
 export CHECK_E2E_AUTH_DRY_RUN="true"
 
-export EVENT_ACTION="synchronize"
+export EVENT_ACTION="reopened"
 unset PR_UPDATED_AT
 write_pr "NONE" '[{"name":"ok-to-test"}]' "2026-06-01T10:00:00Z"
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
 run_case "falls back to pull updated_at when PR_UPDATED_AT unset" "true" "ok_to_test" "false"
 
+export PR_AUTHOR_LOGIN="author"
+set_role "author" "write"
 write_pr "MEMBER" '[]'
 export GH_FAIL="events"
 run_case "trusted author not blocked by events API failure" "true" "trusted_author" "false"
+echo "" >"${ROLES_DIR}/author"
+unset PR_AUTHOR_LOGIN
 
-export EVENT_ACTION="synchronize"
+export EVENT_ACTION="reopened"
 export PR_UPDATED_AT="2026-06-01T10:00:00Z"
 write_pr "NONE" '[{"name":"ok-to-test"}]'
 write_events '[]'
@@ -360,7 +374,7 @@ run_case "collaborator API read permission denied" "false" "unauthorized" "false
 # Collaborator API fails for the PR author — falls through to the ok-to-test
 # path, where the labeler's own permission is checked.
 echo "" >"${COLLAB_ROLE}"
-export EVENT_ACTION="synchronize"
+export EVENT_ACTION="reopened"
 export PR_UPDATED_AT="2026-06-01T10:00:00Z"
 write_pr "NONE" '[{"name":"ok-to-test"}]'
 write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:00:00Z"}]'
