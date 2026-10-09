@@ -2,7 +2,8 @@
 
 Read and write issue content across GitHub, GitLab, and Jira from
 custom agent scripts using `fullsend issues get`,
-`fullsend issues post-comment`, and `fullsend issues link`.
+`fullsend issues create`, `fullsend issues post-comment`, and
+`fullsend issues link`.
 
 ## When to use
 
@@ -16,6 +17,8 @@ GitHub-sourced events. Use these commands when:
   non-GitHub tracker.
 - A workflow depends on **typed issue links** in Jira (for example, a
   bug that blocks a task).
+- A planning or decomposition script needs to **create** issues,
+  including Jira sub-tasks under a parent issue.
 
 ## `fullsend issues get`
 
@@ -90,6 +93,66 @@ otherwise ignored.
 | `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
 | `--fields` | Jira only | Comma-separated Jira custom field IDs (`customfield_<digits>`) to include under `custom_fields`. Repeatable. |
 | `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
+
+## `fullsend issues create`
+
+Creates a new issue and prints its number, URL, and (for Jira) key as
+JSON:
+
+```json
+{
+  "number": 43,
+  "key": "PROJ-43",
+  "title": "Sub-task title",
+  "url": "https://myteam.atlassian.net/browse/PROJ-43"
+}
+```
+
+`key` is only present for Jira. `--body` is the issue description as
+Markdown, or `-` to read it from stdin (capped at 2 MB). For Jira, the
+body is converted to Atlassian Document Format.
+
+```bash
+fullsend issues create \
+  --tracker github \
+  --project owner/repo \
+  --title "Widget is broken" \
+  --body "Steps to reproduce..."
+```
+
+For Jira, `--type` is required. `--parent` creates the issue under a
+parent issue, which is how Jira sub-tasks are created:
+
+```bash
+cat plan.md | fullsend issues create \
+  --tracker jira \
+  --project PROJ \
+  --type 10003 \
+  --parent PROJ-42 \
+  --title "Sub-task title" \
+  --body - \
+  --jira-url https://myteam.atlassian.net \
+  --jira-email you@example.com
+```
+
+`--type` and `--parent` are Jira only. GitHub and GitLab have no
+equivalent here, so passing either with `--tracker github` or
+`--tracker gitlab` is an error rather than being silently ignored.
+
+### Flags
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--tracker` | Yes (unless config default set) | Tracker backend: `github`, `gitlab`, or `jira` |
+| `--project` | Yes | Project identifier: `owner/repo` (GitHub/GitLab) or project key (Jira) |
+| `--title` | Yes | Issue title |
+| `--body` | No | Issue description as Markdown, or `-` to read from stdin (default: empty) |
+| `--type` | Jira only (required) | Jira issue type: an all-digit value is an issue type ID (e.g. `10003`), anything else an issue type name (e.g. `Sub-task`) |
+| `--parent` | Jira only | Parent issue key (e.g. `PROJ-42`) for sub-task creation |
+| `--token` | No | API token (default: env var per tracker) |
+| `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
+| `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
+| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources a default `--tracker` from its `config.yaml` when the flag is omitted) |
 
 ## `fullsend issues post-comment`
 

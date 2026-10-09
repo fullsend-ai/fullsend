@@ -74,6 +74,9 @@ func TestJiraClient_GetIssue(t *testing.T) {
 	if issue.URL != "https://acme.atlassian.net/browse/PROJ-42" {
 		t.Errorf("issue.URL = %q, want %q", issue.URL, "https://acme.atlassian.net/browse/PROJ-42")
 	}
+	if issue.Key != "PROJ-42" {
+		t.Errorf("issue.Key = %q, want %q", issue.Key, "PROJ-42")
+	}
 }
 
 func TestJiraClient_GetIssue_IssueTypeAndCustomFields(t *testing.T) {
@@ -694,5 +697,101 @@ func TestJiraClient_LinkIssues_NotFound(t *testing.T) {
 	}
 	if len(fj.Links) != 0 {
 		t.Fatalf("Links = %+v, want none recorded on error", fj.Links)
+	}
+}
+
+func TestJiraClient_CreateIssue(t *testing.T) {
+	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	issue, err := jc.CreateIssue(ctx, "PROJ", "Sub-task title", "Some **bold** text", CreateIssueOptions{
+		IssueType: "10003",
+		Parent:    "PROJ-42",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue returned error: %v", err)
+	}
+	want := jira.CreateIssueInput{
+		ProjectKey:  "PROJ",
+		IssueType:   "10003",
+		ParentKey:   "PROJ-42",
+		Summary:     "Sub-task title",
+		Description: "Some **bold** text",
+	}
+	if len(fj.CreatedIssues) != 1 || fj.CreatedIssues[0] != want {
+		t.Fatalf("CreatedIssues = %+v, want [%+v]", fj.CreatedIssues, want)
+	}
+	if issue.Number != 1 || issue.Title != "Sub-task title" || issue.Body != "Some **bold** text" ||
+		issue.URL != "https://acme.atlassian.net/browse/PROJ-1" {
+		t.Errorf("CreateIssue returned unexpected issue: %+v", issue)
+	}
+
+	// The created issue is addressable through GetIssue with the returned
+	// number, and its description round-trips through ADF.
+	got, err := jc.GetIssue(ctx, "PROJ", issue.Number)
+	if err != nil {
+		t.Fatalf("GetIssue returned error: %v", err)
+	}
+	if got.Title != "Sub-task title" || got.Body != "Some **bold** text" {
+		t.Errorf("GetIssue after CreateIssue = %+v", got)
+	}
+}
+
+func TestJiraClient_CreateIssue_RequiresIssueType(t *testing.T) {
+	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jc.CreateIssue(context.Background(), "PROJ", "t", "", CreateIssueOptions{}); err == nil {
+		t.Fatal("CreateIssue without an issue type should return an error")
+	}
+	if len(fj.CreatedIssues) != 0 {
+		t.Errorf("CreateIssue created %d issues, want none", len(fj.CreatedIssues))
+	}
+}
+
+func TestJiraClient_CreateIssue_NotFound(t *testing.T) {
+	jc, fj, err := NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fj.CreateIssueError = &jira.APIError{StatusCode: 404, Message: "project not found"}
+	_, err = jc.CreateIssue(context.Background(), "NOPE", "t", "", CreateIssueOptions{IssueType: "10003"})
+	if !IsNotFound(err) {
+		t.Fatalf("CreateIssue error = %v, want IsNotFound", err)
+	}
+}
+
+// badKeyJiraClient returns a created issue whose key has no numeric part.
+type badKeyJiraClient struct {
+	FakeJiraClient
+	key string
+}
+
+func (b *badKeyJiraClient) CreateIssue(_ context.Context, _ jira.CreateIssueInput) (*jira.CreatedIssue, error) {
+	return &jira.CreatedIssue{Key: b.key}, nil
+}
+
+func TestJiraClient_CreateIssue_ReturnsJiraKey(t *testing.T) {
+	// The requested project spelling differs from the key Jira returns.
+	c := newTestJiraClient(t, &badKeyJiraClient{key: "PROJ-7"}, "https://acme.atlassian.net")
+	issue, err := c.CreateIssue(context.Background(), "proj", "t", "", CreateIssueOptions{IssueType: "10003"})
+	if err != nil {
+		t.Fatalf("CreateIssue returned error: %v", err)
+	}
+	if issue.Key != "PROJ-7" || issue.Number != 7 || issue.URL != "https://acme.atlassian.net/browse/PROJ-7" {
+		t.Errorf("CreateIssue returned unexpected issue: %+v", issue)
+	}
+}
+
+func TestJiraClient_CreateIssue_UnexpectedKey(t *testing.T) {
+	for _, key := range []string{"", "PROJ", "-1", "PROJ-abc", "PROJ-0"} {
+		c := newTestJiraClient(t, &badKeyJiraClient{key: key}, "https://acme.atlassian.net")
+		if _, err := c.CreateIssue(context.Background(), "PROJ", "t", "", CreateIssueOptions{IssueType: "10003"}); err == nil {
+			t.Errorf("CreateIssue with returned key %q should return an error", key)
+		}
 	}
 }

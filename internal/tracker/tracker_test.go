@@ -379,6 +379,9 @@ func TestForgeClient_DeleteCommentReaction_InvalidProject(t *testing.T) {
 type staticClient struct{}
 
 func (staticClient) GetIssue(_ context.Context, _ string, _ int) (*Issue, error) { return nil, nil }
+func (staticClient) CreateIssue(_ context.Context, _, _ string, _ Body, _ CreateIssueOptions) (*Issue, error) {
+	return nil, nil
+}
 func (staticClient) ListComments(_ context.Context, _ string, _ int) ([]Comment, error) {
 	return nil, nil
 }
@@ -419,5 +422,59 @@ func TestIsNotSupported(t *testing.T) {
 	}
 	if IsNotSupported(errors.New("other")) {
 		t.Error("IsNotSupported(other) = true, want false")
+	}
+}
+
+func TestForgeClient_CreateIssue(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+
+	issue, err := c.CreateIssue(context.Background(), "group/subgroup/project", "New widget", "details", CreateIssueOptions{})
+	if err != nil {
+		t.Fatalf("CreateIssue returned error: %v", err)
+	}
+	if len(fc.CreatedIssues) != 1 {
+		t.Fatalf("CreatedIssues = %d, want 1", len(fc.CreatedIssues))
+	}
+	got := fc.CreatedIssues[0]
+	if got.Owner != "group/subgroup" || got.Repo != "project" || got.Title != "New widget" || got.Body != "details" {
+		t.Errorf("forge CreateIssue called with %+v", got)
+	}
+	if issue.Number != got.Number || issue.Title != "New widget" || issue.Body != "details" || issue.URL == "" {
+		t.Errorf("CreateIssue returned unexpected issue: %+v", issue)
+	}
+}
+
+func TestForgeClient_CreateIssue_RejectsJiraOnlyOptions(t *testing.T) {
+	for name, opts := range map[string]CreateIssueOptions{
+		"issue type": {IssueType: "10003"},
+		"parent":     {Parent: "PROJ-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			_, err := NewForgeClient(fc).CreateIssue(context.Background(), "acme/widgets", "t", "", opts)
+			if !IsNotSupported(err) {
+				t.Fatalf("CreateIssue error = %v, want ErrNotSupported", err)
+			}
+			if len(fc.CreatedIssues) != 0 {
+				t.Errorf("CreateIssue created %d issues, want none", len(fc.CreatedIssues))
+			}
+		})
+	}
+}
+
+func TestForgeClient_CreateIssue_InvalidProject(t *testing.T) {
+	fc := forge.NewFakeClient()
+	if _, err := NewForgeClient(fc).CreateIssue(context.Background(), "invalid", "t", "", CreateIssueOptions{}); err == nil {
+		t.Fatal("CreateIssue with invalid project should return an error")
+	}
+}
+
+func TestForgeClient_CreateIssue_NotFound(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors = map[string]error{"CreateIssue": forge.ErrNotFound}
+	_, err := NewForgeClient(fc).CreateIssue(context.Background(), "acme/widgets", "t", "", CreateIssueOptions{})
+	if !IsNotFound(err) {
+		t.Fatalf("CreateIssue error = %v, want IsNotFound", err)
 	}
 }
