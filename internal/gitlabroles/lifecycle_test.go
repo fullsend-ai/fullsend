@@ -221,3 +221,55 @@ func TestExpiryHelpers(t *testing.T) {
 	_, ok = parseExpiryDate("not-a-date")
 	assert.False(t, ok)
 }
+
+func TestAnnotateTokenLifecycle(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		tok     TokenSnapshot
+		lead    time.Duration
+		want    LifecycleState
+		expires string
+	}{
+		{name: "ok", tok: TokenSnapshot{ID: 4, Active: true, ExpiresAt: "2027-01-01"}, want: LifecycleOK, expires: "2027-01-01"},
+		{name: "expiring within default lead", tok: TokenSnapshot{ID: 4, Active: true, ExpiresAt: "2026-10-01"}, want: LifecycleExpiring, expires: "2026-10-01"},
+		{name: "outside explicit lead", tok: TokenSnapshot{ID: 4, Active: true, ExpiresAt: "2026-10-01"}, lead: 24 * time.Hour, want: LifecycleOK, expires: "2026-10-01"},
+		{name: "expired", tok: TokenSnapshot{ID: 4, Active: true, ExpiresAt: "2026-09-01"}, want: LifecycleExpired, expires: "2026-09-01"},
+		{name: "revoked", tok: TokenSnapshot{ID: 4, Active: true, Revoked: true, ExpiresAt: "2027-01-01"}, want: LifecycleRevoked, expires: "2027-01-01"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := RoleReport{Name: RoleCoder}
+			AnnotateTokenLifecycle(&rr, tc.tok, now, tc.lead)
+			assert.Equal(t, tc.want, rr.Lifecycle)
+			assert.Equal(t, tc.expires, rr.ExpiresAt)
+			assert.Equal(t, []int{tc.tok.ID}, rr.TokenIDs)
+			assert.False(t, rr.Overlapping)
+		})
+	}
+	t.Run("zero now uses the current time", func(t *testing.T) {
+		rr := RoleReport{Name: RoleCoder}
+		AnnotateTokenLifecycle(&rr, TokenSnapshot{ID: 4, Active: true, ExpiresAt: "2000-01-01"}, time.Time{}, 0)
+		assert.Equal(t, LifecycleExpired, rr.Lifecycle)
+	})
+	t.Run("re-annotating discards earlier overlap, expiry, and token IDs", func(t *testing.T) {
+		rr := RoleReport{Name: RoleCoder}
+		annotateRoleLifecycle(&rr, []TokenSnapshot{
+			{ID: 1, Active: true, ExpiresAt: "2027-01-01"},
+			{ID: 2, Active: true, ExpiresAt: "2027-02-01"},
+		}, now, DefaultRotationLead)
+		require.Equal(t, LifecycleOverlapping, rr.Lifecycle, "setup: want an overlapping report")
+		require.True(t, rr.Overlapping)
+
+		AnnotateTokenLifecycle(&rr, TokenSnapshot{ID: 7, Active: true, ExpiresAt: "2027-01-01"}, now, 0)
+		assert.Equal(t, LifecycleOK, rr.Lifecycle)
+		assert.False(t, rr.Overlapping)
+		assert.Equal(t, "2027-01-01", rr.ExpiresAt)
+		assert.Equal(t, []int{7}, rr.TokenIDs)
+
+		AnnotateTokenLifecycle(&rr, TokenSnapshot{ID: 8, Active: true}, now, 0)
+		assert.Equal(t, LifecycleOK, rr.Lifecycle)
+		assert.Empty(t, rr.ExpiresAt, "no stale expiry")
+		assert.Equal(t, []int{8}, rr.TokenIDs)
+	})
+}
