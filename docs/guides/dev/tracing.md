@@ -58,14 +58,16 @@ returns a noop tracer. Telemetry failures never affect the run.
 ```
 telemetry.Setup()
 │
+├── InstallOTELRedactingLogger()                ← redact OTel SDK internal logs (prevent header leaks)
 ├── OTEL_SDK_DISABLED check   → noop tracer if "true"
 ├── os.OpenFile(jsonl)        → noop tracer on error
 │
 ├── SimpleSpanProcessor(fileExporter)           ← always present
 │
 └── OTEL_EXPORTER_OTLP_*ENDPOINT check
-    ├── validateEndpoints()   → stderr warning, skip
-    ├── newOTLPExporter()     → stderr warning, skip
+    ├── validateEndpoints()     → stderr warning, skip
+    ├── ValidateOTLPHeaders()   → stderr warning, skip
+    ├── newOTLPExporter()       → stderr warning, skip
     └── parentSampledProcessor(BatchSpanProcessor(otlpExporter))
 ```
 
@@ -82,12 +84,29 @@ dropped.
 Result: the file exporter always writes all spans; the OTLP exporter
 respects upstream sampling.
 
-### Endpoint validation
+### Endpoint and header validation
 
-`validateEndpoints` rejects non-http(s) URLs and unsupported protocols
-before creating the exporter. A malformed endpoint produces a stderr
-warning; the SDK's default `localhost:4318` fallback is never used
-silently.
+`validateEndpoints` checks all non-empty endpoint variables
+(`OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`),
+rejecting non-http(s) URLs and unsupported protocols; passwords in URL userinfo
+are redacted from error messages.
+
+`ValidateOTLPHeaders` checks `OTEL_EXPORTER_OTLP_HEADERS` and
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS` to ensure headers strictly follow
+OTel `key=value` syntax:
+- Every non-empty comma-separated entry must contain an `=` separator.
+- Header keys must consist exclusively of RFC 7230 token characters.
+- Values must have valid URL percent-encoding.
+
+Malformed headers produce a value-free warning on stderr and skip remote
+OTLP export without failing the run. `ValidateOTLPHeaders` is enforced in `Setup`
+and `fullsend eval-measure`.
+
+Additionally, `InstallOTELRedactingLogger` installs a redacting `logr.LogSink`
+for SDK internal logging (`internal/global`). It preserves error messages on
+stderr while dropping `keysAndValues` and redacting `*url.Error` details so
+secrets are never echoed. Installed at CLI startup (`PersistentPreRun`),
+`telemetry.Setup`, and shared exporter constructors.
 
 ## Span lifecycle in run.go
 

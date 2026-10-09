@@ -554,6 +554,27 @@ func TestExportOTLPScores_ExportsMoreThanDefaultQueueSize(t *testing.T) {
 	assert.Equal(t, count, got)
 }
 
+func TestExportOTLPScores_ValidatesHeaders(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "Authorization: Basic CANARY_SECRET_12345") // gitleaks:allow
+
+	results := []EvaluationResult{
+		{
+			Name: "trace_fitness", Label: LabelPass,
+			TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
+			Version: "em-001@1", Value: 1,
+		},
+	}
+
+	err := ExportOTLPScores(context.Background(), results, "test-1.2.3")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "otlp header validation")
+	assert.NotContains(t, err.Error(), "CANARY_SECRET_12345")
+	assert.Empty(t, sink.allSpans(), "malformed headers must skip remote export")
+}
+
 func explanationFromSink(t *testing.T, sink *scoreOTLPSink) string {
 	t.Helper()
 	reqs := sink.allSpans()
