@@ -416,6 +416,156 @@ For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
 
+## Using an inference gateway (experimental)
+
+> **Experimental.** Behaviour may change. This section covers local runs only for now. Hosted (CI)
+> runs follow the [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) design and may
+> differ.
+
+On the [pi](../../runtimes/pi.md) runtime, an agent can reach its model through an
+OpenAI/Anthropic-compatible inference gateway (Praxis, LiteLLM, agentgateway, ...) instead of the
+provider's own API. fullsend loads the
+[pi-inference-gateway](https://github.com/fullsend-ai/pi-inference-gateway) extension (v0.1.0) for
+any model spec that starts with `gateway/`. One gateway can serve models on three APIs:
+
+| API | `api` value | Request |
+|---|---|---|
+| Chat Completions | `openai-completions` | `POST /v1/chat/completions` |
+| Responses | `openai-responses` | `POST /v1/responses` |
+| Messages | `anthropic-messages` | `POST /v1/messages` |
+
+### Prerequisites
+
+- Everything earlier in this guide: the CLI, OpenShell, a GitHub token and the fleet clone.
+- A sandbox image that includes the extension
+  ([#8271](https://github.com/fullsend-ai/fullsend/pull/8271)).
+- Your gateway's base URL, for example `https://gateway.example.com`.
+- A key for that gateway.
+- The id of each model you want to use, as your gateway names it, and the API it is served on.
+
+### Example: three models on three APIs
+
+The steps below set up one gateway with three models, one per API:
+
+| Model spec | Model | API |
+|---|---|---|
+| `gateway/example-open-model` | An open-weight model | Chat Completions |
+| `gateway/gpt-5.6-luna` | A GPT model | Responses |
+| `gateway/claude-sonnet-5` | A Claude model on a Vertex-backed gateway | Messages |
+
+Replace each id with the one your gateway serves.
+
+### Steps
+
+1. **Put the gateway URL and key in an env file.**
+
+   ```bash
+   # fullsend-gateway.env
+   INFERENCE_GATEWAY_BASE_URL=https://gateway.example.com
+   INFERENCE_GATEWAY_API_KEY=...
+   ```
+
+   Pass this file to `fullsend run` with `--env-file`. Never put the key in the harness YAML, under
+   `env.sandbox`, or in a file the harness copies into the sandbox: the sandbox's `.env` is
+   agent-writable. The runner owns every `INFERENCE_GATEWAY_*` variable. It drops any that the
+   sandbox's `.env` sets, refuses a plugin `env` that names one, and exports only its own values.
+   The agent sees a placeholder instead of your key. Without `INFERENCE_GATEWAY_BASE_URL`, the
+   runner refuses to start a `gateway/` run.
+
+2. **Declare every model in an `inference-gateway.json` file.** The sandbox runs pi with
+   `PI_OFFLINE=1`, so the extension never asks the gateway for its model list (`GET /v1/models`).
+   Each model you use must appear here with its `api`, even one the gateway lists:
+
+   ```json
+   {
+     "providers": {
+       "gateway": {
+         "baseUrlEnv": "INFERENCE_GATEWAY_BASE_URL",
+         "models": {
+           "example-open-model": {
+             "api": "openai-completions",
+             "contextWindow": 131072,
+             "maxTokens": 16384
+           },
+           "gpt-5.6-luna": { "api": "openai-responses" },
+           "claude-sonnet-5": {
+             "api": "anthropic-messages",
+             "compat": { "supportsMidConvoEffort": false }
+           }
+         }
+       }
+     }
+   }
+   ```
+
+   - `baseUrlEnv` tells the extension to use the URL the runner exports. The extension skips a
+     provider entry that has neither `baseUrl` nor `baseUrlEnv`.
+   - Leave out every credential key (`apiKeyEnv`, `tokenFile`, `passwordEnv`, `passwordFile`). The
+     runner supplies the key and refuses a file that names a credential source.
+   - **Pick the API per model.** A model's `api` always wins. Without one, the extension's
+     [routing rules](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.0/docs/routing.md)
+     choose, and its [Which API to pick](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.0/docs/routing.md#which-api-to-pick)
+     table lists the API to use for each model family. In short, GPT uses Responses, Claude
+     uses Messages, and most open-weight models use Chat Completions.
+   - **Claude on a Vertex-backed gateway** needs `"compat": { "supportsMidConvoEffort": false }` on
+     each Claude model. Without it, requests fail with 400
+     `messages.1.output_config: Extra inputs are not permitted`. Some cloud projects also need
+     `"supportsStrictTools": false` in the same `compat` object.
+   - **Open-weight models** usually need `contextWindow` and `maxTokens` set to your deployment's
+     limits. The values above are placeholders.
+
+   Other per-model keys are in the extension's
+   [configuration reference](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.0/docs/configuration.md#config-file)
+   and [`compat` reference](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.0/docs/compat.md).
+
+3. **Hand the file to the runner.** pi reads it as `/sandbox/pi-config/inference-gateway.json`. You
+   cannot place it there yourself: `host_files` refuses any destination under `/sandbox/pi-config`
+   (`is reserved for the runner`), and nothing inside the sandbox may write it. Set it through the
+   config key the [#7480](https://github.com/fullsend-ai/fullsend/issues/7480) route adds under
+   `inference:` in `.fullsend/config.yaml`. The runner seeds the file and checks that it is
+   unchanged before and after the sandbox's `.env` is sourced.
+
+4. **Allow egress to the gateway.** Add `gateway` to the harness's `providers:` list. Its profile
+   lets pi's `node` binary send `POST` requests to the three API paths on the gateway host, with
+   bearer auth, and nothing else.
+
+5. **Run with a `gateway/` model.**
+
+   ```bash
+   fullsend run triage \
+     --fullsend-dir /tmp/fullsend-agents/ \
+     --target-repo /tmp/target-repo/ \
+     --forge github \
+     --env-file fullsend-gateway.env \
+     --env-file fullsend-triage.env \
+     --runtime pi \
+     --model gateway/claude-sonnet-5 \
+     --no-post-script
+   ```
+
+   Repeat with `--model gateway/gpt-5.6-luna` and `--model gateway/example-open-model` to try the
+   other two APIs. Always write the full `gateway/<model>`: a bare id gets the
+   `FULLSEND_PI_PROVIDER` prefix (default `anthropic-vertex`) and never reaches the gateway.
+
+### What success looks like
+
+The run's model line names the gateway model you selected, and the agent writes a result that
+passes schema validation. `metrics.json` in the run directory records the model that served the
+run.
+
+> Not yet executed: waits on the #7480 route.
+
+### Troubleshooting the gateway
+
+| Error | Cause | Fix |
+|---|---|---|
+| The run is refused before the sandbox starts because no gateway base URL is set. Exact text: not yet executed, waits on the #7480 route | `INFERENCE_GATEWAY_BASE_URL` is missing from the runner's environment | Add it to the env file you pass with `--env-file` |
+| The `inference-gateway.json` guard stops the run. Exact text: not yet executed, waits on the #7480 route | The file names a credential source, or something in the sandbox changed it | Remove `apiKeyEnv`, `tokenFile`, `passwordEnv` and `passwordFile` from the file. If you did not change it, treat it as tampering |
+| `Model "<id>" not found for provider "gateway"` | The model is not in `inference-gateway.json`, or its entry has no `api`. Under `PI_OFFLINE=1` the gateway's own list is never read | Add the model with its `api` ([step 2](#steps)) |
+| Egress to the gateway host is denied. Exact text: not yet executed, waits on the #7480 route. `grep DENIED <run-dir>/logs/openshell-sandbox.log` names the host | The harness does not declare the `gateway` provider, or the request went to a path or host the profile does not allow | Add `gateway` to `providers:` ([step 4](#steps)) and check the host in `INFERENCE_GATEWAY_BASE_URL` |
+| Claude: `400 ... messages.1.output_config: Extra inputs are not permitted` | The gateway's Claude backend (for example Vertex) rejects pi's mid-conversation effort message | Set `"compat": { "supportsMidConvoEffort": false }` on that model |
+| Claude: `400 ... disallowed feature ...` naming structured output or strict tools | Your cloud project restricts this feature for partner models | Set `"compat": { "supportsStrictTools": false }` on that model |
+
 ## Run from a container
 
 Instead of downloading the fullsend binary and installing its host-side

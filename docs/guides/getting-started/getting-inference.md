@@ -95,3 +95,7 @@ Head over to [Configuring GitHub](configuring-github.md) to use your WIF provide
 For GitLab repositories, skip this provision output and follow
 [Configuring GitLab](configuring-gitlab.md) instead — GitLab inference credentials
 are written by `repos install --vertex-project`, not by this command.
+
+To run agents on the pi runtime through an OpenAI/Anthropic-compatible inference gateway instead,
+see [Using an inference gateway (experimental)](../user/running-agents-locally.md#using-an-inference-gateway-experimental).
+It covers local runs only for now.
