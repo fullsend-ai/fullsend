@@ -41,6 +41,42 @@ type Options struct {
 	// credentials the harness asks for and whether the model must be an
 	// OpenAI id.
 	Runtime string
+	// Workflow is the harness workflow: field (--workflow-source and
+	// --workflow, ADR 0130), or nil.
+	Workflow *harness.WorkflowSpec
+}
+
+// PlaceholderTreeHash is the #sha256= value ParseWorkflow writes for a
+// remote source given without one: 64 zeros, which no tree hashes to, so
+// `fullsend lock` fails and prints the tree hash the commit has.
+var PlaceholderTreeHash = strings.Repeat("0", 64)
+
+// ParseWorkflow reads --workflow-source and --workflow (the workflow
+// name) into the harness workflow: field. A remote source without a
+// #sha256= pin gets PlaceholderTreeHash, which the caller explains. The
+// result is checked like the field itself; which runtime it suits is
+// Options.Validate's job.
+func ParseWorkflow(source, name string) (*harness.WorkflowSpec, error) {
+	if source == "" {
+		if name != "" {
+			return nil, fmt.Errorf("--workflow %s needs --workflow-source (spec key workflow_source), the workflow-definition repository: a GitHub tree URL at a commit sha or a path in this repository", name)
+		}
+		return nil, nil
+	}
+	if harness.IsURL(source) && !strings.Contains(source, "#") {
+		source += "#sha256=" + PlaceholderTreeHash
+	}
+	spec := &harness.WorkflowSpec{Source: source, Name: name}
+	if err := harness.ValidateWorkflowSpec(spec); err != nil {
+		return nil, err
+	}
+	return spec, nil
+}
+
+// HasPlaceholderPin reports whether the workflow source carries
+// PlaceholderTreeHash, so the user still has to pin the real tree hash.
+func (o Options) HasPlaceholderPin() bool {
+	return o.Workflow != nil && strings.HasSuffix(o.Workflow.Source, "#sha256="+PlaceholderTreeHash)
 }
 
 // Validate checks every field that reaches a generated file, and does so
@@ -89,6 +125,27 @@ func (o *Options) Validate() error {
 	}
 	if o.Image == "" {
 		return fmt.Errorf("image must not be empty")
+	}
+	if o.Workflow != nil {
+		if err := harness.ValidateWorkflowSpec(o.Workflow); err != nil {
+			return err
+		}
+		// ADR 0130 rule 3: claude starts a Claude plugin's workflow by
+		// name, pi loads a pi extension that takes no name, and fullsend
+		// run refuses workflow: on any other runtime, so the generator
+		// does too.
+		switch o.Runtime {
+		case "", "claude":
+			if o.Workflow.Name == "" {
+				return fmt.Errorf("--workflow-source needs --workflow <name> (spec key workflow) on the claude runtime: the workflows/<name>.js the runner starts; for a pi extension definition pass --runtime pi")
+			}
+		case "pi":
+			if o.Workflow.Name != "" {
+				return fmt.Errorf("--workflow %s is set, but on the pi runtime the definition is a pi extension, which takes no workflow name; drop --workflow and keep --workflow-source, or pass --runtime claude", o.Workflow.Name)
+			}
+		default:
+			return fmt.Errorf("a workflow definition runs on claude or pi, and this agent resolves to %s: pass --runtime claude or --runtime pi, or drop --workflow-source", o.Runtime)
+		}
 	}
 	return nil
 }
