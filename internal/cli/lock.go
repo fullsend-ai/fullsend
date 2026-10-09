@@ -765,9 +765,9 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	var providers []resolve.ResolvedProvider
 
 	for _, lockDep := range entry.Dependencies {
-		// Agent source URLs are validated against the org-level allowlist
+		// Agent source URLs are validated against the config-level allowlist
 		// during lock creation, not the harness's own AllowedRemoteResources.
-		// Skip both harness-level and org-level allowlist checks for
+		// Skip both harness-level and config-level allowlist checks for
 		// agent_source entries — they were validated at lock creation time.
 		if lockDep.Field != "agent_source" &&
 			h.MatchingAllowedPrefix(lockDep.URL) == "" &&

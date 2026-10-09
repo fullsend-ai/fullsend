@@ -924,7 +924,7 @@ func (h *Harness) Scripts() []string {
 
 // ValidateAllowedRemoteResources checks that each entry in AllowedRemoteResources
 // is a valid HTTPS URL ending with "/" and is covered by at least one entry in the
-// org-level allowlist. Org allowlist entries are also validated: each must be a
+// config-level allowlist. Allowlist entries are also validated: each must be a
 // valid HTTPS URL ending with "/" and must not contain double-encoded sequences.
 func (h *Harness) ValidateAllowedRemoteResources(orgAllowlist []string) error {
 	for i, orgEntry := range orgAllowlist {

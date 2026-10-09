@@ -1086,6 +1086,150 @@ func TestPinAgentURL_GitHubBranchRefCapture(t *testing.T) {
 	assert.Contains(t, output, "Resolved to "+resolvedSHA[:12], "should show resolved SHA")
 }
 
+func TestPinAgentURL_BranchWithSlash(t *testing.T) {
+	// A branch name containing "/" makes the blob URL ambiguous. The
+	// first segment ("user") is not a branch, so the next candidate
+	// ("user/feature") must be probed and the remaining path used.
+	resolvedSHA := "a9a8a7a6a5a4a3a2a1a0b9b8b7b6b5b4b3b2b1b0"
+
+	origPolicy := fetch.DefaultPolicy
+	fetch.DefaultPolicy = fetch.FetchPolicy{Offline: true}
+	defer func() { fetch.DefaultPolicy = origPolicy }()
+
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{FullName: "org/repo", DefaultBranch: "main"}}
+	client.BranchRefs["org/repo/main"] = "0000000000000000000000000000000000000000"
+	client.BranchRefs["org/repo/user/feature"] = resolvedSHA
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	_, _, err := pinAgentURL(context.Background(),
+		"https://github.com/org/repo/blob/user/feature/dir/agent.yaml",
+		client, printer)
+	// Fetch fails (offline policy) but the pinned URL is in the error.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "https://raw.githubusercontent.com/org/repo/"+resolvedSHA+"/dir/agent.yaml")
+
+	output := buf.String()
+	assert.Contains(t, output, `Using branch "user/feature"`)
+	assert.Contains(t, output, "Resolved to "+resolvedSHA[:12])
+	assert.NotContains(t, output, "falling back to default branch")
+}
+
+func TestPinAgentURL_UnresolvedRefFetchErrorExplainsFallback(t *testing.T) {
+	mainSHA := "b9b8b7b6b5b4b3b2b1b0a9a8a7a6a5a4a3a2a1a0"
+
+	origPolicy := fetch.DefaultPolicy
+	fetch.DefaultPolicy = fetch.FetchPolicy{Offline: true}
+	defer func() { fetch.DefaultPolicy = origPolicy }()
+
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{FullName: "org/repo", DefaultBranch: "main"}}
+	client.BranchRefs["org/repo/main"] = mainSHA
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	_, _, err := pinAgentURL(context.Background(),
+		"https://github.com/org/repo/blob/user/typo/dir/agent.yaml",
+		client, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `no branch matching "user" was found in org/repo`)
+	assert.Contains(t, err.Error(), `default branch "main" was used`)
+	assert.Contains(t, err.Error(), "pin it to a commit SHA")
+	assert.Contains(t, buf.String(), "falling back to default branch")
+}
+
+func TestResolveBranchAndPath(t *testing.T) {
+	sha := "c9c8c7c6c5c4c3c2c1c0b9b8b7b6b5b4b3b2b1b0"
+
+	tests := []struct {
+		name       string
+		branches   []string
+		ref        string
+		path       string
+		wantBranch string
+		wantPath   string
+		wantErr    bool
+	}{
+		{
+			name:       "single segment branch",
+			branches:   []string{"main"},
+			ref:        "main",
+			path:       "harness/agent.yaml",
+			wantBranch: "main",
+			wantPath:   "harness/agent.yaml",
+		},
+		{
+			name:       "branch with one slash",
+			branches:   []string{"user/feature"},
+			ref:        "user",
+			path:       "feature/dir/agent.yaml",
+			wantBranch: "user/feature",
+			wantPath:   "dir/agent.yaml",
+		},
+		{
+			name:       "branch with two slashes",
+			branches:   []string{"a/b/c"},
+			ref:        "a",
+			path:       "b/c/agent.yaml",
+			wantBranch: "a/b/c",
+			wantPath:   "agent.yaml",
+		},
+		{
+			name: "last segment is never treated as part of the branch",
+			// The final path segment must remain the file path.
+			branches:   []string{"user/feature/agent.yaml"},
+			ref:        "user",
+			path:       "feature/agent.yaml",
+			wantBranch: "user/feature",
+			wantErr:    true,
+		},
+		{
+			name:       "no candidate resolves",
+			ref:        "missing",
+			path:       "agent.yaml",
+			wantBranch: "missing",
+			wantErr:    true,
+		},
+		{
+			name:       "empty path",
+			ref:        "missing",
+			wantBranch: "missing",
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := forge.NewFakeClient()
+			for _, b := range tt.branches {
+				client.BranchRefs["org/repo/"+b] = sha
+			}
+
+			branch, path, gotSHA, err := resolveBranchAndPath(context.Background(), client, "org", "repo", tt.ref, tt.path)
+			assert.Equal(t, tt.wantBranch, branch)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.True(t, forge.IsNotFound(err), "expected not-found error, got %v", err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantPath, path)
+			assert.Equal(t, sha, gotSHA)
+		})
+	}
+}
+
+func TestResolveBranchAndPath_TransientErrorStopsProbing(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors["GetBranchRef"] = fmt.Errorf("HTTP 500: internal server error")
+
+	branch, _, _, err := resolveBranchAndPath(context.Background(), client, "org", "repo", "user", "feature/agent.yaml")
+	require.Error(t, err)
+	assert.False(t, forge.IsNotFound(err))
+	assert.Equal(t, "user", branch, "should stop at the first candidate on a non-not-found error")
+}
+
 func TestRunAgentUpdate_GitHubURLUsesRawURL(t *testing.T) {
 	newSHA := "f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1"
 	newContent := []byte("role: triage\nupdated: true\n")

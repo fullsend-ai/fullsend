@@ -1699,7 +1699,7 @@ base: https://example.com/base.yaml#sha256=0000000000000000000000000000000000000
 	// No OrgAllowlist and allowSelfAllowlist is false (default)
 	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL base requires org-level allowed_remote_resources")
+	assert.Contains(t, err.Error(), "URL base requires config-level allowed_remote_resources")
 }
 
 func TestLoadWithBase_URLBase_MissingHash(t *testing.T) {

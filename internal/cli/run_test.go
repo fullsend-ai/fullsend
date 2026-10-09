@@ -3351,6 +3351,111 @@ func TestAgentTimedOut(t *testing.T) {
 	}
 }
 
+func TestIsBehavioralExitSubtype(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		subtype string
+		want    bool
+	}{
+		{"max turns", "error_max_turns", true},
+		{"max budget", "error_max_budget_usd", true},
+		{"legacy max cost spelling", "error_max_cost", false},
+		{"success", "success", false},
+		{"unknown error", "error_unknown", false},
+		{"empty string", "", false},
+		{"partial match suffix", "error_max_turns_extra", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := isBehavioralExitSubtype(tt.subtype)
+			assert.Equal(t, tt.want, got, "isBehavioralExitSubtype(%q)", tt.subtype)
+		})
+	}
+}
+
+func TestClassifyTranscriptError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name             string
+		subtype          string
+		exitCode         int
+		wantExitReason   string
+		wantOverrideExit bool
+		wantWarnContains string
+	}{
+		{
+			name:             "behavioral exit max turns",
+			subtype:          "error_max_turns",
+			exitCode:         2,
+			wantExitReason:   "error_max_turns",
+			wantOverrideExit: false,
+			wantWarnContains: "Agent hit behavioral limit:",
+		},
+		{
+			name:             "behavioral exit max budget",
+			subtype:          "error_max_budget_usd",
+			exitCode:         1,
+			wantExitReason:   "error_max_budget_usd",
+			wantOverrideExit: false,
+			wantWarnContains: "Agent hit behavioral limit:",
+		},
+		{
+			name:             "behavioral exit with exit code 0",
+			subtype:          "error_max_turns",
+			exitCode:         0,
+			wantExitReason:   "error_max_turns",
+			wantOverrideExit: false,
+			wantWarnContains: "Agent hit behavioral limit:",
+		},
+		{
+			name:             "infra error with exit code 0",
+			subtype:          "error_unknown",
+			exitCode:         0,
+			wantExitReason:   "",
+			wantOverrideExit: true,
+			wantWarnContains: "Agent exited with code 0 but transcript contains error:",
+		},
+		{
+			name:             "non-behavioral error with non-zero exit",
+			subtype:          "error_unknown",
+			exitCode:         1,
+			wantExitReason:   "",
+			wantOverrideExit: false,
+			wantWarnContains: "Transcript contains error:",
+		},
+		{
+			name:             "empty subtype with exit code 0",
+			subtype:          "",
+			exitCode:         0,
+			wantExitReason:   "",
+			wantOverrideExit: true,
+			wantWarnContains: "Agent exited with code 0 but transcript contains error:",
+		},
+		{
+			name:             "empty subtype with non-zero exit",
+			subtype:          "",
+			exitCode:         1,
+			wantExitReason:   "",
+			wantOverrideExit: false,
+			wantWarnContains: "Transcript contains error:",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			outcome := classifyTranscriptError("test error msg", tt.subtype, tt.exitCode)
+			assert.Equal(t, tt.wantExitReason, outcome.exitReason,
+				"exitReason for subtype=%q exitCode=%d", tt.subtype, tt.exitCode)
+			assert.Equal(t, tt.wantOverrideExit, outcome.overrideExitCode,
+				"overrideExitCode for subtype=%q exitCode=%d", tt.subtype, tt.exitCode)
+			assert.Contains(t, outcome.warnMsg, tt.wantWarnContains,
+				"warnMsg for subtype=%q exitCode=%d", tt.subtype, tt.exitCode)
+		})
+	}
+}
+
 // writeValScript creates a validation script at dir/name that exits 0 if a
 // marker file named "pass" exists in the script's working directory, and
 // exits 1 otherwise. Returns the absolute path to the script.
@@ -4426,6 +4531,27 @@ func TestIterationTimedOut(t *testing.T) {
 	assert.True(t, iterationTimedOut(1, 18*time.Minute, timeout), "failed at 90 %")
 	assert.True(t, iterationTimedOut(-1, timeout, timeout), "killed at 100 %")
 	assert.False(t, iterationTimedOut(1, 3*time.Minute, timeout), "early exit with bad output")
+}
+
+// TestIterationTimedOutUnlessBehavioral pins that a recognized behavioral
+// limit exit is not presumed killed near the budget (#6877), while a killed
+// exit or a non-behavioral failure keeps the timeout treatment.
+func TestIterationTimedOutUnlessBehavioral(t *testing.T) {
+	t.Parallel()
+	const timeout = 30 * time.Minute
+	late := 28 * time.Minute
+	assert.False(t, iterationTimedOutUnlessBehavioral(2, late, timeout, "error_max_turns"), "behavioral exit at 93 %")
+	assert.False(t, iterationTimedOutUnlessBehavioral(1, late, timeout, "error_max_budget_usd"), "behavioral budget exit at 93 %")
+	assert.True(t, iterationTimedOutUnlessBehavioral(-1, timeout, timeout, "error_max_turns"), "killed exit stays a timeout")
+	assert.True(t, iterationTimedOutUnlessBehavioral(2, late, timeout, ""), "non-behavioral failure at 93 %")
+	assert.True(t, iterationTimedOutUnlessBehavioral(2, late, timeout, "error_unknown"), "unrecognized reason at 93 %")
+	assert.False(t, iterationTimedOutUnlessBehavioral(0, late, timeout, ""), "clean exit")
+
+	// With the behavioral exit not counted as a timeout, the run ends
+	// without a terminal error, so the post-script (guarded on runErr) runs.
+	timedOut := iterationTimedOutUnlessBehavioral(2, late, timeout, "error_max_turns")
+	assert.NoError(t, runTerminalError(false, false, timedOut, 1, late, timeout))
+	assert.NoError(t, runTerminalError(true, true, timedOut, 1, late, timeout))
 }
 
 // TestIterationEnvSourceLine pins the last line of .env: sourcing an absent

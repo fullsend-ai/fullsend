@@ -14,7 +14,9 @@ These problems exist because fullsend is not part of GitHub. A native system doe
 
 ### Cross-repo dispatch
 
-Fullsend uses a centralized `.fullsend` config repo as the hub for agent pipelines. When something happens in an enrolled repo (a PR is opened, an issue is filed), a shim workflow in that repo must dispatch an event to `.fullsend` so the agent pipeline can run. This requires:
+*(Historical — this section describes the per-org `.fullsend` config-repo model, which was removed with per-org installation ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md)). Per-repo installs run agents in the enrolled repository itself: its `fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` through `workflow_call` ([ADR 0033](../ADRs/0033-per-repo-installation-mode.md)), so there is no `.fullsend` hub repo and no dispatch PAT. The analysis is kept because it motivated that change.)*
+
+Fullsend used a centralized `.fullsend` config repo as the hub for agent pipelines. When something happens in an enrolled repo (a PR is opened, an issue is filed), a shim workflow in that repo must dispatch an event to `.fullsend` so the agent pipeline can run. This requires:
 
 - `workflow_dispatch` as the cross-repo trigger mechanism, because `workflow_call` would require the caller to have the App PEM ([ADR 0008](../ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md))
 - A fine-grained PAT (`FULLSEND_DISPATCH_TOKEN`) stored as an org secret with selected-repo visibility, so enrolled repos can trigger `.fullsend` workflows
@@ -125,7 +127,9 @@ Fullsend's SDLC pipeline is itself orchestrated natively via GitHub — labels a
 
 ### Org-wide configuration
 
-Fullsend creates a `.fullsend` config repo with `config.yaml`, normative specs, and centralized secrets. GitHub already provides org-level Actions policies, required workflows, organization rulesets, and org secrets with selected-repo visibility. A native system could leverage these directly rather than creating a parallel configuration layer.
+*(Historical — the central `.fullsend` config repo was removed with per-org installation ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md)); configuration now lives in each repository's `.fullsend/` directory.)*
+
+Fullsend created a `.fullsend` config repo with `config.yaml`, normative specs, and centralized secrets. GitHub already provides org-level Actions policies, required workflows, organization rulesets, and org secrets with selected-repo visibility. A native system could leverage these directly rather than creating a parallel configuration layer.
 
 ## The trade-offs of nativeness
 

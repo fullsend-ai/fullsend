@@ -210,7 +210,7 @@ Mode is inferred from `PER_REPO_WIF_REPOS` — there is no separate trust-mode f
 - **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
 - **mint enroll**: Succeeds without changing mint configuration (repository registration is unnecessary); **mint unenroll** for individual repositories is not supported in public mode
 
-**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `PER_REPO_WIF_REPOS=*` and permissive WIF together; in tight mode (default), `mint deploy` provisions an org-scoped WIF provider and `mint enroll` creates a dedicated repo-scoped WIF provider for each enrolled repository. Redeploys must match the mint mode (`--public` for public, omit for tight).
+**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `PER_REPO_WIF_REPOS=*` and permissive WIF together; in tight mode (default), `mint deploy` provisions the shared WIF provider with a placeholder-only condition (it does not scope the provider to any org) and `mint enroll` creates a dedicated repo-scoped WIF provider for each enrolled repository. Redeploys must match the mint mode (`--public` for public, omit for tight).
 
 **Standalone mint (JWKS verification):** `cmd/mint` uses `JWKSVerifier` — direct GitHub JWKS signature checks with no STS or WIF. Public mode is fully determined by `PER_REPO_WIF_REPOS` and workflow provenance in `mintcore`; WIF provisioning is not applicable.
 
@@ -306,7 +306,7 @@ During installation, the GCF provisioner creates:
 1. **Service Account** — For the Cloud Function identity
 2. **WIF Pool** — `fullsend-inference` for inference, `fullsend-pool` for mint
 3. **WIF Provider** — Maps GitHub OIDC claims to GCP attributes
-4. **IAM Bindings** — Grants `roles/aiplatform.user` to federated identities
+4. **IAM Bindings** — Grants `roles/aiplatform.user` to federated identities (created only by inference provisioning, `ProvisionWIF` / `fullsend inference provision`; mint deployment does not create these bindings)
 5. **Per-repo providers** (per-repo mode) — Scoped WIF provider per repository via `mintcore.BuildRepoProviderID()` (GitHub only; GitLab uses a shared `gitlab-oidc` provider scoped via attribute conditions on the WIF pool)
 
 ---
@@ -438,12 +438,6 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  │ Provider          │ OIDC issuer:                             │
 │  │                   │   token.actions.githubusercontent.com    │
 │  │                   │ (skip if exists)                         │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
-│  │ Grant Agent       │ roles/aiplatform.user                    │
-│  │ Platform access   │ on the inference project                 │
-│  │ to federated IDs  │                                          │
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │

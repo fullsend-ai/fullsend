@@ -119,7 +119,7 @@ type Config struct {
 	WIFPoolName       string // default: "fullsend-pool"
 	WIFProvider       string // default: "github-oidc"
 	GitHubOrgs        []string
-	Repo              string // per-repo mode: "owner/repo"; empty = per-org
+	Repo              string // "owner/repo" to register/scope WIF for one repo; empty = no repo registration (Provision) or org-scoped WIF (inference ProvisionWIF)
 	FunctionSourceDir string // path to Cloud Function source directory
 
 	// AgentPEMs maps role → PEM private key data for all agent Apps.
@@ -521,8 +521,8 @@ func (p *Provisioner) verifyMintURL(ctx context.Context, expectedURL string) err
 }
 
 // RegisterPerRepoWIF adds a repo to the mint's PER_REPO_WIF_REPOS env var
-// so the mint routes OIDC tokens from that repo to a dedicated WIF provider
-// instead of the org-level default. Idempotent — skips repos already listed.
+// so the mint routes OIDC tokens from that repo to a dedicated WIF provider.
+// Idempotent — skips repos already listed.
 // Not safe for concurrent calls — run per-repo installs sequentially when
 // sharing a mint.
 func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error {
@@ -576,12 +576,15 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 // When MintURL is empty, deploys the full mint infrastructure:
 //  1. Look up project number
 //  2. Create/verify service account
-//  3. Create/verify WIF pool + provider
-//  4. Grant Agent Platform access to each org's WIF principalSet (direct WIF)
-//  5. Store all agent PEMs in Secret Manager
-//  6. Grant SA access to all role secrets
-//  7. Deploy Cloud Function
+//  3. Create/verify WIF pool + provider (no org entry is added to a new
+//     provider's condition, and an existing provider's condition is preserved)
+//  4. Store all agent PEMs in Secret Manager
+//  5. Grant SA access to all role secrets
+//  6. Deploy Cloud Function
+//  7. Register the repo for per-repo WIF when Repo is set
 //  8. Return FULLSEND_MINT_URL
+//
+// No org-level Agent Platform grants are created or modified.
 //
 // When MintURL is set, reuses an existing mint:
 //  1. Store all agent PEMs in Secret Manager
@@ -732,41 +735,16 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		return nil, fmt.Errorf("creating service account: %w", err)
 	}
 
-	// Step 2: Create/verify WIF pool + provider with merged org list.
-	for _, org := range p.cfg.GitHubOrgs {
-		if strings.ContainsAny(org, `'"`) {
-			return nil, fmt.Errorf("invalid GitHub org name %q: contains quotes", org)
-		}
-	}
-
-	// Save the orgs from this install run before merging with existing orgs.
-	// PEMs and app IDs belong to the current run's apps and must only be
-	// stored under the installing orgs' secret/env-var keys.
-	installingOrgs := make([]string, len(p.cfg.GitHubOrgs))
-	copy(installingOrgs, p.cfg.GitHubOrgs)
-
-	wifResult, err := p.ensureWIFPoolAndProvider(ctx, installingOrgs)
+	// Step 2: Create/verify the WIF pool + shared provider. Mint deployment
+	// never adds the installing owner to the provider condition and never
+	// grants org-level Agent Platform access; existing provider state is
+	// preserved as-is. Per-repo callers authenticate through per-repo
+	// providers registered via PER_REPO_WIF_REPOS.
+	wifResult, err := p.ensureMintWIFPoolAndProvider(ctx)
 	if err != nil {
 		return nil, err
 	}
 	projectNumber := wifResult.projectNumber
-
-	// Step 3: Grant Agent Platform access to each installing org's .fullsend repo
-	// at the project level (direct WIF — no intermediate service account).
-	// IAM policy changes can take up to 7 minutes to propagate.
-	iamGrantCount := 0
-	if !p.cfg.PublicMint {
-		for _, org := range installingOrgs {
-			if org == PlaceholderOrg {
-				continue
-			}
-			if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
-				return nil, err
-			}
-			iamGrantCount++
-		}
-	}
-	log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", iamGrantCount)
 
 	// Determine if code deployment is needed. When the function already
 	// exists and is active with the same source hash, skip the code deploy
@@ -1209,15 +1187,57 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 	return &wifMergeResult{projectNumber: projectNumber}, nil
 }
 
-// GrantOrgVertexAIAccess grants roles/aiplatform.user to an org's .fullsend
-// repo principal so that enrolled org workflows can call Agent Platform.
-func (p *Provisioner) GrantOrgVertexAIAccess(ctx context.Context, org string) error {
+// ensureMintWIFPoolAndProvider creates or verifies the WIF pool and the shared
+// provider for mint deployment without writing org-scoped state:
+//   - A newly created provider gets the placeholder-only condition; the
+//     installing owner is not added.
+//   - An existing provider keeps its attribute condition exactly as-is
+//     (including any legacy org entries). It is still re-applied so audiences
+//     and enabled state converge. An empty or whitespace-only existing
+//     condition is replaced with the placeholder-only condition.
+//   - Public mint mode keeps its permissive condition.
+//
+// Org-scoped inference WIF goes through ensureWIFPoolAndProvider instead.
+func (p *Provisioner) ensureMintWIFPoolAndProvider(ctx context.Context) (*wifMergeResult, error) {
 	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
 	if err != nil {
-		return fmt.Errorf("getting project number: %w", err)
+		return nil, fmt.Errorf("getting project number: %w", err)
 	}
 
-	return p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org)
+	if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
+		return nil, fmt.Errorf("creating WIF pool: %w", err)
+	}
+
+	existingProvider, getErr := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
+	if getErr != nil {
+		// A non-nil error means "unknown state" — proceeding could overwrite
+		// existing provider state. GetWIFProvider returns (nil, nil) for 404.
+		return nil, fmt.Errorf("reading existing WIF provider: %w", getErr)
+	}
+
+	var attrCondition string
+	switch {
+	case p.cfg.PublicMint:
+		attrCondition = buildPublicAttributeCondition()
+	case existingProvider != nil && strings.TrimSpace(existingProvider.AttributeCondition) != "":
+		attrCondition = existingProvider.AttributeCondition
+	default:
+		// New provider, or an existing one whose condition was emptied out of
+		// band: fall back to the placeholder-only condition rather than
+		// re-applying an empty (permissive) condition.
+		attrCondition = buildAttributeCondition([]string{PlaceholderOrg})
+	}
+
+	audiences := []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
+	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
+		IssuerURI:          oidcIssuer,
+		AttributeCondition: attrCondition,
+		AllowedAudiences:   audiences,
+	}); err != nil {
+		return nil, fmt.Errorf("creating WIF provider: %w", err)
+	}
+
+	return &wifMergeResult{projectNumber: projectNumber}, nil
 }
 
 func (p *Provisioner) grantOrgVertexAIAccessWithNumber(ctx context.Context, projectNumber, org string) error {
@@ -1236,51 +1256,6 @@ func (p *Provisioner) grantRepoVertexAIAccessWithNumber(ctx context.Context, pro
 		return fmt.Errorf("granting Agent Platform access for repo %s: %w", repo, err)
 	}
 	return nil
-}
-
-// EnsureOrgInWIFCondition adds an org to the org-level WIF provider's
-// attribute condition. Reads the existing condition, merges, and updates.
-// Strips the deploy-time placeholder (PlaceholderOrg) if present.
-// WARNING: read-modify-write without locking — concurrent calls may race.
-func (p *Provisioner) EnsureOrgInWIFCondition(ctx context.Context, org string) error {
-	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
-	if err != nil {
-		return fmt.Errorf("getting project number: %w", err)
-	}
-
-	existing, err := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
-	if err != nil {
-		return fmt.Errorf("reading WIF provider: %w", err)
-	}
-	if existing == nil {
-		return fmt.Errorf("WIF provider %s not found — run 'inference provision' or 'mint deploy' first", p.cfg.WIFProvider)
-	}
-
-	existingOrgs := parseConditionOrgs(existing.AttributeCondition)
-	merged := make(map[string]string)
-	for _, o := range existingOrgs {
-		if o != PlaceholderOrg {
-			merged[strings.ToLower(o)] = o
-		}
-	}
-	merged[strings.ToLower(org)] = org
-
-	allOrgs := make([]string, 0, len(merged))
-	for _, o := range merged {
-		allOrgs = append(allOrgs, o)
-	}
-	sort.Strings(allOrgs)
-
-	newCondition := buildAttributeCondition(allOrgs)
-	if newCondition == existing.AttributeCondition {
-		return nil
-	}
-
-	audiences := []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
-	return p.gcpAPI.UpdateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
-		AttributeCondition: newCondition,
-		AllowedAudiences:   audiences,
-	})
 }
 
 // RemoveOrgFromWIFCondition removes an org from the org-level WIF provider's

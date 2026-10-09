@@ -1,0 +1,27 @@
+cd '/sandbox/workspace/repo' &&
+readonly FULLSEND_CODEX_BIN="$(command -v codex)" &&
+test -n "$FULLSEND_CODEX_BIN" || { echo 'fullsend: codex not found on PATH' >&2; exit 127; } &&
+readonly FULLSEND_CODEX_PATH="$PATH" &&
+{ test -f '/sandbox/codex-config/config.toml' &&
+test -f '/sandbox/codex-config/openai-token.sh' &&
+[ "$(command -p sha256sum '/sandbox/codex-config/openai-token.sh' | command -p cut -d' ' -f1)" = '<sha256>' ] || { echo 'fullsend: codex config, hook adapter or auth script missing or modified; refusing to run' >&2; exit 97; }; } &&
+{ [ "$(command -p sha256sum '/sandbox/codex-config/config.toml' | command -p cut -d' ' -f1)" = '<sha256>' ] || { echo 'fullsend: codex config.toml or hooks.json is not the file fullsend wrote; refusing to run (a rewritten config can trust the target repo, which loads its .codex/ layer and its hooks)' >&2; exit 98; }; } &&
+command -p rm -f '/sandbox/codex-config/models_cache.json' &&
+case "${OPENAI_API_KEY:-}" in openshell:resolve:env:*OPENAI_API_KEY) ;; *) echo 'fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run codex' >&2; exit 1 ;; esac &&
+case "$OPENAI_API_KEY" in *[!A-Za-z0-9_:]*) echo 'fullsend: OPENAI_API_KEY placeholder has unexpected characters; refusing to run codex' >&2; exit 1 ;; esac &&
+command -p mkdir -p '/sandbox/codex-config' &&
+printf '%s' "$OPENAI_API_KEY" > '/sandbox/codex-config/openai-token.fullsend' &&
+command -p mv -f '/sandbox/codex-config/openai-token.fullsend' '/sandbox/codex-config/openai-token' &&
+. '/sandbox/workspace/.env' &&
+export CODEX_HOME=/sandbox/codex-config &&
+export PATH="$FULLSEND_CODEX_PATH" &&
+export FULLSEND_CODEX_PATH &&
+export FULLSEND_RUNTIME=codex &&
+unset OPENAI_BASE_URL OPENAI_API_KEY CODEX_API_KEY NODE_OPTIONS NODE_PATH PYTHONPATH PYTHONHOME PYTHONSTARTUP LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT &&
+unset -f test command grep cut wc sha256sum printf codex &&
+{ test -f '/sandbox/codex-config/config.toml' &&
+test -f '/sandbox/codex-config/openai-token.sh' &&
+[ "$(command -p sha256sum '/sandbox/codex-config/openai-token.sh' | command -p cut -d' ' -f1)" = '<sha256>' ] || { echo 'fullsend: codex config, hook adapter or auth script missing or modified; refusing to run' >&2; exit 97; }; } &&
+{ [ "$(command -p sha256sum '/sandbox/codex-config/config.toml' | command -p cut -d' ' -f1)" = '<sha256>' ] || { echo 'fullsend: codex config.toml or hooks.json is not the file fullsend wrote; refusing to run (a rewritten config can trust the target repo, which loads its .codex/ layer and its hooks)' >&2; exit 98; }; } &&
+command -p rm -f '/sandbox/codex-config/models_cache.json' &&
+printf '%s' 'Run the agent task' | "$FULLSEND_CODEX_BIN" exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -C '/sandbox/workspace/repo' --model 'gpt-5.6-luna' -c 'model_provider=fullsend-openai' -c 'approval_policy=never' -c 'sandbox_mode=danger-full-access' -c 'model_providers.fullsend-openai.base_url="https://api.openai.com/v1"' -c 'model_providers.fullsend-openai.auth.command="/sandbox/codex-config/openai-token.sh"' -o '/sandbox/codex-config/last-message.txt' -

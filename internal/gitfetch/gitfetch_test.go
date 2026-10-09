@@ -475,6 +475,172 @@ func TestFetchTree_SymlinkRejected(t *testing.T) {
 	}
 }
 
+// createSymlinkTestRepo is like createTestRepo but also commits the given
+// symlinks (repo-relative link path -> link target).
+func createSymlinkTestRepo(t *testing.T, files, links map[string]string) (repoURL, commitSHA string) {
+	t.Helper()
+	dir := t.TempDir()
+
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), testGitEnv()...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	run("init", "-b", "main")
+	run("config", "commit.gpgsign", "false")
+
+	for p, content := range files {
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, target := range links {
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, full); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+	}
+
+	run("add", "-f", ".")
+	run("commit", "-m", "initial")
+	return "file://" + dir, run("rev-parse", "HEAD")
+}
+
+func TestFetchTree_SymlinkSubpathComponent(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "shared", "SKILL.md"), []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		files     map[string]string
+		links     map[string]string
+		subpath   string
+		component string
+	}{
+		{
+			// The link and its target are both inside the sparse cone, so
+			// the component check, not the in-tree walk, refuses it.
+			name:      "symlink component inside checkout",
+			files:     map[string]string{"skills/review/real/SKILL.md": "# Review"},
+			links:     map[string]string{"skills/review/alias": "real"},
+			subpath:   "skills/review/alias",
+			component: "skills/review/alias",
+		},
+		{
+			// Cone-mode sparse checkout materializes the top-level link but
+			// not catalog/, so the component dangles in the checkout.
+			name:      "symlink component with target outside the cone",
+			files:     map[string]string{"catalog/review/SKILL.md": "# Review"},
+			links:     map[string]string{"skills": "catalog"},
+			subpath:   "skills/review",
+			component: "skills",
+		},
+		{
+			name:      "symlink outside checkout",
+			files:     map[string]string{"README.md": "hello"},
+			links:     map[string]string{"pkg/ext": outside},
+			subpath:   "pkg/ext/shared",
+			component: "pkg/ext",
+		},
+		{
+			name:      "dangling symlink",
+			files:     map[string]string{"README.md": "hello"},
+			links:     map[string]string{"skills/gone": "missing"},
+			subpath:   "skills/gone",
+			component: "skills/gone",
+		},
+		{
+			name:      "symlink loop",
+			files:     map[string]string{"README.md": "hello"},
+			links:     map[string]string{"loop/a": "b", "loop/b": "a"},
+			subpath:   "loop/a",
+			component: "loop/a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoURL, sha := createSymlinkTestRepo(t, tt.files, tt.links)
+
+			files, err := FetchTree(context.Background(), repoURL, tt.subpath, sha, "")
+			if err == nil {
+				t.Fatalf("expected error, got files %v", keys(files))
+			}
+			want := fmt.Sprintf("component %q is a symlink", tt.component)
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("expected error containing %q, got: %v", want, err)
+			}
+		})
+	}
+}
+
+func TestFetchTree_PlainDirSubpathWithUnrelatedSymlink(t *testing.T) {
+	repoURL, sha := createSymlinkTestRepo(t,
+		map[string]string{
+			"skills/review/SKILL.md":         "# Review",
+			"skills/review/scripts/check.sh": "#!/bin/sh",
+		},
+		map[string]string{"skills/alias": "review"},
+	)
+
+	files, err := FetchTree(context.Background(), repoURL, "skills/review", sha, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d: %v", len(files), keys(files))
+	}
+	if string(files["SKILL.md"]) != "# Review" {
+		t.Errorf("unexpected SKILL.md content: %q", files["SKILL.md"])
+	}
+	if string(files["scripts/check.sh"]) != "#!/bin/sh" {
+		t.Errorf("unexpected scripts/check.sh content: %q", files["scripts/check.sh"])
+	}
+}
+
+func TestResolveWalkRoot(t *testing.T) {
+	root := t.TempDir()
+	if _, err := resolveWalkRoot(root, "missing"); !errors.Is(err, errPathNotFound) {
+		t.Errorf("expected errPathNotFound, got: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveWalkRoot(root, "file/child"); !errors.Is(err, errPathNotFound) {
+		t.Errorf("expected errPathNotFound below a regular file, got: %v", err)
+	}
+	if _, err := resolveWalkRoot(filepath.Join(root, "nope"), ""); err == nil {
+		t.Error("expected error resolving missing checkout root")
+	}
+	got, err := resolveWalkRoot(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(root)
+	if got != want {
+		t.Errorf("resolveWalkRoot(root, \"\") = %q, want %q", got, want)
+	}
+}
+
 func TestRedactToken_URLEncoded(t *testing.T) {
 	token := "ghp_test+special/chars"
 	encoded := "ghp_test%2Bspecial%2Fchars"
@@ -696,4 +862,37 @@ func keys(m map[string][]byte) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestFetchTree_SymlinkedCheckoutRoot(t *testing.T) {
+	// The temp checkout is created under a symlinked parent, so the
+	// checkout root itself only resolves through a link.
+	base := t.TempDir()
+	realTmp := filepath.Join(base, "real")
+	if err := os.Mkdir(realTmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkTmp := filepath.Join(base, "link")
+	if err := os.Symlink(realTmp, linkTmp); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	t.Setenv("TMPDIR", linkTmp)
+
+	repoURL, sha := createSymlinkTestRepo(t,
+		map[string]string{"skills/review/SKILL.md": "# Review"},
+		map[string]string{"skills/alias": "review"},
+	)
+
+	files, err := FetchTree(context.Background(), repoURL, "skills/review", sha, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(files["SKILL.md"]) != "# Review" {
+		t.Errorf("unexpected files: %v", keys(files))
+	}
+
+	_, err = FetchTree(context.Background(), repoURL, "skills/alias", sha, "")
+	if err == nil || !strings.Contains(err.Error(), `component "skills/alias" is a symlink`) {
+		t.Errorf("expected the symlinked component to be refused, got: %v", err)
+	}
 }

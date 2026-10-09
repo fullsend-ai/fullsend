@@ -741,7 +741,7 @@ func TestRotateGitLabRoleCredentials_InvalidStateAndEmptyCreate(t *testing.T) {
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	fc := seededRoleClient(t, gitlabroles.RolePoller)
 	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"poller":{"unknown":true}}}`, true))
+		`{"roles":{"poller":{"lock_until":"not-a-time"}}}`, true))
 	tokens := &fakeTokens{emptyValue: map[string]bool{gitlabroles.PollerTokenName: true}}
 	tokens.seed(ProjectAccessToken{Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-10-01"})
 

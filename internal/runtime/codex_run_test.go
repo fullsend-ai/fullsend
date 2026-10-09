@@ -150,7 +150,8 @@ func TestBuildCodexRunCommand_OrderAndFlags(t *testing.T) {
 	assert.Equal(t, 4, strings.Count(cmd, "exit "+strconv.Itoa(codexHooksMissingExit)))
 	assert.Equal(t, 2, strings.Count(cmd, "exit "+strconv.Itoa(codexConfigTamperedExit)))
 	assert.Equal(t, 2, strings.Count(cmd, testRunnerHeldDigests.ConfigTOML))
-	assert.Equal(t, 2, strings.Count(cmd, testRunnerHeldDigests.HooksJSON))
+	// hooks.json's digest once more: the spawn guard's export carries it.
+	assert.Equal(t, 3, strings.Count(cmd, testRunnerHeldDigests.HooksJSON))
 
 	// models_cache.json is removed before .env is sourced and again after it,
 	// before launch.
@@ -752,4 +753,33 @@ func TestCodexSecurityEnv_BeatsTheAgentsEnvFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "api.github.com:443", string(out),
 		"the runner's value must survive an agent-written .env")
+}
+
+// TestBuildCodexRunCommand_ExportsSpawnDigests: the spawn digests are
+// exported after .env, before launch, and only when hooks are on.
+func TestBuildCodexRunCommand_ExportsSpawnDigests(t *testing.T) {
+	t.Parallel()
+
+	digests := testRunnerHeldDigests
+	digests.RoleFiles = map[string]string{"correctness": strings.Repeat("c", 64)}
+	params := RunParams{
+		RepoDir:           sandbox.SandboxWorkspace + "/repo",
+		HooksSettingsPath: "/sandbox/codex-config/hooks.json",
+	}
+	cmd := buildCodexRunCommand(params, "gpt-5.6-luna", "high", true, digests)
+
+	spawnExport := "export " + codexSpawnDigestsEnv + "=" + shellQuote(
+		"agents/correctness.toml:"+strings.Repeat("c", 64)+" hooks.json:"+digests.HooksJSON)
+	spawnAt := strings.Index(cmd, spawnExport)
+	require.Positive(t, spawnAt, "the spawn digests are not exported: %s", cmd)
+	assert.Greater(t, spawnAt, strings.Index(cmd, `. '`+sandbox.SandboxWorkspace+`/.env'`),
+		"exported after .env so nothing there can move it")
+	assert.Less(t, spawnAt, strings.Index(cmd, "exec --json"))
+	assert.Contains(t, cmd,
+		"export "+codexHookDigestsEnv+"="+shellQuote(codexHookDigestsValue(digests.HookScripts))+" && "+spawnExport,
+		"directly after the hook-script digests")
+	assert.Equal(t, 1, strings.Count(cmd, codexSpawnDigestsEnv), "one export, one variable")
+
+	off := buildCodexRunCommand(RunParams{RepoDir: "/repo"}, "gpt-5.6-luna", "", false, digests)
+	assert.NotContains(t, off, codexSpawnDigestsEnv, "no hooks, no guard, nothing to export")
 }

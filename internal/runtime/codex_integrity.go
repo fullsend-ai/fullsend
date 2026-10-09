@@ -65,6 +65,11 @@ type codexRunnerHeldDigestSet struct {
 	// is why the expected names travel with the digests rather than being
 	// re-derived from the binary's full set.
 	HookScripts map[string]string
+
+	// RoleFiles maps each registered sub-agent role name to the digest of
+	// its role file, agents/<name>.toml under CODEX_HOME. Empty until a
+	// Bootstrap registers roles; the spawn guard admits only these.
+	RoleFiles map[string]string
 }
 
 // codexEnvPair is one runner-owned environment assignment.

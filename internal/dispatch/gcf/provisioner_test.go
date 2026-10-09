@@ -276,7 +276,6 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 		"CreateWIFPool",
 		"GetWIFProvider",
 		"CreateWIFProvider",
-		"SetProjectIAMBinding",
 		"GetSecret",
 		"CreateSecret",
 		"AddSecretVersion",
@@ -292,12 +291,8 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 	require.Contains(t, vars, "FULLSEND_MINT_URL")
 	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
 
-	// Verify project IAM binding arguments.
-	require.Len(t, fake.projectIAMBindings, 1)
-	assert.Equal(t, "my-project", fake.projectIAMBindings[0].ProjectID)
-	assert.Equal(t, "roles/aiplatform.user", fake.projectIAMBindings[0].Role)
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "principalSet://iam.googleapis.com/")
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/test-org/.fullsend")
+	// Mint deployment creates no org-level Agent Platform grants.
+	assert.Empty(t, fake.projectIAMBindings)
 
 	// Verify PEMs were zeroed.
 	for role, pem := range p.cfg.AgentPEMs {
@@ -461,7 +456,7 @@ func TestProvisioner_Provision_SameHashAutoRoutesToExistingMint(t *testing.T) {
 	assert.Contains(t, fake.calls, "CreateServiceAccount")
 	assert.Contains(t, fake.calls, "CreateWIFPool")
 	assert.Contains(t, fake.calls, "CreateWIFProvider")
-	assert.Contains(t, fake.calls, "SetProjectIAMBinding")
+	assert.NotContains(t, fake.calls, "SetProjectIAMBinding")
 	// Code deploy skipped — auto-routed to provisionWithExistingMint for PEM + org registration.
 	assert.NotContains(t, fake.calls, "UploadFunctionSource")
 	assert.NotContains(t, fake.calls, "CreateFunction")
@@ -1169,7 +1164,7 @@ func TestProvisioner_Provision_GetWIFProviderError_FailsFast(t *testing.T) {
 
 	_, err := p.Provision(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reading existing WIF provider for merge")
+	assert.Contains(t, err.Error(), "reading existing WIF provider")
 }
 
 func TestProvisioner_Provision_CreateSecretError(t *testing.T) {
@@ -1208,26 +1203,11 @@ func TestProvisioner_Provision_AddSecretVersionError(t *testing.T) {
 	assert.Contains(t, err.Error(), "version error")
 }
 
-func TestProvisioner_Provision_SetProjectIAMBindingError(t *testing.T) {
+// Mint deployment must not create org-level Agent Platform grants, so a
+// project IAM failure injected into the fake is never hit.
+func TestProvisioner_Provision_NoOrgProjectIAMBindings(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["SetProjectIAMBinding"] = fmt.Errorf("project iam denied")
-
-	p := newTestProvisioner(Config{
-		ProjectID:         "test-project-id",
-		GitHubOrgs:        []string{"org"},
-		AgentPEMs:         singleRolePEMs(),
-		AgentAppIDs:       singleRoleAppIDs(),
-		FunctionSourceDir: fakeFunctionSourceDir(t),
-	}, fake)
-
-	_, err := p.Provision(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "granting Agent Platform access for org org")
-	assert.Contains(t, err.Error(), "project iam denied")
-}
-
-func TestProvisioner_Provision_MultiOrg_ProjectIAMBindings(t *testing.T) {
-	fake := newFakeGCFClient()
 	fake.functionInfoAfterCreate = &FunctionInfo{URI: "https://mint.run.app"}
 
 	p := newTestProvisioner(Config{
@@ -1241,11 +1221,8 @@ func TestProvisioner_Provision_MultiOrg_ProjectIAMBindings(t *testing.T) {
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 
-	require.Len(t, fake.projectIAMBindings, 2)
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/org-a/.fullsend")
-	assert.Contains(t, fake.projectIAMBindings[1].Member, "attribute.repository/org-b/.fullsend")
-	assert.Equal(t, "roles/aiplatform.user", fake.projectIAMBindings[0].Role)
-	assert.Equal(t, "roles/aiplatform.user", fake.projectIAMBindings[1].Role)
+	assert.NotContains(t, fake.calls, "SetProjectIAMBinding")
+	assert.Empty(t, fake.projectIAMBindings)
 }
 
 func TestProvisioner_Provision_SetIAMBindingError(t *testing.T) {
@@ -1753,13 +1730,127 @@ func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 
 // --- multi-org tests ---
 
-func TestProvisioner_Provision_MultiOrg_WIFCondition(t *testing.T) {
+// New mint provisioning must not add the installing owner(s) to the shared
+// provider condition: a newly created provider gets the placeholder only.
+func TestProvisioner_Provision_NewMint_NoOrgInWIFCondition(t *testing.T) {
+	for _, orgs := range [][]string{{"acme"}, {"acme", "widgetco"}} {
+		t.Run(strings.Join(orgs, ","), func(t *testing.T) {
+			fake := newFakeGCFClient()
+			fake.functionInfoAfterCreate = &FunctionInfo{URI: "https://mint.run.app"}
+
+			p := newTestProvisioner(Config{
+				ProjectID:         "test-project-id",
+				GitHubOrgs:        orgs,
+				AgentPEMs:         singleRolePEMs(),
+				AgentAppIDs:       singleRoleAppIDs(),
+				FunctionSourceDir: fakeFunctionSourceDir(t),
+			}, fake)
+
+			_, err := p.Provision(context.Background())
+			require.NoError(t, err)
+
+			assert.Contains(t, fake.calls, "CreateWIFProvider")
+			assert.Equal(t, "assertion.repository_owner == '"+PlaceholderOrg+"'",
+				fake.lastWIFProviderConfig.AttributeCondition)
+			for _, org := range orgs {
+				assert.NotContains(t, fake.lastWIFProviderConfig.AttributeCondition, org)
+			}
+			assert.Empty(t, fake.projectIAMBindings)
+
+			expectedIAMAudience := "https://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc"
+			assert.Equal(t, []string{"fullsend-mint", expectedIAMAudience},
+				fake.lastWIFProviderConfig.AllowedAudiences)
+		})
+	}
+}
+
+// Existing mints keep their org-level state exactly: the provider condition
+// is re-applied verbatim (placeholder, single/multi org, or legacy repo
+// scoped), the installing owner is not added, and no IAM grants change.
+func TestProvisioner_Provision_ExistingMint_PreservesWIFCondition(t *testing.T) {
+	conditions := map[string]string{
+		"single org":      "assertion.repository_owner == 'existing-org'",
+		"multi org":       "assertion.repository_owner in ['existing-a', 'existing-b']",
+		"placeholder":     "assertion.repository_owner == '" + PlaceholderOrg + "'",
+		"legacy repo":     "assertion.repository == 'existing-org/.fullsend'",
+		"unsorted/casing": "assertion.repository_owner in ['Zed', 'alpha']",
+	}
+	for name, condition := range conditions {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			fake.functionInfo = &FunctionInfo{
+				URI: "https://mint.run.app",
+				EnvVars: map[string]string{
+					"ALLOWED_ORGS": "existing-org",
+					"ROLE_APP_IDS": `{"coder":"999"}`,
+				},
+			}
+			fake.wifProvider = &WIFProviderInfo{AttributeCondition: condition}
+
+			p := newTestProvisioner(Config{
+				ProjectID:         "test-project-id",
+				GitHubOrgs:        []string{"new-org"},
+				AgentPEMs:         singleRolePEMs(),
+				AgentAppIDs:       singleRoleAppIDs(),
+				FunctionSourceDir: fakeFunctionSourceDir(t),
+			}, fake)
+
+			_, err := p.Provision(context.Background())
+			require.NoError(t, err)
+
+			assert.Equal(t, condition, fake.lastWIFProviderConfig.AttributeCondition)
+			assert.NotContains(t, fake.lastWIFProviderConfig.AttributeCondition, "new-org")
+			assert.Empty(t, fake.projectIAMBindings)
+			assert.NotContains(t, fake.calls, "SetProjectIAMBinding")
+			assert.NotContains(t, fake.calls, "UpdateWIFProvider")
+		})
+	}
+}
+
+// An existing provider with an empty or whitespace-only condition (only
+// possible through out-of-band edits) is repaired to the placeholder-only
+// condition on redeploy instead of being re-applied as-is.
+func TestProvisioner_Provision_ExistingMint_EmptyWIFConditionRepaired(t *testing.T) {
+	for name, condition := range map[string]string{"empty": "", "whitespace": "  \t\n"} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeGCFClient()
+			fake.functionInfo = &FunctionInfo{
+				URI: "https://mint.run.app",
+				EnvVars: map[string]string{
+					"ALLOWED_ORGS": "existing-org",
+					"ROLE_APP_IDS": `{"coder":"999"}`,
+				},
+			}
+			fake.wifProvider = &WIFProviderInfo{AttributeCondition: condition}
+
+			p := newTestProvisioner(Config{
+				ProjectID:         "test-project-id",
+				GitHubOrgs:        []string{"new-org"},
+				AgentPEMs:         singleRolePEMs(),
+				AgentAppIDs:       singleRoleAppIDs(),
+				FunctionSourceDir: fakeFunctionSourceDir(t),
+			}, fake)
+
+			_, err := p.Provision(context.Background())
+			require.NoError(t, err)
+
+			assert.Equal(t, "assertion.repository_owner == '"+PlaceholderOrg+"'",
+				fake.lastWIFProviderConfig.AttributeCondition)
+		})
+	}
+}
+
+// Per-repo enrollment on a newly deployed mint still registers the repo in
+// PER_REPO_WIF_REPOS without creating org-level WIF or IAM state.
+func TestProvisioner_Provision_NewMint_PerRepoEnrollment(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfoAfterCreate = &FunctionInfo{URI: "https://mint.run.app"}
+	fake.trafficEnvVars = map[string]string{"PER_REPO_WIF_REPOS": "other/repo"}
 
 	p := newTestProvisioner(Config{
 		ProjectID:         "test-project-id",
-		GitHubOrgs:        []string{"acme", "widgetco"},
+		GitHubOrgs:        []string{"acme"},
+		Repo:              "acme/widget",
 		AgentPEMs:         singleRolePEMs(),
 		AgentAppIDs:       singleRoleAppIDs(),
 		FunctionSourceDir: fakeFunctionSourceDir(t),
@@ -1768,35 +1859,77 @@ func TestProvisioner_Provision_MultiOrg_WIFCondition(t *testing.T) {
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 
-	assert.Equal(t, "assertion.repository_owner in ['acme', 'widgetco']",
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Equal(t, "other/repo,acme/widget", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
+	assert.Equal(t, "assertion.repository_owner == '"+PlaceholderOrg+"'",
 		fake.lastWIFProviderConfig.AttributeCondition)
-
-	expectedIAMAudience := "https://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc"
-	assert.Equal(t, []string{"fullsend-mint", expectedIAMAudience},
-		fake.lastWIFProviderConfig.AllowedAudiences)
+	assert.Empty(t, fake.projectIAMBindings)
 }
 
-func TestProvisioner_Provision_SingleOrg_WIFCondition(t *testing.T) {
+// Per-repo enrollment on an existing mint (re-used via MintURL) still
+// registers the repo and leaves org-level provider state and IAM untouched.
+func TestProvisioner_Provision_ExistingMint_PerRepoEnrollment(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://fullsend-mint-shared.run.app",
+		EnvVars: map[string]string{
+			"PER_REPO_WIF_REPOS": "other/repo",
+		},
+	}
+	fake.trafficEnvVars = map[string]string{"PER_REPO_WIF_REPOS": "other/repo"}
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner == 'existing-org'",
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:  "shared-project",
+		GitHubOrgs: []string{"acme"},
+		AgentPEMs:  singleRolePEMs(),
+		MintURL:    "https://fullsend-mint-shared.run.app",
+		Repo:       "acme/widget",
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "other/repo,acme/widget", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
+	assert.NotContains(t, fake.calls, "CreateWIFProvider")
+	assert.NotContains(t, fake.calls, "UpdateWIFProvider")
+	assert.Empty(t, fake.projectIAMBindings)
+}
+
+// Inference org-mode (ProvisionWIF without Repo) keeps writing org-scoped
+// WIF conditions and org-level Vertex AI grants, merged with existing orgs;
+// it is independent of mint deployment.
+func TestProvisionWIF_OrgMode_Unchanged_AfterMintProvision(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfoAfterCreate = &FunctionInfo{URI: "https://mint.run.app"}
 
-	p := newTestProvisioner(Config{
+	mint := newTestProvisioner(Config{
 		ProjectID:         "test-project-id",
 		GitHubOrgs:        []string{"acme"},
 		AgentPEMs:         singleRolePEMs(),
 		AgentAppIDs:       singleRoleAppIDs(),
 		FunctionSourceDir: fakeFunctionSourceDir(t),
 	}, fake)
+	_, err := mint.Provision(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, fake.projectIAMBindings)
 
-	_, err := p.Provision(context.Background())
+	// Simulate the provider state the mint deploy left behind.
+	fake.wifProvider = &WIFProviderInfo{AttributeCondition: fake.lastWIFProviderConfig.AttributeCondition}
+
+	inference := NewProvisioner(Config{
+		ProjectID:  "test-project-id",
+		GitHubOrgs: []string{"acme"},
+	}, fake)
+	_, err = inference.ProvisionWIF(context.Background())
 	require.NoError(t, err)
 
-	assert.Equal(t, "assertion.repository_owner == 'acme'",
-		fake.lastWIFProviderConfig.AttributeCondition)
-
-	expectedIAMAudience := "https://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc"
-	assert.Equal(t, []string{"fullsend-mint", expectedIAMAudience},
-		fake.lastWIFProviderConfig.AllowedAudiences)
+	assert.Equal(t, "assertion.repository_owner == 'acme'", fake.lastWIFProviderConfig.AttributeCondition)
+	require.Len(t, fake.projectIAMBindings, 1)
+	assert.Equal(t, "roles/aiplatform.user", fake.projectIAMBindings[0].Role)
+	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/.fullsend")
 }
 
 func TestProvisioner_Provision_WIF_AllowedAudiences(t *testing.T) {
@@ -1882,8 +2015,8 @@ func TestProvisioner_Provision_MultiOrg_MergeDoesNotOverwriteExistingPEMs(t *tes
 		assert.Equal(t, "fullsend-coder-app-pem", name)
 	}
 
-	// WIF condition should include both orgs.
-	assert.Equal(t, "assertion.repository_owner in ['existing-org', 'new-org']",
+	// Existing WIF condition is preserved; the installing org is not added.
+	assert.Equal(t, "assertion.repository_owner == 'existing-org'",
 		fake.lastWIFProviderConfig.AttributeCondition)
 
 	// The installing org is never registered in the mint's ALLOWED_ORGS.
@@ -3350,59 +3483,6 @@ func TestMarshalRoleAppIDs_SortsKeys(t *testing.T) {
 	raw, err := marshalRoleAppIDs(map[string]string{"triage": "2", "coder": "1"})
 	require.NoError(t, err)
 	assert.Equal(t, `{"coder":"1","triage":"2"}`, raw)
-}
-
-func TestEnsureOrgInWIFCondition_AddsOrgAndStripsPlaceholder(t *testing.T) {
-	fake := NewFakeGCFClient(
-		WithFakeWIFProvider(&WIFProviderInfo{
-			AttributeCondition: "assertion.repository_owner in ['" + PlaceholderOrg + "']",
-		}),
-	)
-	p := NewProvisioner(Config{
-		ProjectID:   "proj1",
-		Region:      "us-central1",
-		WIFPoolName: "fullsend-pool",
-		WIFProvider: "github-oidc",
-	}, fake)
-
-	err := p.EnsureOrgInWIFCondition(context.Background(), "Acme")
-	require.NoError(t, err)
-	assert.Contains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
-	assert.Contains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'Acme'")
-	assert.NotContains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, PlaceholderOrg)
-}
-
-func TestEnsureOrgInWIFCondition_NoOpWhenAlreadyPresent(t *testing.T) {
-	condition := "assertion.repository_owner == 'acme'"
-	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{AttributeCondition: condition}))
-	p := NewProvisioner(Config{
-		ProjectID:   "proj1",
-		Region:      "us-central1",
-		WIFPoolName: "fullsend-pool",
-		WIFProvider: "github-oidc",
-	}, fake)
-
-	err := p.EnsureOrgInWIFCondition(context.Background(), "acme")
-	require.NoError(t, err)
-	assert.NotContains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
-}
-
-func TestEnsureOrgInWIFCondition_ReEnrollmentInstallingCaseWins(t *testing.T) {
-	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{
-		AttributeCondition: "assertion.repository_owner == 'acme'",
-	}))
-	p := NewProvisioner(Config{
-		ProjectID:   "proj1",
-		Region:      "us-central1",
-		WIFPoolName: "fullsend-pool",
-		WIFProvider: "github-oidc",
-	}, fake)
-
-	err := p.EnsureOrgInWIFCondition(context.Background(), "ACME")
-	require.NoError(t, err)
-	assert.Contains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
-	assert.Equal(t, "assertion.repository_owner == 'ACME'",
-		fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition)
 }
 
 func TestRemoveOrgFromWIFCondition_RemovesOrgAndAddsPlaceholder(t *testing.T) {

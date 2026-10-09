@@ -52,6 +52,12 @@ const codexPathVar = "FULLSEND_CODEX_PATH"
 // closing the intra-iteration window that Claude Code and pi leave open.
 const codexHookDigestsEnv = "FULLSEND_CODEX_HOOK_DIGESTS"
 
+// codexSpawnDigestsEnv carries the files the spawn guard re-checks before it
+// admits a child, as space-separated "<path>:<sha256>" pairs relative to
+// CODEX_HOME: hooks.json and every registered role file, which codex re-reads
+// when a child starts. Its keys are also the guard's role registry.
+const codexSpawnDigestsEnv = "FULLSEND_CODEX_SPAWN_DIGESTS"
+
 // codexHookDigestsValue renders the map for the environment. Sorted so the
 // launch command is stable across iterations.
 func codexHookDigestsValue(scripts map[string]string) string {
@@ -65,6 +71,17 @@ func codexHookDigestsValue(scripts map[string]string) string {
 		pairs = append(pairs, name+":"+scripts[name])
 	}
 	return strings.Join(pairs, " ")
+}
+
+// codexSpawnDigestsValue renders the spawn guard's digest map: hooks.json
+// plus agents/<role>.toml per registered role, keyed by path relative to
+// CODEX_HOME, which is where the adapter resolves the file from.
+func codexSpawnDigestsValue(d codexRunnerHeldDigestSet) string {
+	entries := map[string]string{codexHooksFile: d.HooksJSON}
+	for role, digest := range d.RoleFiles {
+		entries["agents/"+role+".toml"] = digest
+	}
+	return codexHookDigestsValue(entries)
 }
 
 // codexOpenAIProvider is the only model provider prefix codex accepts in a
@@ -376,6 +393,8 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		// and read by the adapter before every hook script it spawns.
 		parts = append(parts, "&& export "+codexHookDigestsEnv+"="+
 			shellQuote(codexHookDigestsValue(digests.HookScripts)))
+		parts = append(parts, "&& export "+codexSpawnDigestsEnv+"="+
+			shellQuote(codexSpawnDigestsValue(digests)))
 		// The hook scripts' own configuration, re-asserted from what the
 		// runner derived from the harness. appendHookEnv wrote the same values
 		// into the workspace .env at bootstrap, and that file is

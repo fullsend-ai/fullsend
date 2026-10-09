@@ -139,18 +139,25 @@ fullsend
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
 ├── issues                                   # Read and write issue content across trackers
-│   ├── get                                  #   Read issue content (title, body, comments, labels)
+│   ├── get                                  #   Read issue content (title, type, body, comments, labels, Jira custom fields)
 │   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
 │   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
-│   │   └── --number <int>                   #     Issue number
-│   └── post-comment                         #   Post or update a sticky comment on an issue
-│       ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
-│       ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
-│       ├── --number <int>                   #     Issue number
-│       ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
-│       ├── --keep-history                   #     Append previous content as collapsed history (default true)
-│       ├── --only-if-exists                 #     Update an existing marked comment, never create one
-│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
+│   │   ├── --number <int>                   #     Issue number
+│   │   └── --fields <ids>                   #     Jira custom field IDs (customfield_<digits>) to include under custom_fields (Jira only)
+│   ├── post-comment                         #   Post or update a sticky comment on an issue
+│   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
+│   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
+│   │   ├── --number <int>                   #     Issue number
+│   │   ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
+│   │   ├── --keep-history                   #     Append previous content as collapsed history (default true)
+│   │   ├── --only-if-exists                 #     Update an existing marked comment, never create one
+│   │   └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
+│   └── link                                 #   Create a typed link between two issues (Jira only)
+│       ├── --tracker <tracker>              #     Tracker backend; github/gitlab return "not supported"
+│       ├── --from <key>                     #     Source issue key (e.g. PROJ-123)
+│       ├── --to <key>                       #     Target issue key (e.g. PROJ-456)
+│       ├── --type <name>                    #     Link type name (e.g. Blocks), passed through verbatim
+│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves default --tracker)
 ├── post-review                              # Post sticky PR/MR review comments (formal review is best-effort)
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
 │   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)
@@ -551,6 +558,18 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                   │ yet (tracked in fullsend-ai/agents#411)  │
 │  │                   │ — they still scan for the last iteration │
 │  │                   │ blindly.                                 │
+│  │                   │                                          │
+│  │                   │ FULLSEND_AGENT_EXIT_REASON is set when   │
+│  │                   │ the agent hit a behavioral limit rather  │
+│  │                   │ than crashing or succeeding. Known       │
+│  │                   │ subtypes: error_max_turns (turn limit),  │
+│  │                   │ error_max_budget_usd (cost limit).       │
+│  │                   │ Unlike API/infrastructure errors (which  │
+│  │                   │ skip the post-script entirely),          │
+│  │                   │ behavioral exits still run the           │
+│  │                   │ post-script so it can report accurately  │
+│  │                   │ instead of emitting a misleading "no     │
+│  │                   │ changes needed" message. See #6877.      │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -730,7 +749,7 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/inference_openai.go` | ~900 | OpenAI WIF enrolment: request document, reply import, status/exchange |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/github_client.go` | ~130 | GitHub token resolution and authenticated client construction |
-| `internal/cli/issues.go` | ~430 | Issue read/write commands (`fullsend issues get`, `post-comment`) |
+| `internal/cli/issues.go` | ~765 | Issue read/write commands (`fullsend issues get`, `post-comment`, `link`) |
 | `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |
