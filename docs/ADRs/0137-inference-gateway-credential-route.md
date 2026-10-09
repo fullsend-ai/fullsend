@@ -151,20 +151,43 @@ inference:
 - **The layers merge field by field.** For example, a preset can carry `url`
   and `audience` while each repository opts in its own models.
 
-### Precedence
+### Route selection and coexistence
 
-The order is **gateway, then WIF, then static key, then error**. For pi, the
-`gateway/` model prefix selects the gateway route, and `openai/` models keep
-the ADR 0092 resolution.
+The gateway is an additional route, chosen **per model by its provider
+prefix**. There is no precedence order between it and the WIF or static-key
+routes. The route (where requests go) and the credential (what the runner
+presents) are separate choices: this decision presents the forge OIDC token
+directly, and a gateway that expects a token exchanged through a WIF or STS
+service is a later credential mode of the same route, not a fallback.
 
+- `gateway/` models use the gateway route;
+- `openai/` models keep the ADR 0092 resolution (WIF, then static key);
+- every other provider (`anthropic-vertex/`, `xai-vertex/` and the rest) is
+  unchanged.
+
+The rules that follow from that:
+
+- **One run can mix routes.** Per-agent models
+  ([ADR 0091](0091-per-agent-runtime-model-effort.md)) and sub-agents can pick
+  `gateway/`, `openai/` and Vertex models in the same run. The runner attaches
+  each route's provider and egress profile side by side. The gateway profile
+  only adds its own host.
+- **A block changes nothing else.** Configuring `inference.gateway` does not
+  move `openai/` or any other model onto the gateway. It also has no effect on
+  runtimes without this route (Claude Code and Codex, deferred below); a
+  `gateway/` model on such a runtime is an error.
 - **A configured gateway never falls back.** If it is unreachable or refuses
-  the token, the run fails. Falling back to a static key would mean that key
-  could never be deleted.
-- **A `gateway/` model needs a complete block.** With no block, or a partial
-  one, the run is an error. It does not fall back to the `openai` provider.
-- **A block that does not apply to the run is ignored.** For example, a local
-  run has no OIDC endpoint. This matches how an inapplicable `inference.openai`
-  WIF block is handled today.
+  the token, the run fails. It never switches the model to the `openai`
+  provider or a static key, otherwise that key could never be deleted. A
+  partial block is an error.
+- **The runner owns the route only when a block applies.** A block applies when
+  it is complete and the run has a forge OIDC endpoint. With no block, or on a
+  run without an OIDC endpoint such as a local run, the runner adds nothing.
+  The harness-plugin setup in the local guide (`running-agents-locally.md`),
+  which carries the extension and its `INFERENCE_GATEWAY_*` settings in plugin
+  env, keeps working as documented. When a block applies, a harness that also
+  carries the extension or `INFERENCE_GATEWAY_*` plugin env is refused, so the
+  route never has two owners.
 
 ### pi reaches the gateway through a separate `gateway` provider
 
@@ -268,14 +291,15 @@ Deploying and operating the gateway are out of scope.
   is a concentrated risk to every repository that uses it.
 - **The forge stores nothing reusable.** Once the gateway route is live,
   `FULLSEND_OPENAI_API_KEY` can be deleted.
-- **The agent cannot set the base URL.** The runner owns the
-  `INFERENCE_GATEWAY_*` variables and refuses to launch without its own base
-  URL. Neither the agent-writable `.env` nor plugin env can override them:
+- **The agent cannot set the base URL.** When a block applies, the runner owns
+  the `INFERENCE_GATEWAY_*` variables and refuses to launch a `gateway/` model
+  without its own base URL. Neither the agent-writable `.env` nor plugin env
+  can override them:
   after both are applied, the runner unsets the whole `INFERENCE_GATEWAY_*`
   family and re-exports only its own values (`BASE_URL`, `TOKEN_FILE` and, if
   needed, `PROVIDER_ID`). This is a new ordering, because plugin env is
-  exported last today and only a deny-list protects it. Plugin env may not
-  use the `INFERENCE_GATEWAY_` prefix.
+  exported last today and only a deny-list protects it. With a block applied,
+  plugin env may not use the `INFERENCE_GATEWAY_` prefix.
 - **The egress rules are scoped to the gateway host.** The gateway gets its
   own egress profile and provider, rendered per configured host with a
   per-host id, so two gateways on one shared OpenShell gateway do not collide
@@ -288,6 +312,8 @@ Deploying and operating the gateway are out of scope.
 These are deferred and named:
 
 - Claude Code and Codex on the gateway route
+- a gateway credential exchanged through a WIF or STS service instead of the
+  forge OIDC token itself
 - GitLab ID tokens, which arrive as an `id_tokens:` job variable rather than
   a request URL
 - operator guides for gateways beyond agentgateway and Praxis (LiteLLM,
@@ -297,8 +323,9 @@ These are deferred and named:
 
 - A repository can run GPT, Claude, Gemini and open-weight models on pi
   through a gateway, without WIF admin access or a stored provider key.
-- Deleting `FULLSEND_OPENAI_API_KEY` is safe once a repository's runs use the
-  gateway, because a configured gateway never falls back to it.
+- Deleting `FULLSEND_OPENAI_API_KEY` is safe once a repository's `openai/`
+  models have moved to `gateway/`, because the gateway route never falls back
+  to it.
 - A gateway outage fails runs for every repository behind it, by design.
 - Every gateway model must be listed, inline or in `models_file`, because pi
   cannot discover models offline.
