@@ -179,7 +179,7 @@ func failClosedPoller(ctx context.Context, client forge.Client, to GitLabTrigger
 		incomplete := errors.Is(containErr, ErrPollerContainmentIncomplete)
 		containErr = safeAPIError(fmt.Sprintf("containing the GitLab Poller credential (user ID %d): revoke its personal access tokens and remove %s manually", restoreErr.userID, forge.SecretGitLabPollerToken), containErr)
 		if incomplete {
-			containErr = errors.Join(containErr, fmt.Errorf("%w: the Poller service account still has an active personal access token that fullsend does not manage; revoke it or have an administrator block the account", ErrPollerContainmentIncomplete))
+			containErr = errors.Join(containErr, fmt.Errorf("%w: one or more authentication paths on the Poller service account may remain active (personal access tokens or pipeline trigger tokens that fullsend does not manage, managed tokens that stayed active after revocation, SSH keys, unfinished jobs, pipeline schedules, or an inventory that could not be read); inspect and remove them or have an administrator block the account", ErrPollerContainmentIncomplete))
 		}
 	} else {
 		res.Details = append(res.Details, fmt.Sprintf("Revoked the GitLab Poller identity's (user ID %d) managed personal access tokens and removed %s; polling and webhook dispatch are unavailable until the identity is back at Developer access and 'fullsend repos install' provisions a replacement credential", restoreErr.userID, forge.SecretGitLabPollerToken))

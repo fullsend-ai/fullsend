@@ -1646,7 +1646,7 @@ func deferGitLabTriggerReplacement(ctx context.Context, client forge.Client, res
 	var cleanupErrs []error
 	if minted != nil {
 		if revokeErr := client.RevokePipelineTriggerToken(ctx, owner, repo, minted.ID); revokeErr != nil && !forge.IsNotFound(revokeErr) {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("revoking rejected pipeline trigger token ID %d: %w", minted.ID, revokeErr))
+			cleanupErrs = append(cleanupErrs, safeAPIError(fmt.Sprintf("revoking rejected pipeline trigger token ID %d", minted.ID), revokeErr))
 		} else {
 			res.Details = append(res.Details, fmt.Sprintf("Revoked rejected pipeline trigger token (ID %d)", minted.ID))
 		}
@@ -1659,7 +1659,7 @@ func deferGitLabTriggerReplacement(ctx context.Context, client forge.Client, res
 	if !st.activeCompliant(baseURL) {
 		details, teardownErr := revokeGitLabWebhookFastPath(ctx, client, owner, repo, false)
 		res.Details = append(res.Details, details...)
-		cleanupErrs = append(cleanupErrs, teardownErr)
+		cleanupErrs = append(cleanupErrs, safeAPIError("tearing down the managed webhook fast path", teardownErr))
 		return errors.Join(cleanupErrs...)
 	}
 	res.Details = append(res.Details, "Preserved the existing compliant pipeline trigger token and webhook")
@@ -1670,7 +1670,7 @@ func deferGitLabTriggerReplacement(ctx context.Context, client forge.Client, res
 			continue
 		}
 		if revokeErr := client.RevokePipelineTriggerToken(ctx, owner, repo, old.ID); revokeErr != nil && !forge.IsNotFound(revokeErr) {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("revoking superseded pipeline trigger token ID %d: %w", old.ID, revokeErr))
+			cleanupErrs = append(cleanupErrs, safeAPIError(fmt.Sprintf("revoking superseded pipeline trigger token ID %d", old.ID), revokeErr))
 			continue
 		}
 		res.Details = append(res.Details, fmt.Sprintf("Revoked superseded pipeline trigger token (ID %d)", old.ID))

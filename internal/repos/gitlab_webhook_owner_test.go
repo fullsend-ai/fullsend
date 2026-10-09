@@ -175,13 +175,14 @@ func TestEnsureGitLabWebhookFastPath_TriggerOwnerLookupFailureFailsClosed(t *tes
 	t.Run("revoking the rejected token fails", func(t *testing.T) {
 		c := newWebhookFake()
 		ownedBy(c, webhookMaintainerUserID, forge.GitLabAccessLevelMaintainer)
-		c.Errors = map[string]error{"RevokePipelineTriggerToken": errors.New("revoke boom")}
+		c.Errors = map[string]error{"RevokePipelineTriggerToken": errors.New("revoke boom glpat-echoed-credential")}
 
 		_, err := ensureWebhookRaw(c)
 
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "revoke boom", "cleanup failures are reported")
-		assert.ErrorContains(t, err, "rejected pipeline trigger token")
+		assert.ErrorContains(t, err, "rejected pipeline trigger token", "cleanup failures are reported")
+		assert.NotContains(t, err.Error(), "revoke boom", "server error text is withheld")
+		assert.NotContains(t, err.Error(), "glpat-echoed-credential", "an echoed credential is withheld")
 	})
 }
 

@@ -719,8 +719,34 @@ func TestEnsureGitLabWebhookFastPath_PollerContainmentIncompleteReported(t *test
 
 	res, err := ensureWebhookAsPoller(c, po, false)
 	require.ErrorIs(t, err, ErrPollerContainmentIncomplete)
-	require.ErrorContains(t, err, "does not manage")
+	require.ErrorContains(t, err, "authentication paths on the Poller service account may remain active")
 	assert.NotContains(t, strings.Join(res.Details, "\n"), "managed personal access tokens", "incomplete containment is not reported as done")
+}
+
+// Incomplete containment can leave SSH keys, jobs, schedules, or an unreadable
+// inventory, not only a personal access token. The message must not assert a
+// PAT that may not exist, and must name every path that could remain.
+func TestEnsureGitLabWebhookFastPath_PollerContainmentIncompleteNamesEveryPath(t *testing.T) {
+	for name, reason := range map[string]string{
+		"ssh key only":         "SSH authentication key(s) [4] on the Poller service account were not removed",
+		"job only":             "job(s) [9] are unfinished and run as the Poller service account",
+		"schedule only":        "pipeline schedule(s) [3] are owned by the Poller service account",
+		"inventory unreadable": "reading the SSH key inventory failed",
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newWebhookFake()
+			po := newPollerOwner(c)
+			po.restoreErrs = 2
+			po.containErr = fmt.Errorf("%w: %s", ErrPollerContainmentIncomplete, reason)
+
+			_, err := ensureWebhookAsPoller(c, po, false)
+			require.ErrorIs(t, err, ErrPollerContainmentIncomplete)
+			assert.NotContains(t, err.Error(), "still has an active personal access token")
+			for _, path := range []string{"SSH keys", "unfinished jobs", "pipeline schedules", "inventory that could not be read"} {
+				assert.Contains(t, err.Error(), path)
+			}
+		})
+	}
 }
 
 // unmetReadiness makes the repository fail the readiness gate, so the fast
