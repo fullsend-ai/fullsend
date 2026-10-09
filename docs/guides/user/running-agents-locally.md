@@ -533,7 +533,8 @@ The steps edit the agents clone from [Clone repositories](#clone-repositories)
    List every model you will use in `INFERENCE_GATEWAY_EXTRA_MODELS`, as `id=api`. pi never asks
    the gateway for its model list inside the sandbox, so a model missing here is unknown to pi.
 
-5. **Run with a `gateway/` model:**
+5. **Run with a `gateway/` model** from the directory that holds your env files from
+   [Run default agents](#run-default-agents):
 
    ```bash
    export INFERENCE_GATEWAY_API_KEY=...   # your gateway key
@@ -577,9 +578,9 @@ The same setup passed with an open-weight model on Chat Completions and with `cl
   sandbox yet ([pi-inference-gateway#15](https://github.com/fullsend-ai/pi-inference-gateway/issues/15)).
   A model that needs one of them fails, and open-weight models run with pi's default limits, which
   may exceed what your deployment allows on long runs.
-- **The base URL and model list come from the harness.** The runner exports the plugin's `env`
-  after the agent-writable `.env`, on every launch, so the agent cannot change them. The key is only
-  sent to the profile's host.
+- **The base URL and model list come from the harness.** The runner exports the plugin's `env` on
+  every launch, after the agent-writable `.env`, so plain assignments in `.env` do not change them.
+  The key is only sent to the profile's host.
 
 ### Troubleshooting the gateway
 
