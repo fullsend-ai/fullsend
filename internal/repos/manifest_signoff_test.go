@@ -127,6 +127,41 @@ gitlab:
 	}
 }
 
+func TestSignoffForgesFor_ResolutionPrecedence(t *testing.T) {
+	input := `
+version: 1
+github:
+  repos:
+    - name: acme/api
+      signoff: false
+    - name: "acme/*"
+      signoff: true
+    - name: "shadow/*"
+    - name: "shadow/team-*"
+      signoff: true
+`
+	var m Manifest
+	require.NoError(t, parseManifestBytes([]byte(input), &m))
+
+	tests := []struct {
+		name   string
+		filter []string
+		want   []string
+	}{
+		{"explicit unsigned entry under signed glob", []string{"acme/api"}, nil},
+		{"other repo under signed glob", []string{"acme/web"}, []string{ForgeGitHub}},
+		{"unsigned first glob shadows signed later glob", []string{"shadow/team-a"}, nil},
+		{"glob filter stays conservative", []string{"acme/*"}, []string{ForgeGitHub}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := m.SignoffForgesFor(tt.filter)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestSignoffForgesFor_InvalidPattern(t *testing.T) {
 	m := Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/app"}}}}
 	_, err := m.SignoffForgesFor([]string{"acme/[invalid"})

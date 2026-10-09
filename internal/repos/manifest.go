@@ -1317,41 +1317,54 @@ func entryMatchesFilter(e RepoEntry, filter []string) (bool, error) {
 	if len(filter) == 0 {
 		return true, nil
 	}
-	entryIsGlob := isGlob(e.Name)
 	for _, pattern := range filter {
-		ok, err := matchesPattern(pattern, e.Name)
-		if err != nil {
-			return false, fmt.Errorf("matching filter %q against manifest entry %q: %w", pattern, e.Name, err)
-		}
-		if ok {
-			return true, nil
-		}
-		if !entryIsGlob {
-			continue
-		}
-		if isGlob(pattern) {
-			// Both sides are globs: conservative match (see doc comment).
-			return true, nil
-		}
-		// A glob manifest entry ("acme/*") counts as selected when the
-		// filter names a concrete repo that would expand from it.
-		ok, err = matchesPattern(e.Name, pattern)
-		if err != nil {
-			return false, fmt.Errorf("matching manifest entry %q against filter %q: %w", e.Name, pattern, err)
-		}
-		if ok {
-			return true, nil
+		ok, err := patternSelectsEntry(e, pattern)
+		if err != nil || ok {
+			return ok, err
 		}
 	}
 	return false, nil
+}
+
+// patternSelectsEntry reports whether a single filter pattern selects the
+// manifest entry e, using the conservative glob semantics described on
+// platformEntriesMatchFilter.
+func patternSelectsEntry(e RepoEntry, pattern string) (bool, error) {
+	ok, err := matchesPattern(pattern, e.Name)
+	if err != nil {
+		return false, fmt.Errorf("matching filter %q against manifest entry %q: %w", pattern, e.Name, err)
+	}
+	if ok {
+		return true, nil
+	}
+	if !isGlob(e.Name) {
+		return false, nil
+	}
+	if isGlob(pattern) {
+		// Both sides are globs: conservative match (see doc comment).
+		return true, nil
+	}
+	// A glob manifest entry ("acme/*") counts as selected when the
+	// filter names a concrete repo that would expand from it.
+	ok, err = matchesPattern(e.Name, pattern)
+	if err != nil {
+		return false, fmt.Errorf("matching manifest entry %q against filter %q: %w", e.Name, pattern, err)
+	}
+	return ok, nil
 }
 
 // SignoffForgesFor returns the forges (in DistinctForgesFor order) that
 // have at least one manifest entry selected by filter whose resolved
 // signoff setting is true. Callers use it to resolve the installing
 // user's identity once per forge before any scaffold commit is made.
-// Glob/filter matching is conservative, so a forge may be reported when
-// no concrete repository it expands to ends up needing a trailer.
+//
+// A concrete (non-glob) filter pattern is resolved exactly as the real
+// per-repo resolution does (ResolveConfigWithGlobs: an explicit entry
+// first, then the first matching glob), so an explicit unsigned entry or
+// an earlier unsigned glob is not overridden by a signed glob that also
+// matches. Glob filter patterns and unfiltered runs stay conservative, so
+// a forge may be reported when no concrete repository it expands to ends
+// up needing a trailer.
 func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
 	var forges []string
 	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
@@ -1360,21 +1373,53 @@ func (m *Manifest) SignoffForgesFor(filter []string) ([]string, error) {
 			continue
 		}
 		for _, e := range platform.Repos {
-			ok, err := entryMatchesFilter(e, filter)
+			needed, err := m.entryNeedsSignoff(forgeName, e, filter)
 			if err != nil {
 				return nil, err
 			}
-			if !ok {
-				continue
-			}
-			owner, repo, _ := strings.Cut(e.Name, "/")
-			if m.ResolveConfigForEntry(owner, repo, forgeName, e).Signoff {
+			if needed {
 				forges = append(forges, forgeName)
 				break
 			}
 		}
 	}
 	return forges, nil
+}
+
+// entryNeedsSignoff reports whether manifest entry e on forgeName is
+// selected by filter and resolves to signoff=true for at least one
+// repository the filter selects.
+func (m *Manifest) entryNeedsSignoff(forgeName string, e RepoEntry, filter []string) (bool, error) {
+	owner, repo, _ := strings.Cut(e.Name, "/")
+	entrySignoff := func() bool {
+		return m.ResolveConfigForEntry(owner, repo, forgeName, e).Signoff
+	}
+	if len(filter) == 0 {
+		return entrySignoff(), nil
+	}
+	for _, pattern := range filter {
+		ok, err := patternSelectsEntry(e, pattern)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			continue
+		}
+		if isGlob(pattern) {
+			// Conservative: the pattern may select repos this entry governs.
+			if entrySignoff() {
+				return true, nil
+			}
+			continue
+		}
+		// Concrete repo: honor explicit-entry and first-glob precedence.
+		pOwner, pRepo, _ := strings.Cut(pattern, "/")
+		resolved, found := m.ResolveConfigWithGlobs(pOwner, pRepo)
+		if found && resolved.Forge == forgeName && resolved.Signoff {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // HasForge reports whether any repo in the manifest resolves to the
