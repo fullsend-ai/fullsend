@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # check-e2e-authorization.sh — Decide whether a PR may run e2e tests in CI.
 #
-# Authorized when the PR author is OWNER/MEMBER/COLLABORATOR, when the author
-# is a trusted bot (e.g. renovate-fullsend[bot]), when the collaborator
-# permission API confirms write+ access, or when a fresh ok-to-test label was
-# applied by a user with write+ access after the latest push.
+# Authorized when the PR author is a trusted bot (e.g. renovate-fullsend[bot]),
+# when the collaborator permission API confirms write+ access (admin, maintain,
+# write), or when a fresh ok-to-test label was applied by a user with write+
+# access after the latest push.
 #
-# The author_association field from the event payload can misreport org members
-# whose membership visibility is private (returns CONTRIBUTOR/NONE instead of
-# MEMBER). When author_association is untrusted, the script falls back to the
-# collaborator permission API which correctly resolves regardless of visibility.
+# Do not base trust on author_association: GitHub reports MEMBER or COLLABORATOR
+# for users with read or triage roles, which must not run credentialed CI.
+# Trust is based strictly on the collaborator permission API (write, maintain, admin).
 #
 # Freshness uses PR updated_at from the frozen workflow event (PR_UPDATED_AT).
 # On ok-to-test labeled events, freshness is not checked. Does not use
@@ -33,7 +32,6 @@ set -euo pipefail
 PR_NUMBER="${1:?PR number required}"
 REPOSITORY="${2:?repository (owner/repo) required}"
 
-TRUSTED_ASSOCIATIONS="OWNER MEMBER COLLABORATOR"
 TRUSTED_BOT_LOGINS="renovate-fullsend[bot] fullsend-ai-coder[bot]"
 OK_TO_TEST_LABEL="ok-to-test"
 
@@ -51,14 +49,6 @@ write_error_output() {
 
 trap 'write_error_output; exit 0' ERR
 
-is_trusted_author() {
-  local assoc="$1"
-  case " ${TRUSTED_ASSOCIATIONS} " in
-    *" ${assoc} "*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 is_trusted_bot() {
   local login="${1:-}"
   case " ${TRUSTED_BOT_LOGINS} " in
@@ -67,9 +57,9 @@ is_trusted_bot() {
   esac
 }
 
-# Fallback: check actor has write+ permission via the collaborator permission
-# API, which correctly resolves org membership regardless of visibility
-# (private vs public). Same approach as the dispatch workflow.
+# Check actor has write+ permission via the collaborator permission API.
+# Base trust strictly on write+ permissions (admin, maintain, write), never
+# on author_association which can include triage/read members.
 has_write_permission() {
   local username="${1:-}"
   if [[ -z "${username}" ]]; then
@@ -100,53 +90,50 @@ label_removed=false
 authorized=false
 reason="unauthorized"
 
-# Try the frozen workflow event payload first (fast path). If it reports an
-# untrusted association, has_write_permission falls back to the collaborator
-# permission API which resolves correctly regardless of membership visibility.
-if [[ -n "${PR_AUTHOR_ASSOCIATION:-}" ]]; then
-  author_association="${PR_AUTHOR_ASSOCIATION}"
-else
+# Ensure PR_AUTHOR_LOGIN is populated if not provided via environment.
+if [[ -z "${PR_AUTHOR_LOGIN:-}" ]]; then
   pr_json="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
-  author_association="$(jq -r '.author_association' <<<"${pr_json}")"
+  PR_AUTHOR_LOGIN="$(jq -r '.user.login // ""' <<<"${pr_json}")"
 fi
 
-if is_trusted_author "${author_association}"; then
-  authorized=true
-  reason="trusted_author"
-elif is_trusted_bot "${PR_AUTHOR_LOGIN:-}"; then
+if is_trusted_bot "${PR_AUTHOR_LOGIN:-}"; then
   authorized=true
   reason="trusted_bot"
-elif has_write_permission "${PR_AUTHOR_LOGIN:-}" 2>/dev/null; then
-  # author_association was wrong (e.g. private org membership); collaborator
-  # permission API confirms write+ access.
+elif [[ -n "${PR_AUTHOR_LOGIN:-}" ]] && has_write_permission "${PR_AUTHOR_LOGIN}"; then
   authorized=true
   reason="trusted_author"
 else
   pr_json="${pr_json:-$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")}"
   has_ok_label="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '[.labels[].name] | index($label) != null' <<<"${pr_json}")"
 
-  if [[ "${has_ok_label}" == "true" && "${EVENT_ACTION:-}" == "labeled" ]]; then
-    authorized=true
-    reason="ok_to_test"
-  elif [[ "${has_ok_label}" == "true" ]]; then
-    events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')"
-    ok_to_test_at="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '
-      [.[] | select(.event == "labeled" and (.label.name // "") == $label) | .created_at] | max // empty
-    ' <<<"${events_json}")"
-
-    last_push_at="${PR_UPDATED_AT:-}"
-    if [[ -z "${last_push_at}" ]]; then
-      # Fallback: live updated_at is noisy (bumped by comments, labels, etc.)
-      # and may over-reject. Prefer the frozen event-payload value (PR_UPDATED_AT).
-      last_push_at="$(jq -r '.updated_at // empty' <<<"${pr_json}")"
-    fi
-
-    if [[ -n "${ok_to_test_at}" && -n "${last_push_at}" && "${ok_to_test_at}" > "${last_push_at}" ]]; then
+  if [[ "${has_ok_label}" == "true" ]]; then
+    if [[ "${EVENT_ACTION:-}" == "synchronize" ]]; then
+      # New commits invalidate previous approvals until re-approved.
+      remove_ok_to_test_label
+      reason="stale_ok_to_test"
+    elif [[ "${EVENT_ACTION:-}" == "labeled" ]]; then
       authorized=true
       reason="ok_to_test"
     else
-      remove_ok_to_test_label
-      reason="stale_ok_to_test"
+      events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')"
+      ok_to_test_at="$(jq -r --arg label "${OK_TO_TEST_LABEL}" '
+        [.[] | select(.event == "labeled" and (.label.name // "") == $label) | .created_at] | max // empty
+      ' <<<"${events_json}")"
+
+      last_push_at="${PR_UPDATED_AT:-}"
+      if [[ -z "${last_push_at}" ]]; then
+        # Fallback: live updated_at is noisy (bumped by comments, labels, etc.)
+        # and may over-reject. Prefer the frozen event-payload value (PR_UPDATED_AT).
+        last_push_at="$(jq -r '.updated_at // empty' <<<"${pr_json}")"
+      fi
+
+      if [[ -n "${ok_to_test_at}" && -n "${last_push_at}" && "${ok_to_test_at}" > "${last_push_at}" ]]; then
+        authorized=true
+        reason="ok_to_test"
+      else
+        remove_ok_to_test_label
+        reason="stale_ok_to_test"
+      fi
     fi
   fi
 fi
@@ -176,20 +163,24 @@ if [[ "${reason}" == "ok_to_test" ]]; then
     labeler_login="$(latest_labeler)"
   fi
 
-  # The API answers 200 for any user or bot, so a failed lookup is an API
-  # error (reason=error via the ERR trap), not a denial.
-  labeler_role=""
-  if [[ -n "${labeler_login}" ]]; then
-    labeler_role="$(gh api "repos/${REPOSITORY}/collaborators/${labeler_login}/permission" | jq -r '.role_name // ""')"
-  fi
-
-  # Remove the label so a maintainer's re-apply fires a new labeled event.
-  # Keep it when someone else has re-applied it since: that run decides.
-  if ! is_write_role "${labeler_role}"; then
+  # Any missing identity results in denial (Fail Closed).
+  if [[ -z "${labeler_login}" ]]; then
     authorized=false
     reason="untrusted_labeler"
-    if [[ -z "${frozen_labeler}" || "$(latest_labeler)" == "${frozen_labeler}" ]]; then
-      remove_ok_to_test_label
+    remove_ok_to_test_label
+  else
+    # The API answers 200 for any user or bot, so a failed lookup is an API
+    # error (reason=error via the ERR trap), not a denial.
+    labeler_role="$(gh api "repos/${REPOSITORY}/collaborators/${labeler_login}/permission" | jq -r '.role_name // ""')"
+
+    # Remove the label so a maintainer's re-apply fires a new labeled event.
+    # Keep it when someone else has re-applied it since: that run decides.
+    if ! is_write_role "${labeler_role}"; then
+      authorized=false
+      reason="untrusted_labeler"
+      if [[ -z "${frozen_labeler}" || "$(latest_labeler)" == "${frozen_labeler}" ]]; then
+        remove_ok_to_test_label
+      fi
     fi
   fi
 fi
