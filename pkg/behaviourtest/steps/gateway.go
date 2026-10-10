@@ -122,7 +122,21 @@ func givenTestInferenceGateway(w *world.World) error {
 	if !ok {
 		return godog.ErrSkip
 	}
-	return commitInferenceGateway(w, map[string]any{"url": gatewayURL, "audience": audience})
+	return commitInferenceGateway(w, map[string]any{"url": gatewayURL, "audience": audience, "models": testGatewayModels()})
+}
+
+// testGatewayModels is the model list the test gateway serves to pi
+// (which runs offline and cannot discover it). Some projects' org policy
+// refuses strict tool schemas on partner models, so the Anthropic model
+// sets the compat flag that turns them off. The dummy runtime ignores the
+// list.
+func testGatewayModels() map[string]any {
+	return map[string]any{
+		"claude-haiku-5-5": map[string]any{
+			"api":    "anthropic-messages",
+			"compat": map[string]any{"supportsStrictTools": false},
+		},
+	}
 }
 
 // givenTestInferenceGatewayAPIKey commits an api-key inference.gateway
@@ -136,7 +150,7 @@ func givenTestInferenceGatewayAPIKey(w *world.World) error {
 		return godog.ErrSkip
 	}
 	registerSecretForms(key)
-	return commitInferenceGateway(w, map[string]any{"url": gatewayURL, "auth": "api-key"})
+	return commitInferenceGateway(w, map[string]any{"url": gatewayURL, "auth": "api-key", "models": testGatewayModels()})
 }
 
 // commitInferenceGateway commits gateway as the enrolled repo's

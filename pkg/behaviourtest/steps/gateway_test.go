@@ -91,6 +91,7 @@ func TestGivenTestInferenceGateway_RecordsOriginalOnWorld(t *testing.T) {
 	assert.Equal(t, original, w.GatewayConfigOriginal)
 	require.Len(t, scmDriver.commits, 1)
 	assert.Contains(t, string(scmDriver.commits[0].content), "audience: aud")
+	assert.Contains(t, string(scmDriver.commits[0].content), "supportsStrictTools: false", "the model list pi needs is committed")
 
 	// A second run reads the already-modified file; the pre-scenario
 	// original must win.
@@ -175,7 +176,12 @@ func TestGivenTestInferenceGatewayAPIKey(t *testing.T) {
 	require.Len(t, scmDriver.commits, 1)
 	var doc map[string]any
 	require.NoError(t, yaml.Unmarshal(scmDriver.commits[0].content, &doc))
-	assert.Equal(t, map[string]any{"url": "https://gw.example", "auth": "api-key"}, doc["inference"].(map[string]any)["gateway"])
+	gw := doc["inference"].(map[string]any)["gateway"].(map[string]any)
+	assert.Equal(t, "https://gw.example", gw["url"])
+	assert.Equal(t, "api-key", gw["auth"])
+	assert.NotContains(t, gw, "audience")
+	assert.Equal(t, map[string]any{"api": "anthropic-messages", "compat": map[string]any{"supportsStrictTools": false}},
+		gw["models"].(map[string]any)["claude-haiku-5-5"], "pi runs offline: the model list is committed")
 	assert.NotContains(t, string(scmDriver.commits[0].content), "test-gateway-key-value", "the key is never committed")
 
 	t.Setenv(envInferenceGatewayURL, "")
