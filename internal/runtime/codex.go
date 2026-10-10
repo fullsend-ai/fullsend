@@ -86,7 +86,6 @@ func (r CodexRuntime) OpenAIAuthFile() string { return r.ConfigDir() + "/" + cod
 // bypassed, and forwarding it would defeat the design (ADR 0092).
 func (r CodexRuntime) OpenAIAuthSeed() string {
 	final := r.OpenAIAuthFile()
-	tmp := shellQuote(final+".fullsend") + `.$$`
 	// piPlaceholderPrefix is the OpenShell gateway namespace, not a
 	// pi-specific value; it is assembled from two parts there on purpose and
 	// is referenced rather than copied so there is exactly one spelling of it
@@ -94,7 +93,7 @@ func (r CodexRuntime) OpenAIAuthSeed() string {
 	return `case "${OPENAI_API_KEY:-}" in ` + piPlaceholderPrefix +
 		`*OPENAI_API_KEY) ;; *) echo 'fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run codex' >&2; exit 1 ;; esac` +
 		` && case "$OPENAI_API_KEY" in *[!A-Za-z0-9_:]*) echo 'fullsend: OPENAI_API_KEY placeholder has unexpected characters; refusing to run codex' >&2; exit 1 ;; esac` +
-		` && ` + orderedSeedWrite("OPENAI_API_KEY", r.ConfigDir(), final, tmp,
+		` && ` + orderedSeedWrite("OPENAI_API_KEY", r.ConfigDir(), final,
 		`printf '%s' "$OPENAI_API_KEY"`,
 		`fullsend: writing the codex token file failed`, "exit 1")
 }

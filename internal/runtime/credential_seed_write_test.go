@@ -145,7 +145,7 @@ func TestOrderedSeed_StaleWriterCannotReplaceNewer(t *testing.T) {
 			// The stale seed is paused inside the lock, just before its
 			// rename. The re-seed cannot write until it lets go, so the
 			// re-seed lands last.
-			old := c.command(pausedAt(t, c.seed(dir), "command -p mv -f", ready, release), "1")
+			old := c.command(pausedAt(t, c.seed(dir), "command -p mv -f "+shellQuote(filepath.Join(dir, c.file+seedTempSuffix)), ready, release), "1")
 			var oldOut strings.Builder
 			old.Stdout, old.Stderr = &oldOut, &oldOut
 			require.NoError(t, old.Start())
@@ -202,11 +202,71 @@ func TestOrderedSeed_StaleWriterCannotReplaceNewer(t *testing.T) {
 			require.Error(t, err, string(out))
 			assert.Contains(t, string(out), "failed")
 			c.holds(t, dir, "1")
-			entries, err := os.ReadDir(dir)
-			require.NoError(t, err)
-			for _, e := range entries {
-				assert.NotContains(t, e.Name(), ".fullsend", "temp file left behind")
-			}
+			assertOnlySeedFiles(t, dir, c.file)
+		})
+
+		// With no initial seed the history is empty, so the stalled seed
+		// has recorded nothing when the refresher rotates past it. The
+		// re-seed names the placeholder it replaces, and that alone must
+		// keep the stalled seed from overwriting the newer file.
+		t.Run(c.name+"/stalled before the lock with no initial seed", func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "cfg")
+			sync := t.TempDir()
+			ready, release := filepath.Join(sync, "ready"), filepath.Join(sync, "release")
+
+			old := c.command(pausedAt(t, c.seed(dir), "command -p flock", ready, release), "1")
+			var oldOut strings.Builder
+			old.Stdout, old.Stderr = &oldOut, &oldOut
+			require.NoError(t, old.Start())
+			waitForFile(t, ready)
+
+			out, err := c.command(SeedReplacing(c.seed(dir), c.placeholder("1")), "2").CombinedOutput()
+			require.NoError(t, err, string(out))
+			c.holds(t, dir, "2")
+
+			require.NoError(t, os.WriteFile(release, nil, 0o600))
+			require.NoError(t, old.Wait(), "a stale seed is not a failure: %s", oldOut.String())
+			assert.Contains(t, oldOut.String(), "older generation")
+			c.holds(t, dir, "2")
+			assertOnlySeedFiles(t, dir, c.file)
+
+			// The next rotation records generation 2 the same way.
+			out, err = c.command(SeedReplacing(c.seed(dir), c.placeholder("2")), "3").CombinedOutput()
+			require.NoError(t, err, string(out))
+			c.holds(t, dir, "3")
+			c.run(t, dir, "2")
+			c.holds(t, dir, "3")
+		})
+
+		// A seed for the next generation that ran before the refresher's
+		// re-seed leaves the history ahead of it; the replaced placeholder
+		// is recorded before it, not as the newest.
+		t.Run(c.name+"/replaced placeholder is recorded behind a newer one", func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "cfg")
+			c.run(t, dir, "2")
+			out, err := c.command(SeedReplacing(c.seed(dir), c.placeholder("1")), "2").CombinedOutput()
+			require.NoError(t, err, string(out))
+			c.holds(t, dir, "2")
+			c.run(t, dir, "1")
+			c.holds(t, dir, "2")
+		})
+
+		t.Run(c.name+"/lock does not collide with pi's auth.json.lock", func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "cfg")
+			c.run(t, dir, "1")
+			// proper-lockfile takes its lock by mkdir on <file>.lock; a
+			// regular file there would break pi's credential storage.
+			_, err := os.Lstat(filepath.Join(dir, c.file+".lock"))
+			assert.True(t, os.IsNotExist(err), "seed left %s.lock behind", c.file)
+		})
+
+		t.Run(c.name+"/unexpected previous placeholder fails the seed", func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "cfg")
+			out, err := c.command(SeedReplacing(c.seed(dir), "x\ny z"), "1").CombinedOutput()
+			require.Error(t, err, string(out))
+			assert.Contains(t, string(out), "unexpected characters")
+			_, statErr := os.Stat(filepath.Join(dir, c.file))
+			assert.True(t, os.IsNotExist(statErr))
 		})
 	}
 }

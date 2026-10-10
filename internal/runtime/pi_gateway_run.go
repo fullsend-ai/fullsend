@@ -241,10 +241,9 @@ const (
 // stalls cannot replace a newer placeholder a re-seed already wrote.
 func PiGatewayTokenSeed(configDir string) string {
 	final := configDir + "/" + piInferenceGatewayTokenFile
-	tmp := shellQuote(final+".fullsend") + `.$$`
 	return `case "${` + piGatewayCredentialEnv + `:-}" in ` + piPlaceholderPrefix + `*` + piGatewayCredentialEnv + `) ;; *) echo 'fullsend: ` + piGatewayCredentialEnv + ` in the sandbox is not a gateway placeholder (inference gateway provider not attached, or a real token reached the sandbox); refusing to run the gateway provider' >&2; ` + piSeedExit + ` ;; esac` +
 		` && case "$` + piGatewayCredentialEnv + `" in *[!A-Za-z0-9_:]*) echo 'fullsend: ` + piGatewayCredentialEnv + ` placeholder has unexpected characters; refusing to run the gateway provider' >&2; ` + piSeedExit + ` ;; esac` +
-		` && ` + orderedSeedWrite(piGatewayCredentialEnv, configDir, final, tmp,
+		` && ` + orderedSeedWrite(piGatewayCredentialEnv, configDir, final,
 		`printf '%s' "$`+piGatewayCredentialEnv+`"`,
 		`fullsend: writing the inference gateway token file failed`, piSeedExit)
 }

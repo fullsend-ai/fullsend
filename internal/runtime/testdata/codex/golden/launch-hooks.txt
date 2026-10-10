@@ -35,12 +35,15 @@ test -f '/sandbox/codex-config/hooks/unicode_posttool.py' &&
 command -p rm -f '/sandbox/codex-config/models_cache.json' &&
 case "${OPENAI_API_KEY:-}" in openshell:resolve:env:*OPENAI_API_KEY) ;; *) echo 'fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run codex' >&2; exit 1 ;; esac &&
 case "$OPENAI_API_KEY" in *[!A-Za-z0-9_:]*) echo 'fullsend: OPENAI_API_KEY placeholder has unexpected characters; refusing to run codex' >&2; exit 1 ;; esac &&
-{ command -p mkdir -p '/sandbox/codex-config' &&
+{ case "${FULLSEND_SEED_PREVIOUS:-}" in *[!A-Za-z0-9_:]*) echo 'fullsend: FULLSEND_SEED_PREVIOUS has unexpected characters; refusing to seed' >&2; exit 1 ;; esac &&
+command -p mkdir -p '/sandbox/codex-config' &&
 { command -p flock -w 10 9 &&
+{ test -z "${FULLSEND_SEED_PREVIOUS:-}" || command -p grep -qxF -e "$FULLSEND_SEED_PREVIOUS" '/sandbox/codex-config/openai-token.generations' 2>/dev/null || { { printf '%s\n' "$FULLSEND_SEED_PREVIOUS"; command -p cat '/sandbox/codex-config/openai-token.generations' 2>/dev/null || :; } > '/sandbox/codex-config/openai-token.generations'.$$ &&
+command -p mv -f '/sandbox/codex-config/openai-token.generations'.$$ '/sandbox/codex-config/openai-token.generations'; }; } &&
 if test "$(command -p tail -n 1 '/sandbox/codex-config/openai-token.generations' 2>/dev/null)" != "$OPENAI_API_KEY" &&
 command -p grep -qxF -e "$OPENAI_API_KEY" '/sandbox/codex-config/openai-token.generations' 2>/dev/null; then echo 'fullsend: OPENAI_API_KEY is an older generation than the credential file holds; leaving the file as it is' >&2; else { test "$(command -p tail -n 1 '/sandbox/codex-config/openai-token.generations' 2>/dev/null)" = "$OPENAI_API_KEY" || printf '%s\n' "$OPENAI_API_KEY" >> '/sandbox/codex-config/openai-token.generations'; } &&
 printf '%s' "$OPENAI_API_KEY" > '/sandbox/codex-config/openai-token.fullsend'.$$ &&
-command -p mv -f '/sandbox/codex-config/openai-token.fullsend'.$$ '/sandbox/codex-config/openai-token'; fi; } 9>>'/sandbox/codex-config/openai-token.lock' || { command -p rm -f '/sandbox/codex-config/openai-token.fullsend'.$$; echo 'fullsend: writing the codex token file failed' >&2; exit 1; }; } &&
+command -p mv -f '/sandbox/codex-config/openai-token.fullsend'.$$ '/sandbox/codex-config/openai-token'; fi; } 9>>'/sandbox/codex-config/openai-token.fullsend-seed.lock' || { command -p rm -f '/sandbox/codex-config/openai-token.fullsend'.$$ '/sandbox/codex-config/openai-token.generations'.$$; echo 'fullsend: writing the codex token file failed' >&2; exit 1; }; } &&
 . '/sandbox/workspace/.env' &&
 export CODEX_HOME=/sandbox/codex-config &&
 export PATH="$FULLSEND_CODEX_PATH" &&

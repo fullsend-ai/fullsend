@@ -305,7 +305,9 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 	// environment, which may still carry the previous placeholder. The
 	// seed fragment keeps that older writer from replacing a newer
 	// generation (an in-sandbox lock and generation history, see the
-	// runtime's orderedSeedWrite). The verification and the one retry
+	// runtime's orderedSeedWrite). The re-seed also names previous as the
+	// generation it replaces, so a writer holding it that has not yet
+	// recorded itself is still refused. The verification and the one retry
 	// remain as a check that the write landed.
 	// Only the write is taken under the sandbox lock, and one exec at a
 	// time: the seed writes atomically (mv -f) but the between-iteration
@@ -325,7 +327,7 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 			var code int
 			err := withSandboxLock(ctx, nil, func() error {
 				var execErr error
-				_, stderr, code, execErr = sandbox.ExecContext(ctx, sandboxName, seed.Seed, openAIPlaceholderExecTimeout)
+				_, stderr, code, execErr = sandbox.ExecContext(ctx, sandboxName, runtime.SeedReplacing(seed.Seed, previous), openAIPlaceholderExecTimeout)
 				return execErr
 			})
 			if err != nil {

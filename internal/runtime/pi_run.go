@@ -790,10 +790,9 @@ const piOpenAIAuthShape = `[{]"openai":[{]"type":"api_key","key":"` + piPlacehol
 // replacing it. Leaving it is not a failure here.
 func PiOpenAIAuthSeed(configDir string) string {
 	final := configDir + "/" + piOpenAIAuthFile
-	tmp := shellQuote(final+".fullsend") + `.$$`
 	return `case "${OPENAI_API_KEY:-}" in ` + piPlaceholderPrefix + `*OPENAI_API_KEY) ;; *) echo 'fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run the openai provider' >&2; ` + piSeedExit + ` ;; esac` +
 		` && case "$OPENAI_API_KEY" in *[!A-Za-z0-9_:]*) echo 'fullsend: OPENAI_API_KEY placeholder has unexpected characters; refusing to run the openai provider' >&2; ` + piSeedExit + ` ;; esac` +
-		` && ` + orderedSeedWrite("OPENAI_API_KEY", configDir, final, tmp,
+		` && ` + orderedSeedWrite("OPENAI_API_KEY", configDir, final,
 		`printf '{"openai":{"type":"api_key","key":"%s"}}\n' "$OPENAI_API_KEY"`,
 		`fullsend: writing pi auth.json failed`, piSeedExit)
 }
