@@ -117,6 +117,14 @@ type World struct {
 	// the switch so the next scenario on this slot is not affected.
 	KillSwitchActivated bool
 
+	// KillSwitchBaseActivated records whether this scenario activated
+	// the kill switch via .fullsend/config.base.yaml (the central/base
+	// layer) rather than config.yaml. CleanupScenario uses this to
+	// deactivate it so the next scenario on this slot is not affected.
+	// Tracked separately from KillSwitchActivated because the two
+	// files are independent.
+	KillSwitchBaseActivated bool
+
 	// RuntimeOverridden records that this scenario changed the repo's
 	// `runtime:` in .fullsend/config.yaml; RuntimeOriginal is the value
 	// to restore. CleanupScenario reverts it so the slot's next scenario

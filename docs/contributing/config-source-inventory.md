@@ -81,6 +81,7 @@ These fields live on `perRepoConfig` in `internal/config/config.go`. Unset means
 | `status_notifications` | Start and completion comments and reactions | Overlay, base, compiled unset | Whole object replaces the parent when set | Status posting | Already layered | Yes, when a fleet wants one notification policy. |
 | `models.aliases` | Remap of `opus`, `sonnet`, `haiku`, `fable` | Overlay, base, compiled alias table | Per-key merge, then the compiled table | Model resolution | Already layered | Yes. Fleet model pins belong here. |
 | `inference.provider` | Inference backend id | Overlay, base, compiled `vertex` | Overlay, then base, then `vertex`. No workflow variable found | Accessor at install and run setup | Already layered | Yes. |
+| `kill_switch` | Stop all agent dispatch | Overlay, base, compiled `false` | Overlay, then base, then `false`. Both direct reads — GitHub's "Check kill switch" bash step and GitLab's `run-agent-job.sh` — now consult `config.base.yaml` when `config.yaml` is silent on the key, matching the Go accessor | `internal/harnessdispatch`, `reusable-dispatch.yml`, and GitLab's `run-agent-job.sh` | Already layered | Yes. A central stop belongs in the base file. |
 
 `authorization` (extra permission sources, today `owners_file`) is
 overlay-only by design, not an accessor gap: a base-file value under this
@@ -97,7 +98,6 @@ The Go accessor layers these. The bash steps in `.github/workflows/reusable-disp
 
 | Setting | Controls | Set from | Wins today | Read by | Decision | Base file? |
 |---|---|---|---|---|---|---|
-| `kill_switch` | Stop all agent dispatch | Overlay, base, compiled `false` | Go accessor: overlay, then base, then `false`. Bash "Check kill switch": `yq '.kill_switch'` on `config.yaml` only. A missing file does not halt dispatch | `internal/harnessdispatch` and `reusable-dispatch.yml` | Layer the direct read so a base-file `true` halts dispatch | Yes. A central stop belongs in the base file. |
 | `roles` | Which agent roles are enabled | Overlay, base, compiled default role list | Go accessor: replace-if-set, so an explicit empty `roles: []` denies every role. Bash "Check role is enabled": `yq '.roles[]'` on `config.yaml` only, piped through `\|\| echo ""`. An omitted key, a missing file, an explicit `roles: []`, or any `yq` error all leave `$ROLES` empty, and the script only skips the stage when `$ROLES` is non-empty — so all four cases fail open and let the stage run, the opposite of the Go accessor's deny-all | Go accessor and `reusable-dispatch.yml` | Layer the direct read, and make the bash script fail closed on an explicit empty list, not just add the base file | Yes, for the shared role set. An overlay list replaces it. |
 | `agents` | Registered agents and per-agent `runtime`, `model`, `effort`, `subagents` | Overlay, base, compiled none | Go accessor: keyed merge by agent name. Bash validates the shape of `config.yaml` only | Go run path and `reusable-dispatch.yml` | Layer the direct read for enablement and role checks. Per-agent runtime, model, and effort still lose to flags and environment variables; those rows are below | Yes, for the shared agent baseline. |
 

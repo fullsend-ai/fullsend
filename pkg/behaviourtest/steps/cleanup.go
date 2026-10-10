@@ -64,9 +64,31 @@ func ValidateSlotClean(w *world.World) error {
 	if err != nil {
 		return nil
 	}
-	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	// config.base.yaml is not part of the standard scaffold and is
+	// absent on most slots; a missing-file error just means there is
+	// no base layer to check, not a validation failure.
+	baseData, err := w.SCM.GetFileContent(context.Background(),
+		w.Org, w.RepoName, filepath.Join(".fullsend", "config.base.yaml"))
 	if err != nil {
-		return nil
+		baseData = nil
+	}
+	cfg, err := config.ParsePerRepoConfigWriterLayered(cfgData, baseData)
+	if err != nil {
+		// Fall back to an overlay-only parse so the
+		// overlay is still checked, and flag the malformed base
+		// itself as stale state worth reporting.
+		overlayCfg, overlayErr := config.ParsePerRepoConfigWriter(cfgData)
+		if overlayErr != nil {
+			return nil
+		}
+		stale := []string{fmt.Sprintf("config.base.yaml is malformed: %v", err)}
+		if overlayCfg.IsKillSwitchActive() {
+			stale = append(stale, "kill_switch is active")
+		}
+		if overlayCfg.IsOwnersFileAuthEnabled() {
+			stale = append(stale, "owners_file authorization is enabled")
+		}
+		return fmt.Errorf("repo slot has stale state from a previous scenario (cleanup likely failed): %s", strings.Join(stale, ", "))
 	}
 	var stale []string
 	if cfg.IsKillSwitchActive() {
@@ -254,6 +276,13 @@ func CleanupScenario(w *world.World) {
 			return DeactivateKillSwitch(w)
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: deactivate kill switch: %v", err)
+		}
+	}
+	if w.KillSwitchBaseActivated {
+		if err := cleanupRetry(w.Logf, "deactivate kill switch in config.base.yaml", func() error {
+			return DeactivateKillSwitchBase(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: deactivate kill switch in config.base.yaml: %v", err)
 		}
 	}
 

@@ -305,16 +305,41 @@ if ! git fetch origin "${FULLSEND_PINNED_REF}" --depth=1; then
 fi
 DEFAULT_BRANCH_SHA=$(git rev-parse FETCH_HEAD)
 CONFIG_YAML=$(git show "${DEFAULT_BRANCH_SHA}:.fullsend/config.yaml" 2>/dev/null || echo "")
+CONFIG_BASE_YAML=$(git show "${DEFAULT_BRANCH_SHA}:.fullsend/config.base.yaml" 2>/dev/null || echo "")
 
-# Kill switch — halt all agent dispatch when active
-if [ -n "${CONFIG_YAML}" ]; then
-  if ! KILL_SWITCH=$(echo "${CONFIG_YAML}" | python3 -c "import sys,yaml; print('true' if str((yaml.safe_load(sys.stdin) or {}).get('kill_switch', False)).lower() in ('true','yes','1','on') else 'false')"); then
-    echo "WARNING: invalid .fullsend/config.yaml — treating as unconfigured (no kill-switch)"
+# Kill switch — halt all agent dispatch when active. Mirrors
+# internal/config's IsKillSwitchActive(): if config.yaml sets
+# kill_switch at all, that value is final and config.base.yaml is
+# ignored; config.base.yaml is only consulted when config.yaml is
+# silent on the key.
+if [ -n "${CONFIG_YAML}" ] || [ -n "${CONFIG_BASE_YAML}" ]; then
+  if ! KILL_SWITCH=$(OVERLAY_YAML="${CONFIG_YAML}" BASE_YAML="${CONFIG_BASE_YAML}" python3 -c "
+import os, sys, yaml
+
+def load(text):
+    return (yaml.safe_load(text) or {}) if text else {}
+
+# Resolve the overlay first, and only parse the base file when the
+# overlay is silent on kill_switch. This keeps a malformed base.yaml
+# from ever being able to suppress an explicit overlay value (it is
+# never parsed in that case), and treats overlay 'kill_switch: null'
+# (or a bare 'kill_switch:') the same as a fully omitted key — both
+# decode to None, matching Go's *bool nil-falls-through-to-parent
+# semantics — rather than as an explicit false that shadows the base.
+overlay = load(os.environ.get('OVERLAY_YAML', ''))
+active = overlay.get('kill_switch')
+if active is None:
+    base = load(os.environ.get('BASE_YAML', ''))
+    active = base.get('kill_switch')
+
+print('true' if str(active).lower() in ('true', 'yes', '1', 'on') else 'false')
+"); then
+    echo "WARNING: invalid .fullsend/config.yaml or .fullsend/config.base.yaml — treating as unconfigured (no kill-switch)"
     KILL_SWITCH="false"
   fi
   if [ "${KILL_SWITCH}" = "true" ]; then
     echo "ERROR: Kill switch is active — all agent dispatch halted" >&2
-    echo "Set kill_switch: false in .fullsend/config.yaml to resume" >&2
+    echo "Set kill_switch: false in .fullsend/config.yaml or .fullsend/config.base.yaml to resume" >&2
     exit 1
   fi
 fi
