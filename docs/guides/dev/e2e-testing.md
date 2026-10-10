@@ -488,7 +488,7 @@ are part of the `BEHAVIOUR_CAPABILITIES` default in the `Makefile`, which
 
 | Capability | Scenarios | Declared in CI |
 |------------|-----------|----------------|
-| `inference-gateway` | `features/runtime/inference-gateway.feature` (Tier A, dummy runtime, `echo` and `echo-denied`) | Yes |
+| `inference-gateway` | `features/runtime/inference-gateway.feature`: one dummy-runtime scenario covering the placeholder, credential custody on `echo`, egress scope and the `echo-denied` refusal | Yes |
 | `inference-gateway-api-key` | `features/runtime/inference-gateway-api-key.feature` (dummy runtime, echo-only key) | Yes |
 | `runtime-pi-gateway` | `features/runtime/pi-gateway.feature` (pi through the gateway to a real model, `claude-haiku-5-5`) | No: costs a real model run |
 | `inference-gateway-reseed` | The token-rotation scenario in `features/runtime/inference-gateway.feature`, which also needs `inference-gateway` | No: holds the sandbox for a 330 s wait |

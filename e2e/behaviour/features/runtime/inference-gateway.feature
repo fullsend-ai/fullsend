@@ -52,65 +52,39 @@ Feature: inference gateway route under the dummy runtime
         && event.transition.label.name == "ready-for-gateway-probe"
       """
 
+  # One harness run carries every check, so CI pays for a single repo
+  # lease and workflow run: the sandbox sees only the placeholder, the
+  # proxy injects the credential and the gateway accepts it, egress is
+  # scoped to the gateway's inference path, and a model authorised only
+  # for another repository is refused.
   @requires:capability:inference-gateway
-  Scenario: the sandbox holds only the placeholder
+  Scenario: the gateway route keeps the credential out of the sandbox and scoped to its model path
     Given a dummy agent that would:
-      | description             | op            | args                                                      |
-      | See the placeholder     | assert_env    | INFERENCE_GATEWAY_API_KEY                                  |
-      | Placeholder is no JWT   | assert_not_jwt | INFERENCE_GATEWAY_API_KEY                                |
-      | Emit triage JSON        | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
+      | description            | op             | args                                                                                                                              |
+      | See the placeholder    | assert_env     | INFERENCE_GATEWAY_API_KEY                                                                                                         |
+      | Placeholder is no JWT  | assert_not_jwt | INFERENCE_GATEWAY_API_KEY                                                                                                         |
+      | Call the gateway       | http_probe     | POST <gateway>/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model":"echo","messages":[{"role":"user","content":"ping"}]}        |
+      | Call denied model      | http_probe     | POST <gateway>/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model":"echo-denied","messages":[{"role":"user","content":"ping"}]} |
+      | List models on gateway | http_probe     | GET <gateway>/v1/models INFERENCE_GATEWAY_API_KEY                                                                                 |
+      | Reach another host     | http_probe     | GET https://example.com/ INFERENCE_GATEWAY_API_KEY                                                                                |
+      | Emit triage JSON       | write_fixture  | output/agent-result.json, fixtures/triage/sufficient.json                                                                         |
     And an issue
     When the issue is labeled "ready-for-gateway-probe"
     Then the harness "gateway-probe" workflow completes successfully
     And the agent will succeed to See the placeholder
     And the agent will succeed to Placeholder is no JWT
-    And the agent will succeed to Emit triage JSON
-
-  @requires:capability:inference-gateway
-  Scenario: the proxy injects the credential and the gateway accepts it
-    Given a dummy agent that would:
-      | description      | op            | args                                                                                                                       |
-      | Call the gateway | http_probe    | POST <gateway>/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model":"echo","messages":[{"role":"user","content":"ping"}]} |
-      | Emit triage JSON | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json                                                                  |
-    And an issue
-    When the issue is labeled "ready-for-gateway-probe"
-    Then the harness "gateway-probe" workflow completes successfully
-    And the agent will succeed to Call the gateway
     And the agent's probe "Call the gateway" returned HTTP 200
     # Custody: the stub upstream echoes the headers it received. The
     # gateway strips the caller's token and adds its own stub key, so the
     # forge OIDC token (a JWT, "eyJ...") never reaches the upstream.
     And the agent's probe "Call the gateway" response contains "x-api-key"
     And the agent's probe "Call the gateway" response does not contain "eyJ"
-    And the harness workflow logs show the inference gateway provider was cleaned up
-
-  @requires:capability:inference-gateway
-  Scenario: egress is scoped to the gateway's inference path
-    Given a dummy agent that would:
-      | description               | op            | args                                                      |
-      | List models on gateway    | http_probe    | GET <gateway>/v1/models INFERENCE_GATEWAY_API_KEY          |
-      | Reach another host        | http_probe    | GET https://example.com/ INFERENCE_GATEWAY_API_KEY         |
-      | Emit triage JSON          | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
-    And an issue
-    When the issue is labeled "ready-for-gateway-probe"
-    Then the harness "gateway-probe" workflow completes successfully
+    And the agent will fail to Call denied model
+    And the agent's probe "Call denied model" returned HTTP 403
     And the agent will fail to List models on gateway
     And the agent will fail to Reach another host
     And the agent will succeed to Emit triage JSON
-
-  @requires:capability:inference-gateway
-  Scenario: a model authorised only for another repository is refused
-    Given a dummy agent that would:
-      | description        | op            | args                                                                                                                              |
-      | Call allowed model | http_probe    | POST <gateway>/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model":"echo","messages":[{"role":"user","content":"ping"}]}        |
-      | Call denied model  | http_probe    | POST <gateway>/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model":"echo-denied","messages":[{"role":"user","content":"ping"}]} |
-      | Emit triage JSON   | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json                                                                         |
-    And an issue
-    When the issue is labeled "ready-for-gateway-probe"
-    Then the harness "gateway-probe" workflow completes successfully
-    And the agent's probe "Call allowed model" returned HTTP 200
-    And the agent will fail to Call denied model
-    And the agent's probe "Call denied model" returned HTTP 403
+    And the harness workflow logs show the inference gateway provider was cleaned up
 
   # Rotation: the probe must still succeed after one token lifetime, so the
   # runner refreshed the provider's token. The wait outlasts a 300 s GitHub
