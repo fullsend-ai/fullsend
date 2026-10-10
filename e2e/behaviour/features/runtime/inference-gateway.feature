@@ -22,14 +22,14 @@
 #
 # The placeholder variable is the gateway provider's credential key,
 # INFERENCE_GATEWAY_API_KEY (profiles/fullsend-inference-gateway.yaml).
-# assert_not_jwt checks that a variable does not hold a JWT and, when it
-# names a file, that the file is readable and does not hold one either.
-# The dummy runtime does not implement the gateway route runtime, so it
-# prepares no token file and exports no INFERENCE_GATEWAY_TOKEN_FILE: only
-# the placeholder variable can be asserted here. wait sleeps between ops, so the re-seed scenario outlasts one
-# token lifetime (exp - iat). "the harness workflow logs show the inference
-# gateway provider was cleaned up" checks the run-scoped provider's removal
-# in the completed harness run's logs.
+# assert_not_jwt checks that a variable does not hold a JWT. The dummy
+# runtime carries no gateway token file (that is pi's, re-seeded on each
+# refresh; runtime/pi-gateway.feature covers it), and each op is its own
+# sandbox exec, so a probe always sends the placeholder the sandbox hands
+# out at that moment. wait sleeps between ops, so the rotation scenario
+# outlasts one token lifetime (exp - iat). "the harness workflow logs show
+# the inference gateway provider was cleaned up" checks the run-scoped
+# provider's removal in the completed harness run's logs.
 Feature: inference gateway route under the dummy runtime
 
   Background:
@@ -55,14 +55,12 @@ Feature: inference gateway route under the dummy runtime
   Scenario: the sandbox holds only the placeholder
     Given a dummy agent that would:
       | description             | op            | args                                                      |
-      | See the token file path | assert_env    | INFERENCE_GATEWAY_TOKEN_FILE                              |
       | See the placeholder     | assert_env    | INFERENCE_GATEWAY_API_KEY                                  |
       | Placeholder is no JWT   | assert_not_jwt | INFERENCE_GATEWAY_API_KEY                                |
       | Emit triage JSON        | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
     And an issue
     When the issue is labeled "ready-for-gateway-probe"
     Then the harness "gateway-probe" workflow completes successfully
-    And the agent will succeed to See the token file path
     And the agent will succeed to See the placeholder
     And the agent will succeed to Placeholder is no JWT
     And the agent will succeed to Emit triage JSON
@@ -113,12 +111,15 @@ Feature: inference gateway route under the dummy runtime
     And the agent will fail to Call denied model
     And the agent's probe "Call denied model" returned HTTP 403
 
-  # Re-seed: the probe must still succeed after one token lifetime. The wait
-  # outlasts a 300 s GitHub OIDC token. Because it holds the sandbox for
-  # more than five minutes, it is also gated on its own capability, which
-  # a maintainer declares when the CI budget allows.
+  # Rotation: the probe must still succeed after one token lifetime, so the
+  # runner refreshed the provider's token. The wait outlasts a 300 s GitHub
+  # OIDC token. Each probe is a new exec carrying the current placeholder,
+  # so this covers the provider refresh, not the token-file re-seed (pi's,
+  # runtime/pi-gateway.feature). Because it holds the sandbox for more than
+  # five minutes, it is also gated on its own capability, which a
+  # maintainer declares when the CI budget allows.
   @requires:capability:inference-gateway @requires:capability:inference-gateway-reseed
-  Scenario: the credential is re-seeded after the token expires
+  Scenario: the credential still resolves after the token rotates
     Given a dummy agent that would:
       | description       | op            | args                                                                                                                       |
       | Call before wait  | http_probe    | POST <gateway>/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model":"echo","messages":[{"role":"user","content":"ping"}]} |
