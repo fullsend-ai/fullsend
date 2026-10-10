@@ -397,8 +397,8 @@ func buildRunCommand(params RunParams) string {
 	if params.HooksSettingsPath != "" {
 		parts = append(parts, fmt.Sprintf("--settings '%s'", strings.ReplaceAll(params.HooksSettingsPath, "'", "'\\''")))
 	} else if extra := (ClaudeRuntime{}).claudeGatewaySettings(params.SandboxName); extra != nil {
-		// No hooks file to carry the oidc apiKeyHelper (installClaudeHooks
-		// writes it there), so pass it inline.
+		// No hooks file to carry the gateway settings (installClaudeHooks
+		// writes them there), so pass them inline.
 		inline, err := json.Marshal(extra)
 		if err == nil {
 			parts = append(parts, "--settings "+shellQuote(string(inline)))
@@ -482,9 +482,9 @@ func buildRunCommand(params RunParams) string {
 // agent-writable workspace tree (#6358).
 //
 // extra are further settings for the same file: Claude Code reads one
-// --settings flag, so an oidc gateway run's apiKeyHelper
-// (claudeGatewaySettings) is written here; buildRunCommand passes it inline
-// when the run has no hooks file.
+// --settings flag, so a gateway run's settings (claudeGatewaySettings: the
+// pinned route env and the apiKeyHelper) are written here; buildRunCommand
+// passes them inline when the run has no hooks file.
 func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, extra map[string]any) error {
 	// security.SandboxHooksDir is the directory the generated hooks.json
 	// commands point at; installHookScripts creates it.

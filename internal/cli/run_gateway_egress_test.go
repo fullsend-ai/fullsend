@@ -99,35 +99,27 @@ type renderedClaudeGatewayProfile struct {
 }
 
 func TestRenderGatewayProfile_Claude(t *testing.T) {
-	render := func(apiKey bool) (renderedClaudeGatewayProfile, string, string) {
-		t.Helper()
-		data, id, err := renderGatewayProfileFor(gatewayProfile{host: "Gateway.Example.com", claude: true, apiKey: apiKey})
-		require.NoError(t, err)
-		assert.NotContains(t, string(data), "__INFERENCE_GATEWAY_", "every placeholder is filled in")
-		var p renderedClaudeGatewayProfile
-		require.NoError(t, yaml.Unmarshal(data, &p))
-		assert.Equal(t, id, p.ID)
-		return p, id, string(data)
-	}
-	oidc, oidcID, _ := render(false)
-	key, keyID, _ := render(true)
+	data, id, err := renderGatewayProfileFor(gatewayProfile{host: "Gateway.Example.com", claude: true})
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "__INFERENCE_GATEWAY_", "every placeholder is filled in")
+	var p renderedClaudeGatewayProfile
+	require.NoError(t, yaml.Unmarshal(data, &p))
+	assert.Equal(t, id, p.ID)
 	_, piID, err := renderGatewayProfile("gateway.example.com")
 	require.NoError(t, err)
 
-	assert.Regexp(t, `^fullsend-inference-gateway-claude-oidc-[0-9a-f]{12}$`, oidcID)
-	assert.Regexp(t, `^fullsend-inference-gateway-claude-apikey-[0-9a-f]{12}$`, keyID)
-	assert.NotEqual(t, piID, oidcID, "pi and Claude Code never share a profile id")
-	assert.Equal(t, strings.TrimPrefix(piID, gatewayProfileTemplateID+"-"), oidcID[len(oidcID)-gatewayProfileIDHashLen:], "the same host hash")
+	assert.Regexp(t, `^fullsend-inference-gateway-claude-[0-9a-f]{12}$`, id)
+	assert.NotEqual(t, piID, id, "pi and Claude Code never share a profile id")
+	assert.Equal(t, strings.TrimPrefix(piID, gatewayProfileTemplateID+"-"), id[len(id)-gatewayProfileIDHashLen:], "the same host hash")
 
-	require.Len(t, oidc.Credentials, 1)
-	assert.Equal(t, []string{gatewayCredentialKey}, oidc.Credentials[0].EnvVars)
-	assert.Equal(t, "bearer", oidc.Credentials[0].AuthStyle)
-	assert.Equal(t, "authorization", oidc.Credentials[0].HeaderName)
-	require.Len(t, key.Credentials, 1)
-	assert.Equal(t, "header", key.Credentials[0].AuthStyle)
-	assert.Equal(t, "x-api-key", key.Credentials[0].HeaderName)
+	// Both auth modes send Authorization: Bearer (ADR 0137), so one
+	// rendering serves both.
+	require.Len(t, p.Credentials, 1)
+	assert.Equal(t, []string{gatewayCredentialKey}, p.Credentials[0].EnvVars)
+	assert.Equal(t, "bearer", p.Credentials[0].AuthStyle)
+	assert.Equal(t, "authorization", p.Credentials[0].HeaderName)
 
-	for _, p := range []renderedClaudeGatewayProfile{oidc, key} {
+	{
 		require.Len(t, p.Endpoints, 1)
 		ep := p.Endpoints[0]
 		assert.Equal(t, "gateway.example.com", ep.Host)
@@ -138,7 +130,7 @@ func TestRenderGatewayProfile_Claude(t *testing.T) {
 			rules = append(rules, r.Allow.Method+" "+r.Allow.Path)
 		}
 		assert.Equal(t, []string{"POST /v1/messages", "POST /v1/messages/count_tokens"}, rules)
-		assert.Equal(t, []string{"**/claude", "**/claude.exe", "**/node"}, p.Binaries, "the sandbox binary is claude.exe")
+		assert.Equal(t, []string{"**/claude", "**/claude.exe"}, p.Binaries, "the sandbox binary is claude.exe, a native binary")
 	}
 
 	_, _, err = renderGatewayProfileFor(gatewayProfile{host: "https://gw.example.com", claude: true})
@@ -147,7 +139,7 @@ func TestRenderGatewayProfile_Claude(t *testing.T) {
 
 func TestEnsureGatewayProfile_Claude(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
-	p := gatewayProfile{host: "gateway.example.com", claude: true, apiKey: true}
+	p := gatewayProfile{host: "gateway.example.com", claude: true}
 	_, id, err := renderGatewayProfileFor(p)
 	require.NoError(t, err)
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    "+id+"  Fullsend inference gateway (Claude Code)  endpoints: 1")

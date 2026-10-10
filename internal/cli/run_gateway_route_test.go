@@ -134,7 +134,7 @@ func TestPlanGatewayRoute(t *testing.T) {
 		_, err := planGatewayRoute(rc, claude, "fs-plan-claude-local", []string{"gateway/m1"}, true)
 		assert.ErrorContains(t, err, "auth: api-key for a local run")
 	})
-	t.Run("a local api-key run on Claude Code uses the api-key profile", func(t *testing.T) {
+	t.Run("a local api-key run on Claude Code uses the Claude Code profile", func(t *testing.T) {
 		stubGatewayOIDC(t, "", "")
 		keyed := gatewayTestRunConfig(t, "version: \"1\"\ninference:\n  gateway:\n    url: https://gw.example.com\n    auth: api-key\n", nil)
 		const sb = "fs-plan-claude-key"
@@ -142,7 +142,7 @@ func TestPlanGatewayRoute(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, plan)
 		t.Cleanup(func() { plan.prepared.ClearGatewayRun(sb) })
-		assert.Equal(t, gatewayProfile{host: "gw.example.com", claude: true, apiKey: true}, plan.profileSpec())
+		assert.Equal(t, gatewayProfile{host: "gw.example.com", claude: true}, plan.profileSpec())
 	})
 }
 

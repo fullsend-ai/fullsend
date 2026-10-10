@@ -102,13 +102,51 @@ func TestSetClaudeGatewayAgentModel(t *testing.T) {
 	assert.Equal(t, "https://gw.example.com", claudeGatewayRunFor("fs-claude-gw-agent").baseURL)
 }
 
+// TestClaudeGatewaySettings: the --settings document pins the route
+// against the repository's own .claude/settings.json, whose env block
+// Claude Code applies after launch: command-line settings rank above it, and
+// "" unsets a variable there.
 func TestClaudeGatewaySettings(t *testing.T) {
 	assert.Nil(t, ClaudeRuntime{}.claudeGatewaySettings("fs-claude-gw-unset"))
-	registerClaudeGateway(t, "fs-claude-gw-key-settings", true)
-	assert.Nil(t, ClaudeRuntime{}.claudeGatewaySettings("fs-claude-gw-key-settings"), "the api-key mode needs no helper")
+
 	registerClaudeGateway(t, "fs-claude-gw-oidc-settings", false)
-	assert.Equal(t, map[string]any{"apiKeyHelper": "command -p cat '/sandbox/claude-config/inference-gateway.token'"},
-		ClaudeRuntime{}.claudeGatewaySettings("fs-claude-gw-oidc-settings"))
+	oidc := ClaudeRuntime{}.claudeGatewaySettings("fs-claude-gw-oidc-settings")
+	assert.Equal(t, "command -p cat '/sandbox/claude-config/inference-gateway.token'", oidc["apiKeyHelper"])
+	oidcEnv, ok := oidc["env"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "https://gw.example.com", oidcEnv["ANTHROPIC_BASE_URL"])
+	assert.Equal(t, "1", oidcEnv["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"])
+	assert.Equal(t, "10000", oidcEnv["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"], "a project TTL would otherwise apply")
+	for _, name := range claudeGatewayEnvUnset {
+		require.Contains(t, oidcEnv, name, "every cleared variable is pinned")
+	}
+	for _, name := range []string{"CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS"} {
+		assert.Equal(t, "", oidcEnv[name], name)
+	}
+
+	registerClaudeGateway(t, "fs-claude-gw-key-settings", true)
+	key := ClaudeRuntime{}.claudeGatewaySettings("fs-claude-gw-key-settings")
+	assert.Equal(t, "", key["apiKeyHelper"], `"" overrides a project helper; null would not`)
+	keyEnv, ok := key["env"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "https://gw.example.com", keyEnv["ANTHROPIC_BASE_URL"])
+	assert.NotContains(t, keyEnv, "ANTHROPIC_AUTH_TOKEN", "the launch exports the placeholder; an empty pin would erase it")
+	assert.Equal(t, "", keyEnv["ANTHROPIC_API_KEY"])
+	assert.Equal(t, "", keyEnv["CLAUDE_CODE_USE_VERTEX"])
+	assert.Equal(t, "", keyEnv["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"])
+}
+
+// inlineGatewaySettings returns the inline --settings document of a launch
+// command.
+func inlineGatewaySettings(t *testing.T, cmd string) map[string]any {
+	t.Helper()
+	_, rest, ok := strings.Cut(cmd, "--settings '")
+	require.True(t, ok, cmd)
+	raw, _, ok := strings.Cut(rest, "' --")
+	require.True(t, ok, cmd)
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.ReplaceAll(raw, `'\''`, "'")), &doc))
+	return doc
 }
 
 func TestMergeClaudeSettings(t *testing.T) {
@@ -160,6 +198,27 @@ func TestInstallClaudeHooks_GatewaySettings(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &doc))
 	assert.Equal(t, "helper", doc["apiKeyHelper"])
 	assert.Contains(t, doc, "hooks")
+
+	// Each mode's real settings survive the merge next to the hooks.
+	for _, apiKey := range []bool{false, true} {
+		sb := "fs-claude-gw-hooks-oidc"
+		if apiKey {
+			sb = "fs-claude-gw-hooks-key"
+		}
+		registerClaudeGateway(t, sb, apiKey)
+		extra := ClaudeRuntime{}.claudeGatewaySettings(sb)
+		require.NoError(t, installClaudeHooks("test-sandbox", securityAllOff(), extra))
+		data, err := os.ReadFile(captured)
+		require.NoError(t, err)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(data, &got))
+		assert.Contains(t, got, "hooks", sb)
+		assert.Equal(t, extra["apiKeyHelper"], got["apiKeyHelper"], sb)
+		env, ok := got["env"].(map[string]any)
+		require.True(t, ok, sb)
+		assert.Equal(t, "https://gw.example.com", env["ANTHROPIC_BASE_URL"], sb)
+		assert.Equal(t, "", env["CLAUDE_CODE_USE_VERTEX"], sb)
+	}
 }
 
 func TestBuildRunCommand_GatewayOIDC(t *testing.T) {
@@ -189,18 +248,21 @@ func TestBuildRunCommand_GatewayOIDC(t *testing.T) {
 	assert.Less(t, baseAt, launchAt)
 	assert.Contains(t, cmd, "export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
 	assert.Contains(t, cmd, "export CLAUDE_CODE_API_KEY_HELPER_TTL_MS=10000")
-	assert.NotContains(t, cmd, "export ANTHROPIC_API_KEY", "oidc presents the credential through the helper")
+	assert.NotContains(t, cmd, "export ANTHROPIC_AUTH_TOKEN", "oidc presents the credential through the helper")
+	assert.NotContains(t, cmd, "export ANTHROPIC_API_KEY")
 	for _, name := range []string{"CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"} {
 		assert.Contains(t, claudeGatewayEnvUnset, name)
 	}
 
 	assert.Contains(t, cmd, "--model 'claude-haiku-5-5'", "the gateway/ prefix only selects the route")
 	assert.Contains(t, cmd, "--fallback-model 'claude-sonnet-5-5,sonnet'")
-	assert.Contains(t, cmd, `--settings '{"apiKeyHelper":"command -p cat '\''/sandbox/claude-config/inference-gateway.token'\''"}'`, "no hooks file, so the helper is inline")
+	inline := inlineGatewaySettings(t, cmd)
+	assert.Equal(t, "command -p cat '/sandbox/claude-config/inference-gateway.token'", inline["apiKeyHelper"], "no hooks file, so the settings are inline")
+	assert.Contains(t, inline, "env")
 
 	withHooks := buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: "/r", Model: "gateway/m", HooksSettingsPath: "/sandbox/claude-config/hooks.json"})
 	assert.Contains(t, withHooks, "--settings '/sandbox/claude-config/hooks.json'")
-	assert.Equal(t, 1, strings.Count(withHooks, "--settings"), "Claude Code reads one --settings; the helper is in the hooks file")
+	assert.Equal(t, 1, strings.Count(withHooks, "--settings"), "Claude Code reads one --settings; the gateway settings are in the hooks file")
 }
 
 func TestBuildRunCommand_GatewayAPIKey(t *testing.T) {
@@ -210,14 +272,17 @@ func TestBuildRunCommand_GatewayAPIKey(t *testing.T) {
 
 	captureAt := strings.Index(cmd, `FULLSEND_GATEWAY_PLACEHOLDER="$INFERENCE_GATEWAY_API_KEY" && readonly FULLSEND_GATEWAY_PLACEHOLDER`)
 	envAt := strings.Index(cmd, ". /sandbox/workspace/.env")
-	exportAt := strings.Index(cmd, `export ANTHROPIC_API_KEY="$FULLSEND_GATEWAY_PLACEHOLDER"`)
+	exportAt := strings.Index(cmd, `export ANTHROPIC_AUTH_TOKEN="$FULLSEND_GATEWAY_PLACEHOLDER"`)
 	require.NotEqual(t, -1, captureAt, cmd)
 	require.NotEqual(t, -1, exportAt, cmd)
 	assert.Less(t, captureAt, envAt, "the placeholder is read before .env")
 	assert.Less(t, envAt, exportAt)
 	assert.Contains(t, cmd, gatewayPlaceholderCheck())
+	assert.NotContains(t, cmd, "export ANTHROPIC_API_KEY", "x-api-key is never used; both modes send Bearer")
 	assert.NotContains(t, cmd, "inference-gateway.token", "the api-key mode writes no token file")
-	assert.NotContains(t, cmd, "--settings", "no helper in the api-key mode")
+	inline := inlineGatewaySettings(t, cmd)
+	assert.Equal(t, "", inline["apiKeyHelper"], "a project helper is overridden")
+	assert.Contains(t, inline, "env")
 	assert.NotContains(t, cmd, "CLAUDE_CODE_API_KEY_HELPER_TTL_MS=")
 	assert.Contains(t, cmd, "--model 'claude-haiku-5-5'")
 }
@@ -307,7 +372,9 @@ func TestBuildRunCommand_GatewayEnvOwnership_APIKey(t *testing.T) {
 	registerClaudeGateway(t, sb, true)
 	out, _, err := gatewayLaunch(t, sb, hostileGatewayEnv)
 	require.NoError(t, err, out)
-	assert.Contains(t, out, "ANTHROPIC_API_KEY="+gatewayTestPlaceholder+"\n", "the placeholder read before .env")
+	assert.Contains(t, out, "ANTHROPIC_AUTH_TOKEN="+gatewayTestPlaceholder+"\n", "the placeholder read before .env")
+	assert.NotContains(t, out, "ANTHROPIC_API_KEY=", ".env's x-api-key credential is cleared, so it cannot change the header")
+	assert.NotContains(t, out, "ANTHROPIC_AUTH_TOKEN=planted")
 	assert.Contains(t, out, "ANTHROPIC_BASE_URL=https://gw.example.com\n")
 	assert.NotContains(t, out, "CLAUDE_CODE_USE_VERTEX=")
 	assert.NotContains(t, out, "FULLSEND_GATEWAY_PLACEHOLDER", "the captured placeholder is never exported")
@@ -323,7 +390,7 @@ func TestBuildRunCommand_GatewayEnvOwnership_APIKey(t *testing.T) {
 func TestBuildRunCommand_GatewayReadonlyFailsClosed(t *testing.T) {
 	const sb = "fs-claude-gw-shell-ro"
 	registerClaudeGateway(t, sb, false)
-	for _, name := range []string{"ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_API_KEY"} {
+	for _, name := range []string{"ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
 		out, _, err := gatewayLaunch(t, sb, "readonly "+name+"=planted\n")
 		require.Error(t, err, name)
 		assert.NotContains(t, out, "REAL-CLAUDE", name)

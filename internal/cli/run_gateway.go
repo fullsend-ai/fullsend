@@ -163,6 +163,32 @@ func validateClaudeGatewayModels(models []string, block config.InferenceGatewayC
 	return errors.New("gateway/ models on the claude runtime need an inference.gateway block that applies to this run")
 }
 
+// validateClaudeGatewayFallbacks checks a Claude Code run's fallback chain
+// after models.aliases, as buildRunCommand remaps it. On the gateway route
+// every fallback goes to the gateway, so a gateway/ entry is fine there.
+// Off the route Claude Code would send a gateway/ entry to Vertex as a
+// literal id, so it is refused: the route is selected by the run's own
+// model, never by a fallback. On either side a gateway/ entry must name a
+// model, or Claude Code would get an empty fallback id.
+func validateClaudeGatewayFallbacks(parentGateway bool, fallbacks []string, aliases map[string]string) error {
+	for _, fb := range fallbacks {
+		target := fb
+		if id, ok := aliases[fb]; ok {
+			target = id
+		}
+		if !isGatewayModel(target) {
+			continue
+		}
+		if _, id, _ := strings.Cut(strings.TrimSpace(target), "/"); strings.TrimSpace(id) == "" {
+			return fmt.Errorf("fallback model %q names no gateway model after the gateway/ prefix", fb)
+		}
+		if !parentGateway {
+			return fmt.Errorf("fallback model %q selects the inference gateway, but the run's own model does not; on the claude runtime only the run's model selects the gateway route, and every fallback then goes to the gateway too", fb)
+		}
+	}
+	return nil
+}
+
 // gatewayOIDCEnvFn returns the forge OIDC endpoint the runner fetches
 // assertions from: ACTIONS_ID_TOKEN_REQUEST_URL and
 // ACTIONS_ID_TOKEN_REQUEST_TOKEN. Override in tests to stub the endpoint

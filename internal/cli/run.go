@@ -1394,6 +1394,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		gatewayModels = append(gatewayModels, c.Spec)
 	}
 	needsGateway := parentNeedsGateway || len(gatewayChildren) > 0
+	if runtimeBackend.Runtime.Name() == "claude" {
+		if err := validateClaudeGatewayFallbacks(parentNeedsGateway, overrides.fallbackModels, configModelAliases); err != nil {
+			printer.StepFail("Inference gateway route unavailable")
+			return err
+		}
+	}
 	gatewayPlan, err := planGatewayRoute(runCfg, runtimeBackend, sandboxName, gatewayModels, needsGateway)
 	if err != nil {
 		printer.StepFail("Inference gateway route unavailable")

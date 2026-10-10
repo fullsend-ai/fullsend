@@ -328,7 +328,7 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 // printClaudeGatewayRoute reports how a claude runtime run with a
 // gateway/<model> model reaches the gateway for a complete block g: the
 // base URL the runner exports and the header the credential travels in,
-// which differs per auth mode.
+// Authorization: Bearer in both auth modes.
 func printClaudeGatewayRoute(printer *ui.Printer, g config.InferenceGatewayConfig) {
 	u, err := url.Parse(g.URL)
 	if err != nil {
@@ -336,10 +336,10 @@ func printClaudeGatewayRoute(printer *ui.Printer, g config.InferenceGatewayConfi
 	}
 	printer.StepInfo("claude runtime: gateway/<model> runs Claude Code against ANTHROPIC_BASE_URL=" + u.Scheme + "://" + u.Host + " as <model> (the model list is not used)")
 	if g.IsAPIKey() {
-		printer.StepInfo("claude runtime: credential is an ANTHROPIC_API_KEY placeholder, sent as x-api-key")
+		printer.StepInfo("claude runtime: credential is an ANTHROPIC_AUTH_TOKEN placeholder, sent as Authorization: Bearer")
 		return
 	}
-	printer.StepInfo("claude runtime: credential comes from an apiKeyHelper that re-reads the runner-seeded token file, sent as Authorization: Bearer")
+	printer.StepInfo("claude runtime: credential comes from an apiKeyHelper that re-reads the runner-seeded token file, sent as Authorization: Bearer (Claude Code also copies it into x-api-key)")
 }
 
 // gatewayJWTPattern matches a JWT-shaped value (three base64url segments,

@@ -1,9 +1,9 @@
 ---
 # Template, not imported as-is: the runner renders it per configured gateway
-# host and auth mode for the claude runtime (renderGatewayProfileFor in
-# internal/cli/run_gateway_egress.go), replacing the placeholders below and
-# suffixing the id with the mode and a hash of the host, so two gateways, or
-# two modes, on one shared OpenShell gateway never share a profile id.
+# host for the claude runtime (renderGatewayProfileFor in
+# internal/cli/run_gateway_egress.go), replacing the host placeholder below
+# and suffixing the id with a hash of the host, so two gateways on one shared
+# OpenShell gateway never share a profile id.
 id: fullsend-inference-gateway-claude
 display_name: Fullsend inference gateway (Claude Code)
 description: Inference gateway for the claude runtime (runner-seeded, run-scoped credential)
@@ -13,12 +13,12 @@ credentials:
     description: Run-scoped inference gateway credential (forge OIDC token or gateway API key)
     env_vars: [INFERENCE_GATEWAY_API_KEY]
     required: true
-    # The header Claude Code sends the credential in: Authorization: Bearer
-    # from the oidc mode's apiKeyHelper, x-api-key from ANTHROPIC_API_KEY in
-    # the api-key mode. OpenShell resolves the placeholder wherever it
+    # Claude Code sends the credential as Authorization: Bearer in both auth
+    # modes: from the oidc mode's apiKeyHelper, and from ANTHROPIC_AUTH_TOKEN
+    # in the api-key mode. OpenShell resolves the placeholder wherever it
     # appears on a request to the endpoint below.
-    auth_style: __INFERENCE_GATEWAY_AUTH_STYLE__
-    header_name: __INFERENCE_GATEWAY_HEADER_NAME__
+    auth_style: bearer
+    header_name: authorization
     refresh:
       strategy: external
 # Explicit allow rules instead of an `access:` preset: headless Claude Code
@@ -45,8 +45,10 @@ endpoints:
           method: POST
           path: /v1/messages/count_tokens
 # The sandbox image's Claude Code binary is .../claude-code/bin/claude.exe, so
-# **/claude alone does not match it.
+# **/claude alone does not match it. It is a native binary, exec'd directly,
+# so no node wrapper needs listing. OpenShell matches the connecting process
+# or any ancestor, so tools Claude Code starts share this access; the
+# sandbox, not this list, is the boundary for them.
 binaries:
   - "**/claude"
   - "**/claude.exe"
-  - "**/node"

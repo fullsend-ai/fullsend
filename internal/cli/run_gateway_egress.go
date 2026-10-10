@@ -87,18 +87,13 @@ func gatewayProfileID(host string) string {
 }
 
 // The Claude Code rendering (#8294) is a template of its own: Claude Code
-// calls only the Messages API, from its own binary, and the header the
-// credential travels in depends on the auth mode. OpenShell stores a static
-// credential's auth_style and header_name as placement metadata and still
-// resolves the env placeholder wherever the client puts it, so the
-// metadata records the header Claude Code sends in each mode. Each mode
-// gets its own id, so two runs on one shared OpenShell gateway never import
-// over each other's profile.
-const (
-	gatewayClaudeProfileTemplateID = "fullsend-inference-gateway-claude"
-	gatewayProfileAuthStyle        = "__INFERENCE_GATEWAY_AUTH_STYLE__"
-	gatewayProfileHeaderName       = "__INFERENCE_GATEWAY_HEADER_NAME__"
-)
+// calls only the Messages API, from its own binary. Both auth modes send
+// the credential as Authorization: Bearer (an apiKeyHelper in the oidc
+// mode, ANTHROPIC_AUTH_TOKEN in the api-key mode), the header ADR 0137 sets
+// for the route, so one rendering serves both. Its id differs from pi's, so
+// a pi run and a Claude Code run on one shared OpenShell gateway never
+// import over each other's profile.
+const gatewayClaudeProfileTemplateID = "fullsend-inference-gateway-claude"
 
 // gatewayProfile selects the rendering of the per-host gateway profile.
 type gatewayProfile struct {
@@ -106,10 +101,6 @@ type gatewayProfile struct {
 	host string
 	// claude selects the Claude Code template.
 	claude bool
-	// apiKey is the block's api-key mode; it changes the Claude Code
-	// rendering only (pi presents the credential as a bearer token in
-	// both modes).
-	apiKey bool
 }
 
 // renderGatewayProfile renders the scaffold's inference gateway profile
@@ -127,17 +118,11 @@ func renderGatewayProfileFor(p gatewayProfile) ([]byte, string, error) {
 		return nil, "", err
 	}
 	templateID := gatewayProfileTemplateID
-	var auth map[string]string
 	id := gatewayProfileID(h)
 	if p.claude {
 		templateID = gatewayClaudeProfileTemplateID
-		mode, style, header := "oidc", "bearer", "authorization"
-		if p.apiKey {
-			mode, style, header = "apikey", "header", "x-api-key"
-		}
-		auth = map[string]string{gatewayProfileAuthStyle: style, gatewayProfileHeaderName: header}
 		sum := sha256.Sum256([]byte(h))
-		id = templateID + "-" + mode + "-" + hex.EncodeToString(sum[:])[:gatewayProfileIDHashLen]
+		id = templateID + "-" + hex.EncodeToString(sum[:])[:gatewayProfileIDHashLen]
 	}
 	tmpl, err := scaffold.FullsendRepoFile("profiles/" + templateID + ".yaml")
 	if err != nil {
@@ -147,12 +132,6 @@ func renderGatewayProfileFor(p gatewayProfile) ([]byte, string, error) {
 	idLine := "\nid: " + templateID + "\n"
 	if strings.Count(s, idLine) != 1 || strings.Count(s, gatewayProfileHostPlaceholder) != 1 {
 		return nil, "", fmt.Errorf("embedded provider profile %q is not a valid gateway template (one id line and one host placeholder expected)", templateID)
-	}
-	for placeholder, value := range auth {
-		if strings.Count(s, placeholder) != 1 {
-			return nil, "", fmt.Errorf("embedded provider profile %q is not a valid gateway template (one %s placeholder expected)", templateID, placeholder)
-		}
-		s = strings.Replace(s, placeholder, value, 1)
 	}
 	s = strings.Replace(s, idLine, "\nid: "+id+"\n", 1)
 	s = strings.Replace(s, gatewayProfileHostPlaceholder, h, 1)

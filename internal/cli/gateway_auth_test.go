@@ -155,20 +155,21 @@ func TestInferenceGatewayStatus_DefaultAuth(t *testing.T) {
 }
 
 // The status command reports the Claude Code route and the header its
-// credential travels in, which differs per mode.
+// credential travels in: Authorization: Bearer in both modes (the oidc
+// mode's apiKeyHelper value also goes in x-api-key).
 func TestInferenceGatewayStatus_ClaudeRoute(t *testing.T) {
 	dir := writeGatewayStatusConfig(t, "inference:\n  gateway:\n    url: https://gw.example.com/\n    audience: aud\n", "")
 	out, err := runGatewayStatusForTest(t, dir, newGatewayStatusFixture(map[string]string{}, nil))
 	require.NoError(t, err)
 	assert.Contains(t, out, "claude runtime: gateway/<model> runs Claude Code against ANTHROPIC_BASE_URL=https://gw.example.com as <model>")
 	assert.Contains(t, out, "apiKeyHelper")
-	assert.Contains(t, out, "Authorization: Bearer")
-	assert.NotContains(t, out, "x-api-key")
+	assert.Contains(t, out, "Authorization: Bearer (Claude Code also copies it into x-api-key)")
 
 	dir = writeGatewayStatusConfig(t, "inference:\n  gateway:\n    url: https://gw.example.com\n    auth: api-key\n", "")
 	out, err = runGatewayStatusForTest(t, dir, newGatewayStatusFixture(map[string]string{}, nil))
 	require.NoError(t, err)
 	assert.Contains(t, out, "ANTHROPIC_BASE_URL=https://gw.example.com")
-	assert.Contains(t, out, "ANTHROPIC_API_KEY placeholder, sent as x-api-key")
+	assert.Contains(t, out, "ANTHROPIC_AUTH_TOKEN placeholder, sent as Authorization: Bearer")
 	assert.NotContains(t, out, "apiKeyHelper")
+	assert.NotContains(t, out, "x-api-key")
 }

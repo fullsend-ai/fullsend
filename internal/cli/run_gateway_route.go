@@ -95,7 +95,7 @@ func planGatewayRoute(rc runConfig, backend runtime.Backend, sandboxName string,
 		return nil, fmt.Errorf("inference.gateway.url: %w", err)
 	}
 	plan := &gatewayRoutePlan{block: block, host: u.Hostname()}
-	plan.profile = gatewayProfile{host: plan.host, claude: name == "claude", apiKey: block.IsAPIKey()}
+	plan.profile = gatewayProfile{host: plan.host, claude: name == "claude"}
 	gr, ok := backend.Runtime.(runtime.GatewayRouteRuntime)
 	if !ok {
 		return plan, nil

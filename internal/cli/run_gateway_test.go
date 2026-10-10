@@ -89,6 +89,19 @@ func TestValidateGatewayRuntime(t *testing.T) {
 	assert.ErrorContains(t, validateGatewayRuntime("codex", []string{"gateway/a"}), "codex")
 }
 
+func TestValidateClaudeGatewayFallbacks(t *testing.T) {
+	aliases := map[string]string{"fast": "gateway/claude-haiku-5-5", "sonnet": "claude-sonnet-5-5"}
+	require.NoError(t, validateClaudeGatewayFallbacks(false, nil, aliases))
+	require.NoError(t, validateClaudeGatewayFallbacks(false, []string{"sonnet", "opus"}, aliases))
+	require.NoError(t, validateClaudeGatewayFallbacks(true, []string{"gateway/m", "fast", "sonnet"}, aliases), "on the route every fallback goes to the gateway")
+	assert.ErrorContains(t, validateClaudeGatewayFallbacks(false, []string{"opus", "gateway/m"}, aliases), `fallback model "gateway/m" selects the inference gateway`)
+	assert.ErrorContains(t, validateClaudeGatewayFallbacks(false, []string{"fast"}, aliases), `fallback model "fast"`, "checked after models.aliases")
+	assert.ErrorContains(t, validateClaudeGatewayFallbacks(false, []string{"GATEWAY/m"}, nil), "selects the inference gateway")
+	assert.ErrorContains(t, validateClaudeGatewayFallbacks(true, []string{"sonnet", "gateway/"}, aliases), "names no gateway model")
+	assert.ErrorContains(t, validateClaudeGatewayFallbacks(true, []string{"Gateway/ "}, nil), "names no gateway model")
+	assert.ErrorContains(t, validateClaudeGatewayFallbacks(true, []string{"empty"}, map[string]string{"empty": "gateway/"}), `fallback model "empty" names no gateway model`)
+}
+
 func TestValidateClaudeGatewayModels(t *testing.T) {
 	oidc := config.InferenceGatewayConfig{URL: "https://gw.example.com", Audience: "aud"}
 	apiKey := config.InferenceGatewayConfig{URL: "https://gw.example.com", Auth: config.GatewayAuthAPIKey}

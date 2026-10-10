@@ -62,8 +62,10 @@ prefix only selects the route, so `gateway/claude-haiku-5-5` calls `claude-haiku
 - With no block, a `gateway/` model is an error.
 - In the `oidc` mode the block applies only on a run with a forge OIDC endpoint, so a local run with
   a `gateway/` model is an error. Use `auth: api-key` for a local run.
-- Other Claude models in a run with a block keep the Vertex route. The Vertex credential check and
-  the Vertex host-file requirement are skipped only for gateway runs.
+- Other Claude models in a run with a block keep the Vertex route. The Vertex credential check is
+  skipped only for gateway runs. A harness `host_files` mount of `${GOOGLE_APPLICATION_CREDENTIALS}`
+  that is not `optional` is still required, so mark it optional, or remove it, when you move a
+  Vertex harness to the gateway.
 
 **What the runner owns.** For gateway runs, after the agent-writable `.env` (and the harness
 `env.sandbox` and host-file env files it sources), the launch clears the variables listed
@@ -75,33 +77,62 @@ prefix only selects the route, so `gateway/claude-haiku-5-5` calls `claude-haiku
 - the credential, per mode (below).
 
 `.env` cannot override any of these. A variable that `.env` makes `readonly` stops the launch rather
-than reaching Claude Code. The placeholder is read from the sandbox before `.env` runs. This
-covers the environment Claude Code is launched with: the `env` block of the repository's own
-`.claude/settings.json` is applied by Claude Code after launch and can still replace the advertised
-routing (see [Environment the launch clears](#environment-the-launch-clears)).
+than reaching Claude Code. The placeholder is read from the sandbox before `.env` runs.
 
-**Credential per `auth` mode.** Gateways differ in which header they accept. For example, one tested
-gateway refuses `Authorization: Bearer` on `/v1/messages` for static keys. Check that your gateway
-accepts the header for your mode:
+The repository's own `.claude/settings.json` and `.claude/settings.local.json` can carry an `env`
+block, which Claude Code applies after launch over the launch environment. The runner therefore
+repeats the route in the `--settings` file it passes, which ranks above both. That file sets
+`ANTHROPIC_BASE_URL`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and, in the `oidc` mode, the helper
+and its TTL. It also sets every other variable in the [cleared list](#environment-the-launch-clears)
+to `""`, which Claude Code treats as unset. In the `api-key` mode it sets `apiKeyHelper` to `""`,
+so a repository helper adds no `x-api-key` value. One exception: in the `api-key` mode
+`ANTHROPIC_AUTH_TOKEN` is not pinned, because its value, the placeholder, is known only inside the
+sandbox. A repository `env` value for it replaces the Bearer credential. The agent holds no other
+credential for the gateway, so this can break the run but not redirect it.
+
+**Credential per `auth` mode.** In both modes the credential is sent as `Authorization: Bearer`,
+the header [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) sets for the route and the
+one pi sends, so a gateway reads one header whatever the runtime or mode:
 
 | Mode | How Claude Code gets it | Header sent |
 |---|---|---|
-| `oidc` (default) | an `apiKeyHelper` (`command -p cat` of a runner-seeded token file) in the `--settings` file, with `CLAUDE_CODE_API_KEY_HELPER_TTL_MS=10000` | `Authorization: Bearer` |
-| `api-key` | `ANTHROPIC_API_KEY` set to the placeholder for `FULLSEND_INFERENCE_GATEWAY_API_KEY` | `x-api-key` |
+| `oidc` (default) | an `apiKeyHelper` (`command -p cat` of a runner-seeded token file) in the `--settings` file, with `CLAUDE_CODE_API_KEY_HELPER_TTL_MS=10000` | `Authorization: Bearer`, plus a copy in `x-api-key` (below) |
+| `api-key` | `ANTHROPIC_AUTH_TOKEN` set to the placeholder for `FULLSEND_INFERENCE_GATEWAY_API_KEY` | `Authorization: Bearer` |
+
+`ANTHROPIC_API_KEY`, which Claude Code would send as `x-api-key`, is cleared and never set, so a
+`.env` value cannot add a second credential header. A gateway that accepts static keys only in
+`x-api-key` is not supported on the route.
+
+In the `oidc` mode Claude Code also sends the helper's value as `x-api-key`: it puts an
+`apiKeyHelper` value in both headers. The gateway authenticates the `Authorization` header and must
+strip both headers before it calls upstream, as
+[ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) requires.
 
 In the `oidc` mode the token is the job's forge OIDC token, which lives about 300 s. Each refresh
-pins a new placeholder generation, so Claude Code cannot keep one in `ANTHROPIC_API_KEY`. Instead,
-the runner re-seeds the token file after every refresh, as it does for pi. Claude Code (verified on
-2.1.295) re-runs the helper once its TTL has passed, using the cached value for one more request
-while it does, and drops the cached value on a 401. The runner hands each new placeholder over at
-least the refresh work plus a safety margin before the old token expires. A 10 s TTL keeps that
-inside the margin, so a run longer than one token lifetime keeps working. If a hand-off does not
-land, the route fails closed at the expiry of the token Claude Code holds.
+pins a new placeholder generation, so Claude Code cannot keep one in an environment variable.
+Instead, the runner re-seeds the token file after every refresh, as it does for pi, and hands the new
+placeholder over at least the refresh work plus a safety margin before the old token expires
+(typically about two minutes). Claude Code (checked on 2.1.296) re-runs the helper when a request
+is answered 401 or 403. Otherwise it re-runs it in the background once
+`CLAUDE_CODE_API_KEY_HELPER_TTL_MS` has passed, and sends its cached value meanwhile, however old.
 
-**Egress.** The runner imports a per-host profile for the gateway, rendered for Claude Code and the
-auth mode. It allows `POST /v1/messages` and `POST /v1/messages/count_tokens`, from the binaries
-`**/claude`, `**/claude.exe` (the sandbox image's binary) and `**/node`. Its credential metadata
-names the mode's header. OpenShell resolves the placeholder only on requests to that host and path.
+**Limit: long gaps between model requests in the `oidc` mode.** A model request after a gap that
+spans a hand-off and outlasts the old token still carries the old placeholder. Such a gap is
+typically one tool call of more than about 2 minutes. OpenShell refuses to resolve an expired
+placeholder and answers `500` (`credential_unavailable`), not 401, so Claude Code retries with the
+same value until it gives up, and the run ends with a credential error. This fails closed: no wrong
+or expired credential reaches the gateway. For agents with long tool calls, use the `api-key` mode,
+whose credential does not rotate. The same runs on pi are not affected: pi reads the token file on
+every request. A way to recover from the stale value is tracked in
+[#8316](https://github.com/fullsend-ai/fullsend/issues/8316).
+
+**Egress.** The runner imports a per-host profile for the gateway, rendered for Claude Code. It
+allows `POST /v1/messages` and `POST /v1/messages/count_tokens`, from the binaries `**/claude` and
+`**/claude.exe` (the sandbox image's native binary). OpenShell also admits a process whose ancestor
+matches ([egress binary identity](../contributing/runtime-implementation.md#pinned-runtime-binaries-in-the-sandbox-image)),
+so the tools Claude Code starts share this access. Its credential metadata names
+`Authorization: Bearer`. OpenShell
+resolves the placeholder only on requests to that host and path.
 
 **Limits.**
 
@@ -132,12 +163,13 @@ credentials, comes from the sandbox.
 | Run | Cleared after `.env` | Sources it covers |
 |---|---|---|
 | Every run | `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `NODE_OPTIONS`, `NODE_PATH`, `BUN_OPTIONS`: code-loading variables, not routing ones | all |
-| Gateway runs | `ANTHROPIC_BASE_URL`, `ANTHROPIC_UNIX_SOCKET`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_IDENTITY_TOKEN`, `ANTHROPIC_IDENTITY_TOKEN_FILE`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`, and the provider selectors `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_FOUNDRY`, `CLAUDE_CODE_USE_MANTLE`, `CLAUDE_CODE_USE_ANTHROPIC_AWS`, `CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD`, `CLAUDE_CODE_USE_GATEWAY`; then the runner exports its own values | all: `env.sandbox`, host-file env files, the agent's `.env` writes, and providers |
+| Gateway runs | `ANTHROPIC_BASE_URL`, `ANTHROPIC_UNIX_SOCKET`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_IDENTITY_TOKEN`, `ANTHROPIC_IDENTITY_TOKEN_FILE`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`, `ANTHROPIC_PROFILE`, `ANTHROPIC_FEDERATION_RULE_ID`, `CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_SESSION_ACCESS_TOKEN`, `CLAUDE_CODE_HOST_AUTH_ENV_VAR`, `CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER`, `AGENT_PROXY_AUTH_TOKEN`, and the provider selectors `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_FOUNDRY`, `CLAUDE_CODE_USE_MANTLE`, `CLAUDE_CODE_USE_ANTHROPIC_AWS`, `CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD`, `CLAUDE_CODE_USE_GATEWAY`; then the runner exports its own values | all: `env.sandbox`, host-file env files, the agent's `.env` writes, and providers |
 
 On non-gateway runs no `ANTHROPIC_*` variable is cleared. A value the harness sets is honoured.
-Model-choice variables (`ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_*_MODEL`) are never cleared. The
-`env` block of the repository's own `.claude/settings.json` is read by Claude Code itself, after
-launch. On every route, the egress profile and the endpoint-bound placeholder are what keep the
+Model-choice variables (`ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_*_MODEL`) are never cleared or
+pinned. On gateway runs the cleared variables are also pinned in the `--settings` file, against a repository
+`.claude/settings.json` `env` block (see [What the runner owns](#inference-gateway-route)). On
+non-gateway runs that block is read by Claude Code itself, after launch. On every route, the egress profile and the endpoint-bound placeholder are what keep the
 credential on its host.
 
 ## Behaviour differences worth knowing

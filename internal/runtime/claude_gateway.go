@@ -22,23 +22,31 @@ import (
 //
 //   - oidc: the forge OIDC token is rotated every few minutes and each
 //     placeholder generation is pinned, so Claude Code cannot hold one in
-//     ANTHROPIC_API_KEY. The runner seeds the placeholder into a token file
+//     an environment variable. The runner seeds the placeholder into a token file
 //     (gatewayTokenSeed, re-run after every refresh) and gives Claude Code
-//     an apiKeyHelper that prints that file. Claude Code (verified in
-//     2.1.295) sends the helper's value as Authorization: Bearer, re-runs
-//     the helper once CLAUDE_CODE_API_KEY_HELPER_TTL_MS has passed and
-//     drops its cached value on a 401.
+//     an apiKeyHelper that prints that file. Claude Code (checked on
+//     2.1.296) sends the helper's value as both Authorization: Bearer and
+//     x-api-key, re-runs the helper on a 401 or 403, and otherwise re-runs
+//     it in the background once CLAUDE_CODE_API_KEY_HELPER_TTL_MS has
+//     passed, sending the cached value, however old, meanwhile. So a model
+//     request after a gap that spans a hand-off and outlasts the old token
+//     carries an expired placeholder, which OpenShell refuses with a 500
+//     that Claude Code does not treat as an auth failure: the run fails
+//     closed (docs/runtimes/claude.md, "Limit: long gaps between model
+//     requests").
 //   - api-key: the key is not rotated, so the placeholder goes into
-//     ANTHROPIC_API_KEY, which Claude Code sends as x-api-key.
+//     ANTHROPIC_AUTH_TOKEN, which Claude Code sends as Authorization:
+//     Bearer. Both modes send the header ADR 0137 sets for the route (pi
+//     sends the same), so a gateway reads one header whatever the runtime
+//     or mode. ANTHROPIC_API_KEY (x-api-key) is cleared, never set.
 
 const (
 	// claudeGatewayHelperTTLMs is CLAUDE_CODE_API_KEY_HELPER_TTL_MS on an
-	// oidc run. The runner hands a new placeholder over well before the
-	// held token expires (gatewayRefreshDelay keeps at least the refresh
-	// work plus a safety margin); after the TTL Claude Code uses the cached
-	// value once more and re-runs the helper in the background, so the TTL
-	// must stay well inside that margin. The default (5 min) is longer than
-	// a GitHub OIDC token's whole lifetime.
+	// oidc run. Once it has passed, the next request re-reads the token file
+	// in the background, so a run whose model requests are closer together
+	// than the hand-off lead (gatewayRefreshDelay) picks up each new
+	// placeholder before the old token expires. The default (5 min) is
+	// longer than a GitHub OIDC token's whole lifetime.
 	claudeGatewayHelperTTLMs = 10000
 	// claudeGatewayPlaceholderVar holds, in the launch shell only, the
 	// api-key mode's placeholder as the sandbox handed it out, read before
@@ -69,6 +77,15 @@ var claudeGatewayEnvUnset = []string{
 	"CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
 	"CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
 	"CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+	// Further credential sources in Claude Code 2.1.296's credential
+	// registry; most rank below the runner's, but none is the route's.
+	"ANTHROPIC_PROFILE",
+	"ANTHROPIC_FEDERATION_RULE_ID",
+	"CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR",
+	"CLAUDE_CODE_SESSION_ACCESS_TOKEN",
+	"CLAUDE_CODE_HOST_AUTH_ENV_VAR",
+	"CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER",
+	"AGENT_PROXY_AUTH_TOKEN",
 	// Provider selection: each one wins over ANTHROPIC_BASE_URL.
 	"CLAUDE_CODE_USE_VERTEX",
 	"CLAUDE_CODE_USE_BEDROCK",
@@ -172,15 +189,42 @@ func (r ClaudeRuntime) claudeGatewayHelper() string {
 	return "command -p cat " + shellQuote(r.claudeGatewayTokenFile())
 }
 
-// claudeGatewaySettings returns the settings an oidc gateway run adds to
-// the --settings file Claude Code loads, or nil when the sandbox has no
-// oidc gateway run.
+// claudeGatewaySettings returns the settings a gateway run adds to the
+// --settings file Claude Code loads, or nil when the sandbox has no gateway
+// run. Command-line settings rank above the repository's own
+// .claude/settings.json and .claude/settings.local.json, which the agent
+// can write, so this is where the route is pinned against them:
+//
+//   - env repeats the launch's runner-owned values (claudeGatewayPostEnv)
+//     and sets every other cleared variable to "", which Claude Code treats
+//     as unset. A project env block would otherwise replace the launch
+//     environment, for example with CLAUDE_CODE_USE_VERTEX=1 or another
+//     ANTHROPIC_BASE_URL.
+//   - apiKeyHelper is the runner's helper on an oidc run. On an api-key run
+//     it is "", which overrides a project helper (null would not), so no
+//     agent-chosen value is added as x-api-key.
+//
+// The api-key mode's ANTHROPIC_AUTH_TOKEN is not pinned: its value, the
+// placeholder, is only known inside the sandbox at launch.
 func (r ClaudeRuntime) claudeGatewaySettings(sandboxName string) map[string]any {
 	gw := claudeGatewayRunFor(sandboxName)
-	if gw == nil || gw.apiKey {
+	if gw == nil {
 		return nil
 	}
-	return map[string]any{"apiKeyHelper": r.claudeGatewayHelper()}
+	env := map[string]any{}
+	for _, name := range claudeGatewayEnvUnset {
+		env[name] = ""
+	}
+	env[claudeGatewayBaseURLEnv] = gw.baseURL
+	env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+	helper := ""
+	if gw.apiKey {
+		delete(env, "ANTHROPIC_AUTH_TOKEN")
+	} else {
+		env["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"] = strconv.Itoa(claudeGatewayHelperTTLMs)
+		helper = r.claudeGatewayHelper()
+	}
+	return map[string]any{"apiKeyHelper": helper, "env": env}
 }
 
 // mergeClaudeSettings adds extra's keys to the settings JSON document
@@ -223,7 +267,7 @@ func claudeGatewayPostEnv(gw *claudeGatewayRun) string {
 		"export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 	}
 	if gw.apiKey {
-		parts = append(parts, `export ANTHROPIC_API_KEY="$`+claudeGatewayPlaceholderVar+`"`)
+		parts = append(parts, `export ANTHROPIC_AUTH_TOKEN="$`+claudeGatewayPlaceholderVar+`"`)
 	} else {
 		parts = append(parts, "export CLAUDE_CODE_API_KEY_HELPER_TTL_MS="+strconv.Itoa(claudeGatewayHelperTTLMs))
 	}

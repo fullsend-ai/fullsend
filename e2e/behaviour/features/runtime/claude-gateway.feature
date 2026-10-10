@@ -22,7 +22,8 @@ Feature: Claude Code runs an agent through an inference gateway without a creden
 
   @requires:capability:runtime-claude-gateway
   Scenario: gateway run selects Claude Code and reports metrics
-    Given the enrolled test repository
+    Given the test inference gateway is available
+    And the enrolled test repository
     And the test inference gateway is configured for the repository
     And the repository runtime is "claude"
     And a custom harness "claude-gateway-smoke" with:
