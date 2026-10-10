@@ -96,6 +96,8 @@ func testGatewayFromEnv() (gatewayURL, audience string, ok bool) {
 	if gatewayURL == "" {
 		return "", "", false
 	}
+	// The URL embeds the E2E project number: keep it out of artifacts.
+	registerSecretForms(gatewayURL)
 	audience = strings.TrimSpace(os.Getenv(envInferenceGatewayAudience))
 	if audience == "" {
 		audience = defaultGatewayAudience

@@ -74,10 +74,12 @@ Feature: inference gateway route under the dummy runtime
     And the agent will succeed to See the placeholder
     And the agent will succeed to Placeholder is no JWT
     And the agent's probe "Call the gateway" returned HTTP 200
-    # Custody: the stub upstream echoes the headers it received. The
-    # gateway strips the caller's token and adds its own stub key, so the
-    # forge OIDC token (a JWT, "eyJ...") never reaches the upstream.
-    And the agent's probe "Call the gateway" response contains "x-api-key"
+    # Custody: the stub upstream reports which credential it received:
+    # STUB_KEY for the gateway's own stub key, "OTHER len=N" for anything
+    # else. The gateway strips the caller's token and sends its stub key,
+    # so the forge OIDC token (a JWT, "eyJ...") never reaches the upstream.
+    And the agent's probe "Call the gateway" response contains "STUB_KEY"
+    And the agent's probe "Call the gateway" response does not contain "OTHER len="
     And the agent's probe "Call the gateway" response does not contain "eyJ"
     And the agent will fail to Call denied model
     And the agent's probe "Call denied model" returned HTTP 403

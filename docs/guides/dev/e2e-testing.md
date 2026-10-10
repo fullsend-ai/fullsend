@@ -455,8 +455,8 @@ The generated config (print it with `--print-config`):
 
 ### Wiring it into the behaviour tests
 
-The gateway URL embeds the E2E project number, so it is never committed. A
-maintainer wires it in by hand; this script changes no workflow files:
+The gateway URL embeds the E2E project number, so it is never committed. This
+script changes no workflow files; the wiring is:
 
 1. Set two repository-level **secrets**, like the `E2E_GCP_*` secrets:
    - `E2E_INFERENCE_GATEWAY_URL`: the URL the script prints.
@@ -470,9 +470,10 @@ maintainer wires it in by hand; this script changes no workflow files:
 
    `E2E_INFERENCE_GATEWAY_AUDIENCE` defaults to `fullsend-e2e-gateway` and
    needs setting only if it changes.
-2. Pass both secrets in the env of the `behaviour` job's "Run behaviour
-   tests" step in `e2e.yml`, next to the `E2E_GCP_*` secrets. The gateway
-   scenarios skip when these variables are unset. Pull requests that the
+2. `e2e.yml` passes both secrets in the env of the `behaviour` job's "Run
+   behaviour tests" step, next to the `E2E_GCP_*` secrets, and to the
+   artifact redaction step. The gateway scenarios skip when these variables
+   are unset. Pull requests that the
    `gate` job does not authorize never run the `behaviour` job, so they
    receive neither secret. Authorized pull requests, including forks, do
    receive them, and the `behaviour` job runs the pull request's head code

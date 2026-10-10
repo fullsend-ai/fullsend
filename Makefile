@@ -223,8 +223,8 @@ test: lint-all go-test script-test lint-eval-cases
 # (features/runtime/inference-gateway*.feature) reach no real model: the
 # dummy runtime calls the E2E test gateway's echo models. They skip when
 # E2E_INFERENCE_GATEWAY_URL (and, for the api-key scenario,
-# E2E_INFERENCE_GATEWAY_TEST_KEY) is unset. Once wired into e2e.yml, authorized
-# PRs, including forks, receive them (docs/guides/dev/e2e-testing.md).
+# E2E_INFERENCE_GATEWAY_TEST_KEY) is unset. e2e.yml passes both to authorized
+# PRs, including forks (docs/guides/dev/e2e-testing.md).
 # runtime-pi-gateway (a real model run) and inference-gateway-reseed (holds
 # the sandbox for a 330 s wait) are deliberately not declared; run them on
 # demand with the full list (docs/guides/dev/e2e-testing.md), e.g.

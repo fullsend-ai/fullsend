@@ -250,6 +250,8 @@ jobs:
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+          E2E_INFERENCE_GATEWAY_URL: ${{ secrets.E2E_INFERENCE_GATEWAY_URL }}
+          E2E_INFERENCE_GATEWAY_TEST_KEY: ${{ secrets.E2E_INFERENCE_GATEWAY_TEST_KEY }}
         run: |
           exec /usr/bin/env -i \
             PATH=/usr/bin:/bin \
@@ -270,6 +272,8 @@ jobs:
             E2E_GCP_PROJECT_ID="${E2E_GCP_PROJECT_ID}" \
             E2E_GCP_WIF_PROVIDER="${E2E_GCP_WIF_PROVIDER}" \
             E2E_GCP_SERVICE_ACCOUNT="${E2E_GCP_SERVICE_ACCOUNT}" \
+            E2E_INFERENCE_GATEWAY_URL="${E2E_INFERENCE_GATEWAY_URL}" \
+            E2E_INFERENCE_GATEWAY_TEST_KEY="${E2E_INFERENCE_GATEWAY_TEST_KEY}" \
             /usr/bin/bash "${{ github.workspace }}/base-scripts/scripts/redact-behaviour-artifacts.sh"
 
       - name: Upload behaviour debug artifacts
