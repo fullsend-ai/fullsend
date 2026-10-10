@@ -292,16 +292,18 @@ independently through the layered config system (an overlay can override
   gateway that validates the job's forge OIDC token directly
   ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). Models
   with the `gateway/` prefix use this route. The block applies when it is
-  complete and the run has a forge OIDC endpoint (a GitHub Actions job with
-  `id-token: write`). The runner then fetches the job's OIDC assertion for
+  complete and, in the default `oidc` mode, the run has a forge OIDC endpoint
+  (a GitHub Actions job with `id-token: write`); the `api-key` mode (see
+  `auth` below) has no such condition. In the `oidc` mode the runner then
+  fetches the job's OIDC assertion for
   `audience` and puts it behind a run-scoped OpenShell provider with a
   per-host egress profile. It seeds the provider's placeholder into a
   runner-owned token file, and re-seeds it before each token's own `exp`.
   This happens in addition to every other provider: `openai/` and Vertex
   models in the same run keep their own routes. If the gateway cannot be
   reached, or refuses the token, the run fails and does not fall back to
-  another credential. With no block, or on a local run without an OIDC
-  endpoint, the runner adds nothing, so a harness that loads the
+  another credential. With no block, or in the `oidc` mode on a local run
+  without an OIDC endpoint, the runner adds nothing, so a harness that loads the
   inference-gateway extension as a plugin keeps working. A `gateway/` model
   on a runtime without the route (Claude Code, Codex) is an error. Fields:
   - `url` — the gateway origin, for example `https://gateway.example.com`.

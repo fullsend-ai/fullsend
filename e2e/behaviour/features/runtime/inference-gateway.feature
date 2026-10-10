@@ -23,8 +23,10 @@
 # The placeholder variable is the gateway provider's credential key,
 # INFERENCE_GATEWAY_API_KEY (profiles/fullsend-inference-gateway.yaml).
 # assert_not_jwt checks that a variable does not hold a JWT and, when it
-# names a file (INFERENCE_GATEWAY_TOKEN_FILE), that the file does not
-# either. wait sleeps between ops, so the re-seed scenario outlasts one
+# names a file, that the file is readable and does not hold one either.
+# The dummy runtime does not implement the gateway route runtime, so it
+# prepares no token file and exports no INFERENCE_GATEWAY_TOKEN_FILE: only
+# the placeholder variable can be asserted here. wait sleeps between ops, so the re-seed scenario outlasts one
 # token lifetime (exp - iat). "the harness workflow logs show the inference
 # gateway provider was cleaned up" checks the run-scoped provider's removal
 # in the completed harness run's logs.
@@ -55,7 +57,6 @@ Feature: inference gateway route under the dummy runtime
       | description             | op            | args                                                      |
       | See the token file path | assert_env    | INFERENCE_GATEWAY_TOKEN_FILE                              |
       | See the placeholder     | assert_env    | INFERENCE_GATEWAY_API_KEY                                  |
-      | Token file has no JWT   | assert_not_jwt | INFERENCE_GATEWAY_TOKEN_FILE                             |
       | Placeholder is no JWT   | assert_not_jwt | INFERENCE_GATEWAY_API_KEY                                |
       | Emit triage JSON        | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
     And an issue
@@ -63,7 +64,6 @@ Feature: inference gateway route under the dummy runtime
     Then the harness "gateway-probe" workflow completes successfully
     And the agent will succeed to See the token file path
     And the agent will succeed to See the placeholder
-    And the agent will succeed to Token file has no JWT
     And the agent will succeed to Placeholder is no JWT
     And the agent will succeed to Emit triage JSON
 

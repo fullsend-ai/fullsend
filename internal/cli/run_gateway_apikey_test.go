@@ -159,6 +159,22 @@ func TestEnsureGatewayAPIKeyProvider(t *testing.T) {
 	}
 }
 
+// The ::add-mask:: line is percent-encoded, so the runner decodes it back to
+// the exact key even when the key holds a literal "%25" or "%0A".
+func TestEnsureGatewayAPIKeyProvider_MaskIsPercentEncoded(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("GITHUB_ACTIONS", "true")
+	id := gatewayProfileID("gateway.example.com")
+	profileListingStub(t, "Available Provider Profiles:\n    "+id+"  Fullsend inference gateway  endpoints: 1")
+	key := gatewayTestAPIKey + "%25x%0Ay"
+	var err error
+	stderr := captureStderr(t, func() {
+		_, _, err = ensureGatewayAPIKeyProvider(context.Background(), "gateway.example.com", "fs-tri-0123456789abcdef", key, time.Now().Add(time.Hour), ui.New(io.Discard))
+	})
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "::add-mask::"+gatewayTestAPIKey+"%2525x%250Ay\n")
+}
+
 func TestEnsureGatewayAPIKeyProvider_RejectsControlCharacters(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv("GITHUB_ACTIONS", "true")

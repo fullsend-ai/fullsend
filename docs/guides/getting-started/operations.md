@@ -143,7 +143,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Repo Maintainer (OpenAI) | `fullsend inference openai request <owner/repo>[,...]` | Generate the provider/mapping request for an OpenAI organization admin (GPT on pi or codex) |
 | Repo Maintainer (OpenAI) | `fullsend inference openai import [reply.json]` | Record the admin's reply in `config.yaml`, or set the repository variables |
 | Repo Maintainer (OpenAI) | `fullsend inference openai status <owner/repo>` | Check the OpenAI WIF identifiers, and the exchange when run inside Actions |
-| Repo Maintainer (Gateway) | `fullsend inference gateway status <owner/repo>` | Check the `inference.gateway` block and its source, and the gateway's response to the job's OIDC token when run inside Actions |
+| Repo Maintainer (Gateway) | `fullsend inference gateway status <owner/repo>` | Check the `inference.gateway` block, its source and its auth mode. In the default `oidc` mode it also checks the gateway's response to the job's OIDC token when run inside Actions. In the `api-key` mode it warns about the long-lived secret, reports whether `FULLSEND_INFERENCE_GATEWAY_API_KEY` is set, and stops at the config checks |
 | GitHub Maintainer | `fullsend github setup <owner/repo>` | Configure a GitHub repo (no GCP needed) |
 | GitHub Maintainer | `fullsend github set <owner/repo> <key> <value>` | Update a single config value (secret or variable) |
 | GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |

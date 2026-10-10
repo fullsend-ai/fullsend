@@ -367,6 +367,8 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return fmt.Errorf("assert_not_jwt %s unset or empty", varName)
 		case assertNotJWTFound:
 			return fmt.Errorf("assert_not_jwt %s holds a JWT, or names a file that does", varName)
+		case assertNotJWTUninspected:
+			return fmt.Errorf("assert_not_jwt %s could not be inspected: grep failed, or it names a missing or unreadable file", varName)
 		}
 		return fmt.Errorf("assert_not_jwt %s failed: %s", varName, strings.TrimSpace(stderr))
 	case "assert_file":
@@ -633,19 +635,29 @@ func executeWait(ctx context.Context, op BehaviourOperation) error {
 const (
 	assertNotJWTUnset = 3
 	assertNotJWTFound = 4
+	// assertNotJWTUninspected: the credential could not be inspected, so
+	// the check must not pass (grep failed, or an absolute-path value
+	// names a missing or unreadable file).
+	assertNotJWTUninspected = 5
 )
 
 // assertNotJWTCommand checks, inside the sandbox, that the variable
-// varName is set and does not hold a JWT and, when its value is a readable
-// file path (a token-file variable), that the file does not hold one
-// either. A JWT is three base64url segments, the first starting "eyJ".
-// varName has been checked against envVarNamePattern.
+// varName is set and does not hold a JWT and, when its value is an
+// absolute file path (a token-file variable), that the file is readable
+// and does not hold one either. A grep failure (exit above 1) or a missing
+// or unreadable file fails the check rather than passing it. A JWT is
+// three base64url segments, the first starting "eyJ". varName has been
+// checked against envVarNamePattern.
 func assertNotJWTCommand(varName string) string {
 	jwt := shellQuote(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.`)
-	return fmt.Sprintf(`v=$(printenv -- %s); test -n "$v" || exit %d; `+
-		`if printf '%%s' "$v" | grep -Eq %s; then exit %d; fi; `+
-		`case "$v" in /*) if test -f "$v" && test -r "$v"; then if grep -Eq %s -- "$v"; then exit %d; fi; fi ;; esac; exit 0`,
-		shellQuote(varName), assertNotJWTUnset, jwt, assertNotJWTFound, jwt, assertNotJWTFound)
+	return fmt.Sprintf(`v=$(printenv -- %[1]s); test -n "$v" || exit %[2]d; `+
+		`printf '%%s' "$v" | grep -Eq %[3]s; rc=$?; `+
+		`if test "$rc" -eq 0; then exit %[4]d; fi; if test "$rc" -gt 1; then exit %[5]d; fi; `+
+		`case "$v" in /*) if test -f "$v" && test -r "$v"; then `+
+		`grep -Eq %[3]s -- "$v"; rc=$?; `+
+		`if test "$rc" -eq 0; then exit %[4]d; fi; if test "$rc" -gt 1; then exit %[5]d; fi; `+
+		`else exit %[5]d; fi ;; esac; exit 0`,
+		shellQuote(varName), assertNotJWTUnset, jwt, assertNotJWTFound, assertNotJWTUninspected)
 }
 
 // executeHTTPProbe runs one http_probe op and returns the HTTP status,

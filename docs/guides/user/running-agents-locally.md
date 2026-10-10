@@ -421,6 +421,9 @@ Status comment behavior is configured via `status_notifications` in
 > **Experimental.** Behaviour may change. This section covers local runs, where the harness ships
 > the extension as a plugin. Hosted (CI) runs use the runner-managed `inference.gateway` block in
 > `.fullsend/config.yaml` instead (see the [config reference](../../reference/config-reference.md)).
+> A local run can use that block too with `auth: api-key`, which reads the gateway key from
+> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no OIDC endpoint
+> ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
 
 On the [pi](../../runtimes/pi.md) runtime, an agent can reach its model through an
 OpenAI/Anthropic-compatible inference gateway (Praxis, LiteLLM, agentgateway, ...). The

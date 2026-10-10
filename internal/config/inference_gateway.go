@@ -54,11 +54,12 @@ func ValidGatewayAPIs() []string {
 // self-hosted, OpenAI/Anthropic-compatible gateway. Auth selects the
 // credential mode (EffectiveAuth): oidc (the default) presents the job's
 // forge OIDC token and requires Audience; api-key presents a gateway API
-// key and needs no audience. URL is always required (see Missing). The model list is optional at block level and takes exactly
-// one of two forms: Models (inline) or ModelsFile (a repository path to a
-// file in the pi-inference-gateway extension's own config format). A
-// runtime that cannot discover models (pi under PI_OFFLINE) requires one
-// when a gateway/ model is resolved.
+// key and needs no audience. URL is always required (see Missing). The
+// model list is optional at block level and takes exactly one of two
+// forms: Models (inline) or ModelsFile (a repository path to a file in the
+// pi-inference-gateway extension's own config format). A runtime that
+// cannot discover models (pi under PI_OFFLINE) requires one when a
+// gateway/ model is resolved.
 //
 // There is deliberately no runner-variable override: the committed config
 // is the single source, and pull-request events read it from the base

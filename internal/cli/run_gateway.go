@@ -186,7 +186,7 @@ var gatewayAPIKeyEnvFn = func() string { return os.Getenv(gatewayAPIKeyEnv) }
 func gatewayAPIKey() (string, error) {
 	key := strings.TrimSpace(gatewayAPIKeyEnvFn())
 	if key == "" {
-		return "", fmt.Errorf("inference.gateway.auth is %s but %s is not set; set it as a forge secret (or in the local environment)", config.GatewayAuthAPIKey, gatewayAPIKeyEnv)
+		return "", fmt.Errorf("inference.gateway.auth is %q but %s is not set; set it as a forge secret (or in the local environment)", config.GatewayAuthAPIKey, gatewayAPIKeyEnv)
 	}
 	if strings.ContainsAny(key, "\r\n\x00") {
 		return "", fmt.Errorf("%s holds a control character; refusing to use it", gatewayAPIKeyEnv)

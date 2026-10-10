@@ -1151,6 +1151,26 @@ func TestAssertNotJWTCommand(t *testing.T) {
 	assert.Equal(t, assertNotJWTFound, run("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig"))
 	assert.Equal(t, assertNotJWTFound, run(jwtFile))
 	assert.Equal(t, assertNotJWTUnset, run(""))
+	// An absolute path that names no readable file cannot be inspected, so
+	// it must not pass.
+	assert.Equal(t, assertNotJWTUninspected, run(filepath.Join(dir, "missing.token")))
+	assert.Equal(t, assertNotJWTUninspected, run(dir))
+}
+
+// A grep that fails (exit above 1, here a missing binary on PATH is not
+// usable, so a stub grep exits 2) must fail the check, not pass it.
+func TestAssertNotJWTCommand_GrepFailure(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "grep"), []byte("#!/bin/sh\nexit 2\n"), 0o755))
+	cmd := exec.Command("sh", "-c", assertNotJWTCommand("PROBE_VAR"))
+	cmd.Env = append(os.Environ(), "PROBE_VAR=openshell:resolve:env:v1_X", "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+	assert.Equal(t, assertNotJWTUninspected, exitErr.ExitCode())
 }
 
 func TestExecuteBehaviourOp_AssertNotJWT(t *testing.T) {
@@ -1159,7 +1179,7 @@ func TestExecuteBehaviourOp_AssertNotJWT(t *testing.T) {
 	require.ErrorContains(t, err, "requires a variable name")
 	err = executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{Op: "assert_not_jwt", Args: "X; rm -rf /"})
 	require.ErrorContains(t, err, "invalid variable name")
-	for code, want := range map[int]string{0: "", assertNotJWTUnset: "unset or empty", assertNotJWTFound: "holds a JWT", 1: "failed"} {
+	for code, want := range map[int]string{0: "", assertNotJWTUnset: "unset or empty", assertNotJWTFound: "holds a JWT", assertNotJWTUninspected: "could not be inspected", 1: "failed"} {
 		rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
 			return "", "boom", code, nil
 		}}
