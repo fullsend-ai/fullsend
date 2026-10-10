@@ -317,8 +317,10 @@ func TestValidateGatewayCompat_KnownFlags(t *testing.T) {
 	require.Error(t, ValidateGatewayCompat(map[string]any{"supportsStrictTools": "false"}, GatewayAPIAnthropicMessages))
 	require.Error(t, ValidateGatewayCompat(map[string]any{"extraHeaders": "x"}, ""))
 	require.Error(t, ValidateGatewayCompat(map[string]any{"pwd": "x"}, ""))
-	// A flag another transport declares is kept as the extension keeps it.
+	// A flag only another transport declares still has to match that type.
 	require.NoError(t, ValidateGatewayCompat(map[string]any{"maxTokensField": "max_tokens"}, GatewayAPIAnthropicMessages))
+	require.NoError(t, ValidateGatewayCompat(map[string]any{"sendSessionAffinityHeaders": true}, GatewayAPIOpenAIResponses))
+	require.Error(t, ValidateGatewayCompat(map[string]any{"sendSessionAffinityHeaders": "sk-example"}, GatewayAPIOpenAIResponses))
 }
 
 func TestValidateGatewayCompat_AllowedFallbackModelsEveryAPI(t *testing.T) {

@@ -346,19 +346,12 @@ func ValidateGatewayCompat(compat map[string]any, api string) error {
 		if k == "allowedFallbackModels" {
 			return fmt.Errorf("flag %q is not supported: the gateway routes models itself", k)
 		}
-		var checks []gatewayCompatCheck
-		structured := false
-		for _, target := range ValidGatewayAPIs() {
-			if api != "" && target != api {
-				continue
-			}
-			if check, ok := gatewayCompatFields[target][k]; ok {
-				if check == nil {
-					structured = true
-					continue
-				}
-				checks = append(checks, check)
-			}
+		checks, structured := gatewayCompatChecks(k, api)
+		if len(checks) == 0 && !structured && api != "" {
+			// A flag only another transport declares: the extension keeps
+			// it untyped, but fullsend still holds it to the declared type
+			// so the name cannot carry free text past the credential filter.
+			checks, structured = gatewayCompatChecks(k, "")
 		}
 		switch {
 		case structured && len(checks) == 0:
@@ -377,6 +370,27 @@ func ValidateGatewayCompat(compat map[string]any, api string) error {
 		}
 	}
 	return nil
+}
+
+// gatewayCompatChecks returns the value checks the transports declare for
+// flag k (only api's when api is set) and whether any declares it as a
+// structured field.
+func gatewayCompatChecks(k, api string) ([]gatewayCompatCheck, bool) {
+	var checks []gatewayCompatCheck
+	structured := false
+	for _, target := range ValidGatewayAPIs() {
+		if api != "" && target != api {
+			continue
+		}
+		if check, ok := gatewayCompatFields[target][k]; ok {
+			if check == nil {
+				structured = true
+				continue
+			}
+			checks = append(checks, check)
+		}
+	}
+	return checks, structured
 }
 
 func gatewayCompatAPISuffix(api string) string {

@@ -316,7 +316,10 @@ independently through the layered config system (an overlay can override
     `contextWindow` and `maxTokens` positive whole numbers, `cost` only
     `input`, `output`, `cacheRead` and `cacheWrite` as non-negative
     numbers, and `thinkingLevelMap` thinking levels mapped to a string or
-    `null`. Duplicate JSON keys are refused. `include`,
+    `null`. Duplicate JSON keys are refused. These checks validate the
+    file's shape; they are not secret detection. `fullsend github setup`
+    commits the file as written, so keep credentials out of free-text
+    values such as model names. `include`,
     `exclude` and `defaultApi` only apply to models discovered from the
     gateway, so they have no effect on a pi run. A file that sets
     `baseUrl`, `baseUrlEnv`, a credential key (`apiKey*`, `tokenFile`,
