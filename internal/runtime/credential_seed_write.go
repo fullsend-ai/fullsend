@@ -64,12 +64,14 @@ func SeedReplacing(seed string, previous ...string) string {
 // rename. A placeholder that appears in the history but is not its last
 // line was replaced by a newer generation, and its writer skips the rename.
 // Skipping is not a failure when the file already holds that newer
-// generation, so the writer first checks that the file names the history's
-// last entry, which must be a well-formed placeholder that the file holds as
-// a whole token, not a blank line or a fragment of some other value. The history is a plain file in a directory the agent can
-// write: an agent that truncates or reorders it must not turn a skipped
-// write into a silent success while the file holds something else. A file
-// that does not name the last entry fails the seed instead.
+// generation, so the writer first checks that the file holds the history's
+// last entry. That entry must be a well-formed placeholder for envVar (the
+// gateway namespace, ending in envVar), and the file must hold exactly the
+// content this seed would write for it, not a token that merely appears in
+// it. The history is a plain file in a directory the agent can write: an
+// agent that truncates or reorders it must not turn a skipped write into a
+// silent success while the file holds something else. A file that does not
+// hold the last entry fails the seed instead.
 //
 // A stalled seed may not have recorded its placeholder when the refresher
 // rotates past it, so arrival order alone cannot mark it stale. The
@@ -109,11 +111,18 @@ func orderedSeedWrite(envVar, dir, final, write, failMsg, failStmt string) strin
 	last := `"$fullsend_last"`
 	readLast := `{ fullsend_last=$(command -p tail -n 1 ` + generations + ` 2>/dev/null) || :; }`
 	// lastHeld succeeds only when the history's last entry is a well-formed
-	// placeholder and the credential file holds it as a whole token. A blank
-	// or truncated entry, or one that is merely part of some other value,
-	// does not show that the file holds the newest generation.
+	// placeholder for envVar (the gateway namespace, ending in the
+	// credential's env key) and the credential file holds exactly the
+	// content this seed would write for it. A bare token anywhere in the
+	// file is not enough: words such as the provider name or the credential
+	// type appear in the file as metadata. A blank, truncated or foreign
+	// entry therefore does not show that the file holds the newest
+	// generation.
 	lastHeld := `{ case ` + last + ` in ''|*[!A-Za-z0-9_:]*) command -p false ;;` +
-		` *) command -p grep -Eq -e "(^|[^A-Za-z0-9_:])${fullsend_last}([^A-Za-z0-9_:]|\$)" ` + shellQuote(final) + ` 2>/dev/null ;; esac; }`
+		` ` + piPlaceholderPrefix + `*` + envVar + `)` +
+		` fullsend_want=$( ` + envVar + `=` + last + `; ` + write + ` ) && test -n "$fullsend_want"` +
+		` && command -p grep -qxF -e "$fullsend_want" ` + shellQuote(final) + ` 2>/dev/null ;;` +
+		` *) command -p false ;; esac; }`
 	validatePrev := `case "${` + seedPreviousEnv + `:-}" in *[!A-Za-z0-9_:\ ]*) echo 'fullsend: ` + seedPreviousEnv + ` has unexpected characters; refusing to seed' >&2; ` + failStmt + ` ;; esac`
 	recordPrev := `{ test -z "${` + seedPreviousEnv + `:-}" ||` +
 		` { { for fullsend_g in $` + seedPreviousEnv + `; do command -p grep -qxF -e "$fullsend_g" ` + generations + ` 2>/dev/null || printf '%s\n' "$fullsend_g"; done;` +

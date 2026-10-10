@@ -307,6 +307,13 @@ func TestOrderedSeed_StaleWriterCannotReplaceNewer(t *testing.T) {
 				return p[:len(p)-len("_"+c.env)+1] + "\n"
 			}},
 			{"a last entry with unexpected characters", func() string { return "v2 v2\n" }},
+			// pi's auth.json holds these words as JSON metadata, so a
+			// token match over the file would accept them.
+			{"a last entry that is the provider name", func() string { return "openai\n" }},
+			{"a last entry that is the credential type", func() string { return "api_key\n" }},
+			{"a last entry outside the placeholder namespace", func() string {
+				return "v2_" + c.env + "\n"
+			}},
 		} {
 			t.Run(c.name+"/skipped write fails on "+tc.name, func(t *testing.T) {
 				dir := filepath.Join(t.TempDir(), "cfg")
