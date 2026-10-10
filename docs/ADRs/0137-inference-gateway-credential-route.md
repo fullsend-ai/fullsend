@@ -26,7 +26,7 @@ WIF exchange, which needs admin access to the OpenAI organization. The second
 is a static `OPENAI_API_KEY`, which is a long-lived provider key kept in forge
 secret storage. Neither route can put an LLM gateway in front of the provider.
 Such a gateway is an OpenAI- and Anthropic-compatible front door, such as
-agentgateway, Praxis, LiteLLM or APISIX. It checks the job's CI OIDC token
+agentgateway, Praxis or LiteLLM. It checks the job's CI OIDC token
 against the forge's JWKS and holds the provider key server-side.
 
 This decision builds on four earlier ones and answers part of a fifth:
@@ -319,8 +319,8 @@ These are deferred and named:
   token, placeholder and model-prefix id.
 - GitLab ID tokens, which arrive as an `id_tokens:` job variable rather than
   a request URL
-- operator guides for gateways beyond agentgateway and Praxis (LiteLLM,
-  APISIX); any gateway that meets the requirements above can serve the route
+- operator guides for gateways beyond agentgateway and Praxis, such as
+  LiteLLM; any gateway that meets the requirements above can serve the route
 
 ## Consequences
 
