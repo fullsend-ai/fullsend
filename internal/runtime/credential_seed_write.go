@@ -112,16 +112,18 @@ func orderedSeedWrite(envVar, dir, final, write, failMsg, failStmt string) strin
 	readLast := `{ fullsend_last=$(command -p tail -n 1 ` + generations + ` 2>/dev/null) || :; }`
 	// lastHeld succeeds only when the history's last entry is a well-formed
 	// placeholder for envVar (the gateway namespace, ending in the
-	// credential's env key) and the credential file holds exactly the
-	// content this seed would write for it. A bare token anywhere in the
-	// file is not enough: words such as the provider name or the credential
-	// type appear in the file as metadata. A blank, truncated or foreign
+	// credential's env key) and the credential file as a whole equals the
+	// content this seed would write for it (command substitution drops
+	// trailing newlines from both sides). A bare token, or one matching
+	// line, is not enough: words such as the provider name or the credential
+	// type appear in the file as metadata, and extra lines around the
+	// expected content leave a malformed file. A blank, truncated or foreign
 	// entry therefore does not show that the file holds the newest
 	// generation.
 	lastHeld := `{ case ` + last + ` in ''|*[!A-Za-z0-9_:]*) command -p false ;;` +
 		` ` + piPlaceholderPrefix + `*` + envVar + `)` +
 		` fullsend_want=$( ` + envVar + `=` + last + `; ` + write + ` ) && test -n "$fullsend_want"` +
-		` && command -p grep -qxF -e "$fullsend_want" ` + shellQuote(final) + ` 2>/dev/null ;;` +
+		` && fullsend_have=$(command -p cat ` + shellQuote(final) + ` 2>/dev/null) && test "$fullsend_have" = "$fullsend_want" ;;` +
 		` *) command -p false ;; esac; }`
 	validatePrev := `case "${` + seedPreviousEnv + `:-}" in *[!A-Za-z0-9_:\ ]*) echo 'fullsend: ` + seedPreviousEnv + ` has unexpected characters; refusing to seed' >&2; ` + failStmt + ` ;; esac`
 	recordPrev := `{ test -z "${` + seedPreviousEnv + `:-}" ||` +

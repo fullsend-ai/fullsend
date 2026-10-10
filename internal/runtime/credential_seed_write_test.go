@@ -328,6 +328,31 @@ func TestOrderedSeed_StaleWriterCannotReplaceNewer(t *testing.T) {
 			})
 		}
 
+		// The credential file must equal the rendered content as a whole. A
+		// file that holds the newest generation plus extra lines is
+		// malformed, so a stale seed must not skip its write as done.
+		for _, tc := range []struct {
+			name string
+			edit func(content string) string
+		}{
+			{"an extra line before the credential", func(s string) string { return "junk\n" + s }},
+			{"an extra line after the credential", func(s string) string { return strings.TrimRight(s, "\n") + "\nBROKEN\n" }},
+			{"extra lines on both sides of the credential", func(s string) string { return "junk\n" + strings.TrimRight(s, "\n") + "\nBROKEN\n" }},
+		} {
+			t.Run(c.name+"/skipped write fails on "+tc.name, func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "cfg")
+				c.run(t, dir, "1")
+				c.run(t, dir, "2")
+				path := filepath.Join(dir, c.file)
+				data, err := os.ReadFile(path)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, []byte(tc.edit(string(data))), 0o600))
+				out, err := c.command(c.seed(dir), "1").CombinedOutput()
+				require.Error(t, err, string(out))
+				assert.Contains(t, string(out), "not treating the skipped write as done")
+			})
+		}
+
 		t.Run(c.name+"/lock does not collide with pi's auth.json.lock", func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "cfg")
 			c.run(t, dir, "1")
