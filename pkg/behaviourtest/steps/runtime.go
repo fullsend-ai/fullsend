@@ -383,8 +383,10 @@ func assertRunMetricsReportTokens(w *world.World) error {
 
 // assertRunMetricsReportTokensUnless is assertRunMetricsReportTokens, except
 // that a run whose requested model is exempt may report zero tokens as long
-// as the model answered (num_turns > 0). It is for a gateway whose stream
-// delivers usage after the finish chunk, which codex then records as 0.
+// as it recorded a turn (num_turns > 0). A failed turn also counts, so pair
+// it with steps that prove the model answered (a successful workflow and a
+// recorded tool call). It is for a model whose usage the gateway delivers
+// after the finish chunk, which codex then records as 0.
 func assertRunMetricsReportTokensUnless(w *world.World, exempt string) error {
 	m, err := readRunMetrics(w)
 	if err != nil {
@@ -394,7 +396,7 @@ func assertRunMetricsReportTokensUnless(w *world.World, exempt string) error {
 		return assertRunMetricsReportTokens(w)
 	}
 	if m.NumTurns <= 0 {
-		return fmt.Errorf("metrics.json num_turns = %d, want > 0 (model %q never answered)", m.NumTurns, m.RequestedModel)
+		return fmt.Errorf("metrics.json num_turns = %d, want > 0 (no turn recorded for model %q)", m.NumTurns, m.RequestedModel)
 	}
 	return nil
 }

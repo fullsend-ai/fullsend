@@ -8,7 +8,8 @@
 # one revision; spec drift and a not-Ready service redeploy; a run without a
 # Vertex flag never removes the Vertex models; --delete removes exactly the
 # named resources; an image digest mismatch, an HTML 401 from Cloud Run's
-# front end and an unreadable resource fail the run.
+# front end and an unreadable resource fail the run; REAL_KEY_MODEL decides
+# the one model the real key may call.
 #
 # Run from the repo root:
 #   bash hack/setup-e2e-inference-gateway_test.sh
@@ -639,6 +640,26 @@ if run_setup --without-vertex; then fail "ran without a project"; else
 if E2E_GCP_PROJECT_ID="${PROJECT}" env PATH="${SHIM_DIR}:${PATH}" STUB_STATE="${STATE}" \
     bash "${SETUP}" --without-vertex > "${STATE}/out" 2>&1; then
   pass "E2E_GCP_PROJECT_ID is the default project"; else fail "E2E_GCP_PROJECT_ID ignored"; fi
+
+# --- real key: REAL_KEY_MODEL picks the one model it may call -------------------
+REAL_HASH="sha256:$(printf 'b%.0s' {1..64})"
+# real_key_models FILE: the models whose rules admit the real key, then its allowedModels.
+real_key_models() {
+  awk '/^  - name: /{m=$3} /apiKey.purpose == "e2e-real-run"/{print m}' "$1" | tr '\n' ' '
+  grep -A1 'purpose: e2e-real-run' "$1" | sed -n 's/.*allowedModels: //p'
+}
+for want in claude-haiku-5-5 gpt-oss-120b; do
+  if [[ "${want}" == claude-haiku-5-5 ]]; then sel=(); else sel=(REAL_KEY_MODEL="${want}"); fi
+  env ${sel[@]+"${sel[@]}"} REAL_KEY_HASH="${REAL_HASH}" PATH="${SHIM_DIR}:${PATH}" \
+    bash "${SETUP}" --project "${PROJECT}" --with-vertex --print-config > "${STATE}/real.yaml"
+  got=$(real_key_models "${STATE}/real.yaml")
+  if [[ "${got}" == "${want} [${want}]" ]]; then
+    pass "the real key may call only ${want}"; else fail "real key for ${want}: ${got}"; fi
+done
+if env REAL_KEY_MODEL=gemini-3.8-flash REAL_KEY_HASH="${REAL_HASH}" PATH="${SHIM_DIR}:${PATH}" \
+    bash "${SETUP}" --project "${PROJECT}" --with-vertex --print-config > "${STATE}/out" 2>&1; then
+  fail "unsupported REAL_KEY_MODEL accepted"; else
+  expect_out "REAL_KEY_MODEL is limited to two models" "REAL_KEY_MODEL must be"; fi
 
 echo
 if (( FAILURES > 0 )); then

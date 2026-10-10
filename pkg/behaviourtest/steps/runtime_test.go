@@ -153,7 +153,7 @@ func TestAssertRunMetricsReportTokensUnless(t *testing.T) {
 	}{
 		{"tokens pass", `{"requested_model":"openai/gpt-5.6-luna","num_turns":2,"token_usage":{"input":10,"output":5}}`, ""},
 		{"exempt model with zero tokens passes", `{"requested_model":"gateway/gpt-oss-120b","num_turns":3,"token_usage":{"input":0,"output":0}}`, ""},
-		{"exempt model that never answered fails", `{"requested_model":"gateway/gpt-oss-120b","num_turns":0,"token_usage":{"input":0,"output":0}}`, "never answered"},
+		{"exempt model with no turn fails", `{"requested_model":"gateway/gpt-oss-120b","num_turns":0,"token_usage":{"input":0,"output":0}}`, "no turn recorded"},
 		{"other model with zero tokens fails", `{"requested_model":"gateway/other","num_turns":3,"token_usage":{"input":0,"output":0}}`, "want input and output > 0"},
 	}
 	for _, tc := range cases {

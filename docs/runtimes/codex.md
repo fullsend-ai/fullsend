@@ -99,8 +99,9 @@ included
 run where no block applies fails before the agent starts:
 
 ```
-model "gateway/vendor/org/model" selects the inference gateway route, but no inference.gateway
-block applies to this run: ...
+gateway/ models on codex need an inference.gateway block that applies to this run: add one to
+.fullsend/config.yaml (with auth: oidc it applies on a run with a forge OIDC endpoint, with auth:
+api-key on every run)
 ```
 
 **The runner owns the route.** It renders a second model provider, `fullsend-gateway`, into the
@@ -120,13 +121,13 @@ used on codex, and codex's own `GET /v1/models` probe is denied by the gateway p
 `gateway/` is what codex sends. The gateway must serve
 it on `POST /v1/responses` with Bearer auth.
 
-**Token counts can read 0.** Codex takes usage from the gateway's final Responses event. A gateway
-that delivers usage only after the finish chunk sends zeros there, so `metrics.json` records 0 tokens
-for a run that did answer. Read usage from the gateway's own log in that case.
+**Token counts can read 0.** Codex takes usage from the gateway's final Responses event. On the E2E
+test gateway, `gpt-oss-120b`'s usage arrives after the finish chunk, and `metrics.json` records 0
+tokens for runs that did answer. If you see this with your gateway, read usage from the gateway's
+own log.
 
 **Check the effort level against the model.** Effort is passed to the gateway as is, and some models
-refuse some levels. `gpt-6-luna`, for example, rejects `minimal` with an upstream 400 (it accepts
-`none`, `low`, `medium`, `high`, `xhigh` and `max`).
+refuse some levels with an upstream 400. Check the levels your model accepts before you set `effort`.
 
 ## At a glance
 
@@ -139,7 +140,8 @@ refuse some levels. `gpt-6-luna`, for example, rejects `minimal` with an upstrea
 | Not supported | Sub-agents, `plugins:`, fallback chains, non-OpenAI providers (other than through a Responses-capable inference gateway), Chat Completions or Messages on a gateway |
 
 Cost is **not** in `metrics.json` on codex: the `codex exec --json` stream carries no cost field, so
-the value stays `0`. Token counts are recorded normally.
+the value stays `0`. Token counts are recorded normally on the direct route; through a gateway they
+can read 0 (see [Models through an inference gateway](#models-through-an-inference-gateway-experimental)).
 
 ## Running it locally
 

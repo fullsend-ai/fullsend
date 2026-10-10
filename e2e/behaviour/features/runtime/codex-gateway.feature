@@ -8,18 +8,19 @@
 # assertion.
 #
 # Gated on the `runtime-codex-gateway` capability, which is NOT declared by
-# default. codex speaks the Responses API only, and fullsend renders no
-# model catalog for it, so the model is pinned here; the inference.gateway model list the shared
-# step commits for pi is not read on codex. The test gateway serves
-# gpt-oss-120b on Responses. The gateway location comes from
-# E2E_INFERENCE_GATEWAY_URL and E2E_INFERENCE_GATEWAY_AUDIENCE (default
-# fullsend-e2e-gateway) and is never committed here; the scenario skips when
-# the URL is unset. Enable with
-# BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-codex-gateway.
+# default: it costs a real model run. codex speaks the Responses API only,
+# and fullsend renders no model catalog for it, so the model is pinned
+# here; the inference.gateway model list the shared step commits for pi is
+# not read on codex. The test gateway serves gpt-oss-120b on Responses. The
+# gateway location comes from E2E_INFERENCE_GATEWAY_URL and
+# E2E_INFERENCE_GATEWAY_AUDIENCE (default fullsend-e2e-gateway) and is never
+# committed here; the scenario skips when the URL is unset. Run it on demand
+# with the full capability list in docs/guides/dev/e2e-testing.md.
 #
-# The test gateway delivers gpt-oss-120b's usage after the finish chunk,
+# On the test gateway, gpt-oss-120b's usage arrives after the finish chunk,
 # so codex records 0 tokens for it; the token step exempts that model and
-# requires that it answered instead.
+# requires a recorded turn instead, and the workflow and tool-call steps
+# prove the model answered.
 Feature: codex runtime runs an agent through an inference gateway without a credential in the sandbox
 
   @requires:capability:runtime-codex-gateway

@@ -275,7 +275,8 @@ changes:
   (`pkg/behaviourtest/drivers/install/driver.go`). Edit `POOL_ORGS` or
   `POOL_REPOS` at the top of the script.
 - **agentgateway bump:** change `AGW_VERSION`.
-- **Model change:** edit `VERTEX_MODELS`.
+- **Model change:** edit `VERTEX_MODELS`, plus `vertex_params` for a
+  model-as-a-service model.
 
 The operator needs these roles on the project:
 
@@ -386,10 +387,10 @@ The api-key behaviour test ([ADR 0138](../../ADRs/0138-inference-gateway-api-key
 needs a gateway key for the `echo` model only. Pass its hash, never the key,
 as `ECHO_KEY_HASH=sha256:<64 hex>` on every run; a run without it removes
 the key. `REAL_KEY_HASH` does the same for a time-boxed key used in one local
-run, and is left unset afterwards. It may call one real model:
+run, and is left unset afterwards. That key may call one real model:
 `claude-haiku-5-5` by default, or `gpt-oss-120b` with
-`REAL_KEY_MODEL=gpt-oss-120b`. With a key, this
-test gateway serves both modes, so its OIDC check is permissive: a request
+`REAL_KEY_MODEL=gpt-oss-120b`. With a key, this test gateway serves both
+modes, so its OIDC check is permissive: a request
 with no credential passes authentication and each model then refuses it
 with a 403. That is a test-gateway arrangement, not a recommendation. An
 OIDC-only gateway keeps strict `jwtAuth`, and a gateway that does mix the
@@ -426,15 +427,15 @@ The generated config (print it with `--print-config`):
   The mode depends on whether a key hash is set:
   - **No key hash:** `jwtAuth` runs in `strict` mode, and a request without
     a valid token gets a 401.
-  - **`ECHO_KEY_HASH` or `REAL_KEY_HASH` set** (the durable gateway has
-    `ECHO_KEY_HASH` only, and no real key): `jwtAuth` runs in `permissive` mode, followed by an
+  - **`ECHO_KEY_HASH` or `REAL_KEY_HASH` set:** `jwtAuth` runs in `permissive` mode, followed by an
     `apiKey` policy in `optional` mode. A valid JWT is checked and
     stripped first, so it never reaches the key check. A bearer that is not
     a JWT goes on to the key check, and a wrong key gets a 401. Each key
     carries its own `allowedModels`: `[echo]` for the echo key, and the one
     model `REAL_KEY_MODEL` names for the real key. A request with no credential
     passes both checks, and each model's authorisation rules then deny it
-    with a 403.
+    with a 403. The durable gateway has `ECHO_KEY_HASH` only, and no real
+    key.
 
   This mixed setup exists so that one test gateway can serve both the
   `oidc` and `api-key` auth modes. Do not copy it to production. A
@@ -451,16 +452,20 @@ The generated config (print it with `--print-config`):
   each kind of caller: the pool shares one budget per model, each configured
   key has its own, and every other caller shares one separate budget. So no
   caller can use up the behaviour tests' budget, not even with requests the
-  model refuses. `echo` and `echo-denied` allow 60 requests a second. Tokens
-  are counted after each response, including cached input. The budgets are
-  held in the single instance and start again with each new revision. A
-  refused request gets a 429 whose body is `rate limit exceeded`; the limit
-  appears only in its `x-ratelimit-limit` and `retry-after` headers. During
-  a flood of unauthenticated requests, a request with no credential can
-  receive that 429 instead of a 403. The script's tests check the rendered
-  rules but do not evaluate them; the separation between callers was
-  checked by sending requests to a running gateway as the pool, as a key,
-  and without credentials.
+  model refuses. `echo` and `echo-denied` allow pool and key callers 60
+  requests a second; every other caller stays in its one shared bucket.
+  Tokens are counted after each response, including cached input, so the
+  token budget is a throttle rather than a hard ceiling: requests already in
+  flight when it runs out still finish, and only later ones are refused. The
+  budgets are held in the single instance and start again with each new
+  revision. On the durable gateway, a refused request gets a 429 whose body
+  is `rate limit exceeded`; the limit appears only in its
+  `x-ratelimit-limit` and `retry-after` headers. During a flood of
+  unauthenticated requests, a request with no credential can receive that
+  429 instead of a 403. The script's tests check the rendered rules but do
+  not evaluate them; the separation between callers was checked by sending
+  requests to a running gateway as the pool, as a key, and without
+  credentials.
 - serves these models:
 
   | Model | Allowed for | Upstream |
