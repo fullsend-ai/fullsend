@@ -219,15 +219,23 @@ test: lint-all go-test script-test lint-eval-cases
 # fullsend-sandbox:latest ships pi since v0.37.0; each pi scenario costs one
 # small haiku run on the pool repo's Vertex WIF. Override to skip them:
 #   BEHAVIOUR_CAPABILITIES= make behaviour-test
+# inference-gateway and inference-gateway-api-key
+# (features/runtime/inference-gateway*.feature) reach no real model: the
+# dummy runtime calls the E2E test gateway's echo models. They skip when
+# E2E_INFERENCE_GATEWAY_URL (and, for the api-key scenario,
+# E2E_INFERENCE_GATEWAY_TEST_KEY) is unset, as on fork PRs.
+# runtime-pi-gateway (a real model run) and inference-gateway-reseed (holds
+# the sandbox for a 330 s wait) are deliberately not declared; run them on
+# demand with the full list (docs/guides/dev/e2e-testing.md), e.g.
+#   BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,inference-gateway-reseed
 # runtime-pi-openai (features/runtime/pi-openai.feature) is deliberately not
 # declared: it needs an OpenAI organization mapped to the pool repositories
 # (docs/guides/infrastructure/openai-workload-identity.md). Add it here once
-# that exists: BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-pi-openai
+# that exists.
 # runtime-codex-openai (features/runtime/codex-openai.feature) is undeclared
 # for the same reason, and codex has no Vertex path — so unlike pi it has no
-# default behaviour coverage at all until that organization exists:
-# BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-codex-openai
-BEHAVIOUR_CAPABILITIES ?= runtime-pi
+# default behaviour coverage at all until that organization exists.
+BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
 behaviour-test:
 	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/

@@ -909,8 +909,8 @@ else
 fi
 echo
 if [[ -n "${URL}" ]]; then
-  echo "==> Behaviour test settings (set the URL as a variable in the dev and stage"
-  echo "    environments; it embeds the project number, so never commit it):"
+  echo "==> Behaviour test settings (set the URL as a repository secret; it embeds"
+  echo "    the project number, so never commit it):"
   echo
   echo "    E2E_INFERENCE_GATEWAY_URL=${URL}"
   echo "    E2E_INFERENCE_GATEWAY_AUDIENCE=${AUDIENCE}"

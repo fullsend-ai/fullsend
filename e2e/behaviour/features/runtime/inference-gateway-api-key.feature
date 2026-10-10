@@ -6,7 +6,8 @@
 # own credential, so the key never travels further.
 #
 # Gated on the `inference-gateway` and `inference-gateway-api-key`
-# capabilities, which are NOT declared by default. It needs the durable
+# capabilities, which `make behaviour-test` declares by default (the key
+# reaches only the echo model, never a real one). It needs the durable
 # test gateway (#8286) with a test key authorised for the `echo` model
 # only, and that key provisioned two ways:
 #   - as the pool repositories' FULLSEND_INFERENCE_GATEWAY_API_KEY secret,

@@ -260,9 +260,10 @@ durable [agentgateway](https://github.com/agentgateway/agentgateway) v1.6.0
 instance on Cloud Run in the E2E GCP project. The gateway accepts GitHub
 Actions OIDC tokens from the pool repositories only.
 `hack/setup-e2e-inference-gateway.sh` creates it, or adopts an existing one
-with the same names, and keeps it in sync. The scenarios stay behind
-`@requires:capability:inference-gateway` until the gateway exists and the
-capability is declared.
+with the same names, and keeps it in sync. The scenarios are gated on
+`@requires:capability:` tags.
+[Wiring it into the behaviour tests](#wiring-it-into-the-behaviour-tests)
+lists the capabilities CI declares and how to run the rest.
 
 ### Who runs it, and when
 
@@ -344,8 +345,8 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
 
    ==> No changes: everything was already in place.
 
-   ==> Behaviour test settings (set the URL as a variable in the dev and stage
-       environments; it embeds the project number, so never commit it):
+   ==> Behaviour test settings (set the URL as a repository secret; it embeds
+       the project number, so never commit it):
 
        E2E_INFERENCE_GATEWAY_URL=https://fullsend-e2e-gateway-abc123-ul.a.run.app
        E2E_INFERENCE_GATEWAY_AUDIENCE=fullsend-e2e-gateway
@@ -416,22 +417,40 @@ not on the project.
 
 The generated config (print it with `--print-config`):
 
-- validates tokens with `jwtAuth` in `strict` mode. The issuer is
+- validates tokens with `jwtAuth`. The issuer is
   `https://token.actions.githubusercontent.com`, its JWKS is fetched from
   GitHub, and the only accepted audience is `fullsend-e2e-gateway`. The
   caller's token is never forwarded upstream; that is agentgateway's default.
+  The mode depends on whether a key hash is set:
+  - **No key hash:** `jwtAuth` runs in `strict` mode, and a request without
+    a valid token gets a 401.
+  - **`ECHO_KEY_HASH` or `REAL_KEY_HASH` set** (the durable gateway has
+    `ECHO_KEY_HASH`): `jwtAuth` runs in `permissive` mode, followed by an
+    `apiKey` policy in `optional` mode. A valid JWT is checked and
+    stripped first, so it never reaches the key check. A bearer that is not
+    a JWT goes on to the key check, and a wrong key gets a 401. Each key
+    carries its own `allowedModels`: `[echo]` for the echo key and
+    `[claude-haiku-5-5]` for the real key. A request with no credential
+    passes both checks, and each model's authorisation rules then deny it
+    with a 403.
+
+  This mixed setup exists so that one test gateway can serve both the
+  `oidc` and `api-key` auth modes. Do not copy it to production. A
+  production OIDC gateway should keep the strict `jwtAuth` recommended by
+  [ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md).
 - authorises each model with an exact-match list of `jwt.repository` values.
   The list covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
   `halfsend-12` and in the STAGE org `halfsend`: 156 repositories. It
   matches names, so keep the pool orgs registered: whoever owns a pool org
-  name can call the gateway.
+  name can call the gateway. A model that a configured key may call also
+  admits that key's `apiKey.purpose`.
 - strips `x-api-key` from every request it sends upstream.
 - serves these models:
 
   | Model | Allowed for | Upstream |
   |-------|-------------|----------|
-  | `claude-haiku-5-5`, `gemini-3.8-flash` (`--with-vertex` only) | The pool | Vertex AI, location `global`, as the runtime service account |
-  | `echo` | The pool | A header-echo listener in the same container. The gateway sends it the stub key. Its answer reports whether that key, and not the caller's credential, arrived, so the custody check can assert it. |
+  | `claude-haiku-5-5`, `gemini-3.8-flash` (`--with-vertex` only) | The pool, plus the real key for `claude-haiku-5-5` when `REAL_KEY_HASH` is set | Vertex AI, location `global`, as the runtime service account |
+  | `echo` | The pool, plus the echo key when `ECHO_KEY_HASH` is set | A header-echo listener in the same container. The gateway sends it the stub key. Its answer reports whether that key, and not the caller's credential, arrived, so the custody check can assert it. |
   | `echo-denied` | Only `fullsend-e2e-gateway-outside/not-a-pool-repo`, which is outside the pool | The same echo listener. A behaviour test calls it from a pool repository and expects 403. |
 
 ### Wiring it into the behaviour tests
@@ -439,14 +458,43 @@ The generated config (print it with `--print-config`):
 The gateway URL embeds the E2E project number, so it is never committed. A
 maintainer wires it in by hand; this script changes no workflow files:
 
-1. Set the printed URL as the variable `E2E_INFERENCE_GATEWAY_URL` in the
-   `dev` and `stage` GitHub environments. `E2E_INFERENCE_GATEWAY_AUDIENCE`
-   defaults to `fullsend-e2e-gateway` and needs setting only if it changes.
-2. Pass the variable to the `behaviour` job in `e2e.yml`.
-3. Once a behaviour test run passes with
-   `BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway`, declare
-   `inference-gateway` in `BEHAVIOUR_CAPABILITIES` (`Makefile`) and in the
-   `behaviour` job.
+1. Set two repository-level **secrets**, like the `E2E_GCP_*` secrets:
+   - `E2E_INFERENCE_GATEWAY_URL`: the URL the script prints.
+   - `E2E_INFERENCE_GATEWAY_TEST_KEY`: the plaintext of the echo-only key
+     whose hash is passed as `ECHO_KEY_HASH`. The gateway authorises it for
+     the `echo` model only, so it reaches no real model. The suite
+     registers it for redaction. The pool repositories need the same key
+     as their `FULLSEND_INFERENCE_GATEWAY_API_KEY` secret.
+
+   `E2E_INFERENCE_GATEWAY_AUDIENCE` defaults to `fullsend-e2e-gateway` and
+   needs setting only if it changes.
+2. Pass both secrets in the env of the `behaviour` job's "Run behaviour
+   tests" step in `e2e.yml`, next to the `E2E_GCP_*` secrets. On fork pull
+   requests the secrets are empty, and the gateway scenarios skip.
+
+CI declares only the gateway capabilities that reach no real model. They
+are part of the `BEHAVIOUR_CAPABILITIES` default in the `Makefile`, which
+`make behaviour-test` and the `behaviour` job use:
+
+| Capability | Scenarios | Declared in CI |
+|------------|-----------|----------------|
+| `inference-gateway` | `features/runtime/inference-gateway.feature` (Tier A, dummy runtime, `echo` and `echo-denied`) | Yes |
+| `inference-gateway-api-key` | `features/runtime/inference-gateway-api-key.feature` (dummy runtime, echo-only key) | Yes |
+| `runtime-pi-gateway` | `features/runtime/pi-gateway.feature` (pi through the gateway to a real model, `claude-haiku-5-5`) | No: costs a real model run |
+| `inference-gateway-reseed` | The token-rotation scenario in `features/runtime/inference-gateway.feature`, which also needs `inference-gateway` | No: holds the sandbox for a 330 s wait |
+
+To run the undeclared scenarios on demand, set `E2E_INFERENCE_GATEWAY_URL`
+and pass the full capability list. This replaces the `Makefile` default
+rather than adding to it:
+
+```bash
+BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,inference-gateway-reseed \
+  make behaviour-test
+```
+
+To run them in CI, add them to the `BEHAVIOUR_CAPABILITIES` default in the
+`Makefile` on a pull request. The behaviour job reads the `Makefile` from
+the pull request.
 
 ### Removing it
 

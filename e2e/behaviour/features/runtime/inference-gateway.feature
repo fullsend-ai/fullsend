@@ -6,11 +6,12 @@
 # through node (the binary the gateway profile allows) and records the
 # HTTP status and the first 4 KiB of the response body.
 #
-# Gated on the `inference-gateway` capability, which is NOT declared by
-# default. It needs the durable test gateway (#8286): agentgateway with
-# strict jwtAuth for the pool repositories, serving `echo` (authorised for
-# the pool) and `echo-denied` (authorised only for another repository) in
-# front of a header-echo stub upstream with a non-secret stub key.
+# Gated on the `inference-gateway` capability, which `make behaviour-test`
+# declares by default (it reaches no real model). It needs the durable test
+# gateway (#8286): agentgateway with jwtAuth for the pool repositories,
+# serving `echo` (authorised for the pool) and `echo-denied` (authorised
+# only for another repository) in front of a header-echo stub upstream
+# with a non-secret stub key.
 #
 # The gateway location is never committed here: the "test inference
 # gateway" step reads E2E_INFERENCE_GATEWAY_URL and
