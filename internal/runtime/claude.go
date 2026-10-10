@@ -107,8 +107,8 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 	// On the gateway route a gateway/ model in the frontmatter must reach
 	// Claude Code as an explicit --model without the prefix.
 	setClaudeGatewayAgentModel(sandboxName, AgentDefinitionModel(agentPath))
-	// The api-key mode pins its placeholder in the --settings file, which
-	// the hooks install below writes.
+	// The api-key mode pins its placeholder in the --settings document,
+	// which the hooks install below builds.
 	if err := claudeGatewayAPIKeyPlaceholder(sandboxName); err != nil {
 		return err
 	}
@@ -399,15 +399,13 @@ func buildRunCommand(params RunParams) string {
 		"--output-format stream-json",
 	}
 
-	if params.HooksSettingsPath != "" {
+	if gw != nil {
+		// A gateway run passes its settings (the hooks plus the route pins)
+		// inline, never by path, so the route does not depend on a file in
+		// the sandbox.
+		parts = append(parts, "--settings "+shellQuote((ClaudeRuntime{}).claudeGatewaySettingsArg(params.SandboxName)))
+	} else if params.HooksSettingsPath != "" {
 		parts = append(parts, fmt.Sprintf("--settings '%s'", strings.ReplaceAll(params.HooksSettingsPath, "'", "'\\''")))
-	} else if extra := (ClaudeRuntime{}).claudeGatewaySettings(params.SandboxName); extra != nil {
-		// No hooks file to carry the gateway settings (installClaudeHooks
-		// writes them there), so pass them inline.
-		inline, err := json.Marshal(extra)
-		if err == nil {
-			parts = append(parts, "--settings "+shellQuote(string(inline)))
-		}
 	}
 
 	if params.Debug != "" {
@@ -486,10 +484,11 @@ func buildRunCommand(params RunParams) string {
 // co-located under the runner-owned config directory, outside the
 // agent-writable workspace tree (#6358).
 //
-// extra are further settings for the same file: Claude Code reads one
+// extra are further settings for the same document: Claude Code reads one
 // --settings flag, so a gateway run's settings (claudeGatewaySettings: the
-// pinned route env and the apiKeyHelper) are written here; buildRunCommand
-// passes them inline when the run has no hooks file.
+// pinned route env and the apiKeyHelper) are merged here. On a gateway run
+// the merged document is also recorded, and buildRunCommand passes it
+// inline instead of the uploaded file.
 func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, extra map[string]any) error {
 	// security.SandboxHooksDir is the directory the generated hooks.json
 	// commands point at; installHookScripts creates it.
@@ -505,6 +504,9 @@ func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, ex
 	if err != nil {
 		return fmt.Errorf("adding the inference gateway settings to the hooks config: %w", err)
 	}
+	// A gateway run passes this document inline (claudeGatewaySettingsArg),
+	// not the uploaded file.
+	setClaudeGatewaySettingsJSON(sandboxName, hooksJSON)
 
 	tmpDir, err := os.MkdirTemp("", "fullsend-hooks-")
 	if err != nil {

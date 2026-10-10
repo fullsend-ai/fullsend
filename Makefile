@@ -225,10 +225,11 @@ test: lint-all go-test script-test lint-eval-cases
 # E2E_INFERENCE_GATEWAY_URL (and, for the api-key scenario,
 # E2E_INFERENCE_GATEWAY_TEST_KEY) is unset. e2e.yml passes both to authorized
 # PRs, including forks (docs/guides/dev/e2e-testing.md).
-# runtime-pi-gateway (a real model run) and inference-gateway-reseed (holds
-# the sandbox for a 330 s wait) are deliberately not declared; run them on
-# demand with the full list (docs/guides/dev/e2e-testing.md), e.g.
-#   BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,inference-gateway-reseed
+# runtime-pi-gateway and runtime-claude-gateway (real model runs) and
+# inference-gateway-reseed (holds the sandbox for a 330 s wait) are
+# deliberately not declared; run them on demand with the full list
+# (docs/guides/dev/e2e-testing.md), e.g.
+#   BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,runtime-claude-gateway,inference-gateway-reseed
 # runtime-pi-openai (features/runtime/pi-openai.feature) is deliberately not
 # declared: it needs an OpenAI organization mapped to the pool repositories
 # (docs/guides/infrastructure/openai-workload-identity.md). Add it here once

@@ -207,7 +207,7 @@ func TestInstallClaudeHooks_GatewaySettings(t *testing.T) {
 		}
 		registerClaudeGateway(t, sb, apiKey)
 		extra := ClaudeRuntime{}.claudeGatewaySettings(sb)
-		require.NoError(t, installClaudeHooks("test-sandbox", securityAllOff(), extra))
+		require.NoError(t, installClaudeHooks(sb, securityAllOff(), extra))
 		data, err := os.ReadFile(captured)
 		require.NoError(t, err)
 		var got map[string]any
@@ -218,6 +218,7 @@ func TestInstallClaudeHooks_GatewaySettings(t *testing.T) {
 		require.True(t, ok, sb)
 		assert.Equal(t, "https://gw.example.com", env["ANTHROPIC_BASE_URL"], sb)
 		assert.Equal(t, "", env["CLAUDE_CODE_USE_VERTEX"], sb)
+		assert.Equal(t, string(data), ClaudeRuntime{}.claudeGatewaySettingsArg(sb), "%s: the launch passes the same document inline", sb)
 	}
 }
 
@@ -260,9 +261,18 @@ func TestBuildRunCommand_GatewayOIDC(t *testing.T) {
 	assert.Equal(t, "command -p cat '/sandbox/claude-config/inference-gateway.token'", inline["apiKeyHelper"], "no hooks file, so the settings are inline")
 	assert.Contains(t, inline, "env")
 
+	// With hooks, Bootstrap records the merged document; the launch passes
+	// it inline and never names hooks.json.
+	merged, err := mergeClaudeSettings([]byte(`{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"python3 '/sandbox/hooks/x.py'"}]}]}}`), ClaudeRuntime{}.claudeGatewaySettings(sb))
+	require.NoError(t, err)
+	setClaudeGatewaySettingsJSON(sb, merged)
 	withHooks := buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: "/r", Model: "gateway/m", HooksSettingsPath: "/sandbox/claude-config/hooks.json"})
-	assert.Contains(t, withHooks, "--settings '/sandbox/claude-config/hooks.json'")
-	assert.Equal(t, 1, strings.Count(withHooks, "--settings"), "Claude Code reads one --settings; the gateway settings are in the hooks file")
+	assert.NotContains(t, withHooks, "hooks.json", "a gateway run never reads the settings file")
+	assert.Equal(t, 1, strings.Count(withHooks, "--settings"), "Claude Code reads one --settings")
+	doc := inlineGatewaySettings(t, withHooks)
+	assert.Contains(t, doc, "hooks", "the inline document carries the hooks")
+	assert.Equal(t, "command -p cat '/sandbox/claude-config/inference-gateway.token'", doc["apiKeyHelper"])
+	assert.Equal(t, "https://gw.example.com", doc["env"].(map[string]any)["ANTHROPIC_BASE_URL"], "and the route pins")
 }
 
 func TestBuildRunCommand_GatewayAPIKey(t *testing.T) {
@@ -488,4 +498,38 @@ func TestClaudeGatewayAPIKeyPlaceholder(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, got, "placeholder changed since Bootstrap")
 	assert.NotContains(t, got, "REAL-CLAUDE")
+}
+
+// The inline --settings document reaches Claude Code as one argument, byte
+// for byte, even when it spans lines and holds single quotes (hook
+// commands quote their paths).
+func TestBuildRunCommand_GatewayInlineSettingsArgv(t *testing.T) {
+	const sb = "fs-claude-gw-argv"
+	registerClaudeGateway(t, sb, false)
+	merged, err := mergeClaudeSettings([]byte("{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"python3 '/sandbox/hooks/it'\\\\''s.py'\"}]}]}}"), ClaudeRuntime{}.claudeGatewaySettings(sb))
+	require.NoError(t, err)
+	require.Contains(t, string(merged), "\n", "the recorded document is multi-line")
+	setClaudeGatewaySettingsJSON(sb, merged)
+
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	require.NoError(t, os.MkdirAll(binDir, 0o755))
+	argFile := filepath.Join(tmp, "settings-arg")
+	stub := "#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --settings ]; then printf '%s' \"$2\" > '" + argFile + "'; fi; shift; done\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "claude"), []byte(stub), 0o755))
+	envFile := filepath.Join(tmp, ".env")
+	require.NoError(t, os.WriteFile(envFile, nil, 0o644))
+
+	cmd := buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: tmp, Model: "gateway/m", HooksSettingsPath: "/sandbox/claude-config/hooks.json"})
+	cmd = strings.Replace(cmd, sandbox.SandboxWorkspace+"/.env", envFile, 1)
+	cmd = strings.ReplaceAll(cmd, sandbox.SandboxClaudeConfig, filepath.Join(tmp, "claude-config"))
+	c := exec.Command("/bin/sh", "-c", cmd)
+	c.Env = []string{"PATH=" + binDir + ":/usr/bin:/bin", "HOME=" + tmp, "INFERENCE_GATEWAY_API_KEY=" + gatewayTestPlaceholder}
+	out, err := c.CombinedOutput()
+	require.NoError(t, err, string(out))
+	got, err := os.ReadFile(argFile)
+	require.NoError(t, err)
+	// The test redirects the config dir in the command, so expect the same.
+	want := strings.ReplaceAll(string(merged), sandbox.SandboxClaudeConfig, filepath.Join(tmp, "claude-config"))
+	assert.Equal(t, want, string(got), "the argument is the recorded document, unchanged")
 }

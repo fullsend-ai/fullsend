@@ -116,6 +116,10 @@ type claudeGatewayRun struct {
 	// so its generation does not change during the run; the launch checks
 	// that the sandbox still hands out this value.
 	placeholder string
+	// settings is the merged hooks and gateway settings document
+	// installClaudeHooks generated, passed inline with --settings: the
+	// runner-owned route must not depend on a file in the sandbox.
+	settings []byte
 }
 
 var claudeGatewayRuns sync.Map // sandboxName -> *claudeGatewayRun
@@ -167,6 +171,35 @@ func claudeGatewayAPIKeyPlaceholder(sandboxName string) error {
 	cp.placeholder = p
 	claudeGatewayRuns.Store(sandboxName, &cp)
 	return nil
+}
+
+// setClaudeGatewaySettingsJSON records the merged settings document on an
+// existing registration; it is a no-op without one.
+func setClaudeGatewaySettingsJSON(sandboxName string, doc []byte) {
+	gw := claudeGatewayRunFor(sandboxName)
+	if gw == nil {
+		return
+	}
+	cp := *gw
+	cp.settings = append([]byte(nil), doc...)
+	claudeGatewayRuns.Store(sandboxName, &cp)
+}
+
+// claudeGatewaySettingsArg returns the --settings value of a gateway run:
+// the merged hooks and gateway document Bootstrap recorded, or the gateway
+// settings alone when the run has no hooks. It is always inline JSON, never
+// a path, so no file in the sandbox decides the route.
+func (r ClaudeRuntime) claudeGatewaySettingsArg(sandboxName string) string {
+	gw := claudeGatewayRunFor(sandboxName)
+	if gw == nil {
+		return ""
+	}
+	if len(gw.settings) > 0 {
+		return string(gw.settings)
+	}
+	// A map of strings always encodes.
+	inline, _ := json.Marshal(r.claudeGatewaySettings(sandboxName))
+	return string(inline)
 }
 
 // cutGatewayModel returns the id after a gateway/ provider prefix
@@ -228,7 +261,7 @@ func (r ClaudeRuntime) claudeGatewayHelper() string {
 }
 
 // claudeGatewaySettings returns the settings a gateway run adds to the
-// --settings file Claude Code loads, or nil when the sandbox has no gateway
+// --settings document Claude Code loads, or nil when the sandbox has no gateway
 // run. Command-line settings rank above the repository's own
 // .claude/settings.json and .claude/settings.local.json, which the agent
 // can write, so this is where the route is pinned against them:

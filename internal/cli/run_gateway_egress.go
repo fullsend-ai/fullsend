@@ -82,12 +82,17 @@ func validateGatewayHost(host string) (string, error) {
 // host: the template id plus a short hash of the host, so two gateways on one
 // shared OpenShell gateway never import over each other's profile.
 func gatewayProfileID(host string) string {
-	sum := sha256.Sum256([]byte(strings.ToLower(host)))
-	return gatewayProfileTemplateID + "-" + hex.EncodeToString(sum[:])[:gatewayProfileIDHashLen]
+	return gatewayProfileIDFor(gatewayProfileTemplateID, host)
 }
 
-// The Claude Code rendering (#8294) is a template of its own: Claude Code
-// calls only the Messages API, from its own binary. Both auth modes send
+// gatewayProfileIDFor is gatewayProfileID for the template templateID.
+func gatewayProfileIDFor(templateID, host string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(host)))
+	return templateID + "-" + hex.EncodeToString(sum[:])[:gatewayProfileIDHashLen]
+}
+
+// gatewayClaudeProfileTemplateID is the Claude Code rendering (#8294), a
+// template of its own: Claude Code calls only the Messages API, from its own binary. Both auth modes send
 // the credential as Authorization: Bearer (an apiKeyHelper in the oidc
 // mode, ANTHROPIC_AUTH_TOKEN in the api-key mode), the header ADR 0137 sets
 // for the route, so one rendering serves both. Its id differs from pi's, so
@@ -121,8 +126,7 @@ func renderGatewayProfileFor(p gatewayProfile) ([]byte, string, error) {
 	id := gatewayProfileID(h)
 	if p.claude {
 		templateID = gatewayClaudeProfileTemplateID
-		sum := sha256.Sum256([]byte(h))
-		id = templateID + "-" + hex.EncodeToString(sum[:])[:gatewayProfileIDHashLen]
+		id = gatewayProfileIDFor(templateID, h)
 	}
 	tmpl, err := scaffold.FullsendRepoFile("profiles/" + templateID + ".yaml")
 	if err != nil {

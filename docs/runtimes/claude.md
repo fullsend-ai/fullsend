@@ -81,7 +81,9 @@ than reaching Claude Code. The placeholder is read from the sandbox before `.env
 
 The repository's own `.claude/settings.json` and `.claude/settings.local.json` can carry an `env`
 block, which Claude Code applies after launch over the launch environment. The runner therefore
-repeats the route in the `--settings` file it passes, which ranks above both. That file sets
+repeats the route in the `--settings` document it passes, which ranks above both. On gateway runs that
+document goes inline on the command line, together with the security hooks, never as a path to a
+file in the sandbox. It sets
 `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and, in the `oidc` mode, the helper
 and its TTL. It also sets every other variable in the [cleared list](#environment-the-launch-clears)
 to `""`, which Claude Code treats as unset. In the `api-key` mode it sets `apiKeyHelper` to `""`,
@@ -97,7 +99,7 @@ one pi sends, so a gateway reads one header whatever the runtime or mode:
 
 | Mode | How Claude Code gets it | Header sent |
 |---|---|---|
-| `oidc` (default) | an `apiKeyHelper` (`command -p cat` of a runner-seeded token file) in the `--settings` file, with `CLAUDE_CODE_API_KEY_HELPER_TTL_MS=10000` | `Authorization: Bearer`, plus a copy in `x-api-key` (below) |
+| `oidc` (default) | an `apiKeyHelper` (`command -p cat` of a runner-seeded token file) in the inline `--settings` document, with `CLAUDE_CODE_API_KEY_HELPER_TTL_MS=10000` | `Authorization: Bearer`, plus a copy in `x-api-key` (below) |
 | `api-key` | `ANTHROPIC_AUTH_TOKEN` set to the placeholder for `FULLSEND_INFERENCE_GATEWAY_API_KEY` | `Authorization: Bearer` |
 
 `ANTHROPIC_API_KEY`, which Claude Code would send as `x-api-key`, is cleared and never set, so a
@@ -171,7 +173,7 @@ credentials, comes from the sandbox.
 
 On non-gateway runs no `ANTHROPIC_*` variable is cleared. A value the harness sets is honoured.
 Model-choice variables (`ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_*_MODEL`) are never cleared or
-pinned. On gateway runs the cleared variables are also pinned in the `--settings` file, against a repository
+pinned. On gateway runs the cleared variables are also pinned in the inline `--settings` document, against a repository
 `.claude/settings.json` `env` block (see [What the runner owns](#inference-gateway-route)). On
 non-gateway runs that block is read by Claude Code itself, after launch. On every route, the egress profile and the endpoint-bound placeholder are what keep the
 credential on its host.
