@@ -1081,6 +1081,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
+	// Collect lint diagnostics before ${VAR} expansion below: Lint() scans
+	// env values for deprecated references (e.g. ${GITHUB_ISSUE_URL}) that
+	// expansion would replace with their resolved values. Emitted after
+	// harness load so the output order is unchanged.
+	lintDiags := h.Lint()
 	for k, v := range h.RunnerEnv {
 		h.RunnerEnv[k] = os.Expand(v, expander)
 	}
@@ -1123,7 +1128,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Run lint checks before merging env.runner into RunnerEnv so that
 	// Lint() sees the original YAML state and only warns when runner_env
 	// was actually declared (not when env.runner entries are merged in).
-	for _, diag := range h.Lint() {
+	for _, diag := range lintDiags {
+		// shouldStartFetchService prints this one when starting the fetch
+		// service; skip it here so run warns once.
+		if diag.Message == harness.ImplicitRuntimeFetchWarning {
+			continue
+		}
 		emitDiagnostic(printer, diag)
 	}
 
@@ -2932,19 +2942,16 @@ type fetchServiceEnv struct {
 	token string // bearer token
 }
 
-const deprecatedImplicitFetchWarning = "Harness declares allowed_remote_resources without allow_runtime_fetch: true; " +
-	"the runtime fetch service will start for backward compatibility, but this behavior is " +
-	"deprecated — add allow_runtime_fetch: true to the harness to silence this warning"
-
 // shouldStartFetchService decides whether the runtime fetch HTTP service
 // should be started, and returns a deprecation warning if the harness relies
-// on the legacy implicit opt-in via allowed_remote_resources.
+// on the legacy implicit opt-in via allowed_remote_resources. The warning
+// text is shared with Harness.Lint().
 func shouldStartFetchService(h *harness.Harness) (start bool, deprecationWarning string) {
 	if h.HasURLDirResources() || h.AllowRuntimeFetch {
 		return true, ""
 	}
 	if len(h.AllowedRemoteResources) > 0 {
-		return true, deprecatedImplicitFetchWarning
+		return true, harness.ImplicitRuntimeFetchWarning
 	}
 	return false, ""
 }
@@ -6152,18 +6159,20 @@ func extractNormalizedEventFromPayload(payload []byte) map[string]any {
 // Warnings use StepWarn, errors use StepFail. This ensures future SeverityError
 // diagnostics are visually distinct from warnings.
 func emitDiagnostic(printer *ui.Printer, diag harness.Diagnostic) {
+	msg := agentruntime.SanitizeForDisplay(diag.String())
 	switch diag.Severity {
 	case harness.SeverityError:
-		printer.StepFail(diag.String())
+		printer.StepFail(msg)
 	default:
-		printer.StepWarn(diag.String())
+		printer.StepWarn(msg)
 	}
 }
 
 // emitDiagnosticWithContext prints a diagnostic with additional context (e.g., agent name).
-// Used by lock --all where multiple harnesses are processed and context helps identify which.
+// Used by lock --all and fullsend lint. The output is sanitized because
+// context and the diagnostic can carry untrusted harness content.
 func emitDiagnosticWithContext(printer *ui.Printer, context string, diag harness.Diagnostic) {
-	msg := fmt.Sprintf("%s: %s", context, diag.String())
+	msg := agentruntime.SanitizeForDisplay(fmt.Sprintf("%s: %s", context, diag.String()))
 	switch diag.Severity {
 	case harness.SeverityError:
 		printer.StepFail(msg)

@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -186,10 +188,10 @@ func TestCacheSymlinkProtection(t *testing.T) {
 	// Plant a symlink in the hash directory pointing outside the cache.
 	require.NoError(t, os.Symlink(outside, filepath.Join(cacheDir, hash)))
 
-	// CachePut: MkdirAll follows the symlink, then validateCachePath rejects it.
+	// CachePut: the containment check rejects the symlinked path.
 	err := CachePut(root, "https://example.com/symlink", content)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cache path escapes cache root")
+	assert.Contains(t, err.Error(), "path escapes")
 
 	// For CacheGet, plant metadata+content in the outside dir so reads succeed
 	// and the symlink check fires after.
@@ -645,5 +647,175 @@ func TestCacheNamedSymlink(t *testing.T) {
 		// No entry should have been created for the rejected name.
 		_, statErr := os.Lstat(filepath.Join(dir, "sub"))
 		assert.True(t, os.IsNotExist(statErr))
+	})
+}
+
+func TestCacheWritesRejectSymlinkEscapes(t *testing.T) {
+	files := map[string][]byte{"sub/a.txt": []byte("alpha")}
+	treeHash := ComputeTreeHash(files)
+
+	t.Run("cache root symlink", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		require.NoError(t, os.Symlink(outside, filepath.Join(root, ".fullsend-cache")))
+
+		_, err := CachePutDir(root, "https://example.com/dir", files)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes workspace")
+		assert.NoFileExists(t, filepath.Join(outside, "resources", "sha256", treeHash, "tree", "sub", "a.txt"))
+
+		err = CachePut(root, "https://example.com/f", []byte("content"))
+		require.Error(t, err)
+		entries, rerr := os.ReadDir(outside)
+		require.NoError(t, rerr)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("tree descendant symlink", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		treeDir := filepath.Join(root, ".fullsend-cache", "resources", "sha256", treeHash, "tree")
+		require.NoError(t, os.MkdirAll(treeDir, 0o700))
+		require.NoError(t, os.Symlink(outside, filepath.Join(treeDir, "sub")))
+
+		_, err := CachePutDir(root, "https://example.com/dir", files)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes workspace")
+		assert.NoFileExists(t, filepath.Join(outside, "a.txt"))
+	})
+
+	t.Run("tree descendant symlink with nested missing directory", func(t *testing.T) {
+		nested := map[string][]byte{"sub/new/a.txt": []byte("alpha")}
+		nestedHash := ComputeTreeHash(nested)
+		root := t.TempDir()
+		outside := t.TempDir()
+		treeDir := filepath.Join(root, ".fullsend-cache", "resources", "sha256", nestedHash, "tree")
+		require.NoError(t, os.MkdirAll(treeDir, 0o700))
+		require.NoError(t, os.Symlink(outside, filepath.Join(treeDir, "sub")))
+
+		_, err := CachePutDir(root, "https://example.com/dir", nested)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes workspace")
+		assert.NoDirExists(t, filepath.Join(outside, "new"))
+	})
+}
+
+func TestCheckWithinWorkspace(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "in"), 0o700))
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "out")))
+	require.NoError(t, os.Symlink(filepath.Join(root, "in"), filepath.Join(root, "inlink")))
+
+	assert.NoError(t, CheckWithinWorkspace(root, filepath.Join(root, "in", "new", "file")))
+	assert.NoError(t, CheckWithinWorkspace(root, filepath.Join(root, "inlink", "file")))
+	assert.Error(t, CheckWithinWorkspace(root, filepath.Join(root, "out", "file")))
+	assert.Error(t, CheckWithinWorkspace(root, filepath.Join(root, "out")))
+	assert.Error(t, CheckWithinWorkspace(root, outside))
+}
+
+func TestCacheGet_RejectsSpecialFileSymlinks(t *testing.T) {
+	if _, err := os.Stat("/dev/zero"); err != nil {
+		t.Skip("/dev/zero not available")
+	}
+	for _, name := range []string{"content", "metadata.json"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			content := []byte("hello")
+			require.NoError(t, CachePut(root, "https://example.com/r", content))
+			hash := ComputeSHA256(content)
+			dir, err := CachePath(root, hash)
+			require.NoError(t, err)
+
+			planted := filepath.Join(dir, name)
+			require.NoError(t, os.Remove(planted))
+			require.NoError(t, os.Symlink("/dev/zero", planted))
+
+			_, _, err = CacheGet(root, hash)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestCacheGet_RejectsOversizedFile(t *testing.T) {
+	root := t.TempDir()
+	content := []byte("hello")
+	require.NoError(t, CachePut(root, "https://example.com/r", content))
+	hash := ComputeSHA256(content)
+	dir, err := CachePath(root, hash)
+	require.NoError(t, err)
+
+	big := filepath.Join(dir, "content")
+	f, err := os.OpenFile(big, os.O_WRONLY|os.O_TRUNC, 0o600)
+	require.NoError(t, err)
+	require.NoError(t, f.Truncate(maxCacheFileBytes+1))
+	require.NoError(t, f.Close())
+
+	_, _, err = CacheGet(root, hash)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
+}
+
+func TestReadURLIndex(t *testing.T) {
+	root := t.TempDir()
+	idx := filepath.Join(root, ".fullsend-cache", "url-index.json")
+
+	_, err := ReadURLIndex(root, idx)
+	require.Error(t, err)
+	assert.True(t, os.IsNotExist(err))
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(idx), 0o700))
+	require.NoError(t, os.WriteFile(idx, []byte(`{"u":"h"}`), 0o600))
+	data, err := ReadURLIndex(root, idx)
+	require.NoError(t, err)
+	assert.Equal(t, `{"u":"h"}`, string(data))
+
+	t.Run("escaping symlink", func(t *testing.T) {
+		outside := filepath.Join(t.TempDir(), "outside.json")
+		require.NoError(t, os.WriteFile(outside, []byte(`{}`), 0o600))
+		require.NoError(t, os.Remove(idx))
+		require.NoError(t, os.Symlink(outside, idx))
+		_, err := ReadURLIndex(root, idx)
+		require.Error(t, err)
+	})
+
+	t.Run("special file", func(t *testing.T) {
+		if _, statErr := os.Stat("/dev/zero"); statErr != nil {
+			t.Skip("/dev/zero not available")
+		}
+		require.NoError(t, os.Remove(idx))
+		require.NoError(t, os.Symlink("/dev/zero", idx))
+		_, err := ReadURLIndex(root, idx)
+		require.Error(t, err)
+	})
+
+	t.Run("fifo does not block", func(t *testing.T) {
+		require.NoError(t, os.Remove(idx))
+		if err := syscall.Mkfifo(idx, 0o600); err != nil {
+			t.Skipf("mkfifo not available: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := ReadURLIndex(root, idx)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not a regular file")
+		case <-time.After(5 * time.Second):
+			t.Fatal("ReadURLIndex blocked on a FIFO")
+		}
+	})
+
+	t.Run("oversized", func(t *testing.T) {
+		require.NoError(t, os.Remove(idx))
+		f, err := os.OpenFile(idx, os.O_WRONLY|os.O_CREATE, 0o600)
+		require.NoError(t, err)
+		require.NoError(t, f.Truncate(maxURLIndexBytes+1))
+		require.NoError(t, f.Close())
+		_, err = ReadURLIndex(root, idx)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exceeds")
 	})
 }

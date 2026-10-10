@@ -3,6 +3,7 @@ package agentnew
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
@@ -16,6 +17,46 @@ func loadAndCheck(t *testing.T, dir, name string) ([]harness.Diagnostic, error) 
 		return nil, err
 	}
 	return harness.CheckGenerated(h, dir)
+}
+
+// ignoreIssueURLDeprecation drops only the GITHUB_ISSUE_URL deprecation
+// warnings on env/host_files fields; errors are always kept.
+// TODO: remove once the templates move to FULLSEND_WORK_ITEM_URL (follow-up).
+func ignoreIssueURLDeprecation(diags []harness.Diagnostic) []harness.Diagnostic {
+	var out []harness.Diagnostic
+	for _, d := range diags {
+		isDeprecation := d.Severity == harness.SeverityWarning &&
+			d.Message == harness.DeprecatedIssueURLWarning &&
+			(strings.HasPrefix(d.Field, "env.runner.") ||
+				strings.HasPrefix(d.Field, "env.sandbox.") ||
+				strings.HasPrefix(d.Field, "host_files["))
+		if !isDeprecation {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func TestIgnoreIssueURLDeprecationKeepsOtherDiagnostics(t *testing.T) {
+	deprecation := harness.Diagnostic{
+		Severity: harness.SeverityWarning,
+		Field:    "env.runner.X",
+		Message:  harness.DeprecatedIssueURLWarning,
+	}
+	unrelatedError := harness.Diagnostic{
+		Severity: harness.SeverityError,
+		Field:    "env.runner.X",
+		Message:  "trigger compilation failed: GITHUB_ISSUE_URL",
+	}
+	unrelatedWarning := harness.Diagnostic{
+		Severity: harness.SeverityWarning,
+		Field:    "runner_env",
+		Message:  "runner_env mentions GITHUB_ISSUE_URL",
+	}
+	got := ignoreIssueURLDeprecation([]harness.Diagnostic{deprecation, unrelatedError, unrelatedWarning})
+	if len(got) != 2 || got[0] != unrelatedError || got[1] != unrelatedWarning {
+		t.Errorf("got %v, want only the unrelated diagnostics", got)
+	}
 }
 
 func generateInto(t *testing.T, dir string, opts Options) {
@@ -36,7 +77,7 @@ func TestCheckGeneratedAcceptsAFreshTree(t *testing.T) {
 			if err != nil {
 				t.Fatalf("freshly generated tree failed CheckGenerated: %v", err)
 			}
-			if len(diags) != 0 {
+			if diags = ignoreIssueURLDeprecation(diags); len(diags) != 0 {
 				t.Errorf("unexpected lint diagnostics: %v", diags)
 			}
 		})
@@ -66,7 +107,7 @@ func TestGeneratedTreeHasNoProviderOrProfileFiles(t *testing.T) {
 			if err != nil {
 				t.Fatalf("freshly generated tree with no providers/profiles files failed CheckGenerated: %v", err)
 			}
-			if len(diags) != 0 {
+			if diags = ignoreIssueURLDeprecation(diags); len(diags) != 0 {
 				t.Errorf("unexpected lint diagnostics: %v", diags)
 			}
 		})

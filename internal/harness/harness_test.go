@@ -2647,3 +2647,23 @@ func TestParseProviderDef(t *testing.T) {
 	_, err = ParseProviderDef([]byte("name: bad name\ntype: x\n"))
 	require.Error(t, err)
 }
+
+func TestLoadRaw_RejectsNonRegularAndOversizedFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := LoadRaw(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a regular file")
+
+	big := filepath.Join(dir, "big.yaml")
+	require.NoError(t, os.WriteFile(big, []byte("# "+strings.Repeat("x", MaxHarnessFileBytes)+"\n"), 0o644))
+	_, err = LoadRaw(big)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
+
+	ok := filepath.Join(dir, "ok.yaml")
+	require.NoError(t, os.WriteFile(ok, []byte("agent: agents/a.md\nrole: test\n"), 0o644))
+	h, err := LoadRaw(ok)
+	require.NoError(t, err)
+	assert.Equal(t, "agents/a.md", h.Agent)
+}

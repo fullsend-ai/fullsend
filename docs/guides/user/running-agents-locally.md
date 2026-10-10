@@ -243,6 +243,7 @@ Add to an env file:
 # fullsend-triage.env
 GH_TOKEN={github-pat}
 GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
+FULLSEND_WORK_ITEM_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 ```
 
 ```bash
@@ -295,6 +296,7 @@ GH_TOKEN={github-pat}
 PUSH_TOKEN={github-pat}
 PUSH_TOKEN_SOURCE=pat
 GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
+FULLSEND_WORK_ITEM_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 REPO_FULL_NAME={org}/{repo}
 ISSUE_NUMBER={issue_num}
 CODE_ALLOWED_TARGET_BRANCHES=main
@@ -382,6 +384,8 @@ or a cached artifact is missing, `fullsend run` falls back to normal network
 resolution and prints a warning suggesting you re-run `fullsend lock`.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
+
+The fetch cache (`.fullsend-cache/` in the workspace root) must resolve inside the workspace. If it is a symlink to a location outside the workspace (for example a shared CI volume), `run`, `lock` and `lint` fail with a "path escapes workspace" error; replace the symlink with a real directory or point it at a path inside the workspace. Cache files are also read only when they are regular files of at most 100 MiB.
 
 ### Status notification flags
 

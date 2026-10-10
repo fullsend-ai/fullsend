@@ -54,14 +54,19 @@ func ValidForgePlatform(platform string) bool {
 	return validForgeKeys[platform]
 }
 
-// ForgeKeyList returns a comma-separated list of valid forge platform keys.
-func ForgeKeyList() string {
+// ValidForgePlatforms returns the sorted list of valid forge platform keys.
+func ValidForgePlatforms() []string {
 	keys := make([]string, 0, len(validForgeKeys))
 	for k := range validForgeKeys {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	return strings.Join(keys, ", ")
+	return keys
+}
+
+// ForgeKeyList returns a comma-separated list of valid forge platform keys.
+func ForgeKeyList() string {
+	return strings.Join(ValidForgePlatforms(), ", ")
 }
 
 // validateForge checks that the forge section contains only recognized keys
@@ -264,7 +269,7 @@ func (h *Harness) validateOverlays() error {
 			return fmt.Errorf("overlays[%d].when must evaluate to bool, got %v", i, ast.OutputType())
 		}
 		fc := entry.ForgeConfig
-		inheritScript := h.ValidationLoop != nil && h.ValidationLoop.Script != ""
+		inheritScript := (h.ValidationLoop != nil && h.ValidationLoop.Script != "") || h.baseOverlaySuppliesScript
 		if err := validateOverlayForgeConfigInherit(i, &fc, inheritScript); err != nil {
 			return err
 		}
@@ -288,6 +293,15 @@ func (h *Harness) validateOverlays() error {
 // runtime.forge == "github") that fails on key access when event is empty
 // does not prevent a broader fallback overlay from matching.
 func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, config map[string]any) error {
+	return h.resolveOverlays(event, forgePlatform, config, nil)
+}
+
+// resolveOverlays is ResolveOverlays with optional forced overlay indices.
+// When force is non-nil, only the overlays in force are merged (without
+// evaluating When) and the rest are skipped. resolveOverlaysFor puts
+// unconditional overlays that precede the forced one into force too, so the
+// inherited defaults they supply survive. Used by fullsend lint.
+func (h *Harness) resolveOverlays(event map[string]any, forgePlatform string, config map[string]any, force map[int]bool) error {
 	if len(h.Overlays) == 0 {
 		h.Overlays = nil
 		return nil
@@ -298,6 +312,13 @@ func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, co
 		event = make(map[string]any)
 	}
 	for i, entry := range h.Overlays {
+		if force != nil {
+			if force[i] {
+				fc := entry.ForgeConfig
+				mergeForgeConfig(h, &fc)
+			}
+			continue
+		}
 		matched, err := EvaluateOverlay(entry.When, event, forgePlatform, config)
 		if err != nil {
 			// Intentional exception to the harness package's return-errors
@@ -311,7 +332,9 @@ func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, co
 			// CEL expressions at load time; runtime errors here are
 			// typically data-dependent (missing event keys) and should
 			// not prevent the harness from loading.
-			log.Printf("harness: overlay[%d].when eval failed: %v", i, err)
+			//
+			// Quote the error: it can embed untrusted harness text.
+			log.Printf("harness: overlay[%d].when eval failed: %q", i, err.Error())
 			continue
 		}
 		if matched {

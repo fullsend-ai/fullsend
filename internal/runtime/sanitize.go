@@ -23,6 +23,12 @@ func sanitizeStreamText(s string) string {
 	return sanitize(s, true)
 }
 
+// SanitizeForDisplay strips ANSI escapes, control characters, and GHA workflow
+// command markers from untrusted text. Exported form of sanitizeOutput.
+func SanitizeForDisplay(s string) string {
+	return sanitizeOutput(s)
+}
+
 func sanitize(s string, preserveNewlines bool) string {
 	s = ansiEscRe.ReplaceAllString(s, "")
 	// A single non-overlapping ReplaceAll pass reconstitutes "::" at the

@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
@@ -51,6 +53,60 @@ model: opus
 	assert.Equal(t, "opus", h.Model)
 	assert.Empty(t, deps)
 	assert.Empty(t, h.Base)
+}
+
+// TestLoadWithBase_NoBase_PreservesHadForgeBeforeResolve is a regression test:
+// LoadWithBase must capture hadForgeBeforeResolve before ResolveForge nils
+// out the Forge map, the same way LoadWithOpts does, so Lint() can still emit
+// the "forge" deprecation warning (ADR 0088) after a forge platform resolves.
+func TestLoadWithBase_NoBase_PreservesHadForgeBeforeResolve(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github: {}
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	assert.Nil(t, h.Forge, "ResolveForge should have consumed the forge map")
+	diags := h.Lint()
+	var found bool
+	for _, d := range diags {
+		if d.Field == "forge" {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a forge deprecation diagnostic, got %+v", diags)
+}
+
+// TestLoadWithBase_WithBase_ChildForgePreservesHadForgeBeforeResolve is the
+// same regression as above, but through the base-composition path (child has
+// a base:), which resolves forge in a second call site after merge.
+func TestLoadWithBase_WithBase_ChildForgePreservesHadForgeBeforeResolve(t *testing.T) {
+	dir := t.TempDir()
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+`)
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  github: {}
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	assert.Nil(t, h.Forge, "ResolveForge should have consumed the forge map")
+	diags := h.Lint()
+	var found bool
+	for _, d := range diags {
+		if d.Field == "forge" {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a forge deprecation diagnostic, got %+v", diags)
 }
 
 func TestLoadWithBase_LocalBase_ScalarOverride(t *testing.T) {
@@ -10032,4 +10088,339 @@ plugins:
 	// pass ValidateFilesExist, rather than being re-rooted under fullsendDir.
 	require.NoError(t, h.ResolveRelativeTo(fullsendDir))
 	require.NoError(t, h.ValidateFilesExist())
+}
+
+// TestLoadWithBase_BaseForgePreservesHadForgeBeforeResolve covers the case
+// where only the base layer declares the deprecated forge map: its presence
+// must survive base composition so strict lint still warns.
+func TestLoadWithBase_BaseForgePreservesHadForgeBeforeResolve(t *testing.T) {
+	dir := t.TempDir()
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github: {}
+`)
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	var found bool
+	for _, d := range h.Lint() {
+		if d.Field == "forge" {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a forge deprecation diagnostic from the base layer")
+}
+
+func TestURLIndexPut_RejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	hash := strings.Repeat("a", 64)
+
+	t.Run("cache root symlink", func(t *testing.T) {
+		ws := filepath.Join(root, "cacheroot")
+		require.NoError(t, os.MkdirAll(ws, 0o700))
+		require.NoError(t, os.Symlink(outside, filepath.Join(ws, ".fullsend-cache")))
+		require.Error(t, urlIndexPut(ws, "https://example.com/x", hash))
+		assert.NoFileExists(t, filepath.Join(outside, "url-index.json"))
+	})
+
+	t.Run("index file symlink", func(t *testing.T) {
+		ws := filepath.Join(root, "indexfile")
+		require.NoError(t, os.MkdirAll(filepath.Join(ws, ".fullsend-cache"), 0o700))
+		victim := filepath.Join(outside, "victim.txt")
+		require.NoError(t, os.WriteFile(victim, []byte("keep"), 0o600))
+		require.NoError(t, os.Symlink(victim, filepath.Join(ws, ".fullsend-cache", "url-index.json")))
+		require.Error(t, urlIndexPut(ws, "https://example.com/x", hash))
+		got, err := os.ReadFile(victim)
+		require.NoError(t, err)
+		assert.Equal(t, "keep", string(got))
+	})
+}
+
+func TestURLIndexPut_UnsafeIndex(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+
+	t.Run("fifo index is refused without blocking", func(t *testing.T) {
+		ws := t.TempDir()
+		idx := urlIndexPath(ws)
+		require.NoError(t, os.MkdirAll(filepath.Dir(idx), 0o700))
+		if err := syscall.Mkfifo(idx, 0o600); err != nil {
+			t.Skipf("mkfifo not available: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- urlIndexPut(ws, "https://example.com/x", hash) }()
+		select {
+		case err := <-done:
+			require.Error(t, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("urlIndexPut blocked on a FIFO index")
+		}
+	})
+
+	t.Run("in-workspace symlink target is not overwritten", func(t *testing.T) {
+		ws := t.TempDir()
+		idx := urlIndexPath(ws)
+		require.NoError(t, os.MkdirAll(filepath.Dir(idx), 0o700))
+		victim := filepath.Join(ws, "victim.txt")
+		require.NoError(t, os.WriteFile(victim, []byte("keep"), 0o600))
+		require.NoError(t, os.Symlink(victim, idx))
+		// Refused because the target is not a valid index, or replaced
+		// atomically; either way the symlink target is left intact.
+		_ = urlIndexPut(ws, "https://example.com/x", hash)
+		got, err := os.ReadFile(victim)
+		require.NoError(t, err)
+		assert.Equal(t, "keep", string(got))
+	})
+}
+
+func TestResolveOverlaysFor_ForcedOverlayIsolatedAndGlobalIndex(t *testing.T) {
+	newHarness := func() *Harness {
+		return &Harness{Overlays: []OverlayEntry{
+			{When: "false", ForgeConfig: ForgeConfig{PreScript: "scripts/event.sh"}},
+			{When: `runtime.forge == ""`, ForgeConfig: ForgeConfig{PreScript: "scripts/fallback.sh"}},
+		}}
+	}
+
+	t.Run("forced overlay is not overwritten by fallback", func(t *testing.T) {
+		h := newHarness()
+		var n int
+		require.NoError(t, h.resolveOverlaysFor(ComposeOpts{OverlayCount: &n, ForceOverlays: map[int]bool{0: true}}))
+		assert.Equal(t, "scripts/event.sh", h.PreScript)
+		assert.Equal(t, 2, n)
+	})
+
+	t.Run("indices are offset by earlier layers", func(t *testing.T) {
+		h := newHarness()
+		n := 3 // three overlays already counted in inherited layers
+		require.NoError(t, h.resolveOverlaysFor(ComposeOpts{OverlayCount: &n, ForceOverlays: map[int]bool{3: true}}))
+		assert.Equal(t, "scripts/event.sh", h.PreScript)
+		assert.Equal(t, 5, n)
+	})
+
+	t.Run("layer without forced index merges only matching preceding overlays", func(t *testing.T) {
+		h := newHarness()
+		var n int
+		require.NoError(t, h.resolveOverlaysFor(ComposeOpts{OverlayCount: &n, ForceOverlays: map[int]bool{9: true}}))
+		// Overlay 0 ("false") never matches; overlay 1 matches the unknown
+		// forge and precedes the forced overlay, as in a real composition.
+		assert.Equal(t, "scripts/fallback.sh", h.PreScript)
+	})
+
+	t.Run("unconditional overlay is preserved when another is forced", func(t *testing.T) {
+		h := &Harness{Overlays: []OverlayEntry{
+			{When: "true", ForgeConfig: ForgeConfig{PreScript: "scripts/default.sh"}},
+			{When: "false", ForgeConfig: ForgeConfig{PostScript: "scripts/post.sh"}},
+		}}
+		var n int
+		require.NoError(t, h.resolveOverlaysFor(ComposeOpts{OverlayCount: &n, ForceOverlays: map[int]bool{1: true}}))
+		assert.Equal(t, "scripts/default.sh", h.PreScript)
+		assert.Equal(t, "scripts/post.sh", h.PostScript)
+	})
+
+	t.Run("forge-conditioned preceding overlay is preserved when forge matches", func(t *testing.T) {
+		newForgeHarness := func() *Harness {
+			return &Harness{Overlays: []OverlayEntry{
+				{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/default.sh"}},
+				{When: `event.kind == "x"`, ForgeConfig: ForgeConfig{PostScript: "scripts/post.sh"}},
+			}}
+		}
+
+		h := newForgeHarness()
+		var n int
+		require.NoError(t, h.resolveOverlaysFor(ComposeOpts{OverlayCount: &n, ForgePlatform: "github", ForceOverlays: map[int]bool{1: true}}))
+		assert.Equal(t, "scripts/default.sh", h.PreScript)
+		assert.Equal(t, "scripts/post.sh", h.PostScript)
+
+		// An unknown or different forge does not match the base overlay.
+		h = newForgeHarness()
+		n = 0
+		require.NoError(t, h.resolveOverlaysFor(ComposeOpts{OverlayCount: &n, ForceOverlays: map[int]bool{1: true}}))
+		assert.Empty(t, h.PreScript)
+		assert.Equal(t, "scripts/post.sh", h.PostScript)
+	})
+
+	t.Run("preceding overlay with a broader condition is preserved", func(t *testing.T) {
+		h := &Harness{Overlays: []OverlayEntry{
+			{When: `event.kind == "x"`, ForgeConfig: ForgeConfig{PreScript: "scripts/default.sh"}},
+			{When: `event.kind == "x" && event.action == "opened"`, ForgeConfig: ForgeConfig{PostScript: "scripts/post.sh"}},
+		}}
+		var n int
+		require.NoError(t, h.resolveOverlaysFor(ComposeOpts{
+			OverlayCount: &n, ForceOverlays: map[int]bool{1: true},
+			ForceWhens: map[string]bool{h.Overlays[1].When: true},
+		}))
+		assert.Equal(t, "scripts/default.sh", h.PreScript)
+		assert.Equal(t, "scripts/post.sh", h.PostScript)
+	})
+
+	t.Run("preceding overlay with a narrower condition is dropped", func(t *testing.T) {
+		h := &Harness{Overlays: []OverlayEntry{
+			{When: `event.kind == "x" && event.action == "opened"`, ForgeConfig: ForgeConfig{PreScript: "scripts/default.sh"}},
+			{When: `event.kind == "x"`, ForgeConfig: ForgeConfig{PostScript: "scripts/post.sh"}},
+		}}
+		var n int
+		require.NoError(t, h.resolveOverlaysFor(ComposeOpts{
+			OverlayCount: &n, ForceOverlays: map[int]bool{1: true},
+			ForceWhens: map[string]bool{h.Overlays[1].When: true},
+		}))
+		assert.Empty(t, h.PreScript)
+		assert.Equal(t, "scripts/post.sh", h.PostScript)
+	})
+
+	t.Run("config-only preceding overlay mentioning event in a string literal is kept", func(t *testing.T) {
+		cfg := map[string]any{"agents": []any{map[string]any{"name": "event-handler"}}}
+		h := &Harness{Overlays: []OverlayEntry{
+			{When: `config.agents.exists(a, a.name == "event-handler")`, ForgeConfig: ForgeConfig{PreScript: "scripts/default.sh"}},
+			{When: `has(event.entity)`, ForgeConfig: ForgeConfig{PostScript: "scripts/post.sh"}},
+		}}
+		var n int
+		require.NoError(t, h.resolveOverlaysFor(ComposeOpts{
+			OverlayCount: &n, ForceOverlays: map[int]bool{1: true}, Config: cfg,
+			ForceWhens: map[string]bool{h.Overlays[1].When: true},
+		}))
+		assert.Equal(t, "scripts/default.sh", h.PreScript)
+		assert.Equal(t, "scripts/post.sh", h.PostScript)
+	})
+
+	t.Run("event-dependent preceding overlay matching the empty event is dropped", func(t *testing.T) {
+		h := &Harness{Overlays: []OverlayEntry{
+			{When: `!has(event.entity)`, ForgeConfig: ForgeConfig{PreScript: "scripts/default.sh"}},
+			{When: `has(event.entity)`, ForgeConfig: ForgeConfig{PostScript: "scripts/post.sh"}},
+		}}
+		var n int
+		require.NoError(t, h.resolveOverlaysFor(ComposeOpts{
+			OverlayCount: &n, ForceOverlays: map[int]bool{1: true},
+			ForceWhens: map[string]bool{h.Overlays[1].When: true},
+		}))
+		assert.Empty(t, h.PreScript)
+		assert.Equal(t, "scripts/post.sh", h.PostScript)
+	})
+
+	t.Run("ForceOverlays without OverlayCount is an error", func(t *testing.T) {
+		h := newHarness()
+		err := h.resolveOverlaysFor(ComposeOpts{ForceOverlays: map[int]bool{0: true}})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "OverlayCount")
+	})
+}
+
+func TestWhenImplies(t *testing.T) {
+	tests := []struct {
+		name        string
+		child, base string
+		want        bool
+	}{
+		{"identical", `event.kind == "x"`, `event.kind == "x"`, true},
+		{"whitespace and parens", `(event.kind  ==  "x")`, `event.kind == "x"`, true},
+		{"child adds a term", `event.kind == "x" && event.a == 1`, `event.kind == "x"`, true},
+		{"child adds a term, base parenthesized", `(event.a == 1) && event.kind == "x"`, `(event.kind == "x")`, true},
+		{"base adds an alternative", `event.kind == "x"`, `event.kind == "x" || event.kind == "y"`, true},
+		{"child narrower than base fails", `event.kind == "x"`, `event.kind == "x" && event.a == 1`, false},
+		{"child alternative not covered", `event.kind == "x" || event.kind == "z"`, `event.kind == "x"`, false},
+		{"unrelated", `event.kind == "x"`, `event.kind == "y"`, false},
+		{"operators inside strings are not split", `event.kind == "a&&b"`, `event.kind == "a"`, false},
+		{"parenthesized disjunction is one term", `(event.a || event.b) && event.c`, `event.a`, false},
+		{"ternary is opaque", `event.p ? event.q : event.r && event.s`, `event.s`, false},
+		{"parenthesized conjunction is flattened", `(event.a == 1 && event.kind == "x")`, `event.kind == "x"`, true},
+		{"empty", ``, `event.kind == "x"`, false},
+		{"whitespace inside a string literal is significant", `event.kind == "a  b"`, `event.kind == "a b"`, false},
+		{"identical literal with inner whitespace", `event.kind  ==  "a  b"`, `event.kind == "a  b"`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, whenImplies(tt.child, tt.base))
+		})
+	}
+}
+
+func TestWhenReadsEvent(t *testing.T) {
+	tests := []struct {
+		when string
+		want bool
+	}{
+		{`event.kind == "x"`, true},
+		{`!has(event.entity)`, true},
+		{`runtime.forge == "github" && has(event.entity)`, true},
+		{`runtime.forge == "github"`, false},
+		{`config.agents.exists(a, a.name == "event-handler")`, false},
+		{`config.event_mode == "on"`, false},
+		{`not valid cel (`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.when, func(t *testing.T) {
+			assert.Equal(t, tt.want, whenReadsEvent(tt.when))
+		})
+	}
+}
+
+func TestOverlayWhenPossible(t *testing.T) {
+	cfg := map[string]any{"flag": true}
+	tests := []struct {
+		name, when, forge string
+		config            map[string]any
+		want              bool
+	}{
+		{"matching forge", `runtime.forge == "github"`, "github", nil, true},
+		{"other forge", `runtime.forge == "github"`, "gitlab", nil, false},
+		{"unknown forge", `runtime.forge == "github"`, "", nil, true},
+		{"other forge with event term", `runtime.forge == "github" && has(event.entity)`, "gitlab", nil, false},
+		{"parenthesized conjunction under excluded forge", `(runtime.forge == "github" && has(event.entity))`, "gitlab", nil, false},
+		{"nested parenthesized conjunction under excluded forge", `has(event.entity) && (runtime.forge == "github" && has(event.kind))`, "gitlab", nil, false},
+		{"parenthesized conjunction under matching forge", `(runtime.forge == "github" && has(event.entity))`, "github", nil, true},
+		{"parenthesized disjunction with possible alternative", `(runtime.forge == "github" || has(event.entity))`, "gitlab", nil, true},
+		{"event only", `has(event.entity)`, "gitlab", nil, true},
+		{"forge alternative", `runtime.forge == "github" || has(event.entity)`, "gitlab", nil, true},
+		{"all alternatives excluded", `runtime.forge == "github" || runtime.forge == "forgejo"`, "gitlab", nil, false},
+		{"config false", `config.flag == false`, "github", cfg, false},
+		{"config unknown", `config.flag == false`, "github", nil, true},
+		{"unconditional", `true`, "gitlab", nil, true},
+		{"event in string literal, config false", `config.flag == "event-handler"`, "github", cfg, false},
+		{"event in string literal, config true", `config.flag == true || config.name == "event"`, "github", map[string]any{"flag": true, "name": "x"}, true},
+		{"event in field name, config false", `config.event_flag == false`, "github", map[string]any{"event_flag": true}, false},
+		{"triple-quoted literal with operators", `config.flag == """a && b || c"""`, "github", map[string]any{"flag": "a && b || c"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, OverlayWhenPossible(tt.when, tt.forge, tt.config))
+		})
+	}
+}
+
+func TestSplitWhenTerms_TripleQuotedLiteralIsOpaque(t *testing.T) {
+	got := splitWhenTerms(`config.flag == """a && b || c"""`)
+	assert.Equal(t, [][]string{{`config.flag == """a && b || c"""`}}, got)
+	got = splitWhenTerms(`config.flag == '''a && b'''`)
+	assert.Len(t, got, 1)
+	assert.Len(t, got[0], 1)
+}
+
+func TestURLIndexLookup_RejectsUnsafeIndex(t *testing.T) {
+	root := t.TempDir()
+	idx := urlIndexPath(root)
+	require.NoError(t, os.MkdirAll(filepath.Dir(idx), 0o700))
+	require.NoError(t, os.WriteFile(idx, []byte(`{"https://example.com/a":"abc"}`), 0o600))
+	h, ok := urlIndexLookup(root, "https://example.com/a")
+	require.True(t, ok)
+	assert.Equal(t, "abc", h)
+
+	// A symlink escaping the workspace is not read.
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	require.NoError(t, os.WriteFile(outside, []byte(`{"https://example.com/a":"evil"}`), 0o600))
+	require.NoError(t, os.Remove(idx))
+	require.NoError(t, os.Symlink(outside, idx))
+	_, ok = urlIndexLookup(root, "https://example.com/a")
+	assert.False(t, ok)
+
+	// A special file is not read.
+	if _, err := os.Stat("/dev/zero"); err == nil {
+		require.NoError(t, os.Remove(idx))
+		require.NoError(t, os.Symlink("/dev/zero", idx))
+		_, ok = urlIndexLookup(root, "https://example.com/a")
+		assert.False(t, ok)
+	}
 }

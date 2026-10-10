@@ -21,6 +21,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -594,7 +595,9 @@ func resolveHarnessPath(dir, agentName string, printer *ui.Printer) (string, err
 		return ymlPath, nil
 	}
 	if _, ymlErr := os.Stat(filepath.Join(dir, "harness", agentName+".yml")); ymlErr == nil {
-		printer.StepWarn(fmt.Sprintf("Both %s.yaml and %s.yml exist; using .yaml", agentName, agentName))
+		// Sanitize the displayed copy only; agentName is untrusted.
+		safeName := agentruntime.SanitizeForDisplay(agentName)
+		printer.StepWarn(fmt.Sprintf("Both %s.yaml and %s.yml exist; using .yaml", safeName, safeName))
 	}
 	return yamlPath, nil
 }
@@ -616,6 +619,12 @@ func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string
 	}
 
 	// Local file not found — try config-driven resolution.
+	return resolveRegisteredAgent(ctx, absFullsendDir, agentName, orgCfg, rFlags, policy, printer)
+}
+
+// resolveRegisteredAgent resolves agentName through its config registration
+// only (not the local harness directory), as runAgent does.
+func resolveRegisteredAgent(ctx context.Context, absFullsendDir, agentName string, orgCfg config.ConfigReader, rFlags resolveFlags, policy fetch.FetchPolicy, printer *ui.Printer) (string, []resolve.Dependency, error) {
 	if orgCfg == nil {
 		return "", nil, fmt.Errorf("agent %q: harness file not found locally and no config.yaml for fallback resolution", agentName)
 	}
@@ -638,8 +647,11 @@ func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string
 		}
 	}
 
+	// Display only.
+	safeName := agentruntime.SanitizeForDisplay(agentName)
+
 	if harness.IsURL(entry.Source) {
-		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agentName))
+		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", safeName))
 	}
 	resolved, resolveErr := harness.ResolveRegisteredPath(ctx, absFullsendDir, *entry, orgCfg.AllowedResources(), harness.ComposeOpts{
 		WorkspaceRoot: absFullsendDir,
@@ -655,7 +667,7 @@ func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string
 	}
 
 	if harness.IsURL(entry.Source) {
-		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agentName))
+		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", safeName))
 		dep := resolve.Dependency{
 			Field:     "agent_source",
 			URL:       resolved.Dep.URL,
@@ -668,7 +680,7 @@ func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string
 		}
 		return resolved.Path, []resolve.Dependency{dep}, nil
 	}
-	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agentName))
+	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", safeName))
 	return resolved.Path, nil, nil
 }
 

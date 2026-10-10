@@ -3,11 +3,13 @@ package resolve
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -164,6 +166,63 @@ func parseProviderDef(content []byte, index int, source string) (harness.Provide
 	}
 	w := WarnLiteralCredentials(def.Name, def.Credentials)
 	return def, w, nil
+}
+
+// ValidateProviderFile parses and validates one provider definition document
+// with the same rules ResolveHarness applies to local provider files.
+func ValidateProviderFile(content []byte, index int, source string) error {
+	_, err := ParseProviderFile(content, index, source)
+	return err
+}
+
+// ParseProviderFile is ValidateProviderFile that also returns the parsed
+// definition, so callers can check it against the declared profiles.
+func ParseProviderFile(content []byte, index int, source string) (harness.ProviderDef, error) {
+	def, _, err := parseProviderDef(content, index, source)
+	return def, err
+}
+
+// MaxLocalResourceBytes bounds ReadContainedFile; provider and profile
+// definitions are small YAML documents.
+const MaxLocalResourceBytes = 1 << 20
+
+// ReadContainedFile reads a local resource file for static validation. Like
+// ResolveHarness it requires p to be inside root (resolving symlinks), and it
+// additionally requires a regular file no larger than MaxLocalResourceBytes,
+// so special files such as /dev/zero are never read.
+func ReadContainedFile(p, root string) ([]byte, error) {
+	if !isContainedPath(p, root) {
+		return nil, fmt.Errorf("path %q is outside workspace root", p)
+	}
+	// Open non-blocking (a FIFO cannot hang the open), then check the opened
+	// descriptor so a path swapped after the check cannot yield a special file.
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("path %q is not a regular file", p)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, MaxLocalResourceBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxLocalResourceBytes {
+		return nil, fmt.Errorf("file %q exceeds %d bytes", p, MaxLocalResourceBytes)
+	}
+	return data, nil
+}
+
+// IsContainedPath reports whether the absolute path p is inside root,
+// resolving symlinks when p exists. Static validators use it to keep local
+// directories outside the workspace from being inspected.
+func IsContainedPath(p, root string) bool {
+	return isContainedPath(p, root)
 }
 
 // isContainedPath reports whether the absolute path p is inside root.
