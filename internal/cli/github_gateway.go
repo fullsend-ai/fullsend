@@ -120,6 +120,12 @@ func validateEffectiveGateway(cfg githubSetupConfig, effective config.PerRepoCon
 	if missing := g.Missing(); len(missing) > 0 {
 		return fmt.Errorf("inference.gateway would have no %s: pass --inference-gateway-url and --inference-gateway-audience, or inherit them from config.base.yaml", strings.Join(missing, " or "))
 	}
+	// The inherited layer is not validated when it is parsed, so check the
+	// composed block as a whole: an inherited http url or bad model entry
+	// must not pass because only the overlay's own fields were checked.
+	if err := g.Validate(); err != nil {
+		return fmt.Errorf("composed config: %w", err)
+	}
 	return nil
 }
 
@@ -143,7 +149,7 @@ func loadGatewayModelsFile(cfg githubSetupConfig) ([]byte, error) {
 		return nil, fmt.Errorf("reading --inference-gateway-models-file: %w", err)
 	}
 	if _, err := runtime.ValidatePiGatewayModelsFile(data); err != nil {
-		return nil, fmt.Errorf("--inference-gateway-models-file %s: %w", p, err)
+		return nil, fmt.Errorf("--inference-gateway-models-file %q: %w", p, err)
 	}
 	return data, nil
 }

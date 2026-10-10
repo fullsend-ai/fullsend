@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"maps"
+	"net"
 	"net/url"
 	"path"
 	"slices"
@@ -137,14 +138,16 @@ func (c InferenceGatewayConfig) Validate() error {
 }
 
 // ValidateGatewayURL checks that raw is an absolute https URL with a host
-// and no embedded credentials, query or fragment.
+// and no embedded credentials, query or fragment. Plain http is accepted
+// only for a loopback host (test servers), as openaiwif.requireSecureURL
+// does.
 func ValidateGatewayURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("inference.gateway.url: %w", err)
 	}
-	if u.Scheme != "https" {
-		return fmt.Errorf("inference.gateway.url must use https (got scheme %q)", u.Scheme)
+	if u.Scheme != "https" && (u.Scheme != "http" || !isLoopbackHost(u.Hostname())) {
+		return fmt.Errorf("inference.gateway.url must use https (got scheme %q; plain http is allowed only for a loopback host)", u.Scheme)
 	}
 	if u.Hostname() == "" {
 		return fmt.Errorf("inference.gateway.url %q has no host", raw)
@@ -156,6 +159,14 @@ func ValidateGatewayURL(raw string) error {
 		return fmt.Errorf("inference.gateway.url must not carry a query or fragment")
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ValidateGatewayModelsFilePath checks that p is a clean, relative
@@ -204,6 +215,15 @@ func validateGatewayModel(id string, m InferenceGatewayModel) error {
 	}
 	if !slices.Contains(ValidGatewayAPIs(), m.API) {
 		return fmt.Errorf("inference.gateway.models[%q]: invalid api %q: must be one of %s", id, m.API, strings.Join(ValidGatewayAPIs(), ", "))
+	}
+	// compat is a flat map of flags in the extension's format. Holding it
+	// to scalar values keeps nested data out of the rendered file and
+	// makes the one-level copy in cloneGatewayModels a full copy.
+	for k, v := range m.Compat {
+		switch v.(type) {
+		case map[string]any, []any:
+			return fmt.Errorf("inference.gateway.models[%q].compat must hold only scalar values (%s is not)", id, k)
+		}
 	}
 	if m.ContextWindow < 0 {
 		return fmt.Errorf("inference.gateway.models[%q]: contextWindow must not be negative", id)

@@ -42,6 +42,18 @@ func TestValidatePiGatewayModelsFile_Valid(t *testing.T) {
 	assert.Len(t, models, 2)
 }
 
+func TestValidatePiGatewayModelsFile_ValueShapes(t *testing.T) {
+	for _, models := range []string{
+		`{"m": {"api": "openai-responses", "compat": null, "thinkingLevelMap": null}}`,
+		`{"m": {"api": "openai-responses", "thinkingLevelMap": {"high": null, "low": "minimal"}}}`,
+		`{"m": {"api": "openai-responses", "cost": {"input": 1.5, "output": 3}, "input": ["text", "image"], "reasoning": false}}`,
+		`{"m": {"api": "openai-responses"}, "n": {"api": "anthropic-messages", "input": []}}`,
+	} {
+		_, err := ValidatePiGatewayModelsFile([]byte(`{"providers": {"gateway": {"include": ["a", "b"], "models": ` + models + `}}}`))
+		require.NoError(t, err, models)
+	}
+}
+
 func TestValidatePiGatewayModelsFile_Refused(t *testing.T) {
 	wrap := func(gateway string) string {
 		return `{"providers": {"gateway": ` + gateway + `}}`
@@ -80,6 +92,17 @@ func TestValidatePiGatewayModelsFile_Refused(t *testing.T) {
 		{"model id nbsp", wrap(`{"models": {"a\u00a0b": {"api": "openai-responses"}}}`), "invalid model id"},
 		{"model id control", wrap(`{"models": {"a\u0085b": {"api": "openai-responses"}}}`), "invalid model id"},
 		{"model id too long", wrap(`{"models": {"` + strings.Repeat("m", config.MaxGatewayModelIDLength+1) + `": {"api": "openai-responses"}}}`), "at most 256"},
+		{"duplicate providers", `{"providers": {"gateway": {"apiKey": "sk", ` + okModels + `}}, "providers": {"gateway": {` + okModels + `}}}`, `duplicate key "providers"`},
+		{"duplicate gateway", `{"providers": {"gateway": {"apiKey": "sk", ` + okModels + `}, "gateway": {` + okModels + `}}}`, `duplicate key "gateway"`},
+		{"duplicate model key", wrap(`{"models": {"m": {"api": "openai-responses", "api": "openai-completions"}}}`), `duplicate key "api"`},
+		{"duplicate inside array object", wrap(`{"include": ["a"], "models": {"m": {"api": "openai-responses", "input": ["text"]}}, "exclude": [{"x": 1, "x": 2}]}`), `duplicate key "x"`},
+		{"duplicate escaped key", wrap(`{"models": {"m": {"api": "openai-responses", "\u0061pi": "openai-completions"}}}`), `duplicate key "api"`},
+		{"malformed nested", wrap(`{"models": {"m": {"api": "openai-responses",}}}`), "parsing JSON"},
+		{"null cost", wrap(`{"models": {"m": {"api": "openai-responses", "cost": null}}}`), "cost must be an object"},
+		{"name not string", wrap(`{"models": {"m": {"api": "openai-responses", "name": {"password": "x"}}}}`), `name must be a string`},
+		{"compat nested", wrap(`{"models": {"m": {"api": "openai-responses", "compat": {"headers": {"Authorization": "x"}}}}}`), `compat must hold only scalar values`},
+		{"contextWindow not number", wrap(`{"models": {"m": {"api": "openai-responses", "contextWindow": "big"}}}`), `contextWindow must be a number`},
+		{"input not strings", wrap(`{"models": {"m": {"api": "openai-responses", "input": [1]}}}`), `input must be an array of strings`},
 		{"model without api", wrap(`{"models": {"m": {"contextWindow": 200000}}}`), `models["m"] must set api`},
 		{"model without api despite defaultApi", wrap(`{"defaultApi": "openai-responses", "models": {"m": {}}}`), `models["m"] must set api`},
 		{"model per-model headers", wrap(`{"models": {"m": {"headers": {}}}}`), `unsupported key providers.gateway.models["m"].headers`},

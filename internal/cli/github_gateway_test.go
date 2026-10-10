@@ -210,6 +210,14 @@ func TestValidateEffectiveGateway(t *testing.T) {
 	// Without gateway flags or a preset the check does not run.
 	require.NoError(t, validateEffectiveGateway(githubSetupConfig{}, effective))
 
+	// An inherited http url is refused even though only models were passed.
+	httpBase := []byte("version: \"1\"\ninference:\n  gateway:\n    url: http://gw.example.com\n    audience: aud\n")
+	effective, err = composeSetupLayers(nil, overlay, httpBase)
+	require.NoError(t, err)
+	err = validateEffectiveGateway(modelsOnly, effective)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must use https")
+
 	// A --config preset that carries only half the pair is refused.
 	partial := []byte("version: \"1\"\ninference:\n  gateway:\n    url: https://gw.example.com\n")
 	effective, err = composeSetupLayers(nil, nil, partial)

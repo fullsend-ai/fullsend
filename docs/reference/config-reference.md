@@ -293,7 +293,7 @@ independently through the layered config system (an overlay can override
   with the `gateway/` prefix use this route. The runner does not act on this
   block yet: `fullsend` parses and validates it, and the runner support for
   the route lands in later changes (#8280). Fields:
-  - `url` — the gateway URL. Must be `https`, with no credentials, query or
+  - `url` — the gateway URL. Must be `https` (plain `http` only for a loopback test host), with no credentials, query or
     fragment.
   - `audience` — the OIDC audience the runner requests. The token is valid
     only at the gateway.

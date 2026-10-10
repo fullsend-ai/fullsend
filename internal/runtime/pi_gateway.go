@@ -83,6 +83,12 @@ func ValidatePiGatewayModelsFile(data []byte) (map[string]any, error) {
 	if len(data) > MaxPiGatewayModelsFileBytes {
 		return nil, fmt.Errorf("inference.gateway models_file exceeds %d bytes", MaxPiGatewayModelsFileBytes)
 	}
+	// Go keeps the last of duplicate object members, so an earlier copy
+	// could carry a credential past the key checks below while setup
+	// commits the original bytes. Refuse duplicates at every level.
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return nil, fmt.Errorf("inference.gateway models_file: %w", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	var root map[string]any
@@ -148,6 +154,9 @@ func ValidatePiGatewayModelsFile(data []byte) (map[string]any, error) {
 			if !slices.Contains(piGatewayModelKeys, key) {
 				return nil, fmt.Errorf("inference.gateway models_file: unsupported key providers.gateway.models[%q].%s (allowed: %s)", id, key, strings.Join(piGatewayModelKeys, ", "))
 			}
+			if err := validatePiGatewayModelValue(key, m[key]); err != nil {
+				return nil, fmt.Errorf("inference.gateway models_file: providers.gateway.models[%q].%s %w", id, key, err)
+			}
 		}
 		// Every model needs its own api: pi runs offline, and extension
 		// v0.1.1 offers a configured model only when its entry sets api
@@ -162,6 +171,107 @@ func ValidatePiGatewayModelsFile(data []byte) (map[string]any, error) {
 		}
 	}
 	return gw, nil
+}
+
+// validatePiGatewayModelValue checks the JSON type of a per-model key, so
+// a value cannot smuggle nested data (a credential-shaped object, say)
+// under a key the allowlist admits. The object-valued keys (compat, cost,
+// thinkingLevelMap) may hold only scalar values; the extension reads them
+// as flat maps. compat and thinkingLevelMap may also be null, which the
+// extension (v0.1.1 src/config.ts) reads as "drop pi's catalog copy".
+func validatePiGatewayModelValue(key string, v any) error {
+	switch key {
+	case "api":
+		return nil // checked against the API list by the caller
+	case "name":
+		if _, ok := v.(string); !ok {
+			return errors.New("must be a string")
+		}
+	case "contextWindow", "maxTokens":
+		if _, ok := v.(json.Number); !ok {
+			return errors.New("must be a number")
+		}
+	case "reasoning":
+		if _, ok := v.(bool); !ok {
+			return errors.New("must be a boolean")
+		}
+	case "input":
+		list, ok := v.([]any)
+		if !ok {
+			return errors.New("must be an array of strings")
+		}
+		for _, item := range list {
+			if _, ok := item.(string); !ok {
+				return errors.New("must be an array of strings")
+			}
+		}
+	case "compat", "cost", "thinkingLevelMap":
+		if v == nil && key != "cost" {
+			return nil
+		}
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return errors.New("must be an object")
+		}
+		for k, item := range obj {
+			switch item.(type) {
+			case map[string]any, []any:
+				return fmt.Errorf("must hold only scalar values (%s is not)", k)
+			}
+		}
+	}
+	return nil
+}
+
+// rejectDuplicateJSONKeys walks data's tokens and reports the first object
+// that repeats a member name, at any depth.
+func rejectDuplicateJSONKeys(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var walk func() error
+	walk = func() error {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch tok {
+		case json.Delim('{'):
+			seen := map[string]bool{}
+			for dec.More() {
+				keyTok, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				key, _ := keyTok.(string)
+				if seen[key] {
+					return fmt.Errorf("duplicate key %q", key)
+				}
+				seen[key] = true
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err = dec.Token() // closing }
+			return err
+		case json.Delim('['):
+			for dec.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+			_, err = dec.Token() // closing ]
+			return err
+		}
+		return nil
+	}
+	if err := walk(); err != nil {
+		var syntaxErr *json.SyntaxError
+		if errors.As(err, &syntaxErr) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+			return nil // the decode below reports malformed JSON
+		}
+		return err
+	}
+	return nil
 }
 
 func validatePiGatewayAPI(field string, v any) error {

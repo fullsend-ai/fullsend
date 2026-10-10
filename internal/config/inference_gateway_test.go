@@ -63,7 +63,8 @@ func TestInferenceGateway_ValidateErrors(t *testing.T) {
 		want string
 	}{
 		{"http scheme", InferenceGatewayConfig{URL: "http://gw.example.com"}, "must use https"},
-		{"http loopback", InferenceGatewayConfig{URL: "http://127.0.0.1:8080"}, "must use https"},
+		{"http non-loopback", InferenceGatewayConfig{URL: "http://gw.example.com"}, "must use https"},
+		{"http loopback lookalike", InferenceGatewayConfig{URL: "http://localhost.example.com"}, "must use https"},
 		{"no host", InferenceGatewayConfig{URL: "https://"}, "has no host"},
 		{"userinfo", InferenceGatewayConfig{URL: "https://user:pw@gw.example.com"}, "must not carry credentials"},
 		{"query", InferenceGatewayConfig{URL: "https://gw.example.com?x=1"}, "query or fragment"},
@@ -85,6 +86,7 @@ func TestInferenceGateway_ValidateErrors(t *testing.T) {
 		{"bom id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"a\ufeffb": {API: GatewayAPIOpenAIResponses}}}, "whitespace"},
 		{"control id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"a\x7fb": {API: GatewayAPIOpenAIResponses}}}, "control"},
 		{"long id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{strings.Repeat("m", MaxGatewayModelIDLength+1): {API: GatewayAPIOpenAIResponses}}}, "at most 256"},
+		{"nested compat", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, Compat: map[string]any{"headers": map[string]any{"a": "b"}}}}}, "compat must hold only scalar values"},
 		{"negative context", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, ContextWindow: -1}}}, "contextWindow"},
 		{"negative max", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, MaxTokens: -1}}}, "maxTokens"},
 	}
@@ -245,4 +247,10 @@ func TestValidateGatewayModelID_Boundary(t *testing.T) {
 	// 128 astral-plane runes are 256 UTF-16 code units, the JavaScript length.
 	require.NoError(t, ValidateGatewayModelID(strings.Repeat("😀", MaxGatewayModelIDLength/2)))
 	require.Error(t, ValidateGatewayModelID(strings.Repeat("😀", MaxGatewayModelIDLength/2+1)))
+}
+
+func TestValidateGatewayURL_LoopbackHTTP(t *testing.T) {
+	for _, u := range []string{"http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"} {
+		require.NoError(t, ValidateGatewayURL(u), u)
+	}
 }
