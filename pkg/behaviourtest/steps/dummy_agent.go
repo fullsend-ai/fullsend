@@ -77,6 +77,19 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 			}
 			op.Args = args
 		}
+		// <gateway> expansion is scoped to http_probe for the same reason.
+		// The op is validated here so a malformed row fails at Given time
+		// instead of inside the workflow run.
+		if op.Op == "http_probe" {
+			args, err := expandGatewayPlaceholder(op.Args)
+			if err != nil {
+				return err
+			}
+			if _, err := runtime.ParseHTTPProbeArgs(args); err != nil {
+				return err
+			}
+			op.Args = args
+		}
 		if op.Op == "write_fixture" {
 			parts := strings.SplitN(op.Args, ",", 2)
 			if len(parts) != 2 {

@@ -1,0 +1,46 @@
+---
+# Template, not imported as-is: the runner renders it per configured gateway
+# host (renderGatewayProfile in internal/cli/run_gateway_egress.go), replacing
+# the placeholder host below and suffixing the id with a hash of the host, so
+# two gateways on one shared OpenShell gateway never share a profile id.
+id: fullsend-inference-gateway
+display_name: Fullsend inference gateway
+description: Inference gateway for the pi runtime (runner-seeded, run-scoped forge OIDC token)
+category: inference
+credentials:
+  - name: api_token
+    description: Short-lived forge OIDC token presented to the inference gateway
+    env_vars: [INFERENCE_GATEWAY_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+    refresh:
+      strategy: external
+# Explicit allow rules instead of an `access:` preset: the inference-gateway
+# extension only calls the three model APIs below, and a preset would admit
+# every other path on the host. `path` limits the credential binding to the
+# model API prefix; without it OpenShell binds every path on host:port.
+endpoints:
+  - host: __INFERENCE_GATEWAY_HOST__
+    port: 443
+    path: /v1/**
+    protocol: rest
+    enforcement: enforce
+    # OpenShell 0.0.110+ resets any inspected request body that contains the
+    # literal placeholder prefix (NVIDIA/OpenShell#2904). Model bodies never
+    # legitimately carry a placeholder, so forward bodies uninspected; the
+    # bearer header is still injected and the method/path rules still apply.
+    allow_uninspected_credentials: true
+    rules:
+      - allow:
+          method: POST
+          path: /v1/responses
+      - allow:
+          method: POST
+          path: /v1/messages
+      - allow:
+          method: POST
+          path: /v1/chat/completions
+# pi (and its inference-gateway extension) calls the gateway from node.
+binaries:
+  - "**/node"

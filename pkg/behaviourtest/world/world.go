@@ -140,6 +140,14 @@ type World struct {
 	AgentsOverridden bool
 	AgentsOriginal   []config.AgentEntry
 
+	// GatewayConfigOverridden records that this scenario committed an
+	// inference.gateway block into .fullsend/config.yaml;
+	// GatewayConfigOriginal holds the pre-scenario file bytes.
+	// CleanupScenario commits them back, before the leased repo is
+	// deallocated, so the slot's next scenario does not inherit the block.
+	GatewayConfigOverridden bool
+	GatewayConfigOriginal   []byte
+
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
 	// CleanupScenario removes both.

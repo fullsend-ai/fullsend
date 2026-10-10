@@ -175,6 +175,8 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		AllowedResourcesOriginal:   []string{"https://example.com/"},
 		AgentsOverridden:           true,
 		AgentsOriginal:             []config.AgentEntry{{Name: "test", Source: "harness/test.yaml"}},
+		GatewayConfigOverridden:    true,
+		GatewayConfigOriginal:      []byte("runtime: dummy\n"),
 		PlaybackEntries:            []runtime.PlaybackEntry{{Result: "triage/bug"}},
 		PlaybackCommitted:          true,
 		ConsumedHarnessRunIDs:      map[string]map[int]bool{"review": {10: true}},
@@ -195,6 +197,8 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Nil(t, w.AllowedResourcesOriginal)
 	assert.False(t, w.AgentsOverridden)
 	assert.Nil(t, w.AgentsOriginal)
+	assert.False(t, w.GatewayConfigOverridden)
+	assert.Nil(t, w.GatewayConfigOriginal)
 	assert.Nil(t, w.PlaybackEntries)
 	assert.False(t, w.PlaybackCommitted)
 	assert.Nil(t, w.ConsumedHarnessRunIDs)

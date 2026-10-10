@@ -163,7 +163,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().StringVar(&cfg.openaiAudience, "openai-audience", "", "OpenAI Workload Identity audience (GPT on pi or codex; with --openai-identity-provider-id and --openai-service-account-id)")
 	cmd.Flags().StringVar(&cfg.openaiIdentityProviderID, "openai-identity-provider-id", "", "OpenAI Workload Identity provider ID")
 	cmd.Flags().StringVar(&cfg.openaiServiceAccountID, "openai-service-account-id", "", "OpenAI service account ID the provider maps this repository to")
-	cmd.Flags().StringVar(&cfg.gatewayURL, "inference-gateway-url", "", "inference gateway URL, https (plain http only for a loopback test host); gateway/ models on pi, with --inference-gateway-audience")
+	cmd.Flags().StringVar(&cfg.gatewayURL, "inference-gateway-url", "", "inference gateway origin, https://host with no path and port 443 only (plain http and any port only for a loopback test host); gateway/ models on pi, with --inference-gateway-audience")
 	cmd.Flags().StringVar(&cfg.gatewayAudience, "inference-gateway-audience", "", "OIDC audience the runner requests for the inference gateway")
 	cmd.Flags().StringArrayVar(&cfg.gatewayModels, "inference-gateway-model", nil, "inference gateway model as id=api (repeatable; api is openai-responses, anthropic-messages or openai-completions)")
 	cmd.Flags().StringVar(&cfg.gatewayModelsFile, "inference-gateway-models-file", "", "local pi-inference-gateway config file listing the gateway models; validated and committed as "+gatewayModelsFileRepoPath)
@@ -399,6 +399,16 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			Mode:    "100644",
 		})
 	}
+	removeModelsFile, keptModelsFile, err := gatewayModelsFileRemoval(ctx, client, owner, repo, cfg, effective)
+	if err != nil {
+		return err
+	}
+	if keptModelsFile {
+		printer.StepInfo("Keeping " + gatewayModelsFileRepoPath + ": the inherited inference.gateway block still sets models_file to it")
+	}
+	if removeModelsFile {
+		files = append(files, forge.TreeFile{Path: gatewayModelsFileRepoPath, Delete: true})
+	}
 
 	// Mint/inference values are stored in layered config (ADR 0069
 	// Decision 1). Repo variables/secrets are ALSO written for backward
@@ -499,6 +509,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		for _, f := range files {
+			if f.Delete {
+				printer.StepDone(fmt.Sprintf("Would delete: %s", f.Path))
+				continue
+			}
 			printer.StepDone(fmt.Sprintf("Would commit: %s (%d bytes)", f.Path, len(f.Content)))
 		}
 		if signOffTrailer != "" {

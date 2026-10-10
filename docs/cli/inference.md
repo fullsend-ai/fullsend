@@ -4,7 +4,7 @@ sidebar_label: fullsend inference
 
 # fullsend inference
 
-Manage the inference credentials agent runs use. `provision`, `deprovision` and `status` create, inspect, and remove the GCP Workload Identity Federation (WIF) pool, OIDC provider, and IAM bindings that let GitHub Actions workflows authenticate with GCP for Agent Platform (Vertex) access. [`openai`](#inference-openai) enrols repositories with OpenAI WIF for GPT models on the pi runtime.
+Manage the inference credentials agent runs use. `provision`, `deprovision` and `status` create, inspect, and remove the GCP Workload Identity Federation (WIF) pool, OIDC provider, and IAM bindings that let GitHub Actions workflows authenticate with GCP for Agent Platform (Vertex) access. [`openai`](#inference-openai) enrols repositories with OpenAI WIF for GPT models on the pi runtime. [`gateway status`](#inference-gateway-status) checks a repository's `inference.gateway` block and whether the gateway accepts the job's OIDC assertion.
 
 ## Commands
 
@@ -16,6 +16,7 @@ Manage the inference credentials agent runs use. `provision`, `deprovision` and 
 | `fullsend inference openai request <owner/repo>[,…]` | Generate WIF provider/mapping request for OpenAI admin |
 | `fullsend inference openai import [reply.json]` | Import OpenAI WIF identifiers into config |
 | `fullsend inference openai status <owner/repo>` | Check OpenAI WIF configuration and exchange status |
+| `fullsend inference gateway status <owner/repo>` | Check inference gateway configuration and authentication |
 
 ## `inference provision`
 
@@ -159,6 +160,19 @@ Prints the resolved OpenAI WIF identifiers and their source (config layer or env
 
 ```bash
 fullsend inference openai status <owner/repo> \
+  [--fullsend-dir ".fullsend"]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--fullsend-dir` | `.fullsend` | Path to the .fullsend configuration directory |
+
+## `inference gateway status`
+
+Prints the resolved `inference.gateway` block ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)) — `url`, `audience` and the model list (`models` or `models_file`) — with the config layer each comes from (`config.yaml` or `config.base.yaml`), and flags a partial block (url or audience missing). The block has no environment-variable override. When run inside a GitHub Actions job in `<owner/repo>` with `id-token: write`, fetches one GitHub OIDC assertion for the configured audience, reports its expiry (`exp`, lifetime, time left), and sends one authenticated request, `GET <url>/v1/models` with the assertion as a bearer token. It reports the HTTP status and reads the reply as an OpenAI-style model list (`{"data":[{"id":...}]}`, at most 1 MiB): a 2xx list with entries means the gateway accepted the assertion, and the command prints how many models the gateway authorises for `<owner/repo>` and their ids (the first 20, with JWT-shaped values redacted, control characters replaced by `?` and every `::` printed as `: :` so an id cannot form a workflow command); an empty list means the assertion was authenticated but no models are authorised for the repository, which is an error; 401 or 403 means the gateway refused the assertion; 3xx is an error (redirects are not followed); any other status (for example 404, 405, 429 or 5xx), or a 2xx reply that is not a model list, means authentication could not be confirmed, which is also an error. The request goes out over `https` only, ignores proxy settings, and refuses to connect to loopback, private or other internal addresses. The assertion is never printed. Outside Actions, it says so and stops at the config checks.
+
+```bash
+fullsend inference gateway status <owner/repo> \
   [--fullsend-dir ".fullsend"]
 ```
 

@@ -112,7 +112,7 @@ func fetchLocal(path string) ([]byte, error) {
 // internal/reserved IP addresses (loopback, link-local, private, etc.).
 // It resolves the target host, validates every resolved address, and
 // dials only the addresses that pass. Mirrors
-// internal/repos.safeDialContext, applied here to preset fetches.
+// internal/repos.SafeDialContext, applied here to preset fetches.
 func safeDialContext(d *net.Dialer, skipIPCheck bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)

@@ -35,6 +35,8 @@ fullsend
 │   ├── provision    <org|owner/repo>        # Create WIF pool/provider for Agent Platform
 │   ├── deprovision  <org|owner/repo>        # Remove WIF access for org or repo
 │   ├── status       <org|owner/repo>        # Check WIF health, print config
+│   ├── gateway                              # Inference gateway route (ADR 0137)
+│   │   └── status   <owner/repo>            # Resolved block and source, and the gateway inside Actions
 │   └── openai                               # OpenAI WIF enrolment (GPT on pi or codex)
 │       ├── request  <owner/repo>[,...]      # Generate the provider/mapping request for an admin
 │       │   ├── --audience <string>          #   Provider audience (default: fullsend://<owner>)
@@ -774,7 +776,8 @@ var executableFiles = map[string]struct{}{
 | `internal/scaffold/scaffold.go` | ~146 | Embedded template system |
 | `internal/inference/inference.go` | ~26 | Provider interface |
 | `internal/inference/vertex/vertex.go` | ~80 | Agent Platform (Vertex AI) implementation |
-| `internal/inference/openaiwif/openaiwif.go` | ~330 | OpenAI Workload Identity Federation token exchange (runner-side) |
+| `internal/inference/actionsoidc/actionsoidc.go` | ~250 | Provider-neutral GitHub Actions OIDC assertion fetch (inference gateway route, and the first step of the OpenAI exchange) |
+| `internal/inference/openaiwif/openaiwif.go` | ~260 | OpenAI Workload Identity Federation token exchange (runner-side) |
 | `internal/cli/run_openai.go` | ~550 | OpenAI credential resolution, run-scoped provider lifecycle and refresh |
 | `internal/config/config.go` | ~264 | Per-repo config structures |
 

@@ -142,6 +142,8 @@ func resetScenarioWorld(w *world.World) {
 	w.AllowedResourcesOriginal = nil
 	w.AgentsOverridden = false
 	w.AgentsOriginal = nil
+	w.GatewayConfigOverridden = false
+	w.GatewayConfigOriginal = nil
 	w.OwnersAuthActivated = false
 	w.JiraMockServer = nil
 	w.JiraMockState = nil

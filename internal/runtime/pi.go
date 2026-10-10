@@ -60,9 +60,12 @@ const piXaiVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/xai-vertex"
 // PI_INFERENCE_GATEWAY_VERSION). It fronts OpenAI- or Anthropic-compatible
 // gateways (LiteLLM, agentgateway, APISIX and similar) and registers one
 // provider (default id "gateway") whose models come from the gateway's
-// /v1/models. The image installs it, but Run does not load it yet: the -e
-// load, the INFERENCE_GATEWAY_* unset and the inference-gateway.json guard
-// land with gateway model routing (#7480, #8262).
+// /v1/models. Run loads it with `-e` only when an inference.gateway block
+// applies (SetPiGatewayRun) and a resolved model is on the gateway
+// provider; it then also guards the rendered inference-gateway.json and
+// owns the INFERENCE_GATEWAY_* environment (pi_gateway_run.go, #8280).
+// Without a block the runner leaves it alone, so a harness may still load
+// it as a plugin.
 const piInferenceGatewayExtensionPath = sandbox.SandboxPiExtensionsDir + "/inference-gateway"
 
 // OpenAI on pi: unlike the Vertex providers, OpenAI uses a runner-exchanged
