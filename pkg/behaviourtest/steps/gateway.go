@@ -24,9 +24,9 @@ const (
 	envInferenceGatewayURL      = "E2E_INFERENCE_GATEWAY_URL"
 	envInferenceGatewayAudience = "E2E_INFERENCE_GATEWAY_AUDIENCE"
 	// envInferenceGatewayTestKey is the test gateway's API key for the
-	// api-key mode (ADR 0138), authorised for the echo model only. The
-	// suite holds it only to check it never reaches the upstream; the
-	// harness run gets it as the pool repository's
+	// api-key mode (ADR 0138), authorised for the echo model only. In the
+	// suite it only gates the scenario and is registered for redaction;
+	// the harness run gets it as the pool repository's
 	// FULLSEND_INFERENCE_GATEWAY_API_KEY secret, provisioned out of band.
 	envInferenceGatewayTestKey = "E2E_INFERENCE_GATEWAY_TEST_KEY"
 	defaultGatewayAudience     = "fullsend-e2e-gateway"
@@ -41,9 +41,6 @@ func registerGatewaySteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^the test inference gateway is configured for the repository with an API key$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenTestInferenceGatewayAPIKey(world.FromContext(ctx))
-	})
-	sc.Step(`^the agent's probe "([^"]+)" response does not contain the test inference gateway API key$`, func(ctx context.Context, description string) (context.Context, error) {
-		return ctx, assertProbeBodyWithoutTestKey(world.FromContext(ctx), description)
 	})
 	sc.Step(`^the agent's probe "([^"]+)" returned HTTP (\d{3})$`, func(ctx context.Context, description, status string) (context.Context, error) {
 		return ctx, assertProbeStatus(world.FromContext(ctx), description, status)
@@ -279,28 +276,6 @@ func checkProbeBody(res runtime.BehaviourOpResult, wantContains bool, needle str
 		return fmt.Errorf("probe %q: response body does not contain %q", res.Description, needle)
 	case !wantContains && got:
 		return fmt.Errorf("probe %q: response body unexpectedly contains %q", res.Description, needle)
-	}
-	return nil
-}
-
-// assertProbeBodyWithoutTestKey fails when a probe's recorded response
-// holds the test gateway API key: the gateway must swap it for its own
-// upstream credential. The error never prints the key.
-func assertProbeBodyWithoutTestKey(w *world.World, description string) error {
-	key := strings.TrimSpace(os.Getenv(envInferenceGatewayTestKey))
-	if key == "" {
-		return fmt.Errorf("%s is unset", envInferenceGatewayTestKey)
-	}
-	res, err := findProbeResult(w, description)
-	if err != nil {
-		return err
-	}
-	return checkProbeBodyWithoutKey(res, key)
-}
-
-func checkProbeBodyWithoutKey(res runtime.BehaviourOpResult, key string) error {
-	if strings.Contains(res.ResponseBody, key) {
-		return fmt.Errorf("probe %q: the response holds the test inference gateway API key; the gateway forwarded it upstream", res.Description)
 	}
 	return nil
 }

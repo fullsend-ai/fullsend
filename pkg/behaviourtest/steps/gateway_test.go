@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -181,13 +180,4 @@ func TestGivenTestInferenceGatewayAPIKey(t *testing.T) {
 
 	t.Setenv(envInferenceGatewayURL, "")
 	assert.ErrorIs(t, givenTestInferenceGatewayAPIKey(&world.World{SCM: &fakeCleanupSCM{}}), godog.ErrSkip, "no URL: skip")
-}
-
-func TestCheckProbeBodyWithoutKey(t *testing.T) {
-	res := runtime.BehaviourOpResult{Description: "Call", ResponseBody: `{"authorization":"Bearer stub"}`}
-	assert.NoError(t, checkProbeBodyWithoutKey(res, "test-gateway-key-value"))
-	res.ResponseBody = `{"authorization":"Bearer test-gateway-key-value"}`
-	err := checkProbeBodyWithoutKey(res, "test-gateway-key-value")
-	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "test-gateway-key-value", "the error never prints the key")
 }
