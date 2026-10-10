@@ -132,9 +132,10 @@ type RepoStatus struct {
 	ConfigRejected bool `json:"-"`
 
 	// GitLab role-credential status. Names only; never token values.
-	GitLabRolesReady      bool     `json:"gitlab_roles_ready,omitempty"`
-	GitLabRolesPartial    bool     `json:"gitlab_roles_partial,omitempty"`
-	GitLabRoleDiagnostics []string `json:"gitlab_role_diagnostics,omitempty"`
+	GitLabRolesReady      bool                         `json:"gitlab_roles_ready,omitempty"`
+	GitLabRolesPartial    bool                         `json:"gitlab_roles_partial,omitempty"`
+	GitLabRoleDiagnostics []string                     `json:"gitlab_role_diagnostics,omitempty"`
+	GitLabServiceAccounts []GitLabServiceAccountStatus `json:"gitlab_service_accounts,omitempty"`
 }
 
 // StatusSummary provides aggregate counts across all repos.

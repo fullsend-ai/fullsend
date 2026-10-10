@@ -78,7 +78,7 @@ func TestServiceAccountTokenClient_DurableOwnershipGatesReuseAndRevocation(t *te
 			return nil
 		},
 	}
-	tok, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.PollerTokenName, []string{"api"}, forge.GitLabAccessLevelDeveloper, "2027-01-01")
+	tok, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.PollerTokenName, []string{"api"}, forge.GitLabAccessLevelDeveloper, validRolePATExpiry())
 	require.NoError(t, err)
 	assert.NotEqual(t, 77, tok.UserID)
 	assert.Equal(t, forge.GitLabAccessLevelMaintainer, sa.members[77])
@@ -109,11 +109,11 @@ func TestServiceAccountTokenClient_DurableOwnershipGatesReuseAndRevocation(t *te
 	_, err = c.ListProjectAccessTokens(ctx, "g", "p")
 	require.Error(t, err, "unreadable supplied ownership is not an empty inventory")
 	c.SuppliedAccountIDs = nil
-	_, err = c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.PollerTokenName, []string{"api"}, forge.GitLabAccessLevelDeveloper, "2027-01-01")
+	_, err = c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.PollerTokenName, []string{"api"}, forge.GitLabAccessLevelDeveloper, validRolePATExpiry())
 	require.NoError(t, err)
 	assert.Len(t, sa.createdSAs, 1, "a recorded account is reused")
 	c.ManagedAccountIDs = func(context.Context, string, string) ([]int, error) { return nil, forge.ErrForbidden }
-	_, err = c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.PollerTokenName, nil, forge.GitLabAccessLevelDeveloper, "2027-01-01")
+	_, err = c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.PollerTokenName, gitlabroles.TokenScopes(), forge.GitLabAccessLevelDeveloper, validRolePATExpiry())
 	require.ErrorIs(t, err, ErrPollerSuppliedUnresolved)
 	assert.Len(t, sa.createdSAs, 1)
 }

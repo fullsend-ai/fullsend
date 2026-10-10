@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -414,4 +415,122 @@ func TestGitLabRoleLifecycle_RevokedRoleRotatesWithoutSharedToken(t *testing.T) 
 	for _, name := range tokens.createdNames() {
 		assert.NotEqual(t, gitlabroles.SharedTokenName, name)
 	}
+}
+
+// The rotation document records credential provenance, so it is kept until
+// token revocation succeeds: a retry after a failed revocation must still
+// recognize the supplied account.
+func TestCleanupGitLabRoleIdentity_RetainsRotationStateUntilRevocationSucceeds(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	seedEnforcedIdentity(t, fc)
+	rotationKey := "group/project/" + forge.VarGitLabRoleRotation
+	fc.VariableValues[rotationKey] = `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z","supplied_user_id":90}}}`
+	tokens := &fakeTokens{failRevoke: errors.New("revoke refused")}
+	// The token reports a non-excluded owner: with exclusions recorded, a token
+	// that reports no owner is never revoked at all.
+	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.CoderTokenName, Active: true, UserID: 600})
+
+	_, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+	})
+	require.Error(t, err)
+	assert.True(t, fc.VariablesExist[rotationKey], "provenance survives a failed revocation")
+	state, _, err := loadRotationState(ctx, fc, "group", "project")
+	require.NoError(t, err)
+	assert.Equal(t, 90, state.Roles["poller"].SuppliedUserID)
+
+	tokens.failRevoke = nil
+	_, err = CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+	})
+	require.NoError(t, err)
+	// Only the supplied-account exclusions outlive a successful cleanup.
+	require.True(t, fc.VariablesExist[rotationKey], "exclusions for the surviving supplied account are kept")
+	state, _, err = loadRotationState(ctx, fc, "group", "project")
+	require.NoError(t, err)
+	assert.Equal(t, RoleProvenance{ExcludedUserIDs: []int{90}}, provenanceOf(state.Roles["poller"]))
+}
+
+// Cleanup fails closed when managed-account ownership cannot be read: no
+// credential is revoked and no identity state is deleted.
+func TestCleanupGitLabRoleIdentity_UnreadableOwnershipFailsClosed(t *testing.T) {
+	t.Parallel()
+	fc := forge.NewFakeClient()
+	seedEnforcedIdentity(t, fc)
+	rotationKey := "group/project/" + forge.VarGitLabRoleRotation
+	fc.VariableValues[rotationKey] = "invalid"
+	tokens := &fakeTokens{}
+	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.CoderTokenName, Active: true})
+
+	_, err := CleanupGitLabRoleIdentity(context.Background(), GitLabRoleCleanupConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+	})
+	require.Error(t, err)
+	assert.Empty(t, tokens.revoked)
+	assert.Equal(t, "invalid", fc.VariableValues[rotationKey])
+	assert.True(t, fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry])
+}
+
+// A supplied enrollment recorded with no user ID, whose owner is resolved only
+// through the supplied-account callback, keeps that owner in the exclusions-only
+// document cleanup leaves behind.
+func TestCleanupPersistsResolvedSuppliedOwnerExclusion(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+		"coder": {Supplied: true},
+	}}))
+	c := ServiceAccountTokenClient{
+		SA:                 newFakeSAAPI(),
+		SuppliedAccountIDs: func(context.Context, string, string) ([]int, error) { return []int{501}, nil },
+	}
+	_, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{Owner: "g", Repo: "p", Client: fc, Tokens: c})
+	require.NoError(t, err)
+	require.True(t, fc.VariablesExist["g/p/"+forge.VarGitLabRoleRotation], "exclusions-only document is retained")
+	state, _, err := loadRotationState(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.Equal(t, []int{501}, state.Roles["coder"].ExcludedUserIDs)
+}
+
+// A pointer to the service-account client is wrapped with the recorded
+// exclusions like the value form, so cleanup never revokes an excluded owner's
+// tokens.
+func TestCleanupAppliesRecordedExclusionsForPointerClient(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+		"coder": {ExcludedUserIDs: []int{501}},
+	}}))
+	sa := newFakeSAAPI()
+	sa.accounts = []GitLabServiceAccount{{ID: 501, Name: gitlabroles.CoderTokenName}}
+	sa.tokens[501] = []ProjectAccessToken{{ID: 7, Name: gitlabroles.CoderTokenName, Active: true}}
+	c := &ServiceAccountTokenClient{
+		SA:                sa,
+		ManagedAccountIDs: func(context.Context, string, string) ([]int, error) { return []int{501}, nil },
+	}
+	result, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{Owner: "g", Repo: "p", Client: fc, Tokens: c})
+	require.NoError(t, err)
+	assert.Empty(t, sa.revoked)
+	assert.Zero(t, result.TokensRevoked)
+	assert.True(t, sa.tokens[501][0].Active)
+}
+
+// Recorded excluded owners are skipped for any token client that reports token
+// owners, not only the service-account client.
+func TestCleanupSkipsExcludedOwnerTokensForGenericClient(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+		"coder": {SuppliedUserID: 501, ExcludedUserIDs: []int{502}},
+	}}))
+	tokens := &fakeTokens{}
+	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.CoderTokenName, Active: true, UserID: 501})
+	tokens.seed(ProjectAccessToken{ID: 2, Name: gitlabroles.AnalystTokenName, Active: true, UserID: 502})
+	tokens.seed(ProjectAccessToken{ID: 3, Name: gitlabroles.PollerTokenName, Active: true, UserID: 600})
+	result, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{Owner: "g", Repo: "p", Client: fc, Tokens: tokens})
+	require.NoError(t, err)
+	assert.Equal(t, []int{3}, tokens.revoked)
+	assert.Equal(t, 1, result.TokensRevoked)
 }

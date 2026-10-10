@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
@@ -52,6 +53,20 @@ type GitLabServiceAccountAPI interface {
 // When the instance does not offer project service accounts (404, 403,
 // or not supported), Create falls back to Legacy project access tokens.
 type ServiceAccountTokenClient struct {
+	// ContainmentClient supplies durable ownership and secret deletion for
+	// access failures at the token creation boundary. Live adapters set it.
+	ContainmentClient forge.Client
+	// InstalledRoleCredentialOwner attributes the live secret before containment.
+	// Missing or unverifiable attribution preserves the secret.
+	InstalledRoleCredentialOwner func(ctx context.Context, owner, repo, secretName string) (int, error)
+	// RoleRegistry supplies the trusted role registry that authorizes the
+	// identity a service account is created for. When nil, ContainmentClient's
+	// registry variable is read instead. Without either source only the
+	// built-in role identities are authorized; custom roles fail closed.
+	RoleRegistry func(ctx context.Context, owner, repo string) (gitlabroles.Registry, error)
+	// Now is the clock the role credential policy validates PAT expiry
+	// against. Nil uses time.Now.
+	Now func() time.Time
 	// ManagedLegacyTokenIDs supplies positive creation records for destructive
 	// legacy operations. A nil callback supplies no ownership evidence.
 	ManagedLegacyTokenIDs func(ctx context.Context, owner, repo string) ([]int, error)
@@ -286,8 +301,35 @@ func (c ServiceAccountTokenClient) CreateProjectAccessToken(ctx context.Context,
 	if accessLevel > gitlabroles.DeveloperAccessLevel {
 		return nil, fmt.Errorf("refusing to provision GitLab role identity %q above Developer access (requested %d)", name, accessLevel)
 	}
+	now := time.Now
+	if c.Now != nil {
+		now = c.Now
+	}
+	// Policy and identity authorization are enforced before the backend is
+	// selected so the legacy fallback never receives a request the
+	// service-account path would refuse.
+	if err := validateRoleCredentialRequest(name, scopes, accessLevel, expiresAt, now()); err != nil {
+		return nil, err
+	}
+	if err := c.authorizeRoleIdentity(ctx, owner, repo, name); err != nil {
+		return nil, err
+	}
 	if c.SA == nil {
 		return c.legacyCreate(ctx, owner, repo, name, scopes, accessLevel, expiresAt, nil)
+	}
+	// Durable project-wide exclusions are frozen before account selection or any
+	// membership or token operation, so a caller that did not wrap the client
+	// with withProjectExclusions still cannot touch an administrator-owned
+	// account. Wrapping an already frozen client is idempotent.
+	if c.ContainmentClient != nil {
+		state, _, stateErr := loadRotationState(ctx, c.ContainmentClient, owner, repo)
+		if stateErr != nil {
+			return nil, fmt.Errorf("refusing to provision GitLab role identity %q: durable account exclusions unreadable: %w", name, safeAPIError("reading rotation state", stateErr))
+		}
+		var exclErr error
+		if c, _, exclErr = c.withProjectExclusions(ctx, owner, repo, state); exclErr != nil {
+			return nil, exclErr
+		}
 	}
 	accounts, err := c.managedServiceAccounts(ctx, owner, repo)
 	if err != nil {
@@ -322,7 +364,7 @@ func (c ServiceAccountTokenClient) CreateProjectAccessToken(ctx context.Context,
 		}
 	}
 	if err := c.ensureMemberLevel(ctx, owner, repo, sa, accessLevel); err != nil {
-		return nil, err
+		return nil, errors.Join(err, c.containCreationAccessFailure(ctx, owner, repo, name, sa.ID))
 	}
 	// The direct membership is at the requested level, but access inherited
 	// from a group or a shared project can still exceed it. A credential is
@@ -330,14 +372,14 @@ func (c ServiceAccountTokenClient) CreateProjectAccessToken(ctx context.Context,
 	// stay within the ceiling.
 	effective, err := c.SA.GetProjectMemberAccessLevel(ctx, owner, repo, int64(sa.ID))
 	if err != nil {
-		return nil, safeAPIError(fmt.Sprintf("verifying the effective project access of GitLab service account %q (user ID %d) before issuing its token", name, sa.ID), err)
+		return nil, errors.Join(safeAPIError(fmt.Sprintf("verifying the effective project access of GitLab service account %q (user ID %d) before issuing its token", name, sa.ID), err), c.containCreationAccessFailure(ctx, owner, repo, name, sa.ID))
 	}
 	if effective != accessLevel {
 		comparison := "does not match"
 		if effective > accessLevel {
 			comparison = "exceeds"
 		}
-		return nil, fmt.Errorf("refusing to issue a token for GitLab service account %q (user ID %d): its effective project access (%d, including inherited membership) %s the requested level %d. Repair the membership, then re-run", name, sa.ID, effective, comparison, accessLevel)
+		return nil, errors.Join(fmt.Errorf("refusing to issue a token for GitLab service account %q (user ID %d): its effective project access (%d, including inherited membership) %s the requested level %d. Repair the membership, then re-run", name, sa.ID, effective, comparison, accessLevel), c.containCreationAccessFailure(ctx, owner, repo, name, sa.ID))
 	}
 	tok, err := c.SA.CreateServiceAccountPAT(ctx, owner, repo, sa.ID, name, scopes, expiresAt)
 	if err != nil {
@@ -364,6 +406,41 @@ func (c ServiceAccountTokenClient) CreateProjectAccessToken(ctx context.Context,
 	return tok, nil
 }
 
+// authorizeRoleIdentity resolves name against the trusted role registry before
+// any service-account creation or membership primitive. The identity must be a
+// registered role that owns its credential: unregistered and reuse-only roles
+// are refused, and an unreadable registry fails closed. Built-in role names
+// are fixed and authorized without a registry source; custom role names are
+// not, so a bare name prefix never authorizes an account.
+func (c ServiceAccountTokenClient) authorizeRoleIdentity(ctx context.Context, owner, repo, name string) error {
+	var reg gitlabroles.Registry
+	switch {
+	case c.RoleRegistry != nil:
+		var err error
+		if reg, err = c.RoleRegistry(ctx, owner, repo); err != nil {
+			return fmt.Errorf("refusing to provision GitLab role identity %q: trusted role registry unreadable: %w", name, safeAPIError("reading role registry", err))
+		}
+	case c.ContainmentClient != nil:
+		raw, _, err := c.ContainmentClient.GetRepoVariable(ctx, owner, repo, forge.VarGitLabRoleRegistry)
+		if err != nil {
+			return fmt.Errorf("refusing to provision GitLab role identity %q: trusted role registry unreadable: %w", name, safeAPIError("reading role registry", err))
+		}
+		if reg, err = gitlabroles.ParseRegistry(raw); err != nil {
+			return fmt.Errorf("refusing to provision GitLab role identity %q: trusted role registry is invalid", name)
+		}
+	case slices.Contains([]string{gitlabroles.PollerTokenName, gitlabroles.AnalystTokenName, gitlabroles.CoderTokenName}, name):
+		return nil
+	default:
+		return fmt.Errorf("refusing to provision GitLab role identity %q: no trusted role registry available to authorize it", name)
+	}
+	for _, rec := range reg.Registrations() {
+		if rec.Credential.Kind != gitlabroles.CredentialReuse && roleTokenName(rec) == name {
+			return nil
+		}
+	}
+	return fmt.Errorf("refusing to provision GitLab role identity %q: not a registered role that owns its credential", name)
+}
+
 // ensureMemberLevel makes the service account a direct project member at
 // exactly accessLevel, adding it or correcting an existing membership.
 func (c ServiceAccountTokenClient) ensureMemberLevel(ctx context.Context, owner, repo string, sa GitLabServiceAccount, accessLevel int) error {
@@ -380,10 +457,48 @@ func (c ServiceAccountTokenClient) ensureMemberLevel(ctx context.Context, owner,
 	return nil
 }
 
+// validateRoleCredentialRequest enforces the role credential policy before
+// any service-account primitive receives caller-chosen values: the target
+// must be a Fullsend role identity, membership is exactly the role minimum
+// (Developer), scopes are exactly the role scopes, and expiry is a future
+// date no later than the role credential lifetime. Anything else fails closed.
+func validateRoleCredentialRequest(name string, scopes []string, accessLevel int, expiresAt string, now time.Time) error {
+	if !gitlabroles.IsRoleProjectTokenName(name) || name == gitlabroles.CustomTokenName("") {
+		return fmt.Errorf("refusing to provision GitLab credential %q: not a Fullsend role identity", name)
+	}
+	if accessLevel != gitlabroles.DeveloperAccessLevel {
+		return fmt.Errorf("refusing to provision GitLab role identity %q at access level %d: roles require exactly Developer (%d)", name, accessLevel, gitlabroles.DeveloperAccessLevel)
+	}
+	requested, permitted := slices.Clone(scopes), gitlabroles.TokenScopes()
+	sort.Strings(requested)
+	sort.Strings(permitted)
+	if !slices.Equal(slices.Compact(requested), permitted) {
+		return fmt.Errorf("refusing to provision GitLab role identity %q with scopes %v: roles require exactly %v", name, scopes, gitlabroles.TokenScopes())
+	}
+	if _, err := time.Parse(time.DateOnly, expiresAt); err != nil {
+		return fmt.Errorf("refusing to provision GitLab role identity %q: invalid token expiry %q", name, expiresAt)
+	}
+	if expiresAt <= now.UTC().Format(time.DateOnly) || expiresAt > GitLabPATExpiresAt(now) {
+		return fmt.Errorf("refusing to provision GitLab role identity %q: token expiry %s is outside the role credential lifetime (after today, no later than %s)", name, expiresAt, GitLabPATExpiresAt(now))
+	}
+	return nil
+}
+
+// serviceAccountUnavailableError marks the one CreateProjectAccessToken failure
+// that means service accounts are absent at discovery or creation, with no
+// legacy fallback allowed. Other forbidden/not-found/not-supported failures
+// (membership repair, access verification, containment revocation) carry the
+// same forge classes but do not mean capability absence, so callers must match
+// this type, not those classes, before keeping an existing credential.
+type serviceAccountUnavailableError struct{ err error }
+
+func (e *serviceAccountUnavailableError) Error() string { return e.err.Error() }
+func (e *serviceAccountUnavailableError) Unwrap() error { return e.err }
+
 func (c ServiceAccountTokenClient) legacyCreate(ctx context.Context, owner, repo, name string, scopes []string, accessLevel int, expiresAt string, saErr error) (*ProjectAccessToken, error) {
 	if c.requireServiceAccount || c.Legacy == nil {
 		if saErr != nil {
-			return nil, safeAPIError(fmt.Sprintf("GitLab project service accounts unavailable for %q", name), saErr)
+			return nil, &serviceAccountUnavailableError{err: safeAPIError(fmt.Sprintf("GitLab project service accounts unavailable for %q", name), saErr)}
 		}
 		return nil, fmt.Errorf("no GitLab token client configured for %q", name)
 	}
@@ -431,6 +546,9 @@ type StrictTokenInventory interface {
 }
 
 var _ StrictTokenInventory = ServiceAccountTokenClient{}
+var _ GitLabManagedAccountCleaner = ServiceAccountTokenClient{}
+var _ GitLabOutgoingTokenVerifier = ServiceAccountTokenClient{}
+var _ GitLabServiceAccountStatusAppender = ServiceAccountTokenClient{}
 
 // ListProjectAccessTokensStrict is ListProjectAccessTokens for destructive
 // cleanup: a forbidden listing of either source is an incomplete inventory,

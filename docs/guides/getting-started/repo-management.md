@@ -588,7 +588,7 @@ manifest.
 
 ### Removing repos
 
-Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches, deletes the Fullsend-owned webhook fast-path project webhook, revokes its managed pipeline trigger token, and deletes the `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables; if that cleanup fails, the scaffold is not removed and the manifest entry is kept for retry. Pass `--direct` to push file deletions to the default branch:
+Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches, deletes the Fullsend-owned webhook fast-path project webhook, revokes its managed pipeline trigger token, and deletes the `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables; if that cleanup fails, the scaffold is not removed and the manifest entry is kept for retry. Before deleting anything, GitLab uninstall reads the `FULLSEND_GITLAB_ROLE_ROTATION` ownership variable and stops if it is unreadable or malformed. It then revokes role project access tokens and deletes verified Fullsend-managed service accounts, leaving administrator-supplied accounts and their credentials in place. The rotation variable is removed last, or kept as an exclusions-only document when it records administrator-supplied service accounts. Pass `--direct` to push file deletions to the default branch:
 
 ```bash
 fullsend repos uninstall acme/old-api

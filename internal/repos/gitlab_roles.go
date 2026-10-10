@@ -370,6 +370,8 @@ func ProvisionGitLabRoleCredentials(ctx context.Context, cfg RoleProvisionConfig
 	if cfg.Client == nil {
 		return result, fmt.Errorf("GitLab role provisioning requires a forge client")
 	}
+	// A typed-nil service-account client counts as no token client.
+	cfg.Tokens = normalizeServiceAccountClient(cfg.Tokens)
 	release, lockErr := LockGitLabProject(ctx, cfg.Client, cfg.Owner, cfg.Repo, cfg.DryRun)
 	if lockErr != nil {
 		return result, lockErr
@@ -395,7 +397,7 @@ func ProvisionGitLabRoleCredentials(ctx context.Context, cfg RoleProvisionConfig
 		return result, fmt.Errorf("reading GitLab role credential presence: %w", presErr)
 	}
 	result.Report = gitlabroles.Diagnose(present, reg)
-	result.Diagnostics = result.Report.Diagnostics
+	result.Diagnostics = append(result.Diagnostics, result.Report.Diagnostics...)
 	if secretLeak(result) != "" {
 		return RoleProvisionResult{}, fmt.Errorf("internal error: provision result leaked a secret value")
 	}
@@ -444,6 +446,12 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 			if !cfg.DryRun {
 				backfillInitialDistributionProof(ctx, cfg, rec, now, result)
 			}
+			convergeInstalledServiceAccount(ctx, cfg, rec, now, true, result)
+			continue
+		}
+		failedBefore := len(result.Failed)
+		convergeInstalledServiceAccount(ctx, cfg, rec, now, false, result)
+		if len(result.Failed) > failedBefore {
 			continue
 		}
 		if provided := strings.TrimSpace(cfg.ProvidedTokens[rec.Name]); provided != "" {
@@ -500,7 +508,26 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 		if tokenName == "" {
 			tokenName = gitlabroles.CustomTokenName(rec.Name)
 		}
-		tok, err := cfg.Tokens.CreateProjectAccessToken(ctx, cfg.Owner, cfg.Repo, tokenName,
+		// Missing-secret provisioning honors the same project-wide exclusions
+		// as convergence: an account recorded as supplied or excluded under any
+		// role is never selected, re-membered, or given a credential here.
+		tokens := normalizeServiceAccountClient(cfg.Tokens)
+		if sa, ok := tokens.(ServiceAccountTokenClient); ok {
+			state, _, stateErr := loadRotationState(ctx, cfg.Client, cfg.Owner, cfg.Repo)
+			if stateErr == nil {
+				sa, _, stateErr = sa.withProjectExclusions(ctx, cfg.Owner, cfg.Repo, state)
+			}
+			if stateErr != nil {
+				result.Failed = append(result.Failed, RoleProvisionFailure{
+					Role:   rec.Name,
+					Secret: secret,
+					Reason: "project-wide account exclusions could not be resolved; no credential created",
+				})
+				continue
+			}
+			tokens = sa
+		}
+		tok, err := tokens.CreateProjectAccessToken(ctx, cfg.Owner, cfg.Repo, tokenName,
 			gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, expiresAt)
 		if err != nil {
 			result.Failed = append(result.Failed, RoleProvisionFailure{

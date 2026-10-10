@@ -407,8 +407,11 @@ rotated by the administrator, not by `repos install`.
 `repos status` reports per-role readiness and treats missing, expired, or
 revoked credentials as `gitlab-role:<name>` drift. Re-running
 `repos install` repairs missing role secrets. `repos uninstall` deletes
-the registry, rotation document, role secrets, and matching role project
-access tokens. It does not delete a leftover `FULLSEND_FORGE_TOKEN`
+the registry, role secrets, and matching role project access tokens, and
+removes the rotation document last. If the rotation document records
+administrator-supplied account exclusions, an exclusions-only document is
+retained, and uninstall fails closed, deleting nothing, when the rotation
+state is unreadable or malformed. It does not delete a leftover `FULLSEND_FORGE_TOKEN`
 secret or revoke a matching `fullsend-bot` project access token — a
 repository installed before the role-only rollout requires manual
 cleanup of those. See [Operations § Uninstalling](operations.md#uninstalling).

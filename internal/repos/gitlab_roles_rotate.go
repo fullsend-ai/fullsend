@@ -57,6 +57,9 @@ type RoleRotateConfig struct {
 	// ProvidedTokens maps a role name to an administrator-supplied
 	// replacement PAT. Values must never be logged.
 	ProvidedTokens map[gitlabroles.Role]string
+	// ConvergeServiceAccounts bypasses the recent-distribution skip only when
+	// installation is replacing a legacy credential with a service account.
+	ConvergeServiceAccounts bool
 }
 
 // RoleRotateResult is the observable outcome of a rotation run.
@@ -168,6 +171,8 @@ func RotateGitLabRoleCredentials(ctx context.Context, cfg RoleRotateConfig) (_ R
 	if cfg.Client == nil {
 		return result, fmt.Errorf("GitLab role rotation requires a forge client")
 	}
+	// A typed-nil service-account client counts as no token client.
+	cfg.Tokens = normalizeServiceAccountClient(cfg.Tokens)
 	release, lockErr := LockGitLabProject(ctx, cfg.Client, cfg.Owner, cfg.Repo, cfg.DryRun)
 	if lockErr != nil {
 		return result, lockErr
@@ -287,6 +292,50 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: rotation in progress; skipping", rec.Name))
 		return
 	}
+	// Project-wide supplied and excluded accounts recorded in rotation state
+	// are frozen before any replacement selection, membership change or token
+	// creation, so direct rotation protects them without a supplied-account
+	// callback, as convergence and provisioning already do.
+	//
+	// Any other token client does not enforce exclusions itself, so the same
+	// recorded owners are applied to outgoing selection and grace revocation.
+	//
+	// excludedOwners is that project-wide set of administrator-owned account
+	// IDs. Tokens owned by these accounts are never selected as outgoing nor
+	// revoked at grace cleanup, whatever the concrete token client.
+	unresolvedOwner := false
+	var excludedOwners []int
+	if sa, ok := normalizeServiceAccountClient(cfg.Tokens).(ServiceAccountTokenClient); ok {
+		wrapped, frozen, exclErr := sa.withProjectExclusions(ctx, cfg.Owner, cfg.Repo, state)
+		if exclErr != nil {
+			result.Failed = append(result.Failed, RoleProvisionFailure{
+				Role: rec.Name, Secret: secret, Reason: "project-wide account exclusions could not be resolved; no credential created",
+			})
+			return
+		}
+		cfg.Tokens = wrapped
+		excludedOwners = frozen
+	} else {
+		// A supplied credential whose owner was never recorded cannot be
+		// attributed by recorded exclusions alone, so a same-named
+		// administrator-supplied token could become an outgoing obligation and
+		// be revoked. An ownership-aware client can resolve them through the
+		// optional SuppliedOwnerIDs capability, as cleanup does; the resolved IDs
+		// join the recorded exclusions. Otherwise grace cleanup and replacement
+		// are refused below, once the role is known to need them. A healthy,
+		// not-due enrollment is still skipped without error.
+		excludedOwners = recordedExcludedOwners(state)
+		if cfg.Tokens != nil && unresolvedSuppliedOwner(state) {
+			if ids, resolveErr := resolveSuppliedOwnersViaCapability(ctx, cfg.Tokens, cfg.Owner, cfg.Repo); resolveErr != nil {
+				unresolvedOwner = true
+			} else {
+				for _, id := range ids {
+					excludedOwners = appendExcludedID(excludedOwners, id)
+				}
+				sort.Ints(excludedOwners)
+			}
+		}
+	}
 
 	if !cfg.DryRun {
 		lockUntil := now.Add(lockTTL).Format(time.RFC3339)
@@ -358,13 +407,29 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 
 	matches := tokensNamed(*listed, tokenName)
 	current := currentListed(matches)
-	if !cfg.DryRun {
-		cleaned := cleanupOutgoing(ctx, cfg, &rs, now, grace, listed)
+	if !cfg.DryRun && unresolvedOwner && len(rs.OutgoingIDs) > 0 {
+		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: outgoing tokens were kept and not revoked because supplied credential ownership is unresolved", rec.Name))
+	}
+	if !cfg.DryRun && !unresolvedOwner {
+		prevOutgoing, prevPhase := len(rs.OutgoingIDs), rs.Phase
+		cleaned := cleanupOutgoing(ctx, cfg, &rs, now, grace, listed, excludedOwners)
 		if cleaned {
 			result.Cleaned = append(result.Cleaned, rec.Name)
+		}
+		// Dropping an excluded owner's outgoing obligation changes durable state
+		// without revoking anything, so it is persisted whether or not a token was
+		// revoked.
+		if cleaned || len(rs.OutgoingIDs) != prevOutgoing || rs.Phase != prevPhase {
 			_ = mergeRoleState(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, holder, now, rs, &state)
 			matches = tokensNamed(*listed, tokenName)
 			current = currentListed(matches)
+		}
+		if dist, err := time.Parse(time.RFC3339, rs.DistributedAt); err == nil && rs.Phase == rotationPhaseOverlapping && !now.Before(dist.Add(grace)) {
+			for _, id := range rs.OutgoingIDs {
+				if listedTokenOwnerUnverified(*listed, id, excludedOwners) {
+					result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: outgoing token id %d was kept and not revoked because its owner cannot be verified while administrator-owned accounts are excluded", rec.Name, id))
+				}
+			}
 		}
 	}
 
@@ -394,7 +459,7 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	needsRecovery := rs.IncomingID != 0 && (rs.Phase == rotationPhaseDistributing || rs.Phase == rotationPhaseFailed)
 	alreadyFresh := !cfg.Force && current.ID != 0 && current.Active && current.ExpiresAt == freshExpiry &&
 		distributionProven && !needsRecovery
-	if alreadyFresh || (recentlyDistributed(rs, now) && !gitlabroles.RoleDueForRotation(rr)) {
+	if alreadyFresh || (recentlyDistributed(rs, now) && !gitlabroles.RoleDueForRotation(rr) && !cfg.ConvergeServiceAccounts) {
 		result.Skipped = append(result.Skipped, rec.Name)
 		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: already rotated (idempotent)", rec.Name))
 		if rs.Phase == rotationPhaseOverlapping || rr.Overlapping {
@@ -436,6 +501,14 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 		return
 	}
 
+	if unresolvedOwner {
+		result.Failed = append(result.Failed, RoleProvisionFailure{
+			Role: rec.Name, Secret: secret, Reason: "supplied credential ownership is unresolved; no credential rotated",
+		})
+		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: %s; refusing to rotate", rec.Name, ErrSuppliedCredentialUnresolved))
+		return
+	}
+
 	if cfg.DryRun {
 		result.Rotated = append(result.Rotated, rec.Name)
 		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: would rotate (%s)", rec.Name, secret))
@@ -459,6 +532,11 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	tok, err := cfg.Tokens.CreateProjectAccessToken(ctx, cfg.Owner, cfg.Repo, tokenName,
 		gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, expiresAt)
 	if err != nil {
+		var unavailable *serviceAccountUnavailableError
+		if cfg.ConvergeServiceAccounts && errors.As(err, &unavailable) {
+			result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: service-account creation unavailable; keeping the existing legacy credential", rec.Name))
+			return
+		}
 		rs.Phase = rotationPhaseFailed
 		rs.Error = "project access token creation failed"
 		_ = mergeRoleState(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, holder, now, rs, &state)
@@ -490,12 +568,39 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 		return
 	}
 
-	outgoing := activeIDsExcept(matches, tok.ID)
-	if current.ID != 0 && current.ID != tok.ID {
+	// Tokens owned by a recorded excluded account, or whose owner cannot be
+	// established while exclusions exist, never become outgoing obligations, so
+	// grace cleanup cannot revoke them (generic clients only).
+	outgoing := activeIDsExcept(tokensWithClearedOwner(matches, excludedOwners), tok.ID)
+	if current.ID != 0 && current.ID != tok.ID && len(tokensWithClearedOwner(tokensWithID(matches, current.ID), excludedOwners)) > 0 {
 		outgoing = uniqueInts(append(outgoing, current.ID))
 	}
+	if len(excludedOwners) > 0 {
+		unverified := 0
+		for _, m := range matches {
+			if m.ID != tok.ID && m.Active && !m.Revoked && m.UserID <= 0 {
+				unverified++
+			}
+		}
+		if unverified > 0 {
+			result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: %d same-named active token(s) were not scheduled for revocation because their owner cannot be verified while administrator-owned accounts are excluded", rec.Name, unverified))
+		}
+	}
 	rs.Phase = rotationPhaseDistributing
+	rs.CreatedTokenIDs = uniqueInts(append(rs.CreatedTokenIDs, tok.ID))
 	rs.IncomingID = tok.ID
+	// Account ownership may have been recorded by creation during the mint.
+	// Never infer account ownership merely from a PAT minted on an existing
+	// same-named account: an administrator might have created that identity.
+	createdState, _, createdErr := loadRotationState(ctx, cfg.Client, cfg.Owner, cfg.Repo)
+	if createdErr != nil {
+		cleanupCtx, cancel := gitlabCleanupContext(ctx)
+		_ = cfg.Tokens.RevokeProjectAccessToken(cleanupCtx, cfg.Owner, cfg.Repo, tok.ID)
+		cancel()
+		result.Failed = append(result.Failed, RoleProvisionFailure{Role: rec.Name, Secret: secret, Reason: "reading created account ownership failed"})
+		return
+	}
+	rs.ManagedUserID = createdState.Roles[string(rec.Name)].ManagedUserID
 	rs.OutgoingIDs = outgoing
 	rs.ExpiresAt = expiresAt
 	rs.Error = ""
@@ -616,7 +721,13 @@ func rotateProvided(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.R
 	}
 }
 
-func cleanupOutgoing(ctx context.Context, cfg RoleRotateConfig, rs *rotationRoleState, now time.Time, grace time.Duration, listed *[]ProjectAccessToken) bool {
+// GitLabOutgoingTokenVerifier is the optional authoritative inventory capability
+// used only to retire outgoing rotation obligations that are already inactive.
+type GitLabOutgoingTokenVerifier interface {
+	ConfirmOutgoingTokenInactive(ctx context.Context, owner, repo string, tokenID int) (bool, error)
+}
+
+func cleanupOutgoing(ctx context.Context, cfg RoleRotateConfig, rs *rotationRoleState, now time.Time, grace time.Duration, listed *[]ProjectAccessToken, excludedOwners []int) bool {
 	if cfg.Tokens == nil || len(rs.OutgoingIDs) == 0 {
 		return false
 	}
@@ -636,9 +747,39 @@ func cleanupOutgoing(ctx context.Context, cfg RoleRotateConfig, rs *rotationRole
 		if id == rs.IncomingID {
 			continue
 		}
-		if err := cfg.Tokens.RevokeProjectAccessToken(ctx, cfg.Owner, cfg.Repo, id); err != nil {
-			remaining = append(remaining, id)
+		// A token owned by a recorded excluded account is not this role's to
+		// revoke, even if it entered the outgoing set through a client that does
+		// not enforce exclusions. Drop the obligation without revoking it.
+		if listedTokenOwnedByExcluded(*listed, id, excludedOwners) {
 			continue
+		}
+		// While exclusions exist, a token whose owner cannot be established (no
+		// positive owner, or absent from the listing) may belong to an excluded
+		// account. It is never revoked through a generic client; the obligation is
+		// kept unless the verifier proves the token is already inactive.
+		unverified := listedTokenOwnerUnverified(*listed, id, excludedOwners)
+		// A complete inventory can discharge a missing or inactive outgoing
+		// credential, while generic revocation retains its strict error contract.
+		// The inactivity check is only an optimization: when inactivity cannot
+		// be established (for example legacy fallback with no service-account
+		// client, or an unsupported listing), fall through to the
+		// authorization-enforcing revoke and keep the obligation only if that
+		// fails.
+		inactive := false
+		if verifier, ok := cfg.Tokens.(GitLabOutgoingTokenVerifier); ok {
+			if confirmed, err := verifier.ConfirmOutgoingTokenInactive(ctx, cfg.Owner, cfg.Repo, id); err == nil {
+				inactive = confirmed
+			}
+		}
+		if !inactive {
+			if unverified {
+				remaining = append(remaining, id)
+				continue
+			}
+			if err := cfg.Tokens.RevokeProjectAccessToken(ctx, cfg.Owner, cfg.Repo, id); err != nil {
+				remaining = append(remaining, id)
+				continue
+			}
 		}
 		deactivateListedToken(listed, id)
 		cleaned = true
@@ -678,6 +819,78 @@ func lockGitLabRoleRotation(owner, repo string, role gitlabroles.Role) func() {
 	mu := v.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
+}
+
+// excludeOwner records an administrator-owned account as permanently excluded
+// from fullsend's management. A zero ID is ignored.
+func (rs *rotationRoleState) excludeOwner(id int) {
+	if id > 0 && !containsInt(rs.ExcludedUserIDs, id) {
+		rs.ExcludedUserIDs = append(rs.ExcludedUserIDs, id)
+		sort.Ints(rs.ExcludedUserIDs)
+	}
+}
+
+// RoleProvenance is what rotation state records about a role's installed
+// credential (the Poller's, or any other role's).
+type RoleProvenance struct {
+	// Known is true when rotation state has an entry for the role. Without one,
+	// who minted the installed credential is unknown, not "managed".
+	Known bool
+	// Supplied is true when the credential was enrolled by an administrator
+	// (--gitlab-role-token): no GitLab token ID, idle, distributed, or an
+	// explicitly recorded owner.
+	Supplied bool
+	// UserID is the recorded owner of a supplied credential, or zero when it
+	// was not resolved at enrollment.
+	UserID int
+	// TokenID is the recorded GitLab token ID of a supplied credential, or zero
+	// when it was not resolved at enrollment.
+	TokenID int
+	// ExcludedUserIDs are every administrator-owned account recorded for the
+	// role, including owners of earlier supplied credentials that a managed
+	// or another supplied credential has since replaced. They are never managed.
+	ExcludedUserIDs []int
+}
+
+func provenanceOf(rs rotationRoleState) RoleProvenance {
+	excluded := append([]int(nil), rs.ExcludedUserIDs...)
+	if rs.SuppliedUserID != 0 && !containsInt(excluded, rs.SuppliedUserID) {
+		excluded = append(excluded, rs.SuppliedUserID)
+	}
+	prov := RoleProvenance{UserID: rs.SuppliedUserID, TokenID: rs.SuppliedTokenID, ExcludedUserIDs: excluded}
+	switch {
+	case rs.Supplied || rs.SuppliedUserID != 0:
+		prov.Known, prov.Supplied = true, true
+	case rs.IncomingID == 0 && len(rs.OutgoingIDs) == 0 && rs.Phase == rotationPhaseIdle && rs.DistributedAt != "":
+		// Enrollment shape written before supplied credentials were flagged.
+		prov.Known, prov.Supplied = true, true
+	case rs.validManagedTokenEvidence():
+		// Positive evidence that fullsend minted a token for this role.
+		prov.Known = true
+	}
+	// Anything else (an empty entry, an unrecognized phase, or an entry with no
+	// minted-token or supplied-owner evidence) stays unknown, never managed.
+	return prov
+}
+
+// validManagedTokenEvidence refuses malformed lifecycle state as authorization
+// evidence. A missing phase is tolerated for older token-tracking entries, but
+// an unknown phase or nonpositive token ID never proves managed ownership.
+func (rs rotationRoleState) validManagedTokenEvidence() bool {
+	switch rs.Phase {
+	case "", rotationPhaseIdle, rotationPhaseDistributing, rotationPhaseOverlapping, rotationPhaseFailed:
+	default:
+		return false
+	}
+	if rs.IncomingID < 0 {
+		return false
+	}
+	for _, id := range rs.OutgoingIDs {
+		if id <= 0 {
+			return false
+		}
+	}
+	return rs.IncomingID > 0 || len(rs.OutgoingIDs) > 0
 }
 
 func loadRotationState(ctx context.Context, client forge.Client, owner, repo string) (rotationStateFile, []string, error) {
@@ -804,6 +1017,13 @@ func mergeRoleState(ctx context.Context, client forge.Client, owner, repo string
 	if holder != "" && otherHoldsRotationLock(state.Roles[string(role)], holder, now) {
 		return errRotationLockLost
 	}
+	// Creation provenance is persisted independently while minting. A failed
+	// mint must not overwrite it with the pre-creation lifecycle snapshot.
+	// Only creation recording or state retirement changes account ownership.
+	if created := uniqueInts(append(append([]int(nil), rs.CreatedTokenIDs...), state.Roles[string(role)].CreatedTokenIDs...)); len(created) > 0 {
+		rs.CreatedTokenIDs = created
+	}
+	rs.ManagedUserID = state.Roles[string(role)].ManagedUserID
 	state.Roles[string(role)] = rs
 	return writeRotationState(ctx, client, owner, repo, *state)
 }
@@ -823,8 +1043,33 @@ func recordInitialDistribution(ctx context.Context, client forge.Client, owner, 
 	if err != nil {
 		return fmt.Errorf("reading rotation state before initial distribution proof: %w", err)
 	}
-	if _, exists := state.Roles[string(role)]; exists {
-		return nil
+	if existing, exists := state.Roles[string(role)]; exists {
+		// An ownership-only entry (account recorded before its first PAT was
+		// minted) or a token-only creation record (the legacy fallback wrote
+		// CreatedTokenIDs for the distributed token) carries no lifecycle proof
+		// yet; the first distribution fills it in without touching ownership,
+		// creation records, exclusions or any other recorded field. An
+		// exclusions-only entry (left behind by uninstall, or written for another
+		// role's supplied owner) also carries no lifecycle proof, so it receives
+		// the first distribution too, including a supplied enrollment with no
+		// token ID, and keeps its ExcludedUserIDs.
+		lifecycleEmpty := existing.Phase == "" && existing.Holder == "" && existing.LockUntil == "" &&
+			existing.IncomingID == 0 && existing.DistributedAt == "" && len(existing.OutgoingIDs) == 0 &&
+			!existing.Supplied && existing.SuppliedUserID == 0
+		ownershipOnly := tokenID > 0 && (existing.ManagedUserID > 0 || containsInt(existing.CreatedTokenIDs, tokenID))
+		exclusionsOnly := len(existing.ExcludedUserIDs) > 0 && existing.ManagedUserID == 0 && len(existing.CreatedTokenIDs) == 0 &&
+			existing.SuppliedTokenID == 0 && existing.Error == "" && existing.ExpiresAt == "" &&
+			existing.GenerationCurrentUserID == 0 && existing.GenerationPendingUserID == 0 &&
+			existing.GenerationPendingPhase == "" && existing.GenerationRetiringUserID == 0
+		if !lifecycleEmpty || !(ownershipOnly || exclusionsOnly) {
+			return nil
+		}
+		existing.Phase = rotationPhaseIdle
+		existing.IncomingID = tokenID
+		existing.DistributedAt = now.UTC().Format(time.RFC3339)
+		existing.ExpiresAt = expiresAt
+		state.Roles[string(role)] = existing
+		return writeRotationState(ctx, client, owner, repo, state)
 	}
 	rs := rotationRoleState{
 		Phase:         rotationPhaseIdle,
@@ -833,6 +1078,60 @@ func recordInitialDistribution(ctx context.Context, client forge.Client, owner, 
 		ExpiresAt:     expiresAt,
 	}
 	state.Roles[string(role)] = rs
+	return writeRotationState(ctx, client, owner, repo, state)
+}
+
+// recordReplacementDistribution records rotation-state proof for a
+// replacement credential that the caller created and stored after revoking the
+// role's previous credential, under the project lease. Unlike
+// recordInitialDistribution it replaces an existing role entry: that entry's
+// IncomingID names the credential just revoked, so leaving it would misreport
+// the healthy replacement as due for rotation after the idempotency window.
+// Outgoing IDs whose revocation is not confirmed are preserved. When
+// previousRevocationUnconfirmed is set, the previous IncomingID is preserved
+// as an outgoing ID too, since its revocation failed and it may still be live.
+func recordReplacementDistribution(ctx context.Context, client forge.Client, owner, repo string, role gitlabroles.Role, tokenID int, expiresAt string, now time.Time, previousRevocationUnconfirmed bool) error {
+	state, _, err := loadRotationState(ctx, client, owner, repo)
+	if err != nil {
+		return fmt.Errorf("reading rotation state before replacement distribution proof: %w", err)
+	}
+	// The caller revoked only the managed runtime PATs on the selected
+	// service account, so outgoing IDs recorded earlier (for example a legacy
+	// project access token queued by role rotation) are not confirmed revoked
+	// and stay scheduled for grace cleanup under an overlapping phase.
+	var outgoing []int
+	previous := state.Roles[string(role)]
+	for _, id := range previous.OutgoingIDs {
+		if id != tokenID && !containsInt(outgoing, id) {
+			outgoing = append(outgoing, id)
+		}
+	}
+	if previousRevocationUnconfirmed && previous.IncomingID != 0 && previous.IncomingID != tokenID && !containsInt(outgoing, previous.IncomingID) {
+		outgoing = append(outgoing, previous.IncomingID)
+	}
+	phase := rotationPhaseIdle
+	if len(outgoing) > 0 {
+		phase = rotationPhaseOverlapping
+	}
+	// The replacement is fullsend-minted, but the exclusion of any
+	// administrator-owned account the previous entry recorded must survive.
+	replacement := rotationRoleState{
+		CreatedTokenIDs: uniqueInts(append(append([]int(nil), previous.CreatedTokenIDs...), tokenID)),
+		ManagedUserID:   previous.ManagedUserID,
+		Phase:           phase,
+		IncomingID:      tokenID,
+		OutgoingIDs:     outgoing,
+		DistributedAt:   now.UTC().Format(time.RFC3339),
+		ExpiresAt:       expiresAt,
+		ExcludedUserIDs: append([]int(nil), previous.ExcludedUserIDs...),
+		// Poller identity generations describe accounts, not this credential.
+		GenerationCurrentUserID:  previous.GenerationCurrentUserID,
+		GenerationPendingUserID:  previous.GenerationPendingUserID,
+		GenerationPendingPhase:   previous.GenerationPendingPhase,
+		GenerationRetiringUserID: previous.GenerationRetiringUserID,
+	}
+	replacement.excludeOwner(previous.SuppliedUserID)
+	state.Roles[string(role)] = replacement
 	return writeRotationState(ctx, client, owner, repo, state)
 }
 
@@ -913,6 +1212,74 @@ func snapshotsFrom(toks []ProjectAccessToken) []gitlabroles.TokenSnapshot {
 			ExpiresAt: tok.ExpiresAt,
 			Revoked:   tok.Revoked,
 		})
+	}
+	return out
+}
+
+// recordedExcludedOwners is the project-wide set of administrator-owned account
+// IDs recorded in rotation state: every supplied owner and excluded user ID.
+func recordedExcludedOwners(state rotationStateFile) []int {
+	var excluded []int
+	for _, rs := range state.Roles {
+		excluded = appendExcludedID(excluded, rs.SuppliedUserID)
+		for _, id := range rs.ExcludedUserIDs {
+			excluded = appendExcludedID(excluded, id)
+		}
+	}
+	sort.Ints(excluded)
+	return excluded
+}
+
+// tokensWithClearedOwner drops tokens that exclusions forbid touching. When
+// exclusions exist, only a token whose owner is positively known and not
+// excluded remains: an unattributable token could belong to an excluded account.
+func tokensWithClearedOwner(tokens []ProjectAccessToken, excluded []int) []ProjectAccessToken {
+	if len(excluded) == 0 {
+		return tokens
+	}
+	var out []ProjectAccessToken
+	for _, tok := range tokens {
+		if tok.UserID > 0 && !containsInt(excluded, tok.UserID) {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+func listedTokenOwnedByExcluded(listed []ProjectAccessToken, id int, excluded []int) bool {
+	if len(excluded) == 0 {
+		return false
+	}
+	for _, tok := range listed {
+		if tok.ID == id {
+			return tok.UserID > 0 && containsInt(excluded, tok.UserID)
+		}
+	}
+	return false
+}
+
+// listedTokenOwnerUnverified reports whether exclusions exist and the token's
+// owner cannot be established from the listing, either because the token is not
+// listed or because it reports no positive owner. Such a token is never revoked
+// through a generic client.
+func listedTokenOwnerUnverified(listed []ProjectAccessToken, id int, excluded []int) bool {
+	if len(excluded) == 0 {
+		return false
+	}
+	for _, tok := range listed {
+		if tok.ID == id {
+			return tok.UserID <= 0
+		}
+	}
+	return true
+}
+
+func tokensWithID(listed []ProjectAccessToken, id int) []ProjectAccessToken {
+	var out []ProjectAccessToken
+	for _, tok := range listed {
+		if tok.ID == id {
+			out = append(out, tok)
+		}
 	}
 	return out
 }
