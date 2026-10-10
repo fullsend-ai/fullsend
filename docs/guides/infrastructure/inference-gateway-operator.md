@@ -483,6 +483,11 @@ missing-token negatives returned the same `401`s as above.
 
 ## 9. Check that no caller credential reaches the upstream
 
+> **Order:** this step changes the gateway config and adds a throwaway upstream key. To run the
+> custody check in step 8, apply this step's config before steps 4–6 (validate, store, deploy).
+> Otherwise, change the config afterwards as in [Change the config](#change-the-config) and re-run
+> step 8.
+
 This optional check adds two models whose upstream is a second listener inside the same container.
 It answers every request with what it received: whether `authorization` equals the gateway's own
 upstream key (`GATEWAY_KEY`), and whether `x-api-key` and a canary header arrived. Its key is read
