@@ -140,10 +140,12 @@ func (c InferenceGatewayConfig) Validate() error {
 	return nil
 }
 
-// ValidateGatewayURL checks that raw is an absolute https URL with a host
-// and no embedded credentials, query or fragment. Plain http is accepted
-// only for a loopback host (test servers), as openaiwif.requireSecureURL
-// does.
+// ValidateGatewayURL checks that raw is the gateway origin: an absolute
+// https URL with a host, no path beyond "/", no port other than 443, and
+// no embedded credentials, query or fragment. The runner appends the
+// /v1/... model API paths itself, and the OpenShell egress profile binds
+// the host on port 443 only. Plain http, and any port, is accepted only
+// for a loopback host (test servers), as openaiwif.requireSecureURL does.
 func ValidateGatewayURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -160,6 +162,12 @@ func ValidateGatewayURL(raw string) error {
 	}
 	if u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("inference.gateway.url must not carry a query or fragment")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("inference.gateway.url %q must be the gateway origin (for example https://gateway.example.com): the runner adds the /v1/... paths itself", raw)
+	}
+	if port := u.Port(); port != "" && port != "443" && !isLoopbackHost(u.Hostname()) {
+		return fmt.Errorf("inference.gateway.url %q must be the gateway origin (for example https://gateway.example.com): the egress profile allows port 443 only", raw)
 	}
 	return nil
 }

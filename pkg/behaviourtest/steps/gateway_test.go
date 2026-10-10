@@ -82,3 +82,21 @@ func TestProbeResultAssertions(t *testing.T) {
 	_, err = probeResultFrom([]byte("{"), "chat")
 	assert.Error(t, err)
 }
+
+// TestProbeBodyRedactedJWT checks the custody assertion against a body
+// whose JWT the runtime redacted: the flag, not the redacted text, decides.
+func TestProbeBodyRedactedJWT(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`{"operations":[{"description":"leak","success":true,"http_status":200,"response_body":"{\"authorization\":\"Bearer <redacted-jwt>\"}","body_had_jwt":true}]}`)
+	res, err := probeResultFrom(data, "leak")
+	require.NoError(t, err)
+	require.True(t, res.BodyHadJWT)
+	err = checkProbeBody(res, false, "eyJ")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpectedly contains")
+	require.NoError(t, checkProbeBody(res, true, "eyJ"))
+	// Other needles still match the recorded text only.
+	require.NoError(t, checkProbeBody(res, false, "x-api-key"))
+	require.NoError(t, checkProbeBody(res, true, "<redacted-jwt>"))
+}

@@ -89,7 +89,7 @@ inference:
     identity_provider_id: ""         # OpenAI WIF identity provider ID
     service_account_id: ""           # OpenAI WIF service account ID
   gateway:                           # Inference gateway credential route (ADR 0137)
-    url: ""                          # Gateway URL (https; plain http only for a loopback test host)
+    url: ""                          # Gateway origin, e.g. https://gateway.example.com (no path, port 443 only; plain http only for a loopback test host)
     audience: ""                     # OIDC audience the runner requests for the gateway
     models: {}                       # Inline model list: id -> {api, compat, contextWindow, maxTokens}
     models_file: ""                  # Or: repository path to a pi-inference-gateway config file
@@ -293,8 +293,11 @@ independently through the layered config system (an overlay can override
   with the `gateway/` prefix use this route. The runner does not act on this
   block yet: `fullsend` parses and validates it, and the runner support for
   the route lands in later changes (#8280). Fields:
-  - `url` — the gateway URL. Must be `https` (plain `http` only for a loopback test host), with no credentials, query or
-    fragment.
+  - `url` — the gateway origin, for example `https://gateway.example.com`.
+    Must be `https` (plain `http` only for a loopback test host), with no
+    credentials, query or fragment, no path other than `/`, and no port
+    other than 443: the runner adds the `/v1/...` model API paths itself,
+    and the egress profile allows the gateway host on port 443 only.
   - `audience` — the OIDC audience the runner requests. The token is valid
     only at the gateway.
   - `models` — optional inline model list, a map of model id to settings:

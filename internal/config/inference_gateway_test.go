@@ -70,6 +70,10 @@ func TestInferenceGateway_ValidateErrors(t *testing.T) {
 		{"query", InferenceGatewayConfig{URL: "https://gw.example.com?x=1"}, "query or fragment"},
 		{"fragment", InferenceGatewayConfig{URL: "https://gw.example.com#x"}, "query or fragment"},
 		{"bad url", InferenceGatewayConfig{URL: "https://gw example.com/%zz"}, "inference.gateway.url"},
+		{"path", InferenceGatewayConfig{URL: "https://gw.example.com/v1"}, "must be the gateway origin"},
+		{"nested path", InferenceGatewayConfig{URL: "https://gw.example.com/proxy/"}, "must be the gateway origin"},
+		{"port", InferenceGatewayConfig{URL: "https://gw.example.com:8443"}, "port 443 only"},
+		{"loopback path", InferenceGatewayConfig{URL: "http://127.0.0.1:8080/v1"}, "must be the gateway origin"},
 		{"both forms", InferenceGatewayConfig{
 			Models:     map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses}},
 			ModelsFile: ".fullsend/inference-gateway.json",
@@ -252,7 +256,13 @@ func TestValidateGatewayModelID_Boundary(t *testing.T) {
 }
 
 func TestValidateGatewayURL_LoopbackHTTP(t *testing.T) {
-	for _, u := range []string{"http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"} {
+	for _, u := range []string{"http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080", "https://127.0.0.1:8443/"} {
+		require.NoError(t, ValidateGatewayURL(u), u)
+	}
+}
+
+func TestValidateGatewayURL_Origin(t *testing.T) {
+	for _, u := range []string{"https://gw.example.com", "https://gw.example.com/", "https://gw.example.com:443", "https://gw.example.com:443/"} {
 		require.NoError(t, ValidateGatewayURL(u), u)
 	}
 }

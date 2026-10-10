@@ -100,7 +100,8 @@ func TestBuildPiRunCommand_GatewayGuardAndEnvOrdering(t *testing.T) {
 	assert.Less(t, baseURL, token)
 	assert.Less(t, token, launch)
 
-	// No token file: only the base URL is re-exported.
+	// No token file (validatePiGatewayRun refuses this before the command
+	// is built): the renderer still exports only what is set.
 	run.TokenFile = ""
 	registerPiGatewayRun(t, params.SandboxName, run)
 	assert.NotContains(t, buildPiRunCommand(params, &piManifest{}, nil, ""), "INFERENCE_GATEWAY_TOKEN_FILE=")
@@ -180,6 +181,13 @@ func TestValidatePiGatewayRun(t *testing.T) {
 	noCfg := *run
 	noCfg.Config = nil
 	require.Error(t, validatePiGatewayRun(&noCfg, nil))
+	// The env clear removes INFERENCE_GATEWAY_API_KEY, so a run without the
+	// token file would have no credential.
+	noToken := *run
+	noToken.TokenFile = " "
+	err = validatePiGatewayRun(&noToken, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "INFERENCE_GATEWAY_TOKEN_FILE")
 	require.Error(t, validatePiGatewayRun(run, []PluginInput{{Path: "/p/x", Env: map[string]string{"INFERENCE_GATEWAY_TOKEN_FILE": "/t"}}}))
 }
 

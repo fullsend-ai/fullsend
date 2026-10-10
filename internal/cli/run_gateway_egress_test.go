@@ -56,6 +56,7 @@ func TestRenderGatewayProfile(t *testing.T) {
 	ep := p.Endpoints[0]
 	assert.Equal(t, "gateway.example.com", ep.Host, "the host is lower-cased")
 	assert.Equal(t, 443, ep.Port)
+	assert.Equal(t, "/v1/**", ep.Path, "the credential binding is limited to the model API prefix")
 	assert.Equal(t, "rest", ep.Protocol)
 	assert.True(t, ep.AllowUninspectedCredentials)
 	var rules []string

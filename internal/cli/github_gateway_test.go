@@ -438,24 +438,60 @@ func TestGatewayModelsFileRemoval(t *testing.T) {
 		gatewayAudience: "aud",
 		changedFlags:    gatewayFlags("inference-gateway-url", "inference-gateway-audience"),
 	}
-	remove, err := gatewayModelsFileRemoval(ctx, client, "acme", "widget", keep)
+	remove, kept, err := gatewayModelsFileRemoval(ctx, client, "acme", "widget", keep, nil)
 	require.NoError(t, err)
 	assert.False(t, remove)
+	assert.False(t, kept)
 
 	// No gateway flags at all.
-	remove, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", githubSetupConfig{})
+	remove, _, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", githubSetupConfig{}, nil)
 	require.NoError(t, err)
 	assert.False(t, remove)
 
 	clear := githubSetupConfig{changedFlags: gatewayFlags("inference-gateway-url", "inference-gateway-audience")}
-	remove, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", clear)
+	remove, kept, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", clear, config.NewEmptyPerRepoOverlay())
 	require.NoError(t, err)
 	assert.True(t, remove)
+	assert.False(t, kept)
+
+	// The composed config still points at the file (an inherited block):
+	// it stays.
+	inherited, err := config.ParsePerRepoConfigWriterLayered([]byte("version: \"1\"\n"),
+		[]byte("inference:\n  gateway:\n    url: https://org-gw.example.com\n    audience: org-aud\n    models_file: "+gatewayModelsFileRepoPath+"\n"))
+	require.NoError(t, err)
+	remove, kept, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", clear, inherited)
+	require.NoError(t, err)
+	assert.False(t, remove)
+	assert.True(t, kept)
+
+	// An inherited block with its own (other) model list does not keep it.
+	other, err := config.ParsePerRepoConfigWriterLayered([]byte("version: \"1\"\n"),
+		[]byte("inference:\n  gateway:\n    url: https://org-gw.example.com\n    audience: org-aud\n    models_file: .fullsend/org-models.json\n"))
+	require.NoError(t, err)
+	remove, kept, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", clear, other)
+	require.NoError(t, err)
+	assert.True(t, remove)
+	assert.False(t, kept)
 
 	// A read failure other than not-found is reported, not ignored.
 	client.GetFileContentErrors = map[string]error{key: assert.AnError}
-	_, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", clear)
+	_, _, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", clear, nil)
 	require.Error(t, err)
+}
+
+func TestRunGitHubSetupPerRepo_GatewayClearKeepsInheritedModelsFile(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newGatewayClearClient()
+	client.FileContents["acme/widget/.fullsend/config.yaml"] = []byte("inference:\n  gateway:\n    url: https://gw.example.com\n    audience: aud\n")
+	client.FileContents["acme/widget/.fullsend/config.base.yaml"] = []byte("inference:\n  gateway:\n    url: https://org-gw.example.com\n    audience: org-aud\n    models_file: " + gatewayModelsFileRepoPath + "\n")
+	client.FileContents["acme/widget/"+gatewayModelsFileRepoPath] = []byte(testGatewayModelsFile)
+
+	var buf strings.Builder
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&buf), gatewayClearSetupConfig())
+	require.NoError(t, err)
+	_, ok := committedTreeFile(client, gatewayModelsFileRepoPath)
+	assert.False(t, ok, "the inherited block still references the models file")
+	assert.Contains(t, buf.String(), "Keeping "+gatewayModelsFileRepoPath)
 }
 
 func TestRunGitHubSetupPerRepo_GatewayClearDryRun(t *testing.T) {

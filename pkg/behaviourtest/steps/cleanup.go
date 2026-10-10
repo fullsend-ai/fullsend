@@ -84,6 +84,15 @@ func ValidateSlotClean(w *world.World) error {
 func CleanupScenario(w *world.World) {
 	ctx := context.Background()
 
+	// --- Inference gateway config cleanup ---
+	// Restore the pre-scenario config.yaml first, while the leased repo
+	// still exists (suite.afterScenario deallocates it after this returns).
+	if err := cleanupRetry(w.Logf, "restore config after inference gateway scenario", func() error {
+		return restoreGatewayConfig(w)
+	}); err != nil {
+		worldLogf(w, "behaviour cleanup: restore config after inference gateway scenario: %v", err)
+	}
+
 	// --- Issue / PR cleanup ---
 	if w.IssueNumber > 0 {
 		desc := fmt.Sprintf("close issue #%d", w.IssueNumber)

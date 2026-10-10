@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -137,63 +138,172 @@ func TestInferenceGatewayStatus_OtherRepository(t *testing.T) {
 	assert.Empty(t, f.fetched)
 }
 
-func gatewayTestServer(t *testing.T, status int, gotAuth *string, gotPath *string) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*gotAuth = r.Header.Get("Authorization")
-		*gotPath = r.Method + " " + r.URL.Path
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(strings.Repeat("x", gatewayProbeBodyLimit*2)))
-	}))
-	t.Cleanup(srv.Close)
-	return srv
+// gatewayTestServer is a TLS gateway stub answering every request with
+// status and body. It records the request and whether the handler ran.
+type gatewayTestServer struct {
+	srv           *httptest.Server
+	handlerCalled bool
+	gotAuth       string
+	gotRequest    string
 }
 
-func TestInferenceGatewayStatus_AuthenticatedRequest(t *testing.T) {
-	var gotAuth, gotPath string
-	srv := gatewayTestServer(t, http.StatusBadRequest, &gotAuth, &gotPath)
-	dir := writeGatewayStatusConfig(t, "inference:\n  gateway:\n    url: "+srv.URL+"/\n    audience: gw-aud\n", "")
-	f := newGatewayStatusFixture(actionsEnv("acme/widget"), srv.Client())
+func newGatewayTestServer(t *testing.T, status int, body string) *gatewayTestServer {
+	t.Helper()
+	g := &gatewayTestServer{}
+	g.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.handlerCalled = true
+		g.gotAuth = r.Header.Get("Authorization")
+		g.gotRequest = r.Method + " " + r.URL.Path
+		if status >= 300 && status < 400 {
+			w.Header().Set("Location", "https://elsewhere.example.com/")
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(g.srv.Close)
+	return g
+}
 
+// client returns the stub's TLS client with redirects not followed, as
+// the production client does.
+func (g *gatewayTestServer) client() *http.Client {
+	c := g.srv.Client()
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
+}
+
+func runGatewayStatusAgainst(t *testing.T, g *gatewayTestServer) (*gatewayStatusFixture, string, error) {
+	t.Helper()
+	dir := writeGatewayStatusConfig(t, "inference:\n  gateway:\n    url: "+g.srv.URL+"/\n    audience: gw-aud\n", "")
+	f := newGatewayStatusFixture(actionsEnv("acme/widget"), g.client())
 	out, err := runGatewayStatusForTest(t, dir, f)
+	assert.True(t, g.handlerCalled, "gateway handler was not called")
+	assert.Equal(t, "GET /v1/models", g.gotRequest)
+	assert.Equal(t, "Bearer "+testGatewayAssertion, g.gotAuth)
+	assert.NotContains(t, out, testGatewayAssertion)
+	assert.NotContains(t, out, "secret-assertion")
+	if err != nil {
+		assert.NotContains(t, err.Error(), testGatewayAssertion)
+	}
+	return f, out, err
+}
+
+func TestInferenceGatewayStatus_ModelsAuthorised(t *testing.T) {
+	g := newGatewayTestServer(t, http.StatusOK, `{"object":"list","data":[{"id":"gpt-5","object":"model"},{"id":"claude-sonnet"}]}`)
+	f, out, err := runGatewayStatusAgainst(t, g)
 	require.NoError(t, err)
 	require.Len(t, f.fetched, 1)
 	assert.Equal(t, "gw-aud", f.fetched[0].Audience)
-	assert.Equal(t, "request-token", f.fetched[0].OIDCRequestToken)
-	assert.Equal(t, "Bearer "+testGatewayAssertion, gotAuth)
-	assert.Equal(t, "POST /v1/chat/completions", gotPath)
+	assert.Equal(t, actionsEnv("acme/widget")["ACTIONS_ID_TOKEN_REQUEST_TOKEN"], f.fetched[0].OIDCRequestToken)
 	assert.Contains(t, out, "2026-10-10T12:04:00Z")
 	assert.Contains(t, out, "5m0s")
-	assert.Contains(t, out, "400")
-	assert.Contains(t, out, "Gateway accepted the assertion")
-	assert.NotContains(t, out, testGatewayAssertion)
+	assert.Contains(t, out, "200")
+	assert.Contains(t, out, "Gateway accepted the assertion; 2 model(s) authorised for acme/widget")
+	assert.Contains(t, out, "gpt-5")
+	assert.Contains(t, out, "claude-sonnet")
+}
+
+func TestInferenceGatewayStatus_ModelListCapped(t *testing.T) {
+	var data []string
+	for i := range gatewayProbeMaxListed + 5 {
+		data = append(data, fmt.Sprintf(`{"id":"model-%02d"}`, i))
+	}
+	g := newGatewayTestServer(t, http.StatusOK, `{"data":[`+strings.Join(data, ",")+`]}`)
+	_, out, err := runGatewayStatusAgainst(t, g)
+	require.NoError(t, err)
+	assert.Contains(t, out, fmt.Sprintf("%d model(s) authorised", gatewayProbeMaxListed+5))
+	assert.Contains(t, out, fmt.Sprintf("model-%02d", gatewayProbeMaxListed-1))
+	assert.NotContains(t, out, fmt.Sprintf("model-%02d", gatewayProbeMaxListed))
+	assert.Contains(t, out, "(and 5 more)")
+}
+
+func TestInferenceGatewayStatus_NoModelsAuthorised(t *testing.T) {
+	g := newGatewayTestServer(t, http.StatusOK, `{"object":"list","data":[]}`)
+	_, out, err := runGatewayStatusAgainst(t, g)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authorises no models for acme/widget")
+	assert.Contains(t, out, "no models are authorised for acme/widget")
+	assert.NotContains(t, out, "Gateway accepted")
 }
 
 func TestInferenceGatewayStatus_Refused(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
-		var gotAuth, gotPath string
-		srv := gatewayTestServer(t, status, &gotAuth, &gotPath)
-		dir := writeGatewayStatusConfig(t, "inference:\n  gateway:\n    url: "+srv.URL+"\n    audience: gw-aud\n", "")
-		f := newGatewayStatusFixture(actionsEnv("acme/widget"), srv.Client())
-		out, err := runGatewayStatusForTest(t, dir, f)
-		require.Error(t, err)
+		g := newGatewayTestServer(t, status, `{"error":"denied"}`)
+		_, out, err := runGatewayStatusAgainst(t, g)
+		require.Error(t, err, status)
 		assert.Contains(t, out, "Gateway refused the assertion")
-		assert.NotContains(t, out, testGatewayAssertion)
-		assert.NotContains(t, err.Error(), testGatewayAssertion)
+		assert.NotContains(t, out, "Gateway accepted")
 	}
 }
 
-func TestInferenceGatewayStatus_ServerErrorAndRedirect(t *testing.T) {
-	for _, status := range []int{http.StatusBadGateway, http.StatusFound} {
-		var gotAuth, gotPath string
-		srv := gatewayTestServer(t, status, &gotAuth, &gotPath)
-		dir := writeGatewayStatusConfig(t, "inference:\n  gateway:\n    url: "+srv.URL+"\n    audience: gw-aud\n", "")
-		client := srv.Client()
-		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-		f := newGatewayStatusFixture(actionsEnv("acme/widget"), client)
-		_, err := runGatewayStatusForTest(t, dir, f)
-		require.Error(t, err)
+func TestInferenceGatewayStatus_Redirect(t *testing.T) {
+	g := newGatewayTestServer(t, http.StatusFound, "")
+	_, out, err := runGatewayStatusAgainst(t, g)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "redirect")
+	assert.NotContains(t, out, "Gateway accepted")
+}
+
+func TestInferenceGatewayStatus_CouldNotConfirm(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"not found", http.StatusNotFound, `{"error":"no route"}`},
+		{"method not allowed", http.StatusMethodNotAllowed, ""},
+		{"rate limited", http.StatusTooManyRequests, ""},
+		{"server error", http.StatusInternalServerError, "boom"},
+		{"bad gateway", http.StatusBadGateway, ""},
+		{"bad json", http.StatusOK, "<html>ok</html>"},
+		{"no data key", http.StatusOK, `{"object":"list"}`},
+		{"too large", http.StatusOK, `{"data":[],"pad":"` + strings.Repeat("x", gatewayProbeBodyLimit) + `"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGatewayTestServer(t, tc.status, tc.body)
+			_, out, err := runGatewayStatusAgainst(t, g)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), fmt.Sprintf("could not confirm authentication with the gateway (HTTP %d)", tc.status))
+			assert.Contains(t, out, fmt.Sprintf("Could not confirm authentication (HTTP %d)", tc.status))
+			assert.NotContains(t, out, "Gateway accepted")
+		})
 	}
+}
+
+func TestProbeGateway_RefusesPlainHTTP(t *testing.T) {
+	_, _, err := probeGateway(context.Background(), http.DefaultClient, "http://127.0.0.1:1/v1/models", testGatewayAssertion)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must use https")
+	assert.NotContains(t, err.Error(), testGatewayAssertion)
+}
+
+// TestDefaultGatewayStatusDeps_RefusesInternalAddresses checks the
+// production client: no environment proxy, and its dialer refuses
+// loopback and private addresses before any connection is made.
+func TestDefaultGatewayStatusDeps_RefusesInternalAddresses(t *testing.T) {
+	deps := defaultGatewayStatusDeps()
+	tr, ok := deps.httpClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.Nil(t, tr.Proxy)
+	assert.Equal(t, gatewayProbeTimeout, deps.httpClient.Timeout)
+	require.NotNil(t, deps.httpClient.CheckRedirect)
+	assert.ErrorIs(t, deps.httpClient.CheckRedirect(nil, nil), http.ErrUseLastResponse)
+	for _, addr := range []string{"127.0.0.1:443", "[::1]:443", "10.0.0.1:443", "169.254.169.254:443"} {
+		conn, err := tr.DialContext(context.Background(), "tcp", addr)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		require.Error(t, err, addr)
+		assert.Contains(t, err.Error(), "blocked", addr)
+	}
+
+	// End to end: the probe with the default client cannot reach a
+	// loopback gateway, even one that is listening.
+	g := newGatewayTestServer(t, http.StatusOK, `{"data":[{"id":"m"}]}`)
+	_, _, err := probeGateway(context.Background(), deps.httpClient, g.srv.URL+gatewayProbePath, testGatewayAssertion)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "blocked")
+	assert.False(t, g.handlerCalled)
 }
 
 func TestInferenceGatewayStatus_AssertionFetchFails(t *testing.T) {

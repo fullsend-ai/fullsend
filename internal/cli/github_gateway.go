@@ -160,19 +160,28 @@ func loadGatewayModelsFile(cfg githubSetupConfig) ([]byte, error) {
 // gatewayModelsFileRepoPath in its commit: the flags clear the block
 // (gatewayClearRequested) and the repository holds the file setup
 // committed. A missing file is not an error — there is nothing to remove.
-func gatewayModelsFileRemoval(ctx context.Context, client forge.Client, owner, repo string, cfg githubSetupConfig) (bool, error) {
+//
+// effective is the post-clear composed config (the overlay over the
+// inherited config.base.yaml or --config preset, as validateEffectiveGateway
+// sees it). When it still sets inference.gateway.models_file to the file —
+// an inherited block that references it — the file stays and kept is true,
+// so the caller can say why.
+func gatewayModelsFileRemoval(ctx context.Context, client forge.Client, owner, repo string, cfg githubSetupConfig, effective config.PerRepoConfigReader) (remove, kept bool, err error) {
 	if !gatewayFlagsChanged(cfg) {
-		return false, nil
+		return false, false, nil
 	}
 	g, err := cfg.gatewayBlock()
 	if err != nil || !gatewayClearRequested(cfg, g) {
-		return false, nil
+		return false, false, nil
 	}
 	if _, err := client.GetFileContent(ctx, owner, repo, gatewayModelsFileRepoPath); err != nil {
 		if forge.IsNotFound(err) {
-			return false, nil
+			return false, false, nil
 		}
-		return false, fmt.Errorf("checking %s on %s/%s: %w", gatewayModelsFileRepoPath, owner, repo, err)
+		return false, false, fmt.Errorf("checking %s on %s/%s: %w", gatewayModelsFileRepoPath, owner, repo, err)
 	}
-	return true, nil
+	if effective != nil && effective.ConfigInferenceGateway().Trimmed().ModelsFile == gatewayModelsFileRepoPath {
+		return false, true, nil
+	}
+	return true, false, nil
 }

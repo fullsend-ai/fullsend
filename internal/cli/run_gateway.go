@@ -26,13 +26,10 @@ const gatewayModelProvider = "gateway"
 
 // Gateway refresh budget. Variables, not constants, so tests can shrink
 // them. A 300 s token leaves far less room than the OpenAI route's
-// one-hour ceiling, so the settle wait and retries are sized to finish
-// inside the time left after the refresh fires (see gatewayRefreshDelay).
+// one-hour ceiling, so the retries are sized to finish, with the shared
+// placeholder settle wait, inside the time left after the refresh fires
+// (see gatewayRefreshDelay).
 var (
-	// gatewayPlaceholderSettle bounds how long a refresh waits for the
-	// sandbox to observe the new credential generation before re-seeding
-	// the token file (~20 s measured on OpenShell 0.0.115).
-	gatewayPlaceholderSettle = 45 * time.Second
 	// gatewayRefreshRetries/Backoff retry a failed assertion fetch or
 	// provider update.
 	gatewayRefreshRetries = 2
@@ -50,16 +47,23 @@ var (
 )
 
 // gatewayRefreshWork is the worst-case time one refresh takes: every
-// fetch attempt with its backoff, then the settle wait.
+// fetch attempt with its backoff, then the settle wait. ADR 0137 has the
+// gateway route reuse the OpenAI route's 90 s placeholder settle
+// (openAIPlaceholderSettle), so there is one settle bound for both routes.
+// With the defaults that is 3*10 s + 2*5 s + 90 s = 130 s of work, plus
+// gatewayRefreshSafety = 145 s, inside the 150 s lead of a 300 s token.
 func gatewayRefreshWork() time.Duration {
 	attempts := time.Duration(gatewayRefreshRetries + 1)
-	return attempts*gatewayFetchTimeout + time.Duration(gatewayRefreshRetries)*gatewayRefreshBackoff + gatewayPlaceholderSettle
+	return attempts*gatewayFetchTimeout + time.Duration(gatewayRefreshRetries)*gatewayRefreshBackoff + openAIPlaceholderSettle
 }
 
 // gatewayRefreshDelay returns how long to wait before refreshing a token
 // issued at iat that expires at exp, and whether the refresh work fits in
 // the time left before exp. The lead before exp is half the token's
 // lifetime, but never less than the refresh work plus a safety margin.
+// It is separate from openAIRefreshDelay, which takes a fixed margin and
+// reports no fit, because the gateway's assertion lifetime is the forge's
+// and the schedule must be derived from each token's iat and exp.
 // jitterFrac (in [0,1)) spreads runs apart by up to gatewayRefreshJitter,
 // capped at a quarter of the slack before the lead so it never eats into
 // the work budget.

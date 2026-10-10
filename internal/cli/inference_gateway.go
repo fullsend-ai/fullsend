@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,20 +18,22 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 const (
 	// gatewayProbeTimeout bounds the one authenticated gateway request.
 	gatewayProbeTimeout = 30 * time.Second
-	// gatewayProbeBodyLimit bounds how much of the gateway's reply is read
-	// (and discarded); only the status code is reported.
-	gatewayProbeBodyLimit = 64 << 10
-	// gatewayProbePath is the endpoint the probe calls. The body is a
-	// deliberately empty request, so a gateway that accepts the assertion
-	// answers with a client error rather than running inference.
-	gatewayProbePath = "/v1/chat/completions"
-	gatewayProbeBody = `{"model":"fullsend-status-probe","messages":[],"max_tokens":1}`
+	// gatewayProbeBodyLimit bounds how much of the gateway's model list is
+	// read; a larger reply cannot confirm authentication.
+	gatewayProbeBodyLimit = 1 << 20
+	// gatewayProbePath is the endpoint the probe calls: the OpenAI-style
+	// model list, which a gateway answers per caller without running
+	// inference.
+	gatewayProbePath = "/v1/models"
+	// gatewayProbeMaxListed caps how many authorised model ids are printed.
+	gatewayProbeMaxListed = 20
 )
 
 // gatewayStatusDeps holds the environment and network access of
@@ -40,12 +45,23 @@ type gatewayStatusDeps struct {
 	now            func() time.Time
 }
 
+// defaultGatewayStatusDeps builds the probe's HTTP client for a
+// config-derived URL (go-code.md "Secure HTTP clients"): no environment
+// proxy, every connection resolved and checked against internal and
+// reserved addresses (repos.SafeDialContext dials a validated IP and the
+// request keeps the host name, so SNI and certificate checks still apply),
+// a timeout, and no redirects. probeGateway refuses a non-https URL before
+// the request.
 func defaultGatewayStatusDeps() gatewayStatusDeps {
 	return gatewayStatusDeps{
 		getenv:         os.Getenv,
 		fetchAssertion: openaiwif.FetchAssertion,
 		httpClient: &http.Client{
 			Timeout: gatewayProbeTimeout,
+			Transport: &http.Transport{
+				Proxy:       nil,
+				DialContext: repos.SafeDialContext(&net.Dialer{Timeout: 10 * time.Second}, false),
+			},
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -79,8 +95,9 @@ config.base.yaml), and flags a partial block.
 
 When run inside a GitHub Actions job with id-token: write, fetches one
 OIDC assertion for the configured audience, reports its expiry and
-lifetime, and sends one authenticated request to the gateway, reporting
-only the HTTP status. The assertion is never printed.
+lifetime, and lists the gateway's models with it (GET /v1/models),
+reporting the HTTP status and the model ids the gateway authorises for
+the repository. The assertion is never printed.
 Outside Actions, says so and stops at the config checks.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -237,7 +254,7 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 
 	endpoint := strings.TrimRight(g.URL, "/") + gatewayProbePath
 	printer.StepStart("Sending one authenticated request to " + endpoint)
-	status, err := probeGateway(ctx, deps.httpClient, endpoint, assertion.Value)
+	status, body, err := probeGateway(ctx, deps.httpClient, endpoint, assertion.Value)
 	if err != nil {
 		printer.StepFail("Gateway request failed")
 		return fmt.Errorf("gateway request: %w", err)
@@ -251,29 +268,81 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 	case status >= 300 && status < 400:
 		printer.StepWarn(fmt.Sprintf("Gateway answered with a redirect (HTTP %d); redirects are not followed", status))
 		return fmt.Errorf("gateway answered with a redirect: HTTP %d", status)
-	case status >= 500:
-		printer.StepWarn(fmt.Sprintf("Gateway error (HTTP %d)", status))
-		return fmt.Errorf("gateway error: HTTP %d", status)
 	}
-	printer.StepDone(fmt.Sprintf("Gateway accepted the assertion for %s (HTTP %d)", repo, status))
+	ids, ok := gatewayModelIDs(status, body)
+	switch {
+	case !ok:
+		printer.StepFail(fmt.Sprintf("Could not confirm authentication (HTTP %d)", status))
+		printer.StepInfo("Expected a 2xx OpenAI-style model list from " + endpoint)
+		return fmt.Errorf("could not confirm authentication with the gateway (HTTP %d)", status)
+	case len(ids) == 0:
+		printer.StepFail("Gateway authenticated the assertion, but no models are authorised for " + repo)
+		printer.StepInfo("Grant " + repo + " access to at least one model on the gateway")
+		return fmt.Errorf("gateway authenticated the assertion but authorises no models for %s", repo)
+	}
+	printer.StepDone(fmt.Sprintf("Gateway accepted the assertion; %d model(s) authorised for %s", len(ids), repo))
+	shown := ids
+	if len(shown) > gatewayProbeMaxListed {
+		shown = shown[:gatewayProbeMaxListed]
+	}
+	for _, id := range shown {
+		printer.StepInfo(id)
+	}
+	if more := len(ids) - len(shown); more > 0 {
+		printer.StepInfo(fmt.Sprintf("(and %d more)", more))
+	}
 	return nil
 }
 
-// probeGateway POSTs the probe body to endpoint with the assertion as a
-// bearer token and returns the HTTP status. Errors never include the
-// assertion; at most gatewayProbeBodyLimit bytes of the reply are read.
-func probeGateway(ctx context.Context, client *http.Client, endpoint, assertion string) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(gatewayProbeBody))
+// gatewayModelIDs reads an OpenAI-style model list ({"data":[{"id":...}]})
+// from a 2xx reply. ok is false for any other status, a body that is not
+// such a list, or one cut off at gatewayProbeBodyLimit.
+func gatewayModelIDs(status int, body []byte) (ids []string, ok bool) {
+	if status < 200 || status > 299 || len(body) > gatewayProbeBodyLimit {
+		return nil, false
+	}
+	var list struct {
+		Data *[]struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil || list.Data == nil {
+		return nil, false
+	}
+	for _, m := range *list.Data {
+		if id := strings.TrimSpace(m.ID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, true
+}
+
+// probeGateway sends GET endpoint with the assertion as a bearer token and
+// returns the HTTP status and up to gatewayProbeBodyLimit+1 bytes of the
+// reply, so the caller can tell a list that was cut off. It refuses a
+// non-https endpoint. Errors never include the assertion.
+func probeGateway(ctx context.Context, client *http.Client, endpoint, assertion string) (int, []byte, error) {
+	u, err := url.Parse(endpoint)
 	if err != nil {
-		return 0, fmt.Errorf("building request: %w", err)
+		return 0, nil, fmt.Errorf("parsing gateway URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return 0, nil, fmt.Errorf("gateway URL must use https, got scheme %q", u.Scheme)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("building request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+assertion)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, gatewayProbeBodyLimit))
-	return resp.StatusCode, nil
+	body, err := io.ReadAll(io.LimitReader(resp.Body, gatewayProbeBodyLimit+1))
+	if err != nil {
+		return 0, nil, fmt.Errorf("reading gateway reply: %w", err)
+	}
+	return resp.StatusCode, body, nil
 }

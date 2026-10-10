@@ -396,9 +396,9 @@ func LoadManifest(ctx context.Context, pathOrURL string) (*Manifest, error) {
 	return &m, nil
 }
 
-// safeDialContext wraps a net.Dialer to reject connections to
+// SafeDialContext wraps a net.Dialer to reject connections to
 // internal/reserved IP addresses (loopback, link-local, private, etc.).
-func safeDialContext(d *net.Dialer, skipIPCheck bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
+func SafeDialContext(d *net.Dialer, skipIPCheck bool) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -447,7 +447,7 @@ func fetchManifestURL(ctx context.Context, rawURL string, skipIPCheck bool) ([]b
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy: nil, // ignore environment proxy settings
-			DialContext: safeDialContext(&net.Dialer{
+			DialContext: SafeDialContext(&net.Dialer{
 				Timeout: 10 * time.Second,
 			}, skipIPCheck),
 		},

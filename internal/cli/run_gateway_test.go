@@ -7,14 +7,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
 )
 
+func TestGatewayRefreshWork_UsesOpenAISettle(t *testing.T) {
+	// ADR 0137: the gateway route reuses the OpenAI placeholder settle, and
+	// the default budget still fits a 300 s token's 150 s lead.
+	assert.Equal(t, 90*time.Second, openAIPlaceholderSettle)
+	assert.Equal(t, 130*time.Second, gatewayRefreshWork())
+	assert.LessOrEqual(t, gatewayRefreshWork()+gatewayRefreshSafety, 150*time.Second)
+}
+
 func TestGatewayRefreshDelay_TokenLifetimes(t *testing.T) {
 	iat := time.Unix(1_000_000, 0)
 	need := gatewayRefreshWork() + gatewayRefreshSafety
-	for _, lifetime := range []time.Duration{300 * time.Second, 120 * time.Second, time.Hour} {
+	for _, lifetime := range []time.Duration{300 * time.Second, 10 * time.Minute, time.Hour} {
 		exp := iat.Add(lifetime)
 		for _, frac := range []float64{0, 0.5, 0.999} {
 			d, ok := gatewayRefreshDelay(iat, exp, iat, frac)
@@ -53,10 +63,13 @@ func TestGatewayRefreshDelay_LateStartAndTooShort(t *testing.T) {
 	if d != gatewayRefreshMinDelay || !ok {
 		t.Fatalf("late start: d=%v ok=%v", d, ok)
 	}
-	// A token shorter than the refresh work cannot be refreshed in time.
-	d, ok = gatewayRefreshDelay(iat, iat.Add(30*time.Second), iat, 0)
-	if d != gatewayRefreshMinDelay || ok {
-		t.Fatalf("too short: d=%v ok=%v", d, ok)
+	// A token shorter than the refresh work cannot be refreshed in time;
+	// with the 90 s settle that includes a 120 s token.
+	for _, lifetime := range []time.Duration{30 * time.Second, 120 * time.Second} {
+		d, ok = gatewayRefreshDelay(iat, iat.Add(lifetime), iat, 0)
+		if d != gatewayRefreshMinDelay || ok {
+			t.Fatalf("too short (%v): d=%v ok=%v", lifetime, d, ok)
+		}
 	}
 	// An out-of-range jitter fraction is ignored.
 	if d, _ := gatewayRefreshDelay(iat, exp, iat, 7); d != 150*time.Second {

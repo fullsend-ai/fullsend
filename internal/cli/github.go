@@ -399,9 +399,12 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			Mode:    "100644",
 		})
 	}
-	removeModelsFile, err := gatewayModelsFileRemoval(ctx, client, owner, repo, cfg)
+	removeModelsFile, keptModelsFile, err := gatewayModelsFileRemoval(ctx, client, owner, repo, cfg, effective)
 	if err != nil {
 		return err
+	}
+	if keptModelsFile {
+		printer.StepInfo("Keeping " + gatewayModelsFileRepoPath + ": the inherited inference.gateway block still sets models_file to it")
 	}
 	if removeModelsFile {
 		files = append(files, forge.TreeFile{Path: gatewayModelsFileRepoPath, Delete: true})

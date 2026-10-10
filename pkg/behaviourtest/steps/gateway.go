@@ -31,8 +31,9 @@ const (
 )
 
 // gatewayConfigOriginals holds the pre-scenario .fullsend/config.yaml for
-// scenarios that committed an inference.gateway block, so the After hook
-// can restore it. Keyed by the scenario's World.
+// scenarios that committed an inference.gateway block, so CleanupScenario
+// can restore it before the leased repo is deallocated. Keyed by the
+// scenario's World.
 var gatewayConfigOriginals sync.Map
 
 func registerGatewaySteps(sc *godog.ScenarioContext) {
@@ -44,16 +45,6 @@ func registerGatewaySteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^the agent's probe "([^"]+)" response (contains|does not contain) "([^"]*)"$`, func(ctx context.Context, description, mode, needle string) (context.Context, error) {
 		return ctx, assertProbeBody(world.FromContext(ctx), description, mode == "contains", needle)
-	})
-	sc.After(func(ctx context.Context, _ *godog.Scenario, err error) (context.Context, error) {
-		w := world.FromContext(ctx)
-		if w == nil {
-			return ctx, err
-		}
-		if restoreErr := restoreGatewayConfig(w); restoreErr != nil {
-			fmt.Fprintf(os.Stderr, "behaviour: restoring config after inference gateway scenario: %v\n", restoreErr)
-		}
-		return ctx, err
 	})
 }
 
@@ -135,14 +126,24 @@ func withInferenceGateway(data []byte, gatewayURL, audience string) ([]byte, err
 	return out, nil
 }
 
+// restoreGatewayConfig commits back the pre-scenario config recorded by
+// givenTestInferenceGateway. It is a no-op when the scenario never
+// configured the gateway. CleanupScenario calls it first: a godog After
+// hook registered here would run after suite.afterScenario has already
+// deallocated (deleted) the leased repo.
 func restoreGatewayConfig(w *world.World) error {
-	v, ok := gatewayConfigOriginals.LoadAndDelete(w)
+	v, ok := gatewayConfigOriginals.Load(w)
 	if !ok {
 		return nil
 	}
 	original, _ := v.([]byte)
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	return w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore config after inference gateway scenario", original)
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore config after inference gateway scenario", original); err != nil {
+		// Keep the entry so a cleanupRetry attempt can commit it again.
+		return err
+	}
+	gatewayConfigOriginals.Delete(w)
+	return nil
 }
 
 func findProbeResult(w *world.World, description string) (runtime.BehaviourOpResult, error) {
@@ -197,11 +198,17 @@ func assertProbeBody(w *world.World, description string, wantContains bool, need
 	return checkProbeBody(res, wantContains, needle)
 }
 
+// jwtNeedlePrefix starts every JWT. The recorded probe body has JWT-shaped
+// substrings redacted (runtime.BehaviourOpResult.BodyHadJWT), so a needle
+// with this prefix also matches when the flag says one was redacted.
+const jwtNeedlePrefix = "eyJ"
+
 func checkProbeBody(res runtime.BehaviourOpResult, wantContains bool, needle string) error {
 	if needle == "" {
 		return fmt.Errorf("probe %q: empty needle", res.Description)
 	}
-	got := strings.Contains(res.ResponseBody, needle)
+	got := strings.Contains(res.ResponseBody, needle) ||
+		(res.BodyHadJWT && strings.HasPrefix(needle, jwtNeedlePrefix))
 	switch {
 	case wantContains && !got:
 		return fmt.Errorf("probe %q: response body does not contain %q", res.Description, needle)

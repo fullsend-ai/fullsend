@@ -457,10 +457,10 @@ func TestWriteBehaviourResultsSuccess(t *testing.T) {
 func TestValidateHTTPURL(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, validateHTTPURL("https://example.com/path"))
-	require.Error(t, validateHTTPURL("file:///etc/passwd"))
-	require.Error(t, validateHTTPURL(""))
-	require.Error(t, validateHTTPURL("://missing"))
+	require.NoError(t, validateHTTPURL("url_get", "https://example.com/path"))
+	require.Error(t, validateHTTPURL("url_get", "file:///etc/passwd"))
+	require.Error(t, validateHTTPURL("url_get", ""))
+	require.Error(t, validateHTTPURL("url_get", "://missing"))
 }
 
 func TestExecuteBehaviourOp_AssertEnvEmpty(t *testing.T) {
@@ -822,46 +822,75 @@ func TestDummyRuntime_ClearIterationArtifacts_SweepFailureIsNotAnError(t *testin
 func TestParseHTTPProbeArgs(t *testing.T) {
 	t.Parallel()
 
-	p, err := ParseHTTPProbeArgs(`POST https://gw.example/v1/chat/completions TOKEN_VAR {"model": "echo", "x": 1}`)
+	p, err := ParseHTTPProbeArgs(`POST https://gw.example/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model": "echo", "x": 1}`)
 	require.NoError(t, err)
 	assert.Equal(t, "POST", p.Method)
 	assert.Equal(t, "https://gw.example/v1/chat/completions", p.URL)
-	assert.Equal(t, "TOKEN_VAR", p.HeaderEnv)
+	assert.Equal(t, "INFERENCE_GATEWAY_API_KEY", p.HeaderEnv)
 	assert.Equal(t, `{"model": "echo", "x": 1}`, p.Body)
 
-	p, err = ParseHTTPProbeArgs("GET http://gw.example/v1/models TOKEN_VAR")
+	p, err = ParseHTTPProbeArgs("GET http://gw.example/v1/models INFERENCE_GATEWAY_API_KEY")
 	require.NoError(t, err)
 	assert.Empty(t, p.Body)
 
 	for _, bad := range []string{
 		"",
 		"GET http://gw.example/",
-		"DELETE http://gw.example/ TOKEN",
-		"GET ftp://gw.example/ TOKEN",
+		"DELETE http://gw.example/ OPENAI_API_KEY",
+		"GET ftp://gw.example/ OPENAI_API_KEY",
 		"GET http://gw.example/ BAD-NAME",
 		"GET http://gw.example/ $(id)",
-		"GET http://gw.example/ TOKEN body-on-get",
+		"GET http://gw.example/ GITHUB_TOKEN",
+		"GET http://gw.example/ OPENAI_API_KEY body-on-get",
 	} {
 		_, err := ParseHTTPProbeArgs(bad)
 		assert.Error(t, err, bad)
 	}
 }
 
+func TestHTTPProbeHeaderEnvAllowlist(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range httpProbeHeaderEnvs {
+		_, err := ParseHTTPProbeArgs("GET https://gw.example/v1/models " + name)
+		require.NoError(t, err, name)
+	}
+	_, err := ParseHTTPProbeArgs("GET https://gw.example/v1/models GITHUB_TOKEN")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `http_probe header_env "GITHUB_TOKEN" is not allowed`)
+}
+
+func TestValidateHTTPURLNamesOp(t *testing.T) {
+	t.Parallel()
+
+	for _, op := range []string{"url_get", "http_probe"} {
+		err := validateHTTPURL(op, "ftp://gw.example/")
+		require.Error(t, err)
+		assert.True(t, strings.HasPrefix(err.Error(), op+" requires http or https"), err.Error())
+		err = validateHTTPURL(op, "https://")
+		require.Error(t, err)
+		assert.Equal(t, op+" requires a host", err.Error())
+	}
+	_, err := ParseHTTPProbeArgs("GET ftp://gw.example/ OPENAI_API_KEY")
+	require.Error(t, err)
+	assert.True(t, strings.HasPrefix(err.Error(), "http_probe requires http or https"), err.Error())
+}
+
 func TestHTTPProbeFromOpPrefersFields(t *testing.T) {
 	t.Parallel()
 
-	p, err := httpProbeFromOp(BehaviourOperation{Op: "http_probe", Args: "ignored", Method: "POST", URL: "https://gw.example/x", HeaderEnv: "TOK", Body: "{}"})
+	p, err := httpProbeFromOp(BehaviourOperation{Op: "http_probe", Args: "ignored", Method: "POST", URL: "https://gw.example/x", HeaderEnv: "INFERENCE_GATEWAY_API_KEY", Body: "{}"})
 	require.NoError(t, err)
-	assert.Equal(t, HTTPProbe{Method: "POST", URL: "https://gw.example/x", HeaderEnv: "TOK", Body: "{}"}, p)
+	assert.Equal(t, HTTPProbe{Method: "POST", URL: "https://gw.example/x", HeaderEnv: "INFERENCE_GATEWAY_API_KEY", Body: "{}"}, p)
 
-	_, err = httpProbeFromOp(BehaviourOperation{Op: "http_probe", Method: "PUT", URL: "https://gw.example/x", HeaderEnv: "TOK"})
+	_, err = httpProbeFromOp(BehaviourOperation{Op: "http_probe", Method: "PUT", URL: "https://gw.example/x", HeaderEnv: "INFERENCE_GATEWAY_API_KEY"})
 	assert.Error(t, err)
 }
 
 func TestHTTPProbeCommandNeverInterpolatesValues(t *testing.T) {
 	t.Parallel()
 
-	cmd, err := httpProbeCommand(HTTPProbe{Method: "POST", URL: "https://gw.example/'; rm -rf /", HeaderEnv: "TOK", Body: `'$(id)'`})
+	cmd, err := httpProbeCommand(HTTPProbe{Method: "POST", URL: "https://gw.example/'; rm -rf /", HeaderEnv: "INFERENCE_GATEWAY_API_KEY", Body: `'$(id)'`})
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(cmd, "NODE_USE_ENV_PROXY=1 node -e "))
 	assert.NotContains(t, cmd, "rm -rf")
@@ -890,11 +919,11 @@ func TestExecuteBehaviourScript_HTTPProbeRecordsStatusAndBody(t *testing.T) {
 		return "noise\n" + out + "\n", "stderr text", code, nil
 	}}
 	script := &BehaviourScript{Ops: []BehaviourOperation{
-		{Description: "ok", Op: "http_probe", Args: `POST https://gw.example/v1/chat/completions TOK {"model":"echo"}`},
-		{Description: "denied", Op: "http_probe", Method: "POST", URL: "https://gw.example/v1/chat/completions", HeaderEnv: "TOK"},
-		{Description: "refused", Op: "http_probe", Args: "GET https://other.example/ TOK"},
-		{Description: "garbled", Op: "http_probe", Args: "GET https://other.example/ TOK"},
-		{Description: "invalid", Op: "http_probe", Args: "PUT https://other.example/ TOK"},
+		{Description: "ok", Op: "http_probe", Args: `POST https://gw.example/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model":"echo"}`},
+		{Description: "denied", Op: "http_probe", Method: "POST", URL: "https://gw.example/v1/chat/completions", HeaderEnv: "INFERENCE_GATEWAY_API_KEY"},
+		{Description: "refused", Op: "http_probe", Args: "GET https://other.example/ INFERENCE_GATEWAY_API_KEY"},
+		{Description: "garbled", Op: "http_probe", Args: "GET https://other.example/ INFERENCE_GATEWAY_API_KEY"},
+		{Description: "invalid", Op: "http_probe", Args: "PUT https://other.example/ INFERENCE_GATEWAY_API_KEY"},
 	}}
 	results, err := executeBehaviourScript(context.Background(), rt, "sb", "/sandbox/workspace/repo", script)
 	require.Error(t, err)
@@ -919,15 +948,50 @@ func TestExecuteBehaviourScript_HTTPProbeRecordsStatusAndBody(t *testing.T) {
 
 	assert.False(t, results.Operations[4].Success)
 	assert.Contains(t, results.Operations[4].Error, "GET or POST")
+	for _, res := range results.Operations {
+		assert.False(t, res.BodyHadJWT, res.Description)
+	}
 }
 
-func TestExecuteBehaviourOp_HTTPProbeExecError(t *testing.T) {
+// TestExecuteHTTPProbe_RedactsJWT checks the runner-side redaction: a
+// JWT-shaped substring in the sandbox's output never reaches the recorded
+// body, and the flag records that it was there.
+func TestExecuteHTTPProbe_RedactsJWT(t *testing.T) {
+	t.Parallel()
+
+	jwt := strings.Join([]string{"eyJhbGciOiJSUzI1NiJ9", "eyJzdWIiOiJyZXBvIn0", "c2ln"}, ".")
+	for _, tc := range []struct {
+		name   string
+		stdout string
+		hadJWT bool
+	}{
+		{"redacted here", `{"status":200,"body":"token=` + jwt + ` end"}`, true},
+		{"flagged by the sandbox", `{"status":200,"body":"token=<redacted-jwt> end","body_had_jwt":true}`, true},
+		{"no jwt", `{"status":200,"body":"eyJ alone is not a token"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := DummyRuntime{ExecFn: func(_, _ string, _ time.Duration) (string, string, int, error) {
+				return tc.stdout + "\n", "", 0, nil
+			}}
+			status, body, hadJWT, err := executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET https://gw.example/v1/models INFERENCE_GATEWAY_API_KEY"})
+			require.NoError(t, err)
+			assert.Equal(t, 200, status)
+			assert.Equal(t, tc.hadJWT, hadJWT)
+			assert.NotContains(t, body, jwt)
+			if tc.hadJWT {
+				assert.Equal(t, "token="+httpProbeJWTRedaction+" end", body)
+			}
+		})
+	}
+}
+
+func TestExecuteHTTPProbe_ExecError(t *testing.T) {
 	t.Parallel()
 
 	rt := DummyRuntime{ExecFn: func(_, _ string, _ time.Duration) (string, string, int, error) {
 		return "", "", 0, errors.New("boom")
 	}}
-	err := executeBehaviourOp(rt, "sb", "/sandbox/workspace/repo", BehaviourOperation{Op: "http_probe", Args: "GET https://gw.example/ TOK"})
+	_, _, _, err := executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET https://gw.example/ INFERENCE_GATEWAY_API_KEY"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "http_probe exec")
 }
@@ -947,6 +1011,22 @@ func TestExecuteHTTPProbe_RealNode(t *testing.T) {
 		if r.URL.Path == "/denied" {
 			w.WriteHeader(http.StatusForbidden)
 		}
+		switch r.URL.Path {
+		case "/jwt":
+			// A JWT in the body and another cut off at the read limit.
+			pad := strings.Repeat("p", httpProbeBodyLimit-len(`{"t":"`+realNodeJWT+`","pad":"`)-10)
+			_, _ = w.Write([]byte(`{"t":"` + realNodeJWT + `","pad":"` + pad + `",` + realNodeJWT + `}`))
+			return
+		case "/endless":
+			// Far more than the limit: the probe must stop reading.
+			chunk := []byte(strings.Repeat("e", 64<<10))
+			for range 256 {
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
+			}
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"method":        r.Method,
 			"authorization": r.Header.Get("Authorization"),
@@ -960,12 +1040,12 @@ func TestExecuteHTTPProbe_RealNode(t *testing.T) {
 	var env []string
 	for _, kv := range os.Environ() {
 		k := strings.ToUpper(strings.SplitN(kv, "=", 2)[0])
-		if strings.HasSuffix(k, "_PROXY") {
+		if strings.HasSuffix(k, "_PROXY") || k == "INFERENCE_GATEWAY_API_KEY" || k == "OPENAI_API_KEY" {
 			continue
 		}
 		env = append(env, kv)
 	}
-	env = append(env, "PROBE_TOKEN=placeholder-value")
+	env = append(env, "INFERENCE_GATEWAY_API_KEY=placeholder-value")
 	rt := DummyRuntime{ExecFn: func(_, cmd string, _ time.Duration) (string, string, int, error) {
 		c := exec.Command("sh", "-c", cmd)
 		c.Env = env
@@ -980,19 +1060,40 @@ func TestExecuteHTTPProbe_RealNode(t *testing.T) {
 		return stdout.String(), stderr.String(), code, err
 	}}
 
-	status, body, err := executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "POST " + srv.URL + `/ok PROBE_TOKEN {"model": "echo"}`})
+	status, body, hadJWT, err := executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "POST " + srv.URL + `/ok INFERENCE_GATEWAY_API_KEY {"model": "echo"}`})
 	require.NoError(t, err)
 	assert.Equal(t, 200, status)
 	assert.Len(t, body, httpProbeBodyLimit)
 	assert.Contains(t, body, `"authorization":"Bearer placeholder-value"`)
 	assert.Contains(t, body, `"content_type":"application/json"`)
 	assert.Contains(t, body, `"method":"POST"`)
+	assert.False(t, hadJWT)
 
-	status, _, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/denied PROBE_TOKEN"})
+	status, _, _, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/denied INFERENCE_GATEWAY_API_KEY"})
 	require.Error(t, err)
 	assert.Equal(t, 403, status)
 
-	_, _, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/ok UNSET_PROBE_VAR"})
+	_, _, _, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/ok OPENAI_API_KEY"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "UNSET_PROBE_VAR is unset")
+	assert.Contains(t, err.Error(), "OPENAI_API_KEY is unset")
+
+	// JWT-shaped substrings are redacted in the sandbox, including one cut
+	// off at the read limit.
+	status, body, hadJWT, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/jwt INFERENCE_GATEWAY_API_KEY"})
+	require.NoError(t, err)
+	assert.Equal(t, 200, status)
+	assert.True(t, hadJWT)
+	assert.NotContains(t, body, "eyJ")
+	assert.True(t, strings.HasPrefix(body, `{"t":"`+httpProbeJWTRedaction+`"`), body[:40])
+	assert.True(t, strings.HasSuffix(body, httpProbeJWTRedaction), "the cut-off JWT is redacted too")
+
+	// An endless reply is read only up to the limit.
+	status, body, _, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/endless INFERENCE_GATEWAY_API_KEY"})
+	require.NoError(t, err)
+	assert.Equal(t, 200, status)
+	assert.Len(t, body, httpProbeBodyLimit)
 }
+
+// realNodeJWT is a JWT-shaped value the RealNode test server echoes. It is
+// joined at run time so secret scanners do not flag a fake token in source.
+var realNodeJWT = strings.Join([]string{"eyJhbGciOiJSUzI1NiJ9", "eyJzdWIiOiJyZXBvOmFjbWUvd2lkZ2V0In0", "c2lnbmF0dXJl"}, ".")

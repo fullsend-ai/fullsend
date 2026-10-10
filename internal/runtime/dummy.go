@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,9 +67,12 @@ type BehaviourOpResult struct {
 	Success     bool   `json:"success"`
 	Error       string `json:"error,omitempty"`
 	// HTTPStatus and ResponseBody are recorded by http_probe only. The
-	// body is capped at httpProbeBodyLimit bytes.
+	// body is capped at httpProbeBodyLimit bytes, with every JWT-shaped
+	// substring replaced by httpProbeJWTRedaction; BodyHadJWT records that
+	// one was there, so a custody assertion can still fail on it.
 	HTTPStatus   int    `json:"http_status,omitempty"`
 	ResponseBody string `json:"response_body,omitempty"`
+	BodyHadJWT   bool   `json:"body_had_jwt,omitempty"`
 }
 
 // BehaviourResults is written to output/behaviour-results.json in the sandbox.
@@ -223,7 +228,7 @@ func executeBehaviourScript(ctx context.Context, rt DummyRuntime, sandboxName, r
 		res := BehaviourOpResult{Description: op.Description}
 		var err error
 		if op.Op == "http_probe" {
-			res.HTTPStatus, res.ResponseBody, err = executeHTTPProbe(rt, sandboxName, op)
+			res.HTTPStatus, res.ResponseBody, res.BodyHadJWT, err = executeHTTPProbe(rt, sandboxName, op)
 		} else {
 			err = executeBehaviourOp(rt, sandboxName, repoDir, op)
 		}
@@ -266,7 +271,7 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 		if rawURL == "" {
 			return fmt.Errorf("url_get requires a URL")
 		}
-		if err := validateHTTPURL(rawURL); err != nil {
+		if err := validateHTTPURL("url_get", rawURL); err != nil {
 			return err
 		}
 		cmd := fmt.Sprintf("curl -sf -- %s -o /dev/null", shellQuote(rawURL))
@@ -381,9 +386,8 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return fmt.Errorf("assert_json %s at %s: %s", jsonPath, path, strings.TrimSpace(stderr))
 		}
 		return nil
-	case "http_probe":
-		_, _, err := executeHTTPProbe(rt, sandboxName, op)
-		return err
+	// http_probe is not handled here: executeBehaviourScript runs it
+	// through executeHTTPProbe, which also returns what it records.
 	default:
 		return fmt.Errorf("unknown op %q", op.Op)
 	}
@@ -428,24 +432,45 @@ func checkoutBranchCommand(repoDir, name string) string {
 		shellQuote("test: add scripted marker commit"))
 }
 
-func validateHTTPURL(raw string) error {
+// validateHTTPURL checks an http(s) URL for the named op (url_get or
+// http_probe), which prefixes every error.
+func validateHTTPURL(op, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("url_get invalid URL: %w", err)
+		return fmt.Errorf("%s invalid URL: %w", op, err)
 	}
 	switch u.Scheme {
 	case "http", "https":
 	default:
-		return fmt.Errorf("url_get requires http or https scheme, got %q", u.Scheme)
+		return fmt.Errorf("%s requires http or https scheme, got %q", op, u.Scheme)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("url_get requires a host")
+		return fmt.Errorf("%s requires a host", op)
 	}
 	return nil
 }
 
-// httpProbeBodyLimit caps the response body http_probe records.
+// httpProbeBodyLimit caps the response body http_probe reads and records.
 const httpProbeBodyLimit = 4096
+
+// httpProbeHeaderEnvs are the only variables http_probe may send as the
+// bearer. The probe sends the named variable to a URL the scenario picks,
+// so an open list would let a script ship any sandbox variable (a forge
+// token, for example) to any host egress allows. These two hold OpenShell
+// placeholders that the proxy swaps for the real credential only on the
+// inference endpoints their profiles bind.
+var httpProbeHeaderEnvs = []string{"INFERENCE_GATEWAY_API_KEY", "OPENAI_API_KEY"}
+
+// httpProbeJWTPattern matches a JWT-shaped substring (three base64url
+// segments, the last possibly empty), such as a forge OIDC token.
+// httpProbeScript applies the same pattern in the sandbox.
+const httpProbeJWTPattern = `eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*`
+
+// httpProbeJWTRedaction replaces each JWT-shaped substring in a recorded
+// response body.
+const httpProbeJWTRedaction = "<redacted-jwt>"
+
+var httpProbeJWTRe = regexp.MustCompile(httpProbeJWTPattern)
 
 // httpProbeScript is the fixed node program http_probe runs in the
 // sandbox. It runs through node so the request leaves through a binary
@@ -454,15 +479,31 @@ const httpProbeBodyLimit = 4096
 // into the code or the shell, and base64 never starts with "-", so node
 // cannot read the argument as an option. The bearer value is read from
 // the named environment variable inside the sandbox (the OpenShell
-// placeholder the proxy replaces), never passed on the command line. It
-// prints one JSON line: {"status":N,"body":"..."} or {"error":"..."}.
-const httpProbeScript = `const p=JSON.parse(Buffer.from(process.argv[1],"base64").toString("utf8"));` +
+// placeholder the proxy replaces), never passed on the command line.
+//
+// The body is read incrementally: at most httpProbeBodyLimit bytes are
+// kept and the stream is cancelled once the limit is reached, so a large
+// or endless reply is never buffered whole. JWT-shaped substrings are
+// replaced by httpProbeJWTRedaction before anything is printed, including
+// a JWT cut off at the limit (a trailing "eyJ..." run). It prints one JSON
+// line: {"status":N,"body":"...","body_had_jwt":B} or {"error":"..."}.
+var httpProbeScript = `const L=` + strconv.Itoa(httpProbeBodyLimit) + `;` +
+	`const J=/` + httpProbeJWTPattern + `/g;` +
+	`const T=/eyJ[A-Za-z0-9_-]*(\.[A-Za-z0-9_-]*){0,2}$/;` +
+	`const p=JSON.parse(Buffer.from(process.argv[1],"base64").toString("utf8"));` +
 	`const t=process.env[p.header_env];` +
 	`if(!t){console.log(JSON.stringify({error:"environment variable "+p.header_env+" is unset or empty"}));process.exit(3);}` +
 	`const h={authorization:"Bearer "+t};` +
 	`if(p.body){h["content-type"]="application/json";}` +
 	`fetch(p.url,{method:p.method,headers:h,body:p.body?p.body:undefined,redirect:"manual",signal:AbortSignal.timeout(45000)})` +
-	`.then(async r=>{const b=Buffer.from(await r.arrayBuffer());console.log(JSON.stringify({status:r.status,body:b.subarray(0,4096).toString("utf8")}));})` +
+	`.then(async r=>{const c=[];let n=0,cut=false;` +
+	`if(r.body){const rd=r.body.getReader();` +
+	`for(;;){const x=await rd.read();if(x.done)break;` +
+	`const k=Math.min(x.value.length,L-n);c.push(Buffer.from(x.value.buffer,x.value.byteOffset,k));n+=k;` +
+	`if(n>=L){cut=true;await rd.cancel().catch(()=>{});break;}}}` +
+	`let j=false;let b=Buffer.concat(c).toString("utf8").replace(J,()=>{j=true;return "` + httpProbeJWTRedaction + `";});` +
+	`if(cut&&T.test(b)){j=true;b=b.replace(T,"` + httpProbeJWTRedaction + `");}` +
+	`console.log(JSON.stringify({status:r.status,body:b,body_had_jwt:j}));})` +
 	`.catch(e=>{console.log(JSON.stringify({error:String((e&&e.cause)||e)}));process.exit(2);});`
 
 // HTTPProbe holds the validated fields of one http_probe op.
@@ -513,11 +554,11 @@ func (p HTTPProbe) Validate() error {
 	if p.URL == "" {
 		return fmt.Errorf("http_probe requires a url")
 	}
-	if err := validateHTTPURL(p.URL); err != nil {
-		return fmt.Errorf("http_probe: %w", err)
+	if err := validateHTTPURL("http_probe", p.URL); err != nil {
+		return err
 	}
-	if !envVarNamePattern.MatchString(p.HeaderEnv) {
-		return fmt.Errorf("http_probe invalid header_env %q", p.HeaderEnv)
+	if !slices.Contains(httpProbeHeaderEnvs, p.HeaderEnv) {
+		return fmt.Errorf("http_probe header_env %q is not allowed (allowed: %s)", p.HeaderEnv, strings.Join(httpProbeHeaderEnvs, ", "))
 	}
 	if p.Method == "GET" && p.Body != "" {
 		return fmt.Errorf("http_probe body is only allowed with POST")
@@ -526,8 +567,10 @@ func (p HTTPProbe) Validate() error {
 }
 
 // httpProbeCommand builds the sandbox command for a validated probe.
-// NODE_USE_ENV_PROXY makes node's fetch honour the sandbox's proxy
-// variables (a no-op where egress is transparent).
+// NODE_USE_ENV_PROXY asks node's fetch to honour the sandbox's proxy
+// variables. It is best-effort: node reads it only from 22.21 on, and the
+// sandbox image requires only node >= 22.19; where egress is transparent
+// it is a no-op either way.
 func httpProbeCommand(p HTTPProbe) (string, error) {
 	payload, err := json.Marshal(p)
 	if err != nil {
@@ -537,26 +580,30 @@ func httpProbeCommand(p HTTPProbe) (string, error) {
 	return fmt.Sprintf("NODE_USE_ENV_PROXY=1 node -e %s %s", shellQuote(httpProbeScript), shellQuote(arg)), nil
 }
 
-// executeHTTPProbe runs one http_probe op and returns the HTTP status and
-// the (capped) response body. The op succeeds only on a 2xx response; a
+// executeHTTPProbe runs one http_probe op and returns the HTTP status,
+// the (capped, JWT-redacted) response body and whether a JWT-shaped
+// substring was redacted. The op succeeds only on a 2xx response; a
 // non-2xx status is still recorded so scenarios can assert on it (for
 // example a 403 from the gateway versus a refusal by the egress proxy).
-func executeHTTPProbe(rt DummyRuntime, sandboxName string, op BehaviourOperation) (int, string, error) {
+// The body is redacted again here, so a JWT never reaches the results
+// file whatever the sandbox printed.
+func executeHTTPProbe(rt DummyRuntime, sandboxName string, op BehaviourOperation) (int, string, bool, error) {
 	p, err := httpProbeFromOp(op)
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
 	cmd, err := httpProbeCommand(p)
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
 	stdout, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 60*time.Second)
 	if err != nil {
-		return 0, "", fmt.Errorf("http_probe exec: %w", err)
+		return 0, "", false, fmt.Errorf("http_probe exec: %w", err)
 	}
 	var out struct {
 		Status int    `json:"status"`
 		Body   string `json:"body"`
+		HadJWT bool   `json:"body_had_jwt"`
 		Error  string `json:"error"`
 	}
 	line := strings.TrimSpace(stdout)
@@ -564,7 +611,11 @@ func executeHTTPProbe(rt DummyRuntime, sandboxName string, op BehaviourOperation
 		line = line[i+1:]
 	}
 	if jsonErr := json.Unmarshal([]byte(line), &out); jsonErr != nil {
-		return 0, "", fmt.Errorf("http_probe %s %s: exit %d, unreadable output: %s", p.Method, p.URL, exitCode, strings.TrimSpace(stderr))
+		return 0, "", false, fmt.Errorf("http_probe %s %s: exit %d, unreadable output: %s", p.Method, p.URL, exitCode, strings.TrimSpace(stderr))
+	}
+	if httpProbeJWTRe.MatchString(out.Body) {
+		out.Body = httpProbeJWTRe.ReplaceAllString(out.Body, httpProbeJWTRedaction)
+		out.HadJWT = true
 	}
 	if len(out.Body) > httpProbeBodyLimit {
 		out.Body = out.Body[:httpProbeBodyLimit]
@@ -574,12 +625,12 @@ func executeHTTPProbe(rt DummyRuntime, sandboxName string, op BehaviourOperation
 		if msg == "" {
 			msg = strings.TrimSpace(stderr)
 		}
-		return out.Status, out.Body, fmt.Errorf("http_probe %s %s failed: %s", p.Method, p.URL, msg)
+		return out.Status, out.Body, out.HadJWT, fmt.Errorf("http_probe %s %s failed: %s", p.Method, p.URL, msg)
 	}
 	if out.Status < 200 || out.Status > 299 {
-		return out.Status, out.Body, fmt.Errorf("http_probe %s %s returned HTTP %d", p.Method, p.URL, out.Status)
+		return out.Status, out.Body, out.HadJWT, fmt.Errorf("http_probe %s %s returned HTTP %d", p.Method, p.URL, out.Status)
 	}
-	return out.Status, out.Body, nil
+	return out.Status, out.Body, out.HadJWT, nil
 }
 
 func resolveWriteFixture(op BehaviourOperation) (dest string, content string, err error) {

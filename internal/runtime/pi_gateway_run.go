@@ -47,7 +47,8 @@ type PiGatewayRun struct {
 	// BaseURL is the gateway endpoint exported as INFERENCE_GATEWAY_BASE_URL.
 	BaseURL string
 	// TokenFile is the sandbox path of the gateway token, exported as
-	// INFERENCE_GATEWAY_TOKEN_FILE. Empty leaves the variable unset.
+	// INFERENCE_GATEWAY_TOKEN_FILE. Required: validatePiGatewayRun refuses
+	// a run without it.
 	TokenFile string
 }
 
@@ -108,13 +109,23 @@ func ValidatePiGatewayPluginEnv(plugins []PluginInput) error {
 // validatePiGatewayRun refuses a run whose block applies but which cannot
 // own the gateway route.
 // The base URL is required whether the parent or only a child is on the
-// gateway provider: children inherit the parent's environment.
+// gateway provider: children inherit the parent's environment. So is the
+// token file: the run command clears every INFERENCE_GATEWAY_* variable,
+// INFERENCE_GATEWAY_API_KEY included, so without the file pi would start
+// with no gateway credential at all.
+//
+// The token file's seed (part 3) must run before the agent-writable .env
+// is sourced, as PiOpenAIAuthSeed does in buildPiRunCommand, so .env
+// cannot replace the placeholder it writes.
 func validatePiGatewayRun(g *PiGatewayRun, plugins []PluginInput) error {
 	if g == nil {
 		return nil
 	}
 	if strings.TrimSpace(g.BaseURL) == "" {
 		return fmt.Errorf("inference.gateway applies but %s is not set; refusing to start a %s/ run", piInferenceGatewayBaseURLEnv, piGatewayProvider)
+	}
+	if strings.TrimSpace(g.TokenFile) == "" {
+		return fmt.Errorf("inference.gateway applies but %s is not set; refusing to start a %s/ run with no gateway credential", piInferenceGatewayTokenFileEnv, piGatewayProvider)
 	}
 	if len(g.Config) == 0 {
 		return fmt.Errorf("inference.gateway applies but no %s was rendered", PiInferenceGatewayConfigFile)

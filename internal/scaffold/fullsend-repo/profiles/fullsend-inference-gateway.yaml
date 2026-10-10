@@ -18,10 +18,12 @@ credentials:
       strategy: external
 # Explicit allow rules instead of an `access:` preset: the inference-gateway
 # extension only calls the three model APIs below, and a preset would admit
-# every other path on the host.
+# every other path on the host. `path` limits the credential binding to the
+# model API prefix; without it OpenShell binds every path on host:port.
 endpoints:
   - host: __INFERENCE_GATEWAY_HOST__
     port: 443
+    path: /v1/**
     protocol: rest
     enforcement: enforce
     # OpenShell 0.0.110+ resets any inspected request body that contains the
