@@ -121,6 +121,8 @@ case "$1 $2 $3" in
     tick > "${S}/secrets/$4.v${n}.time"
     echo "${n}" > "${S}/secrets/$4.latest" ;;
   "run services list")
+    # A run/region default narrows the listing to that region.
+    if [[ -n "${CLOUDSDK_RUN_REGION:-}" ]]; then echo '[]'; exit 0; fi
     [[ -f "${S}/list_partial" ]] && echo "WARNING: The following regions were unreachable: europe-west1" >&2
     { [[ -f "${S}/svc.json" ]] && jq '.metadata.labels["cloud.googleapis.com/location"] = "us-east5"' "${S}/svc.json"
       [[ -f "${S}/svc_elsewhere" ]] && jq -n '{metadata: {labels: {"cloud.googleapis.com/location": "europe-west1"}}}'
@@ -399,6 +401,13 @@ echo "roles/aiplatform.user ${SA} conditional" >> "${STATE}/project_policy"
 run_setup --project "${PROJECT}" --without-vertex || fail "conditional grant run failed"
 expect_out "a conditional grant does not count as the Vertex grant" "No changes"
 
+# A secret whose policy holds only a conditional binding gets an
+# unconditional one, added with --condition=None.
+echo "roles/secretmanager.secretAccessor ${SA} conditional" > "${STATE}/secrets/${KEY_SECRET}.policy"
+run_setup --project "${PROJECT}" --without-vertex || fail "conditional secret binding run failed"
+if grep -q -- "secrets add-iam-policy-binding ${KEY_SECRET} .*--condition=None" "${STATE}/gcloud.log"; then
+  pass "a conditional-only secret policy gets an unconditional binding"; else fail "secret binding lacks --condition=None"; fi
+
 # A secret version created later in the same second as the serving revision.
 echo 2027-01-01T00:00:03.100Z > "${STATE}/revision_time"
 echo 2027-01-01T00:00:03.900Z > "${STATE}/secrets/${CFG_SECRET}.v4.time"
@@ -422,11 +431,13 @@ if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete trusted 
 expect_no_mutations "partial-listing --delete deletes nothing" "${before}"
 rm "${STATE}/list_partial"
 touch "${STATE}/svc_elsewhere"
+export CLOUDSDK_RUN_REGION=us-east5
 before=$(mutations | wc -l | tr -d ' ')
 if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete ignored a service in another region"; else
   expect_out "--delete refuses while the service runs in another region" "runs in europe-west1, not us-east5"; fi
 expect_no_mutations "region-mismatch --delete deletes nothing" "${before}"
 rm "${STATE}/svc_elsewhere"
+unset CLOUDSDK_RUN_REGION
 jq '.metadata.labels = {}' "${STATE}/svc.json" > "${STATE}/svc.tmp" && cp "${STATE}/svc.json" "${STATE}/svc.bak" \
   && mv "${STATE}/svc.tmp" "${STATE}/svc.json"
 if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete removed an unlabelled service"; else

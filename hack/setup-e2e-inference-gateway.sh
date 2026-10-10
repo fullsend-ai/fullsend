@@ -339,8 +339,9 @@ if [[ "${DELETE}" == "true" ]]; then
   # The secrets and the service account are global. Never delete them while a
   # service of this name runs in another region (a mistyped --region).
   # A listing that skipped unreachable regions is not proof, so any warning
-  # stops the delete.
-  gc run services list --filter="metadata.name=${NAME}" --format=json \
+  # stops the delete. The operator's run/region default is cleared so that it
+  # cannot narrow the listing to one region.
+  CLOUDSDK_RUN_REGION="" gc run services list --filter="metadata.name=${NAME}" --format=json \
     >"${TMP}/services.json" 2>"${TMP}/services.err" \
     || die "could not list Cloud Run services: $(cat "${TMP}/services.err")"
   if grep -qiE 'warning|unreachable|unavailable' "${TMP}/services.err"; then
@@ -616,7 +617,7 @@ ensure_secret() {
   else
     change "granted secretAccessor on ${secret} to ${SA_EMAIL}" \
       retry gc secrets add-iam-policy-binding "${secret}" \
-        --member="${SA_MEMBER}" --role=roles/secretmanager.secretAccessor
+        --member="${SA_MEMBER}" --role=roles/secretmanager.secretAccessor --condition=None
   fi
 }
 
