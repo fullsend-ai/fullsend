@@ -28,54 +28,43 @@ STATE_FILE="${OUTPUT_DIR}/fixture-state.json"
 case "${FIXTURE_TYPE}" in
   issue)
     issue_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
-      --json state,labels,assignees,milestone,title)
-    comments_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json comments \
-      | jq '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
+      --json state,labels,assignees,milestone,title,comments)
 
-    jq -n \
+    jq \
       --arg fixture_type "issue" \
       --arg fixture_url "$FIXTURE_URL" \
-      --argjson issue "$issue_json" \
-      --argjson comments "$comments_json" \
       '{
         fixture_type: $fixture_type,
         fixture_url: $fixture_url,
-        state: $issue.state,
-        title: $issue.title,
-        labels: [($issue.labels // [])[] | .name],
-        assignees: [($issue.assignees // [])[] | .login],
-        milestone: ($issue.milestone.title // null),
-        comments: $comments
-      }' > "$STATE_FILE"
+        state: .state,
+        title: .title,
+        labels: [(.labels // [])[] | .name],
+        assignees: [(.assignees // [])[] | .login],
+        milestone: (.milestone.title // null),
+        comments: [(.comments // [])[] | {author: .author.login, body: .body, created_at: .createdAt}]
+      }' <<< "$issue_json" > "$STATE_FILE"
     ;;
 
   pull_request)
     pr_json=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
-      --json state,labels,assignees,milestone,title,mergeable,reviewDecision)
-    comments_json=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json comments \
-      | jq '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
-    reviews_json=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json reviews \
-      | jq '[.reviews[] | {author: .author.login, state: .state, body: .body}]')
+      --json state,labels,assignees,milestone,title,mergeable,reviewDecision,comments,reviews)
 
-    jq -n \
+    jq \
       --arg fixture_type "pull_request" \
       --arg fixture_url "$FIXTURE_URL" \
-      --argjson pr "$pr_json" \
-      --argjson comments "$comments_json" \
-      --argjson reviews "$reviews_json" \
       '{
         fixture_type: $fixture_type,
         fixture_url: $fixture_url,
-        state: $pr.state,
-        title: $pr.title,
-        labels: [($pr.labels // [])[] | .name],
-        assignees: [($pr.assignees // [])[] | .login],
-        milestone: ($pr.milestone.title // null),
-        mergeable: $pr.mergeable,
-        review_decision: $pr.reviewDecision,
-        comments: $comments,
-        reviews: $reviews
-      }' > "$STATE_FILE"
+        state: .state,
+        title: .title,
+        labels: [(.labels // [])[] | .name],
+        assignees: [(.assignees // [])[] | .login],
+        milestone: (.milestone.title // null),
+        mergeable: .mergeable,
+        review_decision: .reviewDecision,
+        comments: [(.comments // [])[] | {author: .author.login, body: .body, created_at: .createdAt}],
+        reviews: [(.reviews // [])[] | {author: .author.login, state: .state, body: .body}]
+      }' <<< "$pr_json" > "$STATE_FILE"
     ;;
 
   *)
