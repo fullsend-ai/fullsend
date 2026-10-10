@@ -153,10 +153,6 @@ func testGatewayModels() map[string]any {
 	}
 }
 
-// givenTestInferenceGatewayAPIKey commits an api-key inference.gateway
-// block (url and auth: api-key, no audience) the same way. It skips the
-// scenario when the URL or the test key is unset, and registers the key
-// for redaction so it never reaches the suite's logs.
 // givenTestInferenceGatewayAvailable skips the scenario when the test
 // gateway URL (and, with withKey, the test key) is unset.
 func givenTestInferenceGatewayAvailable(withKey bool) error {
@@ -169,6 +165,10 @@ func givenTestInferenceGatewayAvailable(withKey bool) error {
 	return nil
 }
 
+// givenTestInferenceGatewayAPIKey commits an api-key inference.gateway
+// block (url and auth: api-key, no audience) the same way. It skips the
+// scenario when the URL or the test key is unset, and registers the key
+// for redaction so it never reaches the suite's logs.
 func givenTestInferenceGatewayAPIKey(w *world.World) error {
 	gatewayURL, _, ok := testGatewayFromEnv()
 	key := strings.TrimSpace(os.Getenv(envInferenceGatewayTestKey))
