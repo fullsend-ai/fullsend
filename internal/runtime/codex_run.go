@@ -172,13 +172,13 @@ type codexModel struct {
 func translateCodexModel(model string, gateway bool) (codexModel, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return codexModel{}, fmt.Errorf("codex takes OpenAI model ids only and no model was named: %s", codexModelHelp)
+		return codexModel{}, fmt.Errorf("codex takes OpenAI model ids or gateway/<model> only and no model was named: %s", codexModelHelp)
 	}
 	provider, id, hasSlash := strings.Cut(model, "/")
 	if !hasSlash {
 		if codexClaudeAliases[strings.ToLower(model)] {
 			return codexModel{}, fmt.Errorf(
-				"codex takes OpenAI model ids only, and the Claude model aliases do not apply to it: %q is one of them. To run this agent on codex, %s",
+				"codex takes OpenAI model ids or gateway/<model> only, and the Claude model aliases do not apply to it: %q is one of them. To run this agent on codex, %s",
 				model, codexModelHelp)
 		}
 		return codexModel{ID: model}, nil
@@ -197,7 +197,7 @@ func translateCodexModel(model string, gateway bool) (codexModel, error) {
 	}
 	if !strings.EqualFold(provider, codexOpenAIProvider) {
 		return codexModel{}, fmt.Errorf(
-			"codex takes OpenAI model ids only, so %q is not available on it: %s",
+			"codex takes OpenAI model ids or gateway/<model> only, so %q is not available on it: %s",
 			model, codexModelHelp)
 	}
 	if strings.TrimSpace(id) == "" {

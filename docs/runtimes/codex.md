@@ -24,10 +24,10 @@ speaks the Responses API only, so there is no Claude, Gemini or Grok on codex's 
 codex refuses them rather than picking a GPT model on your behalf:
 
 ```
-codex takes OpenAI model ids only, and the Claude model aliases do not apply to it: "opus" is one
-of them. To run this agent on codex, set FULLSEND_CODEX_MODEL=openai/<id> for the repo, or
-model: openai/<id> on the agent's agents: entry or the harness (or gateway/<model> with an
-inference.gateway block)
+codex takes OpenAI model ids or gateway/<model> only, and the Claude model aliases do not apply to
+it: "opus" is one of them. To run this agent on codex, set FULLSEND_CODEX_MODEL=openai/<id> for
+the repo, or model: openai/<id> on the agent's agents: entry or the harness (or gateway/<model>
+with an inference.gateway block)
 ```
 
 A model carrying another provider's prefix, and a run with no model named at all, fail the same way
@@ -320,7 +320,7 @@ hold a gateway placeholder. Check that the harness declares `providers: [openai]
 admits `api.openai.com:443` without protocol inspection, so the gateway refuses to carry the
 credential over it. Add `policy: policies/base.yaml` to the harness.
 
-**`codex takes OpenAI model ids only ...`.** The resolved model is a Claude alias (`opus` and
+**`codex takes OpenAI model ids or gateway/<model> only ...`.** The resolved model is a Claude alias (`opus` and
 friends), carries another provider's prefix, or is missing entirely. The message names the fixes:
 `FULLSEND_CODEX_MODEL=openai/<id>` for the repo, `model: openai/<id>` on the agent's `agents:`
 entry or the harness, or `gateway/<model>` with an `inference.gateway` block. See [Models](#models).

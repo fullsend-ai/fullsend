@@ -180,7 +180,7 @@ func TestCodexRun_RejectsForeignModelBeforeSpending(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Equal(t, -1, exit)
-	assert.Contains(t, err.Error(), "codex takes OpenAI model ids only")
+	assert.Contains(t, err.Error(), "codex takes OpenAI model ids or gateway/<model> only")
 	assert.NotContains(t, readFileString(t, logPath), "exec --json", "the run must not start")
 }
 

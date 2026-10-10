@@ -64,8 +64,8 @@ func TestTranslateCodexModel(t *testing.T) {
 		{name: "openai prefix stripped", in: "openai/gpt-5.6-luna", want: "gpt-5.6-luna"},
 		{name: "prefix matched case-insensitively", in: "OpenAI/gpt-5.6-luna", want: "gpt-5.6-luna"},
 		{name: "whitespace trimmed", in: "  openai/gpt-5.6-luna  ", want: "gpt-5.6-luna"},
-		{name: "foreign provider rejected", in: "anthropic-vertex/claude-opus-4-6", wantErr: "codex takes OpenAI model ids only"},
-		{name: "vertex prefix rejected", in: "xai-vertex/xai/grok-4.6", wantErr: "codex takes OpenAI model ids only"},
+		{name: "foreign provider rejected", in: "anthropic-vertex/claude-opus-4-6", wantErr: "codex takes OpenAI model ids or gateway/<model> only"},
+		{name: "vertex prefix rejected", in: "xai-vertex/xai/grok-4.6", wantErr: "codex takes OpenAI model ids or gateway/<model> only"},
 		{name: "empty id after prefix", in: "openai/", wantErr: "empty model id"},
 		{name: "empty spec", in: "", wantErr: "no model was named"},
 		// Claude aliases deliberately do not apply to codex, and are never
@@ -114,7 +114,7 @@ func TestTranslateCodexModel_Gateway(t *testing.T) {
 		{name: "empty id", in: "gateway/", wantErr: "empty model id"},
 		{name: "leading slash in id", in: "gateway//m", wantErr: "empty model id"},
 		{name: "trailing slash in id", in: "gateway/org/", wantErr: "empty model id"},
-		{name: "other providers still refused", in: "anthropic-vertex/claude-opus-4-6", wantErr: "codex takes OpenAI model ids only"},
+		{name: "other providers still refused", in: "anthropic-vertex/claude-opus-4-6", wantErr: "codex takes OpenAI model ids or gateway/<model> only"},
 		{name: "claude alias still refused", in: "opus", wantErr: "the Claude model aliases do not apply"},
 	}
 	for _, tt := range tests {
