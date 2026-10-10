@@ -255,7 +255,14 @@ func convergeInstalledServiceAccount(ctx context.Context, cfg RoleProvisionConfi
 				var level int
 				level, err = c.SA.GetProjectMemberAccessLevel(ctx, cfg.Owner, cfg.Repo, int64(rs.ManagedUserID))
 				if err == nil && level != gitlabroles.DeveloperAccessLevel {
-					err = fmt.Errorf("effective access is not Developer")
+					if cfg.DryRun && level > 0 {
+						// A live run repairs direct-membership drift via
+						// ensureMemberLevel; plan it rather than failing, and
+						// keep reporting later provisioning/rotation actions.
+						result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: managed service-account membership would be reconciled to Developer (currently access level %d)", rec.Name, level))
+					} else {
+						err = fmt.Errorf("effective access is not Developer")
+					}
 				}
 			}
 			if err != nil {
@@ -357,12 +364,17 @@ func (c ServiceAccountTokenClient) withProjectExclusions(ctx context.Context, ow
 		return c, nil, ErrPollerSuppliedUnresolved
 	}
 	resolved = positiveIDs(resolved)
-	for _, other := range state.Roles {
+	for role, other := range state.Roles {
+		// Reject malformed persisted exclusions here too, so every path that
+		// freezes exclusions validates them, not only the cleanup readers.
+		if err := validateRecordedExclusionIDs(role, other); err != nil {
+			return c, nil, err
+		}
 		if other.SuppliedUserID > 0 && !slices.Contains(resolved, other.SuppliedUserID) {
 			resolved = append(resolved, other.SuppliedUserID)
 		}
 		for _, id := range other.ExcludedUserIDs {
-			if id > 0 && !slices.Contains(resolved, id) {
+			if !slices.Contains(resolved, id) {
 				resolved = append(resolved, id)
 			}
 		}

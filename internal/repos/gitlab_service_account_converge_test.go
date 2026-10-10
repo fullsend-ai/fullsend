@@ -1565,3 +1565,37 @@ func TestInitialDistributionFillsExclusionsOnlyEntry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, state.Roles["coder"].IncomingID)
 }
+
+func TestInstallConvergenceDryRunPlansMembershipDrift(t *testing.T) {
+	ctx := context.Background()
+	for _, level := range []int{20, 40} {
+		t.Run(fmt.Sprintf("level-%d", level), func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			sa := newFakeSAAPI()
+			sa.accounts = []GitLabServiceAccount{{ID: 501, Name: gitlabroles.PollerTokenName}}
+			sa.members[501] = level
+			require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{"poller": {ManagedUserID: 501, IncomingID: 1}}}))
+			cfg := RoleProvisionConfig{Owner: "g", Repo: "p", Client: fc, Tokens: ServiceAccountTokenClient{SA: sa}, DryRun: true}
+			result := RoleProvisionResult{}
+			rec, _ := gitlabroles.BuiltinRegistry().Lookup(gitlabroles.RolePoller)
+			convergeInstalledServiceAccount(ctx, cfg, rec, time.Now(), false, &result)
+			assert.Empty(t, result.Failed)
+			require.Len(t, result.Diagnostics, 1)
+			assert.Contains(t, result.Diagnostics[0], "would be reconciled to Developer")
+			assert.Equal(t, level, sa.members[501], "dry run must not mutate membership")
+		})
+	}
+}
+
+func TestWithProjectExclusionsRejectsMalformedRecordedIDs(t *testing.T) {
+	for name, rs := range map[string]rotationRoleState{
+		"zero excluded":     {ExcludedUserIDs: []int{0}},
+		"negative excluded": {ExcludedUserIDs: []int{501, -1}},
+		"negative supplied": {SuppliedUserID: -1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := (ServiceAccountTokenClient{}).withProjectExclusions(context.Background(), "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{"coder": rs}})
+			require.Error(t, err)
+		})
+	}
+}

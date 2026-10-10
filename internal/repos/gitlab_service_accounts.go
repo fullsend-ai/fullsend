@@ -479,7 +479,7 @@ func validateRoleCredentialRequest(name string, scopes []string, accessLevel int
 		return fmt.Errorf("refusing to provision GitLab role identity %q: invalid token expiry %q", name, expiresAt)
 	}
 	if expiresAt <= now.UTC().Format(time.DateOnly) || expiresAt > GitLabPATExpiresAt(now) {
-		return fmt.Errorf("refusing to provision GitLab role identity %q: token expiry %s is outside the role credential lifetime (after today, no later than %s)", name, expiresAt, GitLabPATExpiresAt(now))
+		return fmt.Errorf("refusing to provision GitLab role identity %q: token expiry %q is outside the role credential lifetime (after today, no later than %s)", name, expiresAt, GitLabPATExpiresAt(now))
 	}
 	return nil
 }
