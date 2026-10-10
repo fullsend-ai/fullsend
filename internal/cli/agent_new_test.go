@@ -250,7 +250,7 @@ func TestAgentNewCodexRequiresOpenAIModel(t *testing.T) {
 	if err == nil {
 		t.Fatal("--runtime codex without --model should be refused")
 	}
-	for _, want := range []string{"use --model openai/gpt-5.6-luna", "runtime codex takes OpenAI model ids only"} {
+	for _, want := range []string{"use --model openai/gpt-5.6-luna", "runtime codex takes OpenAI model ids or gateway/<model> only"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %q, got: %v", want, err)
 		}

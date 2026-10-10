@@ -24,7 +24,8 @@ codex refuses them rather than picking a GPT model on your behalf:
 ```
 codex takes OpenAI model ids only, and the Claude model aliases do not apply to it: "opus" is one
 of them. To run this agent on codex, set FULLSEND_CODEX_MODEL=openai/<id> for the repo, or
-model: openai/<id> on the agent's agents: entry or the harness
+model: openai/<id> on the agent's agents: entry or the harness (or gateway/<model> with an
+inference.gateway block)
 ```
 
 A model carrying another provider's prefix, and a run with no model named at all, fail the same way

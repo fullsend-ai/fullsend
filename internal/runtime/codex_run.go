@@ -135,7 +135,8 @@ var codexClaudeAliases = map[string]bool{"opus": true, "sonnet": true, "haiku": 
 // codexModelHelp names both ways to give codex a model it can serve.
 const codexModelHelp = "set FULLSEND_CODEX_MODEL=" + codexOpenAIProvider +
 	"/<id> for the repo, or model: " + codexOpenAIProvider +
-	"/<id> on the agent's agents: entry or the harness"
+	"/<id> on the agent's agents: entry or the harness (or " + codexGatewayModelProvider +
+	"/<model> with an inference.gateway block)"
 
 // ValidateCodexModel reports whether model is one fullsend's codex
 // integration can serve. Empty, a Claude alias, or a provider prefix other

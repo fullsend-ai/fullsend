@@ -387,8 +387,9 @@ independently through the layered config system (an overlay can override
   without them, and the runner fails a run whose resolved block is
   partial. `models` and `models_file` are mutually exclusive. A pi run on
   a `gateway/` model needs one of them, because pi runs offline and cannot
-  discover the gateway's models. A codex run reads neither: codex never
-  calls `/v1/models`, so the id after `gateway/` is the model it sends.
+  discover the gateway's models. On codex the list is not used: codex never
+  calls `/v1/models`, so the id after `gateway/` is the model it sends (a
+  configured `models_file` must still be readable).
   `url`, `audience` and `auth` layer
   independently; the model list (either form) is one unit,
   and a layer that sets it replaces the inherited list. There is no

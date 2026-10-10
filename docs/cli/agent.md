@@ -338,7 +338,7 @@ and model resolve independently (flag, then config, then default); see
 | `a trigger is required: pass --on with a preset, or --trigger` | `--trigger ""` was passed explicitly | Give a real trigger. A trigger-less agent is silently never dispatched |
 | `no .fullsend directory in the current directory; run from the repository root or pass --fullsend-dir <path>` | `--fullsend-dir` was omitted and the current directory has no `.fullsend` | Run from the repository root or pass `--fullsend-dir`. If the repo has no `.fullsend` yet, scaffold it first |
 | `fullsend dir ... does not exist; run ` + "`fullsend github setup`" + ` first` | `--fullsend-dir` points at nothing | Scaffold the repo first |
-| `runtime codex takes OpenAI model ids only, and ...: use --model openai/gpt-5.6-luna (or another openai/<id>, or gateway/<model> ...) ...` | `--runtime codex`, or a repo whose `config.yaml` sets `runtime: codex`, with no `--model` or with a model that is neither an OpenAI id nor `gateway/<model>`, such as `opus` | Use `--model openai/<id>` (or `gateway/<model>`) on the same command. Nothing is written when this fires |
+| `runtime codex takes OpenAI model ids or gateway/<model> only, and ...: use --model openai/gpt-5.6-luna (or another openai/<id>, or gateway/<model> ...) ...` | `--runtime codex`, or a repo whose `config.yaml` sets `runtime: codex`, with no `--model` or with a model that is neither an OpenAI id nor `gateway/<model>`, such as `opus` | Use `--model openai/<id>` (or `gateway/<model>`) on the same command. Nothing is written when this fires |
 
 These are generation-time errors — `agent new` refuses before writing
 anything. For errors from `fullsend run` or in CI (missing credentials,

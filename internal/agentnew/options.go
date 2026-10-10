@@ -73,7 +73,7 @@ func (o *Options) Validate() error {
 	// example id is the one docs/runtimes/codex.md uses.
 	if o.Runtime == "codex" {
 		if err := agentruntime.ValidateCodexModel(o.Model); err != nil {
-			return fmt.Errorf("runtime codex takes OpenAI model ids only, and %s: "+
+			return fmt.Errorf("runtime codex takes OpenAI model ids or gateway/<model> only, and %s: "+
 				"use --model openai/gpt-5.6-luna (or another openai/<id>, or gateway/<model> "+
 				"with an inference.gateway block) on the command, "+
 				"or model: openai/gpt-5.6-luna in the spec file", describeModel(o.Model))
