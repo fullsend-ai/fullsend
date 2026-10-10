@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/inference/actionsoidc"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
@@ -192,10 +193,76 @@ func startGatewayRoute(ctx context.Context, plan *gatewayRoutePlan, sandboxName 
 	}, nil
 }
 
-// refreshGatewayProvider fetches a fresh assertion, hot-updates it into
-// the provider with its own exp, and, once the sandbox is up, re-seeds the
-// runtime's token file with the new placeholder. It returns the new
-// token's iat and exp and the placeholder the agent now holds.
+// gatewayReseedError is a refresh whose provider update landed but whose
+// hand-off to the running agent did not: the provider holds the new token
+// while the agent still holds the previous placeholder.
+type gatewayReseedError struct{ err error }
+
+func (e *gatewayReseedError) Error() string {
+	return "the provider holds the new token but the running agent was not re-seeded: " + e.err.Error()
+}
+
+func (e *gatewayReseedError) Unwrap() error { return e.err }
+
+// rotateGatewayToken fetches a fresh assertion and hot-updates it into the
+// provider with its own exp, retrying the fetch and update (and only
+// those) up to gatewayRefreshRetries times. Each attempt is bounded by
+// gatewayFetchTimeout, so the retries stay inside the fetch share of
+// gatewayRefreshWork.
+func rotateGatewayToken(ctx context.Context, h gatewayProviderHandle, printer *ui.Printer) (*actionsoidc.Assertion, error) {
+	var lastErr error
+	for attempt := 0; attempt <= gatewayRefreshRetries; attempt++ {
+		if attempt > 0 {
+			printer.StepWarn(fmt.Sprintf("Inference gateway token refresh attempt %d/%d failed: %v", attempt, gatewayRefreshRetries+1, lastErr))
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(gatewayRefreshBackoff):
+			}
+		}
+		a, err := rotateGatewayTokenOnce(ctx, h)
+		if err == nil {
+			return a, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// rotateGatewayTokenOnce is one fetch-and-update attempt.
+func rotateGatewayTokenOnce(ctx context.Context, h gatewayProviderHandle) (*actionsoidc.Assertion, error) {
+	updateCtx, cancel := context.WithTimeout(ctx, gatewayFetchTimeout)
+	defer cancel()
+	a, err := fetchGatewayToken(updateCtx, h.block)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateGatewayAssertion(a.Value); err != nil {
+		return nil, err
+	}
+	if !security.RegisterRuntimeSecret(a.Value) {
+		return nil, errors.New("inference gateway: the refreshed token is too short to redact reliably; refusing to use it")
+	}
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", a.Value)
+	}
+	creds := map[string]string{gatewayCredentialKey: a.Value}
+	if err := sandbox.UpdateProviderLiteralWithExpiry(updateCtx, h.name, creds, a.ExpiresAt); err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// refreshGatewayProvider rotates the provider's token (rotateGatewayToken)
+// and, once the sandbox is up, hands the new placeholder to the running
+// agent by re-seeding the runtime's token file — once, since the settle
+// wait alone takes most of a short token's refresh lead. It returns the new
+// token's iat and exp and the placeholder the agent now holds. A failed
+// hand-off returns the new iat and exp with a *gatewayReseedError and the
+// placeholder the agent still holds.
 func refreshGatewayProvider(ctx context.Context, h gatewayProviderHandle, placeholder string, printer *ui.Printer) (time.Time, time.Time, string, error) {
 	reseed := h.sandboxReady()
 	if reseed && placeholder == "" {
@@ -207,23 +274,8 @@ func refreshGatewayProvider(ctx context.Context, h gatewayProviderHandle, placeh
 		}
 		placeholder = p
 	}
-	updateCtx, cancelUpdate := context.WithTimeout(ctx, gatewayFetchTimeout)
-	defer cancelUpdate()
-	a, err := fetchGatewayToken(updateCtx, h.block)
+	a, err := rotateGatewayToken(ctx, h, printer)
 	if err != nil {
-		return time.Time{}, time.Time{}, placeholder, err
-	}
-	if err := validateGatewayAssertion(a.Value); err != nil {
-		return time.Time{}, time.Time{}, placeholder, err
-	}
-	if !security.RegisterRuntimeSecret(a.Value) {
-		return time.Time{}, time.Time{}, placeholder, errors.New("inference gateway: the refreshed token is too short to redact reliably; refusing to use it")
-	}
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", a.Value)
-	}
-	creds := map[string]string{gatewayCredentialKey: a.Value}
-	if err := sandbox.UpdateProviderLiteralWithExpiry(updateCtx, h.name, creds, a.ExpiresAt); err != nil {
 		return time.Time{}, time.Time{}, placeholder, err
 	}
 	if !reseed {
@@ -233,16 +285,18 @@ func refreshGatewayProvider(ctx context.Context, h gatewayProviderHandle, placeh
 	defer cancelSettle()
 	seeded, err := reseedCredential(settleCtx, h.sandbox, "inference gateway", h.seed, placeholder, printer)
 	if err != nil {
-		return time.Time{}, time.Time{}, placeholder, fmt.Errorf("the provider holds the new token but the running agent was not re-seeded: %w", err)
+		return a.IssuedAt, a.ExpiresAt, placeholder, &gatewayReseedError{err: err}
 	}
 	return a.IssuedAt, a.ExpiresAt, seeded, nil
 }
 
 // runGatewayRefresh keeps the gateway token valid for the life of the
 // run, scheduling each refresh from the current token's own iat and exp
-// (gatewayRefreshDelay). When the retries are exhausted it stops and says
-// so: the provider's recorded expiry makes the proxy fail closed at that
-// instant, so the run fails visibly. Runs until ctx is cancelled.
+// (gatewayRefreshDelay). When the fetch retries are exhausted it stops and
+// says so: the provider's recorded expiry makes the proxy fail closed at
+// that instant, so the run fails visibly. A failed hand-off does not stop
+// it: the provider already holds the new token, and the next refresh
+// re-seeds again. Runs until ctx is cancelled.
 func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui.Printer) {
 	iat, exp := h.issuedAt, h.expiresAt
 	placeholder := ""
@@ -258,31 +312,22 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 			return
 		case <-timer.C:
 		}
-		var nextIat, nextExp time.Time
-		var err error
-		for attempt := 0; attempt <= gatewayRefreshRetries; attempt++ {
-			if attempt > 0 {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(gatewayRefreshBackoff):
-				}
-			}
-			nextIat, nextExp, placeholder, err = refreshGatewayProvider(ctx, h, placeholder, printer)
-			if err == nil {
-				break
-			}
-			if ctx.Err() != nil {
-				return
-			}
-			printer.StepWarn(fmt.Sprintf("Inference gateway token refresh attempt %d/%d failed: %v", attempt+1, gatewayRefreshRetries+1, err))
-		}
-		if err != nil {
-			printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s gave up; the running agent keeps the token it holds, which expires at %s", h.name, exp.UTC().Format(time.RFC3339)))
+		nextIat, nextExp, held, err := refreshGatewayProvider(ctx, h, placeholder, printer)
+		if ctx.Err() != nil {
 			return
 		}
+		var reseedErr *gatewayReseedError
+		switch {
+		case errors.As(err, &reseedErr):
+			printer.StepWarn(fmt.Sprintf("Inference gateway token refreshed for %s, but %v; the running agent keeps the token it holds, which expires at %s, and the next refresh re-seeds again", h.name, reseedErr.err, exp.UTC().Format(time.RFC3339)))
+		case err != nil:
+			printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s gave up: %v; the running agent keeps the token it holds, which expires at %s", h.name, err, exp.UTC().Format(time.RFC3339)))
+			return
+		default:
+			printer.StepDone(fmt.Sprintf("Inference gateway token refreshed for %s (next expiry in %s)", h.name, time.Until(nextExp).Round(time.Second)))
+		}
+		placeholder = held
 		iat, exp = nextIat, nextExp
-		printer.StepDone(fmt.Sprintf("Inference gateway token refreshed for %s (next expiry in %s)", h.name, time.Until(exp).Round(time.Second)))
 	}
 }
 

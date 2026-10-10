@@ -338,3 +338,48 @@ func TestRunGatewayRefresh_GivesUp(t *testing.T) {
 	stops[0]() // safe to call twice
 	assert.Equal(t, int32(gatewayRefreshRetries+1), calls.Load(), "gave up after the retries")
 }
+
+// A hand-off whose settle wait runs out is not retried with another fetch
+// (one settle per refresh, as gatewayRefreshWork budgets): the provider
+// keeps the new token, the agent's placeholder is unchanged, and the
+// refresher keeps going so the next refresh re-seeds again.
+func TestRefreshGatewayProvider_HandOffOnce(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	// The sandbox never hands out a new generation.
+	stubOpenshell(t, "case \"$*\" in *INFERENCE_GATEWAY_API_KEY:-*) printf '"+ph("v111_INFERENCE_GATEWAY_API_KEY")+"' ;; esac; exit 0")
+	oldPoll, oldSettle, oldMin := openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay
+	openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay = time.Millisecond, 20*time.Millisecond, time.Millisecond
+	t.Cleanup(func() {
+		openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay = oldPoll, oldSettle, oldMin
+	})
+	var calls atomic.Int32
+	iat := time.Now().Truncate(time.Second)
+	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
+		calls.Add(1)
+		return &actionsoidc.Assertion{Value: gatewayTestJWT, IssuedAt: iat, ExpiresAt: iat.Add(5 * time.Minute)}, nil
+	})
+	up := &atomic.Bool{}
+	up.Store(true)
+	h := gatewayProviderHandle{name: "inference-gateway-x", block: config.InferenceGatewayConfig{Audience: "aud"}, sandbox: "fs-x", seed: runtime.PiRuntime{}.GatewayCredentialSeed(), sandboxUp: up}
+
+	gotIat, gotExp, held, err := refreshGatewayProvider(context.Background(), h, "", ui.New(io.Discard))
+	var reseedErr *gatewayReseedError
+	require.ErrorAs(t, err, &reseedErr)
+	assert.Equal(t, int32(1), calls.Load(), "one fetch: the hand-off is not retried with a new token")
+	assert.Equal(t, iat, gotIat)
+	assert.Equal(t, iat.Add(5*time.Minute), gotExp)
+	assert.Equal(t, ph("v111_INFERENCE_GATEWAY_API_KEY"), held, "the agent still holds the previous generation")
+
+	// The refresher does not give up on a failed hand-off.
+	calls.Store(0)
+	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
+		calls.Add(1)
+		now := time.Now()
+		return &actionsoidc.Assertion{Value: gatewayTestJWT, IssuedAt: now, ExpiresAt: now.Add(time.Second)}, nil
+	})
+	h.issuedAt, h.expiresAt = time.Now(), time.Now().Add(time.Second)
+	stops := startGatewayRefreshers([]gatewayProviderHandle{h}, ui.New(io.Discard))
+	// More fetches than one refresh's retries: it went on to later refreshes.
+	require.Eventually(t, func() bool { return calls.Load() > int32(gatewayRefreshRetries+1) }, 10*time.Second, 5*time.Millisecond, "refreshed again after a failed hand-off")
+	stops[0]()
+}
