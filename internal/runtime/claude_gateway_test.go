@@ -130,7 +130,7 @@ func TestClaudeGatewaySettings(t *testing.T) {
 	keyEnv, ok := key["env"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "https://gw.example.com", keyEnv["ANTHROPIC_BASE_URL"])
-	assert.NotContains(t, keyEnv, "ANTHROPIC_AUTH_TOKEN", "the launch exports the placeholder; an empty pin would erase it")
+	assert.NotContains(t, keyEnv, "ANTHROPIC_AUTH_TOKEN", "before Bootstrap reads the placeholder there is nothing to pin, and an empty pin would erase it")
 	assert.Equal(t, "", keyEnv["ANTHROPIC_API_KEY"])
 	assert.Equal(t, "", keyEnv["CLAUDE_CODE_USE_VERTEX"])
 	assert.Equal(t, "", keyEnv["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"])
@@ -444,4 +444,48 @@ func TestClaudeRuntime_Run_GatewaySeedFailure(t *testing.T) {
 	code, err = run("fs-claude-gw-run-none")
 	assert.Equal(t, piCredentialSeedFailedExit, code)
 	assert.NoError(t, err, "without the route exit 91 is the agent's own")
+}
+
+// The api-key mode reads its placeholder at Bootstrap, pins it as
+// ANTHROPIC_AUTH_TOKEN in the --settings env, and the launch refuses a
+// sandbox that now hands out another one.
+func TestClaudeGatewayAPIKeyPlaceholder(t *testing.T) {
+	const sb = "fs-claude-gw-key-pin"
+	stubDir := t.TempDir()
+	out := filepath.Join(stubDir, "out")
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\ncat '"+out+"'\n"), 0o755))
+	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
+
+	require.NoError(t, claudeGatewayAPIKeyPlaceholder("fs-claude-gw-key-pin-unregistered"), "no registration, nothing to read")
+	registerClaudeGateway(t, sb+"-oidc", false)
+	require.NoError(t, claudeGatewayAPIKeyPlaceholder(sb+"-oidc"), "the oidc mode pins no placeholder")
+
+	registerClaudeGateway(t, sb, true)
+	for _, bad := range []string{"", "sk-real-key", gatewayTestPlaceholder + "x", gatewayTestPlaceholder + " evil"} {
+		require.NoError(t, os.WriteFile(out, []byte(bad+"\n"), 0o644))
+		assert.Error(t, claudeGatewayAPIKeyPlaceholder(sb), "%q is not a placeholder", bad)
+	}
+	require.NoError(t, os.WriteFile(out, []byte(gatewayTestPlaceholder+"\n"), 0o644))
+	require.NoError(t, claudeGatewayAPIKeyPlaceholder(sb))
+	env := ClaudeRuntime{}.claudeGatewaySettings(sb)["env"].(map[string]any)
+	assert.Equal(t, gatewayTestPlaceholder, env["ANTHROPIC_AUTH_TOKEN"], "a project env value cannot swap the runner's credential")
+
+	inline := inlineGatewaySettings(t, buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: "/r", Model: "gateway/m"}))
+	assert.Equal(t, gatewayTestPlaceholder, inline["env"].(map[string]any)["ANTHROPIC_AUTH_TOKEN"], "the inline settings carry the pin")
+
+	// Every launch re-checks (a validation loop re-runs it); an unchanged
+	// placeholder passes each time.
+	for i := 0; i < 2; i++ {
+		got, _, err := gatewayLaunch(t, sb, "")
+		require.NoError(t, err, got)
+		assert.Contains(t, got, "ANTHROPIC_AUTH_TOKEN="+gatewayTestPlaceholder+"\n")
+	}
+
+	cp := *claudeGatewayRunFor(sb)
+	cp.placeholder = piPlaceholderPrefix + "v6_" + piGatewayCredentialEnv
+	claudeGatewayRuns.Store(sb, &cp)
+	got, _, err := gatewayLaunch(t, sb, "")
+	require.Error(t, err)
+	assert.Contains(t, got, "placeholder changed since Bootstrap")
+	assert.NotContains(t, got, "REAL-CLAUDE")
 }

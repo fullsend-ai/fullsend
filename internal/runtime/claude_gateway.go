@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
 
 // Claude Code on the inference gateway route (ADR 0137, #8294). A
@@ -106,6 +110,12 @@ type claudeGatewayRun struct {
 	// Bootstrap: Claude Code reads it itself when no --model is passed, so
 	// a gateway/ prefix there must become an explicit --model.
 	agentModel string
+	// placeholder is the api-key mode's placeholder, read from the sandbox
+	// at Bootstrap (claudeGatewayAPIKeyPlaceholder) and pinned as
+	// ANTHROPIC_AUTH_TOKEN in the --settings env. The key is not rotated,
+	// so its generation does not change during the run; the launch checks
+	// that the sandbox still hands out this value.
+	placeholder string
 }
 
 var claudeGatewayRuns sync.Map // sandboxName -> *claudeGatewayRun
@@ -129,6 +139,34 @@ func setClaudeGatewayAgentModel(sandboxName, model string) {
 	cp := *gw
 	cp.agentModel = model
 	claudeGatewayRuns.Store(sandboxName, &cp)
+}
+
+// claudeGatewayPlaceholderPattern matches a gateway placeholder as the
+// sandbox hands it out: the prefix, a generation and the credential key, in
+// placeholder characters only (gatewayPlaceholderCheck checks the same).
+var claudeGatewayPlaceholderPattern = regexp.MustCompile(`^` + regexp.QuoteMeta(piPlaceholderPrefix) + `[A-Za-z0-9_]*` + piGatewayCredentialEnv + `$`)
+
+// claudeGatewayAPIKeyPlaceholder reads the api-key mode's placeholder from
+// the sandbox and records it on the registration, for the --settings pin.
+// It is a no-op without an api-key registration, and fails closed on a
+// value that is not a gateway placeholder.
+func claudeGatewayAPIKeyPlaceholder(sandboxName string) error {
+	gw := claudeGatewayRunFor(sandboxName)
+	if gw == nil || !gw.apiKey {
+		return nil
+	}
+	stdout, _, code, err := sandbox.Exec(sandboxName, "printenv "+piGatewayCredentialEnv, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("reading the inference gateway placeholder: %w", err)
+	}
+	p := strings.TrimSpace(stdout)
+	if code != 0 || !claudeGatewayPlaceholderPattern.MatchString(p) {
+		return fmt.Errorf("%s in the sandbox is not a gateway placeholder (inference gateway provider not attached, or a real key reached the sandbox); refusing to run the gateway route", piGatewayCredentialEnv)
+	}
+	cp := *gw
+	cp.placeholder = p
+	claudeGatewayRuns.Store(sandboxName, &cp)
+	return nil
 }
 
 // cutGatewayModel returns the id after a gateway/ provider prefix
@@ -204,8 +242,9 @@ func (r ClaudeRuntime) claudeGatewayHelper() string {
 //     it is "", which overrides a project helper (null would not), so no
 //     agent-chosen value is added as x-api-key.
 //
-// The api-key mode's ANTHROPIC_AUTH_TOKEN is not pinned: its value, the
-// placeholder, is only known inside the sandbox at launch.
+// On an api-key run env also pins ANTHROPIC_AUTH_TOKEN to the placeholder
+// read at Bootstrap (claudeGatewayAPIKeyPlaceholder). It is only the
+// placeholder, so the settings file exposes nothing.
 func (r ClaudeRuntime) claudeGatewaySettings(sandboxName string) map[string]any {
 	gw := claudeGatewayRunFor(sandboxName)
 	if gw == nil {
@@ -220,6 +259,9 @@ func (r ClaudeRuntime) claudeGatewaySettings(sandboxName string) map[string]any 
 	helper := ""
 	if gw.apiKey {
 		delete(env, "ANTHROPIC_AUTH_TOKEN")
+		if gw.placeholder != "" {
+			env["ANTHROPIC_AUTH_TOKEN"] = gw.placeholder
+		}
 	} else {
 		env["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"] = strconv.Itoa(claudeGatewayHelperTTLMs)
 		helper = r.claudeGatewayHelper()
@@ -248,9 +290,16 @@ func mergeClaudeSettings(base []byte, extra map[string]any) ([]byte, error) {
 // shell variable for the export after .env.
 func (r ClaudeRuntime) claudeGatewayPreEnv(gw *claudeGatewayRun) string {
 	if gw.apiKey {
-		return gatewayPlaceholderCheck() +
+		pre := gatewayPlaceholderCheck() +
 			` && ` + claudeGatewayPlaceholderVar + `="$` + piGatewayCredentialEnv + `"` +
 			` && readonly ` + claudeGatewayPlaceholderVar
+		if gw.placeholder != "" {
+			// The --settings pin holds the value read at Bootstrap; a
+			// sandbox now handing out another one would split the two.
+			pre += ` && { test "$` + claudeGatewayPlaceholderVar + `" = ` + shellQuote(gw.placeholder) +
+				` || { echo 'fullsend: the inference gateway placeholder changed since Bootstrap; refusing to run the gateway route' >&2; ` + piSeedExit + `; }; }`
+		}
+		return pre
 	}
 	return gatewayTokenSeed(r.ConfigDir())
 }

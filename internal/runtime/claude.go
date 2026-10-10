@@ -107,6 +107,11 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 	// On the gateway route a gateway/ model in the frontmatter must reach
 	// Claude Code as an explicit --model without the prefix.
 	setClaudeGatewayAgentModel(sandboxName, AgentDefinitionModel(agentPath))
+	// The api-key mode pins its placeholder in the --settings file, which
+	// the hooks install below writes.
+	if err := claudeGatewayAPIKeyPlaceholder(sandboxName); err != nil {
+		return err
+	}
 
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/agents %s/skills %s/plugins",
 		configDir, configDir, configDir)

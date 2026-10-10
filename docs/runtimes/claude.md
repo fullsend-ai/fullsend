@@ -85,10 +85,11 @@ repeats the route in the `--settings` file it passes, which ranks above both. Th
 `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and, in the `oidc` mode, the helper
 and its TTL. It also sets every other variable in the [cleared list](#environment-the-launch-clears)
 to `""`, which Claude Code treats as unset. In the `api-key` mode it sets `apiKeyHelper` to `""`,
-so a repository helper adds no `x-api-key` value. One exception: in the `api-key` mode
-`ANTHROPIC_AUTH_TOKEN` is not pinned, because its value, the placeholder, is known only inside the
-sandbox. A repository `env` value for it replaces the Bearer credential. The agent holds no other
-credential for the gateway, so this can break the run but not redirect it.
+so a repository helper adds no `x-api-key` value. In the `api-key` mode it also pins
+`ANTHROPIC_AUTH_TOKEN` to the placeholder. The runner reads that placeholder from the sandbox before
+the agent starts. It is only a placeholder, so the file exposes nothing, and the key does not
+rotate, so it holds for the whole run. The launch refuses to start if the sandbox hands out a
+different placeholder by then.
 
 **Credential per `auth` mode.** In both modes the credential is sent as `Authorization: Bearer`,
 the header [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) sets for the route and the
@@ -140,6 +141,9 @@ resolves the placeholder only on requests to that host and path.
   `haiku`) is resolved by Claude Code to its own Anthropic id and sent to the gateway as that id.
   Use `inherit`, or an id your gateway serves.
 - Model discovery and the interactive model picker are not used.
+- The sandbox log shows refused DNS lookups for `github.com` and `raw.githubusercontent.com` from
+  Claude Code, even with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. This is expected and
+  harmless: the run does not need them.
 - `fullsend inference gateway status` reports this route and its header.
 
 **Do not point Claude Code at an endpoint by hand.** Setting `ANTHROPIC_BASE_URL` through harness
