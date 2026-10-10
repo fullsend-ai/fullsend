@@ -53,8 +53,10 @@ var (
 // With the defaults that is 3*10 s + 2*5 s + 90 s = 130 s of work, plus
 // gatewayRefreshSafety = 145 s, inside the 150 s lead of a 300 s token.
 // It budgets the expected path: the seed and verify execs after the settle
-// wait each have their own timeout, which it does not count, and a
-// hand-off that misses the budget is retried on its own (runGatewayRefresh).
+// wait each have their own timeout, which it does not count (one hand-off
+// is bounded by gatewayHandOffTimeout). A settle wait that runs out fails
+// the route closed rather than retrying (runGatewayRefresh); a seed or
+// verify failure is retried on its own.
 func gatewayRefreshWork() time.Duration {
 	attempts := time.Duration(gatewayRefreshRetries + 1)
 	return attempts*gatewayFetchTimeout + time.Duration(gatewayRefreshRetries)*gatewayRefreshBackoff + openAIPlaceholderSettle

@@ -352,11 +352,39 @@ func rotateGatewayTokenOnce(ctx context.Context, h gatewayProviderHandle) (*acti
 	return a, nil
 }
 
+// gatewayHandOffTimeout bounds one hand-off by what reseedCredential can
+// do: the settle wait, one placeholder read that may start just before it
+// ends, then reseedSeedAttempts seed-and-verify pairs, plus one poll.
+func gatewayHandOffTimeout() time.Duration {
+	return openAIPlaceholderSettle + openAIPlaceholderExecTimeout + time.Duration(2*reseedSeedAttempts)*openAIPlaceholderExecTimeout + openAIPlaceholderPoll
+}
+
+// setProviderCredentialExpiryFn records a provider credential's expiry
+// (sandbox.SetProviderCredentialExpiry). Override in tests to record the
+// call without a gateway.
+var setProviderCredentialExpiryFn = sandbox.SetProviderCredentialExpiry
+
+// failGatewayClosed stops the route after a hand-off whose new generation
+// never reached the sandbox. OpenShell's placeholder carries no evidence
+// of which rotation a generation belongs to, so a later rotation could not
+// tell a late generation from its own and might hand the agent a token
+// whose expiry it does not know. Instead the provider's expiry is moved
+// back to the token the agent holds, so placeholder resolution fails
+// closed then, and the refresher stops.
+func failGatewayClosed(h gatewayProviderHandle, st *gatewayRefreshState, cause error, printer *ui.Printer) {
+	printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s stopped: %v. The route fails closed at the expiry of the token the running agent holds, %s", h.name, cause, st.heldExpiresAt.UTC().Format(time.RFC3339)))
+	if err := setProviderCredentialExpiryFn(context.Background(), h.name, gatewayCredentialKey, st.heldExpiresAt); err != nil {
+		printer.StepWarn(fmt.Sprintf("Inference gateway provider %s: moving its expiry back to %s failed: %v", h.name, st.heldExpiresAt.UTC().Format(time.RFC3339), err))
+		return
+	}
+	st.expiresAt = st.heldExpiresAt
+}
+
 // handOffGateway re-seeds the running agent's token file once the sandbox
 // hands out a placeholder other than previous, the one the agent holds.
 // It returns the placeholder the agent now holds.
 func handOffGateway(ctx context.Context, h gatewayProviderHandle, previous string, printer *ui.Printer) (string, error) {
-	settleCtx, cancel := context.WithTimeout(ctx, openAIPlaceholderSettle+3*openAIPlaceholderExecTimeout+openAIPlaceholderPoll)
+	settleCtx, cancel := context.WithTimeout(ctx, gatewayHandOffTimeout())
 	defer cancel()
 	return reseedCredential(settleCtx, h.sandbox, "inference gateway", h.seed, previous, printer)
 }
@@ -416,9 +444,15 @@ func waitGateway(ctx context.Context, d time.Duration) bool {
 //   - When the placeholder the agent holds cannot be read, nothing is
 //     rotated and the refresh is retried shortly, until the provider's
 //     token expires.
-//   - When the hand-off fails, the provider already holds the new token;
-//     only the hand-off is retried, every gatewayRefreshBackoff, until the
-//     provider's next refresh is due (which hands off again itself).
+//   - When the sandbox does not hand out the new generation within the
+//     settle wait, the route fails closed (failGatewayClosed): the
+//     provider's expiry moves back to the token the agent holds and the
+//     refresher stops. OpenShell gives no per-rotation evidence, so a late
+//     generation could not be told apart from a later rotation's own.
+//   - When the hand-off fails otherwise (a seed or verify exec), the
+//     provider already holds the new token; only the hand-off is retried,
+//     every gatewayRefreshBackoff, until the provider's next refresh is
+//     due (which hands off again itself).
 func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui.Printer) {
 	if h.apiKey {
 		// The api-key mode rotates nothing and has no re-seed loop.
@@ -442,6 +476,11 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 			cancel()
 			if err != nil {
 				if ctx.Err() != nil {
+					return
+				}
+				var settleErr *placeholderSettleTimeoutError
+				if errors.As(err, &settleErr) {
+					failGatewayClosed(h, st, err, printer)
 					return
 				}
 				if !warnedHeldExpiry.Equal(st.heldExpiresAt) && !time.Now().Before(st.heldExpiresAt) {
@@ -495,6 +534,11 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 		case errors.As(err, &reseedErr):
 			st.issuedAt, st.expiresAt, st.placeholder, st.handOffPending = iat, exp, held, true
 			if ctx.Err() != nil {
+				return
+			}
+			var settleErr *placeholderSettleTimeoutError
+			if errors.As(err, &settleErr) {
+				failGatewayClosed(h, st, reseedErr.err, printer)
 				return
 			}
 			printer.StepWarn(fmt.Sprintf("Inference gateway token refreshed for %s, but %v; retrying the hand-off, and the running agent's token expires at %s", h.name, reseedErr.err, st.heldExpiresAt.UTC().Format(time.RFC3339)))

@@ -299,6 +299,13 @@ independently through the layered config system (an overlay can override
   `audience` and puts it behind a run-scoped OpenShell provider with a
   per-host egress profile. It seeds the provider's placeholder into a
   runner-owned token file, and re-seeds it before each token's own `exp`.
+  OpenShell's placeholders do not say which rotation they belong to. So if
+  the sandbox has not received a refreshed token's placeholder within the
+  90-second settle wait, the runner does not rotate again. It moves the
+  provider's expiry back to the token the agent holds and stops
+  refreshing, and the run fails closed when that token expires. The
+  re-seed runs only after the sandbox hands out the new placeholder, and
+  it checks the file afterwards.
   This happens in addition to every other provider: `openai/` and Vertex
   models in the same run keep their own routes. If the gateway cannot be
   reached, or refuses the token, the run fails and does not fall back to

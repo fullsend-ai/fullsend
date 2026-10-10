@@ -225,6 +225,23 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 	}, previous, printer)
 }
 
+// reseedSeedAttempts is how many times reseedCredential seeds and verifies
+// the credential file once the sandbox hands out the new generation: one
+// seed-and-grep pair per attempt.
+const reseedSeedAttempts = 2
+
+// placeholderSettleTimeoutError is reseedCredential's error when the
+// sandbox still hands out the previous placeholder after the settle wait:
+// the new generation never reached the sandbox, so nothing was seeded.
+type placeholderSettleTimeoutError struct {
+	label  string
+	settle time.Duration
+}
+
+func (e *placeholderSettleTimeoutError) Error() string {
+	return fmt.Sprintf("the sandbox still hands out the previous %s placeholder after %s; the agent keeps the generation it holds", e.label, e.settle)
+}
+
 // reseedCredential is reseedOpenAIAuth for any credential route: it waits
 // for the sandbox to hand out a placeholder other than previous under
 // seed.PlaceholderEnv, re-runs seed.Seed and verifies seed.File names the
@@ -245,7 +262,7 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 			break
 		}
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("the sandbox still hands out the previous %s placeholder after %s; the agent keeps the generation it holds", label, openAIPlaceholderSettle)
+			return "", &placeholderSettleTimeoutError{label: label, settle: openAIPlaceholderSettle}
 		}
 		select {
 		case <-ctx.Done():
@@ -270,7 +287,7 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 	// generation the agent never held.
 	doSeed := func() error {
 		var lastErr error
-		for attempt := 0; attempt < 2; attempt++ {
+		for attempt := 0; attempt < reseedSeedAttempts; attempt++ {
 			var stderr string
 			var code int
 			err := withSandboxLock(ctx, nil, func() error {
