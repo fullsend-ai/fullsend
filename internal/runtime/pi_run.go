@@ -352,8 +352,8 @@ const piConfigTamperedExit = 98
 
 // piCredentialSeedFailedExit is the exit code of a failed credential seed
 // (PiOpenAIAuthSeed, PiGatewayTokenSeed): the sandbox's placeholder is
-// missing or malformed, or the credential file could not be written or
-// was replaced by another writer. Distinct from an agent failure so the
+// missing or malformed, or the credential file could not be written.
+// Distinct from an agent failure so the
 // runner can name the cause.
 const piCredentialSeedFailedExit = 91
 
@@ -785,9 +785,10 @@ const piOpenAIAuthShape = `[{]"openai":[{]"type":"api_key","key":"` + piPlacehol
 // The iteration-start seed and a refresher's re-seed can overlap (only
 // the latter holds the sandbox lock), so, as PiGatewayTokenSeed does, each
 // writer uses its own temp file, named by its shell's pid, and removes it
-// if the write fails. After the move the writer checks that auth.json
-// still holds its own placeholder, so a writer whose value another writer
-// replaced fails rather than reporting a seed that did not stick.
+// if the write fails. Whichever move lands last wins; the refresher's
+// re-seed verifies the file afterwards and re-seeds once if an older
+// writer replaced its value (reseedCredential), so a seed whose value was
+// replaced is not a failure here.
 func PiOpenAIAuthSeed(configDir string) string {
 	dir := shellQuote(configDir)
 	final := shellQuote(configDir + "/" + piOpenAIAuthFile)
@@ -797,9 +798,7 @@ func PiOpenAIAuthSeed(configDir string) string {
 		` && { command -p mkdir -p ` + dir +
 		` && printf '{"openai":{"type":"api_key","key":"%s"}}\n' "$OPENAI_API_KEY" > ` + tmp +
 		` && command -p mv -f ` + tmp + ` ` + final +
-		` || { command -p rm -f ` + tmp + `; echo 'fullsend: writing pi auth.json failed' >&2; ` + piSeedExit + `; }; }` +
-		` && { command -p grep -qF "\"key\":\"$OPENAI_API_KEY\"" ` + final +
-		` || { echo 'fullsend: pi auth.json was replaced by another writer after this seed; refusing to report it seeded' >&2; ` + piSeedExit + `; }; }`
+		` || { command -p rm -f ` + tmp + `; echo 'fullsend: writing pi auth.json failed' >&2; ` + piSeedExit + `; }; }`
 }
 
 // OpenAIAuthSeed implements OpenAICredentialSeeder: the fragment that seeds
