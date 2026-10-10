@@ -318,7 +318,7 @@ Service URL: https://gateway.example.com
 Check that the gateway, not Cloud Run, answers a non-Google bearer:
 
 ```bash
-curl -s -i https://gateway.example.com/v1/models -H 'authorization: Bearer not-a-google-token'
+curl -s -i https://gateway.example.com/v1/models -H 'authorization: Bearer not-a-google-token'  # gitleaks:allow
 ```
 
 ```text

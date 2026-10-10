@@ -175,14 +175,20 @@ For `api-key`, store the key the operator gave you as a repository secret:
 fullsend github set example-org/example-repo FULLSEND_INFERENCE_GATEWAY_API_KEY '<gateway-key>'
 ```
 
+```text
+  • Setting repo secret FULLSEND_INFERENCE_GATEWAY_API_KEY on example-org/example-repo
+  ✓ Set repo secret FULLSEND_INFERENCE_GATEWAY_API_KEY on example-org/example-repo
+```
+
 Or, with the GitHub CLI, which prompts for the value so it stays out of your shell history:
 
 ```bash
 gh secret set FULLSEND_INFERENCE_GATEWAY_API_KEY -R example-org/example-repo
 ```
 
-> **Not executed here:** this walkthrough had no repository it could write secrets to, so the
-> output of these commands is not shown. A maintainer should replace this note with a real run.
+```text
+? Paste your secret:
+```
 
 ### Write the block
 
@@ -196,13 +202,35 @@ fullsend github setup example-org/example-repo \
   --inference-gateway-model gemini-2.5-flash=openai-completions
 ```
 
+```text
+⚡ fullsend <version>
+  Autonomous agentic development for Git-hosted organizations
+
+→ Setting up per-repo fullsend for example-org/example-repo
+
+    Updating existing .fullsend/config.yaml: inference.gateway (other keys kept; comments are not preserved)
+  • Checking token permissions
+  ✓ Token permissions verified
+
+  • Creating scaffold PR for example-org/example-repo (target: main)
+    User example-user has write access — pushing directly to example-org/example-repo
+  ✓ Created PR #1: https://github.com/example-org/example-repo/pull/1
+    Merge the PR to apply these changes
+  • Configuring repository variables
+  ✓ Set 5 repository variables
+  • Configuring repository secrets
+  ✓ Set 0 repository secrets
+
+  ✓ Per-repo setup complete for example-org/example-repo
+```
+
 Use `--inference-gateway-models-file <file>` instead of the `--inference-gateway-model` flags to
 commit a pi-inference-gateway config file. Setup changes only the keys you pass and opens a pull
-request with the change. The resulting `config.yaml` diff, on a repository already set up with
-`--runtime pi`:
+request with the change. The pull request's `config.yaml` diff, on a repository already set up
+with `--runtime pi`:
 
 ```diff
-@@ -20,3 +20,12 @@
+@@ -20,3 +20,12 @@ create_issues:
          repos:
              - example-org/example-repo
              - fullsend-ai/fullsend
@@ -228,8 +256,10 @@ fullsend github setup example-org/example-repo \
   --inference-gateway-model gemini-2.5-flash=openai-completions
 ```
 
+The output is the same as above. The pull request's diff:
+
 ```diff
-@@ -20,3 +20,12 @@
+@@ -20,3 +20,12 @@ create_issues:
          repos:
              - example-org/example-repo
              - fullsend-ai/fullsend
@@ -243,10 +273,6 @@ fullsend github setup example-org/example-repo \
 +            gemini-2.5-flash:
 +                api: openai-completions
 ```
-
-> **Not executed here against a live repository:** the walkthrough could not open a pull
-> request, so setup's terminal output is not shown. Both diffs are the `config.yaml` that setup
-> committed for these flags when run against fullsend's in-memory test forge.
 
 Merge the pull request to apply the change.
 
