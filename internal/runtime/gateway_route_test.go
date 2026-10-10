@@ -134,6 +134,28 @@ func TestNeedsGatewayRoute(t *testing.T) {
 	assert.False(t, NeedsGatewayRoute("claude", "gateway/m1", "", nil), "only pi carries the route")
 }
 
+// A Vertex parent with gateway children: the children alone put the run
+// on the gateway route, so each source must be found, aliases resolved and
+// tombstones ignored, as for OpenAIChildren.
+func TestGatewayChildren(t *testing.T) {
+	t.Setenv(piProviderEnv, "")
+	agent := filepath.Join(t.TempDir(), "code.md")
+	require.NoError(t, os.WriteFile(agent, []byte("---\nname: code\nmodel: opus\n---\nYou code.\n"), 0o644))
+	skills := t.TempDir()
+	writePersonaFile(t, skills, "checker", "---\nname: checker\nmodel: gateway/m1\n---\nCheck.\n")
+	writePersonaFile(t, skills, "writer", "---\nname: writer\nmodel: sonnet\n---\nWrite.\n")
+
+	got := GatewayChildren("pi", agent, map[string]*string{"writer": strp("fast"), "default": nil}, []string{skills}, "code", map[string]string{"fast": "gateway/m2"})
+	assert.Equal(t, []PiChild{
+		{Source: `persona "checker" frontmatter model`, Spec: "gateway/m1"},
+		{Source: "subagents.writer", Spec: "gateway/m2", Configured: true},
+	}, got)
+	assert.False(t, NeedsGatewayRoute("pi", "", AgentDefinitionModel(agent), nil), "the parent itself stays off the route")
+
+	assert.Empty(t, GatewayChildren("pi", agent, map[string]*string{"checker": strp("opus")}, []string{skills}, "code", nil),
+		"a config override away from the gateway beats its frontmatter")
+}
+
 func TestGatewayChildren_NotPi(t *testing.T) {
 	assert.Empty(t, GatewayChildren("claude", "/nonexistent", nil, nil, "a", nil))
 	assert.Empty(t, GatewayChildren("pi", "/nonexistent", nil, nil, "a", nil))
