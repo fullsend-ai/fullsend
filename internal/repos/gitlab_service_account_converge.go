@@ -39,18 +39,23 @@ func (c ServiceAccountTokenClient) AppendGitLabServiceAccountStatus(ctx context.
 	if err != nil {
 		return serviceAccountStatusUnverified(status, "gitlab-service-accounts", "Service-account ownership could not be verified")
 	}
+	// Exclusions are project-wide: freeze the recorded exclusions joined with the
+	// supplied owners the resolver attributes now, so status ownership matches
+	// what convergence and cleanup treat as administrator-owned and the
+	// inventory below uses the same frozen set.
+	c, frozen, exclErr := c.withProjectExclusions(ctx, owner, repo, state)
+	if exclErr != nil {
+		return serviceAccountStatusUnverified(status, "gitlab-service-accounts", safeAPIError("Supplied-account ownership could not be verified", exclErr).Error())
+	}
 	owned := map[int]bool{}
 	for _, rs := range state.Roles {
 		if rs.ManagedUserID > 0 {
 			owned[rs.ManagedUserID] = true
 		}
 	}
-	for _, rs := range state.Roles {
-		for _, id := range rs.ExcludedUserIDs {
+	for _, id := range frozen {
+		if _, ok := owned[id]; ok {
 			owned[id] = false
-		}
-		if rs.SuppliedUserID > 0 {
-			owned[rs.SuppliedUserID] = false
 		}
 	}
 	if c.SA == nil {
@@ -263,6 +268,13 @@ func convergeInstalledServiceAccount(ctx context.Context, cfg RoleProvisionConfi
 					} else {
 						err = fmt.Errorf("effective access is not Developer")
 					}
+				} else if err != nil && cfg.DryRun && errors.Is(err, forge.ErrNotFound) {
+					// A live run adds the missing direct membership via
+					// ensureMemberLevel; plan it rather than failing, and keep
+					// reporting later provisioning/rotation actions. Other lookup
+					// failures still fail closed.
+					result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: managed service-account would be added to the project as Developer (no current membership)", rec.Name))
+					err = nil
 				}
 			}
 			if err != nil {

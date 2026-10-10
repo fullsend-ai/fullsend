@@ -269,7 +269,12 @@ func preflightGitLabRoleCleanup(ctx context.Context, client forge.Client, owner,
 			}
 		}
 	}
-	if _, ok := tokens.(GitLabManagedAccountCleaner); !ok {
+	// A concrete service-account client implements the cleaner interface even
+	// when it has no service-account backend, so its cleanup would still fail
+	// only after the destructive teardown steps.
+	saClient, isSA := tokens.(ServiceAccountTokenClient)
+	_, isCleaner := tokens.(GitLabManagedAccountCleaner)
+	if !isCleaner || (isSA && saClient.SA == nil) {
 		owned := map[int]bool{}
 		for _, rs := range state.Roles {
 			if rs.ManagedUserID > 0 {
@@ -281,7 +286,7 @@ func preflightGitLabRoleCleanup(ctx context.Context, client forge.Client, owner,
 			delete(owned, id)
 		}
 		if len(owned) > 0 {
-			return nil, fmt.Errorf("managed-account cleanup capability unavailable; account cleanup skipped and ownership retained for retry")
+			return nil, fmt.Errorf("managed-account cleanup capability unavailable; account cleanup skipped and ownership retained for retry: %w", forge.ErrNotSupported)
 		}
 	}
 	sort.Ints(excluded)
@@ -352,7 +357,9 @@ func resolveSuppliedOwnersViaCapability(ctx context.Context, tokens ProjectAcces
 	}
 	ids, err := resolver.SuppliedOwnerIDs(ctx, owner, repo)
 	if err != nil {
-		return nil, err
+		// A generic resolver's error may echo a supplied credential; only the
+		// ownership sentinel is exposed.
+		return nil, fmt.Errorf("%w: %s", ErrSuppliedCredentialUnresolved, safeAPIError("resolving the owner of the supplied role credentials", err))
 	}
 	if ids = positiveIDs(ids); len(ids) == 0 {
 		return nil, ErrSuppliedCredentialUnresolved
