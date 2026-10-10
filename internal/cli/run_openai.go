@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -117,6 +118,52 @@ type openAIProviderHandle struct {
 	// (runtime.OpenAICredentialSeeder.OpenAIAuthFile), checked after a
 	// re-seed.
 	authFile string
+	// unrecorded remembers generations the refresher saw in the sandbox
+	// whose hand-off failed before the seed recorded them; the next re-seed
+	// retires them too. Shared by every copy of the handle; nil in a handle
+	// that carries none.
+	unrecorded *seedGenerations
+}
+
+// seedGenerations is a set of placeholders a refresher saw in the sandbox
+// but could not hand off. A later rotation retires them, so a seed holding
+// one must still be recognized as stale (see runtime.SeedReplacing). Only one
+// refresher per handle runs at a time, but the lock keeps a restart's
+// stop-and-wait ordering from mattering. The methods accept a nil receiver.
+type seedGenerations struct {
+	mu   sync.Mutex
+	list []string
+}
+
+func (g *seedGenerations) snapshot() []string {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.list...)
+}
+
+func (g *seedGenerations) has(p string) bool {
+	return slices.Contains(g.snapshot(), p)
+}
+
+func (g *seedGenerations) add(p string) {
+	if g == nil || p == "" || g.has(p) {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.list = append(g.list, p)
+}
+
+func (g *seedGenerations) clear() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.list = nil
 }
 
 // sandboxReady reports whether a refresh has a running sandbox to re-seed.
@@ -222,7 +269,7 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 		PlaceholderEnv: openAIDefaultCredentialKey,
 		Seed:           h.authSeed,
 		File:           h.authFile,
-	}, previous, printer)
+	}, previous, h.unrecorded, nil, printer)
 }
 
 // reseedSeedAttempts is how many times reseedCredential seeds and verifies
@@ -276,7 +323,18 @@ func (e *generationNotObservedError) Unwrap() error { return e.cause }
 // for the sandbox to hand out a placeholder other than previous under
 // seed.PlaceholderEnv, re-runs seed.Seed and verifies seed.File names the
 // new placeholder. label names the route in errors and the log line.
-func reseedCredential(ctx context.Context, sandboxName, label string, seed runtime.CredentialSeed, previous string, printer *ui.Printer) (string, error) {
+//
+// unrecorded (nil for a route that retries its hand-off without rotating
+// again) holds generations an earlier failed hand-off saw in the sandbox but
+// never recorded. The re-seed retires them along with previous, and the
+// settle wait does not take one for the new generation. A generation seen
+// here whose seed then fails is added to it; a successful re-seed empties it.
+//
+// superseded lists further older generations the re-seed retires, for a
+// route whose pending hand-off was passed over by a later rotation (the
+// gateway route). Unlike unrecorded it is not touched here: the route that
+// owns it decides when it is spent, and the settle wait does not exclude it.
+func reseedCredential(ctx context.Context, sandboxName, label string, seed runtime.CredentialSeed, previous string, unrecorded *seedGenerations, superseded []string, printer *ui.Printer) (string, error) {
 	if previous == "" {
 		return "", fmt.Errorf("re-seeding the %s credential file: the placeholder the agent currently holds is unknown", label)
 	}
@@ -287,7 +345,7 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 		if err != nil {
 			return "", &generationNotObservedError{label: label, cause: err}
 		}
-		if p != "" && p != previous {
+		if p != "" && p != previous && !unrecorded.has(p) {
 			current = p
 			break
 		}
@@ -300,10 +358,15 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 		case <-time.After(openAIPlaceholderPoll):
 		}
 	}
-	// Seed, then confirm the file names the new generation: an iteration
-	// starting at this very moment seeds too (from its own exec
-	// environment, which may still carry the previous placeholder), and
-	// whichever write lands last wins. One re-seed closes that window.
+	// Seed, then confirm the file names the new generation. An iteration
+	// starting at this very moment seeds too, from its own exec
+	// environment, which may still carry the previous placeholder. The
+	// seed fragment keeps that older writer from replacing a newer
+	// generation (an in-sandbox lock and generation history, see the
+	// runtime's orderedSeedWrite). The re-seed also names previous as the
+	// generation it replaces, so a writer holding it that has not yet
+	// recorded itself is still refused. The verification and the one retry
+	// remain as a check that the write landed.
 	// Only the write is taken under the sandbox lock, and one exec at a
 	// time: the seed writes atomically (mv -f) but the between-iteration
 	// sweep must not kill it mid-run, whereas the grep below only reads and
@@ -315,6 +378,12 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 	// refresher records the new placeholder while the file may still name
 	// the old one — and the next settle wait would then compare against a
 	// generation the agent never held.
+	retired := append([]string{previous}, unrecorded.snapshot()...)
+	for _, p := range superseded {
+		if !slices.Contains(retired, p) {
+			retired = append(retired, p)
+		}
+	}
 	doSeed := func() error {
 		var lastErr error
 		for attempt := 0; attempt < reseedSeedAttempts; attempt++ {
@@ -322,7 +391,7 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 			var code int
 			err := withSandboxLock(ctx, nil, func() error {
 				var execErr error
-				_, stderr, code, execErr = sandbox.ExecContext(ctx, sandboxName, seed.Seed, openAIPlaceholderExecTimeout)
+				_, stderr, code, execErr = sandbox.ExecContext(ctx, sandboxName, runtime.SeedReplacing(seed.Seed, retired...), openAIPlaceholderExecTimeout)
 				return execErr
 			})
 			if err != nil {
@@ -347,8 +416,12 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 		return lastErr
 	}
 	if err := doSeed(); err != nil {
+		// The caller keeps previous and rotates again; the generation just
+		// seen would then be missing from the next re-seed's record.
+		unrecorded.add(current)
 		return "", err
 	}
+	unrecorded.clear()
 	printer.StepInfo("the runtime's " + label + " credential file was re-seeded with the refreshed placeholder")
 	return current, nil
 }
@@ -867,12 +940,13 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 	printer.StepDone(fmt.Sprintf("Provider ready: %s (%s, expires in %s, %.1fs)", name, cred.source, time.Until(cred.expiresAt).Round(time.Minute), time.Since(start).Seconds()))
 	authSeed, authFile := openAICredentialFiles(backend)
 	return openAIProviderHandle{
-		sandbox:   sandboxName,
-		authSeed:  authSeed,
-		ids:       ids,
-		sandboxUp: &atomic.Bool{},
-		authFile:  authFile,
-		name:      name, keys: keys, source: cred.source, expiresAt: cred.expiresAt}, nil
+		sandbox:    sandboxName,
+		authSeed:   authSeed,
+		ids:        ids,
+		sandboxUp:  &atomic.Bool{},
+		authFile:   authFile,
+		unrecorded: &seedGenerations{},
+		name:       name, keys: keys, source: cred.source, expiresAt: cred.expiresAt}, nil
 }
 
 // openAICredentialFiles returns the seed fragment and credential file for

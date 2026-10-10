@@ -1459,6 +1459,51 @@ func TestReseedOpenAIAuth_UnverifiedSeedIsAnError(t *testing.T) {
 	assert.Equal(t, "seeded\nseeded\n", string(data), "both attempts ran before giving up")
 }
 
+// A generation the refresher saw but could not seed must not drop out of
+// the record (fullsend#8311). A is held, B shows up and its seed fails, and
+// the retry rotates on to C: the seed that hands C over retires both A and
+// B, and the settle wait does not mistake the lingering B for C.
+func TestReseedOpenAIAuth_FailedHandOffGenerationIsRetiredByTheNextOne(t *testing.T) {
+	binDir := t.TempDir()
+	log := filepath.Join(binDir, "log")
+	counter := filepath.Join(binDir, "count")
+	failFlag := filepath.Join(binDir, "fail")
+	phase2 := filepath.Join(binDir, "phase2")
+	require.NoError(t, os.WriteFile(failFlag, nil, 0o644))
+	// Phase 1 only ever hands out B. In phase 2 the sandbox answers B once
+	// more before C appears.
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"  *'printf %s'*) if [ -e " + shellQuoteForTest(phase2) + " ]; then n=$(cat " + shellQuoteForTest(counter) + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + shellQuoteForTest(counter) + "; if [ $n -le 1 ]; then printf '" + ph("v222_OPENAI_API_KEY") + "'; else printf '" + ph("v333_OPENAI_API_KEY") + "'; fi; else printf '" + ph("v222_OPENAI_API_KEY") + "'; fi; exit 0 ;;\n" +
+		"  *'seed auth.json'*) echo \"$*\" >> " + shellQuoteForTest(log) + "; if [ -e " + shellQuoteForTest(failFlag) + " ]; then echo boom >&2; exit 1; fi; exit 0 ;;\n" +
+		"esac\nexit 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := openAIPlaceholderPoll
+	openAIPlaceholderPoll = 5 * time.Millisecond
+	t.Cleanup(func() { openAIPlaceholderPoll = old })
+
+	h := openAIProviderHandle{sandbox: "fs-x", authSeed: "seed auth.json", unrecorded: &seedGenerations{}}
+	a, b, c := ph("v111_OPENAI_API_KEY"), ph("v222_OPENAI_API_KEY"), ph("v333_OPENAI_API_KEY")
+
+	got, err := reseedOpenAIAuth(context.Background(), h, a, ui.New(io.Discard))
+	require.Error(t, err)
+	assert.Empty(t, got)
+	assert.Equal(t, []string{b}, h.unrecorded.snapshot(), "the generation that was seen but not seeded is kept")
+
+	require.NoError(t, os.Remove(failFlag))
+	require.NoError(t, os.WriteFile(phase2, nil, 0o644))
+	got, err = reseedOpenAIAuth(context.Background(), h, a, ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.Equal(t, c, got, "the lingering B is not taken for the new generation")
+	assert.Empty(t, h.unrecorded.snapshot(), "a landed re-seed empties the set")
+
+	data, err := os.ReadFile(log)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[1], "FULLSEND_SEED_PREVIOUS='"+a+" "+b+"'", "the re-seed retires A and B")
+}
+
 // The same failure seen through refreshOpenAIProvider: the provider is
 // updated, but the returned placeholder stays the one the agent holds, so
 // the refresh loop retries against the right baseline.

@@ -43,6 +43,7 @@ func TestPiGatewayCredentialSeed_IsItsOwnRoute(t *testing.T) {
 // placeholder is written to the token file as-is; anything else fails
 // closed and leaves no file.
 func TestPiGatewayTokenSeed_Shell(t *testing.T) {
+	requireSeedLock(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -76,6 +77,7 @@ func TestPiGatewayTokenSeed_Shell(t *testing.T) {
 // Overlapping seeds (iteration start and a refresher's re-seed) each
 // write their own temp file, so neither fails and none is left behind.
 func TestPiGatewayTokenSeed_Concurrent(t *testing.T) {
+	requireSeedLock(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -95,10 +97,9 @@ func TestPiGatewayTokenSeed_Concurrent(t *testing.T) {
 	for i := 0; i < 16; i++ {
 		require.NoError(t, <-errs)
 	}
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1, "only the token file: no temp file is left behind")
-	assert.Equal(t, piInferenceGatewayTokenFile, entries[0].Name())
+	// Only the token file and the seed's lock and history: no temp file
+	// is left behind.
+	assertOnlySeedFiles(t, dir, piInferenceGatewayTokenFile)
 
 }
 
@@ -107,6 +108,7 @@ func TestPiGatewayTokenSeed_Concurrent(t *testing.T) {
 // a writer that fails does so only because another writer replaced its
 // value after its move.
 func TestPiOpenAIAuthSeed_Concurrent(t *testing.T) {
+	requireSeedLock(t)
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available")
 	}
@@ -129,10 +131,9 @@ func TestPiOpenAIAuthSeed_Concurrent(t *testing.T) {
 	for range 16 {
 		require.NoError(t, <-errs)
 	}
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1, "only auth.json: no temp file is left behind")
-	assert.Equal(t, piOpenAIAuthFile, entries[0].Name())
+	// Only auth.json and the seed's lock and history: no temp file is
+	// left behind.
+	assertOnlySeedFiles(t, dir, piOpenAIAuthFile)
 	data, err := os.ReadFile(filepath.Join(dir, piOpenAIAuthFile))
 	require.NoError(t, err)
 	assert.Regexp(t, `^\{"openai":\{"type":"api_key","key":"`+piPlaceholderPrefix+`v[0-9]+_OPENAI_API_KEY"\}\}\n$`, string(data))
