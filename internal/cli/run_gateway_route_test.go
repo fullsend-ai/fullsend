@@ -383,3 +383,10 @@ func TestRefreshGatewayProvider_HandOffOnce(t *testing.T) {
 	require.Eventually(t, func() bool { return calls.Load() > int32(gatewayRefreshRetries+1) }, 10*time.Second, 5*time.Millisecond, "refreshed again after a failed hand-off")
 	stops[0]()
 }
+
+// The cleanup keys the runner passes for each route must be the env keys
+// the runtime seeds from, or provider cleanup and re-seed drift apart.
+func TestRouteCredentialKeysMatchRuntimeSeeds(t *testing.T) {
+	assert.Equal(t, gatewayCredentialKey, runtime.PiRuntime{}.GatewayCredentialSeed().PlaceholderEnv)
+	assert.Equal(t, openAIDefaultCredentialKey, runtime.OpenAIRouteSeed(runtime.PiRuntime{}).PlaceholderEnv)
+}
