@@ -67,7 +67,7 @@ The run prints which source it used. For local and GitLab Vertex runs, point
 `GOOGLE_APPLICATION_CREDENTIALS` at a non-empty credential file when the harness mounts it.
 An OpenAI run uses the [OpenAI credential path](#openai-credentials-on-pi-and-codex), and a pi or
 codex run whose own model is `gateway/<id>` uses the
-[inference gateway credential path](#inference-gateway-credentials-on-pi); neither runs the Vertex
+[inference gateway credential path](#inference-gateway-credentials-on-pi-and-codex); neither runs the Vertex
 setup above. When both GCP
 inputs are set, an OpenAI run on GitHub Actions also prepares Google WIF credentials for Vertex
 sub-agents; a failure there is a warning. The `dummy` and `dummy-playback` runtimes follow the
@@ -343,7 +343,7 @@ is already rejected). Give repository-specific providers and profiles their own 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
 
-## Inference gateway credentials on pi
+## Inference gateway credentials on pi and codex
 
 A pi run that resolves a `gateway/<id>` model, for the parent or a configured sub-agent, uses the
 `inference.gateway` block of `.fullsend/config.yaml`

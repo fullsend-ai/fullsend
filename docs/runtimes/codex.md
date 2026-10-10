@@ -1,8 +1,10 @@
 # Codex
 
-[Codex](https://github.com/openai/codex) is fullsend's third agent runtime. It runs **OpenAI models
-only**, through the same sandbox, egress policy and secretless credential path pi uses for GPT — the
-runner holds the credential, the sandbox never sees it. Turn it on for one repo, for one agent, or
+[Codex](https://github.com/openai/codex) is fullsend's third agent runtime. It runs **OpenAI models**,
+through the same sandbox, egress policy and secretless credential path pi uses for GPT — the runner
+holds the credential, the sandbox never sees it. Through an
+[inference gateway](#models-through-an-inference-gateway-experimental) it also runs any
+Responses-capable model (`gateway/<model>`). Turn it on for one repo, for one agent, or
 as a `repos.yaml` default.
 
 ```bash
@@ -317,9 +319,9 @@ admits `api.openai.com:443` without protocol inspection, so the gateway refuses 
 credential over it. Add `policy: policies/base.yaml` to the harness.
 
 **`codex takes OpenAI model ids only ...`.** The resolved model is a Claude alias (`opus` and
-friends), carries another provider's prefix, or is missing entirely. The message names both fixes:
-`FULLSEND_CODEX_MODEL=openai/<id>` for the repo, or `model: openai/<id>` on the agent's `agents:`
-entry or the harness. See [Models](#models).
+friends), carries another provider's prefix, or is missing entirely. The message names the fixes:
+`FULLSEND_CODEX_MODEL=openai/<id>` for the repo, `model: openai/<id>` on the agent's `agents:`
+entry or the harness, or `gateway/<model>` with an `inference.gateway` block. See [Models](#models).
 
 **A guard refused the run.** The runner-written files under `CODEX_HOME` are checked before every
 launch, and a mismatch stops the run rather than continuing unprotected. Each message names what

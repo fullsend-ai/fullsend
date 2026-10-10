@@ -111,6 +111,7 @@ var (
 	_ Runtime           = CodexRuntime{}
 	_ TranscriptHandler = CodexRuntime{}
 	_ DebugLogNamer     = CodexRuntime{}
+	_ ProviderResolver  = CodexRuntime{}
 
 	_ OpenAICredentialSeeder = CodexRuntime{}
 )

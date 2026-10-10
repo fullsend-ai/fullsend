@@ -96,7 +96,7 @@ For GitLab repositories, skip this provision output and follow
 [Configuring GitLab](configuring-gitlab.md) instead — GitLab inference credentials
 are written by `repos install --vertex-project`, not by this command.
 
-To run agents on the pi runtime through an OpenAI/Anthropic-compatible inference gateway instead,
+To run agents on the pi or codex runtime through an inference gateway instead (codex needs one that serves the Responses API),
 see [Using an inference gateway (experimental)](../user/running-agents-locally.md#using-an-inference-gateway-experimental).
 That page covers local runs. For GitHub Actions runs, set the `inference.gateway` block with
 `fullsend github setup --inference-gateway-*` (see the
