@@ -459,11 +459,14 @@ func TestRunGatewayRefresh_BaselineFailureIsRetried(t *testing.T) {
 	shrinkGatewayRefreshTimers(t)
 	calls := countFiveMinuteAssertions(t)
 	var out syncBuffer
-	stops := startGatewayRefreshers([]gatewayProviderHandle{gatewayDueHandle(time.Minute)}, ui.New(&out))
+	// Expiring inside even the shrunk refresh budget: a late refresh.
+	stops := startGatewayRefreshers([]gatewayProviderHandle{gatewayDueHandle(20 * time.Second)}, ui.New(&out))
 	t.Cleanup(stops[0])
 
 	require.Eventually(t, func() bool { return strings.Count(out.String(), "deferred") >= 2 }, 10*time.Second, 5*time.Millisecond, out.String())
 	assert.Equal(t, int32(0), calls.Load(), "nothing rotated without the baseline")
+	assert.Contains(t, out.String(), "refreshing now", "a late refresh is not blamed on the token lifetime")
+	assert.NotContains(t, out.String(), "lifetime")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "base"), nil, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "flip"), nil, 0o644))
 	require.Eventually(t, func() bool { return strings.Contains(out.String(), "token refreshed for") }, 10*time.Second, 5*time.Millisecond, out.String())

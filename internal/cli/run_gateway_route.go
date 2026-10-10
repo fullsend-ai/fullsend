@@ -388,7 +388,14 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 		}
 		if !fits && !warnedFor.Equal(st.expiresAt) {
 			warnedFor = st.expiresAt
-			printer.StepWarn(fmt.Sprintf("Inference gateway token lifetime %s leaves less than the %s refresh budget; a refresh may not land before it expires", st.expiresAt.Sub(st.issuedAt).Round(time.Second), (gatewayRefreshWork() + gatewayRefreshSafety).Round(time.Second)))
+			budget := gatewayRefreshWork() + gatewayRefreshSafety
+			if lifetime := st.expiresAt.Sub(st.issuedAt); lifetime < budget {
+				printer.StepWarn(fmt.Sprintf("Inference gateway token lifetime %s leaves less than the %s refresh budget; a refresh may not land before it expires", lifetime.Round(time.Second), budget.Round(time.Second)))
+			} else {
+				// A long lifetime that still does not fit: the refresh is
+				// late (a long pre-script, a suspended host).
+				printer.StepWarn(fmt.Sprintf("Inference gateway token for %s expires at %s, inside the %s refresh budget; refreshing now", h.name, st.expiresAt.UTC().Format(time.RFC3339), budget.Round(time.Second)))
+			}
 		}
 		if !waitGateway(ctx, delay) {
 			return
