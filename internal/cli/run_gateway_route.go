@@ -165,7 +165,9 @@ func (h gatewayProviderHandle) sandboxReady() bool {
 	return h.sandboxUp != nil && h.sandboxUp.Load() && h.sandbox != "" && !h.seed.IsZero()
 }
 
-// ensureGatewayProviderFn is ensureGatewayProvider; tests replace it.
+// ensureGatewayProviderFn creates the run-scoped gateway provider
+// (ensureGatewayProvider). Override in tests to create no provider and
+// return a fixed name or an error.
 var ensureGatewayProviderFn = ensureGatewayProvider
 
 // startGatewayRoute fetches the job's OIDC assertion for the block's
@@ -368,9 +370,9 @@ func waitGateway(ctx context.Context, d time.Duration) bool {
 func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui.Printer) {
 	st := h.refreshState()
 	var warnedFor time.Time
-	// warnedHeldExpired keeps a hand-off that keeps failing from warning
-	// on every retry: it warns once, when the agent's token expires.
-	warnedHeldExpired := false
+	// warnedHeldExpiry keeps a hand-off that keeps failing from warning
+	// on every retry: it warns once per held token, when that token expires.
+	var warnedHeldExpiry time.Time
 	for {
 		delay, fits := gatewayRefreshDelay(st.issuedAt, st.expiresAt, time.Now(), rand.Float64())
 		if st.handOffPending && delay > gatewayRefreshBackoff {
@@ -386,8 +388,8 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 				if ctx.Err() != nil {
 					return
 				}
-				if !warnedHeldExpired && !time.Now().Before(st.heldExpiresAt) {
-					warnedHeldExpired = true
+				if !warnedHeldExpiry.Equal(st.heldExpiresAt) && !time.Now().Before(st.heldExpiresAt) {
+					warnedHeldExpiry = st.heldExpiresAt
 					printer.StepWarn(fmt.Sprintf("Inference gateway hand-off for %s still failing: %v; the running agent's token expired at %s, still retrying", h.name, err, st.heldExpiresAt.UTC().Format(time.RFC3339)))
 				}
 				continue
@@ -436,7 +438,6 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 			printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s deferred: %v; retrying", h.name, err))
 		case errors.As(err, &reseedErr):
 			st.issuedAt, st.expiresAt, st.placeholder, st.handOffPending = iat, exp, held, true
-			warnedHeldExpired = false
 			if ctx.Err() != nil {
 				return
 			}

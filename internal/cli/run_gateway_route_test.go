@@ -502,6 +502,7 @@ func TestStartGatewayRefreshers_RestartResumesState(t *testing.T) {
 	handles := []gatewayProviderHandle{h}
 	var out syncBuffer
 	stops := startGatewayRefreshers(handles, ui.New(&out))
+	t.Cleanup(stops[0])
 	require.Eventually(t, func() bool { return strings.Contains(out.String(), "token refreshed for") }, 10*time.Second, 5*time.Millisecond)
 	stops[0]()
 	require.Equal(t, int32(1), calls.Load())
@@ -525,6 +526,7 @@ func TestRunGatewayRefresh_StopDuringHandOff(t *testing.T) {
 	handles := []gatewayProviderHandle{gatewayDueHandle(time.Minute)}
 	var out syncBuffer
 	stops := startGatewayRefreshers(handles, ui.New(&out))
+	t.Cleanup(stops[0])
 	require.Eventually(t, func() bool {
 		_, err := os.Stat(filepath.Join(dir, "settling"))
 		return err == nil
@@ -575,6 +577,7 @@ func TestRunGatewayRefresh_PendingHandOffSeedsTheNewestGeneration(t *testing.T) 
 	handles := []gatewayProviderHandle{gatewayDueHandle(20 * time.Second)}
 	var out syncBuffer
 	stops := startGatewayRefreshers(handles, ui.New(&out))
+	t.Cleanup(stops[0])
 	require.Eventually(t, func() bool { return strings.Contains(out.String(), "token refreshed for inference-gateway-x (next") }, 10*time.Second, 5*time.Millisecond, out.String())
 	stops[0]()
 

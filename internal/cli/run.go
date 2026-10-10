@@ -4479,12 +4479,14 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	}
 }
 
-// deleteSandboxFn and collectOpenshellLogsFn are sandbox.Delete and
-// collectOpenshellLogs; tests replace them.
-var (
-	deleteSandboxFn        = sandbox.Delete
-	collectOpenshellLogsFn = collectOpenshellLogs
-)
+// deleteSandboxFn deletes a sandbox (sandbox.Delete). Override in tests to
+// record the deletion or return an error without a gateway.
+var deleteSandboxFn = sandbox.Delete
+
+// collectOpenshellLogsFn copies a sandbox's OpenShell logs into the run
+// directory (collectOpenshellLogs). Override in tests to record the call
+// without a gateway.
+var collectOpenshellLogsFn = collectOpenshellLogs
 
 // discardSandbox deletes a sandbox that failed a credential egress
 // preflight. Those preflights run before the run's own sandbox cleanup
