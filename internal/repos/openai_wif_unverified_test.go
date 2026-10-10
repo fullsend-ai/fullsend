@@ -172,20 +172,23 @@ func TestConverge_SwitchToAPIKeyKeepsCredentialsWhileInheritedVariablesUnverifie
 		populateGitLabInstalled(fc, "acme", "api")
 		populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
 		populateGitLabTypedRoot(t, fc, "acme", "api", fc.FileContents["acme/api/"+fullsendPipelineInclude])
-		fc.FileContents["acme/api/"+preset.OverlayPath] = openAIWIFConfigYAML(t, config.OpenAIWIFConfig{Audience: "aud", IdentityProviderID: "idp", ServiceAccountID: "sa"})
+		// A managed overlay that matches the manifest and retains
+		// inference.openai, so convergence reaches the cleanup guard
+		// instead of stopping at adoption.
+		cfg.Manifest.GitLab.Repos[0].Config = mustManagedConfig(t,
+			"inference:\n  openai:\n    audience: aud\n    identity_provider_id: idp\n    service_account_id: sa\n")
+		fc.FileContents["acme/api/"+preset.OverlayPath] = mustDesiredManaged(t, cfg.Manifest, "acme", "api")
 		client := partialInheritedClient{FakeClient: fc, scopes: []string{"group top", "instance"}}
 		scopes, err := unverifiedOpenAIWIFScopes(context.Background(), client, "acme", "api")
 		require.NoError(t, err)
 		assert.Equal(t, []string{"group top", "instance"}, scopes)
 		result, err := Converge(context.Background(), cfg, newTestClientFactory(client), (&fakeScaffoldCommit{}).fn(), noopProgress)
 		require.NoError(t, err)
-		// The markerless retained overlay is an adoption case (#8218): the
-		// established gate rejects the repository before any write.
-		require.Len(t, result.Failed(), 1)
-		assert.Contains(t, result.Failed()[0].Error.Error(), "adoption required")
+		require.Empty(t, result.Failed())
 		assert.Empty(t, deletedSecretNames(fc, "api"))
 		assert.True(t, fc.Secrets["acme/api/"+forge.SecretGCPProjectID])
 		assert.True(t, fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider])
+		assert.Contains(t, actionDetails(result), "group top, instance")
 	})
 	t.Run("verified inheritance still deletes", func(t *testing.T) {
 		fc, cfg := installedOpenAISwitchFixture(t)

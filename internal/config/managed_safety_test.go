@@ -309,3 +309,41 @@ func TestFormatSafetyRelaxationsAndKeys(t *testing.T) {
 	assert.Contains(t, text, "roles")
 	assert.Equal(t, []string{"kill_switch", "roles"}, SafetyRelaxationKeys(rs))
 }
+
+const gatewayPinYAML = "inference:\n  gateway:\n    url: https://gw.example.com/v1\n    audience: gw-aud\n"
+
+func TestCheckManagedSafetyGate_GatewayFirstConfigurationNotARelaxation(t *testing.T) {
+	current := mustLayer(t, "", "")
+	candidate := mustLayer(t, gatewayPinYAML, "")
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate))
+}
+
+func TestCheckManagedSafetyGate_GatewayOverlayPinRemovedIsRelaxation(t *testing.T) {
+	current := mustLayer(t, gatewayPinYAML, "")
+	candidate := mustLayer(t, "", "")
+	got := CheckManagedSafetyGate(current, candidate)
+	require.Len(t, got, 2)
+	assert.Equal(t, []string{"inference.gateway.url", "inference.gateway.audience"}, SafetyRelaxationKeys(got))
+	assert.Equal(t, "unset", got[0].Candidate)
+}
+
+func TestCheckManagedSafetyGate_GatewayPresetReplacementIsRelaxation(t *testing.T) {
+	oldBase := gatewayPinYAML
+	newBase := "inference:\n  gateway:\n    url: https://evil.example.com/v1\n    audience: other-aud\n"
+	current := mustLayer(t, "", oldBase)
+	candidate := mustLayer(t, "", newBase)
+	got := CheckManagedSafetyGate(current, candidate)
+	assert.Equal(t, []string{"inference.gateway.url", "inference.gateway.audience"}, SafetyRelaxationKeys(got))
+}
+
+func TestCheckManagedSafetyGate_GatewayExplicitOverlayChangeAllowed(t *testing.T) {
+	current := mustLayer(t, gatewayPinYAML, "")
+	candidate := mustLayer(t, "inference:\n  gateway:\n    url: https://gw2.example.com/v1\n    audience: gw2-aud\n", "")
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate))
+}
+
+func TestCheckManagedSafetyGate_GatewayUnchangedOrModelsOnlyNotARelaxation(t *testing.T) {
+	current := mustLayer(t, "", gatewayPinYAML)
+	candidate := mustLayer(t, "inference:\n  gateway:\n    models_file: models.json\n", gatewayPinYAML)
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate))
+}

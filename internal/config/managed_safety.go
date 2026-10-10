@@ -217,7 +217,39 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 			})
 		}
 	}
+
+	currentGW := current.ConfigInferenceGateway().Trimmed()
+	candidateGW := candidate.ConfigInferenceGateway().Trimmed()
+	var localGW InferenceGatewayConfig
+	if local != nil && local.Inference != nil && local.Inference.Gateway != nil {
+		localGW = local.Inference.Gateway.Trimmed()
+	}
+	// The gateway URL is the inference destination and the audience is
+	// the OIDC assertion binding, so changing an established value (or
+	// dropping it through the parent chain) must be declared locally.
+	// First configuration (no current value) is not a change.
+	if currentGW.URL != "" && candidateGW.URL != currentGW.URL && localGW.URL == "" {
+		out = append(out, SafetyRelaxation{
+			Key:       "inference.gateway.url",
+			Current:   currentGW.URL,
+			Candidate: formatUnset(candidateGW.URL),
+		})
+	}
+	if currentGW.Audience != "" && candidateGW.Audience != currentGW.Audience && localGW.Audience == "" {
+		out = append(out, SafetyRelaxation{
+			Key:       "inference.gateway.audience",
+			Current:   currentGW.Audience,
+			Candidate: formatUnset(candidateGW.Audience),
+		})
+	}
 	return out
+}
+
+func formatUnset(v string) string {
+	if v == "" {
+		return "unset"
+	}
+	return v
 }
 
 // newlyAdmitted returns the candidate entries not covered by any current

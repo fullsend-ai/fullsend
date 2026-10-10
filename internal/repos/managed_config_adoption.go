@@ -109,6 +109,26 @@ func stripYAMLComments(n *yaml.Node) *yaml.Node {
 	return &cp
 }
 
+// expandYAMLAliases returns a copy of n with every alias replaced by an
+// independent copy of the node it names and every anchor dropped, so the
+// result can be reordered or re-parented without leaving a dangling or
+// forward alias reference.
+func expandYAMLAliases(n *yaml.Node) *yaml.Node {
+	if n == nil {
+		return nil
+	}
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		return expandYAMLAliases(n.Alias)
+	}
+	cp := *n
+	cp.Anchor = ""
+	cp.Content = make([]*yaml.Node, len(n.Content))
+	for i, c := range n.Content {
+		cp.Content[i] = expandYAMLAliases(c)
+	}
+	return &cp
+}
+
 // hasYAMLComments reports whether the document carries any YAML comment
 // (head, line, or foot), including inline ones. It reads comments from the
 // parsed nodes so '#' text inside a block scalar is not counted. A document
@@ -151,7 +171,9 @@ func proposedManifestEntry(cfg ResolvedConfig, current *yaml.Node) string {
 	scalar := func(v string) *yaml.Node { return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v} }
 	entry.Content = append(entry.Content, scalar("name"), scalar(cfg.Owner+"/"+cfg.Repo))
 	for i := 0; i+1 < len(current.Content); i += 2 {
-		key, val := current.Content[i], current.Content[i+1]
+		// Aliases are expanded before settings move under config: a
+		// relocated alias could otherwise precede the anchor it names.
+		key, val := expandYAMLAliases(current.Content[i]), expandYAMLAliases(current.Content[i+1])
 		switch key.Value {
 		case "runtime", "allowed_remote_resources":
 			entry.Content = append(entry.Content, key, val)

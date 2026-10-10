@@ -10,6 +10,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func adoptionCfg() ResolvedConfig {
@@ -446,4 +447,24 @@ func TestHasYAMLComments(t *testing.T) {
 			assert.Equal(t, tt.want, hasYAMLComments([]byte(tt.in)))
 		})
 	}
+}
+
+func TestProposedManifestEntry_ExpandsAliasesBeforeRelocation(t *testing.T) {
+	existing := []byte("agents:\n  - name: code\n    runtime: &rt pi\n" +
+		"runtime: *rt\n")
+	current, err := overlayMapping(existing)
+	require.NoError(t, err)
+
+	got := proposedManifestEntry(adoptionCfg(), current)
+
+	// The anchor is dropped and the alias expanded, so the suggested
+	// entry parses on its own with the aliased value intact.
+	assert.NotContains(t, got, "*rt")
+	assert.NotContains(t, got, "&rt")
+	var parsed []map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(got), &parsed))
+	require.Len(t, parsed, 1)
+	assert.Equal(t, "pi", parsed[0]["runtime"])
+	_, hasConfig := parsed[0]["config"]
+	assert.True(t, hasConfig)
 }
