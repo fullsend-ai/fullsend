@@ -28,9 +28,14 @@
 #   ECHO_KEY_HASH     a key for the echo model only (E2E_INFERENCE_GATEWAY_TEST_KEY)
 #   REAL_KEY_HASH     a time-boxed key for claude-haiku-5-5 only, for one local
 #                     run; leave it unset once that run is done
-# With a key the OIDC check becomes permissive (a non-JWT bearer goes on to
-# the key check), each model also admits its key's purpose, and the
-# post-deploy probe expects a 401 for a wrong key instead of for no token.
+# With a key, this TEST gateway runs both modes on one gateway: its OIDC
+# check becomes permissive (a non-JWT bearer goes on to the key check),
+# each model also admits its key's purpose, and the post-deploy probe
+# expects a 401 for a wrong key instead of for no token. That is not a
+# recommended setup: a gateway that only serves the oidc mode keeps strict
+# jwtAuth. Permissive is safe here only because every model's
+# authorization rules admit nothing but a pool repository's token or a
+# configured key, so an anonymous request is refused per model.
 #
 # Idempotent: checks each resource and creates or updates only what is
 # missing or different, then prints what it did. Re-running after a pool
