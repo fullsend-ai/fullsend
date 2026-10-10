@@ -38,7 +38,8 @@
 // PiRuntime.Bootstrap wrote (FULLSEND_PI_MANIFEST).
 import { spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 export const DEFAULT_MANIFEST_PATH = "/sandbox/pi-config/fullsend-manifest.json";
@@ -72,6 +73,10 @@ const GATEWAY_PROVIDER = "gateway";
 // both read from the config dir (PI_CODING_AGENT_DIR).
 export const GATEWAY_CONFIG_FILE = "inference-gateway.json";
 export const GATEWAY_LOCAL_CONFIG_FILE = "inference-gateway.local.json";
+// GATEWAY_CONFIG_FILE_ENV names the one config file the inference-gateway
+// extension (v0.1.2 and later) reads: with it set, no file in the config
+// dir and no overlay is read, and a missing file is an error.
+export const GATEWAY_CONFIG_FILE_ENV = "INFERENCE_GATEWAY_CONFIG_FILE";
 // VERTEX_PROVIDERS authenticate with the sandbox's Google ADC file.
 const VERTEX_PROVIDERS = new Set(["anthropic-vertex", "google-vertex", "xai-vertex"]);
 // DEFAULT_KILL_GRACE_MS is how long a child gets to handle SIGTERM (kill
@@ -672,13 +677,59 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
   // before every dispatch, like extensionDigests.
   const gatewayConfigDigest = typeof agent.gatewayConfigDigest === "string" ? agent.gatewayConfigDigest : "";
 
+  // verifiedGatewayConfig is the runner-rendered config, read once when
+  // this extension loads (just after the run command's launch guard
+  // checked the same digest) and kept in memory. Children never read the
+  // agent-writable file: each gets its own copy of these bytes
+  // (writeChildGatewayConfig), named by INFERENCE_GATEWAY_CONFIG_FILE, so
+  // a file swapped in the config dir after load cannot reach a child.
+  // gatewayConfigLoadError is why it could not be read; every gateway
+  // dispatch is then refused.
+  let verifiedGatewayConfig = null;
+  let gatewayConfigLoadError = "";
+  if (gatewayConfigDigest) {
+    if (!configDir) {
+      gatewayConfigLoadError = "the inference gateway config is pinned but the config dir is unknown; refusing to dispatch";
+    } else {
+      const cfg = join(configDir, GATEWAY_CONFIG_FILE);
+      try {
+        const st = lstatSync(cfg);
+        if (!st.isFile()) throw new Error("not a regular file");
+        const bytes = readFileSync(cfg);
+        if (createHash("sha256").update(bytes).digest("hex") !== gatewayConfigDigest) throw new Error("its digest is not the one the runner rendered");
+        verifiedGatewayConfig = bytes;
+      } catch (err) {
+        gatewayConfigLoadError = `cannot load the runner's ${GATEWAY_CONFIG_FILE}: ${err.message}; refusing to dispatch`;
+      }
+    }
+  }
+
+  // writeChildGatewayConfig writes the verified config into a new private
+  // directory (mkdtemp, mode 0700; the file 0400) for one child and returns
+  // its path and a cleanup. The parent and its children run as one sandbox
+  // user, so this is not a permission boundary against a concurrent writer
+  // with that uid: what it removes is the shared, predictable, agent-
+  // writable path between verification and the child's read. The path is
+  // new per child and exists only while the child runs.
+  const writeChildGatewayConfig = () => {
+    const dir = mkdtempSync(join(tmpdir(), "fullsend-gateway-"));
+    const path = join(dir, GATEWAY_CONFIG_FILE);
+    try {
+      writeFileSync(path, verifiedGatewayConfig, { mode: 0o400, flag: "wx" });
+    } catch (err) {
+      rmSync(dir, { recursive: true, force: true });
+      throw err;
+    }
+    return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  };
+
   // gatewayConfigDrift reports why the gateway config may not be trusted
   // for a child, or "" when it may. It fails closed: no config dir, a
   // config that is not a regular file (a symlink included), a digest
   // mismatch, or any overlay entry at all (a dangling symlink included).
   const gatewayConfigDrift = () => {
     if (!gatewayConfigDigest) return "";
-    if (!configDir) return "the inference gateway config is pinned but the config dir is unknown; refusing to dispatch";
+    if (gatewayConfigLoadError) return gatewayConfigLoadError;
     const cfg = join(configDir, GATEWAY_CONFIG_FILE);
     const local = join(configDir, GATEWAY_LOCAL_CONFIG_FILE);
     try {
@@ -759,10 +810,21 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       const state = newStreamState();
       const startedAt = now();
       const args = childArgs(agent, { seq: id, modelSpec, tools, personaName });
+      const spawnEnv = childEnv(env, modelSpec);
+      let gatewayCopy;
+      if (verifiedGatewayConfig) {
+        try {
+          gatewayCopy = writeChildGatewayConfig();
+        } catch (err) {
+          resolve({ state, startedAt, exitCode: null, signal: null, spawnError: `writing the child's inference gateway config: ${err.message}`, stderr: "", timedOut: false, pid: undefined, droppedLines: 0 });
+          return;
+        }
+        spawnEnv[GATEWAY_CONFIG_FILE_ENV] = gatewayCopy.path;
+      }
       let child;
       try {
         child = spawn(agent.piBin || "pi", args, {
-          env: childEnv(env, modelSpec),
+          env: spawnEnv,
           // stdin carries the prompt; a child in the parent's process group
           // so `detached` is not set — a killed parent must not leave
           // children spending tokens, and the SIGTERM below is what makes
@@ -770,6 +832,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
           stdio: ["pipe", "pipe", "pipe"],
         });
       } catch (err) {
+        gatewayCopy?.cleanup();
         resolve({ state, startedAt, exitCode: null, signal: null, spawnError: err.message, stderr: "", timedOut: false, pid: undefined, droppedLines: 0 });
         return;
       }
@@ -849,6 +912,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
         stderr = (stderr + chunk).slice(-STDERR_TAIL_BYTES);
       });
       const finish = (exitCode, signal, spawnError) => {
+        gatewayCopy?.cleanup();
         clearTimeout(timer);
         if (killTimer !== undefined) clearTimeout(killTimer);
         running.delete(handle);

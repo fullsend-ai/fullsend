@@ -177,6 +177,9 @@ func TestPiPrepareGatewayRun(t *testing.T) {
 	assert.Equal(t, []string{"m1"}, gw.ModelIDs)
 	assert.Equal(t, "https://gw.example.com", gw.BaseURL)
 	assert.Equal(t, r.ConfigDir()+"/"+piInferenceGatewayTokenFile, gw.TokenFile)
+	assert.Equal(t, r.ConfigDir()+"/"+PiInferenceGatewayConfigFile, gw.ConfigFile)
+	assert.Contains(t, strings.Join(piGatewayEnvParts(gw), " "), "export INFERENCE_GATEWAY_CONFIG_FILE='"+r.ConfigDir()+"/"+PiInferenceGatewayConfigFile+"'",
+		"the parent reads exactly the guarded file, never an overlay")
 	assert.Contains(t, string(gw.Config), `"authHeader": "authorization"`)
 	require.NoError(t, validatePiGatewayRun(gw, nil), "a prepared run passes the launch check")
 

@@ -17,6 +17,7 @@ import defaultExport, {
   AGENT_TOOL_PARAMETERS,
   CHILD_SYSTEM_NOTE,
   GATEWAY_CONFIG_FILE,
+  GATEWAY_CONFIG_FILE_ENV,
   GATEWAY_LOCAL_CONFIG_FILE,
   MAX_DESCRIPTION_BYTES,
   MAX_STDOUT_LINE_CHARS,
@@ -1631,4 +1632,52 @@ test("childArgs: non-persona dispatch names session dir with agent prefix", () =
   const sessionDirIdx = args.indexOf("--session-dir");
   assert.ok(sessionDirIdx >= 0);
   assert.ok(args[sessionDirIdx + 1].endsWith("/agent-2"), `session dir should use agent prefix: ${args[sessionDirIdx + 1]}`);
+});
+
+test("run: a child reads a private copy of the verified gateway config, not the writable file", async () => {
+  const { cfg, bytes, tool, children } = gatewayFixture();
+  const pending = tool.run({ prompt: "p" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1);
+  const copy = children[0].opts.env[GATEWAY_CONFIG_FILE_ENV];
+  assert.ok(copy, "the child is pointed at one config file");
+  assert.notEqual(dirname(copy), dirname(cfg), "not the agent-writable config dir");
+  // A file swapped into the config dir once the child is spawned does not
+  // reach it: the child reads its own copy of the bytes verified at load.
+  writeFileSync(cfg, '{"providers":{"gateway":{"baseUrl":"https://elsewhere.example"}}}');
+  assert.equal(readFileSync(copy, "utf8"), bytes);
+  children[0].child.finish(okStream("one"));
+  assert.equal((await pending).text, "one");
+  assert.equal(existsSync(dirname(copy)), false, "the copy goes when the child exits");
+});
+
+test("run: a gateway config that fails verification at load refuses every dispatch", async () => {
+  const { dir, manifest } = fixture();
+  const configDir = join(dir, "pi-config");
+  mkdirSync(configDir);
+  const cfg = join(configDir, GATEWAY_CONFIG_FILE);
+  const bytes = '{"providers":{"gateway":{"models":[{"id":"m1"}]}}}';
+  writeFileSync(cfg, '{"providers":{"gateway":{"baseUrl":"https://elsewhere.example"}}}');
+  const agent = { ...manifest.agent, gatewayConfigDigest: createHash("sha256").update(bytes).digest("hex") };
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool({ ...manifest, agent }, { ...quiet, spawn, configDir });
+  // Putting the runner's bytes back afterwards does not help: the copy
+  // comes from what was verified at load, and nothing was.
+  writeFileSync(cfg, bytes);
+  const res = await tool.run({ prompt: "p" }, {});
+  assert.equal(res.isError, true);
+  assert.match(res.error, /cannot load the runner's inference-gateway\.json: its digest is not the one the runner rendered/);
+  assert.equal(children.length, 0);
+});
+
+test("run: without a pinned gateway config the child gets no config file", async () => {
+  const { manifest } = fixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1);
+  assert.equal(children[0].opts.env[GATEWAY_CONFIG_FILE_ENV], process.env[GATEWAY_CONFIG_FILE_ENV], "nothing set or changed");
+  children[0].child.finish(okStream("one"));
+  await pending;
 });
