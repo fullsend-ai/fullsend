@@ -192,9 +192,11 @@ if you must: a key is a long-lived secret, and a leaked key works until you revo
 OIDC wherever it is possible.
 
 > **Not executed here:** this section has no live run, so no output is shown. Validate the config
-> as in [step 4](#4-validate-the-config-locally) before you deploy it, and repeat the
+> as in [step 4](#4-validate-the-config-locally) before you deploy it. To repeat the
 > [step 9](#9-check-that-no-caller-credential-reaches-the-upstream) custody check with a key in
-> place of the token.
+> place of the token, grant a test key the echo models for the check only: add `echo` and
+> `echo-noremove` to its `allowedModels`, add its `apiKey.purpose` rule to both echo models, and
+> remove both grants once the check passes.
 
 Add an agentgateway `apiKey` policy under `llm.policies`. Store each key's SHA-256 hash, never the
 key, and list the models each key may call:
@@ -226,8 +228,8 @@ Admit the key on each model it may call, with a second rule next to the reposito
 
 - **Strip the caller's key before the upstream, as you strip the bearer.** The key must never
   reach the model provider. Keep `requestHeaders.remove: [x-api-key]` on every model, never
-  forward the caller's `Authorization` header, and check with the step 9 custody models that the
-  upstream sees only the gateway's own key.
+  forward the caller's `Authorization` header, and check with the step 9 custody models (with the
+  temporary test-key grants above) that the upstream sees only the gateway's own key.
 - **A gateway that serves only OIDC keeps strict `jwtAuth`.** Leave out the `apiKey` policy, keep
   `mode: strict` as in [step 3](#3-write-the-gateway-config), and the gateway stays as tested above.
 - **Serving both modes on one gateway weakens authentication.** `jwtAuth` must be `permissive`
