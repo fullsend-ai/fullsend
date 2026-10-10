@@ -291,6 +291,10 @@ func TestInferenceGatewayStatus_CouldNotConfirm(t *testing.T) {
 		{"bad gateway", http.StatusBadGateway, ""},
 		{"bad json", http.StatusOK, "<html>ok</html>"},
 		{"no data key", http.StatusOK, `{"object":"list"}`},
+		// A gateway that admits requests without a valid credential
+		// (permissive OIDC check plus optional keys) answers /v1/models
+		// with an empty bare list: never reported as healthy.
+		{"bare empty list", http.StatusOK, `[]`},
 		{"too large", http.StatusOK, `{"data":[],"pad":"` + strings.Repeat("x", gatewayProbeBodyLimit) + `"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

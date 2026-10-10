@@ -43,6 +43,7 @@ func canonicalForgeEnvVars() map[string]struct{} {
 		forge.SecretTriggerToken,
 		forge.SecretWebhookSecret,
 		forge.SecretOpenAIAPIKey,
+		forge.SecretInferenceGatewayAPIKey,
 		forge.VarLegacyBotTokenSecret,
 		forge.VarLegacySA,
 		forge.VarLegacyWIFProvider,

@@ -225,6 +225,53 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 	}, previous, printer)
 }
 
+// reseedSeedAttempts is how many times reseedCredential seeds and verifies
+// the credential file once the sandbox hands out the new generation: one
+// seed-and-grep pair per attempt.
+const reseedSeedAttempts = 2
+
+// handOffTimeout bounds one hand-off by what reseedCredential can do: the
+// settle wait, one placeholder read that may start just before it ends,
+// then reseedSeedAttempts seed-and-verify pairs, plus one poll.
+func handOffTimeout() time.Duration {
+	return openAIPlaceholderSettle + openAIPlaceholderExecTimeout + time.Duration(2*reseedSeedAttempts)*openAIPlaceholderExecTimeout + openAIPlaceholderPoll
+}
+
+// failOpenAIClosed stops the OpenAI route after a hand-off whose new
+// generation never reached the sandbox, as failGatewayClosed does for the
+// gateway route: each credential's expiry moves back to heldExpiresAt, the
+// expiry of the generation the agent holds, so placeholder resolution
+// fails closed then.
+func failOpenAIClosed(h openAIProviderHandle, heldExpiresAt time.Time, cause error, printer *ui.Printer) {
+	printer.StepWarn(fmt.Sprintf("OpenAI credential refresh for %s stopped: %v. The route fails closed at the expiry of the credential the running agent holds, %s", h.name, cause, heldExpiresAt.UTC().Format(time.RFC3339)))
+	for _, k := range h.keys {
+		if err := setProviderCredentialExpiryFn(context.Background(), h.name, k, heldExpiresAt); err != nil {
+			printer.StepWarn(fmt.Sprintf("OpenAI provider %s: moving the expiry of %s back to %s failed: %v", h.name, k, heldExpiresAt.UTC().Format(time.RFC3339), err))
+		}
+	}
+}
+
+// generationNotObservedError is reseedCredential's error when the new
+// generation was never seen in the sandbox: the settle wait ran out
+// (cause nil), or reading the placeholder failed or was cut short before
+// it changed (cause set). Nothing was seeded, and there is no evidence of
+// which rotation a generation that shows up later belongs to, so the
+// refreshers fail closed on it rather than rotating again.
+type generationNotObservedError struct {
+	label  string
+	settle time.Duration
+	cause  error
+}
+
+func (e *generationNotObservedError) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("the new %s placeholder was not observed in the sandbox: %v; the agent keeps the generation it holds", e.label, e.cause)
+	}
+	return fmt.Sprintf("the sandbox still hands out the previous %s placeholder after %s; the agent keeps the generation it holds", e.label, e.settle)
+}
+
+func (e *generationNotObservedError) Unwrap() error { return e.cause }
+
 // reseedCredential is reseedOpenAIAuth for any credential route: it waits
 // for the sandbox to hand out a placeholder other than previous under
 // seed.PlaceholderEnv, re-runs seed.Seed and verifies seed.File names the
@@ -238,18 +285,18 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 	for {
 		p, err := sandboxPlaceholder(ctx, sandboxName, seed.PlaceholderEnv)
 		if err != nil {
-			return "", err
+			return "", &generationNotObservedError{label: label, cause: err}
 		}
 		if p != "" && p != previous {
 			current = p
 			break
 		}
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("the sandbox still hands out the previous %s placeholder after %s; the agent keeps the generation it holds", label, openAIPlaceholderSettle)
+			return "", &generationNotObservedError{label: label, settle: openAIPlaceholderSettle}
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", &generationNotObservedError{label: label, cause: ctx.Err()}
 		case <-time.After(openAIPlaceholderPoll):
 		}
 	}
@@ -270,7 +317,7 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 	// generation the agent never held.
 	doSeed := func() error {
 		var lastErr error
-		for attempt := 0; attempt < 2; attempt++ {
+		for attempt := 0; attempt < reseedSeedAttempts; attempt++ {
 			var stderr string
 			var code int
 			err := withSandboxLock(ctx, nil, func() error {
@@ -927,7 +974,7 @@ func refreshOpenAIProvider(ctx context.Context, h openAIProviderHandle, placehol
 	// The running agent keeps the placeholder it launched with, and on
 	// OpenShell 0.0.115 that placeholder stays pinned to the old generation,
 	// so hand the new one over through the file it re-reads per request.
-	settleCtx, cancelSettle := context.WithTimeout(ctx, openAIPlaceholderSettle+3*openAIPlaceholderExecTimeout+openAIPlaceholderPoll)
+	settleCtx, cancelSettle := context.WithTimeout(ctx, handOffTimeout())
 	defer cancelSettle()
 	seeded, err := reseedOpenAIAuth(settleCtx, h, placeholder, printer)
 	if err != nil {
@@ -984,6 +1031,15 @@ func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.P
 				break
 			}
 			if ctx.Err() != nil {
+				return
+			}
+			// A new generation that was never observed in the sandbox: a
+			// later rotation could take it for its own (OpenShell's
+			// placeholder says nothing about the rotation it belongs to),
+			// so fail closed rather than rotating again (failOpenAIClosed).
+			var notObserved *generationNotObservedError
+			if errors.As(err, &notObserved) {
+				failOpenAIClosed(h, expiresAt, err, printer)
 				return
 			}
 			printer.StepWarn(fmt.Sprintf("OpenAI credential refresh attempt %d/%d failed: %v", attempt+1, openAIRefreshRetries, err))

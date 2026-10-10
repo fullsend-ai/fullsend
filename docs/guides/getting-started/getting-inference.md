@@ -100,4 +100,5 @@ To run agents on the pi runtime through an OpenAI/Anthropic-compatible inference
 see [Using an inference gateway (experimental)](../user/running-agents-locally.md#using-an-inference-gateway-experimental).
 That page covers local runs. For GitHub Actions runs, set the `inference.gateway` block with
 `fullsend github setup --inference-gateway-*` (see the
-[config reference](../../reference/config-reference.md)).
+[config reference](../../reference/config-reference.md)). The same block also applies to local
+runs when it sets `auth: api-key`.

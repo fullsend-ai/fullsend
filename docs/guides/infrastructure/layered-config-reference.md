@@ -134,6 +134,7 @@ the overlay → base → code defaults chain.
 | `inference.openai.service_account_id` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.gateway.url` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.gateway.audience` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.gateway.auth` | `string` (nested) | Scalar override | `""` (empty; means `oidc`) |
 | `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
@@ -235,14 +236,18 @@ unset (`""`) falls through to parent, then to code default
   `openai-wif` repos. Each resolves independently through
   the layers; a run needs all three from one source. The `FULLSEND_OPENAI_*`
   runner variables, when any is set, replace the resolved block entirely.
-- **`inference.gateway.{url,audience}`**: the inference gateway credential
-  route (ADR 0137), written by `fullsend github setup --inference-gateway-*`.
-  The runner owns the route when the resolved block is complete and the run
-  has a forge OIDC endpoint (see the
+- **`inference.gateway.{url,audience,auth}`**: the inference gateway
+  credential route (ADR 0137), written by `fullsend github setup
+  --inference-gateway-*`. `auth` selects the credential mode, `oidc` (the
+  default) or `api-key` (ADR 0138). In the `oidc` mode the runner owns the
+  route when the resolved block is complete and the run has a forge OIDC
+  endpoint. In the `api-key` mode it owns the route on every run, local
+  runs included (see the
   [config reference](../../reference/config-reference.md)).
   Each resolves independently through the layers, so an org preset can carry
-  `url` and `audience` while each repository opts in its own models. The
-  resolved block needs both. There is no runner-variable override.
+  `url` and `audience` while each repository opts in its own models or its
+  own `auth`. The resolved block needs `url`, plus `audience` in the `oidc`
+  mode. There is no runner-variable override.
 - **`inference.gateway.models` / `inference.gateway.models_file`**: the
   gateway model list. The two forms are one unit: a layer that sets either
   replaces the inherited list, so the forms never combine across layers.

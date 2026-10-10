@@ -91,9 +91,13 @@ func newInferenceGatewayStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status <owner/repo>",
 		Short: "Check inference gateway configuration and authentication",
-		Long: `Prints the resolved inference.gateway block (url, audience and model
-list) and the config layer each value comes from (config.yaml or
-config.base.yaml), and flags a partial block.
+		Long: `Prints the resolved inference.gateway block (url, audience, auth mode
+and model list) and the config layer each value comes from (config.yaml
+or config.base.yaml), and flags a partial block.
+
+In the api-key auth mode, warns that the mode relies on a long-lived
+secret, reports whether FULLSEND_INFERENCE_GATEWAY_API_KEY is set (never
+its value) and stops at the config checks.
 
 When run inside a GitHub Actions job with id-token: write, fetches one
 OIDC assertion for the configured audience, reports its expiry and
@@ -126,6 +130,7 @@ type gatewayStatusSources struct {
 	Block          config.InferenceGatewayConfig
 	URLSource      string
 	AudienceSource string
+	AuthSource     string
 	ModelsSource   string
 }
 
@@ -170,6 +175,7 @@ func resolveGatewayStatusSources(fullsendDir string) (gatewayStatusSources, erro
 	}
 	s.URLSource = source(overlay.URL != "", s.Block.URL != "")
 	s.AudienceSource = source(overlay.Audience != "", s.Block.Audience != "")
+	s.AuthSource = source(overlay.Auth != "", s.Block.Auth != "")
 	s.ModelsSource = source(overlay.HasModelList(), s.Block.HasModelList())
 	return s, nil
 }
@@ -189,6 +195,11 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 
 	printStatusField(printer, "url", g.URL, sources.URLSource)
 	printStatusField(printer, "audience", g.Audience, sources.AudienceSource)
+	if g.Auth != "" {
+		printStatusField(printer, "auth", g.Auth, sources.AuthSource)
+	} else {
+		printer.StepInfo("auth: " + config.GatewayAuthOIDC + " (default)")
+	}
 	switch {
 	case g.ModelsFile != "":
 		printStatusField(printer, "models_file", g.ModelsFile, sources.ModelsSource)
@@ -206,12 +217,26 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 	}
 	if missing := g.Missing(); len(missing) > 0 {
 		printer.StepWarn("Partial inference.gateway block: missing " + strings.Join(missing, ", "))
-		printer.StepInfo("url and audience must both be set; a run refuses a partial block")
+		if g.IsAPIKey() {
+			printer.StepInfo("url must be set; a run refuses a partial block")
+		} else {
+			printer.StepInfo("url and audience must both be set in the oidc mode; a run refuses a partial block")
+		}
 		return fmt.Errorf("inference.gateway is partially configured: missing %s", strings.Join(missing, ", "))
 	}
 	if err := g.Validate(); err != nil {
 		printer.StepFail("Invalid inference.gateway block")
 		return err
+	}
+	if g.IsAPIKey() {
+		printer.StepDone("url is set")
+		printer.StepWarn("auth is api-key: the route relies on a long-lived gateway API key (" + gatewayAPIKeyEnv + "); use it with caution, and prefer auth: oidc when the gateway can validate forge OIDC tokens")
+		if deps.getenv(gatewayAPIKeyEnv) == "" {
+			printer.StepInfo(gatewayAPIKeyEnv + " is not set in this environment; a run in the api-key mode fails without it")
+		} else {
+			printer.StepInfo(gatewayAPIKeyEnv + " is set in this environment")
+		}
+		return nil
 	}
 	printer.StepDone("url and audience are set")
 	printer.Blank()

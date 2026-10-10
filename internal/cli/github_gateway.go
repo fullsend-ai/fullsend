@@ -23,6 +23,7 @@ const gatewayModelsFileRepoPath = ".fullsend/inference-gateway.json"
 var gatewaySetupFlags = []string{
 	"inference-gateway-url",
 	"inference-gateway-audience",
+	"inference-gateway-auth",
 	"inference-gateway-model",
 	"inference-gateway-models-file",
 }
@@ -43,6 +44,7 @@ func (cfg githubSetupConfig) gatewayBlock() (config.InferenceGatewayConfig, erro
 	g := config.InferenceGatewayConfig{
 		URL:      strings.TrimSpace(cfg.gatewayURL),
 		Audience: strings.TrimSpace(cfg.gatewayAudience),
+		Auth:     strings.TrimSpace(cfg.gatewayAuth),
 	}
 	for _, spec := range cfg.gatewayModels {
 		id, api, ok := strings.Cut(strings.TrimSpace(spec), "=")
@@ -69,7 +71,9 @@ func (cfg githubSetupConfig) gatewayBlock() (config.InferenceGatewayConfig, erro
 
 // gatewayClearRequested reports whether the flags ask to remove the
 // block: --inference-gateway-url and --inference-gateway-audience both
-// passed empty, with no model flag.
+// passed empty, with no model flag and no non-empty
+// --inference-gateway-auth. A clear removes the whole block, auth
+// included.
 func gatewayClearRequested(cfg githubSetupConfig, g config.InferenceGatewayConfig) bool {
 	return g.IsZero() && cfg.changedFlags["inference-gateway-url"] && cfg.changedFlags["inference-gateway-audience"]
 }
@@ -120,7 +124,11 @@ func validateEffectiveGateway(cfg githubSetupConfig, effective config.PerRepoCon
 		return nil
 	}
 	if missing := g.Missing(); len(missing) > 0 {
-		return fmt.Errorf("inference.gateway would have no %s: pass --inference-gateway-url and --inference-gateway-audience, or inherit them from config.base.yaml", strings.Join(missing, " or "))
+		flags := make([]string, len(missing))
+		for i, m := range missing {
+			flags[i] = "--inference-gateway-" + m
+		}
+		return fmt.Errorf("inference.gateway would have no %s: pass %s, or inherit them from config.base.yaml", strings.Join(missing, " or "), strings.Join(flags, " and "))
 	}
 	// The inherited layer is not validated when it is parsed, so check the
 	// composed block as a whole: an inherited http url or bad model entry

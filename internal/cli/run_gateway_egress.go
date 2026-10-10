@@ -170,11 +170,36 @@ func ensureGatewayProvider(ctx context.Context, host, sandboxName, token string,
 	if err := validateGatewayAssertion(token); err != nil {
 		return "", "", err
 	}
+	return storeGatewayProvider(ctx, host, sandboxName, token, expiresAt, printer)
+}
+
+// ensureGatewayAPIKeyProvider is ensureGatewayProvider for the api-key
+// mode: the credential is the gateway API key (gatewayAPIKey has already
+// refused one with a line break, so it cannot break the `::add-mask::`
+// line), behind the same run-scoped placeholder, per-host profile and
+// guards. expiresAt bounds the provider instance, not the key.
+func ensureGatewayAPIKeyProvider(ctx context.Context, host, sandboxName, key string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
+	if strings.ContainsAny(key, "\r\n\x00") || strings.TrimSpace(key) == "" {
+		return "", "", errors.New("inference gateway: the API key is empty or holds a control character; refusing to use it")
+	}
+	return storeGatewayProvider(ctx, host, sandboxName, key, expiresAt, printer)
+}
+
+// gatewayMaskData percent-encodes a value for a workflow command's data
+// part ("%" first by construction, then CR and LF), which the runner
+// decodes, so the registered mask equals the value even when it holds a
+// "%25" or "%0A" sequence.
+var gatewayMaskData = strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
+
+// storeGatewayProvider registers token for redaction, imports the per-host
+// profile and creates the run-scoped provider carrying token with
+// expiresAt as its credential expiry.
+func storeGatewayProvider(ctx context.Context, host, sandboxName, token string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
 	if !security.RegisterRuntimeSecret(token) {
 		return "", "", errors.New("inference gateway: the token is too short to redact reliably; refusing to use it")
 	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", token)
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", gatewayMaskData.Replace(token))
 	}
 	profileID, err = ensureGatewayProfile(ctx, host, printer)
 	if err != nil {

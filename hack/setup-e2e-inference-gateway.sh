@@ -23,6 +23,20 @@
 #                     a gateway deployed by hand and adopted). Without it, any
 #                     unmarked resource stops the delete before anything goes.
 #
+# Optional gateway API keys (the api-key mode, ADR 0138), each given only as
+# its hash, sha256:<64 hex>, never in plaintext:
+#   ECHO_KEY_HASH     a key for the echo model only (E2E_INFERENCE_GATEWAY_TEST_KEY)
+#   REAL_KEY_HASH     a time-boxed key for claude-haiku-5-5 only, for one local
+#                     run; leave it unset once that run is done
+# With a key, this TEST gateway runs both modes on one gateway: its OIDC
+# check becomes permissive (a non-JWT bearer goes on to the key check),
+# each model also admits its key's purpose, and the post-deploy probe
+# expects a 401 for a wrong key instead of for no token. That is not a
+# recommended setup: a gateway that only serves the oidc mode keeps strict
+# jwtAuth. Permissive is safe here only because every model's
+# authorization rules admit nothing but a pool repository's token or a
+# configured key, so an anonymous request is refused per model.
+#
 # Idempotent: checks each resource and creates or updates only what is
 # missing or different, then prints what it did. Re-running after a pool
 # change (POOL_ORGS / POOL_REPOS below) adds a config secret version and rolls
@@ -159,7 +173,8 @@ pool_cel() {
   printf ']'
 }
 
-# model prints one llm model. Arguments: name, provider, params, CEL rule.
+# model prints one llm model. Arguments: name, provider, params, CEL rule,
+# and an optional second CEL rule (an API key's purpose).
 model() {
   cat <<EOF
   - name: $1
@@ -170,6 +185,41 @@ model() {
       rules:
       - allow: '$4'
 EOF
+  if [[ -n "${5:-}" ]]; then
+    printf "      - allow: '%s'\n" "$5"
+  fi
+}
+
+ECHO_KEY_HASH="${ECHO_KEY_HASH:-}"
+REAL_KEY_HASH="${REAL_KEY_HASH:-}"
+for key_hash in "${ECHO_KEY_HASH}" "${REAL_KEY_HASH}"; do
+  if [[ -n "${key_hash}" && ! "${key_hash}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "Error: ECHO_KEY_HASH and REAL_KEY_HASH must be sha256:<64 lowercase hex>, never a plaintext key." >&2
+    exit 1
+  fi
+done
+ECHO_KEY_CEL='apiKey.purpose == "e2e-echo-test"'
+REAL_KEY_CEL='apiKey.purpose == "e2e-real-run"'
+HAS_KEYS=false
+JWT_MODE=strict
+if [[ -n "${ECHO_KEY_HASH}" || -n "${REAL_KEY_HASH}" ]]; then
+  HAS_KEYS=true
+  JWT_MODE=permissive
+fi
+
+# api_key_policy prints the llm apiKey policy for the configured key hashes.
+# jwtAuth runs first and strips a valid JWT, so a key never reaches JWT
+# validation and a JWT never reaches the key check. agentgateway v1.6.0
+# rejects a key budget without config.database, so keys carry none.
+api_key_policy() {
+  [[ "${HAS_KEYS}" == "true" ]] || return 0
+  printf '    apiKey:\n      mode: optional\n      keys:\n'
+  if [[ -n "${ECHO_KEY_HASH}" ]]; then
+    printf '      - keyHash: "%s"\n        metadata: { name: e2e-echo-test, purpose: e2e-echo-test }\n        allowedModels: [echo]\n' "${ECHO_KEY_HASH}"
+  fi
+  if [[ -n "${REAL_KEY_HASH}" ]]; then
+    printf '      - keyHash: "%s"\n        metadata: { name: e2e-real-run, purpose: e2e-real-run }\n        allowedModels: [claude-haiku-5-5]\n' "${REAL_KEY_HASH}"
+  fi
 }
 
 # render_config prints the agentgateway config. It must not contain "$":
@@ -212,19 +262,28 @@ llm:
   discovery: disabled
   policies:
     jwtAuth:
-      mode: strict
+      mode: ${JWT_MODE}
       providers:
       - issuer: ${GITHUB_ISSUER}
         audiences: [${AUDIENCE}]
         jwks: { url: ${GITHUB_ISSUER}/.well-known/jwks }
-  models:
 EOF
+  api_key_policy
+  echo "  models:"
   if [[ "${VERTEX}" == "with" ]]; then
     for m in "${VERTEX_MODELS[@]}"; do
-      model "${m}" vertex "{ vertexProject: ${PROJECT}, vertexRegion: ${VERTEX_REGION} }" "${pool}"
+      local extra=""
+      if [[ "${m}" == "claude-haiku-5-5" && -n "${REAL_KEY_HASH}" ]]; then
+        extra="${REAL_KEY_CEL}"
+      fi
+      model "${m}" vertex "{ vertexProject: ${PROJECT}, vertexRegion: ${VERTEX_REGION} }" "${pool}" "${extra}"
     done
   fi
-  model echo "${echo_provider}" "${echo_params}" "${pool}"
+  local echo_extra=""
+  if [[ -n "${ECHO_KEY_HASH}" ]]; then
+    echo_extra="${ECHO_KEY_CEL}"
+  fi
+  model echo "${echo_provider}" "${echo_params}" "${pool}" "${echo_extra}"
   model echo-denied "${echo_provider}" "${echo_params}" "jwt.repository == \"${DENIED_REPO}\""
 }
 
@@ -801,10 +860,11 @@ else
 fi
 
 # probe sends one request and expects a 401 from the gateway itself (not an
-# HTML page from Cloud Run's front end). It prints the real status and body.
+# HTML page from Cloud Run's front end) whose text/plain body starts with
+# the given prefix. It prints the real status and body.
 probe() {
-  local label="$1"
-  shift
+  local label="$1" prefix="$2"
+  shift 2
   local status ctype body
   : > "${TMP}/probe.body"
   status=$(curl -sS -m 30 -o "${TMP}/probe.body" -w '%{http_code} %{content_type}' "$@" "${URL}/v1/models") \
@@ -820,15 +880,20 @@ probe() {
   elif [[ "${ctype}" == text/html* ]] || grep -qi '<html' "${TMP}/probe.body"; then
     echo "    FAIL: 401 is an HTML page; the invoker IAM check is still on." >&2
     verify_failed=1
-  elif [[ "${ctype}" != text/plain* ]] || ! grep -q '^authentication failure: ' "${TMP}/probe.body"; then
+  elif [[ "${ctype}" != text/plain* ]] || ! grep -q "^${prefix}" "${TMP}/probe.body"; then
     echo "    FAIL: 401 is not agentgateway's text/plain authentication failure." >&2
     verify_failed=1
   fi
 }
-if [[ -n "${URL}" ]]; then
-  probe "no token"
-  probe "x-api-key only" -H "x-api-key: ${STUB_UPSTREAM_KEY}"
-  probe "non-JWT bearer" -H "authorization: Bearer not-a-jwt"
+if [[ -n "${URL}" && "${HAS_KEYS}" == "true" ]]; then
+  # With keys, no credential passes authentication (and is refused per
+  # model), so the probe that must fail is a bearer that is neither a
+  # valid JWT nor a configured key.
+  probe "wrong key" 'api key authentication failure: ' -H "authorization: Bearer not-a-configured-key"
+elif [[ -n "${URL}" ]]; then
+  probe "no token" 'authentication failure: '
+  probe "x-api-key only" 'authentication failure: ' -H "x-api-key: ${STUB_UPSTREAM_KEY}"
+  probe "non-JWT bearer" 'authentication failure: ' -H "authorization: Bearer not-a-jwt"
 fi
 echo
 

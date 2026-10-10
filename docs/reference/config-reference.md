@@ -90,7 +90,8 @@ inference:
     service_account_id: ""           # OpenAI WIF service account ID
   gateway:                           # Inference gateway credential route (ADR 0137)
     url: ""                          # Gateway origin, e.g. https://gateway.example.com (no path, port 443 only; plain http only for a loopback test host)
-    audience: ""                     # OIDC audience the runner requests for the gateway
+    audience: ""                     # OIDC audience the runner requests for the gateway (oidc mode)
+    auth: ""                         # Credential mode: oidc (default) or api-key (ADR 0138)
     models: {}                       # Inline model list: id -> {api, compat, contextWindow, maxTokens}
     models_file: ""                  # Or: repository path to a pi-inference-gateway config file
 
@@ -291,16 +292,26 @@ independently through the layered config system (an overlay can override
   gateway that validates the job's forge OIDC token directly
   ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). Models
   with the `gateway/` prefix use this route. The block applies when it is
-  complete and the run has a forge OIDC endpoint (a GitHub Actions job with
-  `id-token: write`). The runner then fetches the job's OIDC assertion for
+  complete and, in the default `oidc` mode, the run has a forge OIDC endpoint
+  (a GitHub Actions job with `id-token: write`); the `api-key` mode (see
+  `auth` below) has no such condition. In the `oidc` mode the runner then
+  fetches the job's OIDC assertion for
   `audience` and puts it behind a run-scoped OpenShell provider with a
   per-host egress profile. It seeds the provider's placeholder into a
   runner-owned token file, and re-seeds it before each token's own `exp`.
+  OpenShell's placeholders do not say which rotation they belong to. So if
+  the runner does not see a refreshed token's placeholder in the sandbox
+  (the 90-second settle wait runs out, or reading it fails), it does not
+  rotate again. It moves the
+  provider's expiry back to the token the agent holds and stops
+  refreshing, and the run fails closed when that token expires. The
+  re-seed runs only after the sandbox hands out the new placeholder, and
+  it checks the file afterwards.
   This happens in addition to every other provider: `openai/` and Vertex
   models in the same run keep their own routes. If the gateway cannot be
   reached, or refuses the token, the run fails and does not fall back to
-  another credential. With no block, or on a local run without an OIDC
-  endpoint, the runner adds nothing, so a harness that loads the
+  another credential. With no block, or in the `oidc` mode on a local run
+  without an OIDC endpoint, the runner adds nothing, so a harness that loads the
   inference-gateway extension as a plugin keeps working. A `gateway/` model
   on a runtime without the route (Claude Code, Codex) is an error. Fields:
   - `url` — the gateway origin, for example `https://gateway.example.com`.
@@ -314,7 +325,23 @@ independently through the layered config system (an overlay can override
     check one. For such a gateway, a run is the check: its first gateway
     model call fails if the gateway is unreachable or refuses the token.
   - `audience` — the OIDC audience the runner requests. The token is valid
-    only at the gateway.
+    only at the gateway. Required in the `oidc` mode; not used in the
+    `api-key` mode.
+  - `auth` — the credential mode, `oidc` (the default) or `api-key`
+    ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
+    New in fullsend v0.47.0: an older CLI or reusable workflow rejects a
+    config that sets it. There is no precedence and no fallback between them. `oidc` is the
+    route described above. `api-key` is for gateways that cannot trust
+    forge OIDC. It is supported, but it is not the primary or safest
+    option, because it relies on a long-lived secret: use it with caution,
+    and prefer `oidc` when the gateway supports it. In the `api-key` mode
+    the runner reads the gateway key from the
+    `FULLSEND_INFERENCE_GATEWAY_API_KEY` forge secret or local environment
+    variable, and fails the run when it is not set. It puts the key behind
+    the same run-scoped provider placeholder, egress profile and guards as
+    the OIDC token. The key is not rotated, so nothing is re-seeded. The
+    block applies on local runs too, so the runner owns the route there
+    as well.
   - `models` — optional inline model list, a map of model id to settings:
     `api` (one of `openai-responses`, `anthropic-messages`,
     `openai-completions`), and optional `compat`, `contextWindow` and
@@ -348,12 +375,13 @@ independently through the layered config system (an overlay can override
     branch on pull-request events), even when an org or managed layer set
     the path.
 
-  `url` and `audience` are all or none: `fullsend github setup` refuses to
-  leave a block with only one of them, and the runner fails a run whose
-  resolved block is partial. `models` and `models_file` are mutually
-  exclusive. A pi run on a `gateway/` model needs one of them, because pi
-  runs offline and cannot discover the gateway's models. `url` and
-  `audience` layer independently; the model list (either form) is one unit,
+  `url` is always required, and in the `oidc` mode `url` and `audience`
+  are all or none: `fullsend github setup` refuses to leave a block
+  without them, and the runner fails a run whose resolved block is
+  partial. `models` and `models_file` are mutually exclusive. A pi run on
+  a `gateway/` model needs one of them, because pi runs offline and cannot
+  discover the gateway's models. `url`, `audience` and `auth` layer
+  independently; the model list (either form) is one unit,
   and a layer that sets it replaces the inherited list. There is no
   runner-variable override for this block. `fullsend github setup
   --inference-gateway-*` writes it and changes only the keys you pass, so

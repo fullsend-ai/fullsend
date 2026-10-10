@@ -1097,3 +1097,102 @@ func TestExecuteHTTPProbe_RealNode(t *testing.T) {
 // realNodeJWT is a JWT-shaped value the RealNode test server echoes. It is
 // joined at run time so secret scanners do not flag a fake token in source.
 var realNodeJWT = strings.Join([]string{"eyJhbGciOiJSUzI1NiJ9", "eyJzdWIiOiJyZXBvOmFjbWUvd2lkZ2V0In0", "c2lnbmF0dXJl"}, ".")
+
+func TestExecuteWait(t *testing.T) {
+	t.Parallel()
+	for _, bad := range []string{"", "0", "-1", "1.5", "x", "1201"} {
+		err := executeWait(context.Background(), BehaviourOperation{Op: "wait", Args: bad})
+		require.Error(t, err, "%q", bad)
+		assert.Contains(t, err.Error(), "whole number of seconds")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := executeWait(ctx, BehaviourOperation{Op: "wait", Args: "30"})
+	require.ErrorContains(t, err, "cancelled")
+	start := time.Now()
+	require.NoError(t, executeWait(context.Background(), BehaviourOperation{Op: "wait", Args: "1"}))
+	assert.GreaterOrEqual(t, time.Since(start), time.Second)
+}
+
+func TestExecuteBehaviourScript_Wait(t *testing.T) {
+	t.Parallel()
+	script := &BehaviourScript{Ops: []BehaviourOperation{{Op: "wait", Args: "nope", Description: "Wait"}}}
+	res, err := executeBehaviourScript(context.Background(), DummyRuntime{}, "sandbox", t.TempDir(), script)
+	require.Error(t, err)
+	require.Len(t, res.Operations, 1)
+	assert.False(t, res.Operations[0].Success)
+}
+
+// assertNotJWTCommand runs under a real sh: a placeholder value passes, a
+// JWT value or a token file holding one fails with its own exit code, and
+// an unset variable fails.
+func TestAssertNotJWTCommand(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	dir := t.TempDir()
+	placeholderFile := filepath.Join(dir, "placeholder.token")
+	require.NoError(t, os.WriteFile(placeholderFile, []byte("openshell:resolve:env:v1_INFERENCE_GATEWAY_API_KEY"), 0o600))
+	jwtFile := filepath.Join(dir, "jwt.token")
+	require.NoError(t, os.WriteFile(jwtFile, []byte("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig"), 0o600))
+	run := func(value string) int {
+		cmd := exec.Command("sh", "-c", assertNotJWTCommand("PROBE_VAR"))
+		cmd.Env = append(os.Environ(), "PROBE_VAR="+value)
+		err := cmd.Run()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode()
+		}
+		require.NoError(t, err)
+		return 0
+	}
+	assert.Equal(t, 0, run("openshell:resolve:env:v1_INFERENCE_GATEWAY_API_KEY"))
+	assert.Equal(t, 0, run(placeholderFile))
+	assert.Equal(t, assertNotJWTFound, run("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig"))
+	assert.Equal(t, assertNotJWTFound, run(jwtFile))
+	assert.Equal(t, assertNotJWTUnset, run(""))
+	// An absolute path that names no readable file cannot be inspected, so
+	// it must not pass.
+	assert.Equal(t, assertNotJWTUninspected, run(filepath.Join(dir, "missing.token")))
+	assert.Equal(t, assertNotJWTUninspected, run(dir))
+}
+
+// A grep that fails (exit above 1, here a missing binary on PATH is not
+// usable, so a stub grep exits 2) must fail the check, not pass it.
+func TestAssertNotJWTCommand_GrepFailure(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "grep"), []byte("#!/bin/sh\nexit 2\n"), 0o755))
+	cmd := exec.Command("sh", "-c", assertNotJWTCommand("PROBE_VAR"))
+	cmd.Env = append(os.Environ(), "PROBE_VAR=openshell:resolve:env:v1_X", "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+	assert.Equal(t, assertNotJWTUninspected, exitErr.ExitCode())
+}
+
+func TestExecuteBehaviourOp_AssertNotJWT(t *testing.T) {
+	t.Parallel()
+	err := executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{Op: "assert_not_jwt"})
+	require.ErrorContains(t, err, "requires a variable name")
+	err = executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{Op: "assert_not_jwt", Args: "X; rm -rf /"})
+	require.ErrorContains(t, err, "invalid variable name")
+	for code, want := range map[int]string{0: "", assertNotJWTUnset: "unset or empty", assertNotJWTFound: "holds a JWT", assertNotJWTUninspected: "could not be inspected", 1: "failed"} {
+		rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+			return "", "boom", code, nil
+		}}
+		err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{Op: "assert_not_jwt", Args: "INFERENCE_GATEWAY_TOKEN_FILE"})
+		if want == "" {
+			require.NoError(t, err)
+			continue
+		}
+		require.ErrorContains(t, err, want)
+	}
+	rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "", -1, errors.New("exec down")
+	}}
+	err = executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{Op: "assert_not_jwt", Args: "X"})
+	require.ErrorContains(t, err, "exec down")
+}

@@ -382,16 +382,17 @@ func TestRouteCredentialKeysMatchRuntimeSeeds(t *testing.T) {
 // gatewayRecoveryStub puts an openshell on PATH whose placeholder read
 // answers nothing until dir/base exists, then the old generation, and the
 // new one once the provider was updated and dir/flip exists; a read after
-// the update touches dir/settling. Seed and verify execs succeed; a
-// provider update touches dir/updated.
+// the update touches dir/settling (and fails while dir/readfail exists).
+// Seed execs fail while dir/seedfail
+// exists and verify execs succeed; a provider update touches dir/updated.
 func gatewayRecoveryStub(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	q := func(name string) string { return shellQuoteForTest(filepath.Join(dir, name)) }
 	stubOpenshell(t, "case \"$*\" in\n"+
 		"  *grep*) exit 0 ;;\n"+
-		"  *inference-gateway.token*) exit 0 ;;\n"+
-		"  *INFERENCE_GATEWAY_API_KEY:-*) if test -f "+q("updated")+"; then touch "+q("settling")+"; fi; if test -f "+q("updated")+" && test -f "+q("flip")+"; then printf '"+ph("v222_INFERENCE_GATEWAY_API_KEY")+"'; elif test -f "+q("base")+"; then printf '"+ph("v111_INFERENCE_GATEWAY_API_KEY")+"'; fi; exit 0 ;;\n"+
+		"  *inference-gateway.token*) if test -f "+q("seedfail")+"; then exit 1; fi; exit 0 ;;\n"+
+		"  *INFERENCE_GATEWAY_API_KEY:-*) if test -f "+q("updated")+" && test -f "+q("readfail")+"; then exit 1; fi; if test -f "+q("updated")+"; then touch "+q("settling")+"; fi; if test -f "+q("updated")+" && test -f "+q("flip")+"; then printf '"+ph("v222_INFERENCE_GATEWAY_API_KEY")+"'; elif test -f "+q("base")+"; then printf '"+ph("v111_INFERENCE_GATEWAY_API_KEY")+"'; fi; exit 0 ;;\n"+
 		"  *'provider update'*) touch "+q("updated")+"; exit 0 ;;\n"+
 		"esac\nexit 0")
 	return dir
@@ -430,13 +431,15 @@ func countFiveMinuteAssertions(t *testing.T) *atomic.Int32 {
 	return &calls
 }
 
-// A failed hand-off is retried on its own, without fetching or rotating
-// again, and the agent gets the new placeholder once the sandbox hands it
-// out — well before the next rotation is due.
+// A hand-off whose seed fails is retried on its own, without fetching or
+// rotating again, and the agent gets the new placeholder once the seed
+// succeeds — well before the next rotation is due.
 func TestRunGatewayRefresh_RetriesTheHandOffAlone(t *testing.T) {
 	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
 	dir := gatewayRecoveryStub(t)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "base"), nil, 0o644))
+	for _, f := range []string{"base", "flip", "seedfail"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, f), nil, 0o644))
+	}
 	shrinkGatewayRefreshTimers(t)
 	calls := countFiveMinuteAssertions(t)
 	h := gatewayDueHandle(time.Minute)
@@ -447,7 +450,7 @@ func TestRunGatewayRefresh_RetriesTheHandOffAlone(t *testing.T) {
 	require.Eventually(t, func() bool { return strings.Contains(out.String(), "retrying the hand-off") }, 10*time.Second, 5*time.Millisecond, out.String())
 	assert.Never(t, func() bool { return calls.Load() > 1 }, 200*time.Millisecond, 5*time.Millisecond, "the hand-off is retried without another fetch")
 	assert.NotContains(t, out.String(), "still failing", "no warning per retry while the agent's token is valid")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "flip"), nil, 0o644))
+	require.NoError(t, os.Remove(filepath.Join(dir, "seedfail")))
 	require.Eventually(t, func() bool { return strings.Contains(out.String(), "handed off") }, 10*time.Second, 5*time.Millisecond, out.String())
 	assert.Equal(t, int32(1), calls.Load())
 }
@@ -586,4 +589,84 @@ func TestRunGatewayRefresh_PendingHandOffSeedsTheNewestGeneration(t *testing.T) 
 	assert.False(t, st.handOffPending)
 	assert.Equal(t, ph("v2_INFERENCE_GATEWAY_API_KEY"), st.placeholder, "the agent holds the newest generation")
 	assert.Equal(t, st.expiresAt, st.heldExpiresAt)
+}
+
+// A new generation that never reaches the sandbox within the settle wait
+// fails the route closed: no second rotation, the provider's expiry moves
+// back to the token the agent holds, and the refresher stops.
+func TestRunGatewayRefresh_SettleTimeoutFailsClosed(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	dir := gatewayRecoveryStub(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "base"), nil, 0o644)) // no flip: the old generation stays
+	shrinkGatewayRefreshTimers(t)
+	calls := countFiveMinuteAssertions(t)
+	var expiries []time.Time
+	orig := setProviderCredentialExpiryFn
+	setProviderCredentialExpiryFn = func(_ context.Context, name, key string, at time.Time) error {
+		assert.Equal(t, "inference-gateway-x", name)
+		assert.Equal(t, gatewayCredentialKey, key)
+		expiries = append(expiries, at)
+		return nil
+	}
+	t.Cleanup(func() { setProviderCredentialExpiryFn = orig })
+	h := gatewayDueHandle(time.Minute)
+	h.refreshState() // shared with the refresher's copy of h
+	held := h.expiresAt
+	var out syncBuffer
+	done := make(chan struct{})
+	go func() {
+		runGatewayRefresh(context.Background(), h, ui.New(&out))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not stop after the settle wait ran out")
+	}
+	assert.Equal(t, int32(1), calls.Load(), "no second rotation")
+	assert.Equal(t, []time.Time{held}, expiries, "the provider fails closed at the held token's expiry")
+	assert.Contains(t, out.String(), "stopped")
+	assert.NotContains(t, out.String(), "retrying the hand-off")
+	assert.Equal(t, held, h.state.expiresAt)
+}
+
+func TestHandOffTimeout_CoversEveryAttempt(t *testing.T) {
+	want := openAIPlaceholderSettle + openAIPlaceholderPoll + time.Duration(1+2*reseedSeedAttempts)*openAIPlaceholderExecTimeout
+	assert.Equal(t, want, handOffTimeout())
+}
+
+// A placeholder read that fails after the rotation is no evidence of the
+// new generation either: the route fails closed instead of rotating again.
+func TestRunGatewayRefresh_ReadFailureAfterRotationFailsClosed(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	dir := gatewayRecoveryStub(t)
+	for _, f := range []string{"base", "readfail"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, f), nil, 0o644))
+	}
+	shrinkGatewayRefreshTimers(t)
+	calls := countFiveMinuteAssertions(t)
+	var expiries []time.Time
+	orig := setProviderCredentialExpiryFn
+	setProviderCredentialExpiryFn = func(_ context.Context, _, _ string, at time.Time) error {
+		expiries = append(expiries, at)
+		return nil
+	}
+	t.Cleanup(func() { setProviderCredentialExpiryFn = orig })
+	h := gatewayDueHandle(time.Minute)
+	h.refreshState()
+	held := h.expiresAt
+	var out syncBuffer
+	done := make(chan struct{})
+	go func() {
+		runGatewayRefresh(context.Background(), h, ui.New(&out))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not stop after the failed read")
+	}
+	assert.Equal(t, int32(1), calls.Load(), "no second rotation")
+	assert.Equal(t, []time.Time{held}, expiries)
+	assert.Contains(t, out.String(), "not observed in the sandbox")
 }

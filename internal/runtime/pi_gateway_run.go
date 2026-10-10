@@ -27,6 +27,11 @@ const (
 	// piInferenceGatewayTokenFileEnv names the file the extension reads
 	// the gateway token from; the runner owns its value.
 	piInferenceGatewayTokenFileEnv = "INFERENCE_GATEWAY_TOKEN_FILE"
+	// piInferenceGatewayConfigFileEnv names the one config file the
+	// extension (v0.1.2 and later) reads: no other file in the config dir
+	// and no overlay. The runner points it at the guarded rendered file for
+	// the parent; the Agent extension points each child at its own copy.
+	piInferenceGatewayConfigFileEnv = "INFERENCE_GATEWAY_CONFIG_FILE"
 	// piInferenceGatewayEnvPrefix is the extension's environment family.
 	piInferenceGatewayEnvPrefix = "INFERENCE_GATEWAY_"
 	// piInferenceGatewayExtensionName is the extension's directory name.
@@ -50,6 +55,9 @@ type PiGatewayRun struct {
 	// INFERENCE_GATEWAY_TOKEN_FILE. Required: validatePiGatewayRun refuses
 	// a run without it.
 	TokenFile string
+	// ConfigFile is the sandbox path of the rendered config, exported as
+	// INFERENCE_GATEWAY_CONFIG_FILE for the parent.
+	ConfigFile string
 }
 
 func (g *PiGatewayRun) configSum() string {
@@ -197,6 +205,9 @@ func piGatewayEnvParts(g *PiGatewayRun) []string {
 	if g.TokenFile != "" {
 		parts = append(parts, "&& export "+piInferenceGatewayTokenFileEnv+"="+shellQuote(g.TokenFile))
 	}
+	if g.ConfigFile != "" {
+		parts = append(parts, "&& export "+piInferenceGatewayConfigFileEnv+"="+shellQuote(g.ConfigFile))
+	}
 	return parts
 }
 
@@ -230,12 +241,12 @@ func PiGatewayTokenSeed(configDir string) string {
 	dir := shellQuote(configDir)
 	final := shellQuote(configDir + "/" + piInferenceGatewayTokenFile)
 	tmp := shellQuote(configDir+"/"+piInferenceGatewayTokenFile+".fullsend") + `.$$`
-	return `case "${` + piGatewayCredentialEnv + `:-}" in ` + piPlaceholderPrefix + `*` + piGatewayCredentialEnv + `) ;; *) echo 'fullsend: ` + piGatewayCredentialEnv + ` in the sandbox is not a gateway placeholder (inference gateway provider not attached, or a real token reached the sandbox); refusing to run the gateway provider' >&2; exit 1 ;; esac` +
-		` && case "$` + piGatewayCredentialEnv + `" in *[!A-Za-z0-9_:]*) echo 'fullsend: ` + piGatewayCredentialEnv + ` placeholder has unexpected characters; refusing to run the gateway provider' >&2; exit 1 ;; esac` +
-		` && command -p mkdir -p ` + dir +
-		` && { printf '%s' "$` + piGatewayCredentialEnv + `" > ` + tmp +
+	return `case "${` + piGatewayCredentialEnv + `:-}" in ` + piPlaceholderPrefix + `*` + piGatewayCredentialEnv + `) ;; *) echo 'fullsend: ` + piGatewayCredentialEnv + ` in the sandbox is not a gateway placeholder (inference gateway provider not attached, or a real token reached the sandbox); refusing to run the gateway provider' >&2; ` + piSeedExit + ` ;; esac` +
+		` && case "$` + piGatewayCredentialEnv + `" in *[!A-Za-z0-9_:]*) echo 'fullsend: ` + piGatewayCredentialEnv + ` placeholder has unexpected characters; refusing to run the gateway provider' >&2; ` + piSeedExit + ` ;; esac` +
+		` && { command -p mkdir -p ` + dir +
+		` && printf '%s' "$` + piGatewayCredentialEnv + `" > ` + tmp +
 		` && command -p mv -f ` + tmp + ` ` + final +
-		` || { command -p rm -f ` + tmp + `; echo 'fullsend: writing the inference gateway token file failed' >&2; exit 1; }; }`
+		` || { command -p rm -f ` + tmp + `; echo 'fullsend: writing the inference gateway token file failed' >&2; ` + piSeedExit + `; }; }`
 }
 
 // PrepareGatewayRun implements GatewayRouteRuntime: it renders the
@@ -248,10 +259,11 @@ func (r PiRuntime) PrepareGatewayRun(sandboxName string, run GatewayRun) error {
 		return err
 	}
 	SetPiGatewayRun(sandboxName, &PiGatewayRun{
-		Config:    cfg,
-		ModelIDs:  ids,
-		BaseURL:   run.BaseURL,
-		TokenFile: r.ConfigDir() + "/" + piInferenceGatewayTokenFile,
+		Config:     cfg,
+		ModelIDs:   ids,
+		BaseURL:    run.BaseURL,
+		TokenFile:  r.ConfigDir() + "/" + piInferenceGatewayTokenFile,
+		ConfigFile: r.ConfigDir() + "/" + PiInferenceGatewayConfigFile,
 	})
 	return nil
 }

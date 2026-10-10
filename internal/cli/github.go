@@ -71,9 +71,10 @@ type githubSetupConfig struct {
 	signoff                  bool   // --signoff: add Signed-off-by trailer to scaffold commits
 
 	// Inference gateway block (ADR 0137), written to inference.gateway in
-	// .fullsend/config.yaml; url + audience all or none.
+	// .fullsend/config.yaml; url always, audience in the oidc auth mode.
 	gatewayURL        string
 	gatewayAudience   string
+	gatewayAuth       string
 	gatewayModels     []string
 	gatewayModelsFile string
 
@@ -163,8 +164,9 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().StringVar(&cfg.openaiAudience, "openai-audience", "", "OpenAI Workload Identity audience (GPT on pi or codex; with --openai-identity-provider-id and --openai-service-account-id)")
 	cmd.Flags().StringVar(&cfg.openaiIdentityProviderID, "openai-identity-provider-id", "", "OpenAI Workload Identity provider ID")
 	cmd.Flags().StringVar(&cfg.openaiServiceAccountID, "openai-service-account-id", "", "OpenAI service account ID the provider maps this repository to")
-	cmd.Flags().StringVar(&cfg.gatewayURL, "inference-gateway-url", "", "inference gateway origin, https://host with no path and port 443 only (plain http and any port only for a loopback test host); gateway/ models on pi, with --inference-gateway-audience")
-	cmd.Flags().StringVar(&cfg.gatewayAudience, "inference-gateway-audience", "", "OIDC audience the runner requests for the inference gateway")
+	cmd.Flags().StringVar(&cfg.gatewayURL, "inference-gateway-url", "", "inference gateway origin, https://host with no path and port 443 only (plain http and any port only for a loopback test host); gateway/ models on pi, with --inference-gateway-audience in the oidc auth mode")
+	cmd.Flags().StringVar(&cfg.gatewayAudience, "inference-gateway-audience", "", "OIDC audience the runner requests for the inference gateway (required in the oidc auth mode)")
+	cmd.Flags().StringVar(&cfg.gatewayAuth, "inference-gateway-auth", "", "inference gateway credential mode: oidc (default; the job's OIDC token) or api-key (FULLSEND_INFERENCE_GATEWAY_API_KEY; supported for gateways that cannot trust forge OIDC, but relies on a long-lived secret, so use with caution)")
 	cmd.Flags().StringArrayVar(&cfg.gatewayModels, "inference-gateway-model", nil, "inference gateway model as id=api (repeatable; api is openai-responses, anthropic-messages or openai-completions)")
 	cmd.Flags().StringVar(&cfg.gatewayModelsFile, "inference-gateway-models-file", "", "local pi-inference-gateway config file listing the gateway models; validated and committed as "+gatewayModelsFileRepoPath)
 	cmd.Flags().StringVar(&cfg.appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
@@ -573,7 +575,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 // setupConfigFlags are the flags that target a key in .fullsend/config.yaml.
 // Any of them being passed explicitly turns a re-run from "keep the file"
 // into "change that key on the existing file".
-var setupConfigFlags = []string{"runtime", "agents", "mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider", "openai-audience", "openai-identity-provider-id", "openai-service-account-id", "inference-gateway-url", "inference-gateway-audience", "inference-gateway-model", "inference-gateway-models-file"}
+var setupConfigFlags = []string{"runtime", "agents", "mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider", "openai-audience", "openai-identity-provider-id", "openai-service-account-id", "inference-gateway-url", "inference-gateway-audience", "inference-gateway-auth", "inference-gateway-model", "inference-gateway-models-file"}
 
 // setupConfigFlagsChanged reports whether any config-targeting flag was
 // passed explicitly (cobra's Changed, recorded in changedFlags — value
@@ -1129,6 +1131,7 @@ var configKeyMapping = map[string]configKeyInfo{
 	"FULLSEND_GCP_PROJECT_ID":   {storage: storageSecret},
 	"FULLSEND_GCP_WIF_PROVIDER": {storage: storageSecret},
 	openAIRepoSecretName:        {storage: storageSecret},
+	gatewayAPIKeyEnv:            {storage: storageSecret},
 }
 
 func newGitHubSetCmd() *cobra.Command {
@@ -1145,7 +1148,9 @@ Valid keys:
   FULLSEND_PER_REPO_INSTALL   repo variable   per-repo install marker
   FULLSEND_GCP_PROJECT_ID     repo secret     GCP project for inference
   FULLSEND_GCP_WIF_PROVIDER   repo secret     WIF provider resource name
-  FULLSEND_OPENAI_API_KEY     repo secret     opt-in OpenAI API key when WIF is unset`,
+  FULLSEND_OPENAI_API_KEY     repo secret     opt-in OpenAI API key when WIF is unset
+  FULLSEND_INFERENCE_GATEWAY_API_KEY
+                              repo secret     inference gateway key for auth: api-key`,
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
@@ -1179,7 +1184,7 @@ func runGitHubSet(ctx context.Context, client forge.Client, printer *ui.Printer,
 		return fmt.Errorf("unknown config key %q; valid keys: %s", key, strings.Join(validKeys, ", "))
 	}
 
-	if key == openAIRepoSecretName && strings.TrimSpace(value) == "" {
+	if (key == openAIRepoSecretName || key == gatewayAPIKeyEnv) && strings.TrimSpace(value) == "" {
 		return fmt.Errorf("value for %s must not be empty", key)
 	}
 

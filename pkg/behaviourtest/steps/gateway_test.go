@@ -12,6 +12,19 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
+func TestGatewayProviderCleanupLogged(t *testing.T) {
+	require.NoError(t, gatewayProviderCleanupLogged("x\n  ✓ Run-scoped provider deleted: inference-gateway-0123456789ab\n"))
+	require.NoError(t, gatewayProviderCleanupLogged("Run-scoped provider already gone: inference-gateway-abc"))
+	err := gatewayProviderCleanupLogged("Run-scoped provider deleted: openai-0123")
+	require.Error(t, err, "another provider's cleanup does not count")
+	assert.Contains(t, err.Error(), "inference gateway provider")
+}
+
+func TestThenGatewayProviderCleanedUp_NoRun(t *testing.T) {
+	err := thenGatewayProviderCleanedUp(&world.World{})
+	require.ErrorContains(t, err, "no workflow run recorded")
+}
+
 func TestTestGatewayFromEnv(t *testing.T) {
 	t.Setenv(envInferenceGatewayURL, "")
 	_, _, ok := testGatewayFromEnv()
@@ -46,7 +59,7 @@ func TestExpandGatewayPlaceholder(t *testing.T) {
 func TestWithInferenceGatewayKeepsOtherKeys(t *testing.T) {
 	t.Parallel()
 
-	out, err := withInferenceGateway([]byte("runtime: dummy\ninference:\n  openai:\n    project: p\n"), "https://gw.example", "aud")
+	out, err := withInferenceGateway([]byte("runtime: dummy\ninference:\n  openai:\n    project: p\n"), map[string]any{"url": "https://gw.example", "audience": "aud"})
 	require.NoError(t, err)
 	var doc map[string]any
 	require.NoError(t, yaml.Unmarshal(out, &doc))
@@ -55,11 +68,11 @@ func TestWithInferenceGatewayKeepsOtherKeys(t *testing.T) {
 	assert.Equal(t, map[string]any{"project": "p"}, inference["openai"])
 	assert.Equal(t, map[string]any{"url": "https://gw.example", "audience": "aud"}, inference["gateway"])
 
-	out, err = withInferenceGateway(nil, "https://gw.example", "aud")
+	out, err = withInferenceGateway(nil, map[string]any{"url": "https://gw.example", "audience": "aud"})
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "audience: aud")
 
-	_, err = withInferenceGateway([]byte("{"), "u", "a")
+	_, err = withInferenceGateway([]byte("{"), map[string]any{"url": "u"})
 	assert.Error(t, err)
 }
 
@@ -78,6 +91,7 @@ func TestGivenTestInferenceGateway_RecordsOriginalOnWorld(t *testing.T) {
 	assert.Equal(t, original, w.GatewayConfigOriginal)
 	require.Len(t, scmDriver.commits, 1)
 	assert.Contains(t, string(scmDriver.commits[0].content), "audience: aud")
+	assert.Contains(t, string(scmDriver.commits[0].content), "supportsStrictTools: false", "the model list pi needs is committed")
 
 	// A second run reads the already-modified file; the pre-scenario
 	// original must win.
@@ -145,4 +159,31 @@ func TestProbeBodyRedactedJWT(t *testing.T) {
 	// Other needles still match the recorded text only.
 	require.NoError(t, checkProbeBody(res, false, "x-api-key"))
 	require.NoError(t, checkProbeBody(res, true, "<redacted-jwt>"))
+}
+
+// The api-key step commits url and auth only, and skips without the URL
+// or the test key.
+func TestGivenTestInferenceGatewayAPIKey(t *testing.T) {
+	t.Setenv(envInferenceGatewayURL, "https://gw.example")
+	t.Setenv(envInferenceGatewayTestKey, "")
+	w := &world.World{Org: "org", RepoName: "repo", SCM: &fakeCleanupSCM{fileContent: []byte("runtime: dummy\n")}}
+	assert.ErrorIs(t, givenTestInferenceGatewayAPIKey(w), godog.ErrSkip, "no key: skip")
+
+	t.Setenv(envInferenceGatewayTestKey, "test-gateway-key-value")
+	scmDriver := &fakeCleanupSCM{fileContent: []byte("runtime: dummy\n")}
+	w = &world.World{Org: "org", RepoName: "repo", SCM: scmDriver}
+	require.NoError(t, givenTestInferenceGatewayAPIKey(w))
+	require.Len(t, scmDriver.commits, 1)
+	var doc map[string]any
+	require.NoError(t, yaml.Unmarshal(scmDriver.commits[0].content, &doc))
+	gw := doc["inference"].(map[string]any)["gateway"].(map[string]any)
+	assert.Equal(t, "https://gw.example", gw["url"])
+	assert.Equal(t, "api-key", gw["auth"])
+	assert.NotContains(t, gw, "audience")
+	assert.Equal(t, map[string]any{"api": "anthropic-messages", "compat": map[string]any{"supportsStrictTools": false}},
+		gw["models"].(map[string]any)["claude-haiku-5-5"], "pi runs offline: the model list is committed")
+	assert.NotContains(t, string(scmDriver.commits[0].content), "test-gateway-key-value", "the key is never committed")
+
+	t.Setenv(envInferenceGatewayURL, "")
+	assert.ErrorIs(t, givenTestInferenceGatewayAPIKey(&world.World{SCM: &fakeCleanupSCM{}}), godog.ErrSkip, "no URL: skip")
 }

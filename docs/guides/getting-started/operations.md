@@ -39,6 +39,7 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 | `FULLSEND_OPENAI_API_KEY` | Repo secret | OpenAI API key for repos whose `inference.auth` is `openai-api-key`, written by `repos install --openai-api-key` (exported as `OPENAI_API_KEY`; unused when the WIF trio is set) | `sk-...` |
+| `FULLSEND_INFERENCE_GATEWAY_API_KEY` | Repo secret | Inference gateway API key for repos whose `inference.gateway.auth` is `api-key` (ADR 0138); set by the repository admin (`fullsend github set`), not by setup. A long-lived secret: prefer `auth: oidc` | — |
 
 Repositories selecting `inference.auth: openai-wif` need no inference secrets unless
 Vertex sub-agents require GCP credentials. See [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)
@@ -81,6 +82,7 @@ region there remains an alternative.
 | `FULLSEND_GITLAB_POLLER_GENERATIONS` | CI/CD variable (protected, unmasked) | Poller identity-generation state (account IDs and handoff phase; never token values). Not yet written by any command; after the manual cleanup a quarantine message describes, an administrator removes only the `pending` generation and keeps `version`, `current_user_id` and `retiring_user_id`. | `{"version":1}` |
 | `FULLSEND_GITLAB_POLLER_TOKEN` / `FULLSEND_GITLAB_ANALYST_TOKEN` / `FULLSEND_GITLAB_CODER_TOKEN` | CI/CD secret | Built-in role PATs provisioned by `repos install`; the selected role secret is required for every runtime job | (masked) |
 | `FULLSEND_OPENAI_API_KEY` | CI/CD variable (masked) | OpenAI API key for projects whose `inference.auth` is `openai-api-key`, written by `repos install --openai-api-key`. The job maps it to `OPENAI_API_KEY`; an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used (see [upgrade steps](../../cli/repos.md#gitlab-fullsend_openai_api_key-replaces-openai_api_key-breaking)) | `sk-...` |
+| `FULLSEND_INFERENCE_GATEWAY_API_KEY` | CI/CD variable (masked) | Inference gateway API key for projects whose `inference.gateway.auth` is `api-key` (ADR 0138); the job passes it to the runner under its own name. Set by the project admin, not by setup | — |
 
 `repos install` provisions and rotates the registered role credentials directly. There is no migration gate and no shared-token runtime path. Neither install nor uninstall removes a leftover `FULLSEND_FORGE_TOKEN` from a repository installed before the role-only rollout — clean that up manually.
 
@@ -143,7 +145,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Repo Maintainer (OpenAI) | `fullsend inference openai request <owner/repo>[,...]` | Generate the provider/mapping request for an OpenAI organization admin (GPT on pi or codex) |
 | Repo Maintainer (OpenAI) | `fullsend inference openai import [reply.json]` | Record the admin's reply in `config.yaml`, or set the repository variables |
 | Repo Maintainer (OpenAI) | `fullsend inference openai status <owner/repo>` | Check the OpenAI WIF identifiers, and the exchange when run inside Actions |
-| Repo Maintainer (Gateway) | `fullsend inference gateway status <owner/repo>` | Check the `inference.gateway` block and its source, and the gateway's response to the job's OIDC token when run inside Actions |
+| Repo Maintainer (Gateway) | `fullsend inference gateway status <owner/repo>` | Check the `inference.gateway` block, its source and its auth mode. In the default `oidc` mode it also checks the gateway's response to the job's OIDC token when run inside Actions. In the `api-key` mode it warns about the long-lived secret, reports whether `FULLSEND_INFERENCE_GATEWAY_API_KEY` is set, and stops at the config checks |
 | GitHub Maintainer | `fullsend github setup <owner/repo>` | Configure a GitHub repo (no GCP needed) |
 | GitHub Maintainer | `fullsend github set <owner/repo> <key> <value>` | Update a single config value (secret or variable) |
 | GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |

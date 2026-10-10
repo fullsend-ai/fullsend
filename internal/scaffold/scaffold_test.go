@@ -99,6 +99,7 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "install_mode")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
 	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
+	assert.Contains(t, s, "FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}")
 	// Per-role concurrency lives in reusable-dispatch.yml, not a monolithic shim group (#2452).
 	assert.NotContains(t, s, "fullsend-dispatch-${{")
 	assert.NotRegexp(t, `(?m)^\s+concurrency:`, s)
@@ -557,6 +558,7 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
 	assert.Contains(t, s, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
 	assert.Contains(t, s, "FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}")
+	assert.Contains(t, s, "FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}")
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-prioritize-")
 	assert.Contains(t, s, "cancel-in-progress: true")

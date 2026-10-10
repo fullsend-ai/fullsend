@@ -114,6 +114,11 @@ const (
 	// variable is no longer read by the job and is never deleted — see
 	// gitlabUninstallSecrets in internal/repos/uninstall.go.
 	SecretOpenAIAPIKey = "FULLSEND_OPENAI_API_KEY"
+	// SecretInferenceGatewayAPIKey is the inference gateway's API key for
+	// inference.gateway.auth api-key (ADR 0138): a forge secret (GitHub) or
+	// masked CI/CD variable (GitLab) the runner reads under this name.
+	// Setup does not write it; the repository admin sets it.
+	SecretInferenceGatewayAPIKey = "FULLSEND_INFERENCE_GATEWAY_API_KEY"
 
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"

@@ -1397,8 +1397,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Inference gateway route unavailable")
 		return err
 	}
-	if gatewayPlan != nil && gatewayPlan.prepared != nil {
-		defer gatewayPlan.prepared.ClearGatewayRun(sandboxName)
+	if gatewayPlan != nil {
+		iterations := 1
+		if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
+			iterations = h.ValidationLoop.MaxIterations
+		}
+		gatewayPlan.apiKeyLifetime = gatewayAPIKeyLifetimeFor(iterations, time.Duration(effectiveTimeoutMinutes(h))*time.Minute)
+		if gatewayPlan.prepared != nil {
+			defer gatewayPlan.prepared.ClearGatewayRun(sandboxName)
+		}
 	}
 	// runScopedProviders maps a harness provider name to the run-scoped
 	// instance created for it; sandbox creation attaches the latter.
@@ -3106,6 +3113,11 @@ var oidcDenyKeys = map[string]bool{
 	// script maps it to OPENAI_API_KEY and unsets it; if it is ever still
 	// present it holds the real key and must stay runner-only too.
 	"FULLSEND_OPENAI_API_KEY": true,
+	// The inference gateway's api-key credential (ADR 0138) reaches the
+	// sandbox only as the run-scoped gateway provider's placeholder, the
+	// same way: no harness expansion may copy it, and pre/post scripts
+	// never see it.
+	gatewayAPIKeyEnv: true,
 	// The GitLab webhook fast-path credentials `fullsend repos install`
 	// provisions as protected, wildcard-scoped CI/CD variables. The trigger
 	// token is a bearer credential that starts pipelines on the protected

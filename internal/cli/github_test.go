@@ -661,10 +661,12 @@ func TestGitHubSetCmd_RejectsEmptyValue(t *testing.T) {
 	client := forge.NewFakeClient()
 	printer := ui.New(&discardWriter{})
 
-	for _, value := range []string{"", "   "} {
-		err := runGitHubSet(context.Background(), client, printer, "acme/widget", openAIRepoSecretName, value)
-		require.Error(t, err, "empty value %q should be rejected", value)
-		assert.Contains(t, err.Error(), "must not be empty")
+	for _, key := range []string{openAIRepoSecretName, gatewayAPIKeyEnv} {
+		for _, value := range []string{"", "   "} {
+			err := runGitHubSet(context.Background(), client, printer, "acme/widget", key, value)
+			require.Error(t, err, "empty %s value %q should be rejected", key, value)
+			assert.Contains(t, err.Error(), "must not be empty")
+		}
 	}
 	assert.Empty(t, client.CreatedSecrets, "an empty value must not be stored")
 }
@@ -677,6 +679,7 @@ func TestConfigKeyMapping_AllKeys(t *testing.T) {
 		"FULLSEND_GCP_PROJECT_ID",
 		"FULLSEND_GCP_WIF_PROVIDER",
 		openAIRepoSecretName,
+		gatewayAPIKeyEnv,
 	}
 	for _, key := range expectedKeys {
 		_, ok := configKeyMapping[key]
@@ -690,6 +693,7 @@ func TestConfigKeyMapping_AllKeys(t *testing.T) {
 
 	openAIInfo := configKeyMapping[openAIRepoSecretName]
 	assert.Equal(t, storageSecret, openAIInfo.storage)
+	assert.Equal(t, storageSecret, configKeyMapping[gatewayAPIKeyEnv].storage, "the gateway key is a secret, never a variable")
 }
 
 func TestGitHubSetCmd_ValidatesWIFProvider(t *testing.T) {
