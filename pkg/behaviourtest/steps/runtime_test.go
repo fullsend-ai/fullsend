@@ -145,6 +145,32 @@ func TestRunMetricsAssertions(t *testing.T) {
 	require.ErrorContains(t, assertRunMetricsReportTokens(&world.World{ArtifactDir: empty}), "want input and output > 0")
 }
 
+func TestAssertRunMetricsReportTokensUnless(t *testing.T) {
+	t.Parallel()
+	const exempt = "gateway/gpt-oss-120b"
+	cases := []struct {
+		name, metrics, wantErr string
+	}{
+		{"tokens pass", `{"requested_model":"openai/gpt-5.6-luna","num_turns":2,"token_usage":{"input":10,"output":5}}`, ""},
+		{"exempt model with zero tokens passes", `{"requested_model":"gateway/gpt-oss-120b","num_turns":3,"token_usage":{"input":0,"output":0}}`, ""},
+		{"exempt model that never answered fails", `{"requested_model":"gateway/gpt-oss-120b","num_turns":0,"token_usage":{"input":0,"output":0}}`, "never answered"},
+		{"other model with zero tokens fails", `{"requested_model":"gateway/other","num_turns":3,"token_usage":{"input":0,"output":0}}`, "want input and output > 0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			writeArtifact(t, root, "metrics.json", tc.metrics)
+			err := assertRunMetricsReportTokensUnless(&world.World{ArtifactDir: root}, exempt)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
 func TestAssertPiTranscriptHasToolCall(t *testing.T) {
 	t.Parallel()
 	const header = `{"type":"session","version":3,"id":"abc","timestamp":"2026-08-22T10:00:00.000Z","cwd":"/r"}` + "\n"

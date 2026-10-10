@@ -118,6 +118,10 @@ used on codex, and codex's own `GET /v1/models` probe is denied by the gateway p
 `gateway/` is what codex sends. The gateway must serve
 it on `POST /v1/responses` with Bearer auth.
 
+**Token counts can read 0.** Codex takes usage from the gateway's final Responses event. A gateway
+that delivers usage only after the finish chunk sends zeros there, so `metrics.json` records 0 tokens
+for a run that did answer. Read usage from the gateway's own log in that case.
+
 **Check the effort level against the model.** Effort is passed to the gateway as is, and some models
 refuse some levels. `gpt-6-luna`, for example, rejects `minimal` with an upstream 400 (it accepts
 `none`, `low`, `medium`, `high`, `xhigh` and `max`).
