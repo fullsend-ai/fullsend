@@ -187,8 +187,8 @@ refresh_interval_ms = {{ .RefreshIntervalMS }}
 timeout_ms = {{ .TimeoutMS }}
 {{ end }}`))
 
-// codexBaseURL is the OpenAI Responses API base. It is also the only
-// `base_url` the run guard tolerates in the rendered file.
+// codexBaseURL is the OpenAI Responses API base of the fullsend-openai
+// provider.
 const codexBaseURL = "https://api.openai.com/v1"
 
 // codexConfigData is codexConfigTemplate's input. DeveloperInstructions and

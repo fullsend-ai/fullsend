@@ -74,7 +74,8 @@ func (o *Options) Validate() error {
 	if o.Runtime == "codex" {
 		if err := agentruntime.ValidateCodexModel(o.Model); err != nil {
 			return fmt.Errorf("runtime codex takes OpenAI model ids only, and %s: "+
-				"use --model openai/gpt-5.6-luna (or another openai/<id>) on the command, "+
+				"use --model openai/gpt-5.6-luna (or another openai/<id>, or gateway/<model> "+
+				"with an inference.gateway block) on the command, "+
 				"or model: openai/gpt-5.6-luna in the spec file", describeModel(o.Model))
 		}
 	}
@@ -117,6 +118,13 @@ func (o Options) UsesVertex() bool {
 func hasOpenAIPrefix(model string) bool {
 	prefix, _, ok := strings.Cut(model, "/")
 	return ok && strings.EqualFold(prefix, "openai")
+}
+
+// UsesGateway reports whether a codex agent's model selects the inference
+// gateway route (gateway/<model>), which needs no OpenAI credential.
+func (o Options) UsesGateway() bool {
+	prefix, _, ok := strings.Cut(o.Model, "/")
+	return o.Runtime == "codex" && ok && strings.EqualFold(prefix, "gateway")
 }
 
 // describeModel names what was wrong with a model codex refused.

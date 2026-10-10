@@ -335,6 +335,10 @@ func printNextSteps(opts agentnew.Options, f agentNewFlags, printer *ui.Printer)
 		agentnew.DryRunEnvVar(opts.Name), opts.Name, fullsendDirArg(f.fullsendDir)))
 	printer.Raw("     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,\n")
 	switch {
+	case opts.UsesGateway():
+		printer.Raw("     and GH_TOKEN. The model goes through the inference.gateway block in\n")
+		printer.Raw("     .fullsend/config.yaml; with auth: api-key, also set\n")
+		printer.Raw("     FULLSEND_INFERENCE_GATEWAY_API_KEY on the runner.\n")
 	case !opts.UsesVertex():
 		printer.Raw("     GH_TOKEN, and OPENAI_API_KEY. No GCP variables are needed: this\n")
 		printer.Raw("     agent calls only OpenAI, and the runner keeps the key out of the\n")

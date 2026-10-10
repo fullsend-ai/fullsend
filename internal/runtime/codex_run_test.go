@@ -45,9 +45,10 @@ func TestValidateCodexModel(t *testing.T) {
 	require.NoError(t, ValidateCodexModel("gpt-5.6-luna"))
 	require.Error(t, ValidateCodexModel(""))
 	require.Error(t, ValidateCodexModel("opus"))
-	// `agent new` cannot know whether a block will apply, so it keeps
-	// generating openai/ harnesses only.
-	require.Error(t, ValidateCodexModel("gateway/vendor/org/model"))
+	// Accepted by shape: whether a block applies is checked at run time.
+	require.NoError(t, ValidateCodexModel("gateway/vendor/org/model"))
+	require.Error(t, ValidateCodexModel("gateway/"))
+	require.Error(t, ValidateCodexModel("google-vertex/gemini-3.8-flash"))
 }
 
 func TestTranslateCodexModel(t *testing.T) {

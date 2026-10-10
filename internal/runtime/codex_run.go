@@ -138,12 +138,13 @@ const codexModelHelp = "set FULLSEND_CODEX_MODEL=" + codexOpenAIProvider +
 	"/<id> on the agent's agents: entry or the harness"
 
 // ValidateCodexModel reports whether model is one fullsend's codex
-// integration can serve. Empty, a Claude alias, or a non-openai provider
-// prefix are errors; the message names both ways to set a valid id. Used by
-// `agent new` so `--runtime codex` cannot generate a harness the runtime
-// will refuse (#7264).
+// integration can serve. Empty, a Claude alias, or a provider prefix other
+// than openai/ or gateway/ are errors; the message names both ways to set a
+// valid id. Used by `agent new` so `--runtime codex` cannot generate a harness
+// the runtime will refuse (#7264). A gateway/ model is accepted by shape:
+// whether an inference.gateway block applies is known only at run time.
 func ValidateCodexModel(model string) error {
-	_, err := translateCodexModel(model, false)
+	_, err := translateCodexModel(model, true)
 	return err
 }
 
