@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -641,6 +642,32 @@ func TestRunInferenceProvider(t *testing.T) {
 	assert.Equal(t, runProviderNone, runInferenceProvider("dummy-playback", false, false))
 	assert.Equal(t, runProviderVertex, runInferenceProvider("opencode", false, false))
 	assert.Equal(t, runProviderVertex, runInferenceProvider("claude", false, false))
+}
+
+// A sandbox that fails a credential egress preflight is deleted, since
+// the run's own cleanup defer is not registered yet; --keep-sandbox keeps
+// it, and a delete failure is only a warning.
+func TestDiscardSandbox(t *testing.T) {
+	var deleted []string
+	var delErr error
+	orig := deleteSandboxFn
+	deleteSandboxFn = func(name string) error {
+		deleted = append(deleted, name)
+		return delErr
+	}
+	t.Cleanup(func() { deleteSandboxFn = orig })
+
+	discardSandbox("sb-kept", true, ui.New(io.Discard))
+	assert.Empty(t, deleted, "--keep-sandbox keeps it")
+
+	discardSandbox("sb-1", false, ui.New(io.Discard))
+	assert.Equal(t, []string{"sb-1"}, deleted)
+
+	delErr = errors.New("boom")
+	var out bytes.Buffer
+	discardSandbox("sb-2", false, ui.New(&out))
+	assert.Equal(t, []string{"sb-1", "sb-2"}, deleted)
+	assert.Contains(t, out.String(), "Sandbox cleanup failed: boom")
 }
 
 func TestValidateVertexGCPCredentials(t *testing.T) {

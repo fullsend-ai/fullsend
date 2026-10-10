@@ -1831,6 +1831,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// after the agent has retried its first request.
 		if err := checkOpenAIEgressInspected(ctx, sandboxName); err != nil {
 			printer.StepFail("Sandbox policy cannot deliver the OpenAI credential")
+			discardSandbox(sandboxName, keepSandbox, printer)
 			return err
 		}
 		// From here a refresh must also re-seed the running agent's
@@ -1844,6 +1845,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// only reaches it through an inspected route.
 		if err := checkGatewayEgressInspected(ctx, sandboxName, gatewayPlan.host); err != nil {
 			printer.StepFail("Sandbox policy cannot deliver the inference gateway credential")
+			discardSandbox(sandboxName, keepSandbox, printer)
 			return err
 		}
 		for _, gh := range gatewayHandles {
@@ -4446,6 +4448,26 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 		SpanKind:        spanKind,
 		PropagatedFlags: propagatedFlags,
 	}
+}
+
+// deleteSandboxFn is sandbox.Delete; tests replace it.
+var deleteSandboxFn = sandbox.Delete
+
+// discardSandbox deletes a sandbox that failed a credential egress
+// preflight. Those preflights run before the run's own sandbox cleanup
+// defer is registered (it must follow the post-script's), so without this
+// a failed preflight would leave the sandbox running. --keep-sandbox
+// keeps it, as it does for every other failure.
+func discardSandbox(sandboxName string, keep bool, printer *ui.Printer) {
+	if keep {
+		printer.StepWarn(fmt.Sprintf("Sandbox kept (--keep-sandbox): %s", sandboxName))
+		return
+	}
+	if err := deleteSandboxFn(sandboxName); err != nil {
+		printer.StepWarn("Sandbox cleanup failed: " + err.Error())
+		return
+	}
+	printer.StepDone("Sandbox deleted after the failed preflight")
 }
 
 // runInferenceProvider maps the resolved runtime to the provider the parent
