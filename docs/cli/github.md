@@ -99,6 +99,7 @@ fullsend github set <owner/repo> <key> <value>
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project for inference |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | WIF provider resource name |
 | `FULLSEND_OPENAI_API_KEY` | Repo secret | Opt-in OpenAI API key used only when the WIF trio is unset. Do not add this via `github setup`; set it only when you cannot enrol OpenAI WIF. |
+| `FULLSEND_INFERENCE_GATEWAY_API_KEY` | Repo secret | Inference gateway API key, read only when `inference.gateway.auth` is `api-key` ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)). A long-lived secret: prefer `auth: oidc` where the gateway can trust forge OIDC. |
 
 ## See also
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/inference/actionsoidc"
 )
 
@@ -177,7 +178,7 @@ func gatewayAudienceHint(g config.InferenceGatewayConfig) string {
 // gatewayAPIKeyEnv is where the api-key mode reads the gateway API key: a
 // forge secret in CI or the local environment. It is never written to
 // config.
-const gatewayAPIKeyEnv = "FULLSEND_INFERENCE_GATEWAY_API_KEY"
+const gatewayAPIKeyEnv = forge.SecretInferenceGatewayAPIKey
 
 // gatewayAPIKeyEnvFn reads gatewayAPIKeyEnv. Override in tests.
 var gatewayAPIKeyEnvFn = func() string { return os.Getenv(gatewayAPIKeyEnv) }

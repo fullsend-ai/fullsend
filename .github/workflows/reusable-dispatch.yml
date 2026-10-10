@@ -84,6 +84,8 @@ on:
         required: false
       FULLSEND_OPENAI_API_KEY:
         required: false
+      FULLSEND_INFERENCE_GATEWAY_API_KEY:
+        required: false
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
         description: >-
           OTLP headers for ADR 0050 Level 2 trace export, forwarded to all
@@ -760,6 +762,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: triage
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -895,6 +900,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: code
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1021,6 +1029,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: review
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1309,6 +1320,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: fix
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1415,6 +1429,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: retro
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1507,6 +1524,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: prioritize
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1861,6 +1881,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
