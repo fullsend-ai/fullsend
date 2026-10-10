@@ -12,6 +12,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,10 +76,10 @@ func TestGitLabPollerTriggerOwner_ContainPoller(t *testing.T) {
 			return !slices.Contains(revoked, fmt.Sprintf("/api/v4/projects/g/p/service_accounts/77/personal_access_tokens/%d", id))
 		}
 		toks := []map[string]any{
-			{"id": 1, "name": "fullsend-poller", "active": active(1)},
-			{"id": 2, "name": "fullsend-poller", "active": false, "revoked": true},
+			{"id": 1, "name": gitlabroles.PollerTokenName, "active": active(1)},
+			{"id": 2, "name": gitlabroles.PollerTokenName, "active": false, "revoked": true},
 			{"id": 3, "name": "unrelated", "active": unmanaged, "revoked": !unmanaged},
-			{"id": 4, "name": "fullsend-poller-bootstrap", "active": active(4)},
+			{"id": 4, "name": gitlabroles.PollerBootstrapTokenName, "active": active(4)},
 		}
 		writeTestJSON(t, w, patsStatus, toks)
 	})
@@ -262,8 +263,8 @@ func TestGitLabPollerTriggerOwner_ContainPoller(t *testing.T) {
 func TestGitLabPollerTriggerOwner_VerifyPollerElevationSafe(t *testing.T) {
 	ctx := context.Background()
 	safePATs := []map[string]any{
-		{"id": 5, "name": "fullsend-poller", "active": true},
-		{"id": 6, "name": "fullsend-poller", "active": false, "revoked": true},
+		{"id": 5, "name": gitlabroles.PollerTokenName, "active": true},
+		{"id": 6, "name": gitlabroles.PollerTokenName, "active": false, "revoked": true},
 	}
 	for name, tc := range map[string]struct {
 		pats            []map[string]any
@@ -281,7 +282,7 @@ func TestGitLabPollerTriggerOwner_VerifyPollerElevationSafe(t *testing.T) {
 	}{
 		"safe": {pats: safePATs},
 		"the installer's bootstrap credential is recognized": {pats: append([]map[string]any{
-			{"id": 7, "name": "fullsend-poller-bootstrap", "active": true}}, safePATs...)},
+			{"id": 7, "name": gitlabroles.PollerBootstrapTokenName, "active": true}}, safePATs...)},
 		"another active PAT": {unsafe: "does not manage", pats: append([]map[string]any{
 			{"id": 9, "name": "manual", "active": true}}, safePATs...)},
 		"PAT listing fails": {patsStatus: http.StatusInternalServerError, plainErr: true},
@@ -436,7 +437,7 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 		assert.False(t, forge.IsNotFound(err))
 	})
 
-	selfToken := map[string]any{"id": 5, "name": "fullsend-poller", "active": true, "user_id": 77}
+	selfToken := map[string]any{"id": 5, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 77}
 	selfStatus := http.StatusOK
 	pollerOwnerWithAccounts := func(t *testing.T, status int, accounts any) *TriggerOwner {
 		t.Helper()
@@ -460,7 +461,7 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 	}
 
 	t.Run("human or bot poller is never elevated", func(t *testing.T) {
-		to := pollerOwnerWithAccounts(t, http.StatusOK, []map[string]any{{"id": 78, "name": "fullsend-poller"}})
+		to := pollerOwnerWithAccounts(t, http.StatusOK, []map[string]any{{"id": 78, "name": gitlabroles.PollerTokenName}})
 		_, err := to.PollerUserID(ctx, "g", "p")
 		assert.ErrorIs(t, err, forge.ErrNotFound)
 	})
@@ -468,16 +469,20 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 	t.Run("differently named poller token is never elevated", func(t *testing.T) {
 		selfToken = map[string]any{"id": 6, "name": "ci-helper", "active": true, "user_id": 77}
 		selfStatus = http.StatusOK
-		t.Cleanup(func() { selfToken = map[string]any{"id": 5, "name": "fullsend-poller", "active": true, "user_id": 77} })
-		to := pollerOwnerWithAccounts(t, http.StatusOK, []map[string]any{{"id": 77, "name": "fullsend-poller"}})
+		t.Cleanup(func() {
+			selfToken = map[string]any{"id": 5, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 77}
+		})
+		to := pollerOwnerWithAccounts(t, http.StatusOK, []map[string]any{{"id": 77, "name": gitlabroles.PollerTokenName}})
 		_, err := to.PollerUserID(ctx, "g", "p")
 		assert.ErrorIs(t, err, forge.ErrNotFound)
 	})
 
 	t.Run("revoked poller token is never elevated", func(t *testing.T) {
-		selfToken = map[string]any{"id": 5, "name": "fullsend-poller", "active": false, "revoked": true, "user_id": 77}
-		t.Cleanup(func() { selfToken = map[string]any{"id": 5, "name": "fullsend-poller", "active": true, "user_id": 77} })
-		to := pollerOwnerWithAccounts(t, http.StatusOK, []map[string]any{{"id": 77, "name": "fullsend-poller"}})
+		selfToken = map[string]any{"id": 5, "name": gitlabroles.PollerTokenName, "active": false, "revoked": true, "user_id": 77}
+		t.Cleanup(func() {
+			selfToken = map[string]any{"id": 5, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 77}
+		})
+		to := pollerOwnerWithAccounts(t, http.StatusOK, []map[string]any{{"id": 77, "name": gitlabroles.PollerTokenName}})
 		_, err := to.PollerUserID(ctx, "g", "p")
 		assert.ErrorIs(t, err, forge.ErrNotFound)
 	})
@@ -485,7 +490,7 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 	t.Run("poller token lookup error is not a confirmed absence", func(t *testing.T) {
 		selfStatus = http.StatusInternalServerError
 		t.Cleanup(func() { selfStatus = http.StatusOK })
-		to := pollerOwnerWithAccounts(t, http.StatusOK, []map[string]any{{"id": 77, "name": "fullsend-poller"}})
+		to := pollerOwnerWithAccounts(t, http.StatusOK, []map[string]any{{"id": 77, "name": gitlabroles.PollerTokenName}})
 		_, err := to.PollerUserID(ctx, "g", "p")
 		require.Error(t, err)
 		assert.False(t, forge.IsNotFound(err))
@@ -526,7 +531,7 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 		{"no poller member", http.StatusOK, []map[string]any{{"id": 5, "name": "installer", "access_level": forge.GitLabAccessLevelOwner}}, true},
 		{"elevated poller member", http.StatusOK, []map[string]any{
 			{"id": 5, "name": "installer", "access_level": forge.GitLabAccessLevelOwner},
-			{"id": 9, "name": "fullsend-poller", "access_level": forge.GitLabAccessLevelMaintainer},
+			{"id": 9, "name": gitlabroles.PollerTokenName, "access_level": forge.GitLabAccessLevelMaintainer},
 		}, false},
 		{"membership unreadable", http.StatusForbidden, nil, false},
 	} {
@@ -559,8 +564,8 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 		tokensStatus int
 		wantNotFound bool
 	}{
-		{"legacy bot owning a project access token", []map[string]any{{"id": 3, "name": "fullsend-poller", "active": true, "user_id": 9}}, http.StatusOK, true},
-		{"token owned by another user", []map[string]any{{"id": 3, "name": "fullsend-poller", "active": true, "user_id": 10}}, http.StatusOK, false},
+		{"legacy bot owning a project access token", []map[string]any{{"id": 3, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 9}}, http.StatusOK, true},
+		{"token owned by another user", []map[string]any{{"id": 3, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 10}}, http.StatusOK, false},
 		{"unreadable token inventory", nil, http.StatusForbidden, false},
 	} {
 		t.Run("service accounts forbidden with existing developer poller member and "+tc.name, func(t *testing.T) {
@@ -568,7 +573,7 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 			mux.HandleFunc("/api/v4/projects/g%2Fp/members/all", func(w http.ResponseWriter, r *http.Request) {
 				writeTestJSON(t, w, http.StatusOK, []map[string]any{
 					{"id": 5, "name": "installer", "access_level": forge.GitLabAccessLevelOwner},
-					{"id": 9, "name": "fullsend-poller", "access_level": forge.GitLabAccessLevelDeveloper},
+					{"id": 9, "name": gitlabroles.PollerTokenName, "access_level": forge.GitLabAccessLevelDeveloper},
 				})
 			})
 			mux.HandleFunc("/api/v4/projects/g%2Fp/access_tokens", func(w http.ResponseWriter, r *http.Request) {
@@ -626,7 +631,7 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 			})
 			mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
 				adminTokens = append(adminTokens, r.Header.Get("PRIVATE-TOKEN"))
-				writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": "fullsend-poller"}, {"id": 80, "name": "fullsend-poller"}, {"id": 12, "name": "fullsend-coder"}})
+				writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": gitlabroles.PollerTokenName}, {"id": 80, "name": gitlabroles.PollerTokenName}, {"id": 12, "name": gitlabroles.CoderTokenName}})
 			})
 			srv := httptest.NewServer(mux)
 			defer srv.Close()
@@ -648,7 +653,7 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 		})
 		mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
-			writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 12, "name": "fullsend-coder"}})
+			writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 12, "name": gitlabroles.CoderTokenName}})
 		})
 		srv := httptest.NewServer(mux)
 		defer srv.Close()
@@ -674,7 +679,9 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 			mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusUnauthorized)
 			})
+			serviceAccountsCalled := false
 			mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
+				serviceAccountsCalled = true
 				w.WriteHeader(tc.status)
 			})
 			srv := httptest.NewServer(mux)
@@ -683,6 +690,7 @@ func TestGitLabPollerTriggerOwner_Errors(t *testing.T) {
 			require.NoError(t, err)
 			_, err = NewTriggerOwner(admin).PollerUserID(ctx, "g", "p")
 			require.Error(t, err)
+			assert.True(t, serviceAccountsCalled, "service_accounts handler must be invoked")
 			assert.Equal(t, tc.wantNotFound, forge.IsNotFound(err))
 		})
 	}
@@ -753,10 +761,10 @@ func TestGitLabPollerTriggerOwner_SuppliedSameNamedCredentialIsNotManaged(t *tes
 				writeTestJSON(t, w, http.StatusOK, map[string]any{"id": 77})
 			})
 			mux.HandleFunc("/api/v4/projects/group%2Fproject/service_accounts", func(w http.ResponseWriter, r *http.Request) {
-				writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 77, "name": "fullsend-poller"}, {"id": 90, "name": "fullsend-poller"}})
+				writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 77, "name": gitlabroles.PollerTokenName}, {"id": 90, "name": gitlabroles.PollerTokenName}})
 			})
 			mux.HandleFunc("/api/v4/personal_access_tokens/self", func(w http.ResponseWriter, r *http.Request) {
-				writeTestJSON(t, w, http.StatusOK, map[string]any{"id": 5, "name": "fullsend-poller", "active": true, "user_id": 77})
+				writeTestJSON(t, w, http.StatusOK, map[string]any{"id": 5, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 77})
 			})
 			srv := httptest.NewServer(mux)
 			defer srv.Close()
@@ -798,7 +806,7 @@ func TestGitLabPollerTriggerOwner_RejectedSuppliedCredentialFailsClosed(t *testi
 				writeTestJSON(t, w, status, map[string]any{"message": "rejected"})
 			})
 			mux.HandleFunc("/api/v4/projects/group%2Fproject/service_accounts", func(w http.ResponseWriter, r *http.Request) {
-				writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": "fullsend-poller"}})
+				writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": gitlabroles.PollerTokenName}})
 			})
 			srv := httptest.NewServer(mux)
 			defer srv.Close()
@@ -819,6 +827,38 @@ func TestGitLabPollerTriggerOwner_RejectedSuppliedCredentialFailsClosed(t *testi
 	}
 }
 
+// A 404 while attributing a supplied Poller credential with no recorded owner
+// is unresolved ownership, not confirmed absence: the remote error's
+// capability classification must not survive, or elevated-Poller recovery
+// could treat it as "no managed Poller exists".
+func TestGitLabPollerTriggerOwner_SuppliedAttributionNotFoundIsNotAbsence(t *testing.T) {
+	ctx := context.Background()
+	mux := http.NewServeMux()
+	handleRotationState(t, mux, "g%2Fp", `{"roles":{"poller":{"phase":"idle","supplied":true,"distributed_at":"2026-01-01T00:00:00Z"}}}`)
+	mux.HandleFunc("/api/v4/projects/g%2Fp/variables/"+forge.SecretGitLabPollerToken, func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.SecretGitLabPollerToken, "value": "glpat-supplied"})
+	})
+	userCalled := false
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		userCalled = true
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
+		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": gitlabroles.PollerTokenName}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	admin, err := gitlab.New("admin-token", gitlab.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	ids, err := NewTriggerOwner(admin).ManagedPollerUserIDs(ctx, "g", "p")
+	require.Error(t, err)
+	assert.True(t, userCalled, "the supplied credential must be authenticated to attribute it")
+	assert.ErrorIs(t, err, repos.ErrPollerSuppliedUnresolved)
+	assert.False(t, forge.IsNotFound(err))
+	assert.Nil(t, ids)
+}
+
 // A supplied Poller credential's owner is recorded at enrollment, so an
 // expired or revoked credential keeps its owner's account excluded without
 // having to authenticate, and installation can proceed to enroll a replacement.
@@ -834,7 +874,7 @@ func TestGitLabPollerTriggerOwner_RecordedSuppliedOwnerSurvivesRejectedCredentia
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 	mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
-		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": "fullsend-poller"}, {"id": 91, "name": "fullsend-poller"}})
+		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": gitlabroles.PollerTokenName}, {"id": 91, "name": gitlabroles.PollerTokenName}})
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -857,7 +897,7 @@ func TestGitLabPollerTriggerOwner_SuppliedExclusionSurvivesManagedRotation(t *te
 	mux := http.NewServeMux()
 	handleRotationState(t, mux, "g%2Fp", `{"roles":{"poller":{"phase":"idle","incoming_id":7,"managed_user_id":91,"distributed_at":"2026-01-01T00:00:00Z","excluded_user_ids":[90]}}}`)
 	mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
-		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": "fullsend-poller"}, {"id": 91, "name": "fullsend-poller"}})
+		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": gitlabroles.PollerTokenName}, {"id": 91, "name": gitlabroles.PollerTokenName}})
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -911,7 +951,7 @@ func TestGitLabPollerTriggerOwner_NoMatchingAccountSkipsAttribution(t *testing.T
 	mux := http.NewServeMux()
 	handleRotationState(t, mux, "g%2Fp", `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z"}}}`)
 	mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
-		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 12, "name": "fullsend-coder"}})
+		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 12, "name": gitlabroles.CoderTokenName}})
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -931,7 +971,7 @@ func TestGitLabPollerTriggerOwner_UnknownProvenanceFailsClosed(t *testing.T) {
 		writeTestJSON(t, w, http.StatusOK, map[string]any{"key": forge.SecretGitLabPollerToken, "value": "glpat-x"})
 	})
 	mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
-		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": "fullsend-poller"}})
+		writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 90, "name": gitlabroles.PollerTokenName}})
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

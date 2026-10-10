@@ -204,6 +204,14 @@ func (o *TriggerOwner) namedPollerIDs(ctx context.Context, owner, repo string) (
 	return ids, nil
 }
 
+// suppliedUnresolved reports a supplied-ownership failure as exactly
+// repos.ErrPollerSuppliedUnresolved. The sanitized remote cause is flattened
+// with %v so its capability classification (for example forge.ErrNotFound) is
+// not visible through errors.Is/As and cannot be mistaken for confirmed absence.
+func suppliedUnresolved(op string, cause error) error {
+	return fmt.Errorf("%w: %v", repos.ErrPollerSuppliedUnresolved, repos.SafeAPIError(op, cause))
+}
+
 // SuppliedPollerUserID returns the user that owns the installed Poller
 // credential when rotation state records that credential as
 // administrator-supplied. supplied is false when the credential is managed or
@@ -218,7 +226,7 @@ func (o *TriggerOwner) namedPollerIDs(ctx context.Context, owner, repo string) (
 func (o *TriggerOwner) SuppliedPollerUserID(ctx context.Context, owner, repo string) (int64, bool, error) {
 	prov, err := repos.PollerCredentialProvenance(ctx, o.Admin, owner, repo)
 	if err != nil {
-		return 0, false, fmt.Errorf("%w: %w", repos.ErrPollerSuppliedUnresolved, repos.SafeAPIError("reading supplied credential provenance", err))
+		return 0, false, suppliedUnresolved("reading supplied credential provenance", err)
 	}
 	if prov.Known && !prov.Supplied {
 		return 0, false, nil
@@ -228,7 +236,7 @@ func (o *TriggerOwner) SuppliedPollerUserID(ctx context.Context, owner, repo str
 	}
 	token, found, err := o.Admin.GetRepoVariable(ctx, owner, repo, forge.SecretGitLabPollerToken)
 	if err != nil {
-		return 0, false, fmt.Errorf("%w: %w", repos.ErrPollerSuppliedUnresolved, repos.SafeAPIError(fmt.Sprintf("reading %s to attribute the installed Poller credential", forge.SecretGitLabPollerToken), err))
+		return 0, false, suppliedUnresolved(fmt.Sprintf("reading %s to attribute the installed Poller credential", forge.SecretGitLabPollerToken), err)
 	}
 	if !prov.Known {
 		if !found || token == "" {
@@ -243,14 +251,14 @@ func (o *TriggerOwner) SuppliedPollerUserID(ctx context.Context, owner, repo str
 	}
 	c, err := o.NewClient(token, o.Admin.BaseURL())
 	if err != nil {
-		return 0, false, fmt.Errorf("%w: building GitLab Poller client to attribute the supplied credential: %w", repos.ErrPollerSuppliedUnresolved, err)
+		return 0, false, suppliedUnresolved("building GitLab Poller client to attribute the supplied credential", err)
 	}
 	uid, err := c.GetAuthenticatedUserID(ctx)
 	if err != nil {
 		if PollerCredentialRejected(err) {
-			return 0, false, fmt.Errorf("%w: %w", repos.ErrPollerSuppliedUnresolved, repos.SafeAPIError(fmt.Sprintf("the supplied Poller credential is rejected by GitLab and its owner was not recorded, so the %s account cannot be treated as managed; re-enroll a working credential with --gitlab-role-token", gitlabroles.PollerTokenName), err))
+			return 0, false, suppliedUnresolved(fmt.Sprintf("the supplied Poller credential is rejected by GitLab and its owner was not recorded, so the %s account cannot be treated as managed; re-enroll a working credential with --gitlab-role-token", gitlabroles.PollerTokenName), err)
 		}
-		return 0, false, fmt.Errorf("%w: %w", repos.ErrPollerSuppliedUnresolved, repos.SafeAPIError("attributing the supplied Poller credential to an account", err))
+		return 0, false, suppliedUnresolved("attributing the supplied Poller credential to an account", err)
 	}
 	return int64(uid), true, nil
 }
@@ -296,7 +304,7 @@ func (o *TriggerOwner) CurrentSuppliedAccountIDs(ctx context.Context, owner, rep
 func (o *TriggerOwner) resolveSuppliedAccounts(ctx context.Context, owner, repo string) ([]int64, []int64, map[gitlabroles.Role]int, error) {
 	provs, err := repos.RoleCredentialProvenances(ctx, o.Admin, owner, repo)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("%w: %w", repos.ErrPollerSuppliedUnresolved, repos.SafeAPIError("reading supplied credential provenance", err))
+		return nil, nil, nil, suppliedUnresolved("reading supplied credential provenance", err)
 	}
 	attributed := map[gitlabroles.Role]int{}
 	var out, current []int64
@@ -614,7 +622,7 @@ func (o *TriggerOwner) revokeNamedPATs(ctx context.Context, owner, repo string, 
 			continue
 		}
 		if err := o.Admin.RevokeServiceAccountPAT(ctx, owner, repo, int(userID), tok.ID); err != nil && !forge.IsNotFound(err) {
-			errs = append(errs, fmt.Errorf("revoking %s token ID %d: %w", name, tok.ID, err))
+			errs = append(errs, fmt.Errorf("revoking %q token ID %d: %w", name, tok.ID, err))
 		}
 	}
 	if len(errs) > 0 {
@@ -622,11 +630,11 @@ func (o *TriggerOwner) revokeNamedPATs(ctx context.Context, owner, repo string, 
 	}
 	toks, err = o.Admin.ListServiceAccountPATs(ctx, owner, repo, int(userID))
 	if err != nil {
-		return fmt.Errorf("verifying revocation of %s tokens: %w", name, err)
+		return fmt.Errorf("verifying revocation of %q tokens: %w", name, err)
 	}
 	for _, tok := range toks {
 		if !tok.Revoked && tok.Active && tok.Name == name {
-			return fmt.Errorf("%s token ID %d is still active after revocation", name, tok.ID)
+			return fmt.Errorf("%q token ID %d is still active after revocation", name, tok.ID)
 		}
 	}
 	return nil

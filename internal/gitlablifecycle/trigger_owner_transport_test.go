@@ -159,7 +159,7 @@ func TestTriggerOwnerRevokeNamedPATsFailures(t *testing.T) {
 		want    string
 	}{
 		"listing fails":              {fixture: &patFixture{listStatus: http.StatusForbidden}, want: "listing Poller service account tokens"},
-		"revocation fails":           {fixture: &patFixture{revokeStatus: http.StatusForbidden}, want: "revoking " + gitlabroles.PollerBootstrapTokenName + " token ID 5"},
+		"revocation fails":           {fixture: &patFixture{revokeStatus: http.StatusForbidden}, want: "revoking " + strconv.Quote(gitlabroles.PollerBootstrapTokenName) + " token ID 5"},
 		"revocation is ineffective":  {fixture: &patFixture{ineffective: true}, want: "still active after revocation"},
 		"verification listing fails": {fixture: &patFixture{relistStatus: http.StatusForbidden}, want: "verifying revocation"},
 	} {

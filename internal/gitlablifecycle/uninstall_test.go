@@ -3,15 +3,16 @@ package gitlablifecycle
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"net/http"
-	"net/http/httptest"
-	"sync/atomic"
-	"testing"
 )
 
 type uninstallLegacyInventory struct{ tokens []repos.ProjectAccessToken }
@@ -101,8 +102,12 @@ func TestUninstallCachesResolvedExclusionsBeforeCredentialRemoval(t *testing.T) 
 		t.Run(map[bool]string{false: "resolved", true: "unresolved"}[failed], func(t *testing.T) {
 			ctx := context.Background()
 			var reads atomic.Int64
+			var serviceAccountsCalled atomic.Bool
 			mux := http.NewServeMux()
-			mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) })
+			mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
+				serviceAccountsCalled.Store(true)
+				w.WriteHeader(http.StatusNotFound)
+			})
 			mux.HandleFunc("/api/v4/projects/g%2Fp/variables/"+forge.VarGitLabRoleRotation, func(w http.ResponseWriter, r *http.Request) {
 				reads.Add(1)
 				if failed {
@@ -119,6 +124,7 @@ func TestUninstallCachesResolvedExclusionsBeforeCredentialRemoval(t *testing.T) 
 			u := NewUninstallTokenClient(admin, role)
 			fc := forge.NewFakeClient()
 			err = u.ReconcileGitLabPollersForUninstall(ctx, fc, "g", "p")
+			assert.True(t, serviceAccountsCalled.Load(), "service_accounts handler must be invoked")
 			if failed {
 				require.Error(t, err)
 			} else {
