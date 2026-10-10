@@ -34,6 +34,9 @@ type gatewayRoutePlan struct {
 	// prepared is the runtime that registered a gateway run for the
 	// sandbox (PrepareGatewayRun); nil when none did.
 	prepared runtime.GatewayRouteRuntime
+	// apiKeyLifetime bounds the api-key mode's provider instance
+	// (gatewayAPIKeyLifetimeFor); zero means gatewayAPIKeyLifetime.
+	apiKeyLifetime time.Duration
 }
 
 // isDummyRuntime reports whether name is a test runtime the gateway
@@ -204,16 +207,35 @@ func startGatewayRoute(ctx context.Context, plan *gatewayRoutePlan, sandboxName 
 	}, nil
 }
 
-// gatewayAPIKeyLifetime bounds the run-scoped provider instance in the
-// api-key mode. The key itself does not expire, but the instance must: if
-// the runner dies before the deferred delete, placeholder resolution fails
-// closed after this long instead of serving the key indefinitely. It is
-// set once, at creation, and never extended: on OpenShell even an expiry
-// update mints a new placeholder generation the running agent would have
-// to be re-seeded with, and the api-key mode has no re-seed loop. So it is
-// sized above any run (a GitHub-hosted job ends after 6 hours). A variable
-// so tests can shrink it.
+// gatewayAPIKeyLifetime is the floor of the bound on the api-key mode's
+// run-scoped provider instance. The key itself does not expire, but the
+// instance must: if the runner dies before the deferred delete, placeholder
+// resolution fails closed after the bound instead of serving the key
+// indefinitely. The bound is set once, at creation, and never extended:
+// ADR 0092 observed on OpenShell 0.0.115 that even an expiry update mints a
+// new placeholder generation the running agent would have to be re-seeded
+// with, and the api-key mode has no re-seed loop. A variable so tests can
+// shrink it.
 var gatewayAPIKeyLifetime = 24 * time.Hour
+
+// gatewayAPIKeyRunSlack is added to a run's own agent budget when sizing
+// the api-key bound, for the pre-script, sandbox setup, validation and the
+// post-script.
+const gatewayAPIKeyRunSlack = 2 * time.Hour
+
+// gatewayAPIKeyLifetimeFor sizes the api-key bound for a run whose agent
+// budget is iterations of timeout each: at least gatewayAPIKeyLifetime,
+// and longer when the run's own budget plus gatewayAPIKeyRunSlack is (a
+// long local or self-hosted run must not outlive its credential).
+func gatewayAPIKeyLifetimeFor(iterations int, timeout time.Duration) time.Duration {
+	if iterations < 1 {
+		iterations = 1
+	}
+	if need := time.Duration(iterations)*timeout + gatewayAPIKeyRunSlack; need > gatewayAPIKeyLifetime {
+		return need
+	}
+	return gatewayAPIKeyLifetime
+}
 
 // ensureGatewayAPIKeyProviderFn creates the api-key mode's run-scoped
 // provider (ensureGatewayAPIKeyProvider). Override in tests.
@@ -233,7 +255,12 @@ func startGatewayAPIKeyRoute(ctx context.Context, plan *gatewayRoutePlan, sandbo
 	}
 	printer.StepDone("Inference gateway API key ready (" + gatewayAPIKeyEnv + ")")
 	printer.StepWarn("inference.gateway.auth is api-key: the route relies on a long-lived gateway API key; prefer auth: oidc when the gateway can validate forge OIDC tokens")
-	expiresAt := time.Now().Add(gatewayAPIKeyLifetime)
+	lifetime := plan.apiKeyLifetime
+	if lifetime <= 0 {
+		lifetime = gatewayAPIKeyLifetime
+	}
+	printer.StepInfo(fmt.Sprintf("Inference gateway provider bounded at %s; a run that outlasts it fails closed", lifetime.Round(time.Minute)))
+	expiresAt := time.Now().Add(lifetime)
 	name, _, err := ensureGatewayAPIKeyProviderFn(ctx, plan.host, sandboxName, key, expiresAt, printer)
 	if err != nil {
 		return gatewayProviderHandle{}, err

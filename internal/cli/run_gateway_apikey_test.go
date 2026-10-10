@@ -101,7 +101,16 @@ func TestStartGatewayRoute_APIKey(t *testing.T) {
 	assert.Equal(t, gatewayTestAPIKey, gotKey)
 	assert.False(t, gotExpiry.Before(before.Add(gatewayAPIKeyLifetime)), "the instance is bounded by gatewayAPIKeyLifetime")
 	assert.Contains(t, out.String(), "long-lived")
+	assert.Contains(t, out.String(), "bounded at 24h0m0s")
 	assert.NotContains(t, out.String(), gatewayTestAPIKey, "the key is never printed")
+
+	// A plan sized for a longer run bounds the instance by it.
+	plan.apiKeyLifetime = 30 * time.Hour
+	before = time.Now()
+	_, err = startGatewayRoute(context.Background(), plan, "fs-key", ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.False(t, gotExpiry.Before(before.Add(30*time.Hour)), "the run's own bound is used")
+	plan.apiKeyLifetime = 0
 
 	// The refresher does nothing in this mode: it returns at once.
 	done := make(chan struct{})
@@ -189,4 +198,12 @@ func TestEnsureGatewayAPIKeyProvider_RejectsControlCharacters(t *testing.T) {
 		assert.NotContains(t, stderr, "::add-mask::")
 	}
 	assert.NoFileExists(t, argsLog, "no openshell call was made")
+}
+
+// The api-key bound covers the run's own agent budget plus slack, and
+// never drops below gatewayAPIKeyLifetime.
+func TestGatewayAPIKeyLifetimeFor(t *testing.T) {
+	assert.Equal(t, gatewayAPIKeyLifetime, gatewayAPIKeyLifetimeFor(1, 30*time.Minute))
+	assert.Equal(t, gatewayAPIKeyLifetime, gatewayAPIKeyLifetimeFor(0, 30*time.Minute), "no iterations count as one")
+	assert.Equal(t, 10*24*time.Hour+gatewayAPIKeyRunSlack, gatewayAPIKeyLifetimeFor(10, 24*time.Hour))
 }

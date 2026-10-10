@@ -62,10 +62,16 @@ In the `api-key` mode:
   env may not use the prefix.
 - **There is no re-seed loop.** The key is not rotated. On OpenShell even an
   expiry update mints a new placeholder generation, which the running agent
-  would then need to be re-seeded with. So the provider instance gets one
-  expiry bound when it is created and is never extended. The bound is sized
-  above any run (24 hours), so that a runner that dies before its deferred
-  delete leaves no instance serving the key for ever.
+  would then need to be re-seeded with (observed on OpenShell 0.0.115 in
+  [ADR 0092](0092-openai-wif-credential-delivery.md)). So the provider
+  instance gets one expiry bound when it is created and is never extended,
+  so that a runner that dies before its deferred delete leaves no instance
+  serving the key for ever. The bound is 24 hours, or the run's own agent
+  budget (iterations times `timeout_minutes`) plus two hours when that is
+  longer. A run that still outlasts it fails closed; the runner logs the
+  bound when the route starts. The instance is created first and gets its
+  expiry in a second call, so a runner that dies between the two leaves an
+  instance with no expiry until it is deleted.
 - **The block applies on local runs too.** The runner owns the route whenever
   an `api-key` block is configured, with or without an OIDC endpoint. A local
   run that wants the harness-plugin setup from the local guide leaves the
