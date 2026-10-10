@@ -95,7 +95,7 @@ const (
 	// Run-scoped inference providers resolved from the selected agent.
 	runProviderVertex = "vertex"
 	runProviderOpenAI = "openai"
-	// runProviderGateway marks a pi parent on the inference gateway route
+	// runProviderGateway marks a pi or codex parent on the inference gateway route
 	// (a gateway/ model, ADR 0137).
 	runProviderGateway = "gateway"
 	// runProviderNone marks runtimes that do no inference (dummy,

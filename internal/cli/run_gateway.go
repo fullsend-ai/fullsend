@@ -116,10 +116,10 @@ func anyGatewayModel(models []string) bool {
 }
 
 // gatewayRouteRuntimes are the runtimes that implement the gateway route.
-var gatewayRouteRuntimes = []string{"pi"}
+var gatewayRouteRuntimes = []string{"pi", "codex"}
 
 // validateGatewayRuntime refuses a gateway/ model on a runtime without the
-// route (Claude Code, Codex): the model would otherwise fail later with an
+// route (Claude Code): the model would otherwise fail later with an
 // unknown provider, or worse reach a different credential.
 func validateGatewayRuntime(runtimeName string, models []string) error {
 	if !anyGatewayModel(models) {

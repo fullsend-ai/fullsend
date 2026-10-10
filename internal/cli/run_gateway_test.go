@@ -84,8 +84,9 @@ func TestIsGatewayModel(t *testing.T) {
 
 func TestValidateGatewayRuntime(t *testing.T) {
 	require.NoError(t, validateGatewayRuntime("pi", []string{"gateway/a", "openai/b"}))
+	require.NoError(t, validateGatewayRuntime("codex", []string{"gateway/vendor/org/model"}))
 	require.NoError(t, validateGatewayRuntime("claude", []string{"opus"}))
-	for _, rt := range []string{"claude", "codex"} {
+	for _, rt := range []string{"claude", "opencode"} {
 		assert.ErrorContains(t, validateGatewayRuntime(rt, []string{"gateway/a"}), rt)
 	}
 }

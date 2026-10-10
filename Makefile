@@ -236,6 +236,11 @@ test: lint-all go-test script-test lint-eval-cases
 # runtime-codex-openai (features/runtime/codex-openai.feature) is undeclared
 # for the same reason, and codex has no Vertex path — so unlike pi it has no
 # default behaviour coverage at all until that organization exists.
+# runtime-codex-gateway (features/runtime/codex-gateway.feature) is
+# undeclared too: it needs the test inference gateway to serve a
+# Responses-capable model, which its committed model list does not today.
+# Run it on demand, e.g.
+#   BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-codex-gateway
 BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
 behaviour-test:

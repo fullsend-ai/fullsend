@@ -5,7 +5,7 @@
 # two gateways on one shared OpenShell gateway never share a profile id.
 id: fullsend-inference-gateway
 display_name: Fullsend inference gateway
-description: Inference gateway for the pi runtime (runner-seeded, run-scoped forge OIDC token)
+description: Inference gateway for the pi and codex runtimes (runner-seeded, run-scoped forge OIDC token)
 category: inference
 credentials:
   - name: api_token
@@ -42,5 +42,9 @@ endpoints:
           method: POST
           path: /v1/chat/completions
 # pi (and its inference-gateway extension) calls the gateway from node.
+# codex's npm launcher execs the per-platform native binary, so it is
+# `codex` — not node — that opens the connection on that runtime, and it
+# only ever posts to /v1/responses (#8295).
 binaries:
   - "**/node"
+  - "**/codex"
