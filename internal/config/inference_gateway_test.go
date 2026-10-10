@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -80,6 +81,10 @@ func TestInferenceGateway_ValidateErrors(t *testing.T) {
 		{"missing api", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {}}}, "invalid api"},
 		{"empty id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"": {API: GatewayAPIOpenAIResponses}}}, "empty model id"},
 		{"whitespace id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"a b": {API: GatewayAPIOpenAIResponses}}}, "whitespace"},
+		{"tab id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"a\tb": {API: GatewayAPIOpenAIResponses}}}, "whitespace"},
+		{"bom id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"a\ufeffb": {API: GatewayAPIOpenAIResponses}}}, "whitespace"},
+		{"control id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"a\x7fb": {API: GatewayAPIOpenAIResponses}}}, "control"},
+		{"long id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{strings.Repeat("m", MaxGatewayModelIDLength+1): {API: GatewayAPIOpenAIResponses}}}, "at most 256"},
 		{"negative context", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, ContextWindow: -1}}}, "contextWindow"},
 		{"negative max", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, MaxTokens: -1}}}, "maxTokens"},
 	}
@@ -232,4 +237,12 @@ func TestInferenceGateway_ManagedMerge(t *testing.T) {
 	assert.Empty(t, g.Models)
 	assert.Equal(t, ".fullsend/inference-gateway.json", g.ModelsFile)
 	assert.NoError(t, g.Validate())
+}
+
+func TestValidateGatewayModelID_Boundary(t *testing.T) {
+	require.NoError(t, ValidateGatewayModelID(strings.Repeat("m", MaxGatewayModelIDLength)))
+	require.NoError(t, ValidateGatewayModelID("vendor/org/model-1.5"))
+	// 128 astral-plane runes are 256 UTF-16 code units, the JavaScript length.
+	require.NoError(t, ValidateGatewayModelID(strings.Repeat("😀", MaxGatewayModelIDLength/2)))
+	require.Error(t, ValidateGatewayModelID(strings.Repeat("😀", MaxGatewayModelIDLength/2+1)))
 }

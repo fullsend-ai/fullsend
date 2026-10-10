@@ -114,6 +114,9 @@ type PerRepoConfigWriter interface {
 	SetInferenceWIFProvider(string)
 	SetInferenceOpenAI(OpenAIWIFConfig)
 	SetInferenceGateway(InferenceGatewayConfig)
+	// MergeInferenceGateway layers the set fields of g over this layer's
+	// own inference.gateway block, the way the layers merge.
+	MergeInferenceGateway(InferenceGatewayConfig)
 	SetModelAliases(map[string]string)
 	SetOwnersFileAuthEnabled(bool)
 }
@@ -626,6 +629,24 @@ func (c *perRepoConfig) SetInferenceGateway(g InferenceGatewayConfig) {
 		return
 	}
 	inf.Gateway = cloneGateway(&g)
+}
+
+// MergeInferenceGateway layers the set fields of g over this layer's own
+// inference.gateway block (not the inherited one): url and audience
+// replace individually, and a model list in either form replaces the
+// existing list. Fields g leaves unset keep their current value.
+func (c *perRepoConfig) MergeInferenceGateway(g InferenceGatewayConfig) {
+	inf := c.ensureInference()
+	var cur InferenceGatewayConfig
+	if inf.Gateway != nil {
+		cur = *inf.Gateway
+	}
+	merged := mergeGateway(cur, &g)
+	if merged.IsZero() {
+		inf.Gateway = nil
+		return
+	}
+	inf.Gateway = cloneGateway(&merged)
 }
 
 // ensureInference lazily initializes the Inference struct.

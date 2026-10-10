@@ -237,6 +237,8 @@ unset (`""`) falls through to parent, then to code default
   runner variables, when any is set, replace the resolved block entirely.
 - **`inference.gateway.{url,audience}`**: the inference gateway credential
   route (ADR 0137), written by `fullsend github setup --inference-gateway-*`.
+  The runner does not act on the block yet; the runner support lands in
+  later changes (#8280).
   Each resolves independently through the layers, so an org preset can carry
   `url` and `audience` while each repository opts in its own models. The
   resolved block needs both. There is no runner-variable override.

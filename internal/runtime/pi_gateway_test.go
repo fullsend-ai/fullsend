@@ -76,13 +76,18 @@ func TestValidatePiGatewayModelsFile_Refused(t *testing.T) {
 		{"no models", wrap(`{}`), "models must be a non-empty object"},
 		{"empty models", wrap(`{"models": {}}`), "models must be a non-empty object"},
 		{"model not object", wrap(`{"models": {"m": "x"}}`), "must be an object"},
-		{"model id whitespace", wrap(`{"models": {"a b": {}}}`), "invalid model id"},
+		{"model id whitespace", wrap(`{"models": {"a b": {"api": "openai-responses"}}}`), "invalid model id"},
+		{"model id nbsp", wrap(`{"models": {"a\u00a0b": {"api": "openai-responses"}}}`), "invalid model id"},
+		{"model id control", wrap(`{"models": {"a\u0085b": {"api": "openai-responses"}}}`), "invalid model id"},
+		{"model id too long", wrap(`{"models": {"` + strings.Repeat("m", config.MaxGatewayModelIDLength+1) + `": {"api": "openai-responses"}}}`), "at most 256"},
+		{"model without api", wrap(`{"models": {"m": {"contextWindow": 200000}}}`), `models["m"] must set api`},
+		{"model without api despite defaultApi", wrap(`{"defaultApi": "openai-responses", "models": {"m": {}}}`), `models["m"] must set api`},
 		{"model per-model headers", wrap(`{"models": {"m": {"headers": {}}}}`), `unsupported key providers.gateway.models["m"].headers`},
 		{"model bad api", wrap(`{"models": {"m": {"api": "openai"}}}`), `models["m"].api must be one of`},
 		{"bad defaultApi", wrap(`{"defaultApi": 1, ` + okModels + `}`), "defaultApi must be one of"},
 		{"include not list", wrap(`{"include": "x", ` + okModels + `}`), "include must be an array of strings"},
 		{"exclude non-string", wrap(`{"exclude": [1], ` + okModels + `}`), "exclude must be an array of strings"},
-		{"oversized", `{"providers": {"gateway": {"models": {"m": {"name": "` + strings.Repeat("x", maxPiGatewayModelsFileBytes) + `"}}}}}`, "exceeds"},
+		{"oversized", `{"providers": {"gateway": {"models": {"m": {"name": "` + strings.Repeat("x", MaxPiGatewayModelsFileBytes) + `"}}}}}`, "exceeds"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

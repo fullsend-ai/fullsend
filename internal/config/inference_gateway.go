@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf16"
 )
 
 // Inference gateway APIs a model may speak (ADR 0137). They match the
@@ -171,12 +173,34 @@ func ValidateGatewayModelsFilePath(p string) error {
 	return nil
 }
 
-func validateGatewayModel(id string, m InferenceGatewayModel) error {
+// MaxGatewayModelIDLength is the longest model id the pi-inference-gateway
+// extension accepts (v0.1.1 src/config.ts MAX_MODEL_ID_LENGTH), counted
+// in UTF-16 code units as JavaScript counts string length.
+const MaxGatewayModelIDLength = 256
+
+// ValidateGatewayModelID applies the extension's model-id rule (v0.1.1
+// src/config.ts isValidModelId): 1-256 characters, no whitespace and no
+// control characters. The extension skips any other id with a warning, so
+// a run would otherwise fail later with "model not found".
+func ValidateGatewayModelID(id string) error {
 	if id == "" {
-		return fmt.Errorf("inference.gateway.models: empty model id")
+		return fmt.Errorf("empty model id")
 	}
-	if strings.ContainsAny(id, " \t\n\r") {
-		return fmt.Errorf("inference.gateway.models: model id %q must not contain whitespace", id)
+	if n := len(utf16.Encode([]rune(id))); n > MaxGatewayModelIDLength {
+		return fmt.Errorf("model id %q is %d characters long (at most %d)", id, n, MaxGatewayModelIDLength)
+	}
+	for _, r := range id {
+		// JavaScript's \s also matches U+FEFF, which unicode.IsSpace does not.
+		if unicode.IsSpace(r) || unicode.IsControl(r) || r == '\ufeff' {
+			return fmt.Errorf("model id %q must not contain whitespace or control characters", id)
+		}
+	}
+	return nil
+}
+
+func validateGatewayModel(id string, m InferenceGatewayModel) error {
+	if err := ValidateGatewayModelID(id); err != nil {
+		return fmt.Errorf("inference.gateway.models: %w", err)
 	}
 	if !slices.Contains(ValidGatewayAPIs(), m.API) {
 		return fmt.Errorf("inference.gateway.models[%q]: invalid api %q: must be one of %s", id, m.API, strings.Join(ValidGatewayAPIs(), ", "))

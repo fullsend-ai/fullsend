@@ -15,9 +15,12 @@ import (
 
 // Inference gateway route on pi (ADR 0137). The pi-inference-gateway
 // extension registers provider "gateway"; the runner renders its config
-// file, inference-gateway.json, from the inference.gateway block so the
-// endpoint and the auth header are runner-owned and only the model list
-// comes from the repository.
+// file, inference-gateway.json, from the inference.gateway block, so only
+// the model list comes from the repository. The rendered file alone does
+// not make the endpoint and auth header runner-owned: the extension merges
+// its INFERENCE_GATEWAY_* environment over the file (the env wins for
+// authHeader and defaultApi, and can add models or rename the provider),
+// so the runner must also control that environment when it launches pi.
 const (
 	// piGatewayProvider is the model prefix that selects the gateway route.
 	piGatewayProvider = "gateway"
@@ -32,8 +35,8 @@ const (
 	// token as Authorization: Bearer, which a default agentgateway jwtAuth
 	// policy reads. The token then never travels in x-api-key.
 	piInferenceGatewayAuthHeader = "authorization"
-	// maxPiGatewayModelsFileBytes bounds a committed models_file.
-	maxPiGatewayModelsFileBytes = 256 << 10
+	// MaxPiGatewayModelsFileBytes bounds a committed models_file.
+	MaxPiGatewayModelsFileBytes = 256 << 10
 )
 
 // piGatewayProviderKeys are the only keys a models_file may set in
@@ -70,12 +73,15 @@ func isPiGatewayCredentialKey(key string) bool {
 // ValidatePiGatewayModelsFile parses a committed models_file (the
 // extension's own config format) and returns its providers.gateway entry.
 // The file must hold exactly one provider, "gateway", carrying only
-// models, include, exclude and defaultApi, with at least one model.
+// models, include, exclude and defaultApi, with at least one model, and
+// every model must set its own api. include, exclude and defaultApi are
+// accepted for compatibility with the extension's format but only affect
+// discovered models, so they do nothing on an offline pi run.
 // Endpoint, credential, header, discovery and fallback keys are refused:
 // the runner owns them, and discovery is off under PI_OFFLINE.
 func ValidatePiGatewayModelsFile(data []byte) (map[string]any, error) {
-	if len(data) > maxPiGatewayModelsFileBytes {
-		return nil, fmt.Errorf("inference.gateway models_file exceeds %d bytes", maxPiGatewayModelsFileBytes)
+	if len(data) > MaxPiGatewayModelsFileBytes {
+		return nil, fmt.Errorf("inference.gateway models_file exceeds %d bytes", MaxPiGatewayModelsFileBytes)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -131,8 +137,8 @@ func ValidatePiGatewayModelsFile(data []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("inference.gateway models_file: providers.gateway.models must be a non-empty object")
 	}
 	for _, id := range piGatewaySortedKeys(models) {
-		if strings.TrimSpace(id) == "" || strings.ContainsAny(id, " \t\n\r") {
-			return nil, fmt.Errorf("inference.gateway models_file: invalid model id %q", id)
+		if err := config.ValidateGatewayModelID(id); err != nil {
+			return nil, fmt.Errorf("inference.gateway models_file: invalid model id: %w", err)
 		}
 		m, ok := models[id].(map[string]any)
 		if !ok {
@@ -143,10 +149,16 @@ func ValidatePiGatewayModelsFile(data []byte) (map[string]any, error) {
 				return nil, fmt.Errorf("inference.gateway models_file: unsupported key providers.gateway.models[%q].%s (allowed: %s)", id, key, strings.Join(piGatewayModelKeys, ", "))
 			}
 		}
-		if v, ok := m["api"]; ok {
-			if err := validatePiGatewayAPI(fmt.Sprintf("providers.gateway.models[%q].api", id), v); err != nil {
-				return nil, err
-			}
+		// Every model needs its own api: pi runs offline, and extension
+		// v0.1.1 offers a configured model only when its entry sets api
+		// (extraModels in src/discovery.ts). defaultApi and an api-less
+		// entry only apply to models discovered from the gateway.
+		v, ok := m["api"]
+		if !ok {
+			return nil, fmt.Errorf("inference.gateway models_file: providers.gateway.models[%q] must set api (pi runs offline, so a model without its own api is never offered)", id)
+		}
+		if err := validatePiGatewayAPI(fmt.Sprintf("providers.gateway.models[%q].api", id), v); err != nil {
+			return nil, err
 		}
 	}
 	return gw, nil

@@ -305,19 +305,26 @@ independently through the layered config system (an overlay can override
     `.fullsend/inference-gateway.json`, to a file in the
     [pi-inference-gateway config format](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file).
     It must hold exactly one entry, `providers.gateway`, carrying only
-    `models`, `include`, `exclude` and `defaultApi`. A file that sets
+    `models`, `include`, `exclude` and `defaultApi`, and every model must
+    set its own `api`: pi runs offline, and the extension offers a
+    configured model only when its entry names an `api`. `include`,
+    `exclude` and `defaultApi` only apply to models discovered from the
+    gateway, so they have no effect on a pi run. A file that sets
     `baseUrl`, `baseUrlEnv`, a credential key (`apiKey*`, `tokenFile`,
     `username*`, `password*`), `headers`, `authHeader`, `modelsPath`,
     `discovery` or `fallbackModels` is refused: the runner owns those.
 
-  `url` and `audience` are all or none: a block that resolves with only
-  one of them is an error. `models` and `models_file` are mutually
+  `url` and `audience` are all or none: `fullsend github setup` refuses to
+  leave a block with only one of them, and the runner support for the route
+  will refuse such a block when it lands. `models` and `models_file` are mutually
   exclusive. A pi run on a `gateway/` model needs one of them, because pi
   runs offline and cannot discover the gateway's models. `url` and
   `audience` layer independently; the model list (either form) is one unit,
   and a layer that sets it replaces the inherited list. There is no
   runner-variable override for this block. `fullsend github setup
-  --inference-gateway-*` writes it.
+  --inference-gateway-*` writes it and changes only the keys you pass, so
+  a repository can add its models under a `url` and `audience` inherited
+  from `config.base.yaml`.
 
 For setup instructions, see
 [Getting Inference](../guides/getting-started/getting-inference.md).

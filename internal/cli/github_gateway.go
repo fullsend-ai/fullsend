@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -64,12 +65,19 @@ func (cfg githubSetupConfig) gatewayBlock() (config.InferenceGatewayConfig, erro
 	return g, nil
 }
 
-// validateGatewaySetupFlags enforces all-or-none on url + audience: a run
-// needs both, and a partial block in config.yaml would only fail later, at
-// the first gateway/ run. Passing --inference-gateway-url and
-// --inference-gateway-audience both empty (with no model flags) clears the
-// block. --inference-gateway-model and --inference-gateway-models-file are
-// mutually exclusive.
+// gatewayClearRequested reports whether the flags ask to remove the
+// block: --inference-gateway-url and --inference-gateway-audience both
+// passed empty, with no model flag.
+func gatewayClearRequested(cfg githubSetupConfig, g config.InferenceGatewayConfig) bool {
+	return g.IsZero() && cfg.changedFlags["inference-gateway-url"] && cfg.changedFlags["inference-gateway-audience"]
+}
+
+// validateGatewaySetupFlags checks the gateway flags on their own: the
+// model flags are mutually exclusive, every value that is set is valid,
+// and an empty url or audience only appears as half of a clear. Whether
+// url and audience end up together is checked on the composed config
+// (validateEffectiveGateway), because either may be inherited from
+// config.base.yaml or a --config preset.
 func validateGatewaySetupFlags(cfg githubSetupConfig) error {
 	if !gatewayFlagsChanged(cfg) {
 		return nil
@@ -81,17 +89,36 @@ func validateGatewaySetupFlags(cfg githubSetupConfig) error {
 	if err != nil {
 		return err
 	}
-	if g.IsZero() {
-		if !cfg.changedFlags["inference-gateway-url"] || !cfg.changedFlags["inference-gateway-audience"] {
-			return fmt.Errorf("--inference-gateway-url and --inference-gateway-audience must be set together (pass both empty to remove the block)")
+	if gatewayClearRequested(cfg, g) {
+		return nil
+	}
+	for _, f := range []struct{ name, value string }{
+		{"inference-gateway-url", g.URL},
+		{"inference-gateway-audience", g.Audience},
+	} {
+		if cfg.changedFlags[f.name] && f.value == "" {
+			return fmt.Errorf("--%s is empty: pass --inference-gateway-url and --inference-gateway-audience both empty (and no model flag) to remove the block", f.name)
 		}
+	}
+	return g.Validate()
+}
+
+// validateEffectiveGateway enforces all-or-none on url + audience for the
+// block setup will leave in place, after the overlay is composed over the
+// inherited layer: an org preset may carry url and audience while the
+// repository adds only its models. It runs when the gateway flags or a
+// --config preset change the block; a re-run that changes neither leaves
+// the committed config as it was.
+func validateEffectiveGateway(cfg githubSetupConfig, effective config.PerRepoConfigReader) error {
+	if (!gatewayFlagsChanged(cfg) && cfg.configPreset == "") || effective == nil {
+		return nil
+	}
+	g := effective.ConfigInferenceGateway().Trimmed()
+	if g.IsZero() {
 		return nil
 	}
 	if missing := g.Missing(); len(missing) > 0 {
-		return fmt.Errorf("--inference-gateway-url and --inference-gateway-audience must be set together (missing %s)", strings.Join(missing, ", "))
-	}
-	if err := g.Validate(); err != nil {
-		return err
+		return fmt.Errorf("inference.gateway would have no %s: pass --inference-gateway-url and --inference-gateway-audience, or inherit them from config.base.yaml", strings.Join(missing, " or "))
 	}
 	return nil
 }
@@ -105,7 +132,13 @@ func loadGatewayModelsFile(cfg githubSetupConfig) ([]byte, error) {
 	if p == "" {
 		return nil, nil
 	}
-	data, err := os.ReadFile(p)
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, fmt.Errorf("reading --inference-gateway-models-file: %w", err)
+	}
+	defer f.Close()
+	// One byte over the limit is enough for the validator to refuse it.
+	data, err := io.ReadAll(io.LimitReader(f, runtime.MaxPiGatewayModelsFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading --inference-gateway-models-file: %w", err)
 	}

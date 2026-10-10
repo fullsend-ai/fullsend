@@ -343,6 +343,9 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	if err := validateSetupValueFormats(effective, "composed config"); err != nil {
 		return err
 	}
+	if err := validateEffectiveGateway(cfg, effective); err != nil {
+		return err
+	}
 
 	reuseProject, reuseWIF, err := resolveInferenceReuse(ctx, client, owner, repo, cfg, effective)
 	if err != nil {
@@ -767,7 +770,14 @@ func applySetupFlagsToConfig(cfg githubSetupConfig, w config.PerRepoConfigWriter
 	if gatewayFlagsChanged(cfg) {
 		// validateGatewaySetupFlags already ran, so the block parses.
 		if g, err := cfg.gatewayBlock(); err == nil {
-			w.SetInferenceGateway(g)
+			if gatewayClearRequested(cfg, g) {
+				w.SetInferenceGateway(config.InferenceGatewayConfig{})
+			} else {
+				// Change only the keys the flags set: a url/audience
+				// re-run keeps the repository's model list, and a
+				// models-only run keeps (or inherits) url and audience.
+				w.MergeInferenceGateway(g)
+			}
 			changed = append(changed, "inference.gateway")
 		}
 	}
