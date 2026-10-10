@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -59,7 +60,7 @@ func TestExpandGatewayPlaceholder(t *testing.T) {
 func TestWithInferenceGatewayKeepsOtherKeys(t *testing.T) {
 	t.Parallel()
 
-	out, err := withInferenceGateway([]byte("runtime: dummy\ninference:\n  openai:\n    project: p\n"), "https://gw.example", "aud")
+	out, err := withInferenceGateway([]byte("runtime: dummy\ninference:\n  openai:\n    project: p\n"), map[string]any{"url": "https://gw.example", "audience": "aud"})
 	require.NoError(t, err)
 	var doc map[string]any
 	require.NoError(t, yaml.Unmarshal(out, &doc))
@@ -68,11 +69,11 @@ func TestWithInferenceGatewayKeepsOtherKeys(t *testing.T) {
 	assert.Equal(t, map[string]any{"project": "p"}, inference["openai"])
 	assert.Equal(t, map[string]any{"url": "https://gw.example", "audience": "aud"}, inference["gateway"])
 
-	out, err = withInferenceGateway(nil, "https://gw.example", "aud")
+	out, err = withInferenceGateway(nil, map[string]any{"url": "https://gw.example", "audience": "aud"})
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "audience: aud")
 
-	_, err = withInferenceGateway([]byte("{"), "u", "a")
+	_, err = withInferenceGateway([]byte("{"), map[string]any{"url": "u"})
 	assert.Error(t, err)
 }
 
@@ -158,4 +159,35 @@ func TestProbeBodyRedactedJWT(t *testing.T) {
 	// Other needles still match the recorded text only.
 	require.NoError(t, checkProbeBody(res, false, "x-api-key"))
 	require.NoError(t, checkProbeBody(res, true, "<redacted-jwt>"))
+}
+
+// The api-key step commits url and auth only, and skips without the URL
+// or the test key.
+func TestGivenTestInferenceGatewayAPIKey(t *testing.T) {
+	t.Setenv(envInferenceGatewayURL, "https://gw.example")
+	t.Setenv(envInferenceGatewayTestKey, "")
+	w := &world.World{Org: "org", RepoName: "repo", SCM: &fakeCleanupSCM{fileContent: []byte("runtime: dummy\n")}}
+	assert.ErrorIs(t, givenTestInferenceGatewayAPIKey(w), godog.ErrSkip, "no key: skip")
+
+	t.Setenv(envInferenceGatewayTestKey, "test-gateway-key-value")
+	scmDriver := &fakeCleanupSCM{fileContent: []byte("runtime: dummy\n")}
+	w = &world.World{Org: "org", RepoName: "repo", SCM: scmDriver}
+	require.NoError(t, givenTestInferenceGatewayAPIKey(w))
+	require.Len(t, scmDriver.commits, 1)
+	var doc map[string]any
+	require.NoError(t, yaml.Unmarshal(scmDriver.commits[0].content, &doc))
+	assert.Equal(t, map[string]any{"url": "https://gw.example", "auth": "api-key"}, doc["inference"].(map[string]any)["gateway"])
+	assert.NotContains(t, string(scmDriver.commits[0].content), "test-gateway-key-value", "the key is never committed")
+
+	t.Setenv(envInferenceGatewayURL, "")
+	assert.ErrorIs(t, givenTestInferenceGatewayAPIKey(&world.World{SCM: &fakeCleanupSCM{}}), godog.ErrSkip, "no URL: skip")
+}
+
+func TestCheckProbeBodyWithoutKey(t *testing.T) {
+	res := runtime.BehaviourOpResult{Description: "Call", ResponseBody: `{"authorization":"Bearer stub"}`}
+	assert.NoError(t, checkProbeBodyWithoutKey(res, "test-gateway-key-value"))
+	res.ResponseBody = `{"authorization":"Bearer test-gateway-key-value"}`
+	err := checkProbeBodyWithoutKey(res, "test-gateway-key-value")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "test-gateway-key-value", "the error never prints the key")
 }

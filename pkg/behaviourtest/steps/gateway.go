@@ -23,7 +23,13 @@ import (
 const (
 	envInferenceGatewayURL      = "E2E_INFERENCE_GATEWAY_URL"
 	envInferenceGatewayAudience = "E2E_INFERENCE_GATEWAY_AUDIENCE"
-	defaultGatewayAudience      = "fullsend-e2e-gateway"
+	// envInferenceGatewayTestKey is the test gateway's API key for the
+	// api-key mode (ADR 0138), authorised for the echo model only. The
+	// suite holds it only to check it never reaches the upstream; the
+	// harness run gets it as the pool repository's
+	// FULLSEND_INFERENCE_GATEWAY_API_KEY secret, provisioned out of band.
+	envInferenceGatewayTestKey = "E2E_INFERENCE_GATEWAY_TEST_KEY"
+	defaultGatewayAudience     = "fullsend-e2e-gateway"
 	// gatewayPlaceholder is expanded in http_probe args to the test
 	// gateway URL (no trailing slash), e.g. "<gateway>/v1/models".
 	gatewayPlaceholder = "<gateway>"
@@ -32,6 +38,12 @@ const (
 func registerGatewaySteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the test inference gateway is configured for the repository$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenTestInferenceGateway(world.FromContext(ctx))
+	})
+	sc.Step(`^the test inference gateway is configured for the repository with an API key$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenTestInferenceGatewayAPIKey(world.FromContext(ctx))
+	})
+	sc.Step(`^the agent's probe "([^"]+)" response does not contain the test inference gateway API key$`, func(ctx context.Context, description string) (context.Context, error) {
+		return ctx, assertProbeBodyWithoutTestKey(world.FromContext(ctx), description)
 	})
 	sc.Step(`^the agent's probe "([^"]+)" returned HTTP (\d{3})$`, func(ctx context.Context, description, status string) (context.Context, error) {
 		return ctx, assertProbeStatus(world.FromContext(ctx), description, status)
@@ -113,6 +125,27 @@ func givenTestInferenceGateway(w *world.World) error {
 	if !ok {
 		return godog.ErrSkip
 	}
+	return commitInferenceGateway(w, map[string]any{"url": gatewayURL, "audience": audience})
+}
+
+// givenTestInferenceGatewayAPIKey commits an api-key inference.gateway
+// block (url and auth: api-key, no audience) the same way. It skips the
+// scenario when the URL or the test key is unset, and registers the key
+// for redaction so it never reaches the suite's logs.
+func givenTestInferenceGatewayAPIKey(w *world.World) error {
+	gatewayURL, _, ok := testGatewayFromEnv()
+	key := strings.TrimSpace(os.Getenv(envInferenceGatewayTestKey))
+	if !ok || key == "" {
+		return godog.ErrSkip
+	}
+	registerSecretForms(key)
+	return commitInferenceGateway(w, map[string]any{"url": gatewayURL, "auth": "api-key"})
+}
+
+// commitInferenceGateway commits gateway as the enrolled repo's
+// inference.gateway block, recording the original config for
+// restoreGatewayConfig.
+func commitInferenceGateway(w *world.World, gateway map[string]any) error {
 	if w.Org == "" || w.RepoName == "" {
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before configuring the inference gateway")
 	}
@@ -121,7 +154,7 @@ func givenTestInferenceGateway(w *world.World) error {
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
-	merged, err := withInferenceGateway(original, gatewayURL, audience)
+	merged, err := withInferenceGateway(original, gateway)
 	if err != nil {
 		return err
 	}
@@ -136,9 +169,9 @@ func givenTestInferenceGateway(w *world.World) error {
 	return nil
 }
 
-// withInferenceGateway sets inference.gateway.{url,audience} in a config
+// withInferenceGateway sets inference.gateway to gateway in a config
 // document, leaving all other keys untouched.
-func withInferenceGateway(data []byte, gatewayURL, audience string) ([]byte, error) {
+func withInferenceGateway(data []byte, gateway map[string]any) ([]byte, error) {
 	doc := map[string]any{}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
@@ -150,7 +183,7 @@ func withInferenceGateway(data []byte, gatewayURL, audience string) ([]byte, err
 	if inference == nil {
 		inference = map[string]any{}
 	}
-	inference["gateway"] = map[string]any{"url": gatewayURL, "audience": audience}
+	inference["gateway"] = gateway
 	doc["inference"] = inference
 	out, err := yaml.Marshal(doc)
 	if err != nil {
@@ -246,6 +279,28 @@ func checkProbeBody(res runtime.BehaviourOpResult, wantContains bool, needle str
 		return fmt.Errorf("probe %q: response body does not contain %q", res.Description, needle)
 	case !wantContains && got:
 		return fmt.Errorf("probe %q: response body unexpectedly contains %q", res.Description, needle)
+	}
+	return nil
+}
+
+// assertProbeBodyWithoutTestKey fails when a probe's recorded response
+// holds the test gateway API key: the gateway must swap it for its own
+// upstream credential. The error never prints the key.
+func assertProbeBodyWithoutTestKey(w *world.World, description string) error {
+	key := strings.TrimSpace(os.Getenv(envInferenceGatewayTestKey))
+	if key == "" {
+		return fmt.Errorf("%s is unset", envInferenceGatewayTestKey)
+	}
+	res, err := findProbeResult(w, description)
+	if err != nil {
+		return err
+	}
+	return checkProbeBodyWithoutKey(res, key)
+}
+
+func checkProbeBodyWithoutKey(res runtime.BehaviourOpResult, key string) error {
+	if strings.Contains(res.ResponseBody, key) {
+		return fmt.Errorf("probe %q: the response holds the test inference gateway API key; the gateway forwarded it upstream", res.Description)
 	}
 	return nil
 }
