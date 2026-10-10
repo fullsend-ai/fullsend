@@ -370,18 +370,6 @@ func TestRefreshGatewayProvider_HandOffOnce(t *testing.T) {
 	assert.Equal(t, iat.Add(5*time.Minute), gotExp)
 	assert.Equal(t, ph("v111_INFERENCE_GATEWAY_API_KEY"), held, "the agent still holds the previous generation")
 
-	// The refresher does not give up on a failed hand-off.
-	calls.Store(0)
-	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
-		calls.Add(1)
-		now := time.Now()
-		return &actionsoidc.Assertion{Value: gatewayTestJWT, IssuedAt: now, ExpiresAt: now.Add(time.Second)}, nil
-	})
-	h.issuedAt, h.expiresAt = time.Now(), time.Now().Add(time.Second)
-	stops := startGatewayRefreshers([]gatewayProviderHandle{h}, ui.New(io.Discard))
-	// More fetches than one refresh's retries: it went on to later refreshes.
-	require.Eventually(t, func() bool { return calls.Load() > int32(gatewayRefreshRetries+1) }, 10*time.Second, 5*time.Millisecond, "refreshed again after a failed hand-off")
-	stops[0]()
 }
 
 // The cleanup keys the runner passes for each route must be the env keys
@@ -389,4 +377,132 @@ func TestRefreshGatewayProvider_HandOffOnce(t *testing.T) {
 func TestRouteCredentialKeysMatchRuntimeSeeds(t *testing.T) {
 	assert.Equal(t, gatewayCredentialKey, runtime.PiRuntime{}.GatewayCredentialSeed().PlaceholderEnv)
 	assert.Equal(t, openAIDefaultCredentialKey, runtime.OpenAIRouteSeed(runtime.PiRuntime{}).PlaceholderEnv)
+}
+
+// gatewayRecoveryStub puts an openshell on PATH whose placeholder read
+// answers nothing until dir/base exists, then the old generation, and the
+// new one once the provider was updated and dir/flip exists. Seed and
+// verify execs succeed; a provider update touches dir/updated.
+func gatewayRecoveryStub(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	q := func(name string) string { return shellQuoteForTest(filepath.Join(dir, name)) }
+	stubOpenshell(t, "case \"$*\" in\n"+
+		"  *grep*) exit 0 ;;\n"+
+		"  *inference-gateway.token*) exit 0 ;;\n"+
+		"  *INFERENCE_GATEWAY_API_KEY:-*) if test -f "+q("updated")+" && test -f "+q("flip")+"; then printf '"+ph("v222_INFERENCE_GATEWAY_API_KEY")+"'; elif test -f "+q("base")+"; then printf '"+ph("v111_INFERENCE_GATEWAY_API_KEY")+"'; fi; exit 0 ;;\n"+
+		"  *'provider update'*) touch "+q("updated")+"; exit 0 ;;\n"+
+		"esac\nexit 0")
+	return dir
+}
+
+// shrinkGatewayRefreshTimers makes the refresher's waits test-sized.
+func shrinkGatewayRefreshTimers(t *testing.T) {
+	t.Helper()
+	oldPoll, oldSettle, oldMin, oldBackoff := openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff
+	openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff = time.Millisecond, 20*time.Millisecond, time.Millisecond, time.Millisecond
+	t.Cleanup(func() {
+		openAIPlaceholderPoll, openAIPlaceholderSettle, gatewayRefreshMinDelay, gatewayRefreshBackoff = oldPoll, oldSettle, oldMin, oldBackoff
+	})
+}
+
+// gatewayDueHandle is a handle whose token is inside its refresh lead, on
+// a sandbox that is up.
+func gatewayDueHandle(expiresIn time.Duration) gatewayProviderHandle {
+	up := &atomic.Bool{}
+	up.Store(true)
+	now := time.Now()
+	return gatewayProviderHandle{name: "inference-gateway-x", block: config.InferenceGatewayConfig{Audience: "aud"}, sandbox: "fs-x",
+		seed: runtime.PiRuntime{}.GatewayCredentialSeed(), sandboxUp: up, issuedAt: now.Add(expiresIn - 5*time.Minute), expiresAt: now.Add(expiresIn)}
+}
+
+// countFiveMinuteAssertions stubs the assertion fetch with 5 minute tokens
+// and counts the fetches.
+func countFiveMinuteAssertions(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var calls atomic.Int32
+	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
+		calls.Add(1)
+		now := time.Now()
+		return &actionsoidc.Assertion{Value: gatewayTestJWT, IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute)}, nil
+	})
+	return &calls
+}
+
+// A failed hand-off is retried on its own, without fetching or rotating
+// again, and the agent gets the new placeholder once the sandbox hands it
+// out — well before the next rotation is due.
+func TestRunGatewayRefresh_RetriesTheHandOffAlone(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	dir := gatewayRecoveryStub(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "base"), nil, 0o644))
+	shrinkGatewayRefreshTimers(t)
+	calls := countFiveMinuteAssertions(t)
+	h := gatewayDueHandle(time.Minute)
+	var out syncBuffer
+	stops := startGatewayRefreshers([]gatewayProviderHandle{h}, ui.New(&out))
+	t.Cleanup(stops[0])
+
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "failed again") }, 10*time.Second, 5*time.Millisecond, out.String())
+	assert.Equal(t, int32(1), calls.Load(), "the hand-off is retried without another fetch")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "flip"), nil, 0o644))
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "handed off") }, 10*time.Second, 5*time.Millisecond, out.String())
+	assert.Equal(t, int32(1), calls.Load())
+}
+
+// A placeholder that cannot be read rotates nothing; the refresh is
+// retried and rotates once the read succeeds. Once the provider's token
+// has expired, the refresher gives up.
+func TestRunGatewayRefresh_BaselineFailureIsRetried(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	dir := gatewayRecoveryStub(t)
+	shrinkGatewayRefreshTimers(t)
+	calls := countFiveMinuteAssertions(t)
+	var out syncBuffer
+	stops := startGatewayRefreshers([]gatewayProviderHandle{gatewayDueHandle(time.Minute)}, ui.New(&out))
+	t.Cleanup(stops[0])
+
+	require.Eventually(t, func() bool { return strings.Count(out.String(), "deferred") >= 2 }, 10*time.Second, 5*time.Millisecond, out.String())
+	assert.Equal(t, int32(0), calls.Load(), "nothing rotated without the baseline")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "base"), nil, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "flip"), nil, 0o644))
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "token refreshed for") }, 10*time.Second, 5*time.Millisecond, out.String())
+	assert.Equal(t, int32(1), calls.Load())
+
+	// An expired provider token with no readable placeholder: give up.
+	gatewayRecoveryStub(t)
+	var expired syncBuffer
+	done := make(chan struct{})
+	go func() {
+		runGatewayRefresh(context.Background(), gatewayDueHandle(-time.Second), ui.New(&expired))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not give up on an expired token")
+	}
+	assert.Contains(t, expired.String(), "gave up")
+}
+
+// A refresher restarted around a remint resumes from the token the
+// provider holds now, not the one minted when the route started.
+func TestStartGatewayRefreshers_RestartResumesState(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	stubOpenshell(t, "exit 0")
+	shrinkGatewayRefreshTimers(t)
+	calls := countFiveMinuteAssertions(t)
+	h := gatewayDueHandle(time.Minute)
+	h.sandboxUp = &atomic.Bool{} // before the sandbox exists
+	handles := []gatewayProviderHandle{h}
+	var out syncBuffer
+	stops := startGatewayRefreshers(handles, ui.New(&out))
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "token refreshed for") }, 10*time.Second, 5*time.Millisecond)
+	stops[0]()
+	require.Equal(t, int32(1), calls.Load())
+
+	stops = startGatewayRefreshers(handles, ui.New(&out))
+	t.Cleanup(stops[0])
+	assert.Never(t, func() bool { return calls.Load() > 1 }, 200*time.Millisecond, 5*time.Millisecond, "no refresh: the provider's token is fresh")
+	assert.NotContains(t, out.String(), "refresh budget", "no false lifetime warning")
 }

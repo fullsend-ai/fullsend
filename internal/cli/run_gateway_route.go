@@ -156,6 +156,8 @@ type gatewayProviderHandle struct {
 	// sandboxUp is set once the sandbox is Ready: from then a refresh also
 	// re-seeds the runtime's token file.
 	sandboxUp *atomic.Bool
+	// state is the refresher's progress, shared across restarts.
+	state *gatewayRefreshState
 }
 
 // sandboxReady reports whether a refresh has a running sandbox to re-seed.
@@ -190,8 +192,48 @@ func startGatewayRoute(ctx context.Context, plan *gatewayRoutePlan, sandboxName 
 		issuedAt:  a.IssuedAt,
 		expiresAt: a.ExpiresAt,
 		sandboxUp: &atomic.Bool{},
+		state:     &gatewayRefreshState{issuedAt: a.IssuedAt, expiresAt: a.ExpiresAt, heldExpiresAt: a.ExpiresAt},
 	}, nil
 }
+
+// gatewayRefreshState is a gateway refresher's progress. It lives on the
+// handle, so a refresher restarted around a remint resumes from the token
+// the provider holds now rather than the one minted at start. Only one
+// refresher per handle runs at a time (a restart follows stop-and-wait),
+// so it needs no lock.
+type gatewayRefreshState struct {
+	// issuedAt/expiresAt are the provider's current token's iat and exp.
+	issuedAt  time.Time
+	expiresAt time.Time
+	// heldExpiresAt is the exp of the token the running agent holds: the
+	// provider's, unless a hand-off is pending.
+	heldExpiresAt time.Time
+	// placeholder is the generation the agent's token file names; "" until
+	// the first refresh after the sandbox is up reads it.
+	placeholder string
+	// handOffPending is set when the provider holds a newer token than the
+	// agent: the refresher then retries the hand-off alone.
+	handOffPending bool
+}
+
+// refreshState returns the handle's refresh state, creating it from the
+// handle's token when the handle carries none.
+func (h *gatewayProviderHandle) refreshState() *gatewayRefreshState {
+	if h.state == nil {
+		h.state = &gatewayRefreshState{issuedAt: h.issuedAt, expiresAt: h.expiresAt, heldExpiresAt: h.expiresAt}
+	}
+	return h.state
+}
+
+// gatewayBaselineError is a refresh that could not read the placeholder
+// the agent holds, so it rotated nothing.
+type gatewayBaselineError struct{ err error }
+
+func (e *gatewayBaselineError) Error() string {
+	return "reading the placeholder the agent holds before rotating: " + e.err.Error()
+}
+
+func (e *gatewayBaselineError) Unwrap() error { return e.err }
 
 // gatewayReseedError is a refresh whose provider update landed but whose
 // hand-off to the running agent did not: the provider holds the new token
@@ -213,7 +255,6 @@ func rotateGatewayToken(ctx context.Context, h gatewayProviderHandle, printer *u
 	var lastErr error
 	for attempt := 0; attempt <= gatewayRefreshRetries; attempt++ {
 		if attempt > 0 {
-			printer.StepWarn(fmt.Sprintf("Inference gateway token refresh attempt %d/%d failed: %v", attempt, gatewayRefreshRetries+1, lastErr))
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -228,6 +269,7 @@ func rotateGatewayToken(ctx context.Context, h gatewayProviderHandle, printer *u
 			return nil, ctx.Err()
 		}
 		lastErr = err
+		printer.StepWarn(fmt.Sprintf("Inference gateway token refresh attempt %d/%d failed: %v", attempt+1, gatewayRefreshRetries+1, err))
 	}
 	return nil, lastErr
 }
@@ -256,13 +298,23 @@ func rotateGatewayTokenOnce(ctx context.Context, h gatewayProviderHandle) (*acti
 	return a, nil
 }
 
+// handOffGateway re-seeds the running agent's token file once the sandbox
+// hands out a placeholder other than previous, the one the agent holds.
+// It returns the placeholder the agent now holds.
+func handOffGateway(ctx context.Context, h gatewayProviderHandle, previous string, printer *ui.Printer) (string, error) {
+	settleCtx, cancel := context.WithTimeout(ctx, openAIPlaceholderSettle+3*openAIPlaceholderExecTimeout+openAIPlaceholderPoll)
+	defer cancel()
+	return reseedCredential(settleCtx, h.sandbox, "inference gateway", h.seed, previous, printer)
+}
+
 // refreshGatewayProvider rotates the provider's token (rotateGatewayToken)
 // and, once the sandbox is up, hands the new placeholder to the running
-// agent by re-seeding the runtime's token file — once, since the settle
-// wait alone takes most of a short token's refresh lead. It returns the new
-// token's iat and exp and the placeholder the agent now holds. A failed
-// hand-off returns the new iat and exp with a *gatewayReseedError and the
-// placeholder the agent still holds.
+// agent — once, since the settle wait alone takes most of a short token's
+// refresh lead. placeholder is the generation the agent holds, "" when not
+// yet known. It returns the new token's iat and exp and the placeholder
+// the agent now holds. A failed baseline read rotates nothing and returns
+// a *gatewayBaselineError; a failed hand-off returns the new iat and exp
+// with a *gatewayReseedError and the placeholder the agent still holds.
 func refreshGatewayProvider(ctx context.Context, h gatewayProviderHandle, placeholder string, printer *ui.Printer) (time.Time, time.Time, string, error) {
 	reseed := h.sandboxReady()
 	if reseed && placeholder == "" {
@@ -270,7 +322,7 @@ func refreshGatewayProvider(ctx context.Context, h gatewayProviderHandle, placeh
 		p, err := baselinePlaceholder(baseCtx, h.sandbox, h.seed.PlaceholderEnv)
 		cancel()
 		if err != nil {
-			return time.Time{}, time.Time{}, "", fmt.Errorf("reading the placeholder the agent holds before rotating: %w", err)
+			return time.Time{}, time.Time{}, "", &gatewayBaselineError{err: err}
 		}
 		placeholder = p
 	}
@@ -281,53 +333,93 @@ func refreshGatewayProvider(ctx context.Context, h gatewayProviderHandle, placeh
 	if !reseed {
 		return a.IssuedAt, a.ExpiresAt, placeholder, nil
 	}
-	settleCtx, cancelSettle := context.WithTimeout(ctx, openAIPlaceholderSettle+3*openAIPlaceholderExecTimeout+openAIPlaceholderPoll)
-	defer cancelSettle()
-	seeded, err := reseedCredential(settleCtx, h.sandbox, "inference gateway", h.seed, placeholder, printer)
+	seeded, err := handOffGateway(ctx, h, placeholder, printer)
 	if err != nil {
 		return a.IssuedAt, a.ExpiresAt, placeholder, &gatewayReseedError{err: err}
 	}
 	return a.IssuedAt, a.ExpiresAt, seeded, nil
 }
 
+// waitGateway waits d, or returns false when ctx ends first.
+func waitGateway(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 // runGatewayRefresh keeps the gateway token valid for the life of the
-// run, scheduling each refresh from the current token's own iat and exp
-// (gatewayRefreshDelay). When the fetch retries are exhausted it stops and
-// says so: the provider's recorded expiry makes the proxy fail closed at
-// that instant, so the run fails visibly. A failed hand-off does not stop
-// it: the provider already holds the new token, and the next refresh
-// re-seeds again. Runs until ctx is cancelled.
+// run, scheduling each refresh from the provider's current token's own iat
+// and exp (gatewayRefreshDelay). Runs until ctx is cancelled.
+//
+//   - When the fetch retries are exhausted it stops and says so: the
+//     provider's recorded expiry makes the proxy fail closed at that
+//     instant, so the run fails visibly.
+//   - When the placeholder the agent holds cannot be read, nothing is
+//     rotated and the refresh is retried shortly, until the provider's
+//     token expires.
+//   - When the hand-off fails, the provider already holds the new token;
+//     only the hand-off is retried, every gatewayRefreshBackoff, until the
+//     provider's next refresh is due (which hands off again itself).
 func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui.Printer) {
-	iat, exp := h.issuedAt, h.expiresAt
-	placeholder := ""
+	st := h.refreshState()
+	var warnedFor time.Time
 	for {
-		delay, fits := gatewayRefreshDelay(iat, exp, time.Now(), rand.Float64())
-		if !fits {
-			printer.StepWarn(fmt.Sprintf("Inference gateway token lifetime %s leaves less than the %s refresh budget; a refresh may not land before it expires", exp.Sub(iat).Round(time.Second), (gatewayRefreshWork() + gatewayRefreshSafety).Round(time.Second)))
+		delay, fits := gatewayRefreshDelay(st.issuedAt, st.expiresAt, time.Now(), rand.Float64())
+		if st.handOffPending && delay > gatewayRefreshBackoff {
+			if !waitGateway(ctx, gatewayRefreshBackoff) {
+				return
+			}
+			held, err := handOffGateway(ctx, h, st.placeholder, printer)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				printer.StepWarn(fmt.Sprintf("Inference gateway hand-off for %s failed again: %v; the running agent's token expires at %s", h.name, err, st.heldExpiresAt.UTC().Format(time.RFC3339)))
+				continue
+			}
+			st.placeholder, st.heldExpiresAt, st.handOffPending = held, st.expiresAt, false
+			printer.StepDone(fmt.Sprintf("Inference gateway token handed off for %s (next expiry in %s)", h.name, time.Until(st.expiresAt).Round(time.Second)))
+			continue
 		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if !fits && !warnedFor.Equal(st.expiresAt) {
+			warnedFor = st.expiresAt
+			printer.StepWarn(fmt.Sprintf("Inference gateway token lifetime %s leaves less than the %s refresh budget; a refresh may not land before it expires", st.expiresAt.Sub(st.issuedAt).Round(time.Second), (gatewayRefreshWork() + gatewayRefreshSafety).Round(time.Second)))
+		}
+		if !waitGateway(ctx, delay) {
 			return
-		case <-timer.C:
 		}
-		nextIat, nextExp, held, err := refreshGatewayProvider(ctx, h, placeholder, printer)
-		if ctx.Err() != nil {
-			return
-		}
+		iat, exp, held, err := refreshGatewayProvider(ctx, h, st.placeholder, printer)
+		// A rotation that landed is recorded even when the refresher was
+		// stopped meanwhile, so a restart resumes from it.
+		var baselineErr *gatewayBaselineError
 		var reseedErr *gatewayReseedError
 		switch {
+		case err != nil && !errors.As(err, &reseedErr) && ctx.Err() != nil:
+			return
+		case errors.As(err, &baselineErr):
+			if !time.Now().Before(st.expiresAt) {
+				printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s gave up: %v; the provider's token expired at %s", h.name, err, st.expiresAt.UTC().Format(time.RFC3339)))
+				return
+			}
+			printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s deferred: %v; retrying", h.name, err))
 		case errors.As(err, &reseedErr):
-			printer.StepWarn(fmt.Sprintf("Inference gateway token refreshed for %s, but %v; the running agent keeps the token it holds, which expires at %s, and the next refresh re-seeds again", h.name, reseedErr.err, exp.UTC().Format(time.RFC3339)))
+			st.issuedAt, st.expiresAt, st.placeholder, st.handOffPending = iat, exp, held, true
+			if ctx.Err() != nil {
+				return
+			}
+			printer.StepWarn(fmt.Sprintf("Inference gateway token refreshed for %s, but %v; retrying the hand-off, and the running agent's token expires at %s", h.name, reseedErr.err, st.heldExpiresAt.UTC().Format(time.RFC3339)))
 		case err != nil:
-			printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s gave up: %v; the running agent keeps the token it holds, which expires at %s", h.name, err, exp.UTC().Format(time.RFC3339)))
+			printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s gave up: %v; the running agent keeps the token it holds, which expires at %s", h.name, err, st.heldExpiresAt.UTC().Format(time.RFC3339)))
 			return
 		default:
-			printer.StepDone(fmt.Sprintf("Inference gateway token refreshed for %s (next expiry in %s)", h.name, time.Until(nextExp).Round(time.Second)))
+			st.issuedAt, st.expiresAt, st.heldExpiresAt, st.placeholder, st.handOffPending = iat, exp, exp, held, false
+			printer.StepDone(fmt.Sprintf("Inference gateway token refreshed for %s (next expiry in %s)", h.name, time.Until(exp).Round(time.Second)))
 		}
-		placeholder = held
-		iat, exp = nextIat, nextExp
 	}
 }
 
@@ -335,7 +427,11 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 // returns one stop-and-wait func per handle (see startOpenAIRefreshers).
 func startGatewayRefreshers(handles []gatewayProviderHandle, printer *ui.Printer) []func() {
 	stops := make([]func(), 0, len(handles))
-	for _, handle := range handles {
+	for i := range handles {
+		// The state is created here, on the caller's handle, so a restart
+		// of the same handles resumes from it.
+		handles[i].refreshState()
+		handle := handles[i]
 		refreshCtx, stopRefresh := context.WithCancel(context.Background())
 		var wg sync.WaitGroup
 		wg.Add(1)
