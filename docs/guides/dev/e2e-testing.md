@@ -381,6 +381,17 @@ and the script fails. The probes need no token, so a positive check is left
 to the behaviour test, which mints a GitHub Actions OIDC token for a pool
 repository.
 
+The api-key behaviour test ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md))
+needs a gateway key for the `echo` model only. Pass its hash, never the key,
+as `ECHO_KEY_HASH=sha256:<64 hex>` on every run; a run without it removes
+the key. `REAL_KEY_HASH` does the same for a time-boxed `claude-haiku-5-5`
+key used in one local run, and is left unset afterwards. With a key, the
+OIDC check is permissive, so a request with no credential passes
+authentication and each model then refuses it with a 403. The probe
+therefore expects a 401 (`api key authentication failure: ...`) for a
+bearer that is neither a valid token nor a configured key, instead of the
+three probes above.
+
 ### What it manages
 
 Every resource is named `fullsend-e2e-gateway*`. Those names are reserved for
