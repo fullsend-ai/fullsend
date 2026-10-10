@@ -8,8 +8,8 @@
 # assertion.
 #
 # Gated on the `runtime-codex-gateway` capability, which is NOT declared by
-# default. codex speaks the Responses API only and never calls /v1/models,
-# so the model is pinned here; the inference.gateway model list the shared
+# default. codex speaks the Responses API only, and fullsend renders no
+# model catalog for it, so the model is pinned here; the inference.gateway model list the shared
 # step commits for pi is not read on codex. The test gateway serves
 # gpt-oss-120b on Responses. The gateway location comes from
 # E2E_INFERENCE_GATEWAY_URL and E2E_INFERENCE_GATEWAY_AUDIENCE (default

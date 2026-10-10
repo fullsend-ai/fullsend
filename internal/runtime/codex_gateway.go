@@ -87,10 +87,9 @@ func codexGatewayBaseURL(origin string) (string, error) {
 
 // PrepareGatewayRun implements GatewayRouteRuntime: it registers the
 // gateway provider's base_url for the sandbox, so Bootstrap renders the
-// fullsend-gateway provider and Run can select it. codex speaks the
-// Responses API only and never calls /v1/models, so neither the block's
+// fullsend-gateway provider and Run can select it. Neither the block's
 // model list nor its models_file is rendered: the model is pinned by
-// --model.
+// --model, and codex's own GET /v1/models is denied by the gateway profile.
 func (r CodexRuntime) PrepareGatewayRun(sandboxName string, run GatewayRun) error {
 	base, err := codexGatewayBaseURL(run.BaseURL)
 	if err != nil {

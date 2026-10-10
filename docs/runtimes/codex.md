@@ -113,8 +113,9 @@ from the block. The direct `openai/` route is unchanged, and the harness needs n
 `providers:` entry for a gateway run: the runner attaches the gateway provider and its egress profile
 itself.
 
-**Pin the model.** Codex never calls `/v1/models`, so neither the block's `models` list nor its
-`models_file` is read on codex: the id after `gateway/` is what codex sends. The gateway must serve
+**Pin the model.** fullsend renders no model catalog for codex, so the block's `models` list is not
+used on codex, and codex's own `GET /v1/models` probe is denied by the gateway profile: the id after
+`gateway/` is what codex sends. The gateway must serve
 it on `POST /v1/responses` with Bearer auth.
 
 **Check the effort level against the model.** Effort is passed to the gateway as is, and some models
@@ -280,6 +281,7 @@ probes on the way up and the policy refuses what the run does not need:
 | Denied | Why it appears |
 |---|---|
 | `GET /v1/models` on `api.openai.com` | Codex refreshes its model catalog on a custom provider. The `fullsend-openai` profile allows only `POST /v1/responses`, so the probe is denied at L7, up to three times. The first allowed `POST` follows about 100 ms later. |
+| `GET /v1/models` on the inference gateway host | The same catalog refresh on a `gateway/` run. The gateway profile allows only the model `POST`s, so it is denied at L7 and logged by codex as `failed to refresh available models: 403`. |
 | `chatgpt.com:443` | A sign-in/account probe the agent run has no use for; denied at L4. |
 | `api.github.com:443` | Denied at L4 from codex itself — the agent reaches GitHub through the `gh` CLI and its own provider, not from the model client. |
 

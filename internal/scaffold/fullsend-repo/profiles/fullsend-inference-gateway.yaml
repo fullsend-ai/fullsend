@@ -41,10 +41,10 @@ endpoints:
       - allow:
           method: POST
           path: /v1/chat/completions
-# pi (and its inference-gateway extension) calls the gateway from node.
-# codex's npm launcher execs the per-platform native binary, so it is
-# `codex` — not node — that opens the connection on that runtime, and it
-# only ever posts to /v1/responses (#8295).
+# The binary list applies to every rule above. pi (and its
+# inference-gateway extension) calls the gateway from node; on codex the
+# npm launcher execs the native binary, so `codex` opens the connection
+# and uses /v1/responses (#8295).
 binaries:
   - "**/node"
   - "**/codex"

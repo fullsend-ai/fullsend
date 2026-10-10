@@ -172,7 +172,9 @@ The rules that follow from that:
   only adds its own host.
 - **A block changes nothing else.** Configuring `inference.gateway` does not
   move `openai/` or any other model onto the gateway. Until Claude Code and
-  Codex join the route (deferred below), it has no effect on them.
+  Codex join the route (deferred below), it has no effect on them. (Codex:
+  implemented by #8295, through a runner-owned `fullsend-gateway` provider,
+  Responses only.)
 - **A configured gateway never falls back.** If it is unreachable or refuses
   the token, the run fails. It never switches the model to the `openai`
   provider or a static key, otherwise that key could never be deleted. A
@@ -334,7 +336,7 @@ Deploying and operating the gateway are out of scope.
 
 These are deferred and named:
 
-- Claude Code and Codex on the gateway route
+- Claude Code and Codex on the gateway route (Codex: implemented by #8295)
 - a gateway credential exchanged through a WIF or STS service instead of the
   forge OIDC token itself
 - more than one gateway per repository. This decision supports one, which can

@@ -234,7 +234,7 @@ func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL
 	if gatewayBaseURL != "" {
 		data.DefaultProviderID = codexGatewayProviderID
 		data.GatewayProviderID = codexGatewayProviderID
-		data.GatewayBaseURL = codexTOMLKey(gatewayBaseURL)
+		data.GatewayBaseURL = codexTOMLString(gatewayBaseURL)
 		data.GatewayAuthCommand = codexTOMLString(configDir + "/" + codexGatewayAuthScriptFile)
 	}
 	var buf strings.Builder

@@ -44,6 +44,16 @@ type gatewayRoutePlan struct {
 // Tier A).
 func isDummyRuntime(name string) bool { return name == "dummy" || name == "dummy-playback" }
 
+// codexGatewayNeedsBlock is the error for a gateway/ model on codex when no
+// inference.gateway block applies, or nil.
+func codexGatewayNeedsBlock(runtimeName string, needsGateway bool) error {
+	if runtimeName != "codex" || !needsGateway {
+		return nil
+	}
+	return fmt.Errorf("gateway/ models on codex need an inference.gateway block that applies to this run: " +
+		"add one to .fullsend/config.yaml (with auth: oidc it applies on a run with a forge OIDC endpoint, with auth: api-key on every run)")
+}
+
 // planGatewayRoute decides whether the runner owns the gateway route for
 // this run and, when it does, registers the gateway run with the runtime.
 // models are the gateway-relevant model specs the run resolves (the
@@ -53,7 +63,8 @@ func isDummyRuntime(name string) bool { return name == "dummy" || name == "dummy
 // A gateway/ model on a runtime without the route is an error, and so is
 // a partial block. With no block, or on a run with no forge OIDC endpoint,
 // the runner adds nothing, so the harness-plugin setup in the local guide
-// keeps working. Under the dummy runtime the provider is attached whenever
+// keeps working. codex has no plugin fallback, so a gateway/ model on codex
+// with no applying block fails here, before the sandbox is created. Under the dummy runtime the provider is attached whenever
 // a block applies, so behaviour tests can probe the route.
 func planGatewayRoute(rc runConfig, backend runtime.Backend, sandboxName string, models []string, needsGateway bool) (*gatewayRoutePlan, error) {
 	name := backend.Runtime.Name()
@@ -61,7 +72,7 @@ func planGatewayRoute(rc runConfig, backend runtime.Backend, sandboxName string,
 		return nil, err
 	}
 	if rc.perRepo == nil {
-		return nil, nil
+		return nil, codexGatewayNeedsBlock(name, needsGateway)
 	}
 	block := rc.perRepo.ConfigInferenceGateway().Trimmed()
 	applies, err := gatewayBlockApplies(block)
@@ -69,7 +80,7 @@ func planGatewayRoute(rc runConfig, backend runtime.Backend, sandboxName string,
 		return nil, err
 	}
 	if !applies {
-		return nil, nil
+		return nil, codexGatewayNeedsBlock(name, needsGateway)
 	}
 	if !needsGateway && !isDummyRuntime(name) {
 		return nil, nil
