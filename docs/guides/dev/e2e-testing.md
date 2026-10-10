@@ -427,12 +427,12 @@ The generated config (print it with `--print-config`):
   - **No key hash:** `jwtAuth` runs in `strict` mode, and a request without
     a valid token gets a 401.
   - **`ECHO_KEY_HASH` or `REAL_KEY_HASH` set** (the durable gateway has
-    `ECHO_KEY_HASH`): `jwtAuth` runs in `permissive` mode, followed by an
+    `ECHO_KEY_HASH` only, and no real key): `jwtAuth` runs in `permissive` mode, followed by an
     `apiKey` policy in `optional` mode. A valid JWT is checked and
     stripped first, so it never reaches the key check. A bearer that is not
     a JWT goes on to the key check, and a wrong key gets a 401. Each key
-    carries its own `allowedModels`: `[echo]` for the echo key and
-    `[claude-haiku-5-5]` for the real key. A request with no credential
+    carries its own `allowedModels`: `[echo]` for the echo key, and the one
+    model `REAL_KEY_MODEL` names for the real key. A request with no credential
     passes both checks, and each model's authorisation rules then deny it
     with a 403.
 
@@ -465,7 +465,7 @@ The generated config (print it with `--print-config`):
 
   | Model | Allowed for | Upstream |
   |-------|-------------|----------|
-  | `claude-haiku-5-5`, `gemini-3.8-flash` (`--with-vertex` only) | The pool, plus the real key for the model `REAL_KEY_MODEL` names (default `claude-haiku-5-5`) when `REAL_KEY_HASH` is set | Vertex AI, location `global`, as the runtime service account |
+  | `claude-haiku-5-5`, `gemini-3.8-flash` (`--with-vertex` only) | The pool, plus the real key for `claude-haiku-5-5` when `REAL_KEY_HASH` is set and `REAL_KEY_MODEL` is left at its default | Vertex AI, location `global`, as the runtime service account |
   | `gpt-oss-120b` (`--with-vertex` only) | The pool, plus the real key when `REAL_KEY_HASH` is set and `REAL_KEY_MODEL=gpt-oss-120b` | The Vertex AI model-as-a-service model `openai/gpt-oss-120b-maas`, location `global`, as the runtime service account. It serves Responses clients such as Codex on `/v1/responses`, which the gateway translates to Chat Completions. Gemini 3 tool loops through Responses translation aren't supported on the test gateway, and the Claude models take no Responses requests. The gateway drops assistant messages that have neither content nor tool calls from requests to this model, because its chat template rejects them: a test-gateway requirement, not something fullsend needs from every gateway. |
   | `echo` | The pool, plus the echo key when `ECHO_KEY_HASH` is set | A header-echo listener in the same container. The gateway sends it the stub key. Its answer reports whether that key, and not the caller's credential, arrived, so the custody check can assert it. |
   | `echo-denied` | Only `fullsend-e2e-gateway-outside/not-a-pool-repo`, which is outside the pool | The same echo listener. A behaviour test calls it from a pool repository and expects 403. |
@@ -509,6 +509,7 @@ are part of the `BEHAVIOUR_CAPABILITIES` default in the `Makefile`, which
 | `inference-gateway` | `features/runtime/inference-gateway.feature`: one dummy-runtime scenario covering the placeholder, credential custody on `echo`, egress scope and the `echo-denied` refusal | Yes |
 | `inference-gateway-api-key` | `features/runtime/inference-gateway-api-key.feature` (dummy runtime, echo-only key) | Yes |
 | `runtime-pi-gateway` | `features/runtime/pi-gateway.feature` (pi through the gateway to a real model, `claude-haiku-5-5`) | No: costs a real model run |
+| `runtime-codex-gateway` | `features/runtime/codex-gateway.feature` (codex through the gateway to a real model, `gpt-oss-120b`, on Responses) | No: costs a real model run |
 | `inference-gateway-reseed` | The token-rotation scenario in `features/runtime/inference-gateway.feature`, which also needs `inference-gateway` | No: holds the sandbox for a 330 s wait |
 
 To run the undeclared scenarios on demand, set `E2E_INFERENCE_GATEWAY_URL`
@@ -516,7 +517,7 @@ and pass the full capability list. This replaces the `Makefile` default
 rather than adding to it:
 
 ```bash
-BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,inference-gateway-reseed \
+BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,runtime-codex-gateway,inference-gateway-reseed \
   make behaviour-test
 ```
 
