@@ -163,7 +163,7 @@ func ValidateGatewayURL(raw string) error {
 	if u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("inference.gateway.url must not carry a query or fragment")
 	}
-	if u.Path != "" && u.Path != "/" {
+	if (u.Path != "" && u.Path != "/") || (u.RawPath != "" && u.RawPath != "/") {
 		return fmt.Errorf("inference.gateway.url %q must be the gateway origin (for example https://gateway.example.com): the runner adds the /v1/... paths itself", raw)
 	}
 	if port := u.Port(); port != "" && port != "443" && !isLoopbackHost(u.Hostname()) {

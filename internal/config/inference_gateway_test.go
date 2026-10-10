@@ -72,6 +72,7 @@ func TestInferenceGateway_ValidateErrors(t *testing.T) {
 		{"bad url", InferenceGatewayConfig{URL: "https://gw example.com/%zz"}, "inference.gateway.url"},
 		{"path", InferenceGatewayConfig{URL: "https://gw.example.com/v1"}, "must be the gateway origin"},
 		{"nested path", InferenceGatewayConfig{URL: "https://gw.example.com/proxy/"}, "must be the gateway origin"},
+		{"encoded slash path", InferenceGatewayConfig{URL: "https://gw.example.com/%2f"}, "must be the gateway origin"},
 		{"port", InferenceGatewayConfig{URL: "https://gw.example.com:8443"}, "port 443 only"},
 		{"loopback path", InferenceGatewayConfig{URL: "http://127.0.0.1:8080/v1"}, "must be the gateway origin"},
 		{"both forms", InferenceGatewayConfig{

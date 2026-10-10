@@ -203,6 +203,22 @@ func TestInferenceGatewayStatus_ModelsAuthorised(t *testing.T) {
 	assert.Contains(t, out, "claude-sonnet")
 }
 
+func TestInferenceGatewayStatus_ModelIDsSanitised(t *testing.T) {
+	// A gateway that echoes the bearer value, another JWT or a terminal
+	// escape as a model id must not get any of them into the output.
+	otherJWT := strings.Join([]string{"eyJhbGciOiJub25lIn0", "eyJzdWIiOiJ4In0", "c2ln"}, ".")
+	body := `{"data":[{"id":"` + testGatewayAssertion + `"},{"id":"` + otherJWT + `"},{"id":"evil\u001b[2Jmodel"},{"id":"ok-model"}]}`
+	g := newGatewayTestServer(t, http.StatusOK, body)
+	_, out, err := runGatewayStatusAgainst(t, g)
+	require.NoError(t, err)
+	assert.NotContains(t, out, otherJWT)
+	assert.NotContains(t, out, "\x1b")
+	assert.Contains(t, out, "<redacted>")
+	assert.Contains(t, out, "<redacted-jwt>")
+	assert.Contains(t, out, "evil?[2Jmodel")
+	assert.Contains(t, out, "ok-model")
+}
+
 func TestInferenceGatewayStatus_ModelListCapped(t *testing.T) {
 	var data []string
 	for i := range gatewayProbeMaxListed + 5 {

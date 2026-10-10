@@ -11,8 +11,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -286,12 +288,33 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 		shown = shown[:gatewayProbeMaxListed]
 	}
 	for _, id := range shown {
-		printer.StepInfo(id)
+		printer.StepInfo(displayModelID(id, assertion.Value))
 	}
 	if more := len(ids) - len(shown); more > 0 {
 		printer.StepInfo(fmt.Sprintf("(and %d more)", more))
 	}
 	return nil
+}
+
+// gatewayJWTPattern matches a JWT-shaped value (three base64url segments,
+// the first starting with "eyJ").
+var gatewayJWTPattern = regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*`)
+
+// displayModelID makes a gateway-supplied model id safe to print: the
+// gateway is configured, not trusted to keep the assertion out of the
+// output, so the assertion and any JWT-shaped value are redacted and
+// control characters (terminal escapes included) are replaced.
+func displayModelID(id, assertion string) string {
+	if assertion != "" {
+		id = strings.ReplaceAll(id, assertion, "<redacted>")
+	}
+	id = gatewayJWTPattern.ReplaceAllString(id, "<redacted-jwt>")
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, id)
 }
 
 // gatewayModelIDs reads an OpenAI-style model list ({"data":[{"id":...}]})

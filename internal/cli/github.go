@@ -163,7 +163,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().StringVar(&cfg.openaiAudience, "openai-audience", "", "OpenAI Workload Identity audience (GPT on pi or codex; with --openai-identity-provider-id and --openai-service-account-id)")
 	cmd.Flags().StringVar(&cfg.openaiIdentityProviderID, "openai-identity-provider-id", "", "OpenAI Workload Identity provider ID")
 	cmd.Flags().StringVar(&cfg.openaiServiceAccountID, "openai-service-account-id", "", "OpenAI service account ID the provider maps this repository to")
-	cmd.Flags().StringVar(&cfg.gatewayURL, "inference-gateway-url", "", "inference gateway URL, https (plain http only for a loopback test host); gateway/ models on pi, with --inference-gateway-audience")
+	cmd.Flags().StringVar(&cfg.gatewayURL, "inference-gateway-url", "", "inference gateway origin, https://host with no path and port 443 only (plain http and any port only for a loopback test host); gateway/ models on pi, with --inference-gateway-audience")
 	cmd.Flags().StringVar(&cfg.gatewayAudience, "inference-gateway-audience", "", "OIDC audience the runner requests for the inference gateway")
 	cmd.Flags().StringArrayVar(&cfg.gatewayModels, "inference-gateway-model", nil, "inference gateway model as id=api (repeatable; api is openai-responses, anthropic-messages or openai-completions)")
 	cmd.Flags().StringVar(&cfg.gatewayModelsFile, "inference-gateway-models-file", "", "local pi-inference-gateway config file listing the gateway models; validated and committed as "+gatewayModelsFileRepoPath)
