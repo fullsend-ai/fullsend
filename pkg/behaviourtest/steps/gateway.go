@@ -39,6 +39,15 @@ const (
 )
 
 func registerGatewaySteps(sc *godog.ScenarioContext) {
+	// Checked first in each gateway scenario, before a repo is leased, so
+	// a run without the gateway settings skips without spending API calls
+	// on repo allocation and install.
+	sc.Step(`^the test inference gateway is available$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenTestInferenceGatewayAvailable(false)
+	})
+	sc.Step(`^the test inference gateway is available with an API key$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenTestInferenceGatewayAvailable(true)
+	})
 	sc.Step(`^the test inference gateway is configured for the repository$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenTestInferenceGateway(world.FromContext(ctx))
 	})
@@ -148,6 +157,18 @@ func testGatewayModels() map[string]any {
 // block (url and auth: api-key, no audience) the same way. It skips the
 // scenario when the URL or the test key is unset, and registers the key
 // for redaction so it never reaches the suite's logs.
+// givenTestInferenceGatewayAvailable skips the scenario when the test
+// gateway URL (and, with withKey, the test key) is unset.
+func givenTestInferenceGatewayAvailable(withKey bool) error {
+	if _, _, ok := testGatewayFromEnv(); !ok {
+		return godog.ErrSkip
+	}
+	if withKey && strings.TrimSpace(os.Getenv(envInferenceGatewayTestKey)) == "" {
+		return godog.ErrSkip
+	}
+	return nil
+}
+
 func givenTestInferenceGatewayAPIKey(w *world.World) error {
 	gatewayURL, _, ok := testGatewayFromEnv()
 	key := strings.TrimSpace(os.Getenv(envInferenceGatewayTestKey))

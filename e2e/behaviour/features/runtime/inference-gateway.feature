@@ -34,7 +34,8 @@
 Feature: inference gateway route under the dummy runtime
 
   Background:
-    Given the enrolled test repository
+    Given the test inference gateway is available
+    And the enrolled test repository
     And the test inference gateway is configured for the repository
     And a custom harness "gateway-probe" with:
       """

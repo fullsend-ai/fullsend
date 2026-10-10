@@ -20,7 +20,8 @@ Feature: inference gateway route in the api-key mode under the dummy runtime
 
   @requires:capability:inference-gateway @requires:capability:inference-gateway-api-key
   Scenario: the proxy injects the gateway key and the gateway authorises only its model
-    Given the enrolled test repository
+    Given the test inference gateway is available with an API key
+    And the enrolled test repository
     And the test inference gateway is configured for the repository with an API key
     And a custom harness "gateway-key-probe" with:
       """

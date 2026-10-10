@@ -242,3 +242,16 @@ func stripSecretValues(in []forge.SecretRecord) []forge.SecretRecord {
 	}
 	return out
 }
+
+func TestGivenTestInferenceGatewayAvailable(t *testing.T) {
+	t.Setenv(envInferenceGatewayURL, "")
+	t.Setenv(envInferenceGatewayTestKey, "")
+	assert.ErrorIs(t, givenTestInferenceGatewayAvailable(false), godog.ErrSkip, "no URL: skip before a repo is leased")
+
+	t.Setenv(envInferenceGatewayURL, "https://gw.example")
+	require.NoError(t, givenTestInferenceGatewayAvailable(false))
+	assert.ErrorIs(t, givenTestInferenceGatewayAvailable(true), godog.ErrSkip, "no key: the api-key scenario skips")
+
+	t.Setenv(envInferenceGatewayTestKey, "test-gateway-key-value")
+	require.NoError(t, givenTestInferenceGatewayAvailable(true))
+}

@@ -21,7 +21,8 @@ Feature: pi runtime runs an agent through an inference gateway without a credent
 
   @requires:capability:runtime-pi-gateway
   Scenario: gateway run selects pi, calls tools through the hook adapter, and reports metrics
-    Given the enrolled test repository
+    Given the test inference gateway is available
+    And the enrolled test repository
     And the test inference gateway is configured for the repository
     And the repository runtime is "pi"
     And a custom harness "pi-gateway-smoke" with:
