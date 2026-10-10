@@ -734,9 +734,13 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 		parent:                 &perRepoDefaults{},
 	}
 	if targetRepo != "" {
+		// The target repository itself is implicitly allowed by the
+		// triage and retro post-scripts, so only the upstream
+		// cross-repo permission (retro proposals, triage prerequisites)
+		// needs an explicit entry (#8218).
 		cfg.CreateIssues = &CreateIssuesConfig{
 			AllowTargets: AllowTargets{
-				Repos: []string{targetRepo, "fullsend-ai/fullsend"},
+				Repos: []string{DefaultUpstreamRepo},
 			},
 		}
 	}

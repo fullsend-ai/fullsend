@@ -179,11 +179,13 @@ func TestConverge_SwitchToAPIKeyKeepsCredentialsWhileInheritedVariablesUnverifie
 		assert.Equal(t, []string{"group top", "instance"}, scopes)
 		result, err := Converge(context.Background(), cfg, newTestClientFactory(client), (&fakeScaffoldCommit{}).fn(), noopProgress)
 		require.NoError(t, err)
-		require.Empty(t, result.Failed())
+		// The markerless retained overlay is an adoption case (#8218): the
+		// established gate rejects the repository before any write.
+		require.Len(t, result.Failed(), 1)
+		assert.Contains(t, result.Failed()[0].Error.Error(), "adoption required")
 		assert.Empty(t, deletedSecretNames(fc, "api"))
 		assert.True(t, fc.Secrets["acme/api/"+forge.SecretGCPProjectID])
 		assert.True(t, fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider])
-		assert.Contains(t, actionDetails(result), "group top, instance")
 	})
 	t.Run("verified inheritance still deletes", func(t *testing.T) {
 		fc, cfg := installedOpenAISwitchFixture(t)
@@ -286,6 +288,9 @@ func TestConverge_OpenAIWIFEstablishedVendoredInstallChecksInstalledWorkflowsWit
 		})
 		require.NoError(t, err)
 		for _, f := range files {
+			if f.Path == preset.OverlayPath {
+				continue // keep the overlay the installed fixture carries
+			}
 			fc.FileContents["acme/api/"+f.Path] = f.Content
 		}
 		for _, path := range openAIWIFReusableWorkflows {
@@ -384,6 +389,9 @@ func TestConverge_OpenAIWIFEstablishedVendoredInstallDryRunMatchesLiveWithPendin
 		})
 		require.NoError(t, err)
 		for _, f := range files {
+			if f.Path == preset.OverlayPath {
+				continue // keep the overlay the installed fixture carries
+			}
 			fc.FileContents["acme/api/"+f.Path] = f.Content
 		}
 		for _, path := range openAIWIFReusableWorkflows {

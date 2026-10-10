@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
 // SafetyRelaxation is one candidate value that is less restrictive than
@@ -47,6 +49,18 @@ func SafetyRelaxationKeys(rs []SafetyRelaxation) []string {
 // implicit relaxations. Omitted candidate keys fall through the parent
 // chain rather than being ignored because the sparse file lacks them.
 func CheckManagedSafetyGateFromLayers(currentYAML []byte, candidate PerRepoConfigWriter, baseYAML []byte) ([]SafetyRelaxation, error) {
+	return CheckManagedSafetyGateFromLayerPairs(currentYAML, baseYAML, candidate, baseYAML)
+}
+
+// CheckManagedSafetyGateFromLayerPairs compares the current effective
+// configuration (currentYAML over currentBaseYAML → code defaults) with
+// the proposed one (candidate over candidateBaseYAML → code defaults).
+// Use it when the base layer itself would change (a declared preset
+// replacing an existing .fullsend/config.base.yaml), so a replacement
+// base cannot bypass restrictions through overlay fallthrough. Only
+// fields the candidate overlay declares locally count as explicit
+// relaxations; a base change alone never does.
+func CheckManagedSafetyGateFromLayerPairs(currentYAML, currentBaseYAML []byte, candidate PerRepoConfigWriter, candidateBaseYAML []byte) ([]SafetyRelaxation, error) {
 	var currentLayer PerRepoConfigWriter
 	if len(bytes.TrimSpace(currentYAML)) == 0 {
 		currentLayer = NewEmptyPerRepoOverlay()
@@ -57,11 +71,11 @@ func CheckManagedSafetyGateFromLayers(currentYAML []byte, candidate PerRepoConfi
 		}
 		currentLayer = parsed
 	}
-	currentEff, err := LayerOnBase(currentLayer, baseYAML)
+	currentEff, err := LayerOnBase(currentLayer, currentBaseYAML)
 	if err != nil {
 		return nil, fmt.Errorf("layering config: %w", err)
 	}
-	candidateEff, err := LayerOnBase(candidate, baseYAML)
+	candidateEff, err := LayerOnBase(candidate, candidateBaseYAML)
 	if err != nil {
 		return nil, fmt.Errorf("layering config: %w", err)
 	}
@@ -112,8 +126,34 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 
 	currentARR := current.AllowedResources()
 	candidateARR := candidate.AllowedResources()
-	if setWidened(currentARR, candidateARR) {
-		if local == nil || local.AllowedRemoteResources == nil {
+	if newly := newlyAdmitted(currentARR, candidateARR); setWidened(currentARR, candidateARR) && len(newly) > 0 {
+		// A candidate prefix already covered by a current prefix (for
+		// example a narrower path under an existing entry) admits
+		// nothing new and is not reported.
+		//
+		// A non-empty local list is unioned with the parent chain, so a
+		// base replacement can admit prefixes the overlay never named.
+		// Each newly admitted prefix must be declared locally. Code
+		// defaults are unioned beneath a non-empty overlay, but they
+		// count as declared only when the overlay's own list is being
+		// changed (the author re-declared the allowlist). When the
+		// overlay list is unchanged, defaults newly reachable through a
+		// base replacement (e.g. an explicit empty base list replaced by
+		// one omitting the key) were never declared. A default already
+		// reachable in the current chain is not newly admitted.
+		var declared []string
+		declaresLocally := local != nil && local.AllowedRemoteResources != nil
+		if declaresLocally {
+			declared = slices.Clone(local.AllowedRemoteResources)
+			var currentLocal []string
+			if cur, ok := current.(*perRepoConfig); ok && cur != nil {
+				currentLocal = cur.AllowedRemoteResources
+			}
+			if !slices.Equal(currentLocal, local.AllowedRemoteResources) {
+				declared = append(declared, DefaultAllowedRemoteResources()...)
+			}
+		}
+		if !declaresLocally || !allPrefixesDeclared(newly, declared) {
 			out = append(out, SafetyRelaxation{
 				Key:       "allowed_remote_resources",
 				Current:   formatAllowlist(currentARR),
@@ -180,6 +220,37 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 	return out
 }
 
+// newlyAdmitted returns the candidate entries not covered by any current
+// entry. Coverage uses the runtime's allowlist matching (case-insensitive,
+// percent-decoded, dot-segment-normalized prefix match), so a candidate
+// that only narrows a current prefix admits nothing new. A candidate the
+// runtime normalization cannot evaluate is never covered (fails closed).
+func newlyAdmitted(current, candidate []string) []string {
+	var out []string
+	for _, s := range candidate {
+		if slices.Contains(current, s) || urlutil.MatchingAllowedPrefixInList(s, current) != "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// allPrefixesDeclared reports whether every entry in prefixes is covered
+// by declared. Coverage uses the same runtime allowlist matching as
+// newlyAdmitted, so a declared broader prefix authorizes a narrower
+// prefix under it. A prefix the runtime normalization cannot evaluate is
+// covered only by an exact string match (fails closed).
+func allPrefixesDeclared(prefixes, declared []string) bool {
+	for _, p := range prefixes {
+		if slices.Contains(declared, p) || urlutil.MatchingAllowedPrefixInList(p, declared) != "" {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func setWidened(current, candidate []string) bool {
 	if len(candidate) == 0 {
 		return false
@@ -233,6 +304,11 @@ func localAgentExplicitlyEnabled(local []AgentEntry, name string) bool {
 	return false
 }
 
+// allowTargetsWidened reports whether candidate grants issue-creation access
+// current does not. Orgs and repos are compared by what they grant, not
+// list by list: a candidate repository whose owner is already covered by a
+// current org entry admits nothing new, so replacing an org with one of its
+// repositories is a narrowing.
 func allowTargetsWidened(current, candidate *CreateIssuesConfig) bool {
 	var currentOrgs, currentRepos, candidateOrgs, candidateRepos []string
 	if current != nil {
@@ -243,7 +319,19 @@ func allowTargetsWidened(current, candidate *CreateIssuesConfig) bool {
 		candidateOrgs = candidate.AllowTargets.Orgs
 		candidateRepos = candidate.AllowTargets.Repos
 	}
-	return setWidened(currentOrgs, candidateOrgs) || setWidened(currentRepos, candidateRepos)
+	if setWidened(currentOrgs, candidateOrgs) {
+		return true
+	}
+	for _, repo := range candidateRepos {
+		if slices.Contains(currentRepos, repo) {
+			continue
+		}
+		if owner, _, ok := strings.Cut(repo, "/"); ok && slices.Contains(currentOrgs, owner) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func formatStringList(values []string) string {

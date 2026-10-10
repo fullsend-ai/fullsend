@@ -424,7 +424,9 @@ create_issues:
 func TestNewPerRepoConfig_CreateIssuesDefaults(t *testing.T) {
 	cfg := NewPerRepoConfig(nil, "my-org/my-repo")
 	require.NotNil(t, cfg.IssueCreationConfig())
-	assert.Equal(t, []string{"my-org/my-repo", "fullsend-ai/fullsend"}, cfg.IssueCreationConfig().AllowTargets.Repos)
+	// The target repo is implicitly allowed; only the upstream entry is
+	// materialized.
+	assert.Equal(t, []string{"fullsend-ai/fullsend"}, cfg.IssueCreationConfig().AllowTargets.Repos)
 }
 
 // --- AgentEntry tests ---

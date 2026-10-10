@@ -217,7 +217,10 @@ restricts which orgs and repos agents may create issues in.
 - **`allow_targets.repos`** — Specific repos in `owner/name` format.
 
 When omitted, agents cannot create issues outside the repository they are
-running in.
+running in. That repository is always allowed, so it does not need an
+entry. The default per-repo configuration generated without a preset lists
+only `fullsend-ai/fullsend` in `allow_targets.repos`, which lets retro file
+upstream proposals and triage file upstream prerequisites.
 
 ### `authorization`
 

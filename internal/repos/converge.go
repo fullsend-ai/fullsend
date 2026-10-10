@@ -680,6 +680,41 @@ func workflowPresent(components []ComponentStatus) bool {
 	return hasComponent(components, "workflow")
 }
 
+// pristineInstallation reports whether the repository has no established
+// Fullsend installation: either no component at all, or the credential-only
+// state of a pending initialization. Install writes variables and secrets
+// before it delivers the shim workflow and both configuration files through
+// the initialization PR/MR, so a retry after a failure at any point in that
+// sequence (a variable or secret write, branch creation, or the PR/MR itself)
+// sees only credentials and no workflow. On GitLab the CLI additionally
+// creates the pipeline schedules right after the initialization MR opens,
+// before it merges, so those are pending-install resources too: they run
+// nothing without the shim workflow and scaffold. That state is derived from
+// the probed components alone, so it does not depend on the scaffold branch,
+// which is shared with uninstall and can be stale: the retry exemption
+// applies only when every present component is a variable, secret or
+// pipeline schedule and the shim workflow is absent. Any other component
+// (thin callers, scaffold files or auxiliary scripts) is evidence of a live
+// or partially delivered installation and keeps the safety gate. Readiness
+// diagnostics about user-owned or inherited OpenAI identifiers are not
+// installation evidence and are ignored. Nothing executes from these
+// resources alone, so there is no effective configuration to relax.
+// FreshInstall additionally requires both layer files to be absent
+// (pristineFirstInstall), so a repository with any committed configuration
+// also keeps the gate.
+func pristineInstallation(components []ComponentStatus) bool {
+	for _, c := range components {
+		if !c.Present || c.Name == openAIWIFComponent || c.Name == openAIWIFResidualComponent {
+			continue
+		}
+		if !strings.HasPrefix(c.Name, "var:") && !strings.HasPrefix(c.Name, "secret:") &&
+			scheduleSpecByComponent(c.Name) == nil {
+			return false
+		}
+	}
+	return true
+}
+
 // Converge processes every repo in the manifest through a single
 // convergence pipeline: probe → diff → apply. For each repo it
 // determines what components exist and what actions are needed, then
@@ -1019,6 +1054,15 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			continue
 		}
 
+		// A repository with no Fullsend component at all, or only the
+		// credentials of a pending initialization whose shim workflow has not
+		// merged, has no established installation; with neither configuration
+		// file present it is pristine, and the layered safety gate has no
+		// existing configuration to protect. Install, dry run and status
+		// share this predicate (pristineInstallation), so a retry of the same
+		// pending initialization is judged like its first run.
+		d.resolved.FreshInstall = pristineInstallation(d.components)
+
 		// Load declared presets before any writes so a hash mismatch or
 		// invalid source fails the repo without applying changes.
 		if d.resolved.Config != "" {
@@ -1032,10 +1076,33 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				continue
 			}
 			d.preset = data
+			d.resolved.ProposedBase = data
 			if shouldWarnRemotePreset(d.resolved.Config, d.resolved.ConfigHash, warnedRemote) {
 				progress(d.repo.Owner+"/"+d.repo.Repo, "preset",
 					"Remote preset fetched without config_base.sha256; content integrity is not verified")
 			}
+		}
+		// With no resolved preset the desired base layer is no file at
+		// all: stop before any writes rather than silently keeping an
+		// existing .fullsend/config.base.yaml outside management (#8218).
+		if baseErr := checkUndeclaredBase(ctx, d.resolved); baseErr != nil {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: baseErr,
+			}
+			continue
+		}
+		// A declared preset must not replace an invalid base, or relax the
+		// effective configuration without an explicit declaration. Both
+		// layers are checked before any variable, secret or file write.
+		if baseErr := checkDeclaredBase(ctx, d.resolved, d.preset); baseErr != nil {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: baseErr,
+			}
+			continue
 		}
 
 		// Render the managed configuration before any writes so a
@@ -1051,6 +1118,21 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				continue
 			}
 			d.managedConfig = body
+			// An installed repository is also gated on its overlay before
+			// any variable, secret or schedule write: those run ahead of
+			// the scaffold phase that plans the overlay, so the gate there
+			// would fire only after they had changed the repository. A
+			// fresh install is gated before Install in its own path.
+			if workflowPresent(d.components) {
+				if gateErr := checkEstablishedOverlayGate(ctx, d.resolved, body); gateErr != nil {
+					result.Results[i] = ConvergeResult{
+						Owner: d.repo.Owner,
+						Repo:  d.repo.Repo,
+						Error: gateErr,
+					}
+					continue
+				}
+			}
 		}
 
 		// The openai-api-key route is unreachable while WIF identifiers
@@ -1222,6 +1304,36 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	return result, nil
 }
 
+// blockedFreshInstall reports a fresh install that stopped before any forge
+// write because the existing .fullsend/config.yaml needs adoption
+// (ADR-0122) or the layered safety gate rejected the managed configuration.
+// The repository is left untouched, so it is not Installed, and the block
+// is an error: the install did not happen and the operator must act.
+func blockedFreshInstall(cr ConvergeResult, repoFullName string, adoptionRequired bool, rejected *ComponentAction, dryRun bool, progress ProgressFunc) ConvergeResult {
+	stage := "install"
+	if dryRun {
+		stage = "dry-run"
+	}
+	if adoptionRequired {
+		detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before this repository can be installed (ADR-0122); nothing was written", preset.OverlayPath)
+		if rejected != nil && rejected.Action == ActionSafetyRejected {
+			detail = detail + "; " + rejected.Detail
+		}
+		cr.Actions = append(cr.Actions, ComponentAction{
+			Component: preset.OverlayPath,
+			Action:    ActionAdoptionRequired,
+			Detail:    detail,
+		})
+		progress(repoFullName, stage, detail)
+		cr.Error = errors.New(detail)
+		return cr
+	}
+	cr.Actions = append(cr.Actions, *rejected)
+	progress(repoFullName, stage, rejected.Detail)
+	cr.Error = errors.New(rejected.Detail)
+	return cr
+}
+
 // convergeRepo processes a single repo through the convergence pipeline.
 // It determines what action each component needs and applies only the
 // necessary changes.
@@ -1345,16 +1457,22 @@ func convergeRepo(ctx context.Context,
 		var configSafetyRejected *ComponentAction
 		var existingUnmanagedConfig []byte
 		if resolved.ConfigManaged {
-			existing, readErr := resolved.ForgeConfig.Client.GetFileContent(ctx, rr.Owner, rr.Repo, preset.OverlayPath)
-			if readErr != nil && !forge.IsNotFound(readErr) {
+			existing, found, readErr := readExistingFile(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo, preset.OverlayPath)
+			if readErr != nil {
 				cr.Error = fmt.Errorf("reading existing %s: %w", preset.OverlayPath, readErr)
 				return cr
 			}
-			if forge.IsNotFound(readErr) {
-				existing = nil
+			// Validate every found overlay, marked or not, as the
+			// established-path gate, status and preflight do: the safety
+			// comparison does not check decoded values such as runtime.
+			if found {
+				if valErr := validateExistingOverlay(existing); valErr != nil {
+					cr.Error = fmt.Errorf("convergence errors: %w", valErr)
+					return cr
+				}
 			}
-			configAdoptionRequired = len(existing) > 0 && !hasManagedConfigMarker(existing)
-			configSafetyRejected = checkManagedConfigSafetyGate(ctx, resolved, existing)
+			configAdoptionRequired = overlayNeedsAdoption(found, existing)
+			configSafetyRejected = managedSafetyRejectedAction(ctx, resolved)
 		} else if auth == InferenceAuthOpenAIWIF {
 			// Readiness above may have been satisfied by identifiers in an
 			// unmanaged config.yaml already on the default branch. The
@@ -1369,10 +1487,16 @@ func convergeRepo(ctx context.Context,
 				existingUnmanagedConfig = existing
 			}
 		}
-		// Obsolete inference credentials must outlive a blocked
-		// replacement configuration: the old runtime/model configuration
-		// stays active until the adoption or safety rejection is resolved.
-		configBlocked := configAdoptionRequired || configSafetyRejected != nil
+		// A blocked fresh install stops here, before Install or any other
+		// forge write (variables, secrets, scaffold files, the PR/MR), in a
+		// dry run and a live run alike. Writing the credentials and
+		// scaffold without the configuration they depend on would leave a
+		// half-installed repository, and the previous runtime/model
+		// configuration stays active until the adoption or safety
+		// rejection is resolved.
+		if configAdoptionRequired || configSafetyRejected != nil {
+			return blockedFreshInstall(cr, repoFullName, configAdoptionRequired, configSafetyRejected, cfg.DryRun, progress)
+		}
 
 		// Resolve the target ref and scaffold inputs before branching on
 		// DryRun, not after: a dry run must run the same pin-resolution,
@@ -1425,12 +1549,11 @@ func convergeRepo(ctx context.Context,
 			// Supplied inputs replace every secret of the selected
 			// method; without inputs the existing secrets are reused
 			// (validation already required them to be present).
-			ReuseSecrets:                  !d.credsSupplied,
-			VendorBinary:                  vendor,
-			Preset:                        d.preset,
-			ManagedConfig:                 d.managedConfig,
-			ExistingConfig:                existingUnmanagedConfig,
-			ManagedConfigAdoptionRequired: configAdoptionRequired || configSafetyRejected != nil,
+			ReuseSecrets:   !d.credsSupplied,
+			VendorBinary:   vendor,
+			Preset:         d.preset,
+			ManagedConfig:  d.managedConfig,
+			ExistingConfig: existingUnmanagedConfig,
 		}
 		if d.credsSupplied {
 			if auth == InferenceAuthOpenAIAPIKey {
@@ -1480,22 +1603,18 @@ func convergeRepo(ctx context.Context,
 				Detail:    "Would install (new)",
 			})
 			cr.Actions = append(cr.Actions, plannedInferenceSecretActions(d, progress)...)
-			// The previous credentials stay while the replacement
-			// configuration is blocked on adoption or a safety rejection.
-			if !configBlocked {
-				dryCleanup := removeObsoleteInferenceSecrets(ctx, resolved, true, true, nil, progress)
-				cr.Actions = append(cr.Actions, dryCleanup...)
-				// A lookup failure means the removals cannot be determined, so
-				// the preview must not be reported as successful.
-				var dryCleanupErrors []string
-				for _, a := range dryCleanup {
-					if a.Action == "error" {
-						dryCleanupErrors = append(dryCleanupErrors, a.Detail)
-					}
+			dryCleanup := removeObsoleteInferenceSecrets(ctx, resolved, true, true, nil, progress)
+			cr.Actions = append(cr.Actions, dryCleanup...)
+			// A lookup failure means the removals cannot be determined, so
+			// the preview must not be reported as successful.
+			var dryCleanupErrors []string
+			for _, a := range dryCleanup {
+				if a.Action == "error" {
+					dryCleanupErrors = append(dryCleanupErrors, a.Detail)
 				}
-				if len(dryCleanupErrors) > 0 {
-					cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(dryCleanupErrors, "; "))
-				}
+			}
+			if len(dryCleanupErrors) > 0 {
+				cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(dryCleanupErrors, "; "))
 			}
 			if len(d.preset) > 0 {
 				cr.Actions = append(cr.Actions, ComponentAction{
@@ -1505,28 +1624,11 @@ func convergeRepo(ctx context.Context,
 				})
 			}
 			if d.resolved.ConfigManaged {
-				if configAdoptionRequired {
-					detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be written (ADR-0122)", preset.OverlayPath)
-					if configSafetyRejected != nil && configSafetyRejected.Action == ActionSafetyRejected {
-						detail = detail + "; " + configSafetyRejected.Detail
-					}
-					cr.Actions = append(cr.Actions, ComponentAction{
-						Component: preset.OverlayPath,
-						Action:    ActionAdoptionRequired,
-						Detail:    detail,
-					})
-					progress(repoFullName, "dry-run", detail)
-				} else if configSafetyRejected != nil {
-					cr.Actions = append(cr.Actions, *configSafetyRejected)
-					progress(repoFullName, "dry-run", configSafetyRejected.Detail)
-					cr.Error = fmt.Errorf("%s", configSafetyRejected.Detail)
-				} else {
-					cr.Actions = append(cr.Actions, ComponentAction{
-						Component: preset.OverlayPath,
-						Action:    "add",
-						Detail:    "would write managed configuration as " + preset.OverlayPath,
-					})
-				}
+				cr.Actions = append(cr.Actions, ComponentAction{
+					Component: preset.OverlayPath,
+					Action:    "add",
+					Detail:    "would write managed configuration as " + preset.OverlayPath,
+				})
 			}
 			progress(repoFullName, "dry-run", "Would install (new)")
 			return cr
@@ -1554,34 +1656,16 @@ func convergeRepo(ctx context.Context,
 		// This runs on every successful install, including a retry after an
 		// earlier run wrote the credentials but failed to complete setup or
 		// to delete the obsolete secrets.
-		if !configBlocked {
-			cleanup := removeObsoleteInferenceSecrets(ctx, resolved, false, false, installResult.ScaffoldFiles, progress)
-			cr.Actions = append(cr.Actions, cleanup...)
-			var cleanupErrors []string
-			for _, a := range cleanup {
-				if a.Action == "error" {
-					cleanupErrors = append(cleanupErrors, a.Detail)
-				}
-			}
-			if len(cleanupErrors) > 0 {
-				cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(cleanupErrors, "; "))
+		cleanup := removeObsoleteInferenceSecrets(ctx, resolved, false, false, installResult.ScaffoldFiles, progress)
+		cr.Actions = append(cr.Actions, cleanup...)
+		var cleanupErrors []string
+		for _, a := range cleanup {
+			if a.Action == "error" {
+				cleanupErrors = append(cleanupErrors, a.Detail)
 			}
 		}
-		if configAdoptionRequired {
-			detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be converged automatically (ADR-0122)", preset.OverlayPath)
-			if configSafetyRejected != nil && configSafetyRejected.Action == ActionSafetyRejected {
-				detail = detail + "; " + configSafetyRejected.Detail
-			}
-			cr.Actions = append(cr.Actions, ComponentAction{
-				Component: preset.OverlayPath,
-				Action:    ActionAdoptionRequired,
-				Detail:    detail,
-			})
-			progress(repoFullName, "install", detail)
-		} else if configSafetyRejected != nil {
-			cr.Actions = append(cr.Actions, *configSafetyRejected)
-			progress(repoFullName, "install", configSafetyRejected.Detail)
-			cr.Error = fmt.Errorf("%s", configSafetyRejected.Detail)
+		if len(cleanupErrors) > 0 {
+			cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(cleanupErrors, "; "))
 		}
 		return cr
 	}
@@ -3617,9 +3701,10 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 
 	// 2d-iii: Configuration preset — replace .fullsend/config.base.yaml
 	// wholesale when a preset is declared and the installed bytes differ.
-	// No declared preset is a no-op so an existing base file is preserved
-	// without comparison. Managed-configuration handling is independent
-	// (2d-iv).
+	// With no declared preset the desired state is no base file; an
+	// existing one was already rejected by the pre-write check
+	// (checkUndeclaredBase), so this is a no-op. Managed-configuration
+	// handling is independent (2d-iv).
 	presetFiles, presetActions := convergePresetFiles(ctx, resolved, d.preset, cfg.DryRun, progress)
 	actions = append(actions, presetActions...)
 	var presetErrors []string

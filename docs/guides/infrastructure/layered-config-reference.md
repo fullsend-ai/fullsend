@@ -51,8 +51,17 @@ default source in `defaults.config_base.source` (optional
 `config_base`. The `none` sentinel disables inheritance. Convergence writes the fetched bytes to
 `config.base.yaml`; this preset-application step never edits the overlay
 itself (see below for managed-configuration convergence, which does rewrite the
-overlay on drift). `repos status` reports base-file drift only when a
-preset is declared. See
+overlay on drift). With no resolved preset (none declared, or `none`), the
+desired state is no `config.base.yaml`: an existing file, including a
+zero-byte one, is drift, and `repos install` and convergence stop that
+repository before any write until you declare a `config_base` source or
+remove the file. With a declared preset, an existing base must be a valid
+per-repo layer and is compared byte-for-byte; before it is replaced, the
+current effective configuration (overlay over installed base) is compared
+with the proposed one (proposed overlay over the declared preset), and an
+implicit security relaxation is rejected — a preset source change alone is
+not an explicit declaration. `repos status` checks both layers for every
+manifest repository, including before first install. See
 [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
 
 Fleet manifests may also declare managed configuration via
@@ -63,19 +72,24 @@ byte-for-byte to `.fullsend/config.base.yaml`. Managed blocks use this
 same schema and the per-field merge rules below.
 `runtime` and `allowed_remote_resources` stay on the existing manifest
 shorthands and are rejected inside `config`. Managed configuration is
-opt-in: `defaults.config` opts every repository in; a repository `config`
-opts in only that repository. Every managed file carries an ownership
-marker; a pre-existing `config.yaml` that lacks the marker requires
+not an opt-in: every repository selected from the manifest has a managed
+`config.yaml`, with or without a `config` key. Every managed file carries an
+ownership marker; a pre-existing `config.yaml` that lacks the marker requires
 adoption — `repos status` reports "managed configuration (adoption
-required)" instead of ordinary drift, and install/convergence leave that
-file untouched until it is adopted. Once a file carries the marker,
-`repos install` writes the canonical sparse configuration for opted-in
-repositories, `repos status` reports whole-file managed-configuration
-drift, and convergence rewrites a drifted file unless the candidate would
-become less restrictive than the current effective configuration without
-an explicit manifest declaration. That comparison uses the overlay → base
-→ code-defaults accessor chain, including omitted-key fallthrough. Unmanaged
-repositories are left untouched. See
+required)" with the proposed `repos.yaml` entry, the file difference and the
+effective layered-configuration change instead of ordinary drift, and
+install/convergence stop before any write (including for a fresh install) and
+leave that file untouched until it is adopted. Once a file carries
+the marker, `repos install` writes the canonical sparse configuration,
+`repos status` reports whole-file managed-configuration drift, and
+convergence rewrites a drifted file unless the candidate would become less
+restrictive than the current effective configuration without an explicit
+manifest declaration. That comparison uses the overlay → base →
+code-defaults accessor chain, including omitted-key fallthrough, and layers
+the proposed overlay on the proposed (declared) preset rather than the
+installed base; an absent base is an empty layer, so adding a preset is
+compared too. A pristine first install (no installation, no overlay and no
+base) has nothing to compare against and inherits the preset. See
 [Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration).
 
 ### Marshal behavior

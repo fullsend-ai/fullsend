@@ -87,7 +87,7 @@ fullsend
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --manifest-only                  #   Remove from manifest without tearing down
 │   │   └── --uninstall-only                 #   Tear down without removing from manifest
-│   ├── status                               # Compare manifest against actual repo state (includes declared config-preset and managed configuration drift)
+│   ├── status                               # Compare manifest against actual repo state (includes declared config-preset, undeclared-base and managed configuration drift; both layers are checked before first install)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)

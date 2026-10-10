@@ -236,6 +236,18 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 	fmt.Fprintln(out)
 
 	for _, s := range result.Repos {
+		for _, d := range s.Drifts {
+			if d.Detail == "" {
+				continue
+			}
+			fmt.Fprintf(out, "\n%s %s:\n", s.Owner+"/"+s.Repo, d.Field)
+			for _, line := range strings.Split(d.Detail, "\n") {
+				fmt.Fprintf(out, "  %s\n", line)
+			}
+		}
+	}
+
+	for _, s := range result.Repos {
 		if !showGitLabRoleStatus(s) {
 			continue
 		}
@@ -535,6 +547,23 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		clients = newForgeClientFactory(opts.gitlabToken, manifest)
 	}
 
+	// Preflight the existing configuration layers of manifest-tracked repos
+	// before any manifest or forge write: a markerless overlay needs
+	// adoption and an undeclared base needs resolution (#8218).
+	if err := repos.PreflightManagedConfig(ctx, manifest, clients, opts.repoFilter); err != nil {
+		return fmt.Errorf("configuration preflight: %w", err)
+	}
+
+	// Every manifest edit below is planned in memory: the edit helpers run
+	// with DryRun so repos.yaml is not written, and their progress output is
+	// held in deferredOutput. Once all edits are planned, the layered safety
+	// comparison runs against the proposed manifest and presets, and only
+	// then is the manifest persisted once, so a safety rejection leaves
+	// repos.yaml byte-identical and writes nothing to the forge (#8218).
+	var deferredOutput []func()
+	deferOutput := func(f func()) { deferredOutput = append(deferredOutput, f) }
+	manifestChanged := false
+
 	// Phase 0: add repos not yet in the manifest.
 	var newlyAdded []string
 	var notInManifest []string
@@ -604,10 +633,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			// the glob's other settings and its siblings are unchanged. A value
 			// is written when it differs from the inherited platform/default
 			// value or when the copied glob entry already overrides it.
+			// A read-only manifest (HTTPS or an unwritable local file) never
+			// gets a write attempt: carve in memory only, then fail below
+			// with the exact entries to add (#8218).
+			manifestReadOnly := repos.ManifestReadOnly(manifest, opts.manifest)
 			carved, carveErr := repos.CarveOutGlobCovered(ctx, repos.ManifestEditConfig{
 				Manifest:     manifest,
 				ManifestPath: opts.manifest,
-				DryRun:       opts.dryRun,
+				DryRun:       true,
 			}, carveTargets, clients, func(forgeName string, platform *repos.PlatformConfig, entry *repos.RepoEntry) error {
 				// Reject a target that would have no effective inference
 				// authentication selection before anything is persisted:
@@ -624,6 +657,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					}
 				} else if err := repos.ValidateInferenceAuthForForge(forgeName, opts.inferenceAuth); err != nil {
 					return fmt.Errorf("%s: %w", entry.Name, err)
+				}
+				// Apply --inference-auth and --app-set to the in-memory
+				// entry here as well (UpdateInferenceAuth and UpdateAppSet
+				// set the same values later), so a read-only manifest's
+				// suggested entry reproduces the requested install.
+				if opts.inferenceAuth != "" {
+					entry.Inference.Auth = opts.inferenceAuth
+				}
+				if forgeName == repos.ForgeGitHub && opts.appSet != "" {
+					entry.AppSet = opts.appSet
 				}
 				if opts.fullsendRef != "" && (entry.FullsendRef != "" || opts.fullsendRef != platform.FullsendRef) {
 					entry.FullsendRef = opts.fullsendRef
@@ -649,8 +692,18 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			if carveErr != nil {
 				return fmt.Errorf("applying per-repo overrides to glob-covered repos: %w", carveErr)
 			}
-			if len(carved) > 0 && !opts.dryRun {
-				printer.StepDone(fmt.Sprintf("Created explicit manifest entry for %s from matching glob", strings.Join(carved, ", ")))
+			if manifestReadOnly {
+				if roErr := repos.RequireWritableManifestForCarved(ctx, manifest, opts.manifest, carved, clients, opts.roles, opts.rolesChanged); roErr != nil {
+					return fmt.Errorf("recording glob-covered repositories in manifest: %w", roErr)
+				}
+			}
+			if len(carved) > 0 {
+				manifestChanged = true
+				if !opts.dryRun {
+					deferOutput(func() {
+						printer.StepDone(fmt.Sprintf("Created explicit manifest entry for %s from matching glob", strings.Join(carved, ", ")))
+					})
+				}
 			}
 		}
 		if len(notInManifest) > 0 {
@@ -731,6 +784,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				return fmt.Errorf("%s: %w", strings.Join(notInManifest, ", "), err)
 			}
 
+			if err := repos.PreflightManagedConfigNew(ctx, manifest, clients, forgeName, notInManifest); err != nil {
+				return fmt.Errorf("configuration preflight: %w", err)
+			}
+
 			entries := make([]repos.RepoEntry, len(notInManifest))
 			for i, r := range notInManifest {
 				entry := repos.RepoEntry{Name: r}
@@ -772,30 +829,48 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				entries[i] = entry
 			}
 
+			// A manifest that cannot be written fails here, before any
+			// manifest write, with the exact entries to add (#8218).
+			if err := repos.RequireWritableManifestForNewRepos(ctx, manifest, opts.manifest, forgeName, entries, clients, opts.roles, opts.rolesChanged); err != nil {
+				return fmt.Errorf("recording new repositories in manifest: %w", err)
+			}
+
 			addProgress := func(repo, phase, msg string) {
-				switch phase {
-				case "done", "manifest":
-					printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
-				default:
-					printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+				// A planned (not yet persisted) addition is reported as
+				// "Added to manifest" once the manifest is written.
+				if phase == "dry-run" && !opts.dryRun {
+					return
 				}
+				deferOutput(func() {
+					switch phase {
+					case "done", "manifest":
+						printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+					default:
+						printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+					}
+				})
 			}
 			addResult, _, addErr := repos.AddToManifest(ctx, repos.ManifestEditConfig{
 				Manifest:     manifest,
 				ManifestPath: opts.manifest,
-				DryRun:       opts.dryRun,
+				DryRun:       true,
 			}, forgeName, entries, clients, addProgress)
 			if addErr != nil {
 				return addErr
 			}
 			newlyAdded = addResult.Added
+			if !opts.dryRun {
+				for _, added := range newlyAdded {
+					deferOutput(func() { printer.StepDone(fmt.Sprintf("[%s] Added to manifest", added)) })
+				}
+			}
 
-			// A dry run does not persist the new entries, but the read-only
-			// convergence preview must still validate and plan them (inference
-			// credential validation, secret writes) exactly as the real run
-			// would. Add them to the in-memory manifest only; nothing is
-			// written to disk in a dry run.
-			if opts.dryRun && len(newlyAdded) > 0 {
+			// The planned entries are added to the in-memory manifest so the
+			// following edits, the safety comparison and convergence (inference
+			// credential validation, secret writes) see them exactly as the
+			// real run would. The manifest file is written once, below.
+			if len(newlyAdded) > 0 {
+				manifestChanged = true
 				added := make(map[string]bool, len(newlyAdded))
 				for _, a := range newlyAdded {
 					added[strings.ToLower(a)] = true
@@ -828,13 +903,18 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		updated, updateErr := repos.UpdateAppSet(repos.ManifestEditConfig{
 			Manifest:     manifest,
 			ManifestPath: opts.manifest,
-			DryRun:       opts.dryRun,
+			DryRun:       true,
 		}, opts.repoFilter, opts.appSet)
 		if updateErr != nil {
 			return fmt.Errorf("updating app-set overrides: %w", updateErr)
 		}
-		if len(updated) > 0 && !opts.dryRun {
-			printer.StepDone(fmt.Sprintf("Updated app-set override for %d manifest entr%s", len(updated), map[bool]string{true: "y", false: "ies"}[len(updated) == 1]))
+		if len(updated) > 0 {
+			manifestChanged = true
+			if !opts.dryRun {
+				deferOutput(func() {
+					printer.StepDone(fmt.Sprintf("Updated app-set override for %d manifest entr%s", len(updated), map[bool]string{true: "y", false: "ies"}[len(updated) == 1]))
+				})
+			}
 		}
 	}
 
@@ -846,14 +926,57 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		updated, updateErr := repos.UpdateInferenceAuth(ctx, repos.ManifestEditConfig{
 			Manifest:     manifest,
 			ManifestPath: opts.manifest,
-			DryRun:       opts.dryRun,
+			DryRun:       true,
 		}, opts.repoFilter, opts.inferenceAuth, clients)
 		if updateErr != nil {
 			return fmt.Errorf("updating inference.auth: %w", updateErr)
 		}
-		if len(updated) > 0 && !opts.dryRun {
-			printer.StepDone(fmt.Sprintf("Set inference.auth=%s on %d manifest entr%s", opts.inferenceAuth, len(updated), map[bool]string{true: "y", false: "ies"}[len(updated) == 1]))
+		if len(updated) > 0 {
+			manifestChanged = true
+			if !opts.dryRun {
+				deferOutput(func() {
+					printer.StepDone(fmt.Sprintf("Set inference.auth=%s on %d manifest entr%s", opts.inferenceAuth, len(updated), map[bool]string{true: "y", false: "ies"}[len(updated) == 1]))
+				})
+			}
 		}
+	}
+
+	// Persist install-time choices the generated managed overlay must
+	// reproduce (the upstream create_issues default for a no-preset first
+	// install, and an explicit --roles) in each repo's manifest entry
+	// before the overlay is rendered (#8218). A manifest that cannot be
+	// written fails here, before any forge write, with the exact edit.
+	writtenBack, wbErr := repos.EnsureManagedConfigDefaults(ctx, repos.ManagedConfigWritebackConfig{
+		Manifest:      manifest,
+		ManifestPath:  opts.manifest,
+		DryRun:        true,
+		Deferred:      !opts.dryRun,
+		RepoFilter:    opts.repoFilter,
+		Roles:         opts.roles,
+		RolesExplicit: opts.rolesChanged,
+	}, clients, func(repo, _, msg string) {
+		deferOutput(func() { printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg)) })
+	})
+	if wbErr != nil {
+		return fmt.Errorf("recording install defaults in manifest: %w", wbErr)
+	}
+	if len(writtenBack) > 0 {
+		manifestChanged = true
+	}
+
+	// Compare the proposed layered configuration (manifest edits and declared
+	// presets) with each repository's installed layers before anything is
+	// persisted or written to the forge.
+	if err := repos.PreflightProposedManagedSafety(ctx, manifest, clients, opts.repoFilter); err != nil {
+		return fmt.Errorf("configuration safety preflight: %w", err)
+	}
+	if manifestChanged && !opts.dryRun && opts.manifest != "" {
+		if err := repos.WriteManifest(opts.manifest, manifest); err != nil {
+			return fmt.Errorf("writing manifest: %w", err)
+		}
+	}
+	for _, flush := range deferredOutput {
+		flush()
 	}
 
 	// Persist --gitlab-url to the manifest file. The in-memory assignment

@@ -220,6 +220,9 @@ func markFullyInstalled(fc *forge.FakeClient, owner, repo string) {
 	fc.VariableValues[fullName+"/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	fc.FileContents[fullName+"/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, owner, repo)
+	// Every repository's overlay is managed (#8218): an installed repo
+	// carries the marked, empty sparse overlay unless a test overrides it.
+	fc.FileContents[fullName+"/.fullsend/config.yaml"] = []byte(managedConfigMarker + "{}\n")
 	fc.Secrets[fullName+"/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets[fullName+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 }

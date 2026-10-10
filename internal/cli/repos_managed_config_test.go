@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -199,60 +200,145 @@ func TestRunReposInstall_ManagedConfigFreshInstallDryRun(t *testing.T) {
 	assert.Empty(t, fc.FileContents[overlayPath("acme/api")], "dry-run must not create managed configuration")
 }
 
-func TestRunReposInstall_UnmanagedLeavesInstallerOverlay(t *testing.T) {
+// A repository with no config key is still managed: the first install
+// persists the upstream create_issues default in its manifest entry and
+// renders exactly that into the marked sparse overlay (#8218).
+func TestRunReposInstall_NoConfigKeyWritesSparseManagedOverlay(t *testing.T) {
 	manifestPath := writeTestManifest(t, githubUnmanagedManifestYAML)
 	fc := newInstallFakeClient("acme/api")
 
 	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)))
 
 	overlay := fc.FileContents[overlayPath("acme/api")]
-	require.NotEmpty(t, overlay, "unmanaged fresh install still writes the installer overlay")
-	assert.False(t, bytes.HasPrefix(overlay, []byte(managedConfigMarker)), "unmanaged overlay must not carry the ownership marker:\n%s", overlay)
-	assert.Contains(t, string(overlay), "roles:")
+	assert.Equal(t, managedConfigMarker+"create_issues:\n    allow_targets:\n        repos:\n            - fullsend-ai/fullsend\n", string(overlay))
+
+	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, err)
+	require.True(t, reloaded.GitHub.Repos[0].Config.IsSet(), "the default must be persisted on the entry")
+	body, ok, err := reloaded.RenderManagedConfig(reloaded.GitHub.Repos[0])
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, string(overlay), managedConfigMarker+string(body), "manifest and overlay must agree")
 }
 
-func TestRunReposInstall_ManagedConfigOnlyOneRepoManaged(t *testing.T) {
+func TestRunReposInstall_NoConfigKeyDryRunWritesNothing(t *testing.T) {
+	manifestPath := writeTestManifest(t, githubUnmanagedManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	opts := githubManagedInstallOpts(manifestPath, fc)
+	opts.dryRun = true
+	require.NoError(t, runReposInstall(context.Background(), opts))
+
+	assert.Empty(t, fc.FileContents[overlayPath("acme/api")])
+	data, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, githubUnmanagedManifestYAML, string(data), "dry-run must not rewrite the manifest")
+}
+
+func TestRunReposInstall_ExplicitRolesPersistedInManifest(t *testing.T) {
+	manifestPath := writeTestManifest(t, githubUnmanagedManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	opts := githubManagedInstallOpts(manifestPath, fc)
+	opts.roles = []string{"triage", "review"}
+	opts.rolesChanged = true
+	require.NoError(t, runReposInstall(context.Background(), opts))
+
+	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, err)
+	resolved, ok := reloaded.ResolveConfig("acme", "api")
+	require.True(t, ok)
+	assert.Equal(t, []string{"triage", "review"}, resolved.Managed.ConfigRoles())
+	overlay := string(fc.FileContents[overlayPath("acme/api")])
+	assert.Contains(t, overlay, "roles:")
+	assert.Contains(t, overlay, "- review")
+	assert.Contains(t, overlay, "fullsend-ai/fullsend")
+}
+
+func TestRunReposInstall_ExplicitCreateIssuesIsNotOverridden(t *testing.T) {
+	manifest := strings.Replace(githubUnmanagedManifestYAML, "    - name: acme/api\n",
+		"    - name: acme/api\n      config:\n        create_issues:\n          allow_targets:\n            repos:\n              - acme/other\n", 1)
+	manifestPath := writeTestManifest(t, manifest)
+	fc := newInstallFakeClient("acme/api")
+
+	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)))
+
+	overlay := string(fc.FileContents[overlayPath("acme/api")])
+	assert.Contains(t, overlay, "acme/other")
+	assert.NotContains(t, overlay, "fullsend-ai/fullsend")
+}
+
+func TestRunReposInstall_ReadOnlyManifestFailsWithSuggestedEdit(t *testing.T) {
+	// An HTTPS manifest cannot be written back: the install fails before
+	// any forge write and prints the exact per-repo config edit.
+	m, loadErr := repos.LoadManifest(context.Background(), writeTestManifest(t, githubUnmanagedManifestYAML))
+	require.NoError(t, loadErr)
+	_, err := repos.EnsureManagedConfigDefaults(context.Background(), repos.ManagedConfigWritebackConfig{
+		Manifest: m, ManifestPath: "https://example.invalid/repos.yaml",
+	}, newSingleClientFactory(newInstallFakeClient("acme/api")), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read-only")
+	assert.Contains(t, err.Error(), `entry "acme/api"`)
+	assert.Contains(t, err.Error(), "create_issues:")
+	assert.Contains(t, err.Error(), "- fullsend-ai/fullsend")
+}
+
+func TestRunReposInstall_ManagedConfigBothReposManaged(t *testing.T) {
 	manifestPath := writeTestManifest(t, githubMixedManifestYAML)
 	fc := newInstallFakeClient("acme/managed", "acme/unmanaged")
 
 	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)))
 
 	managed := fc.FileContents[overlayPath("acme/managed")]
-	unmanaged := fc.FileContents[overlayPath("acme/unmanaged")]
+	plain := fc.FileContents[overlayPath("acme/unmanaged")]
 	require.NotEmpty(t, managed)
-	require.NotEmpty(t, unmanaged)
+	require.NotEmpty(t, plain)
 	assert.True(t, bytes.HasPrefix(managed, []byte(managedConfigMarker)))
 	assert.Contains(t, string(managed), "kill_switch: true")
-	assert.False(t, bytes.HasPrefix(unmanaged, []byte(managedConfigMarker)))
-	assert.NotContains(t, string(unmanaged), "kill_switch:")
+	assert.True(t, bytes.HasPrefix(plain, []byte(managedConfigMarker)), "a repo without a config key is managed too")
+	assert.NotContains(t, string(plain), "kill_switch:")
 }
 
-func TestRunReposInstall_ManagedConfigAdoptionRequired(t *testing.T) {
-	manifestPath := writeTestManifest(t, githubManagedManifestYAML)
-	fc := newInstalledFakeClientCLI("acme/api")
-	original := []byte("kill_switch: false\n# hand-authored\n")
-	fc.FileContents[overlayPath("acme/api")] = original
+// A markerless overlay is an adoption case even without a config key: the
+// install fails before any manifest or forge write and leaves it alone.
+func TestRunReposInstall_MarkerlessOverlayBlocksInstall(t *testing.T) {
+	for name, manifestYAML := range map[string]string{
+		"with config key":    githubManagedManifestYAML,
+		"without config key": githubUnmanagedManifestYAML,
+	} {
+		t.Run(name, func(t *testing.T) {
+			manifestPath := writeTestManifest(t, manifestYAML)
+			fc := newInstalledFakeClientCLI("acme/api")
+			original := []byte("kill_switch: false\n# hand-authored\n")
+			fc.FileContents[overlayPath("acme/api")] = original
 
-	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)))
-	assert.Equal(t, original, fc.FileContents[overlayPath("acme/api")], "adoption-required install must leave the unmarked file untouched")
+			err := runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "adoption required")
+			assert.Equal(t, original, fc.FileContents[overlayPath("acme/api")], "the unmarked file must be untouched")
+			data, readErr := os.ReadFile(manifestPath)
+			require.NoError(t, readErr)
+			assert.Equal(t, manifestYAML, string(data), "no manifest write before the preflight passes")
 
-	result, err := statusJSON(t, manifestPath, fc)
-	require.Error(t, err)
-	d, found := overlayDrift(t, result, "acme/api")
-	require.True(t, found, "status must report adoption required, got %s", mustEncode(t, result))
-	assert.Equal(t, "managed configuration (adoption required)", d.Expected)
-	assert.Contains(t, d.Actual, "ownership marker")
+			result, statusErr := statusJSON(t, manifestPath, fc)
+			require.Error(t, statusErr)
+			d, found := overlayDrift(t, result, "acme/api")
+			require.True(t, found, "status must report adoption required, got %s", mustEncode(t, result))
+			assert.Equal(t, "managed configuration (adoption required)", d.Expected)
+			assert.Contains(t, d.Actual, "ownership marker")
+		})
+	}
 }
 
-func TestRunReposStatus_UnmanagedDoesNotCompare(t *testing.T) {
+func TestRunReposStatus_NoConfigKeyMarkerlessOverlayRequiresAdoption(t *testing.T) {
 	manifestPath := writeTestManifest(t, githubUnmanagedManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api")
-	fc.FileContents[overlayPath("acme/api")] = []byte("kill_switch: true\n# local\n")
+	fc.FileContents[overlayPath("acme/api")] = []byte("keep_history: true\n# local\n")
 
 	result, _ := statusJSON(t, manifestPath, fc)
-	if d, found := overlayDrift(t, result, "acme/api"); found {
-		t.Fatalf("unmanaged configuration must not be compared, got %+v", d)
-	}
+	d, found := overlayDrift(t, result, "acme/api")
+	require.True(t, found, "a markerless overlay needs adoption even without a config key")
+	assert.Contains(t, d.Expected, "adoption required")
 }
 
 func TestRunReposInstall_ForbiddenShorthandInConfig(t *testing.T) {
@@ -367,4 +453,52 @@ func mustEncode(t *testing.T, v any) string {
 	b, err := json.Marshal(v)
 	require.NoError(t, err)
 	return string(b)
+}
+
+// A zero-byte overlay is an existing markerless file: install stops before
+// any write, and status reports how to adopt it, with no Fullsend
+// components present.
+func TestRunRepos_ZeroByteOverlayRequiresAdoption(t *testing.T) {
+	manifestPath := writeTestManifest(t, githubUnmanagedManifestYAML)
+	fc := forge.NewFakeClient()
+	fc.FileContents[overlayPath("acme/api")] = []byte{}
+
+	err := runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, newInstallFakeClientWithOverlay(t, "acme/api", []byte{})))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "adoption required")
+
+	result, _ := statusJSON(t, manifestPath, fc)
+	d, found := overlayDrift(t, result, "acme/api")
+	require.True(t, found, "status must report the zero-byte overlay, got %s", mustEncode(t, result))
+	assert.Contains(t, d.Expected, "adoption required")
+	assert.Contains(t, d.Detail, "proposed repos.yaml entry for acme/api")
+}
+
+func TestRunReposStatus_AdoptionDetailInJSONAndTable(t *testing.T) {
+	manifestPath := writeTestManifest(t, githubManagedManifestYAML)
+	fc := forge.NewFakeClient()
+	fc.FileContents[overlayPath("acme/api")] = []byte("kill_switch: false\nruntime: pi\n")
+
+	result, _ := statusJSON(t, manifestPath, fc)
+	d, found := overlayDrift(t, result, "acme/api")
+	require.True(t, found)
+	for _, want := range []string{"proposed repos.yaml entry", "runtime: pi", "- kill_switch: false", "+ kill_switch: true"} {
+		assert.Contains(t, d.Detail, want)
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, &result)
+	out := buf.String()
+	assert.Contains(t, out, "acme/api "+preset.OverlayPath+":")
+	assert.Contains(t, out, "  proposed repos.yaml entry for acme/api")
+	assert.Contains(t, out, "+ kill_switch: true")
+}
+
+func newInstallFakeClientWithOverlay(t *testing.T, repo string, overlay []byte) *forge.FakeClient {
+	t.Helper()
+	fc := newInstallFakeClient(repo)
+	fc.FileContents[overlayPath(repo)] = overlay
+	return fc
 }

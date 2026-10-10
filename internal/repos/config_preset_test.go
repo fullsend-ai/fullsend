@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,6 +275,7 @@ func TestCheckPresetDrift_ReportsMissingAndChanged(t *testing.T) {
 			Client: fc,
 		},
 	}
+	status.Installed = true
 	checkPresetDrift(context.Background(), cfg, store, &status)
 	require.Len(t, status.Drifts, 1)
 	assert.Equal(t, preset.BasePath, status.Drifts[0].Field)
@@ -281,30 +283,131 @@ func TestCheckPresetDrift_ReportsMissingAndChanged(t *testing.T) {
 
 	fc.FileContents["acme/api/"+preset.BasePath] = []byte("version: \"1\"\nruntime: pi\n")
 	status = RepoStatus{}
+	status.Installed = true
 	checkPresetDrift(context.Background(), cfg, store, &status)
 	require.Len(t, status.Drifts, 1)
 	assert.Equal(t, "installed content differs", status.Drifts[0].Actual)
 
 	fc.FileContents["acme/api/"+preset.BasePath] = []byte(testPresetYAML)
 	status = RepoStatus{}
+	status.Installed = true
 	checkPresetDrift(context.Background(), cfg, store, &status)
 	assert.Empty(t, status.Drifts)
 }
 
-func TestCheckPresetDrift_NoPresetPreservesExisting(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/"+preset.BasePath] = []byte(testPresetYAML)
+func TestCheckPresetDrift_NoPresetExistingBaseIsDrift(t *testing.T) {
+	for _, installed := range []bool{true, false} {
+		fc := forge.NewFakeClient()
+		fc.FileContents["acme/api/"+preset.BasePath] = []byte(testPresetYAML)
+		status := RepoStatus{}
+		cfg := ResolvedConfig{
+			Owner: "acme",
+			Repo:  "api",
+			ForgeConfig: ForgeConfig{
+				Client: fc,
+			},
+		}
+		status.Installed = installed
+		checkPresetDrift(context.Background(), cfg, newPresetCache(), &status)
+		require.Len(t, status.Drifts, 1, "installed=%v", installed)
+		assert.Equal(t, preset.BasePath, status.Drifts[0].Field)
+		assert.Equal(t, undeclaredBaseExpected, status.Drifts[0].Expected)
+		assert.Contains(t, status.Drifts[0].Actual, "declare a config_base source")
+		assert.Empty(t, status.Error)
+	}
+}
+
+func TestCheckPresetDrift_NoPresetNoBaseInSync(t *testing.T) {
 	status := RepoStatus{}
 	cfg := ResolvedConfig{
-		Owner: "acme",
-		Repo:  "api",
-		ForgeConfig: ForgeConfig{
-			Client: fc,
-		},
+		Owner:       "acme",
+		Repo:        "api",
+		ForgeConfig: ForgeConfig{Client: forge.NewFakeClient()},
 	}
+	status.Installed = true
 	checkPresetDrift(context.Background(), cfg, newPresetCache(), &status)
 	assert.Empty(t, status.Drifts)
 	assert.Empty(t, status.Error)
+}
+
+func TestCheckPresetDrift_NoPresetReadError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.GetFileContentErrors = map[string]error{
+		"acme/api/" + preset.BasePath: fmt.Errorf("boom"),
+	}
+	status := RepoStatus{}
+	cfg := ResolvedConfig{
+		Owner:       "acme",
+		Repo:        "api",
+		ForgeConfig: ForgeConfig{Client: fc},
+	}
+	status.Installed = true
+	checkPresetDrift(context.Background(), cfg, newPresetCache(), &status)
+	assert.Contains(t, status.Error, "reading "+preset.BasePath)
+	assert.Empty(t, status.Drifts)
+}
+
+func TestCheckPresetDrift_NotInstalledSkipsMissingButReportsDiffering(t *testing.T) {
+	path := writePresetFile(t, testPresetYAML)
+	fc := forge.NewFakeClient()
+	cfg := ResolvedConfig{
+		Owner:       "acme",
+		Repo:        "api",
+		Config:      path,
+		ForgeConfig: ForgeConfig{Client: fc},
+	}
+	status := RepoStatus{}
+	checkPresetDrift(context.Background(), cfg, newPresetCache(), &status)
+	assert.Empty(t, status.Drifts, "missing base before install is not drift")
+
+	fc.FileContents["acme/api/"+preset.BasePath] = []byte("version: \"1\"\nruntime: pi\n")
+	status = RepoStatus{}
+	checkPresetDrift(context.Background(), cfg, newPresetCache(), &status)
+	require.Len(t, status.Drifts, 1)
+	assert.Equal(t, "installed content differs", status.Drifts[0].Actual)
+}
+
+func TestCheckUndeclaredBase(t *testing.T) {
+	path := writePresetFile(t, testPresetYAML)
+	tests := []struct {
+		name    string
+		config  string
+		files   map[string][]byte
+		readErr error
+		wantErr string
+	}{
+		{name: "no preset and no base", config: ""},
+		{name: "declared preset ignores existing base", config: path,
+			files: map[string][]byte{"acme/api/" + preset.BasePath: []byte("runtime: pi\n")}},
+		{name: "no preset with existing base", config: "",
+			files:   map[string][]byte{"acme/api/" + preset.BasePath: []byte(testPresetYAML)},
+			wantErr: "no config_base preset is declared"},
+		{name: "read error", config: "", readErr: fmt.Errorf("boom"), wantErr: "reading " + preset.BasePath},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			maps.Copy(fc.FileContents, tt.files)
+			if tt.readErr != nil {
+				fc.GetFileContentErrors = map[string]error{"acme/api/" + preset.BasePath: tt.readErr}
+			}
+			err := checkUndeclaredBase(context.Background(), ResolvedConfig{
+				Owner:       "acme",
+				Repo:        "api",
+				Config:      tt.config,
+				ForgeConfig: ForgeConfig{Client: fc},
+			})
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			if tt.readErr == nil {
+				assert.Contains(t, err.Error(), "acme/api")
+			}
+		})
+	}
 }
 
 func TestCheckPresetDrift_InvalidSourceErrors(t *testing.T) {
@@ -317,6 +420,7 @@ func TestCheckPresetDrift_InvalidSourceErrors(t *testing.T) {
 			Client: forge.NewFakeClient(),
 		},
 	}
+	status.Installed = true
 	checkPresetDrift(context.Background(), cfg, newPresetCache(), &status)
 	require.NotEmpty(t, status.Error)
 	assert.Contains(t, status.Error, "loading config preset")
@@ -337,6 +441,7 @@ func TestCheckPresetDrift_ReadError(t *testing.T) {
 			Client: fc,
 		},
 	}
+	status.Installed = true
 	checkPresetDrift(context.Background(), cfg, newPresetCache(), &status)
 	require.NotEmpty(t, status.Error)
 	assert.Contains(t, status.Error, "reading")

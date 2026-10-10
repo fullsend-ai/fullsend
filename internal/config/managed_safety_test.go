@@ -103,6 +103,69 @@ func TestCheckManagedSafetyGate_AllowlistWideningExplicit(t *testing.T) {
 		"an explicit allowlist is a declared relaxation of deny-all")
 }
 
+func TestCheckManagedSafetyGate_AllowlistBaseWideningUnderNonEmptyOverlay(t *testing.T) {
+	overlay := "allowed_remote_resources:\n  - https://trusted.example/\n"
+	current := mustLayer(t, overlay, "")
+	candidate := mustLayer(t, overlay, "allowed_remote_resources:\n  - https://untrusted.example/\n")
+	got := CheckManagedSafetyGate(current, candidate)
+	require.Len(t, got, 1,
+		"a replacement base must not widen the allowlist through an unchanged non-empty overlay")
+	assert.Equal(t, "allowed_remote_resources", got[0].Key)
+}
+
+func TestCheckManagedSafetyGate_AllowlistDefaultsNotDeclaredByNonEmptyOverlay(t *testing.T) {
+	overlay := "allowed_remote_resources:\n  - https://trusted.example/\n"
+	current := mustLayer(t, overlay, "allowed_remote_resources: []\n")
+	candidate := mustLayer(t, overlay, "kill_switch: false\n")
+	got := CheckManagedSafetyGate(current, candidate)
+	require.Len(t, got, 1,
+		"replacing a deny-all base with one that omits the key must not silently admit the code defaults")
+	assert.Equal(t, "allowed_remote_resources", got[0].Key)
+}
+
+func TestCheckManagedSafetyGate_AllowlistNarrowedBasePrefixNotRelaxation(t *testing.T) {
+	current := mustLayer(t, "", "allowed_remote_resources:\n  - https://resources.example/\n")
+	candidate := mustLayer(t, "", "allowed_remote_resources:\n  - https://resources.example/trusted/\n")
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate),
+		"a candidate prefix covered by a current prefix admits nothing new")
+}
+
+func TestCheckManagedSafetyGate_AllowlistUncoveredBasePrefixStillRelaxation(t *testing.T) {
+	current := mustLayer(t, "", "allowed_remote_resources:\n  - https://resources.example/trusted/\n")
+	candidate := mustLayer(t, "", "allowed_remote_resources:\n  - https://resources.example/\n")
+	got := CheckManagedSafetyGate(current, candidate)
+	require.Len(t, got, 1, "broadening a prefix admits URLs the current chain did not")
+	assert.Equal(t, "allowed_remote_resources", got[0].Key)
+}
+
+func TestCheckManagedSafetyGate_AllowlistNewPrefixDeclaredInOverlay(t *testing.T) {
+	current := mustLayer(t, "allowed_remote_resources:\n  - https://trusted.example/\n", "")
+	candidate := mustLayer(t,
+		"allowed_remote_resources:\n  - https://trusted.example/\n  - https://new.example/\n", "")
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate),
+		"a new prefix the overlay names itself is a declared relaxation")
+}
+
+func TestCheckManagedSafetyGate_AllowlistBroaderOverlayPrefixDeclaresNarrowerBasePrefix(t *testing.T) {
+	current := mustLayer(t, "", "")
+	candidate := mustLayer(t,
+		"allowed_remote_resources:\n  - https://new.example/\n",
+		"allowed_remote_resources:\n  - https://new.example/trusted/\n")
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate),
+		"a declared broader overlay prefix already authorizes a narrower base prefix under it")
+}
+
+func TestCheckManagedSafetyGate_AllowlistNarrowerOverlayPrefixDoesNotDeclareBroaderBasePrefix(t *testing.T) {
+	current := mustLayer(t, "", "")
+	candidate := mustLayer(t,
+		"allowed_remote_resources:\n  - https://new.example/trusted/\n",
+		"allowed_remote_resources:\n  - https://new.example/\n")
+	got := CheckManagedSafetyGate(current, candidate)
+	require.Len(t, got, 1,
+		"a narrower declared prefix must not authorize a broader base prefix")
+	assert.Equal(t, "allowed_remote_resources", got[0].Key)
+}
+
 func TestCheckManagedSafetyGate_AgentSuppressionImplicitDrop(t *testing.T) {
 	current := mustLayer(t, "agents:\n  - name: review\n    enabled: false\n", "")
 	candidate := mustLayer(t, "", "")
@@ -173,6 +236,25 @@ func TestCheckManagedSafetyGate_CreateIssuesNarrowing(t *testing.T) {
 	current := mustLayer(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n      - other\n", "")
 	candidate := mustLayer(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n", "")
 	assert.Empty(t, CheckManagedSafetyGate(current, candidate))
+}
+
+func TestCheckManagedSafetyGate_CreateIssuesOrgToCoveredRepoIsNarrowing(t *testing.T) {
+	currentBase := "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n"
+	candidateBase := "create_issues:\n  allow_targets:\n    repos:\n      - acme/other\n"
+	current := mustLayer(t, "", currentBase)
+	candidate := mustLayer(t, "", candidateBase)
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate),
+		"a repository under an already-allowed org admits nothing new")
+}
+
+func TestCheckManagedSafetyGate_CreateIssuesRepoOutsideCurrentOrgsWidens(t *testing.T) {
+	currentBase := "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n"
+	candidateBase := "create_issues:\n  allow_targets:\n    repos:\n      - other/repo\n"
+	current := mustLayer(t, "", currentBase)
+	candidate := mustLayer(t, "", candidateBase)
+	got := CheckManagedSafetyGate(current, candidate)
+	require.Len(t, got, 1)
+	assert.Equal(t, "create_issues.allow_targets", got[0].Key)
 }
 
 func TestCheckManagedSafetyGate_CreateIssuesDropToUnsetIsNarrowing(t *testing.T) {
