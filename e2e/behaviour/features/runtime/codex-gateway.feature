@@ -8,17 +8,14 @@
 # assertion.
 #
 # Gated on the `runtime-codex-gateway` capability, which is NOT declared by
-# default. Besides the durable test gateway (#8286) it needs that gateway
-# to serve a Responses-capable model under the id below: codex speaks the
-# Responses API only and never calls /v1/models, so the model is pinned
-# here, and the inference.gateway model list the shared step commits for
-# pi is not read on codex. The test gateway's committed list carries no
-# Responses model today, so this scenario has not run in CI yet. The
-# gateway location comes from E2E_INFERENCE_GATEWAY_URL and
-# E2E_INFERENCE_GATEWAY_AUDIENCE (default fullsend-e2e-gateway) and is
-# never committed here; the scenario skips when the URL is unset. Enable
-# with BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-codex-gateway, against a
-# sandbox image built from main (the published :latest may lag it).
+# default. codex speaks the Responses API only and never calls /v1/models,
+# so the model is pinned here; the inference.gateway model list the shared
+# step commits for pi is not read on codex. The test gateway serves
+# gpt-oss-120b on Responses. The gateway location comes from
+# E2E_INFERENCE_GATEWAY_URL and E2E_INFERENCE_GATEWAY_AUDIENCE (default
+# fullsend-e2e-gateway) and is never committed here; the scenario skips when
+# the URL is unset. Enable with
+# BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-codex-gateway.
 Feature: codex runtime runs an agent through an inference gateway without a credential in the sandbox
 
   @requires:capability:runtime-codex-gateway
@@ -31,7 +28,7 @@ Feature: codex runtime runs an agent through an inference gateway without a cred
       agent: agents/codex-gateway-smoke.md
       role: triage
       slug: fullsend-ai-codex-gateway-smoke
-      model: gateway/gpt-5.6-luna
+      model: gateway/gpt-oss-120b
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
       # A policy with no network rules of its own, so the only route to the
       # gateway host is the inspected one from the gateway profile the
