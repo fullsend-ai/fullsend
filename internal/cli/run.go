@@ -1617,9 +1617,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// The gateway provider is the runner's, not the harness's: it is
 	// created whenever the route applies, alongside whatever the harness
 	// declared. Its refresher is independent of the OpenAI ones, so a run
-	// on both routes keeps two handoffs. It reads no reminted token env,
-	// so the pre-/post-script remints need not pause it.
+	// on both routes keeps two handoffs. Like them it reads the forge's
+	// OIDC env and spawns openshell, so it is paused around the pre-script
+	// remints, and the sandbox cleanup defer stops it before the sandbox
+	// is deleted (its own stop-defers would only fire after the
+	// post-script, under LIFO).
 	var gatewayHandles []gatewayProviderHandle
+	var stopGatewayRefreshers []func()
 	if gatewayPlan != nil {
 		if err := sandbox.EnableProvidersV2(); err != nil {
 			printer.StepFail("Failed to enable providers v2")
@@ -1633,7 +1637,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		allProviderNames = append(allProviderNames, gwHandle.name)
 		// LIFO: the refresher stops before the provider is deleted.
 		defer cleanupRunScopedProvider(gwHandle.name, []string{gatewayCredentialKey}, keepSandbox, printer)
-		for _, stop := range startGatewayRefreshers(gatewayHandles, printer) {
+		stopGatewayRefreshers = startGatewayRefreshers(gatewayHandles, printer)
+		for _, stop := range stopGatewayRefreshers {
 			defer stop()
 		}
 	}
@@ -1751,9 +1756,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		for _, stop := range stopOpenAIRefreshers {
 			stop()
 		}
+		for _, stop := range stopGatewayRefreshers {
+			stop()
+		}
 		preRestore, remintErr := maybeRemintAgentTokenForStage(ctx, h, mintURL, forgePlatform, harness.PrivilegeStagePreScript, runtimeLevel, printer)
 		stopOpenAIRefreshers = startOpenAIRefreshers(openAIHandles, printer)
 		for _, stop := range stopOpenAIRefreshers {
+			defer stop()
+		}
+		stopGatewayRefreshers = startGatewayRefreshers(gatewayHandles, printer)
+		for _, stop := range stopGatewayRefreshers {
 			defer stop()
 		}
 		if remintErr != nil {
@@ -1763,9 +1775,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		for _, stop := range stopOpenAIRefreshers {
 			stop()
 		}
+		for _, stop := range stopGatewayRefreshers {
+			stop()
+		}
 		preRestore()
 		stopOpenAIRefreshers = startOpenAIRefreshers(openAIHandles, printer)
 		for _, stop := range stopOpenAIRefreshers {
+			defer stop()
+		}
+		stopGatewayRefreshers = startGatewayRefreshers(gatewayHandles, printer)
+		for _, stop := range stopGatewayRefreshers {
 			defer stop()
 		}
 		if err != nil {
@@ -1922,7 +1941,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// privilege-downgrade case it fails closed on instead.
 			// os.Setenv is safe here: sandbox streaming and OIDC refresh
 			// goroutines have already been torn down (LIFO defers). The
-			// OpenAI credential refreshers are the exception — their own
+			// OpenAI credential refreshers are the exception (the gateway
+			// refreshers were stopped by the sandbox cleanup defer) — their own
 			// stop-defers are registered earlier in the function, so under
 			// LIFO they would not fire until after this defer completes —
 			// so stop them explicitly first to avoid racing this os.Setenv
@@ -2019,6 +2039,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}()
 	}
 	defer func() {
+		// The gateway refreshers re-seed this sandbox; stop them before it
+		// goes, and before the post-script and its remint run.
+		for _, stop := range stopGatewayRefreshers {
+			stop()
+		}
 		// Collect OpenShell logs before sandbox deletion for post-mortem debugging.
 		collectOpenshellLogs(sandboxName, runDir, printer)
 
