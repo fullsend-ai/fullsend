@@ -16,7 +16,7 @@ Fullsend supports multiple agent runtimes. A runtime is the program that runs in
 |---------|--------|-------------|-------------|
 | `claude` | **Stable (default)** | Claude Code on Vertex AI | Every production deployment — mature, full sub-agent support for `review`/`retro` |
 | `pi` | Experimental (enablement phase) | [Pi](https://github.com/earendil-works/pi) — Claude on Vertex by default; any provider pi supports by model name (e.g. Gemini on Vertex with the same credentials) | Opt-in pilots only; see [Runtimes](../../runtimes.md) for known constraints |
-| `codex` | Experimental | [Codex](https://github.com/openai/codex) — OpenAI models only, through the same secretless credential path | Opt-in pilots only, when you want GPT specifically. No sub-agent roster, so keeping `review`/`retro` on Claude Code is recommended; needs an OpenAI model named (`FULLSEND_CODEX_MODEL`) because the fleet harnesses ask for `opus`; see [Codex](../../runtimes/codex.md) |
+| `codex` | Experimental | [Codex](https://github.com/openai/codex) — OpenAI models through the same secretless credential path, or any Responses-capable model through an inference gateway (`gateway/<model>`) | Opt-in pilots only, when you want GPT specifically. No sub-agent roster, so keeping `review`/`retro` on Claude Code is recommended; needs an OpenAI model named (`FULLSEND_CODEX_MODEL`) because the fleet harnesses ask for `opus`; see [Codex](../../runtimes/codex.md) |
 
 ## When and how the runtime is selected
 
