@@ -95,6 +95,9 @@ const (
 	// Run-scoped inference providers resolved from the selected agent.
 	runProviderVertex = "vertex"
 	runProviderOpenAI = "openai"
+	// runProviderGateway marks a pi parent on the inference gateway route
+	// (a gateway/ model, ADR 0137).
+	runProviderGateway = "gateway"
 	// runProviderNone marks runtimes that do no inference (dummy,
 	// dummy-playback).
 	runProviderNone = "none"
@@ -992,7 +995,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// stay parent-only: a Vertex parent with an OpenAI persona still needs
 	// its own Vertex ADC validated, regardless of what its children run on.
 	parentNeedsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
-	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider)
+	// parentNeedsGateway is the same parent-only decision for the inference
+	// gateway route (ADR 0137): a pi parent on a gateway/ model calls no
+	// Vertex, so it must not need Vertex credentials. Its children are
+	// classified on their own, as for openai (vertexGap below).
+	parentNeedsGateway := agentruntime.NeedsGatewayRoute(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
+	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider, parentNeedsGateway)
 	// openAIChildren are the configured pi children (subagents.<persona>,
 	// subagents.default, a persona's frontmatter model:) that resolve to
 	// the openai provider. They need the run-scoped OpenAI provider even
@@ -1380,7 +1388,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	for _, c := range gatewayChildren {
 		gatewayModels = append(gatewayModels, c.Spec)
 	}
-	needsGateway := agentruntime.NeedsGatewayRoute(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases) || len(gatewayChildren) > 0
+	needsGateway := parentNeedsGateway || len(gatewayChildren) > 0
 	gatewayPlan, err := planGatewayRoute(runCfg, runtimeBackend, sandboxName, gatewayModels, needsGateway)
 	if err != nil {
 		printer.StepFail("Inference gateway route unavailable")
@@ -4441,11 +4449,14 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 }
 
 // runInferenceProvider maps the resolved runtime to the provider the parent
-// agent calls.
-func runInferenceProvider(runtimeName string, needsOpenAI bool) string {
+// agent calls. A parent model resolves to at most one of openai and
+// gateway; every other pi, Claude Code or OpenCode parent stays on Vertex.
+func runInferenceProvider(runtimeName string, needsOpenAI, needsGateway bool) string {
 	switch {
 	case needsOpenAI:
 		return runProviderOpenAI
+	case needsGateway:
+		return runProviderGateway
 	case runtimeName == "dummy" || runtimeName == "dummy-playback":
 		return runProviderNone
 	default:
