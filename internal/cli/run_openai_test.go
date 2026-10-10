@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -418,6 +420,19 @@ func recordingProvidersStub(t *testing.T) string {
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
+}
+
+// recordingProvidersStubWithProviderFailure wraps the temporary recorder to
+// fail provider creation while forwarding all other commands.
+func recordingProvidersStubWithProviderFailure(t *testing.T, failureMessage string) {
+	t.Helper()
+	logPath := recordingProvidersStub(t)
+	binDir := filepath.Dir(logPath)
+	basePath := filepath.Join(binDir, "openshell-base")
+	require.NoError(t, os.Rename(filepath.Join(binDir, "openshell"), basePath))
+	createCase := "  'provider create') printf '%s\\n' " + shellQuoteForTest(failureMessage) + "; exit 41 ;;\n"
+	script := "#!/bin/sh\ncase \"$1 $2\" in\n" + createCase + "esac\nexec " + shellQuoteForTest(basePath) + " \"$@\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 }
 
 // writeOpenAIFullsendDir lays out a fullsend dir whose code harness declares
@@ -1129,7 +1144,7 @@ func TestWarnReservedProfileCopies(t *testing.T) {
 		{ID: "fullsend-openai"},
 		{ID: "myorg-github-ro"},
 	}, ui.New(&buf))
-	assert.Equal(t, map[string]struct{}{"fullsend-github-ro": {}, "fullsend-gitleaks": {}}, listed)
+	assert.Equal(t, map[string]string{"fullsend-github-ro": "", "fullsend-gitleaks": ""}, listed)
 	out := buf.String()
 	assert.Equal(t, 1, strings.Count(out, `"fullsend-github-ro" will be rejected`), "one warning per id")
 	assert.Contains(t, out, `declare the bare provider name "gitleaks"`)
@@ -1203,6 +1218,191 @@ func TestWarnReservedProviderNameOverrides(t *testing.T) {
 	for _, cmd := range []string{"error]a", "warning]b", "add-mask]c"} {
 		assert.Contains(t, out, `#\#[`+cmd, "the path stays readable with the command neutralized")
 	}
+}
+
+func runProviderCreateFailure(t *testing.T, provider harness.ProviderDef, extraFiles map[string]string) (runErr, originalErr error, dir string) {
+	t.Helper()
+	const openShellFailure = "provider credentials are not declared by profile 'fullsend-github': _NOOP_GITHUB"
+	recordingProvidersStubWithProviderFailure(t, openShellFailure)
+
+	originalErr = sandbox.EnsureProvider(context.Background(), provider.Name, provider.Type, provider.Credentials, nil, false)
+	require.Error(t, originalErr)
+	var originalExit *exec.ExitError
+	require.ErrorAs(t, originalErr, &originalExit)
+	assert.Equal(t, 41, originalExit.ExitCode())
+
+	dir = t.TempDir()
+	files := map[string]string{
+		"agents/code.md":    "You are a coding agent.",
+		"config.yaml":       "agents:\n  - harness/code.yaml\n",
+		"harness/code.yaml": fmt.Sprintf("agent: agents/code.md\nrole: test\nproviders:\n  - %s\n", provider.Name),
+	}
+	for path, content := range extraFiles {
+		files[path] = content
+	}
+	for path, content := range files {
+		fullPath := filepath.Join(dir, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o644))
+	}
+
+	runErr = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.Error(t, runErr)
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, runErr, &exitErr)
+	assert.Equal(t, 41, exitErr.ExitCode())
+	return runErr, originalErr, dir
+}
+
+func TestRunAgent_ReservedProviderAndProfileCopies_CreateFailureAddsMigrationHint(t *testing.T) {
+	provider := harness.ProviderDef{
+		Name: "github", Type: "fullsend-github", Credentials: map[string]string{"_NOOP_GITHUB": ""},
+	}
+	runErr, originalErr, dir := runProviderCreateFailure(t, provider, map[string]string{
+		"harness/code.yaml": `agent: agents/code.md
+role: test
+providers:
+  - providers/github.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-github.yaml
+`,
+		"providers/github.yaml": `name: github
+type: fullsend-github
+credentials:
+  _NOOP_GITHUB: ""
+`,
+		"profiles/fullsend-github.yaml": `id: fullsend-github
+display_name: repository copy
+`,
+	})
+	providerPath := filepath.Join(dir, "providers", "github.yaml")
+	profilePath := filepath.Join(dir, "profiles", "fullsend-github.yaml")
+	hint := providerMigrationHint(provider,
+		map[string]string{provider.Name: providerPath},
+		map[string]string{provider.Type: profilePath},
+	)
+	require.NotEmpty(t, hint)
+	assert.Contains(t, hint, fmt.Sprintf("provider %q", providerPath))
+	assert.Contains(t, hint, fmt.Sprintf("profile %q", profilePath))
+	assert.Contains(t, runErr.Error(), hint)
+	assert.Contains(t, runErr.Error(), originalErr.Error())
+	assert.Contains(t, runErr.Error(), fmt.Sprintf("ensuring provider %q: %s", provider.Name, originalErr.Error()))
+
+	// The local provider takes precedence, so the hint should not point to
+	// the shadowed definition's file, which is not being used.
+	shadowedProviderPath := filepath.Join(dir, "providers", "shadowed.yaml")
+	providerOverrides := warnReservedProviderNameOverrides(
+		[]harness.ProviderDef{{Name: "github"}},
+		[]resolve.ResolvedProvider{
+			{Def: harness.ProviderDef{Name: provider.Name}, LocalPath: shadowedProviderPath},
+		}, ui.New(io.Discard),
+	)
+	assert.Equal(t, map[string]string{provider.Name: ""}, providerOverrides)
+	localOnlyHint := providerMigrationHint(provider, providerOverrides, nil)
+	assert.Contains(t, localOnlyHint, fmt.Sprintf("provider %q", provider.Name))
+
+	// URL overrides should identify the provider or profile, not point
+	// users at downloaded cache files that are not the sources to change.
+	urlProviderPath := filepath.Join(dir, "cache", "github.yaml")
+	urlProviderOverrides := warnReservedProviderNameOverrides(nil, []resolve.ResolvedProvider{
+		{Def: harness.ProviderDef{Name: provider.Name}, LocalPath: urlProviderPath, FromURL: true},
+	}, ui.New(io.Discard))
+	assert.Equal(t, map[string]string{provider.Name: ""}, urlProviderOverrides)
+	urlProfilePath := filepath.Join(dir, "cache", "fullsend-github.yaml")
+	urlProfileOverrides := warnReservedProfileCopies([]resolve.ResolvedProfile{
+		{ID: provider.Type, LocalPath: urlProfilePath, FromURL: true},
+	}, ui.New(io.Discard))
+	assert.Equal(t, map[string]string{provider.Type: ""}, urlProfileOverrides)
+	urlHint := providerMigrationHint(provider, urlProviderOverrides, urlProfileOverrides)
+	assert.Contains(t, urlHint, fmt.Sprintf("provider %q", provider.Name))
+	assert.Contains(t, urlHint, fmt.Sprintf("profile %q", provider.Type))
+
+	// A profile-only override should identify the built-in profile without replacing a custom provider.
+	customProvider := harness.ProviderDef{Name: "custom-github", Type: provider.Type}
+	profileOnlyHint := providerMigrationHint(customProvider, nil, map[string]string{customProvider.Type: profilePath})
+	assert.Contains(t, profileOnlyHint, fmt.Sprintf("profile %q", profilePath))
+	assert.Contains(t, profileOnlyHint, "use fullsend's corresponding built-in definitions instead")
+	assert.NotContains(t, profileOnlyHint, "declare the bare name")
+
+	// Paths must not add log lines or trigger workflow commands.
+	escapedHint := providerMigrationHint(provider,
+		map[string]string{provider.Name: filepath.Join("providers", "##[error]\n.yaml")},
+		map[string]string{provider.Type: ""},
+	)
+	assert.NotContains(t, escapedHint, "##[")
+	assert.Contains(t, escapedHint, `#\#[error]\n.yaml`)
+	assert.NotContains(t, escapedHint, "\n", "untrusted path newlines are escaped")
+}
+
+// Composition leaves duplicate resolution to runAgent, so migration guidance
+// should name the winning child copies rather than their shadowed base copies.
+func TestRunAgent_ComposedProviderAndProfileCopies_CreateFailureNamesChildCopies(t *testing.T) {
+	provider := harness.ProviderDef{
+		Name: "github", Type: "fullsend-github", Credentials: map[string]string{"_NOOP_GITHUB": ""},
+	}
+	runErr, _, dir := runProviderCreateFailure(t, provider, map[string]string{
+		"harness/base.yaml": `role: test
+providers:
+  - providers/base-github.yaml
+openshell:
+  profiles:
+    - profiles/base-fullsend-github.yaml
+`,
+		"harness/code.yaml": `base: base.yaml
+agent: agents/code.md
+role: test
+providers:
+  - providers/child-github.yaml
+openshell:
+  profiles:
+    - profiles/child-fullsend-github.yaml
+`,
+		"providers/base-github.yaml": `name: github
+type: fullsend-github
+credentials:
+  _NOOP_BASE_GITHUB: ""
+`,
+		"providers/child-github.yaml": `name: github
+type: fullsend-github
+credentials:
+  _NOOP_GITHUB: ""
+`,
+		"profiles/base-fullsend-github.yaml": `id: fullsend-github
+display_name: base copy
+`,
+		"profiles/child-fullsend-github.yaml": `id: fullsend-github
+display_name: child copy
+`,
+	})
+
+	errText := runErr.Error()
+	assert.Contains(t, errText, fmt.Sprintf("provider %q", filepath.Join(dir, "providers", "child-github.yaml")))
+	assert.Contains(t, errText, fmt.Sprintf("profile %q", filepath.Join(dir, "profiles", "child-fullsend-github.yaml")))
+	assert.NotContains(t, errText, filepath.Join(dir, "providers", "base-github.yaml"))
+	assert.NotContains(t, errText, filepath.Join(dir, "profiles", "base-fullsend-github.yaml"))
+}
+
+func TestRunAgent_CustomProvider_CreateFailureHasNoMigrationHint(t *testing.T) {
+	provider := harness.ProviderDef{
+		Name: "custom-github", Type: "custom-profile", Credentials: map[string]string{"CUSTOM_TOKEN": ""},
+	}
+	runErr, originalErr, _ := runProviderCreateFailure(t, provider, map[string]string{
+		"providers/custom-github.yaml": `name: custom-github
+type: custom-profile
+credentials:
+  CUSTOM_TOKEN: ""
+`,
+	})
+	contextError := fmt.Errorf("ensuring provider %q: %w", provider.Name, originalErr)
+	assert.Equal(t, contextError.Error(), runErr.Error())
+}
+
+func TestRunAgent_BuiltinProviderWithoutCopies_CreateFailureHasNoMigrationHint(t *testing.T) {
+	provider := harness.ProviderDef{Name: "vertex-ai", Type: "fullsend-vertex-ai"}
+	runErr, originalErr, _ := runProviderCreateFailure(t, provider, nil)
+	contextError := fmt.Errorf("ensuring provider %q: %w", provider.Name, originalErr)
+	assert.Equal(t, contextError.Error(), runErr.Error())
 }
 
 func TestEnsureOpenAIProvider_RefusesUnredactableCredential(t *testing.T) {
