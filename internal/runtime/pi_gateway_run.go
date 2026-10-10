@@ -202,9 +202,11 @@ func piGatewayEnvParts(g *PiGatewayRun) []string {
 
 const (
 	// piInferenceGatewayTokenFile is the gateway token file under the pi
-	// config dir. The extension re-reads INFERENCE_GATEWAY_TOKEN_FILE on
-	// every request, and it wins over INFERENCE_GATEWAY_API_KEY, so a
-	// running iteration follows a re-seed.
+	// config dir. The extension (v0.1.1) re-reads INFERENCE_GATEWAY_TOKEN_FILE
+	// on every request, and it wins over INFERENCE_GATEWAY_API_KEY, so a
+	// running iteration sends each re-seeded placeholder. ADR 0137 leaves
+	// the proxy resolving a rotated placeholder mid-iteration to be proven
+	// live.
 	piInferenceGatewayTokenFile = "inference-gateway.token"
 	// piGatewayCredentialEnv is the gateway provider's credential key: the
 	// env var the run-scoped provider's placeholder reaches the sandbox in
