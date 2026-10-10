@@ -145,7 +145,7 @@ func (c InferenceGatewayConfig) Validate() error {
 // no embedded credentials, query or fragment. The runner appends the
 // /v1/... model API paths itself, and the OpenShell egress profile binds
 // the host on port 443 only. Plain http, and any port, is accepted only
-// for a loopback host (test servers), as openaiwif.requireSecureURL does.
+// for a loopback host (test servers), as actionsoidc.RequireSecureURL does.
 func ValidateGatewayURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {

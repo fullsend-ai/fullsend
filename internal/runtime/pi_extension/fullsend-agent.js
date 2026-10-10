@@ -38,8 +38,8 @@
 // PiRuntime.Bootstrap wrote (FULLSEND_PI_MANIFEST).
 import { spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { appendFileSync, lstatSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
 export const DEFAULT_MANIFEST_PATH = "/sandbox/pi-config/fullsend-manifest.json";
 export const DEPTH_ENV = "FULLSEND_SUBAGENT_DEPTH";
@@ -64,6 +64,14 @@ const TOOL_ALIAS = "Task";
 // Providers pi serves without an extension and with the same Vertex ADC
 // the sandbox already carries.
 const BUILTIN_PROVIDERS = ["google-vertex"];
+// GATEWAY_PROVIDER is the provider id the inference-gateway extension
+// registers. Its -e directory is named "inference-gateway", so the
+// extension basename never admits it (see allowedProviders).
+const GATEWAY_PROVIDER = "gateway";
+// The inference-gateway extension's config file and its local overlay,
+// both read from the config dir (PI_CODING_AGENT_DIR).
+export const GATEWAY_CONFIG_FILE = "inference-gateway.json";
+export const GATEWAY_LOCAL_CONFIG_FILE = "inference-gateway.local.json";
 // VERTEX_PROVIDERS authenticate with the sandbox's Google ADC file.
 const VERTEX_PROVIDERS = new Set(["anthropic-vertex", "google-vertex", "xai-vertex"]);
 // DEFAULT_KILL_GRACE_MS is how long a child gets to handle SIGTERM (kill
@@ -168,6 +176,13 @@ function allowedProviders(agent, parentSpec) {
   // are still checked exactly by servableSpecs.
   const openaiIDs = agent?.providerModels?.openai;
   if (Array.isArray(openaiIDs) && openaiIDs.length > 0) out.add("openai");
+  // Bootstrap lists gateway ids only when an inference gateway run is
+  // registered (the rendered inference-gateway.json's models). The
+  // extension's -e directory is "inference-gateway", so the basename loop
+  // below never adds the provider id itself. servableSpecs still checks
+  // each id exactly.
+  const gatewayIDs = agent?.providerModels?.[GATEWAY_PROVIDER];
+  if (Array.isArray(gatewayIDs) && gatewayIDs.length > 0) out.add(GATEWAY_PROVIDER);
   for (const ext of agent?.extensions ?? []) {
     if (typeof ext !== "string" || ext.endsWith(".js") || ext.endsWith(".ts")) continue;
     const base = ext.replace(/\/+$/, "").split("/").pop();
@@ -579,7 +594,7 @@ function signalChild(child, signal) {
 // `now` are injectable for tests. run() never throws for a failed child —
 // it returns { isError, error } — so the registered execute() decides how
 // to surface it (pi marks a result isError only when execute throws).
-export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "" } = {}) {
+export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "", configDir = manifestPath ? dirname(manifestPath) : "" } = {}) {
   const agent = manifest?.agent ?? {};
   const maxConcurrent = Math.max(1, Number(agent.maxConcurrent) || DEFAULT_MAX_CONCURRENT);
   const timeoutMs = Math.max(1, (Number(agent.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS) * 1000);
@@ -648,6 +663,47 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     ([file, want]) => typeof file === "string" && file !== "" && typeof want === "string" && want !== "",
   );
 
+  // gatewayConfigDigest is the digest of the inference-gateway.json the
+  // runner rendered, present only when an inference gateway run is
+  // registered. Children load the inference-gateway extension, which
+  // reads that file, and an inference-gateway.local.json overlay merged
+  // over it, from the agent-writable config dir. The runner's guard checks
+  // both once, before the parent starts, so they are re-checked here
+  // before every dispatch, like extensionDigests.
+  const gatewayConfigDigest = typeof agent.gatewayConfigDigest === "string" ? agent.gatewayConfigDigest : "";
+
+  // gatewayConfigDrift reports why the gateway config may not be trusted
+  // for a child, or "" when it may. It fails closed: no config dir, a
+  // config that is not a regular file (a symlink included), a digest
+  // mismatch, or any overlay entry at all (a dangling symlink included).
+  const gatewayConfigDrift = () => {
+    if (!gatewayConfigDigest) return "";
+    if (!configDir) return "the inference gateway config is pinned but the config dir is unknown; refusing to dispatch";
+    const cfg = join(configDir, GATEWAY_CONFIG_FILE);
+    const local = join(configDir, GATEWAY_LOCAL_CONFIG_FILE);
+    try {
+      lstatSync(local);
+      return `${GATEWAY_LOCAL_CONFIG_FILE} is present in the pi config dir; refusing to dispatch`;
+    } catch (err) {
+      if (err?.code !== "ENOENT") return `cannot check ${local} before dispatching: ${err.message}`;
+    }
+    let st;
+    try {
+      st = lstatSync(cfg);
+    } catch (err) {
+      return `cannot check ${cfg} before dispatching: ${err.message}`;
+    }
+    if (!st.isFile()) return `${GATEWAY_CONFIG_FILE} is not a regular file; refusing to dispatch`;
+    let sum;
+    try {
+      sum = createHash("sha256").update(readFileSync(cfg)).digest("hex");
+    } catch (err) {
+      return `cannot re-read ${cfg} before dispatching: ${err.message}`;
+    }
+    if (sum !== gatewayConfigDigest) return `${GATEWAY_CONFIG_FILE} changed since the runner rendered it; refusing to dispatch`;
+    return "";
+  };
+
   // manifestDrift re-reads the manifest and the config-dir extensions it
   // names, and reports whether they still hash to what this extension
   // loaded. The launch guards in buildPiRunCommand check both once, before
@@ -682,7 +738,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       }
       if (sum !== want) return `${basename(file)} changed since load; refusing to dispatch`;
     }
-    return "";
+    return gatewayConfigDrift();
   };
 
   const recordUsage = (record) => {

@@ -776,7 +776,8 @@ var executableFiles = map[string]struct{}{
 | `internal/scaffold/scaffold.go` | ~146 | Embedded template system |
 | `internal/inference/inference.go` | ~26 | Provider interface |
 | `internal/inference/vertex/vertex.go` | ~80 | Agent Platform (Vertex AI) implementation |
-| `internal/inference/openaiwif/openaiwif.go` | ~330 | OpenAI Workload Identity Federation token exchange (runner-side) |
+| `internal/inference/actionsoidc/actionsoidc.go` | ~250 | Provider-neutral GitHub Actions OIDC assertion fetch (inference gateway route, and the first step of the OpenAI exchange) |
+| `internal/inference/openaiwif/openaiwif.go` | ~260 | OpenAI Workload Identity Federation token exchange (runner-side) |
 | `internal/cli/run_openai.go` | ~550 | OpenAI credential resolution, run-scoped provider lifecycle and refresh |
 | `internal/config/config.go` | ~264 | Per-repo config structures |
 

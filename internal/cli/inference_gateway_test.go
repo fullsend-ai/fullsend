@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
+	"github.com/fullsend-ai/fullsend/internal/inference/actionsoidc"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -37,7 +37,7 @@ func writeGatewayStatusConfig(t *testing.T, overlay, base string) string {
 
 type gatewayStatusFixture struct {
 	env      map[string]string
-	fetched  []openaiwif.AssertionConfig
+	fetched  []actionsoidc.AssertionConfig
 	fetchErr error
 	deps     gatewayStatusDeps
 }
@@ -47,12 +47,12 @@ func newGatewayStatusFixture(env map[string]string, client *http.Client) *gatewa
 	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
 	f.deps = gatewayStatusDeps{
 		getenv: func(k string) string { return f.env[k] },
-		fetchAssertion: func(_ context.Context, cfg openaiwif.AssertionConfig) (*openaiwif.Assertion, error) {
+		fetchAssertion: func(_ context.Context, cfg actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
 			f.fetched = append(f.fetched, cfg)
 			if f.fetchErr != nil {
 				return nil, f.fetchErr
 			}
-			return &openaiwif.Assertion{
+			return &actionsoidc.Assertion{
 				Value:     testGatewayAssertion,
 				IssuedAt:  now.Add(-time.Minute),
 				ExpiresAt: now.Add(4 * time.Minute),
@@ -217,6 +217,24 @@ func TestInferenceGatewayStatus_ModelIDsSanitised(t *testing.T) {
 	assert.Contains(t, out, "<redacted-jwt>")
 	assert.Contains(t, out, "evil?[2Jmodel")
 	assert.Contains(t, out, "ok-model")
+}
+
+func TestDisplayModelID_WorkflowCommands(t *testing.T) {
+	// A gateway-supplied id printed in a job log must not form a GitHub
+	// Actions workflow command marker.
+	for id, want := range map[string]string{
+		"::add-mask::x":  ": :add-mask: :x",
+		"::error::x":     ": :error: :x",
+		"a:::b":          "a: : :b",
+		"::::":           ": : : :",
+		"x\n::error::y":  "x?: :error: :y",
+		"vendor:model:1": "vendor:model:1",
+		"ok-model":       "ok-model",
+	} {
+		got := displayModelID(id, "")
+		assert.Equal(t, want, got, "displayModelID(%q)", id)
+		assert.NotContains(t, got, "::", "displayModelID(%q)", id)
+	}
 }
 
 func TestInferenceGatewayStatus_ModelListCapped(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -140,6 +141,24 @@ func checkGatewayEgressInspected(ctx context.Context, sandboxName, host string) 
 		"Give the harness a `policy:` without that rule (the fleet uses policies/base.yaml) or make that endpoint `protocol: rest`")
 }
 
+// gatewayCompactJWTPattern is a compact-serialized JWT: three base64url
+// segments, the signature possibly empty. Anchored, so no newline or other
+// character can ride along.
+var gatewayCompactJWTPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$`)
+
+// validateGatewayAssertion refuses a gateway token that is not a compact
+// JWT before it is registered for redaction, masked or stored. The
+// `::add-mask::` line interpolates the value, so a newline in it would
+// start a second GitHub Actions workflow command (`::error::`,
+// `::add-mask::` of something else) and leave the rest of the token
+// unmasked. The error never carries the value.
+func validateGatewayAssertion(token string) error {
+	if !gatewayCompactJWTPattern.MatchString(token) {
+		return errors.New("inference gateway: the OIDC assertion is not a compact JWT; refusing to use it")
+	}
+	return nil
+}
+
 // ensureGatewayProvider imports the per-host gateway profile and creates the
 // run-scoped provider instance carrying token (the forge OIDC assertion; the
 // caller fetches it) under gatewayCredentialKey, with expiresAt as the
@@ -148,6 +167,9 @@ func checkGatewayEgressInspected(ctx context.Context, sandboxName, host string) 
 // returns the instance name the sandbox must attach and the profile id; the
 // caller registers cleanupRunScopedProvider for the name on success.
 func ensureGatewayProvider(ctx context.Context, host, sandboxName, token string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
+	if err := validateGatewayAssertion(token); err != nil {
+		return "", "", err
+	}
 	if !security.RegisterRuntimeSecret(token) {
 		return "", "", errors.New("inference gateway: the token is too short to redact reliably; refusing to use it")
 	}

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/cucumber/godog"
 	"gopkg.in/yaml.v3"
@@ -29,12 +28,6 @@ const (
 	// gateway URL (no trailing slash), e.g. "<gateway>/v1/models".
 	gatewayPlaceholder = "<gateway>"
 )
-
-// gatewayConfigOriginals holds the pre-scenario .fullsend/config.yaml for
-// scenarios that committed an inference.gateway block, so CleanupScenario
-// can restore it before the leased repo is deallocated. Keyed by the
-// scenario's World.
-var gatewayConfigOriginals sync.Map
 
 func registerGatewaySteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the test inference gateway is configured for the repository$`, func(ctx context.Context) (context.Context, error) {
@@ -77,7 +70,8 @@ func expandGatewayPlaceholder(args string) (string, error) {
 // givenTestInferenceGateway commits an inference.gateway block (url +
 // audience from the environment) into the enrolled repo's
 // .fullsend/config.yaml, keeping every other key, and records the
-// original for restore. It skips the scenario when the URL is unset.
+// original on the World (GatewayConfigOriginal) for CleanupScenario to
+// restore. It skips the scenario when the URL is unset.
 func givenTestInferenceGateway(w *world.World) error {
 	gatewayURL, audience, ok := testGatewayFromEnv()
 	if !ok {
@@ -96,7 +90,10 @@ func givenTestInferenceGateway(w *world.World) error {
 		return err
 	}
 	// Keep the first (pre-scenario) value if the step runs twice.
-	gatewayConfigOriginals.LoadOrStore(w, original)
+	if !w.GatewayConfigOverridden {
+		w.GatewayConfigOriginal = original
+		w.GatewayConfigOverridden = true
+	}
 	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: configure test inference gateway", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
@@ -132,17 +129,16 @@ func withInferenceGateway(data []byte, gatewayURL, audience string) ([]byte, err
 // hook registered here would run after suite.afterScenario has already
 // deallocated (deleted) the leased repo.
 func restoreGatewayConfig(w *world.World) error {
-	v, ok := gatewayConfigOriginals.Load(w)
-	if !ok {
+	if !w.GatewayConfigOverridden {
 		return nil
 	}
-	original, _ := v.([]byte)
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore config after inference gateway scenario", original); err != nil {
-		// Keep the entry so a cleanupRetry attempt can commit it again.
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore config after inference gateway scenario", w.GatewayConfigOriginal); err != nil {
+		// Keep the original so a cleanupRetry attempt can commit it again.
 		return err
 	}
-	gatewayConfigOriginals.Delete(w)
+	w.GatewayConfigOverridden = false
+	w.GatewayConfigOriginal = nil
 	return nil
 }
 

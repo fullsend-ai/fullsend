@@ -1,11 +1,15 @@
 package steps
 
 import (
+	"errors"
 	"testing"
 
+	"github.com/cucumber/godog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 func TestTestGatewayFromEnv(t *testing.T) {
@@ -57,6 +61,48 @@ func TestWithInferenceGatewayKeepsOtherKeys(t *testing.T) {
 
 	_, err = withInferenceGateway([]byte("{"), "u", "a")
 	assert.Error(t, err)
+}
+
+// TestGivenTestInferenceGateway_RecordsOriginalOnWorld: the step records
+// the pre-scenario config on the World, keeps the first value when it runs
+// twice, and the cleanup restores exactly that value.
+func TestGivenTestInferenceGateway_RecordsOriginalOnWorld(t *testing.T) {
+	t.Setenv(envInferenceGatewayURL, "https://gw.example")
+	t.Setenv(envInferenceGatewayAudience, "aud")
+	original := []byte("runtime: dummy\n")
+	scmDriver := &fakeCleanupSCM{fileContent: original}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scmDriver}
+
+	require.NoError(t, givenTestInferenceGateway(w))
+	assert.True(t, w.GatewayConfigOverridden)
+	assert.Equal(t, original, w.GatewayConfigOriginal)
+	require.Len(t, scmDriver.commits, 1)
+	assert.Contains(t, string(scmDriver.commits[0].content), "audience: aud")
+
+	// A second run reads the already-modified file; the pre-scenario
+	// original must win.
+	scmDriver.fileContent = scmDriver.commits[0].content
+	require.NoError(t, givenTestInferenceGateway(w))
+	assert.Equal(t, original, w.GatewayConfigOriginal)
+
+	require.NoError(t, restoreGatewayConfig(w))
+	assert.Equal(t, original, scmDriver.commits[len(scmDriver.commits)-1].content)
+	assert.False(t, w.GatewayConfigOverridden)
+	assert.Nil(t, w.GatewayConfigOriginal)
+}
+
+func TestGivenTestInferenceGateway_SkipsAndErrors(t *testing.T) {
+	t.Setenv(envInferenceGatewayURL, "")
+	w := &world.World{Org: "org", RepoName: "repo", SCM: &fakeCleanupSCM{}}
+	assert.ErrorIs(t, givenTestInferenceGateway(w), godog.ErrSkip)
+	assert.False(t, w.GatewayConfigOverridden)
+
+	t.Setenv(envInferenceGatewayURL, "https://gw.example")
+	assert.ErrorContains(t, givenTestInferenceGateway(&world.World{SCM: &fakeCleanupSCM{}}), "no repo configured")
+
+	failing := &world.World{Org: "org", RepoName: "repo", SCM: &fakeCleanupSCM{getFileErr: errors.New("boom")}}
+	assert.ErrorContains(t, givenTestInferenceGateway(failing), "reading config")
+	assert.False(t, failing.GatewayConfigOverridden, "nothing recorded when the read fails")
 }
 
 func TestProbeResultAssertions(t *testing.T) {

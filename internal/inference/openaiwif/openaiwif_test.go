@@ -14,6 +14,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// oidcResponse is the GitHub OIDC endpoint's JSON shape, as the test
+// servers serve it (the client side lives in package actionsoidc).
+type oidcResponse struct {
+	Value string `json:"value"`
+}
+
 // newTestServers returns a GitHub OIDC httptest server, an OpenAI token
 // httptest server, and a Config wired to both. The caller must close the
 // servers when done.

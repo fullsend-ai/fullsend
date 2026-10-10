@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
-	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
+	"github.com/fullsend-ai/fullsend/internal/inference/actionsoidc"
 )
 
 // Inference gateway credential route (ADR 0137). The runner fetches the
@@ -127,9 +127,11 @@ func validateGatewayRuntime(runtimeName string, models []string) error {
 	return fmt.Errorf("gateway/ models need the inference gateway route, which runtime %q does not implement (supported: %s)", runtimeName, strings.Join(gatewayRouteRuntimes, ", "))
 }
 
-// gatewayOIDCEnv is the forge OIDC endpoint the runner fetches assertions
-// from. Variables so tests can stub the environment.
-var gatewayOIDCEnv = func() (requestURL, requestToken string) {
+// gatewayOIDCEnvFn returns the forge OIDC endpoint the runner fetches
+// assertions from: ACTIONS_ID_TOKEN_REQUEST_URL and
+// ACTIONS_ID_TOKEN_REQUEST_TOKEN. Override in tests to stub the endpoint
+// without touching the process environment.
+var gatewayOIDCEnvFn = func() (requestURL, requestToken string) {
 	return os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL"), os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
 }
 
@@ -149,19 +151,21 @@ func gatewayBlockApplies(g config.InferenceGatewayConfig) (bool, error) {
 	if err := g.Validate(); err != nil {
 		return false, err
 	}
-	reqURL, _ := gatewayOIDCEnv()
+	reqURL, _ := gatewayOIDCEnvFn()
 	return reqURL != "", nil
 }
 
-// fetchGatewayAssertion is the assertion fetch, a variable for tests.
-var fetchGatewayAssertion = openaiwif.FetchAssertion
+// fetchGatewayAssertionFn fetches the job's OIDC assertion (defaults to
+// actionsoidc.FetchAssertion). Override in tests to return a canned
+// assertion or error instead of calling the OIDC endpoint.
+var fetchGatewayAssertionFn = actionsoidc.FetchAssertion
 
 // fetchGatewayToken fetches the job's OIDC assertion for the block's
 // audience. A failure fails the run: the route never falls back to the
 // openai provider, WIF or a static key. Errors never carry the token.
-func fetchGatewayToken(ctx context.Context, g config.InferenceGatewayConfig) (*openaiwif.Assertion, error) {
-	reqURL, reqToken := gatewayOIDCEnv()
-	a, err := fetchGatewayAssertion(ctx, openaiwif.AssertionConfig{
+func fetchGatewayToken(ctx context.Context, g config.InferenceGatewayConfig) (*actionsoidc.Assertion, error) {
+	reqURL, reqToken := gatewayOIDCEnvFn()
+	a, err := fetchGatewayAssertionFn(ctx, actionsoidc.AssertionConfig{
 		Audience:         strings.TrimSpace(g.Audience),
 		OIDCRequestURL:   reqURL,
 		OIDCRequestToken: reqToken,

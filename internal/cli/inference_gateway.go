@@ -19,7 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
-	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
+	"github.com/fullsend-ai/fullsend/internal/inference/actionsoidc"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -42,7 +42,7 @@ const (
 // 'inference gateway status', injectable for tests.
 type gatewayStatusDeps struct {
 	getenv         func(string) string
-	fetchAssertion func(context.Context, openaiwif.AssertionConfig) (*openaiwif.Assertion, error)
+	fetchAssertion func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error)
 	httpClient     *http.Client
 	now            func() time.Time
 }
@@ -57,7 +57,7 @@ type gatewayStatusDeps struct {
 func defaultGatewayStatusDeps() gatewayStatusDeps {
 	return gatewayStatusDeps{
 		getenv:         os.Getenv,
-		fetchAssertion: openaiwif.FetchAssertion,
+		fetchAssertion: actionsoidc.FetchAssertion,
 		httpClient: &http.Client{
 			Timeout: gatewayProbeTimeout,
 			Transport: &http.Transport{
@@ -187,13 +187,13 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 	}
 	g := sources.Block
 
-	printOpenAIStatusField(printer, "url", g.URL, sources.URLSource)
-	printOpenAIStatusField(printer, "audience", g.Audience, sources.AudienceSource)
+	printStatusField(printer, "url", g.URL, sources.URLSource)
+	printStatusField(printer, "audience", g.Audience, sources.AudienceSource)
 	switch {
 	case g.ModelsFile != "":
-		printOpenAIStatusField(printer, "models_file", g.ModelsFile, sources.ModelsSource)
+		printStatusField(printer, "models_file", g.ModelsFile, sources.ModelsSource)
 	case len(g.Models) > 0:
-		printOpenAIStatusField(printer, "models", strings.Join(g.ModelIDs(), ", "), sources.ModelsSource)
+		printStatusField(printer, "models", strings.Join(g.ModelIDs(), ", "), sources.ModelsSource)
 	default:
 		printer.StepInfo("models: (not set; pi gateway/ models need a model list)")
 	}
@@ -239,7 +239,7 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 	}
 
 	printer.StepStart("Fetching OIDC assertion for audience " + g.Audience)
-	assertion, err := deps.fetchAssertion(ctx, openaiwif.AssertionConfig{
+	assertion, err := deps.fetchAssertion(ctx, actionsoidc.AssertionConfig{
 		Audience:         g.Audience,
 		OIDCRequestURL:   oidcURL,
 		OIDCRequestToken: oidcToken,
@@ -303,18 +303,25 @@ var gatewayJWTPattern = regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[
 // displayModelID makes a gateway-supplied model id safe to print: the
 // gateway is configured, not trusted to keep the assertion out of the
 // output, so the assertion and any JWT-shaped value are redacted and
-// control characters (terminal escapes included) are replaced.
+// control characters (terminal escapes included) are replaced. Every "::"
+// becomes ": :", so the id cannot form a GitHub Actions workflow command
+// marker (`::add-mask::`, `::error::`) in a job log either; the loop
+// splits runs of three or more colons too.
 func displayModelID(id, assertion string) string {
 	if assertion != "" {
 		id = strings.ReplaceAll(id, assertion, "<redacted>")
 	}
 	id = gatewayJWTPattern.ReplaceAllString(id, "<redacted-jwt>")
-	return strings.Map(func(r rune) rune {
+	id = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return '?'
 		}
 		return r
 	}, id)
+	for strings.Contains(id, "::") {
+		id = strings.ReplaceAll(id, "::", ": :")
+	}
+	return id
 }
 
 // gatewayModelIDs reads an OpenAI-style model list ({"data":[{"id":...}]})

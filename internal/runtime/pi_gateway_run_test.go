@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -152,6 +153,22 @@ func TestPiGatewayEnvUnset_Shell(t *testing.T) {
 	assert.Equal(t, "INFERENCE_GATEWAY_BASE_URL=https://gw.example.com\nINFERENCE_GATEWAY_TOKEN_FILE=/sandbox/gateway/token\nKEEP_ME=1\n", string(out))
 }
 
+// TestPiGatewayEnvUnset_HostileIFS runs the clear under /bin/sh after an
+// agent-writable .env set IFS to "_" plus newline. Unguarded, the unset
+// list would split into INFERENCE, GATEWAY, BASE, URL, ...: the gateway
+// variables would survive and unrelated names (here GATEWAY and URL)
+// would be unset instead.
+func TestPiGatewayEnvUnset_HostileIFS(t *testing.T) {
+	run := piGatewayTestRun()
+	script := "export INFERENCE_GATEWAY_BASE_URL=evil INFERENCE_GATEWAY_AUTH_HEADER=y GATEWAY=keep URL=keep" +
+		" && IFS='_\n'" +
+		" " + strings.Join(piGatewayEnvParts(run), " ") +
+		" && command -p env | command -p grep -E '^(INFERENCE_GATEWAY_|GATEWAY=|URL=)' | command -p sort"
+	out, err := exec.Command("/bin/sh", "-c", script).Output()
+	require.NoError(t, err)
+	assert.Equal(t, "GATEWAY=keep\nINFERENCE_GATEWAY_BASE_URL=https://gw.example.com\nINFERENCE_GATEWAY_TOKEN_FILE=/sandbox/gateway/token\nURL=keep\n", string(out))
+}
+
 func TestValidatePiGatewayPluginEnv(t *testing.T) {
 	t.Parallel()
 	require.NoError(t, ValidatePiGatewayPluginEnv(nil))
@@ -215,6 +232,48 @@ func TestPiAgentProviderModels_Gateway(t *testing.T) {
 	ids[0] = "mutated"
 	assert.Equal(t, "m1", got[piGatewayProvider][0], "the manifest holds a copy")
 	assert.NotEmpty(t, got[piGoogleVertexProvider])
+}
+
+// TestPiAgentManifest_GatewayConfigDigest covers the digest the Agent
+// extension re-checks before each child: set to the launch guard's digest
+// only when a gateway run is registered, absent otherwise.
+func TestPiAgentManifest_GatewayConfigDigest(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	t.Setenv(piAgentThinkingEnv, "")
+	cfg := PiRuntime{}.ConfigDir()
+	bootstrap := func(t *testing.T) (*piManifest, string) {
+		t.Helper()
+		forgetPiManifestHash(t, "sb-gw-digest")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{sandboxName: "sb-gw-digest", agentPath: writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nbody"), agentName: "review"}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		return &m, store
+	}
+
+	t.Run("no gateway run", func(t *testing.T) {
+		m, _ := bootstrap(t)
+		assert.Empty(t, m.Agent.GatewayConfigDigest, "without a block the manifest is unchanged")
+		raw, err := json.Marshal(m.Agent)
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), "gatewayConfigDigest")
+	})
+
+	t.Run("gateway run registered", func(t *testing.T) {
+		run := piGatewayTestRun()
+		registerPiGatewayRun(t, "sb-gw-digest", run)
+		m, store := bootstrap(t)
+		assert.Equal(t, run.configSum(), m.Agent.GatewayConfigDigest)
+		assert.Contains(t, piGatewayConfigGuard(cfg, run.configSum()), m.Agent.GatewayConfigDigest,
+			"the digest the launch guard checks, so the two cannot drift")
+		assert.Equal(t, run.Config, storedUpload(t, store, cfg+"/"+PiInferenceGatewayConfigFile),
+			"and the digest of the file Bootstrap wrote")
+	})
 }
 
 func TestPiAgentProbe_Gateway(t *testing.T) {

@@ -176,8 +176,15 @@ func piGatewayConfigGuard(configDir, sum string) string {
 // The names come from `command -p env` (no function or PATH entry can
 // stand in) and are restricted to identifier characters, so a value cannot
 // inject anything into the unset list.
+//
+// The substitution is split into words by IFS, and the agent-writable
+// .env runs before this: an IFS holding "_" would cut each name into
+// pieces, leave the family set and unset unrelated variables instead. So
+// IFS is unset first, which POSIX defines as default splitting (space,
+// tab, newline). A loop reading the names would not help: under dash the
+// loop body runs in a pipeline subshell, so its unsets never reach pi.
 func piGatewayEnvUnset() string {
-	return `unset $(command -p env | command -p sed -n 's/^\(` + piInferenceGatewayEnvPrefix + `[A-Za-z0-9_]*\)=.*/\1/p')`
+	return `unset IFS && unset $(command -p env | command -p sed -n 's/^\(` + piInferenceGatewayEnvPrefix + `[A-Za-z0-9_]*\)=.*/\1/p')`
 }
 
 // piGatewayEnvParts renders the clear/re-export block that runs after .env

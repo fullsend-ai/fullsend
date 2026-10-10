@@ -7,15 +7,17 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 
 import defaultExport, {
   AGENT_TOOL_PARAMETERS,
   CHILD_SYSTEM_NOTE,
+  GATEWAY_CONFIG_FILE,
+  GATEWAY_LOCAL_CONFIG_FILE,
   MAX_DESCRIPTION_BYTES,
   MAX_STDOUT_LINE_CHARS,
   OVERSIZED_PREFIX_CHARS,
@@ -243,6 +245,30 @@ test("resolveModel: openai under a non-openai parent needs a configured openai c
   // An empty list admits nothing.
   const empty = { ...manifest.agent, providerModels: { ...manifest.agent.providerModels, openai: [] } };
   assert.throws(() => resolveModel(empty, "openai/gpt-5.6-luna", parent), /provider "openai" is not available in this run/);
+});
+
+test("resolveModel: gateway under a non-gateway parent is admitted by its listed ids (#8280)", () => {
+  const { manifest } = fixture();
+  // The child gets the extension as /usr/local/share/pi-extensions/
+  // inference-gateway; its basename is not the provider id it registers.
+  const extensions = [...manifest.agent.extensions, "/usr/local/share/pi-extensions/inference-gateway"];
+  for (const parent of ["google-vertex/gemini-3.8-flash", "openai/gpt-5.6-luna", "anthropic-vertex/claude-opus-4-6"]) {
+    // No gateway list (no inference.gateway block): the provider is not
+    // available, even with the extension on the -e list.
+    assert.throws(
+      () => resolveModel({ ...manifest.agent, extensions }, "gateway/m1", parent),
+      /provider "gateway" is not available in this run/,
+      `no list under ${parent}`,
+    );
+    const empty = { ...manifest.agent, extensions, providerModels: { ...manifest.agent.providerModels, gateway: [] } };
+    assert.throws(() => resolveModel(empty, "gateway/m1", parent), /provider "gateway" is not available in this run/, `empty list under ${parent}`);
+
+    // Bootstrap lists the rendered config's ids: exactly those resolve.
+    const a = { ...manifest.agent, extensions, providerModels: { ...manifest.agent.providerModels, gateway: ["m1", "Team/M2"] } };
+    assert.equal(resolveModel(a, "gateway/m1", parent), "gateway/m1", `listed id under ${parent}`);
+    assert.equal(resolveModel(a, "gateway/team/m2", parent), "gateway/Team/M2", "an id with a slash, matched case-insensitively");
+    assert.throws(() => resolveModel(a, "gateway/m9", parent), /"m9" is not a model this run serves on "gateway"/, `unlisted id under ${parent}`);
+  }
 });
 
 test("vertexCredentialsUsable: a non-empty regular file, else gcloud's ADC file (#7980)", () => {
@@ -677,6 +703,128 @@ test("run: a hook adapter that vanishes after load stops the next dispatch", asy
   assert.equal(res.isError, true);
   assert.match(res.error, /cannot re-read .*gone-hooks\.js before dispatching/);
   assert.equal(children.length, 0);
+});
+
+// gatewayFixture is a tool whose manifest pins the inference gateway
+// config the runner rendered into configDir.
+function gatewayFixture() {
+  const { dir, manifest } = fixture();
+  const configDir = join(dir, "pi-config");
+  mkdirSync(configDir);
+  const cfg = join(configDir, GATEWAY_CONFIG_FILE);
+  const local = join(configDir, GATEWAY_LOCAL_CONFIG_FILE);
+  const bytes = '{"providers":{"gateway":{"models":[{"id":"m1"}]}}}';
+  writeFileSync(cfg, bytes);
+  const agent = { ...manifest.agent, gatewayConfigDigest: createHash("sha256").update(bytes).digest("hex") };
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool({ ...manifest, agent }, { ...quiet, spawn, configDir });
+  return { dir, cfg, local, bytes, tool, children, agent, manifest };
+}
+
+test("run: the runner's gateway config dispatches; a rewritten one stops the next dispatch", async () => {
+  const { cfg, bytes, tool, children } = gatewayFixture();
+  const first = tool.run({ prompt: "p1" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "the config the runner rendered dispatches");
+  children[0].child.finish(okStream("one"));
+  assert.equal((await first).text, "one");
+
+  // The children load the inference-gateway extension, which reads this
+  // file: a rewrite could point them at another baseUrl or headers.
+  writeFileSync(cfg, '{"providers":{"gateway":{"baseUrl":"https://elsewhere.example"}}}');
+  const res = await tool.run({ prompt: "p2" }, {});
+  assert.equal(res.isError, true);
+  assert.equal(res.error, "inference-gateway.json changed since the runner rendered it; refusing to dispatch");
+  assert.equal(res.stopReason, "rejected");
+  assert.equal(children.length, 1, "nothing was spawned against the rewritten config");
+  assert.equal(tool.inFlight(), 0);
+
+  writeFileSync(cfg, bytes);
+  const again = tool.run({ prompt: "p3" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 2, "restoring the bytes restores dispatch");
+  children[1].child.finish(okStream("three"));
+  assert.equal((await again).text, "three");
+});
+
+test("run: a gateway local overlay, even a dangling symlink, stops the dispatch", async () => {
+  for (const plant of [
+    (local) => writeFileSync(local, '{"baseUrl":"https://elsewhere.example"}'),
+    (local) => symlinkSync("/nonexistent/overlay.json", local),
+    (local) => mkdirSync(local),
+  ]) {
+    const { local, tool, children } = gatewayFixture();
+    plant(local);
+    const res = await tool.run({ prompt: "p" }, {});
+    assert.equal(res.isError, true);
+    assert.equal(res.error, "inference-gateway.local.json is present in the pi config dir; refusing to dispatch");
+    assert.equal(children.length, 0);
+  }
+});
+
+test("run: a gateway config that is a symlink or missing stops the dispatch", async () => {
+  {
+    // A symlink to identical bytes still fails: the file must be the
+    // regular file the runner wrote, not a pointer the agent controls.
+    const { dir, cfg, bytes, tool, children } = gatewayFixture();
+    const target = join(dir, "elsewhere.json");
+    writeFileSync(target, bytes);
+    rmSync(cfg);
+    symlinkSync(target, cfg);
+    const res = await tool.run({ prompt: "p" }, {});
+    assert.equal(res.isError, true);
+    assert.equal(res.error, "inference-gateway.json is not a regular file; refusing to dispatch");
+    assert.equal(children.length, 0);
+  }
+  {
+    const { cfg, tool, children } = gatewayFixture();
+    rmSync(cfg);
+    const res = await tool.run({ prompt: "p" }, {});
+    assert.equal(res.isError, true);
+    assert.match(res.error, /cannot check .*inference-gateway\.json before dispatching/);
+    assert.equal(children.length, 0);
+  }
+});
+
+test("run: a pinned gateway config with no config dir fails closed", async () => {
+  const { manifest } = fixture();
+  const agent = { ...manifest.agent, gatewayConfigDigest: "00" };
+  const { spawn, children } = fakeSpawn();
+  // No manifestPath and no configDir: nowhere to check, so no dispatch.
+  const tool = createAgentTool({ ...manifest, agent }, { ...quiet, spawn });
+  const res = await tool.run({ prompt: "p" }, {});
+  assert.equal(res.isError, true);
+  assert.equal(res.error, "the inference gateway config is pinned but the config dir is unknown; refusing to dispatch");
+  assert.equal(children.length, 0);
+});
+
+test("run: the gateway config dir defaults to the manifest's directory", async () => {
+  const { cfg, local, agent, manifest } = gatewayFixture();
+  const configDir = dirname(cfg);
+  const manifestPath = join(configDir, "fullsend-manifest.json");
+  writeFileSync(manifestPath, JSON.stringify({ ...manifest, agent }));
+  const manifestSum = createHash("sha256").update(readFileSync(manifestPath)).digest("hex");
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool({ ...manifest, agent }, { ...quiet, spawn, manifestPath, manifestSum });
+  writeFileSync(local, "{}");
+  const res = await tool.run({ prompt: "p" }, {});
+  assert.equal(res.error, "inference-gateway.local.json is present in the pi config dir; refusing to dispatch");
+  assert.equal(children.length, 0);
+});
+
+test("run: without a gateway digest the config dir is not consulted", async () => {
+  const { manifest } = fixture();
+  const dir = mkdtempSync(join(tmpdir(), "fullsend-agent-nogw-"));
+  // A local overlay alone changes nothing when no block applies: the
+  // local guide's plugin setup keeps working.
+  writeFileSync(join(dir, GATEWAY_LOCAL_CONFIG_FILE), "{}");
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, configDir: dir });
+  const run = tool.run({ prompt: "p" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1);
+  children[0].child.finish(okStream("ok"));
+  assert.equal((await run).text, "ok");
 });
 
 test("run: model rejection is an error before anything is spawned", async () => {

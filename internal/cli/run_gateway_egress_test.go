@@ -181,6 +181,53 @@ func TestEnsureGatewayProvider(t *testing.T) {
 	assert.Equal(t, "provider create --name inference-gateway-0123456789ab --type "+id+" --credential "+gatewayCredentialKey, lines[3])
 	assert.True(t, strings.HasPrefix(lines[4], "provider update inference-gateway-0123456789ab --credential "+gatewayCredentialKey+" --credential-expires-at "), lines[4])
 
-	_, _, err = ensureGatewayProvider(context.Background(), "gateway.example.com", "fs-x-1", "short", expires, ui.New(io.Discard))
+	_, _, err = ensureGatewayProvider(context.Background(), "gateway.example.com", "fs-x-1", "a.b.c", expires, ui.New(io.Discard))
 	require.Error(t, err, "a token too short to redact is refused")
+}
+
+func TestValidateGatewayAssertion(t *testing.T) {
+	for _, ok := range []string{
+		"eyJhbGciOiJSUzI1NiJ9.eyJpYXQiOjF9.c2ln",
+		"eyJhbGciOiJub25lIn0.eyJpYXQiOjF9.",
+		"a_b-c.d_e-f.g_h-i",
+	} {
+		assert.NoError(t, validateGatewayAssertion(ok), ok)
+	}
+	for name, bad := range map[string]string{
+		"empty":            "",
+		"two segments":     "eyJhbGciOiJSUzI1NiJ9.eyJpYXQiOjF9",
+		"four segments":    "a.b.c.d",
+		"empty payload":    "a..c",
+		"trailing newline": "eyJh.eyJp.c2ln\n",
+		"workflow command": "eyJh.eyJp.c2ln\n::error::pwned",
+		"carriage return":  "eyJh.eyJp.c2ln\r::warning::x",
+		"padding":          "eyJh.eyJp.c2ln==",
+		"space":            "eyJh.eyJp. c2ln",
+		"opaque":           "not-a-jwt-at-all",
+	} {
+		err := validateGatewayAssertion(bad)
+		require.Error(t, err, name)
+		if bad != "" {
+			assert.NotContains(t, err.Error(), bad, "%s: the error never carries the value", name)
+		}
+	}
+}
+
+// TestEnsureGatewayProvider_RejectsNonJWT: a value that is not a compact
+// JWT is refused before anything interpolates it — no ::add-mask:: line
+// (whose newline would start a second workflow command) and no provider.
+func TestEnsureGatewayProvider_RejectsNonJWT(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("GITHUB_ACTIONS", "true")
+	argsLog := profileListingStub(t, "")
+	malicious := "eyJhbGciOiJSUzI1NiJ9.eyJpYXQiOjF9.c2lnbmF0dXJl\n::error::pwned"
+	var err error
+	stderr := captureStderr(t, func() {
+		_, _, err = ensureGatewayProvider(context.Background(), "gateway.example.com", "fs-x-1", malicious, time.Now().Add(5*time.Minute), ui.New(io.Discard))
+	})
+	require.ErrorContains(t, err, "not a compact JWT")
+	assert.NotContains(t, err.Error(), "pwned")
+	assert.NotContains(t, stderr, "::add-mask::")
+	assert.NotContains(t, stderr, "::error::")
+	assert.NoFileExists(t, argsLog, "no openshell call was made")
 }

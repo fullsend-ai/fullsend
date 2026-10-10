@@ -81,6 +81,15 @@ type piAgentManifest struct {
 	// extension re-hashes them before every dispatch; see
 	// piAgentExtensionDigests for why the vendored ones are absent.
 	ExtensionDigests map[string]string `json:"extensionDigests,omitempty"`
+	// GatewayConfigDigest is the sha256 (hex) of the inference-gateway.json
+	// the runner rendered, set only when an inference gateway run is
+	// registered for the sandbox (SetPiGatewayRun). Children load the
+	// inference-gateway extension, which reads that file and any
+	// inference-gateway.local.json overlay from the agent-writable config
+	// dir, so the extension re-checks both before every dispatch, the way
+	// it re-checks ExtensionDigests: the launch guard (piGatewayConfigGuard)
+	// fires only before the parent starts.
+	GatewayConfigDigest string `json:"gatewayConfigDigest,omitempty"`
 	// EditRepairExtension is the edit-repair extension's -e path (see
 	// pi_edit_repair.go), empty when the children's tool set has no edit.
 	// It is kept out of Extensions on purpose: the extension registers the
@@ -520,6 +529,11 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 	}
 	if editRepair {
 		manifest.EditRepairExtension = editRepairExt
+	}
+	if gw != nil {
+		// The same digest piGatewayConfigGuard checks at launch, so the two
+		// cannot drift.
+		manifest.GatewayConfigDigest = gw.configSum()
 	}
 
 	// A pre-configured child — a subagents.<persona> override, subagents.

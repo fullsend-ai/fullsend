@@ -57,15 +57,15 @@ func TestCleanupScenario_RestoresGatewayConfig(t *testing.T) {
 	t.Parallel()
 
 	scmDriver := &fakeCleanupSCM{}
-	w := &world.World{
-		Org:       "org",
-		RepoOwner: "org",
-		RepoName:  "repo",
-		SCM:       scmDriver,
-	}
 	original := []byte("runtime: dummy\n")
-	gatewayConfigOriginals.Store(w, original)
-	t.Cleanup(func() { gatewayConfigOriginals.Delete(w) })
+	w := &world.World{
+		Org:                     "org",
+		RepoOwner:               "org",
+		RepoName:                "repo",
+		SCM:                     scmDriver,
+		GatewayConfigOverridden: true,
+		GatewayConfigOriginal:   original,
+	}
 
 	CleanupScenario(w)
 	require.Len(t, scmDriver.commits, 1)
@@ -73,8 +73,8 @@ func TestCleanupScenario_RestoresGatewayConfig(t *testing.T) {
 	assert.Equal(t, "repo", scmDriver.commits[0].repo)
 	assert.Equal(t, filepath.Join(".fullsend", "config.yaml"), scmDriver.commits[0].path)
 	assert.Equal(t, original, scmDriver.commits[0].content)
-	_, pending := gatewayConfigOriginals.Load(w)
-	assert.False(t, pending, "restored original should be forgotten")
+	assert.False(t, w.GatewayConfigOverridden, "restored original should be forgotten")
+	assert.Nil(t, w.GatewayConfigOriginal)
 }
 
 func TestCleanupScenario_GatewayRestoreFailureKeepsOriginal(t *testing.T) {
@@ -87,13 +87,14 @@ func TestCleanupScenario_GatewayRestoreFailureKeepsOriginal(t *testing.T) {
 		RepoName: "repo",
 		SCM:      scmDriver,
 		Logf:     func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+
+		GatewayConfigOverridden: true,
+		GatewayConfigOriginal:   []byte("runtime: dummy\n"),
 	}
-	gatewayConfigOriginals.Store(w, []byte("runtime: dummy\n"))
-	t.Cleanup(func() { gatewayConfigOriginals.Delete(w) })
 
 	CleanupScenario(w)
-	_, pending := gatewayConfigOriginals.Load(w)
-	assert.True(t, pending, "a failed restore keeps the original for a retry")
+	assert.True(t, w.GatewayConfigOverridden, "a failed restore keeps the original for a retry")
+	assert.Equal(t, []byte("runtime: dummy\n"), w.GatewayConfigOriginal)
 	require.NotEmpty(t, logs)
 	assert.Contains(t, logs[len(logs)-1], "restore config after inference gateway scenario: commit failed")
 }
