@@ -79,12 +79,17 @@ forge stores no reusable provider key.
   hard-codes 300 s. The runner fetches a fresh assertion, updates the
   provider, and re-seeds the in-sandbox placeholder through the ADR 0092
   refresh path. The placeholder is pinned per credential generation, so after
-  each refresh the runner waits for the new generation and then re-seeds the
-  runtime's credential file through the runtime-neutral seeder interface
-  (`runtime.OpenAICredentialSeeder`,
-  [ADR 0099](0099-codex-agent-runtime.md)). Each runtime that joins the route
-  supplies its own seed. pi's seed is a token file that its extension re-reads
-  on every request (`INFERENCE_GATEWAY_TOKEN_FILE`, which wins over
+  each refresh the runner waits for the new generation and then re-seeds a
+  credential file the runtime re-reads. This follows the seeder pattern of
+  ADR 0092 and [ADR 0099](0099-codex-agent-runtime.md), but today's
+  `runtime.OpenAICredentialSeeder` is OpenAI-specific: it seeds the
+  `OPENAI_API_KEY` placeholder into one file, and the refresh polls that key
+  for the new generation. The seeder and the generation polling therefore
+  become route-aware. Each route names its own placeholder environment key,
+  seed and credential file, and the direct OpenAI and gateway refreshers keep
+  independent handoffs when one run uses both. pi's gateway seed is a token
+  file that its extension re-reads on every request
+  (`INFERENCE_GATEWAY_TOKEN_FILE`, which wins over
   `INFERENCE_GATEWAY_API_KEY`).
 - **The refresh margin already adapts to the token lifetime.** ADR 0092's
   `openAIRefreshDelay` caps the refresh lead at half the remaining lifetime
