@@ -146,17 +146,10 @@ case "$1 $2 $3" in
     tick > "${S}/revision_time"
     echo deploy >> "${S}/revisions" ;;
   "run services update")
-    # Like Cloud Run: each --update-secrets adds a new volume and leaves the
-    # old one unmounted.
-    n=$(wc -l < "${S}/revisions" | tr -d ' ')
-    # gcloud also pins the running image by digest when a template change
-    # carries no new image.
-    jq --argjson v "$(volume "cfg-u${n}" fullsend-e2e-gateway-config config.yaml)" \
-      --arg d "$(printf 'upstream-index' | shasum -a 256 | cut -d' ' -f1)" '
-      .spec.template.spec.containers[0].image |= (sub("(:v[0-9.]+|@sha256:[0-9a-f]+)$"; "") + "@sha256:" + $d)
-      | .spec.template.spec.volumes += [$v]
-      | .spec.template.spec.containers[0].volumeMounts |= map(
-          if .mountPath == "/etc/agw-config" then .name = $v.name else . end)' \
+    # Like gcloud 588: the mount keeps its volume, a new revision rolls, and
+    # the running image is pinned by digest when no new image is given.
+    jq --arg d "$(printf 'upstream-index' | shasum -a 256 | cut -d' ' -f1)" '
+      .spec.template.spec.containers[0].image |= (sub("(:v[0-9.]+|@sha256:[0-9a-f]+)$"; "") + "@sha256:" + $d)' \
       "${S}/svc.json" > "${S}/svc.tmp" && mv "${S}/svc.tmp" "${S}/svc.json"
     tick > "${S}/revision_time"
     echo update >> "${S}/revisions" ;;
@@ -177,9 +170,9 @@ case "$1" in
     case "${ref}" in
       docker://ghcr.io/*)
         [[ -f "${S}/upstream_down" ]] && { echo "FATAL: connection refused" >&2; exit 1; }
-        printf 'upstream-index' ;;
+        printf 'upstream-index'; [[ -f "${S}/trailing_newline" ]] && printf '\n'; true ;;
       *) [[ -f "${S}/image_raw" ]] || { echo "FATAL: manifest unknown" >&2; exit 1; }
-         cat "${S}/image_raw" ;;
+         cat "${S}/image_raw"; [[ -f "${S}/trailing_newline" ]] && printf '\n'; true ;;
     esac ;;
   copy) cat "${S}/copy_raw" 2>/dev/null > "${S}/image_raw" || printf 'upstream-index' > "${S}/image_raw" ;;
 esac
@@ -322,7 +315,7 @@ run_setup --project "${PROJECT}" --with-vertex || fail "repeat --with-vertex fai
 expect_out "repeat --with-vertex is a no-op" "No changes"
 if jq -e '.spec.template.spec.containers[0].image | test("@sha256:")' "${STATE}/svc.json" >/dev/null; then
   pass "an image pinned by digest after services update is not drift"; else fail "stub did not pin the image"; fi
-expect_no_mutations "an orphaned config volume is not drift" "${before}"
+expect_no_mutations "a re-run after services update mutates nothing" "${before}"
 
 # --- 4. no Vertex flag never removes the Vertex tier ---------------------------
 before=$(mutations | wc -l | tr -d ' ')
@@ -370,6 +363,21 @@ expect_out "after the traffic fix a re-run is a no-op" "No changes"
 echo "roles/aiplatform.user ${SA} conditional" >> "${STATE}/project_policy"
 run_setup --project "${PROJECT}" --without-vertex || fail "conditional grant run failed"
 expect_out "a conditional grant does not count as the Vertex grant" "No changes"
+
+# A secret version created later in the same second as the serving revision.
+echo 2027-01-01T00:00:03.100Z > "${STATE}/revision_time"
+echo 2027-01-01T00:00:03.900Z > "${STATE}/secrets/${CFG_SECRET}.v4.time"
+run_setup --project "${PROJECT}" --without-vertex || fail "same-second run failed"
+expect_out "a same-second newer secret version is rolled out" "rolled a new revision of Cloud Run service fullsend-e2e-gateway for the latest secret versions"
+
+# An unparseable timestamp stops the run instead of skipping the rollout.
+echo 2099-01-01T00:00:00Z > "${STATE}/revision_time"
+echo not-a-time > "${STATE}/secrets/${CFG_SECRET}.v4.time"
+before=$(mutations | wc -l | tr -d ' ')
+if run_setup --project "${PROJECT}" --without-vertex; then fail "unparseable timestamp accepted"; else
+  expect_out "an unparseable timestamp fails" "could not compare timestamps"; fi
+expect_no_mutations "an unparseable timestamp mutates nothing" "${before}"
+echo 2026-12-31T00:00:00Z > "${STATE}/secrets/${CFG_SECRET}.v4.time"
 
 # --- 6. --delete removes exactly the named resources ---------------------------
 touch "${STATE}/svc_elsewhere"
@@ -432,6 +440,10 @@ expect_out "adopt --dry-run reports no changes" "No changes: everything was alre
 run_setup --project "${PROJECT}" --with-vertex || fail "adopt run failed"
 expect_out "adopt run reports no changes" "No changes: everything was already in place"
 expect_no_mutations "adopt run mutates nothing" 0
+touch "${STATE}/trailing_newline"
+run_setup --project "${PROJECT}" --with-vertex || fail "trailing-newline manifest run failed"
+expect_out "a manifest ending in a newline still matches upstream" "matches upstream"
+rm "${STATE}/trailing_newline"
 if run_setup --project "${PROJECT}"; then fail "adopt without a Vertex flag accepted"; else
   expect_out "adopt without a Vertex flag refuses" "serves Vertex models"; fi
 # The Vertex guard fails closed when the config cannot be read.

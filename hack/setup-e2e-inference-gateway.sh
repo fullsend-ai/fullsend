@@ -464,9 +464,10 @@ gcloud auth print-access-token \
 # dest_digest prints the digest of the copy in Artifact Registry, or nothing
 # when it does not exist yet. Any other error stops the script.
 dest_digest() {
-  local raw
-  if raw=$(skopeo inspect --raw --authfile "${TMP}/auth.json" "docker://${DEST_IMAGE}" 2>"${TMP}/skopeo.err"); then
-    printf 'sha256:%s\n' "$(printf '%s' "${raw}" | sha256)"
+  # Hash the file, not a variable: command substitution drops trailing newlines.
+  if skopeo inspect --raw --authfile "${TMP}/auth.json" "docker://${DEST_IMAGE}" \
+      >"${TMP}/dest.manifest" 2>"${TMP}/skopeo.err"; then
+    printf 'sha256:%s\n' "$(sha256 < "${TMP}/dest.manifest")"
   elif ! grep -qiE 'manifest unknown|name unknown|not found' "${TMP}/skopeo.err"; then
     die "could not read ${DEST_IMAGE}: $(cat "${TMP}/skopeo.err")"
   fi
@@ -634,10 +635,16 @@ ready_of() {
   jq -r '[.status.conditions[]? | select(.type == "Ready") | .status][0] // "Unknown"'
 }
 
-# epoch_of converts an RFC 3339 timestamp, with or without fractional
-# seconds, to whole epoch seconds.
-epoch_of() {
-  jq -rn --arg t "$1" '$t | sub("\\.[0-9]+"; "") | fromdateiso8601'
+# created_after reports whether RFC 3339 timestamp $1 is later than $2, to the
+# nanosecond. It exits on a timestamp it cannot parse.
+created_after() {
+  local result
+  result=$(jq -rn --arg a "$1" --arg b "$2" '
+    def norm: (capture("^(?<s>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.(?<f>[0-9]+))?Z$")
+        // error("unparseable timestamp"))
+      | .s + "." + (((.f // "") + "000000000")[0:9]);
+    ($a | norm) > ($b | norm)') || die "could not compare timestamps '$1' and '$2'."
+  [[ "${result}" == "true" ]]
 }
 
 # secrets_newer_than_revision reports whether either secret's latest version
@@ -646,18 +653,21 @@ epoch_of() {
 # only sees it if its file watch fires on the secret volume, which is not
 # verified. Rolling a revision restarts the gateway on the new config for
 # certain. Comparing times, not what this run changed, also finishes a rollout
-# that an earlier run started but did not complete.
+# that an earlier run started but did not complete. Every lookup exits on
+# failure, because this runs as an if condition, where set -e does not apply.
 secrets_newer_than_revision() {
   local revision="$1" rev_time secret ver_time
   [[ -n "${revision}" ]] || return 0
   describe run revisions describe "${revision}" --region="${REGION}" \
     || die "revision ${revision} of ${NAME} not found."
-  rev_time=$(epoch_of "$(jq -r '.metadata.creationTimestamp' <<<"${DESCRIBED}")")
+  rev_time=$(jq -r '.metadata.creationTimestamp // empty' <<<"${DESCRIBED}")
+  [[ -n "${rev_time}" ]] || die "revision ${revision} has no creation time."
   for secret in "${CONFIG_SECRET}" "${KEY_SECRET}"; do
     describe secrets versions describe latest --secret="${secret}" \
       || die "secret ${secret} has no versions."
-    ver_time=$(epoch_of "$(jq -r '.createTime' <<<"${DESCRIBED}")")
-    if (( ver_time > rev_time )); then
+    ver_time=$(jq -r '.createTime // empty' <<<"${DESCRIBED}")
+    [[ -n "${ver_time}" ]] || die "the latest version of secret ${secret} has no create time."
+    if created_after "${ver_time}" "${rev_time}"; then
       return 0
     fi
   done
