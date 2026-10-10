@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -313,7 +314,9 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 			})
 			return
 		}
-		cfg.Tokens = wrapped
+		// A replacement Poller must hold protected-ref pipeline access before it
+		// is published, whatever the configured verifier checks.
+		cfg.Tokens = wrapped.withPollerPipelineAccess(cfg.Client)
 		excludedOwners = frozen
 	} else {
 		// A supplied credential whose owner was never recorded cannot be
@@ -910,6 +913,12 @@ func loadRotationState(ctx context.Context, client forge.Client, owner, repo str
 	var envelope rotationStateEnvelope
 	if err := dec.Decode(&envelope); err != nil {
 		return out, nil, fmt.Errorf("decode GitLab role rotation state: %w", err)
+	}
+	// A valid JSON prefix followed by anything else is a damaged document, not
+	// a smaller one: reading only the prefix could drop recorded exclusions.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return out, nil, errors.New("decode GitLab role rotation state: unexpected data after the JSON document")
 	}
 	if envelope.Version < 0 || envelope.Version > gitLabRoleRotationStateVersion {
 		return out, nil, fmt.Errorf("unsupported GitLab role rotation state version %d; use a compatible CLI", envelope.Version)

@@ -226,21 +226,33 @@ func TestRotationPersistsDroppedExcludedOutgoingWithoutRevoking(t *testing.T) {
 }
 
 // A supplied credential with no recorded owner cannot be attributed by a
-// generic token client, so cleanup refuses before revoking anything and keeps
-// the rotation document.
-func TestCleanupRefusesUnresolvedSuppliedOwnerForGenericClient(t *testing.T) {
+// generic token client with no ownership capability (the live CLI adapter).
+// Cleanup must not block uninstall and must not guess: the supplied role's
+// token and the rotation document stay untouched, while other roles' tokens are
+// still revoked.
+func TestCleanupPreservesUnresolvedSuppliedOwnerForGenericClient(t *testing.T) {
 	ctx := context.Background()
 	fc := forge.NewFakeClient()
+	// The shape provided-token provisioning records: no incoming token, idle
+	// phase, distributed, and no supplied owner ID.
 	require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
-		"coder": {Supplied: true},
+		"coder": {Phase: rotationPhaseIdle, DistributedAt: time.Now().Format(time.RFC3339)},
 	}}))
+	before := fc.VariableValues["g/p/"+forge.VarGitLabRoleRotation]
 	tokens := &fakeTokens{}
 	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.CoderTokenName, Active: true, UserID: 600})
+	tokens.seed(ProjectAccessToken{ID: 2, Name: gitlabroles.AnalystTokenName, Active: true, UserID: 601})
 
-	_, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{Owner: "g", Repo: "p", Client: fc, Tokens: tokens})
-	require.ErrorIs(t, err, ErrSuppliedCredentialUnresolved)
-	assert.Empty(t, tokens.revoked)
-	assert.True(t, fc.VariablesExist["g/p/"+forge.VarGitLabRoleRotation], "rotation state is kept for recovery")
+	plan, err := PlanGitLabRoleCleanup(ctx, fc, "g", "p", tokens)
+	require.NoError(t, err, "the preflight must not block uninstall")
+	require.True(t, plan.preserved)
+
+	res, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{Owner: "g", Repo: "p", Client: fc, Tokens: tokens})
+	require.NoError(t, err)
+	assert.Equal(t, []int{2}, tokens.revoked, "only the unambiguous role's token is revoked")
+	assert.Equal(t, 1, res.TokensRevoked)
+	assert.True(t, fc.VariablesExist["g/p/"+forge.VarGitLabRoleRotation], "rotation state is kept")
+	assert.Equal(t, before, fc.VariableValues["g/p/"+forge.VarGitLabRoleRotation], "provenance is unchanged")
 }
 
 // The creation boundary freezes durable exclusions itself: a direct call that
@@ -296,8 +308,8 @@ func TestRotationRefusesUnresolvedSuppliedOwnerForGenericClient(t *testing.T) {
 
 // Cleanup with a nil or typed-nil token client must not retire an unresolved
 // supplied enrollment: the rotation document is kept, so a later generic-client
-// cleanup is still refused instead of revoking the supplied token.
-func TestCleanupRefusesUnresolvedSuppliedOwnerForNilClients(t *testing.T) {
+// cleanup still leaves the supplied token in place instead of revoking it.
+func TestCleanupPreservesUnresolvedSuppliedOwnerForNilClients(t *testing.T) {
 	var typedNil *ServiceAccountTokenClient
 	for name, nilClient := range map[string]ProjectAccessTokenClient{"nil": nil, "typed-nil": typedNil} {
 		t.Run(name, func(t *testing.T) {
@@ -308,14 +320,33 @@ func TestCleanupRefusesUnresolvedSuppliedOwnerForNilClients(t *testing.T) {
 			}}))
 
 			_, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{Owner: "g", Repo: "p", Client: fc, Tokens: nilClient})
-			require.ErrorIs(t, err, ErrSuppliedCredentialUnresolved)
+			require.NoError(t, err)
 			assert.True(t, fc.VariablesExist["g/p/"+forge.VarGitLabRoleRotation], "rotation state is kept for recovery")
 
 			tokens := &fakeTokens{}
 			tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.CoderTokenName, Active: true, UserID: 600})
 			_, err = CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{Owner: "g", Repo: "p", Client: fc, Tokens: tokens})
-			require.ErrorIs(t, err, ErrSuppliedCredentialUnresolved)
-			assert.Empty(t, tokens.revoked)
+			require.NoError(t, err)
+			assert.Empty(t, tokens.revoked, "the supplied role's token is left in place")
+			assert.True(t, fc.VariablesExist["g/p/"+forge.VarGitLabRoleRotation], "rotation state is still kept")
+		})
+	}
+}
+
+// A rotation document with data after the JSON value, or a nonpositive
+// persisted exclusion ID, is malformed: the cleanup preflight fails closed
+// instead of reading a prefix or filtering the ID out.
+func TestCleanupPreflightRejectsMalformedRotationState(t *testing.T) {
+	ctx := context.Background()
+	for name, raw := range map[string]string{
+		"trailing data":      `{"roles":{"coder":{"excluded_user_ids":[501]}}} {"roles":{}}`,
+		"negative exclusion": `{"roles":{"coder":{"excluded_user_ids":[-5]}}}`,
+		"zero exclusion":     `{"roles":{"coder":{"excluded_user_ids":[0]}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			require.NoError(t, fc.UpdateCIVariable(ctx, "g", "p", forge.VarGitLabRoleRotation, raw, true))
+			require.Error(t, PreflightGitLabRoleCleanupOwnership(ctx, fc, "g", "p", &fakeTokens{}))
 		})
 	}
 }

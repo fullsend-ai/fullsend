@@ -18,6 +18,9 @@ func TestInstallConvergesLegacyServiceAccounts(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
 	fc := seededRoleClient(t, gitlabroles.RolePoller, gitlabroles.RoleAnalyst, gitlabroles.RoleCoder)
+	// A replacement Poller must gain protected-ref access before publication.
+	seedRepo(fc, "group", "project", "main")
+	fc.ProtectedBranchRules["group/project/main"] = maintainerOnlyRule("main")
 	legacy := &fakeTokens{}
 	sa := newFakeSAAPI()
 	state := rotationStateFile{Roles: map[string]rotationRoleState{}}
@@ -1187,6 +1190,33 @@ func TestPollerMigrationPreservesSecretWhenProtectedGrantFails(t *testing.T) {
 	exists, err := fc.RepoSecretExists(ctx, "group", "project", forge.SecretGitLabPollerToken)
 	require.NoError(t, err)
 	assert.True(t, exists)
+	assert.Empty(t, result.Created)
+}
+
+// An authentication-only VerifyToken must not let convergence publish a
+// replacement Poller that lacks protected-ref pipeline access: the access check
+// is composed into the verifier, so the invalid replacement is revoked and the
+// working secret is preserved.
+func TestPollerConvergenceChecksPipelineAccessWithAuthenticationOnlyVerifier(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	fc := seededRoleClient(t, gitlabroles.RolePoller)
+	seedRepo(fc, "group", "project", "main")
+	rule := maintainerOnlyRule("main")
+	rule.MergeAccessLevels = append(rule.MergeAccessLevels, forge.ProtectedBranchAccess{UserID: 70})
+	fc.ProtectedBranchRules["group/project/main"] = rule
+	fc.Errors["GrantProtectedBranchMergeUser"] = errors.New("grant denied")
+	require.NoError(t, writeRotationState(ctx, fc, "group", "project", rotationStateFile{Roles: map[string]rotationRoleState{"poller": {IncomingID: 1, CreatedTokenIDs: []int{1}, Phase: rotationPhaseIdle, DistributedAt: now.Add(-time.Hour).Format(time.RFC3339)}}}))
+	legacy := &fakeTokens{}
+	legacy.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.PollerTokenName, Active: true, UserID: 70, ExpiresAt: GitLabPATExpiresAt(now)})
+	sa := newFakeSAAPI()
+	c := ServiceAccountTokenClient{SA: sa, Legacy: legacy, ManagedLegacyTokenIDs: recordedLegacyTokens(legacy), VerifyToken: acceptReplacementToken}
+	result := &RoleProvisionResult{}
+	rec, _ := gitlabroles.BuiltinRegistry().Lookup(gitlabroles.RolePoller)
+	convergeInstalledServiceAccount(ctx, RoleProvisionConfig{Owner: "group", Repo: "project", Client: fc, Tokens: c}, rec, now, true, result)
+	require.NotEmpty(t, result.Failed)
+	assert.NotEmpty(t, sa.revoked, "the unverified replacement credential is revoked")
+	assert.Empty(t, legacy.revoked)
 	assert.Empty(t, result.Created)
 }
 

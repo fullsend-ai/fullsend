@@ -312,6 +312,31 @@ func convergeInstalledServiceAccount(ctx context.Context, cfg RoleProvisionConfi
 	result.Diagnostics = append(result.Diagnostics, rotated.Diagnostics...)
 }
 
+// withPollerPipelineAccess returns a client whose VerifyToken also establishes
+// and rereads the protected-default-branch access of a replacement Poller
+// identity (VerifyGitLabReplacementPipelineAccess) before it is published.
+// VerifyToken's own contract is credential authentication, so replacement paths
+// compose the access check here instead of trusting every verifier to include
+// it. The check is idempotent when the verifier already performs it.
+func (c ServiceAccountTokenClient) withPollerPipelineAccess(client forge.Client) ServiceAccountTokenClient {
+	if client == nil {
+		return c
+	}
+	authenticate := c.VerifyToken
+	c.VerifyToken = func(ctx context.Context, owner, repo string, tok *ProjectAccessToken) error {
+		if authenticate != nil {
+			if err := authenticate(ctx, owner, repo, tok); err != nil {
+				return err
+			}
+		}
+		if tok == nil || tok.Name != gitlabroles.PollerTokenName {
+			return nil
+		}
+		return VerifyGitLabReplacementPipelineAccess(ctx, client, owner, repo, tok.UserID)
+	}
+	return c
+}
+
 // withProjectExclusions returns a client whose supplied-account exclusion set
 // is frozen to the resolved supplied owners joined with every exclusion already
 // recorded in rotation state, plus that set. Exclusions are project-wide, so

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -40,6 +41,13 @@ type GitLabRoleCleanupConfig struct {
 type GitLabRoleCleanupPreflight struct {
 	tokens   ProjectAccessTokenClient
 	excluded []int
+	// preserved is set when a supplied credential's owner was never recorded and
+	// the token client cannot resolve it. Cleanup then leaves the project access
+	// tokens named in preservedTokens untouched and keeps the rotation document,
+	// so the supplied credentials and their provenance survive for a later,
+	// ownership-aware cleanup instead of blocking uninstall.
+	preserved       bool
+	preservedTokens []string
 }
 
 // GitLabRoleCleanupResult is the non-secret outcome of identity cleanup.
@@ -115,6 +123,9 @@ func CleanupGitLabRoleIdentityLocked(ctx context.Context, cfg GitLabRoleCleanupC
 		}
 	}
 	tokens, excluded := pre.tokens, pre.excluded
+	if pre.preserved {
+		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("Supplied role credential ownership cannot be resolved by this client; leaving the supplied project access tokens and %s in place", forge.VarGitLabRoleRotation))
+	}
 	// The rotation document records who owns an administrator-supplied Poller
 	// credential. Deleting it before the tokens are revoked would let a retry
 	// after a failed revocation lose that provenance and treat the supplied
@@ -142,7 +153,7 @@ func CleanupGitLabRoleIdentityLocked(ctx context.Context, cfg GitLabRoleCleanupC
 		deleteName(name)
 	}
 
-	revoked, diag, err := revokeGitLabIdentityTokensExcluding(ctx, tokens, cfg.Owner, cfg.Repo, excluded)
+	revoked, diag, err := revokeGitLabIdentityTokensSkipping(ctx, tokens, cfg.Owner, cfg.Repo, excluded, pre.preservedTokens)
 	result.TokensRevoked = revoked
 	if diag != "" {
 		result.Diagnostics = append(result.Diagnostics, diag)
@@ -164,7 +175,7 @@ func CleanupGitLabRoleIdentityLocked(ctx context.Context, cfg GitLabRoleCleanupC
 	// The rotation document holds the exclusions that protect administrator-
 	// supplied accounts, so it is kept whenever any cleanup step failed: a retry
 	// then still knows which accounts are not fullsend's to demote or revoke.
-	if len(errs) == 0 && hasRotation {
+	if len(errs) == 0 && hasRotation && !pre.preserved {
 		if err := retireRotationState(ctx, cfg, excluded, &result); err != nil {
 			errs = append(errs, err)
 		}
@@ -189,11 +200,7 @@ func PreflightGitLabRoleCleanupOwnership(ctx context.Context, client forge.Clien
 // GitLabRoleCleanupConfig.Preflight makes the later destructive steps reuse
 // it rather than resolving supplied owners again.
 func PlanGitLabRoleCleanup(ctx context.Context, client forge.Client, owner, repo string, tokens ProjectAccessTokenClient) (*GitLabRoleCleanupPreflight, error) {
-	frozenTokens, excluded, err := preflightGitLabRoleCleanup(ctx, client, owner, repo, tokens)
-	if err != nil {
-		return nil, err
-	}
-	return &GitLabRoleCleanupPreflight{tokens: frozenTokens, excluded: excluded}, nil
+	return preflightGitLabRoleCleanup(ctx, client, owner, repo, tokens)
 }
 
 // preflightGitLabRoleCleanup performs PreflightGitLabRoleCleanupOwnership and
@@ -204,14 +211,15 @@ func PlanGitLabRoleCleanup(ctx context.Context, client forge.Client, owner, repo
 // touch an administrator-owned account's credentials even when no
 // supplied-account callback is configured. Revocation also filters on the
 // returned set for any other token client that reports token owners.
-func preflightGitLabRoleCleanup(ctx context.Context, client forge.Client, owner, repo string, tokens ProjectAccessTokenClient) (ProjectAccessTokenClient, []int, error) {
+func preflightGitLabRoleCleanup(ctx context.Context, client forge.Client, owner, repo string, tokens ProjectAccessTokenClient) (*GitLabRoleCleanupPreflight, error) {
+	plan := &GitLabRoleCleanupPreflight{}
 	// Ownership must be readable before any variable, secret, or credential is
 	// removed, whether or not the token client can delete accounts itself. A
 	// malformed managed account ID fails closed here rather than reading as
 	// "no managed account".
 	state, readErr := loadManagedAccountOwnership(ctx, client, owner, repo)
 	if readErr != nil {
-		return nil, nil, readErr
+		return nil, readErr
 	}
 	// A non-nil pointer satisfies the same interfaces as the value form;
 	// normalize it so it is wrapped like the value form.
@@ -229,7 +237,7 @@ func preflightGitLabRoleCleanup(ctx context.Context, client forge.Client, owner,
 		wrapped, frozen, exclErr := sa.withRecordedOwnership(state).withProjectExclusions(ctx, owner, repo, state)
 		if exclErr != nil {
 			// The error is already redacted by suppliedOwnerIDs.
-			return nil, nil, fmt.Errorf("resolving supplied-account exclusions before cleanup: %w", exclErr)
+			return nil, fmt.Errorf("resolving supplied-account exclusions before cleanup: %w", exclErr)
 		}
 		tokens = wrapped
 		for _, id := range frozen {
@@ -241,14 +249,24 @@ func preflightGitLabRoleCleanup(ctx context.Context, client forge.Client, owner,
 		// would revoke same-named administrator-supplied tokens and retire their
 		// provenance, and a nil client would retire that provenance without
 		// revoking anything, so a later generic cleanup could revoke the supplied
-		// token. Refuse before anything is removed and keep the rotation document
-		// for recovery.
-		ids, resolveErr := resolveSuppliedOwnersViaCapability(ctx, tokens, owner, repo)
-		if resolveErr != nil {
-			return nil, nil, fmt.Errorf("resolving supplied-account exclusions before cleanup: %w", resolveErr)
-		}
-		for _, id := range ids {
-			excluded = appendExcludedID(excluded, id)
+		// token.
+		if _, ok := tokens.(suppliedOwnerResolver); !ok {
+			// No resolution capability at all (the live CLI token adapter, or no
+			// client): refuse to guess, but do not block uninstall. Leave the
+			// supplied roles' tokens and the rotation document untouched so a
+			// later ownership-aware cleanup can still attribute them.
+			plan.preserved = true
+			plan.preservedTokens = unresolvedSuppliedTokenNames(state)
+		} else {
+			// A present capability that fails or attributes nothing refuses before
+			// anything is removed and keeps the rotation document for recovery.
+			ids, resolveErr := resolveSuppliedOwnersViaCapability(ctx, tokens, owner, repo)
+			if resolveErr != nil {
+				return nil, fmt.Errorf("resolving supplied-account exclusions before cleanup: %w", resolveErr)
+			}
+			for _, id := range ids {
+				excluded = appendExcludedID(excluded, id)
+			}
 		}
 	}
 	if _, ok := tokens.(GitLabManagedAccountCleaner); !ok {
@@ -263,11 +281,12 @@ func preflightGitLabRoleCleanup(ctx context.Context, client forge.Client, owner,
 			delete(owned, id)
 		}
 		if len(owned) > 0 {
-			return nil, nil, fmt.Errorf("managed-account cleanup capability unavailable; account cleanup skipped and ownership retained for retry")
+			return nil, fmt.Errorf("managed-account cleanup capability unavailable; account cleanup skipped and ownership retained for retry")
 		}
 	}
 	sort.Ints(excluded)
-	return tokens, excluded, nil
+	plan.tokens, plan.excluded = tokens, excluded
+	return plan, nil
 }
 
 // unresolvedSuppliedOwner reports whether any role records an administrator-
@@ -279,6 +298,36 @@ func unresolvedSuppliedOwner(state rotationStateFile) bool {
 		}
 	}
 	return false
+}
+
+// suppliedOwnerResolver is the optional capability of a generic token client
+// to attribute administrator-supplied credentials to their owners.
+type suppliedOwnerResolver interface {
+	SuppliedOwnerIDs(ctx context.Context, owner, repo string) ([]int, error)
+}
+
+// unresolvedSuppliedTokenNames returns the project access token names of the
+// roles that record a supplied credential without an owner ID: the built-in
+// token name for the three built-in roles and the custom-role name otherwise.
+func unresolvedSuppliedTokenNames(state rotationStateFile) []string {
+	var names []string
+	for role, rs := range state.Roles {
+		if !provenanceOf(rs).Supplied || rs.SuppliedUserID > 0 {
+			continue
+		}
+		switch gitlabroles.Role(role) {
+		case gitlabroles.RolePoller:
+			names = append(names, gitlabroles.PollerTokenName, gitlabroles.PollerBootstrapTokenName)
+		case gitlabroles.RoleAnalyst:
+			names = append(names, gitlabroles.AnalystTokenName)
+		case gitlabroles.RoleCoder:
+			names = append(names, gitlabroles.CoderTokenName)
+		default:
+			names = append(names, gitlabroles.CustomTokenName(gitlabroles.Role(role)))
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // positiveIDs returns a copy of ids without nonpositive entries.
@@ -297,9 +346,7 @@ func positiveIDs(ids []int) []int {
 // An absent capability, a resolution error, and an empty or invalid-ID-only
 // result all fail closed with an error that attributes nothing.
 func resolveSuppliedOwnersViaCapability(ctx context.Context, tokens ProjectAccessTokenClient, owner, repo string) ([]int, error) {
-	resolver, ok := tokens.(interface {
-		SuppliedOwnerIDs(ctx context.Context, owner, repo string) ([]int, error)
-	})
+	resolver, ok := tokens.(suppliedOwnerResolver)
 	if !ok {
 		return nil, ErrSuppliedCredentialUnresolved
 	}
@@ -436,6 +483,13 @@ func revokeGitLabIdentityTokens(ctx context.Context, tokens ProjectAccessTokenCl
 // exist, a token that does not report an owner cannot be proven not to belong to
 // an excluded account, so it is left in place and reported as an error.
 func revokeGitLabIdentityTokensExcluding(ctx context.Context, tokens ProjectAccessTokenClient, owner, repo string, excluded []int) (int, string, error) {
+	return revokeGitLabIdentityTokensSkipping(ctx, tokens, owner, repo, excluded, nil)
+}
+
+// revokeGitLabIdentityTokensSkipping is revokeGitLabIdentityTokensExcluding that
+// also leaves every token whose name is in preservedNames untouched. Cleanup
+// uses it for supplied credentials whose owner cannot be resolved.
+func revokeGitLabIdentityTokensSkipping(ctx context.Context, tokens ProjectAccessTokenClient, owner, repo string, excluded []int, preservedNames []string) (int, string, error) {
 	if tokens == nil {
 		return 0, "", nil
 	}
@@ -464,6 +518,9 @@ func revokeGitLabIdentityTokensExcluding(ctx context.Context, tokens ProjectAcce
 			continue
 		}
 		if !gitlabroles.IsRoleProjectTokenName(tok.Name) && tok.Name != gitlabroles.PollerBootstrapTokenName {
+			continue
+		}
+		if slices.Contains(preservedNames, tok.Name) {
 			continue
 		}
 		if tok.UserID > 0 && containsInt(excluded, tok.UserID) {
