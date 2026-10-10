@@ -469,8 +469,16 @@ maintainer wires it in by hand; this script changes no workflow files:
    `E2E_INFERENCE_GATEWAY_AUDIENCE` defaults to `fullsend-e2e-gateway` and
    needs setting only if it changes.
 2. Pass both secrets in the env of the `behaviour` job's "Run behaviour
-   tests" step in `e2e.yml`, next to the `E2E_GCP_*` secrets. On fork pull
-   requests the secrets are empty, and the gateway scenarios skip.
+   tests" step in `e2e.yml`, next to the `E2E_GCP_*` secrets. The gateway
+   scenarios skip when these variables are unset. Pull requests that the
+   `gate` job does not authorize never run the `behaviour` job, so they
+   receive neither secret. Authorized pull requests, including forks, do
+   receive them, and the `behaviour` job runs the pull request's head code
+   with those secrets in its environment. Authorizing a pull request
+   therefore lets its head code read both values, as it can already read
+   the `E2E_GCP_*` secrets. The echo-only key scope limits what the key can
+   call, not whether it can be read. To keep fork pull requests away from
+   these secrets, add an explicit condition in the base workflow.
 
 CI declares only the gateway capabilities that reach no real model. They
 are part of the `BEHAVIOUR_CAPABILITIES` default in the `Makefile`, which
