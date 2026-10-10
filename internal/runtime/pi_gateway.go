@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"sort"
 	"strings"
@@ -175,10 +176,12 @@ func ValidatePiGatewayModelsFile(data []byte) (map[string]any, error) {
 
 // validatePiGatewayModelValue checks the JSON type of a per-model key, so
 // a value cannot smuggle nested data (a credential-shaped object, say)
-// under a key the allowlist admits. The object-valued keys (compat, cost,
-// thinkingLevelMap) may hold only scalar values; the extension reads them
-// as flat maps. compat and thinkingLevelMap may also be null, which the
-// extension (v0.1.1 src/config.ts) reads as "drop pi's catalog copy".
+// under a key the allowlist admits. The object-valued keys follow the
+// extension's own rules (v0.1.1 src/config.ts): compat via
+// config.ValidateGatewayCompat, cost by its four number fields,
+// thinkingLevelMap by thinking level to a string or null. compat and
+// thinkingLevelMap may also be null, which the extension reads as "drop
+// pi's catalog copy".
 func validatePiGatewayModelValue(key string, v any) error {
 	switch key {
 	case "api":
@@ -188,8 +191,12 @@ func validatePiGatewayModelValue(key string, v any) error {
 			return errors.New("must be a string")
 		}
 	case "contextWindow", "maxTokens":
-		if _, ok := v.(json.Number); !ok {
+		n, ok := v.(json.Number)
+		if !ok {
 			return errors.New("must be a number")
+		}
+		if i, err := n.Int64(); err != nil || i < 0 {
+			return errors.New("must be a non-negative whole number")
 		}
 	case "reasoning":
 		if _, ok := v.(bool); !ok {
@@ -205,23 +212,63 @@ func validatePiGatewayModelValue(key string, v any) error {
 				return errors.New("must be an array of strings")
 			}
 		}
-	case "compat", "cost", "thinkingLevelMap":
-		if v == nil && key != "cost" {
+	case "compat":
+		if v == nil {
 			return nil
 		}
 		obj, ok := v.(map[string]any)
 		if !ok {
+			return errors.New("must be an object or null")
+		}
+		if err := config.ValidateGatewayCompat(obj); err != nil {
+			return fmt.Errorf("is invalid: %w", err)
+		}
+	case "cost":
+		obj, ok := v.(map[string]any)
+		if !ok {
 			return errors.New("must be an object")
 		}
-		for k, item := range obj {
-			switch item.(type) {
-			case map[string]any, []any:
-				return fmt.Errorf("must hold only scalar values (%s is not)", k)
+		for _, k := range piGatewaySortedKeys(obj) {
+			if !slices.Contains(piGatewayCostKeys, k) {
+				return fmt.Errorf("has unsupported key %q (allowed: %s)", k, strings.Join(piGatewayCostKeys, ", "))
+			}
+			n, ok := obj[k].(json.Number)
+			if !ok {
+				return fmt.Errorf("%s must be a number", k)
+			}
+			if f, err := n.Float64(); err != nil || f < 0 || math.IsInf(f, 0) || math.IsNaN(f) {
+				return fmt.Errorf("%s must be a finite, non-negative number", k)
+			}
+		}
+	case "thinkingLevelMap":
+		if v == nil {
+			return nil
+		}
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return errors.New("must be an object or null")
+		}
+		for _, k := range piGatewaySortedKeys(obj) {
+			if !slices.Contains(piGatewayThinkingLevels, k) {
+				return fmt.Errorf("has unsupported level %q (allowed: %s)", k, strings.Join(piGatewayThinkingLevels, ", "))
+			}
+			if obj[k] == nil {
+				continue
+			}
+			if _, ok := obj[k].(string); !ok {
+				return fmt.Errorf("%s must be a string or null", k)
 			}
 		}
 	}
 	return nil
 }
+
+// piGatewayCostKeys and piGatewayThinkingLevels are the keys the extension
+// reads in a model's cost and thinkingLevelMap (v0.1.1 src/config.ts).
+var (
+	piGatewayCostKeys       = []string{"input", "output", "cacheRead", "cacheWrite"}
+	piGatewayThinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
 
 // rejectDuplicateJSONKeys walks data's tokens and reports the first object
 // that repeats a member name, at any depth.

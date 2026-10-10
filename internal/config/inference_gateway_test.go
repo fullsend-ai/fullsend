@@ -86,7 +86,9 @@ func TestInferenceGateway_ValidateErrors(t *testing.T) {
 		{"bom id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"a\ufeffb": {API: GatewayAPIOpenAIResponses}}}, "whitespace"},
 		{"control id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"a\x7fb": {API: GatewayAPIOpenAIResponses}}}, "control"},
 		{"long id", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{strings.Repeat("m", MaxGatewayModelIDLength+1): {API: GatewayAPIOpenAIResponses}}}, "at most 256"},
-		{"nested compat", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, Compat: map[string]any{"headers": map[string]any{"a": "b"}}}}}, "compat must hold only scalar values"},
+		{"nested compat", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, Compat: map[string]any{"flags": map[string]any{"a": "b"}}}}}, "must be a boolean, string or number"},
+		{"credential compat key", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, Compat: map[string]any{"apiKey": "sk"}}}}, "looks like a credential"},
+		{"bad compat key", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, Compat: map[string]any{"x-y": true}}}}, "must match"},
 		{"negative context", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, ContextWindow: -1}}}, "contextWindow"},
 		{"negative max", InferenceGatewayConfig{Models: map[string]InferenceGatewayModel{"m": {API: GatewayAPIOpenAIResponses, MaxTokens: -1}}}, "maxTokens"},
 	}
@@ -253,4 +255,48 @@ func TestValidateGatewayURL_LoopbackHTTP(t *testing.T) {
 	for _, u := range []string{"http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"} {
 		require.NoError(t, ValidateGatewayURL(u), u)
 	}
+}
+
+func TestInferenceGateway_CompatFromYAML(t *testing.T) {
+	// yaml.v3 decodes a mapping with a non-string key into
+	// map[interface{}]interface{}; it must be refused, not rendered later.
+	cfg, err := ParsePerRepoConfigWriter([]byte(`version: "1"
+inference:
+  gateway:
+    models:
+      m:
+        api: openai-responses
+        compat:
+          nested:
+            1: true
+`))
+	if err == nil {
+		err = cfg.Validate()
+	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a boolean, string or number")
+
+	cfg, err = ParsePerRepoConfigWriter([]byte(`version: "1"
+inference:
+  gateway:
+    models:
+      m:
+        api: anthropic-messages
+        compat:
+          supportsMidConvoEffort: false
+          sessionAffinityFormat: openai
+          maxRetries: 3
+`))
+	require.NoError(t, err)
+	require.NoError(t, cfg.Validate())
+}
+
+func TestValidateGatewayCompat_KnownFlags(t *testing.T) {
+	for _, flag := range gatewayKnownCompatFlags {
+		require.NoError(t, ValidateGatewayCompat(map[string]any{flag: true}), flag)
+	}
+	for _, flag := range []string{"maxTokensField", "thinkingTokenBudgetField", "supportsThinkingTokenBudget", "supportsMaxOutputTokens", "sendSessionAffinityHeaders"} {
+		require.Contains(t, gatewayKnownCompatFlags, flag)
+	}
+	require.Error(t, ValidateGatewayCompat(map[string]any{"extraHeaders": "x"}))
 }

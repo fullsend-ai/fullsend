@@ -1,11 +1,14 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"net"
 	"net/url"
 	"path"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -209,6 +212,111 @@ func ValidateGatewayModelID(id string) error {
 	return nil
 }
 
+// gatewayCompatKeyRe is the extension's compat flag-name rule (v0.1.1
+// src/config.ts COMPAT_KEY_RE).
+var gatewayCompatKeyRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
+
+// gatewayKnownCompatFlags are every compat flag extension v0.1.1 knows
+// (the keys of ANTHROPIC_FIELDS, RESPONSES_FIELDS and COMPLETIONS_FIELDS in
+// src/compat.ts). They are exempt from the credential-word filter below:
+// sendSessionAffinityHeaders, maxTokensField and supportsThinkingTokenBudget
+// are feature switches, not credentials. Re-check the list when the
+// extension pin moves.
+var gatewayKnownCompatFlags = []string{
+	"allowedFallbackModels",
+	"allowEmptySignature",
+	"cacheControlFormat",
+	"chatTemplateArgs",
+	"chatTemplateKwargs",
+	"forceAdaptiveThinking",
+	"maxTokensField",
+	"openRouterRouting",
+	"requiresAssistantAfterToolResult",
+	"requiresReasoningContentOnAssistantMessages",
+	"requiresThinkingAsText",
+	"requiresToolResultName",
+	"sendSessionAffinityHeaders",
+	"sessionAffinityFormat",
+	"supportsAdditionalTools",
+	"supportsCacheControlOnTools",
+	"supportsDeveloperRole",
+	"supportsEagerToolInputStreaming",
+	"supportsExplicitPromptCacheMode",
+	"supportsFinishReason",
+	"supportsLongCacheRetention",
+	"supportsMaxOutputTokens",
+	"supportsMidConvoEffort",
+	"supportsMidConvoSystemMessages",
+	"supportsMidConvoToolAdditions",
+	"supportsMidConvoToolChanges",
+	"supportsOpenAIGrammarTools",
+	"supportsReasoningEffort",
+	"supportsStore",
+	"supportsStrictMode",
+	"supportsStrictTools",
+	"supportsTemperature",
+	"supportsThinkingTokenBudget",
+	"supportsToolSearch",
+	"supportsUsageInStreaming",
+	"thinkingFormat",
+	"thinkingTokenBudgetField",
+	"vercelGatewayRouting",
+	"vllmPriority",
+	"zaiToolStream",
+}
+
+// gatewayCredentialWords mark an unknown compat flag name as credential-
+// or header-shaped. compat holds request-feature flags, and a value under
+// such a name would be committed to the repository.
+var gatewayCredentialWords = []string{"key", "token", "secret", "password", "passwd", "auth", "credential", "cookie", "header", "bearer"}
+
+// ValidateGatewayCompat checks a model's compat map the way the extension
+// reads it (v0.1.1 src/config.ts): flag names match COMPAT_KEY_RE and each
+// value is a boolean, a string or a finite number. Anything else is
+// refused rather than ignored, and so are credential-shaped flag names.
+// Holding values to these scalar types also keeps nested data (including
+// the map[interface{}]interface{} yaml.v3 builds for a non-string-keyed
+// mapping) out of the rendered file, and makes the one-level copy in
+// cloneGatewayModels a full copy.
+func ValidateGatewayCompat(compat map[string]any) error {
+	for _, k := range slices.Sorted(maps.Keys(compat)) {
+		if !gatewayCompatKeyRe.MatchString(k) {
+			return fmt.Errorf("flag name %q must match %s", k, gatewayCompatKeyRe)
+		}
+		if !slices.Contains(gatewayKnownCompatFlags, k) {
+			lower := strings.ToLower(k)
+			for _, w := range gatewayCredentialWords {
+				if strings.Contains(lower, w) {
+					return fmt.Errorf("flag %q looks like a credential or header, which compat must not carry", k)
+				}
+			}
+		}
+		if !isGatewayCompatValue(compat[k]) {
+			return fmt.Errorf("flag %q must be a boolean, string or number", k)
+		}
+	}
+	return nil
+}
+
+func isGatewayCompatValue(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return true
+	case string:
+		return len(utf16.Encode([]rune(x))) <= 256 && !strings.ContainsFunc(x, unicode.IsControl)
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return true
+	case float32:
+		return !math.IsInf(float64(x), 0) && !math.IsNaN(float64(x))
+	case float64:
+		return !math.IsInf(x, 0) && !math.IsNaN(x)
+	case json.Number:
+		f, err := x.Float64()
+		return err == nil && !math.IsInf(f, 0) && !math.IsNaN(f)
+	}
+	return false
+}
+
 func validateGatewayModel(id string, m InferenceGatewayModel) error {
 	if err := ValidateGatewayModelID(id); err != nil {
 		return fmt.Errorf("inference.gateway.models: %w", err)
@@ -216,14 +324,8 @@ func validateGatewayModel(id string, m InferenceGatewayModel) error {
 	if !slices.Contains(ValidGatewayAPIs(), m.API) {
 		return fmt.Errorf("inference.gateway.models[%q]: invalid api %q: must be one of %s", id, m.API, strings.Join(ValidGatewayAPIs(), ", "))
 	}
-	// compat is a flat map of flags in the extension's format. Holding it
-	// to scalar values keeps nested data out of the rendered file and
-	// makes the one-level copy in cloneGatewayModels a full copy.
-	for k, v := range m.Compat {
-		switch v.(type) {
-		case map[string]any, []any:
-			return fmt.Errorf("inference.gateway.models[%q].compat must hold only scalar values (%s is not)", id, k)
-		}
+	if err := ValidateGatewayCompat(m.Compat); err != nil {
+		return fmt.Errorf("inference.gateway.models[%q].compat: %w", id, err)
 	}
 	if m.ContextWindow < 0 {
 		return fmt.Errorf("inference.gateway.models[%q]: contextWindow must not be negative", id)

@@ -89,7 +89,7 @@ inference:
     identity_provider_id: ""         # OpenAI WIF identity provider ID
     service_account_id: ""           # OpenAI WIF service account ID
   gateway:                           # Inference gateway credential route (ADR 0137)
-    url: ""                          # Gateway URL (https only)
+    url: ""                          # Gateway URL (https; plain http only for a loopback test host)
     audience: ""                     # OIDC audience the runner requests for the gateway
     models: {}                       # Inline model list: id -> {api, compat, contextWindow, maxTokens}
     models_file: ""                  # Or: repository path to a pi-inference-gateway config file
