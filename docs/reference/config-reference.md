@@ -300,14 +300,23 @@ independently through the layered config system (an overlay can override
   - `models` — optional inline model list, a map of model id to settings:
     `api` (one of `openai-responses`, `anthropic-messages`,
     `openai-completions`), and optional `compat`, `contextWindow` and
-    `maxTokens`.
+    `maxTokens`. `compat` holds pi request-feature flags: each value is a
+    boolean, string or number, a flag that pi-inference-gateway v0.1.1
+    knows must have that flag's type for the model's `api`, list-valued
+    flags such as `allowedFallbackModels` are refused, and an unknown flag
+    whose name looks like a credential or header is refused.
   - `models_file` — optional repository path, for example
     `.fullsend/inference-gateway.json`, to a file in the
     [pi-inference-gateway config format](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file).
     It must hold exactly one entry, `providers.gateway`, carrying only
     `models`, `include`, `exclude` and `defaultApi`, and every model must
     set its own `api`: pi runs offline, and the extension offers a
-    configured model only when its entry names an `api`. `include`,
+    configured model only when its entry names an `api`. Per-model values
+    follow the extension's types: `compat` as for inline models,
+    `contextWindow` and `maxTokens` positive whole numbers, `cost` only
+    `input`, `output`, `cacheRead` and `cacheWrite` as non-negative
+    numbers, and `thinkingLevelMap` thinking levels mapped to a string or
+    `null`. Duplicate JSON keys are refused. `include`,
     `exclude` and `defaultApi` only apply to models discovered from the
     gateway, so they have no effect on a pi run. A file that sets
     `baseUrl`, `baseUrlEnv`, a credential key (`apiKey*`, `tokenFile`,

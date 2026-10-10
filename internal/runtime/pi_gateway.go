@@ -155,7 +155,7 @@ func ValidatePiGatewayModelsFile(data []byte) (map[string]any, error) {
 			if !slices.Contains(piGatewayModelKeys, key) {
 				return nil, fmt.Errorf("inference.gateway models_file: unsupported key providers.gateway.models[%q].%s (allowed: %s)", id, key, strings.Join(piGatewayModelKeys, ", "))
 			}
-			if err := validatePiGatewayModelValue(key, m[key]); err != nil {
+			if err := validatePiGatewayModelValue(m, key, m[key]); err != nil {
 				return nil, fmt.Errorf("inference.gateway models_file: providers.gateway.models[%q].%s %w", id, key, err)
 			}
 		}
@@ -182,7 +182,7 @@ func ValidatePiGatewayModelsFile(data []byte) (map[string]any, error) {
 // thinkingLevelMap by thinking level to a string or null. compat and
 // thinkingLevelMap may also be null, which the extension reads as "drop
 // pi's catalog copy".
-func validatePiGatewayModelValue(key string, v any) error {
+func validatePiGatewayModelValue(model map[string]any, key string, v any) error {
 	switch key {
 	case "api":
 		return nil // checked against the API list by the caller
@@ -191,12 +191,15 @@ func validatePiGatewayModelValue(key string, v any) error {
 			return errors.New("must be a string")
 		}
 	case "contextWindow", "maxTokens":
+		// The extension keeps only a positive safe integer (positiveInt in
+		// v0.1.1 src/config.ts) and silently drops anything else.
 		n, ok := v.(json.Number)
 		if !ok {
 			return errors.New("must be a number")
 		}
-		if i, err := n.Int64(); err != nil || i < 0 {
-			return errors.New("must be a non-negative whole number")
+		f, err := n.Float64()
+		if err != nil || f < 1 || f > maxJSSafeInteger || f != math.Trunc(f) {
+			return errors.New("must be a positive whole number no larger than 2^53-1")
 		}
 	case "reasoning":
 		if _, ok := v.(bool); !ok {
@@ -220,7 +223,8 @@ func validatePiGatewayModelValue(key string, v any) error {
 		if !ok {
 			return errors.New("must be an object or null")
 		}
-		if err := config.ValidateGatewayCompat(obj); err != nil {
+		api, _ := model["api"].(string)
+		if err := config.ValidateGatewayCompat(obj, api); err != nil {
 			return fmt.Errorf("is invalid: %w", err)
 		}
 	case "cost":
@@ -262,6 +266,9 @@ func validatePiGatewayModelValue(key string, v any) error {
 	}
 	return nil
 }
+
+// maxJSSafeInteger is JavaScript's Number.MAX_SAFE_INTEGER.
+const maxJSSafeInteger = 1<<53 - 1
 
 // piGatewayCostKeys and piGatewayThinkingLevels are the keys the extension
 // reads in a model's cost and thinkingLevelMap (v0.1.1 src/config.ts).

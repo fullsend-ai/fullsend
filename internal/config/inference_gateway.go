@@ -216,74 +216,158 @@ func ValidateGatewayModelID(id string) error {
 // src/config.ts COMPAT_KEY_RE).
 var gatewayCompatKeyRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 
-// gatewayKnownCompatFlags are every compat flag extension v0.1.1 knows
-// (the keys of ANTHROPIC_FIELDS, RESPONSES_FIELDS and COMPLETIONS_FIELDS in
-// src/compat.ts). They are exempt from the credential-word filter below:
-// sendSessionAffinityHeaders, maxTokensField and supportsThinkingTokenBudget
-// are feature switches, not credentials. Re-check the list when the
-// extension pin moves.
-var gatewayKnownCompatFlags = []string{
-	"allowedFallbackModels",
-	"allowEmptySignature",
-	"cacheControlFormat",
-	"chatTemplateArgs",
-	"chatTemplateKwargs",
-	"forceAdaptiveThinking",
-	"maxTokensField",
-	"openRouterRouting",
-	"requiresAssistantAfterToolResult",
-	"requiresReasoningContentOnAssistantMessages",
-	"requiresThinkingAsText",
-	"requiresToolResultName",
-	"sendSessionAffinityHeaders",
-	"sessionAffinityFormat",
-	"supportsAdditionalTools",
-	"supportsCacheControlOnTools",
-	"supportsDeveloperRole",
-	"supportsEagerToolInputStreaming",
-	"supportsExplicitPromptCacheMode",
-	"supportsFinishReason",
-	"supportsLongCacheRetention",
-	"supportsMaxOutputTokens",
-	"supportsMidConvoEffort",
-	"supportsMidConvoSystemMessages",
-	"supportsMidConvoToolAdditions",
-	"supportsMidConvoToolChanges",
-	"supportsOpenAIGrammarTools",
-	"supportsReasoningEffort",
-	"supportsStore",
-	"supportsStrictMode",
-	"supportsStrictTools",
-	"supportsTemperature",
-	"supportsThinkingTokenBudget",
-	"supportsToolSearch",
-	"supportsUsageInStreaming",
-	"thinkingFormat",
-	"thinkingTokenBudgetField",
-	"vercelGatewayRouting",
-	"vllmPriority",
-	"zaiToolStream",
+// gatewayCompatCheck is a compat flag's value type in extension v0.1.1
+// (src/compat.ts): a boolean, a finite number, or one of a fixed set of
+// strings. A nil check marks a structured pi field (a list or record),
+// which a JSON-primitive config flag cannot express.
+type gatewayCompatCheck func(v any) bool
+
+func gatewayCompatBool(v any) bool { _, ok := v.(bool); return ok }
+
+func gatewayCompatFinite(v any) bool { return isGatewayCompatNumber(v) }
+
+func gatewayCompatOneOf(values ...string) gatewayCompatCheck {
+	return func(v any) bool {
+		s, ok := v.(string)
+		return ok && slices.Contains(values, s)
+	}
+}
+
+var (
+	gatewayOpenAISessionAffinity = gatewayCompatOneOf("openai", "openai-nosession", "openrouter")
+	gatewayThinkingFormats       = gatewayCompatOneOf("openai", "openrouter", "deepseek", "together", "baseten", "zai", "qwen", "chat-template", "qwen-chat-template", "string-thinking", "ant-ling")
+)
+
+// gatewayCompatFields are the compat flags extension v0.1.1 knows per
+// transport (ANTHROPIC_FIELDS, RESPONSES_FIELDS and COMPLETIONS_FIELDS in
+// src/compat.ts) with their value types. Re-check them when the extension
+// pin moves.
+var gatewayCompatFields = map[string]map[string]gatewayCompatCheck{
+	GatewayAPIAnthropicMessages: {
+		"supportsEagerToolInputStreaming": gatewayCompatBool,
+		"supportsLongCacheRetention":      gatewayCompatBool,
+		"sendSessionAffinityHeaders":      gatewayCompatBool,
+		"sessionAffinityFormat":           gatewayCompatOneOf("openrouter"),
+		"supportsCacheControlOnTools":     gatewayCompatBool,
+		"supportsTemperature":             gatewayCompatBool,
+		"forceAdaptiveThinking":           gatewayCompatBool,
+		"allowEmptySignature":             gatewayCompatBool,
+		"supportsStrictTools":             gatewayCompatBool,
+		"supportsMidConvoEffort":          gatewayCompatBool,
+		"supportsMidConvoSystemMessages":  gatewayCompatBool,
+		"supportsMidConvoToolChanges":     gatewayCompatBool,
+		"allowedFallbackModels":           nil,
+	},
+	GatewayAPIOpenAIResponses: {
+		"supportsDeveloperRole":           gatewayCompatBool,
+		"supportsMidConvoSystemMessages":  gatewayCompatBool,
+		"sessionAffinityFormat":           gatewayOpenAISessionAffinity,
+		"supportsLongCacheRetention":      gatewayCompatBool,
+		"supportsStrictMode":              gatewayCompatBool,
+		"supportsOpenAIGrammarTools":      gatewayCompatBool,
+		"supportsAdditionalTools":         gatewayCompatBool,
+		"supportsToolSearch":              gatewayCompatBool,
+		"supportsExplicitPromptCacheMode": gatewayCompatBool,
+		"supportsMaxOutputTokens":         gatewayCompatBool,
+	},
+	GatewayAPIOpenAICompletions: {
+		"supportsStore":                               gatewayCompatBool,
+		"supportsDeveloperRole":                       gatewayCompatBool,
+		"supportsReasoningEffort":                     gatewayCompatBool,
+		"supportsUsageInStreaming":                    gatewayCompatBool,
+		"supportsFinishReason":                        gatewayCompatBool,
+		"maxTokensField":                              gatewayCompatOneOf("max_completion_tokens", "max_tokens"),
+		"requiresToolResultName":                      gatewayCompatBool,
+		"requiresAssistantAfterToolResult":            gatewayCompatBool,
+		"requiresThinkingAsText":                      gatewayCompatBool,
+		"requiresReasoningContentOnAssistantMessages": gatewayCompatBool,
+		"thinkingFormat":                              gatewayThinkingFormats,
+		"chatTemplateKwargs":                          nil,
+		"chatTemplateArgs":                            nil,
+		"openRouterRouting":                           nil,
+		"vercelGatewayRouting":                        nil,
+		"zaiToolStream":                               gatewayCompatBool,
+		"thinkingTokenBudgetField":                    gatewayCompatOneOf("thinking_token_budget", "thinking_budget", "thinking_budget_tokens"),
+		"supportsThinkingTokenBudget":                 gatewayCompatBool,
+		"supportsOpenAIGrammarTools":                  gatewayCompatBool,
+		"supportsMidConvoSystemMessages":              gatewayCompatBool,
+		"supportsMidConvoToolAdditions":               gatewayCompatBool,
+		"supportsStrictMode":                          gatewayCompatBool,
+		"cacheControlFormat":                          gatewayCompatOneOf("anthropic"),
+		"sendSessionAffinityHeaders":                  gatewayCompatBool,
+		"sessionAffinityFormat":                       gatewayOpenAISessionAffinity,
+		"supportsLongCacheRetention":                  gatewayCompatBool,
+		"vllmPriority":                                gatewayCompatFinite,
+	},
+}
+
+// isKnownGatewayCompatFlag reports whether any transport declares k.
+func isKnownGatewayCompatFlag(k string) bool {
+	for _, fields := range gatewayCompatFields {
+		if _, ok := fields[k]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // gatewayCredentialWords mark an unknown compat flag name as credential-
 // or header-shaped. compat holds request-feature flags, and a value under
 // such a name would be committed to the repository.
-var gatewayCredentialWords = []string{"key", "token", "secret", "password", "passwd", "auth", "credential", "cookie", "header", "bearer"}
+var gatewayCredentialWords = []string{"key", "token", "secret", "password", "passwd", "pwd", "auth", "credential", "cookie", "header", "bearer", "user", "login"}
 
-// ValidateGatewayCompat checks a model's compat map the way the extension
-// reads it (v0.1.1 src/config.ts): flag names match COMPAT_KEY_RE and each
-// value is a boolean, a string or a finite number. Anything else is
-// refused rather than ignored, and so are credential-shaped flag names.
+// ValidateGatewayCompat checks a model's compat map the way extension
+// v0.1.1 reads it (src/config.ts and validateCompat in src/compat.ts), but
+// refuses what the extension would drop with a warning:
+//   - flag names match COMPAT_KEY_RE;
+//   - a flag the model's api declares must have that transport's type
+//     (with api empty, the type of any transport that declares it);
+//     structured fields such as allowedFallbackModels are refused;
+//   - any other value is a boolean, a string or a finite number, under a
+//     name that does not look like a credential or header.
+//
 // Holding values to these scalar types also keeps nested data (including
 // the map[interface{}]interface{} yaml.v3 builds for a non-string-keyed
 // mapping) out of the rendered file, and makes the one-level copy in
-// cloneGatewayModels a full copy.
-func ValidateGatewayCompat(compat map[string]any) error {
+// cloneGatewayModels a full copy. Free-text string values cannot be
+// scanned for secrets; the name filter and the typed known flags narrow
+// where one could go.
+func ValidateGatewayCompat(compat map[string]any, api string) error {
 	for _, k := range slices.Sorted(maps.Keys(compat)) {
+		v := compat[k]
 		if !gatewayCompatKeyRe.MatchString(k) {
 			return fmt.Errorf("flag name %q must match %s", k, gatewayCompatKeyRe)
 		}
-		if !slices.Contains(gatewayKnownCompatFlags, k) {
+		if !isGatewayCompatValue(v) {
+			return fmt.Errorf("flag %q must be a boolean, string or number", k)
+		}
+		// The extension refuses this one on every transport (validateCompat):
+		// it is a list of model ids, and the gateway routes models itself.
+		if k == "allowedFallbackModels" {
+			return fmt.Errorf("flag %q is not supported: the gateway routes models itself", k)
+		}
+		var checks []gatewayCompatCheck
+		structured := false
+		for _, target := range ValidGatewayAPIs() {
+			if api != "" && target != api {
+				continue
+			}
+			if check, ok := gatewayCompatFields[target][k]; ok {
+				if check == nil {
+					structured = true
+					continue
+				}
+				checks = append(checks, check)
+			}
+		}
+		switch {
+		case structured && len(checks) == 0:
+			return fmt.Errorf("flag %q is a list or record in pi, which a compat flag cannot carry", k)
+		case len(checks) > 0:
+			if !slices.ContainsFunc(checks, func(c gatewayCompatCheck) bool { return c(v) }) {
+				return fmt.Errorf("flag %q does not match pi's type for this field%s", k, gatewayCompatAPISuffix(api))
+			}
+		case !isKnownGatewayCompatFlag(k):
 			lower := strings.ToLower(k)
 			for _, w := range gatewayCredentialWords {
 				if strings.Contains(lower, w) {
@@ -291,19 +375,19 @@ func ValidateGatewayCompat(compat map[string]any) error {
 				}
 			}
 		}
-		if !isGatewayCompatValue(compat[k]) {
-			return fmt.Errorf("flag %q must be a boolean, string or number", k)
-		}
 	}
 	return nil
 }
 
-func isGatewayCompatValue(v any) bool {
+func gatewayCompatAPISuffix(api string) string {
+	if api == "" {
+		return ""
+	}
+	return " on " + api
+}
+
+func isGatewayCompatNumber(v any) bool {
 	switch x := v.(type) {
-	case bool:
-		return true
-	case string:
-		return len(utf16.Encode([]rune(x))) <= 256 && !strings.ContainsFunc(x, unicode.IsControl)
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return true
 	case float32:
@@ -317,6 +401,16 @@ func isGatewayCompatValue(v any) bool {
 	return false
 }
 
+func isGatewayCompatValue(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return true
+	case string:
+		return len(utf16.Encode([]rune(x))) <= 256 && !strings.ContainsFunc(x, unicode.IsControl)
+	}
+	return isGatewayCompatNumber(v)
+}
+
 func validateGatewayModel(id string, m InferenceGatewayModel) error {
 	if err := ValidateGatewayModelID(id); err != nil {
 		return fmt.Errorf("inference.gateway.models: %w", err)
@@ -324,7 +418,7 @@ func validateGatewayModel(id string, m InferenceGatewayModel) error {
 	if !slices.Contains(ValidGatewayAPIs(), m.API) {
 		return fmt.Errorf("inference.gateway.models[%q]: invalid api %q: must be one of %s", id, m.API, strings.Join(ValidGatewayAPIs(), ", "))
 	}
-	if err := ValidateGatewayCompat(m.Compat); err != nil {
+	if err := ValidateGatewayCompat(m.Compat, m.API); err != nil {
 		return fmt.Errorf("inference.gateway.models[%q].compat: %w", id, err)
 	}
 	if m.ContextWindow < 0 {

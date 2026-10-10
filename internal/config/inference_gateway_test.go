@@ -284,7 +284,7 @@ inference:
         api: anthropic-messages
         compat:
           supportsMidConvoEffort: false
-          sessionAffinityFormat: openai
+          sessionAffinityFormat: openrouter
           maxRetries: 3
 `))
 	require.NoError(t, err)
@@ -292,11 +292,46 @@ inference:
 }
 
 func TestValidateGatewayCompat_KnownFlags(t *testing.T) {
-	for _, flag := range gatewayKnownCompatFlags {
-		require.NoError(t, ValidateGatewayCompat(map[string]any{flag: true}), flag)
+	// Every flag a transport declares passes with a value of its type, on
+	// that transport and with no api, credential-shaped name or not.
+	sample := func(check gatewayCompatCheck) any {
+		for _, v := range []any{true, 1, "openrouter", "max_tokens", "thinking_budget", "anthropic", "openai"} {
+			if check(v) {
+				return v
+			}
+		}
+		return nil
 	}
-	for _, flag := range []string{"maxTokensField", "thinkingTokenBudgetField", "supportsThinkingTokenBudget", "supportsMaxOutputTokens", "sendSessionAffinityHeaders"} {
-		require.Contains(t, gatewayKnownCompatFlags, flag)
+	for api, fields := range gatewayCompatFields {
+		for flag, check := range fields {
+			if check == nil {
+				require.Error(t, ValidateGatewayCompat(map[string]any{flag: "x"}, api), flag)
+				continue
+			}
+			v := sample(check)
+			require.NotNil(t, v, flag)
+			require.NoError(t, ValidateGatewayCompat(map[string]any{flag: v}, api), "%s on %s", flag, api)
+			require.NoError(t, ValidateGatewayCompat(map[string]any{flag: v}, ""), flag)
+		}
 	}
-	require.Error(t, ValidateGatewayCompat(map[string]any{"extraHeaders": "x"}))
+	require.Error(t, ValidateGatewayCompat(map[string]any{"supportsStrictTools": "false"}, GatewayAPIAnthropicMessages))
+	require.Error(t, ValidateGatewayCompat(map[string]any{"extraHeaders": "x"}, ""))
+	require.Error(t, ValidateGatewayCompat(map[string]any{"pwd": "x"}, ""))
+	// A flag another transport declares is kept as the extension keeps it.
+	require.NoError(t, ValidateGatewayCompat(map[string]any{"maxTokensField": "max_tokens"}, GatewayAPIAnthropicMessages))
+}
+
+func TestValidateGatewayCompat_AllowedFallbackModelsEveryAPI(t *testing.T) {
+	for _, api := range append(ValidGatewayAPIs(), "") {
+		err := ValidateGatewayCompat(map[string]any{"allowedFallbackModels": "x"}, api)
+		require.Error(t, err, api)
+		assert.Contains(t, err.Error(), "not supported")
+	}
+}
+
+func TestValidateGatewayCompat_ErrorOmitsValue(t *testing.T) {
+	const sentinel = "sentinel-value-must-not-echo"
+	err := ValidateGatewayCompat(map[string]any{"sessionAffinityFormat": sentinel}, GatewayAPIAnthropicMessages)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), sentinel)
 }

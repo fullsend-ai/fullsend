@@ -48,6 +48,7 @@ func TestValidatePiGatewayModelsFile_ValueShapes(t *testing.T) {
 		`{"m": {"api": "openai-responses", "thinkingLevelMap": {"high": null, "low": "minimal"}}}`,
 		`{"m": {"api": "openai-responses", "cost": {"input": 1.5, "output": 3}, "input": ["text", "image"], "reasoning": false}}`,
 		`{"m": {"api": "openai-responses"}, "n": {"api": "anthropic-messages", "input": []}}`,
+		`{"m": {"api": "openai-completions", "contextWindow": 2e5, "maxTokens": 32000.0, "compat": {"maxTokensField": "max_tokens", "vllmPriority": 1, "supportsThinkingTokenBudget": true}}}`,
 	} {
 		_, err := ValidatePiGatewayModelsFile([]byte(`{"providers": {"gateway": {"include": ["a", "b"], "models": ` + models + `}}}`))
 		require.NoError(t, err, models)
@@ -107,10 +108,18 @@ func TestValidatePiGatewayModelsFile_Refused(t *testing.T) {
 		{"cost string", wrap(`{"models": {"m": {"api": "openai-responses", "cost": {"input": "sk"}}}}`), `input must be a number`},
 		{"thinking level credential key", wrap(`{"models": {"m": {"api": "openai-responses", "thinkingLevelMap": {"token": "x"}}}}`), `unsupported level "token"`},
 		{"thinking level number", wrap(`{"models": {"m": {"api": "openai-responses", "thinkingLevelMap": {"high": 1}}}}`), `high must be a string or null`},
-		{"negative maxTokens", wrap(`{"models": {"m": {"api": "openai-responses", "maxTokens": -1}}}`), `maxTokens must be a non-negative whole number`},
-		{"fractional contextWindow", wrap(`{"models": {"m": {"api": "openai-responses", "contextWindow": 1.5}}}`), `contextWindow must be a non-negative whole number`},
+		{"negative maxTokens", wrap(`{"models": {"m": {"api": "openai-responses", "maxTokens": -1}}}`), `maxTokens must be a positive whole number`},
+		{"fractional contextWindow", wrap(`{"models": {"m": {"api": "openai-responses", "contextWindow": 1.5}}}`), `contextWindow must be a positive whole number`},
 		{"huge cost", wrap(`{"models": {"m": {"api": "openai-responses", "cost": {"input": 1e999}}}}`), `input must be a finite, non-negative number`},
 		{"negative cost", wrap(`{"models": {"m": {"api": "openai-responses", "cost": {"output": -1}}}}`), `output must be a finite, non-negative number`},
+		{"zero maxTokens", wrap(`{"models": {"m": {"api": "openai-responses", "maxTokens": 0}}}`), `maxTokens must be a positive whole number`},
+		{"unsafe contextWindow", wrap(`{"models": {"m": {"api": "openai-responses", "contextWindow": 9007199254740993}}}`), `contextWindow must be a positive whole number`},
+		{"compat string for bool", wrap(`{"models": {"m": {"api": "anthropic-messages", "compat": {"supportsStrictTools": "false"}}}}`), `does not match pi's type for this field on anthropic-messages`},
+		{"compat wrong enum for api", wrap(`{"models": {"m": {"api": "anthropic-messages", "compat": {"sessionAffinityFormat": "openai"}}}}`), `does not match pi's type`},
+		{"compat allowedFallbackModels anthropic", wrap(`{"models": {"m": {"api": "anthropic-messages", "compat": {"allowedFallbackModels": "x"}}}}`), `not supported`},
+		{"compat allowedFallbackModels responses", wrap(`{"models": {"m": {"api": "openai-responses", "compat": {"allowedFallbackModels": "x"}}}}`), `not supported`},
+		{"compat structured", wrap(`{"models": {"m": {"api": "openai-completions", "compat": {"openRouterRouting": "x"}}}}`), `list or record`},
+		{"compat pwd", wrap(`{"models": {"m": {"api": "openai-responses", "compat": {"pwd": "x"}}}}`), `looks like a credential`},
 		{"contextWindow not number", wrap(`{"models": {"m": {"api": "openai-responses", "contextWindow": "big"}}}`), `contextWindow must be a number`},
 		{"input not strings", wrap(`{"models": {"m": {"api": "openai-responses", "input": [1]}}}`), `input must be an array of strings`},
 		{"model without api", wrap(`{"models": {"m": {"contextWindow": 200000}}}`), `models["m"] must set api`},
