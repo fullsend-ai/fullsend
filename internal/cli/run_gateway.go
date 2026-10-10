@@ -55,7 +55,7 @@ var (
 // gatewayRefreshSafety = 145 s, inside the 150 s lead of a 300 s token.
 // It budgets the expected path: the seed and verify execs after the settle
 // wait each have their own timeout, which it does not count (one hand-off
-// is bounded by gatewayHandOffTimeout). A settle wait that runs out fails
+// is bounded by handOffTimeout). A settle wait that runs out fails
 // the route closed rather than retrying (runGatewayRefresh); a seed or
 // verify failure is retried on its own.
 func gatewayRefreshWork() time.Duration {

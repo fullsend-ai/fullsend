@@ -629,7 +629,7 @@ func TestRunGatewayRefresh_SettleTimeoutFailsClosed(t *testing.T) {
 	assert.Equal(t, held, h.state.expiresAt)
 }
 
-func TestGatewayHandOffTimeout_CoversEveryAttempt(t *testing.T) {
+func TestHandOffTimeout_CoversEveryAttempt(t *testing.T) {
 	want := openAIPlaceholderSettle + openAIPlaceholderPoll + time.Duration(1+2*reseedSeedAttempts)*openAIPlaceholderExecTimeout
-	assert.Equal(t, want, gatewayHandOffTimeout())
+	assert.Equal(t, want, handOffTimeout())
 }

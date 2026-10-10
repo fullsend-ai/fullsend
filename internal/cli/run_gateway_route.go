@@ -379,13 +379,6 @@ func rotateGatewayTokenOnce(ctx context.Context, h gatewayProviderHandle) (*acti
 	return a, nil
 }
 
-// gatewayHandOffTimeout bounds one hand-off by what reseedCredential can
-// do: the settle wait, one placeholder read that may start just before it
-// ends, then reseedSeedAttempts seed-and-verify pairs, plus one poll.
-func gatewayHandOffTimeout() time.Duration {
-	return openAIPlaceholderSettle + openAIPlaceholderExecTimeout + time.Duration(2*reseedSeedAttempts)*openAIPlaceholderExecTimeout + openAIPlaceholderPoll
-}
-
 // setProviderCredentialExpiryFn records a provider credential's expiry
 // (sandbox.SetProviderCredentialExpiry). Override in tests to record the
 // call without a gateway.
@@ -411,7 +404,7 @@ func failGatewayClosed(h gatewayProviderHandle, st *gatewayRefreshState, cause e
 // hands out a placeholder other than previous, the one the agent holds.
 // It returns the placeholder the agent now holds.
 func handOffGateway(ctx context.Context, h gatewayProviderHandle, previous string, printer *ui.Printer) (string, error) {
-	settleCtx, cancel := context.WithTimeout(ctx, gatewayHandOffTimeout())
+	settleCtx, cancel := context.WithTimeout(ctx, handOffTimeout())
 	defer cancel()
 	return reseedCredential(settleCtx, h.sandbox, "inference gateway", h.seed, previous, printer)
 }
