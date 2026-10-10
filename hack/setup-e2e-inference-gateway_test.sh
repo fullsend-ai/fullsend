@@ -123,7 +123,12 @@ case "$1 $2 $3" in
   "run services list")
     # A run/region default narrows the listing to that region.
     if [[ -n "${CLOUDSDK_RUN_REGION:-}" ]]; then echo '[]'; exit 0; fi
-    [[ -f "${S}/list_partial" ]] && echo "WARNING: The following regions were unreachable: europe-west1" >&2
+    # Like gcloud: an error-only verbosity hides the warning unless the call
+    # pins --verbosity=warning.
+    if [[ -f "${S}/list_partial" ]] && { [[ "${CLOUDSDK_CORE_VERBOSITY:-}" != error ]] \
+        || printf '%s\n' "$@" | grep -qx -- --verbosity=warning; }; then
+      echo "WARNING: The following regions were unreachable: europe-west1" >&2
+    fi
     { [[ -f "${S}/svc.json" ]] && jq '.metadata.labels["cloud.googleapis.com/location"] = "us-east5"' "${S}/svc.json"
       [[ -f "${S}/svc_elsewhere" ]] && jq -n '{metadata: {labels: {"cloud.googleapis.com/location": "europe-west1"}}}'
       true; } | jq -s . ;;
@@ -167,9 +172,9 @@ case "$1 $2 $3" in
     echo deploy >> "${S}/revisions" ;;
   "run services update")
     # Like gcloud 588: the mount keeps its volume, a new revision rolls, and
-    # the running image is pinned by digest when no new image is given.
-    jq --arg d "$(stub_sha256 < "${UPSTREAM}")" '
-      .spec.template.spec.containers[0].image |= (sub("(:v[0-9.]+|@sha256:[0-9a-f]+)$"; "") + "@sha256:" + $d)' \
+    # the template image is pinned to the running revision's image digest
+    # (the linux/amd64 image) when no new image is given.
+    jq --arg d "$(cat "${S}/revision_image")" '.spec.template.spec.containers[0].image = $d' \
       "${S}/svc.json" > "${S}/svc.tmp" && mv "${S}/svc.tmp" "${S}/svc.json"
     tick > "${S}/revision_time"
     [[ -f "${S}/bad_running" ]] || { img=$(jq -r '.spec.template.spec.containers[0].image' "${S}/svc.json"); \
@@ -425,11 +430,13 @@ echo 2026-12-31T00:00:00Z > "${STATE}/secrets/${CFG_SECRET}.v4.time"
 
 # --- 6. --delete removes exactly the named resources ---------------------------
 touch "${STATE}/list_partial"
+export CLOUDSDK_CORE_VERBOSITY=error
 before=$(mutations | wc -l | tr -d ' ')
 if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete trusted a partial listing"; else
   expect_out "--delete refuses a partial service listing" "listing may be incomplete"; fi
 expect_no_mutations "partial-listing --delete deletes nothing" "${before}"
 rm "${STATE}/list_partial"
+unset CLOUDSDK_CORE_VERBOSITY
 touch "${STATE}/svc_elsewhere"
 export CLOUDSDK_RUN_REGION=us-east5
 before=$(mutations | wc -l | tr -d ' ')
@@ -517,11 +524,26 @@ if [[ "${rc}" == "3" ]]; then pass "an unverified running image is a pending cha
 expect_out "an unverified running image is reported" "runs an unverified image"
 expect_no_mutations "unverified-image --dry-run mutates nothing" 0
 
+# A config rollout on the adopted (tag-deployed) gateway, then an unchanged
+# re-run: the pinned linux/amd64 image is not drift.
+cp "${STATE}/svc.adopted" "${STATE}/svc.json"
+echo "us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway@${AMD64_DIGEST}" > "${STATE}/revision_image"
+echo 2099-01-01T00:00:00Z > "${STATE}/secrets/${CFG_SECRET}.v9.time"
+run_setup --project "${PROJECT}" --with-vertex || fail "adopted rollout failed"
+expect_out "the adopted gateway rolls for a newer secret" "rolled a new revision"
+echo 2099-01-01T00:00:05Z > "${STATE}/revision_time"  # the new revision is newer
+before=$(mutations | wc -l | tr -d ' ')
+run_setup --project "${PROJECT}" --with-vertex || fail "re-run after adopted rollout failed"
+expect_out "a re-run after the adopted rollout is a no-op" "No changes"
+expect_no_mutations "a pinned linux/amd64 image is not drift" "${before}"
+echo 2026-01-02T03:04:01.797859Z > "${STATE}/secrets/${CFG_SECRET}.v9.time"
+
 # --delete of the adopted gateway: unmarked resources stop it before anything goes.
+before=$(mutations | wc -l | tr -d ' ')
 echo "us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway@${AMD64_DIGEST}" > "${STATE}/revision_image"
 if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete removed unmarked adopted resources"; else
   expect_out "--delete lists the unmarked resources" "unmarked: secret ${CFG_SECRET}"; fi
-expect_no_mutations "--delete of an adopted gateway deletes nothing without opt-in" 0
+expect_no_mutations "--delete of an adopted gateway deletes nothing without opt-in" "${before}"
 run_setup --project "${PROJECT}" --delete --yes --include-unlabelled || fail "--include-unlabelled delete failed"
 for f in ar sa svc.json "secrets/${CFG_SECRET}.exists" "secrets/${KEY_SECRET}.exists"; do
   if [[ ! -e "${STATE}/${f}" ]]; then pass "--include-unlabelled removed ${f}"; else fail "--include-unlabelled left ${f}"; fi

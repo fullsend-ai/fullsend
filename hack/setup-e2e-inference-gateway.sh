@@ -340,8 +340,10 @@ if [[ "${DELETE}" == "true" ]]; then
   # service of this name runs in another region (a mistyped --region).
   # A listing that skipped unreachable regions is not proof, so any warning
   # stops the delete. The operator's run/region default is cleared so that it
-  # cannot narrow the listing to one region.
-  CLOUDSDK_RUN_REGION="" gc run services list --filter="metadata.name=${NAME}" --format=json \
+  # cannot narrow the listing to one region, and the verbosity is pinned so
+  # that a quieter setting cannot hide the warning.
+  CLOUDSDK_RUN_REGION="" gc run services list --verbosity=warning \
+    --filter="metadata.name=${NAME}" --format=json \
     >"${TMP}/services.json" 2>"${TMP}/services.err" \
     || die "could not list Cloud Run services: $(cat "${TMP}/services.err")"
   if grep -qiE 'warning|unreachable|unavailable' "${TMP}/services.err"; then
@@ -545,8 +547,9 @@ else
   change "copied ${UPSTREAM_IMAGE} to ${DEST_IMAGE}" copy_image
 fi
 # Deploy by the verified digest, so a retag between the check and the deploy
-# cannot change what runs. A service deployed by tag also counts as current:
-# its running image is checked separately (see serving_image_ok).
+# cannot change what runs. A service template naming the tag, the index or its
+# linux/amd64 image (which gcloud may pin on a later update) also counts as
+# current: the running image is checked separately (see serving_image_ok).
 DEST_IMAGE_BY_DIGEST="${DEST_IMAGE%:*}@${upstream_digest}"
 echo
 
@@ -661,7 +664,8 @@ deploy_args=(
 # separated, or nothing. Secret mounts are resolved mountPath -> volume ->
 # secret, because each --update-secrets run leaves an unmounted volume behind.
 spec_drift() {
-  jq -r --arg img "${DEST_IMAGE}" --arg imgd "${DEST_IMAGE_BY_DIGEST}" --arg sa "${SA_EMAIL}" \
+  jq -r --arg img "${DEST_IMAGE}" --arg imgd "${DEST_IMAGE_BY_DIGEST}" \
+    --arg imga "${DEST_IMAGE%:*}@${upstream_amd64}" --arg sa "${SA_EMAIL}" \
     --arg cfgdir "${CONFIG_DIR}" --arg keydir "${KEY_DIR}" \
     --arg cfg "${CONFIG_SECRET}" --arg key "${KEY_SECRET}" \
     --argjson port "${GATEWAY_PORT}" --arg name "${NAME}" '
@@ -671,7 +675,7 @@ spec_drift() {
       ([$t.spec.volumes[]? | select(.name == $v) | .secret][0] // {}) as $s |
       $s.secretName == $secret and $s.items == [{key: "latest", path: $file}];
     [
-      (if $c.image != $img and $c.image != $imgd then "image" else empty end),
+      (if ([$img, $imgd, $imga] | index($c.image)) == null then "image" else empty end),
       (if $t.spec.serviceAccountName != $sa then "service account" else empty end),
       (if $c.args != ["-f", ($cfgdir + "/config.yaml")] then "args" else empty end),
       (if [$c.ports[]?.containerPort] != [$port] then "port" else empty end),
