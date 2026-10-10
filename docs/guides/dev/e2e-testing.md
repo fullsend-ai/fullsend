@@ -385,7 +385,9 @@ repository.
 
 Every resource is named `fullsend-e2e-gateway*`. Those names are reserved for
 this script: it adopts resources that already have them and touches nothing
-else.
+else. What it creates carries the marker `purpose=fullsend-e2e-gateway`: a
+label, or the description of the service account. Adopted resources keep
+whatever they had.
 
 | Resource | Name | Settings |
 |----------|------|----------|
@@ -393,7 +395,7 @@ else.
 | Service account | `fullsend-e2e-gateway@<project>.iam.gserviceaccount.com` | Runtime identity. With `--with-vertex`, it holds `roles/aiplatform.user`. |
 | Secret | `fullsend-e2e-gateway-config` | The generated agentgateway config. |
 | Secret | `fullsend-e2e-gateway-stub-upstream-key` | The stub upstream key, a fixed non-secret value: `e2e-stub-upstream-key`. |
-| Cloud Run service | `fullsend-e2e-gateway` | `--allow-unauthenticated --no-invoker-iam-check`, 1 vCPU / 512 MiB, at most 1 instance, label `purpose=fullsend-e2e-gateway`. Both secrets are mounted as files at `:latest`. |
+| Cloud Run service | `fullsend-e2e-gateway` | `--allow-unauthenticated --no-invoker-iam-check`, 1 vCPU / 512 MiB, at most 1 instance, label `purpose=fullsend-e2e-gateway`. Deployed by the verified image digest; every run checks that the serving revision runs that image. Both secrets are mounted as files at `:latest`. |
 
 The service account gets `roles/secretmanager.secretAccessor` on each secret,
 not on the project.
@@ -439,11 +441,16 @@ hack/setup-e2e-inference-gateway.sh --project "$E2E_GCP_PROJECT_ID" --delete
 ```
 
 `--delete` asks you to type the project ID (`--yes` skips the prompt). It
-then removes the resources above by name, plus the `roles/aiplatform.user`
-grant. It stops without deleting anything if the Cloud Run service lacks the
-`purpose=fullsend-e2e-gateway` label, or runs in a region other than
-`--region`: the secrets and the service account are global, so a mistyped
-region must not remove them from under a running gateway.
+then removes the resources above, plus the `roles/aiplatform.user` grant. It
+checks first and stops without deleting anything when:
+
+- a resource lacks the `purpose=fullsend-e2e-gateway` marker, so the script may
+  not have created it. The durable gateway was deployed by hand and adopted, so
+  removing it needs `--include-unlabelled`.
+- a service of that name runs in a region other than `--region`, or the
+  service listing reports an unreachable region. The secrets and the service
+  account are global, so a mistyped region must not remove them from under a
+  running gateway.
 
 > **Not executed:** `--delete` has not been run against the durable gateway,
 > which stays up.

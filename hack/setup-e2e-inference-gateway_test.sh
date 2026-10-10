@@ -30,6 +30,10 @@ STATE=""
 trap 'rm -rf "${SHIM_DIR}" "${STATE}"' EXIT
 
 printf '#!/bin/sh\nexit 0\n' > "${SHIM_DIR}/sleep"
+# The upstream multi-arch index, and the linux/amd64 image Cloud Run runs.
+AMD64_DIGEST="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+printf '{"manifests":[{"digest":"%s","platform":{"os":"linux","architecture":"amd64"}}]}' \
+  "${AMD64_DIGEST}" > "${SHIM_DIR}/upstream.json"
 
 # --- gcloud: Artifact Registry, IAM, Secret Manager and Cloud Run state ----
 cat > "${SHIM_DIR}/gcloud" <<'EOF'
@@ -59,6 +63,11 @@ volume() {
   jq -n --arg n "$1" --arg s "$2" --arg f "$3" \
     '{name: $n, secret: {secretName: $s, items: [{key: "latest", path: $f}]}}'
 }
+labels_of() { # labels_of FILE -> {"k": "v"} from a "k=v" line, or {}
+  jq -Rn '[inputs | select(length > 0) | split("=") | {(.[0]): .[1]}] | add // {}' < "$1"
+}
+UPSTREAM="$(dirname "$0")/upstream.json"
+AMD64="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 mkdir -p "${S}/secrets"
 case "$1 $2 $3" in
   "auth print-access-token "*) echo "stub-access-token" ;;
@@ -66,11 +75,15 @@ case "$1 $2 $3" in
     for a in run secretmanager artifactregistry iam aiplatform; do
       [[ -f "${S}/api_disabled_${a}" ]] || echo "${a}.googleapis.com"
     done ;;
-  "artifacts repositories describe") [[ -f "${S}/ar" ]] || notfound "repository"; echo '{}' ;;
-  "artifacts repositories create") touch "${S}/ar" ;;
+  "artifacts repositories describe")
+    [[ -f "${S}/ar" ]] || notfound "repository"
+    jq -n --argjson l "$(labels_of "${S}/ar")" '{labels: $l}' ;;
+  "artifacts repositories create") flag labels "$@" > "${S}/ar" ;;
   "artifacts repositories delete") rm "${S}/ar" ;;
-  "iam service-accounts describe") [[ -f "${S}/sa" ]] || notfound "Unknown service account"; echo '{}' ;;
-  "iam service-accounts create") touch "${S}/sa" ;;
+  "iam service-accounts describe")
+    [[ -f "${S}/sa" ]] || notfound "Unknown service account"
+    jq -Rn '{description: (input? // null)}' < "${S}/sa" ;;
+  "iam service-accounts create") flag description "$@" > "${S}/sa" ;;
   "iam service-accounts delete") rm "${S}/sa" ;;
   "projects get-iam-policy "*)
     touch "${S}/project_policy"; policy_json "${S}/project_policy" ;;
@@ -82,9 +95,9 @@ case "$1 $2 $3" in
   "secrets describe "*)
     [[ -f "${S}/deny_secrets" ]] && { echo "ERROR: PERMISSION_DENIED: secretmanager.secrets.get" >&2; exit 1; }
     [[ -f "${S}/secrets/$3.exists" ]] || notfound "Secret [$3] not found"
-    echo '{}' ;;
+    jq -n --argjson l "$(labels_of "${S}/secrets/$3.exists")" '{labels: $l}' ;;
   "secrets create "*)
-    touch "${S}/secrets/$3.exists"
+    flag labels "$@" > "${S}/secrets/$3.exists"
     cp "$(flag data-file "$@")" "${S}/secrets/$3.v1"
     tick > "${S}/secrets/$3.v1.time"
     echo 1 > "${S}/secrets/$3.latest" ;;
@@ -118,7 +131,8 @@ case "$1 $2 $3" in
       '.status = {url: "https://gw.example.test", latestReadyRevisionName: "rev",
         conditions: [{type: "Ready", status: $r}]}' "${S}/svc.json" ;;
   "run revisions describe")
-    jq -n --arg t "$(cat "${S}/revision_time")" '{metadata: {creationTimestamp: $t}}' ;;
+    jq -n --arg t "$(cat "${S}/revision_time")" --arg i "$(cat "${S}/revision_image")" \
+      '{metadata: {creationTimestamp: $t}, status: {imageDigest: $i}}' ;;
   "run services update-traffic")
     jq '.spec.traffic = [{latestRevision: true, percent: 100}]' "${S}/svc.json" > "${S}/svc.tmp" \
       && mv "${S}/svc.tmp" "${S}/svc.json"
@@ -146,14 +160,18 @@ case "$1 $2 $3" in
              volumeMounts: [{mountPath: $cfgdir, name: "cfg-1"},
                             {mountPath: $keydir, name: "key-1"}]}]}}}}' > "${S}/svc.json"
     tick > "${S}/revision_time"
+    img=$(flag image "$@"); base="${img%@*}"; [[ "${base}" == "${img}" ]] && base="${img%:*}"
+    echo "${base}@${AMD64}" > "${S}/revision_image"
     echo deploy >> "${S}/revisions" ;;
   "run services update")
     # Like gcloud 588: the mount keeps its volume, a new revision rolls, and
     # the running image is pinned by digest when no new image is given.
-    jq --arg d "$(printf 'upstream-index' | stub_sha256)" '
+    jq --arg d "$(stub_sha256 < "${UPSTREAM}")" '
       .spec.template.spec.containers[0].image |= (sub("(:v[0-9.]+|@sha256:[0-9a-f]+)$"; "") + "@sha256:" + $d)' \
       "${S}/svc.json" > "${S}/svc.tmp" && mv "${S}/svc.tmp" "${S}/svc.json"
     tick > "${S}/revision_time"
+    [[ -f "${S}/bad_running" ]] || { img=$(jq -r '.spec.template.spec.containers[0].image' "${S}/svc.json"); \
+      echo "${img%@*}@${AMD64}" > "${S}/revision_image"; }
     echo update >> "${S}/revisions" ;;
   "run services delete") rm "${S}/svc.json" ;;
   *) echo "gcloud stub: unhandled: $*" >&2; exit 2 ;;
@@ -167,17 +185,18 @@ S="${STUB_STATE}"
 echo "skopeo $*" >> "${S}/skopeo.log"
 stub_sha256() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 ref="${*: -1}"
+UPSTREAM="$(dirname "$0")/upstream.json"
 case "$1" in
   login) cat > /dev/null ;;
   inspect)
     case "${ref}" in
       docker://ghcr.io/*)
         [[ -f "${S}/upstream_down" ]] && { echo "FATAL: connection refused" >&2; exit 1; }
-        printf 'upstream-index'; [[ -f "${S}/trailing_newline" ]] && printf '\n'; true ;;
+        cat "${UPSTREAM}"; [[ -f "${S}/trailing_newline" ]] && printf '\n'; true ;;
       *) [[ -f "${S}/image_raw" ]] || { echo "FATAL: manifest unknown" >&2; exit 1; }
          cat "${S}/image_raw"; [[ -f "${S}/trailing_newline" ]] && printf '\n'; true ;;
     esac ;;
-  copy) cat "${S}/copy_raw" 2>/dev/null > "${S}/image_raw" || printf 'upstream-index' > "${S}/image_raw" ;;
+  copy) cat "${S}/copy_raw" 2>/dev/null > "${S}/image_raw" || cat "${UPSTREAM}" > "${S}/image_raw" ;;
 esac
 EOF
 
@@ -191,7 +210,10 @@ while [[ $# -gt 0 ]]; do
   [[ "$1" == "-o" ]] && { out="$2"; shift; }
   shift
 done
-if [[ -f "${S}/json_401" ]]; then
+if [[ -f "${S}/curl_down" ]]; then
+  echo "curl: (6) Could not resolve host" >&2
+  exit 6
+elif [[ -f "${S}/json_401" ]]; then
   echo '{"error":"unauthorized"}' > "${out}"
   printf '401 application/json'
 elif [[ -f "${S}/html_401" ]]; then
@@ -205,7 +227,7 @@ EOF
 chmod +x "${SHIM_DIR}"/*
 
 stub_sha256() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
-UPSTREAM_DIGEST="sha256:$(printf 'upstream-index' | stub_sha256)"
+UPSTREAM_DIGEST="sha256:$(stub_sha256 < "${SHIM_DIR}/upstream.json")"
 SA="serviceAccount:fullsend-e2e-gateway@${PROJECT}.iam.gserviceaccount.com"
 CFG_SECRET="fullsend-e2e-gateway-config"
 KEY_SECRET="fullsend-e2e-gateway-stub-upstream-key"
@@ -282,7 +304,7 @@ done
 args=$(grep '^gcloud .* run deploy ' "${STATE}/gcloud.log" | tr ' ' '\n')
 for a in --allow-unauthenticated --no-invoker-iam-check --cpu=1 --memory=512Mi --max-instances=1 \
     --port=8080 --args=-f,/etc/agw-config/config.yaml --labels=purpose=fullsend-e2e-gateway \
-    "--image=us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway:v1.6.0" \
+    "--image=us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway@${UPSTREAM_DIGEST}" \
     "--set-secrets=/etc/agw-config/config.yaml=${CFG_SECRET}:latest,/etc/agw-upstream/key=${KEY_SECRET}:latest"; do
   if grep -qx -- "${a}" <<<"${args}"; then pass "deploys with ${a}"; else fail "deploy lacks ${a}"; fi
 done
@@ -321,7 +343,7 @@ if jq -e '.spec.template.spec.containers[0].image | test("@sha256:")' "${STATE}/
   pass "an image pinned by digest after services update is not drift"; else fail "stub did not pin the image"; fi
 expect_no_mutations "a re-run after services update mutates nothing" "${before}"
 
-# --- 4. no Vertex flag never removes the Vertex tier ---------------------------
+# --- 4. no Vertex flag never removes the Vertex models -------------------------
 before=$(mutations | wc -l | tr -d ' ')
 if run_setup --project "${PROJECT}"; then fail "run without a Vertex flag removed Vertex"; else
   expect_out "run without a Vertex flag refuses" "Pass --with-vertex to keep them"; fi
@@ -408,7 +430,7 @@ rm "${STATE}/svc_elsewhere"
 jq '.metadata.labels = {}' "${STATE}/svc.json" > "${STATE}/svc.tmp" && cp "${STATE}/svc.json" "${STATE}/svc.bak" \
   && mv "${STATE}/svc.tmp" "${STATE}/svc.json"
 if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete removed an unlabelled service"; else
-  expect_out "--delete refuses an unlabelled service" "lacks the label purpose=fullsend-e2e-gateway"; fi
+  expect_out "--delete refuses an unlabelled service" "unmarked: Cloud Run service fullsend-e2e-gateway"; fi
 expect_no_mutations "unlabelled-service --delete deletes nothing" "${before}"
 mv "${STATE}/svc.bak" "${STATE}/svc.json"
 
@@ -425,7 +447,8 @@ expect_out "second --delete is a no-op" "Nothing to delete"
 fresh_state
 mkdir -p "${STATE}/secrets"
 touch "${STATE}/ar" "${STATE}/sa"
-printf 'upstream-index' > "${STATE}/image_raw"
+cat "${SHIM_DIR}/upstream.json" > "${STATE}/image_raw"
+echo "us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway@${AMD64_DIGEST}" > "${STATE}/revision_image"
 echo "roles/aiplatform.user ${SA}" > "${STATE}/project_policy"
 PATH="${SHIM_DIR}:${PATH}" bash "${SETUP}" --project "${PROJECT}" --with-vertex --print-config \
   > "${STATE}/secrets/${CFG_SECRET}.v9"
@@ -437,7 +460,7 @@ echo 2026-01-02T03:04:01.797859Z > "${STATE}/secrets/${CFG_SECRET}.v9.time"
 echo 2026-01-02T02:50:38.762068Z > "${STATE}/secrets/${KEY_SECRET}.v1.time"
 echo 2026-01-02T03:04:03.154420Z > "${STATE}/revision_time"
 for s in "${CFG_SECRET}" "${KEY_SECRET}"; do
-  touch "${STATE}/secrets/${s}.exists"
+  : > "${STATE}/secrets/${s}.exists"
   echo "roles/secretmanager.secretAccessor ${SA}" > "${STATE}/secrets/${s}.policy"
 done
 jq -n --arg img "us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway:v1.6.0" \
@@ -472,6 +495,37 @@ if run_setup --project "${PROJECT}"; then fail "unreadable config treated as no 
   expect_out "unreadable config fails closed" "could not read secret ${CFG_SECRET}"; fi
 expect_no_mutations "unreadable config mutates nothing" 0
 rm "${STATE}/deny_access"
+echo "roles/aiplatform.user ${SA}" > "${STATE}/project_policy"
+
+# A revision running an image other than the verified one is redeployed.
+echo "us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway@sha256:other" > "${STATE}/revision_image"
+cp "${STATE}/svc.json" "${STATE}/svc.adopted"
+cp "${STATE}/revision_image" "${STATE}/revision_image.adopted"
+run_setup --project "${PROJECT}" --with-vertex --dry-run && rc=0 || rc=$?
+if [[ "${rc}" == "3" ]]; then pass "an unverified running image is a pending change"; else fail "unverified image dry-run exit ${rc}"; fi
+expect_out "an unverified running image is reported" "runs an unverified image"
+expect_no_mutations "unverified-image --dry-run mutates nothing" 0
+
+# --delete of the adopted gateway: unmarked resources stop it before anything goes.
+echo "us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway@${AMD64_DIGEST}" > "${STATE}/revision_image"
+if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete removed unmarked adopted resources"; else
+  expect_out "--delete lists the unmarked resources" "unmarked: secret ${CFG_SECRET}"; fi
+expect_no_mutations "--delete of an adopted gateway deletes nothing without opt-in" 0
+run_setup --project "${PROJECT}" --delete --yes --include-unlabelled || fail "--include-unlabelled delete failed"
+for f in ar sa svc.json "secrets/${CFG_SECRET}.exists" "secrets/${KEY_SECRET}.exists"; do
+  if [[ ! -e "${STATE}/${f}" ]]; then pass "--include-unlabelled removed ${f}"; else fail "--include-unlabelled left ${f}"; fi
+done
+if ! grep -q aiplatform "${STATE}/project_policy"; then pass "--include-unlabelled removed the Vertex grant"; else fail "Vertex grant left"; fi
+
+# Unmarked resources with the reserved names, service absent: never deleted.
+fresh_state
+mkdir -p "${STATE}/secrets"
+touch "${STATE}/ar" "${STATE}/sa"
+: > "${STATE}/secrets/${CFG_SECRET}.exists"
+if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete removed unmarked resources"; else
+  expect_out "--delete refuses unmarked resources when the service is absent" "nothing deleted"; fi
+if [[ -e "${STATE}/ar" && -e "${STATE}/sa" && -e "${STATE}/secrets/${CFG_SECRET}.exists" ]]; then
+  pass "unmarked resources are left in place"; else fail "an unmarked resource was deleted"; fi
 
 # --- 8. failures ------------------------------------------------------------------
 fresh_state
@@ -494,6 +548,13 @@ fresh_state
 touch "${STATE}/upstream_down"
 if run_setup --project "${PROJECT}" --without-vertex; then fail "unreadable upstream accepted"; else
   expect_out "unreadable upstream fails" "could not read ghcr.io/agentgateway/agentgateway:v1.6.0"; fi
+
+fresh_state
+run_setup --project "${PROJECT}" --without-vertex || fail "setup before curl failure failed"
+touch "${STATE}/curl_down"
+if run_setup --project "${PROJECT}" --without-vertex; then fail "unreachable gateway accepted"; else
+  expect_out "an unreachable gateway is reported, not a crash" "no token: GET /v1/models -> HTTP curl-failed"
+  expect_out "an unreachable gateway still prints the summary" "Verification failed"; fi
 
 fresh_state
 touch "${STATE}/json_401"

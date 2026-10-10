@@ -5,10 +5,10 @@
 # Usage: hack/setup-e2e-inference-gateway.sh [--project <id>] [--region us-east5]
 #            [--with-vertex | --without-vertex] [--dry-run | --print-config]
 #        hack/setup-e2e-inference-gateway.sh [--project <id>] [--region us-east5]
-#            --delete [--yes]
+#            --delete [--yes] [--include-unlabelled]
 #   --project         GCP project (default: $E2E_GCP_PROJECT_ID; no other default)
 #   --region          Cloud Run and Artifact Registry region (default: us-east5)
-#   --with-vertex     also serve the real Vertex models (Tier B, runtime-pi-gateway)
+#   --with-vertex     also serve the real Vertex models (for runtime-pi-gateway)
 #                     and grant the runtime service account roles/aiplatform.user
 #   --without-vertex  remove the Vertex models and the grant. Without either
 #                     flag, a run against a gateway that serves Vertex models
@@ -17,6 +17,11 @@
 #   --print-config    print the generated gateway config and exit (no gcloud calls)
 #   --delete          remove exactly the resources below, by name, then exit
 #   --yes             with --delete, skip the confirmation prompt
+#   --include-unlabelled
+#                     with --delete, also delete resources with these names that
+#                     lack the purpose=fullsend-e2e-gateway marker (for example
+#                     a gateway deployed by hand and adopted). Without it, any
+#                     unmarked resource stops the delete before anything goes.
 #
 # Idempotent: checks each resource and creates or updates only what is
 # missing or different, then prints what it did. Re-running after a pool
@@ -34,7 +39,9 @@
 #
 # These names are reserved for this script: it adopts resources that already
 # carry them (for example a gateway deployed by hand from the operator guide)
-# and never reads, changes or deletes any other resource.
+# and never reads, changes or deletes any other resource. Resources it creates
+# carry the marker purpose=fullsend-e2e-gateway (a label, or the description
+# of the service account); --delete removes unmarked ones only on request.
 #
 # Requires: gcloud (authenticated), skopeo, jq, curl.
 # See docs/guides/dev/e2e-testing.md#inference-gateway-test-gateway for the
@@ -53,7 +60,7 @@ POOL_REPOS=(test-repo-01 test-repo-02 test-repo-03 test-repo-04 test-repo-05 tes
 # behaviour test can assert the 403 for a pool repository.
 DENIED_REPO="fullsend-e2e-gateway-outside/not-a-pool-repo"
 
-# Tier B: real models on Vertex, reached with the runtime service account.
+# Real models on Vertex, reached with the runtime service account.
 VERTEX_MODELS=(claude-haiku-5-5 gemini-3.8-flash)
 VERTEX_REGION="global"
 
@@ -82,6 +89,7 @@ REGION="us-east5"
 VERTEX=""
 DELETE=false
 YES=false
+INCLUDE_UNLABELLED=false
 DRY_RUN=false
 PRINT_CONFIG=false
 while [[ $# -gt 0 ]]; do
@@ -101,6 +109,7 @@ while [[ $# -gt 0 ]]; do
     --print-config) PRINT_CONFIG=true; shift ;;
     --delete) DELETE=true; shift ;;
     --yes) YES=true; shift ;;
+    --include-unlabelled) INCLUDE_UNLABELLED=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Error: unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -122,8 +131,8 @@ if [[ "${DELETE}" == "true" && ( -n "${VERTEX}" || "${DRY_RUN}" == "true" || "${
   echo "Error: --delete cannot be combined with other modes." >&2
   exit 1
 fi
-if [[ "${YES}" == "true" && "${DELETE}" != "true" ]]; then
-  echo "Error: --yes only applies to --delete." >&2
+if [[ ( "${YES}" == "true" || "${INCLUDE_UNLABELLED}" == "true" ) && "${DELETE}" != "true" ]]; then
+  echo "Error: --yes and --include-unlabelled only apply to --delete." >&2
   exit 1
 fi
 if [[ "${DRY_RUN}" == "true" && "${PRINT_CONFIG}" == "true" ]]; then
@@ -343,10 +352,40 @@ if [[ "${DELETE}" == "true" ]]; then
   [[ -z "${elsewhere}" ]] \
     || die "Cloud Run service ${NAME} runs in ${elsewhere}, not ${REGION}; pass that --region. Nothing deleted."
 
-  echo "==> Cloud Run service ${NAME}"
+  # First pass: find the resources and check each for the marker the script
+  # sets on creation, before anything is deleted. present_* record what exists.
+  unmarked=()
+  marked() { # marked DESCRIPTION JQ_PATH EXPECTED -> records an unmarked resource
+    [[ "$(jq -r "$2 // empty" <<<"${DESCRIBED}")" == "$3" ]] || unmarked+=("$1")
+  }
+  present_svc=false present_sa=false present_ar=false
+  present_secrets=()
   if describe run services describe "${NAME}" --region="${REGION}"; then
-    [[ "$(jq -r '.metadata.labels.purpose // empty' <<<"${DESCRIBED}")" == "${NAME}" ]] \
-      || die "Cloud Run service ${NAME} lacks the label ${LABEL}; leaving everything."
+    present_svc=true
+    marked "Cloud Run service ${NAME}" '.metadata.labels.purpose' "${NAME}"
+  fi
+  for secret in "${CONFIG_SECRET}" "${KEY_SECRET}"; do
+    if describe secrets describe "${secret}"; then
+      present_secrets+=("${secret}")
+      marked "secret ${secret}" '.labels.purpose' "${NAME}"
+    fi
+  done
+  if describe iam service-accounts describe "${SA_EMAIL}"; then
+    present_sa=true
+    # Service accounts take no labels; the script marks the description.
+    marked "service account ${SA_EMAIL}" '.description' "${LABEL}"
+  fi
+  if describe artifacts repositories describe "${NAME}" --location="${REGION}"; then
+    present_ar=true
+    marked "Artifact Registry repository ${NAME}" '.labels.purpose' "${NAME}"
+  fi
+  if (( ${#unmarked[@]} > 0 )) && [[ "${INCLUDE_UNLABELLED}" != "true" ]]; then
+    printf '    unmarked: %s\n' "${unmarked[@]}" >&2
+    die "these resources lack the marker ${LABEL}, so this script may not have created them; nothing deleted. Pass --include-unlabelled to delete them anyway (for example a gateway deployed by hand)."
+  fi
+
+  echo "==> Cloud Run service ${NAME}"
+  if [[ "${present_svc}" == "true" ]]; then
     change "deleted Cloud Run service ${NAME}" gc run services delete "${NAME}" --region="${REGION}"
   else
     ok "Cloud Run service ${NAME} is already absent"
@@ -354,7 +393,7 @@ if [[ "${DELETE}" == "true" ]]; then
 
   echo "==> Secrets"
   for secret in "${CONFIG_SECRET}" "${KEY_SECRET}"; do
-    if describe secrets describe "${secret}"; then
+    if [[ " ${present_secrets[*]} " == *" ${secret} "* ]]; then
       change "deleted secret ${secret}" gc secrets delete "${secret}"
     else
       ok "secret ${secret} is already absent"
@@ -362,7 +401,7 @@ if [[ "${DELETE}" == "true" ]]; then
   done
 
   echo "==> Service account ${SA_EMAIL}"
-  if describe iam service-accounts describe "${SA_EMAIL}"; then
+  if [[ "${present_sa}" == "true" ]]; then
     project_policy=$(gc projects get-iam-policy "${PROJECT}" --format=json)
     if has_binding "${project_policy}" roles/aiplatform.user "${SA_MEMBER}"; then
       change "removed roles/aiplatform.user from ${SA_EMAIL}" \
@@ -375,7 +414,7 @@ if [[ "${DELETE}" == "true" ]]; then
   fi
 
   echo "==> Artifact Registry repository ${NAME}"
-  if describe artifacts repositories describe "${NAME}" --location="${REGION}"; then
+  if [[ "${present_ar}" == "true" ]]; then
     change "deleted Artifact Registry repository ${NAME}" \
       gc artifacts repositories delete "${NAME}" --location="${REGION}"
   else
@@ -421,7 +460,7 @@ fi
 ok "required APIs are enabled"
 echo
 
-# --- 1. Vertex tier -------------------------------------------------------------
+# --- 1. Vertex models -----------------------------------------------------------
 # Without --with-vertex or --without-vertex, follow what the gateway already
 # serves only when it serves no Vertex models, so a forgotten flag never
 # removes them from the durable gateway.
@@ -462,8 +501,13 @@ echo
 # Both digests are of the raw multi-arch index, read with skopeo the same way.
 # A private auth file keeps the operator's own registry config untouched.
 echo "==> agentgateway ${AGW_VERSION} image..."
-upstream_digest="sha256:$(skopeo inspect --raw "docker://${UPSTREAM_IMAGE}" | sha256)" \
+skopeo inspect --raw "docker://${UPSTREAM_IMAGE}" >"${TMP}/upstream.manifest" \
   || die "could not read ${UPSTREAM_IMAGE}."
+upstream_digest="sha256:$(sha256 < "${TMP}/upstream.manifest")"
+# Cloud Run resolves the index to its linux/amd64 image for each revision.
+upstream_amd64=$(jq -r '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest][0] // empty' \
+  "${TMP}/upstream.manifest") || die "could not parse the ${UPSTREAM_IMAGE} index."
+[[ -n "${upstream_amd64}" ]] || die "${UPSTREAM_IMAGE} has no linux/amd64 image."
 say "upstream ${UPSTREAM_IMAGE} is ${upstream_digest}"
 gcloud auth print-access-token \
   | skopeo login --authfile "${TMP}/auth.json" -u oauth2accesstoken --password-stdin "${REGISTRY_HOST}" >/dev/null \
@@ -499,8 +543,9 @@ if [[ -n "${current_digest}" ]]; then
 else
   change "copied ${UPSTREAM_IMAGE} to ${DEST_IMAGE}" copy_image
 fi
-# gcloud run services update pins the running image by digest, so either form
-# of the verified image counts as current.
+# Deploy by the verified digest, so a retag between the check and the deploy
+# cannot change what runs. A service deployed by tag also counts as current:
+# its running image is checked separately (see serving_image_ok).
 DEST_IMAGE_BY_DIGEST="${DEST_IMAGE%:*}@${upstream_digest}"
 echo
 
@@ -511,7 +556,7 @@ if describe iam service-accounts describe "${SA_EMAIL}"; then
 else
   change "created service account ${SA_EMAIL}" \
     gc iam service-accounts create "${NAME}" \
-      --display-name="fullsend e2e inference gateway runtime"
+      --display-name="fullsend e2e inference gateway runtime" --description="${LABEL}"
 fi
 
 if [[ "${VERTEX}" == "with" ]]; then
@@ -596,7 +641,7 @@ echo "==> Cloud Run service ${NAME}..."
 deploy_args=(
   run deploy "${NAME}"
   --region="${REGION}"
-  --image="${DEST_IMAGE}"
+  --image="${DEST_IMAGE_BY_DIGEST}"
   --service-account="${SA_EMAIL}"
   --port="${GATEWAY_PORT}"
   # Without --no-invoker-iam-check, Cloud Run's front end rejects GitHub
@@ -682,6 +727,17 @@ secrets_newer_than_revision() {
   return 1
 }
 
+# serving_image_ok reports whether the given revision runs the verified image:
+# the index digest, or its linux/amd64 image, which Cloud Run resolves a tag or
+# an index to.
+serving_image_ok() {
+  local revision="$1" running
+  describe run revisions describe "${revision}" --region="${REGION}" \
+    || die "revision ${revision} of ${NAME} not found."
+  running=$(jq -r '.status.imageDigest // empty' <<<"${DESCRIBED}")
+  [[ "${running}" == "${DEST_IMAGE%:*}@${upstream_digest}" || "${running}" == "${DEST_IMAGE%:*}@${upstream_amd64}" ]]
+}
+
 # traffic_to_latest reports whether all traffic goes to the latest revision
 # and no revision is reachable through a tag URL.
 traffic_to_latest() {
@@ -698,6 +754,8 @@ if describe run services describe "${NAME}" --region="${REGION}"; then
     change "redeployed Cloud Run service ${NAME} (differed in: ${drift})" gc "${deploy_args[@]}"
   elif [[ "${ready}" != "True" ]]; then
     change "redeployed Cloud Run service ${NAME} (was not Ready)" gc "${deploy_args[@]}"
+  elif ! serving_image_ok "${serving}"; then
+    change "redeployed Cloud Run service ${NAME} (revision ${serving} runs an unverified image)" gc "${deploy_args[@]}"
   elif [[ "${CONFIG_CHANGED}" == "true" || "${KEY_CHANGED}" == "true" ]] \
       || secrets_newer_than_revision "${serving}"; then
     change "rolled a new revision of Cloud Run service ${NAME} for the latest secret versions" \
@@ -743,11 +801,12 @@ probe() {
   local label="$1"
   shift
   local status ctype body
+  : > "${TMP}/probe.body"
   status=$(curl -sS -m 30 -o "${TMP}/probe.body" -w '%{http_code} %{content_type}' "$@" "${URL}/v1/models") \
     || status="curl-failed"
   ctype="${status#* }"
   status="${status%% *}"
-  body=$(head -c 300 "${TMP}/probe.body" 2>/dev/null | tr '\n' ' ')
+  body=$(head -c 300 "${TMP}/probe.body" | tr '\n' ' ') || body=""
   say "${label}: GET /v1/models -> HTTP ${status} ${ctype}"
   say "  body: ${body}"
   if [[ "${status}" != "401" ]]; then
