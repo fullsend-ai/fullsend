@@ -182,6 +182,10 @@ type PerRepoInferenceConfig struct {
 	// them. The FULLSEND_OPENAI_* runner variables, when set, take
 	// precedence over this block.
 	OpenAI *OpenAIWIFConfig `yaml:"openai,omitempty"`
+	// Gateway is the inference gateway credential route (ADR 0137): a
+	// self-hosted gateway that validates the job's forge OIDC token. It
+	// layers field by field and has no runner-variable override.
+	Gateway *InferenceGatewayConfig `yaml:"gateway,omitempty"`
 }
 
 // OpenAIWIFConfig identifies the OpenAI Workload Identity provider and
@@ -906,6 +910,11 @@ func (c *perRepoConfig) validateLocalFields() error {
 		validProviders := ValidProviders()
 		if !slices.Contains(validProviders, c.Inference.Provider) {
 			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
+		}
+	}
+	if c.Inference != nil && c.Inference.Gateway != nil {
+		if err := c.Inference.Gateway.Validate(); err != nil {
+			return err
 		}
 	}
 	validAuthProviders := ValidAuthorizationProviders()

@@ -132,6 +132,9 @@ the overlay → base → code defaults chain.
 | `inference.openai.audience` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.openai.identity_provider_id` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.openai.service_account_id` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.gateway.url` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.gateway.audience` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
@@ -232,6 +235,14 @@ unset (`""`) falls through to parent, then to code default
   `openai-wif` repos. Each resolves independently through
   the layers; a run needs all three from one source. The `FULLSEND_OPENAI_*`
   runner variables, when any is set, replace the resolved block entirely.
+- **`inference.gateway.{url,audience}`**: the inference gateway credential
+  route (ADR 0137), written by `fullsend github setup --inference-gateway-*`.
+  Each resolves independently through the layers, so an org preset can carry
+  `url` and `audience` while each repository opts in its own models. The
+  resolved block needs both. There is no runner-variable override.
+- **`inference.gateway.models` / `inference.gateway.models_file`**: the
+  gateway model list. The two forms are one unit: a layer that sets either
+  replaces the inherited list, so the forms never combine across layers.
 
 The `inference` pointer itself (`*PerRepoInferenceConfig`) uses nil to mean
 "no local inference settings" — if the entire `inference:` key is omitted

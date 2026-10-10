@@ -329,6 +329,7 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 			oa := *src.Inference.OpenAI
 			inf.OpenAI = &oa
 		}
+		inf.Gateway = cloneGateway(src.Inference.Gateway)
 		out.Inference = &inf
 	}
 	if src.Models != nil {
@@ -427,6 +428,14 @@ func applyManagedLayer(out, child *perRepoConfig) {
 			if child.Inference.OpenAI.ServiceAccountID != "" {
 				out.Inference.OpenAI.ServiceAccountID = child.Inference.OpenAI.ServiceAccountID
 			}
+		}
+		if child.Inference.Gateway != nil {
+			var parent InferenceGatewayConfig
+			if out.Inference.Gateway != nil {
+				parent = *out.Inference.Gateway
+			}
+			merged := mergeGateway(parent, child.Inference.Gateway)
+			out.Inference.Gateway = &merged
 		}
 	}
 	if child.Models != nil && len(child.Models.Aliases) > 0 {

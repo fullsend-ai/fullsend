@@ -72,6 +72,9 @@ type PerRepoConfigReader interface {
 	ConfigInferenceRegion() string
 	ConfigInferenceWIFProvider() string
 	ConfigInferenceOpenAI() OpenAIWIFConfig
+	// ConfigInferenceGateway returns the effective inference.gateway
+	// block, layered field by field (ADR 0137).
+	ConfigInferenceGateway() InferenceGatewayConfig
 	// ConfigModelAliases returns the effective model alias map, merged
 	// per-key through the parent chain. nil (the code default) means no
 	// aliases are configured: every alias resolves through the runtime's
@@ -110,6 +113,7 @@ type PerRepoConfigWriter interface {
 	SetInferenceRegion(string)
 	SetInferenceWIFProvider(string)
 	SetInferenceOpenAI(OpenAIWIFConfig)
+	SetInferenceGateway(InferenceGatewayConfig)
 	SetModelAliases(map[string]string)
 	SetOwnersFileAuthEnabled(bool)
 }
@@ -471,6 +475,20 @@ func (c *perRepoConfig) ConfigInferenceOpenAI() OpenAIWIFConfig {
 	return out
 }
 
+// ConfigInferenceGateway returns the inference.gateway block. url and
+// audience resolve independently through the layers; the model list
+// (models or models_file) is one unit that a layer replaces as a whole.
+func (c *perRepoConfig) ConfigInferenceGateway() InferenceGatewayConfig {
+	var out InferenceGatewayConfig
+	if c.parent != nil {
+		out = c.parent.ConfigInferenceGateway()
+	}
+	if c.Inference != nil {
+		out = mergeGateway(out, c.Inference.Gateway)
+	}
+	return out
+}
+
 // ConfigModelAliases returns the effective model alias map, merged per
 // key through the parent chain. Each key in the local Models.Aliases
 // overrides the same key from the parent; unstated keys inherit the
@@ -597,6 +615,17 @@ func (c *perRepoConfig) SetInferenceOpenAI(ids OpenAIWIFConfig) {
 	}
 	cp := ids
 	inf.OpenAI = &cp
+}
+
+// SetInferenceGateway sets the inference.gateway block; a zero value
+// removes it.
+func (c *perRepoConfig) SetInferenceGateway(g InferenceGatewayConfig) {
+	inf := c.ensureInference()
+	if g.IsZero() {
+		inf.Gateway = nil
+		return
+	}
+	inf.Gateway = cloneGateway(&g)
 }
 
 // ensureInference lazily initializes the Inference struct.

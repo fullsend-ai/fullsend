@@ -89,6 +89,12 @@ func (d *perRepoDefaults) ConfigKeepHistory() bool { return true }
 // runner variables).
 func (d *perRepoDefaults) ConfigInferenceOpenAI() OpenAIWIFConfig { return OpenAIWIFConfig{} }
 
+// ConfigInferenceGateway returns the default inference.gateway block
+// (none — set by committing the block to config.yaml).
+func (d *perRepoDefaults) ConfigInferenceGateway() InferenceGatewayConfig {
+	return InferenceGatewayConfig{}
+}
+
 // ConfigModelAliases returns the default model aliases (none — fleet
 // defaults are compiled into the runtimes).
 func (d *perRepoDefaults) ConfigModelAliases() map[string]string { return nil }

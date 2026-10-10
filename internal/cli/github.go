@@ -70,6 +70,13 @@ type githubSetupConfig struct {
 	configHash               string // --config-hash: SHA-256 hex digest for preset validation
 	signoff                  bool   // --signoff: add Signed-off-by trailer to scaffold commits
 
+	// Inference gateway block (ADR 0137), written to inference.gateway in
+	// .fullsend/config.yaml; url + audience all or none.
+	gatewayURL        string
+	gatewayAudience   string
+	gatewayModels     []string
+	gatewayModelsFile string
+
 	// changedFlags records which flags were explicitly set on the
 	// command line (populated by RunE before calling the setup
 	// function). Used to distinguish flag-specified values from
@@ -156,6 +163,10 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().StringVar(&cfg.openaiAudience, "openai-audience", "", "OpenAI Workload Identity audience (GPT on pi or codex; with --openai-identity-provider-id and --openai-service-account-id)")
 	cmd.Flags().StringVar(&cfg.openaiIdentityProviderID, "openai-identity-provider-id", "", "OpenAI Workload Identity provider ID")
 	cmd.Flags().StringVar(&cfg.openaiServiceAccountID, "openai-service-account-id", "", "OpenAI service account ID the provider maps this repository to")
+	cmd.Flags().StringVar(&cfg.gatewayURL, "inference-gateway-url", "", "inference gateway URL, https (gateway/ models on pi; with --inference-gateway-audience)")
+	cmd.Flags().StringVar(&cfg.gatewayAudience, "inference-gateway-audience", "", "OIDC audience the runner requests for the inference gateway")
+	cmd.Flags().StringArrayVar(&cfg.gatewayModels, "inference-gateway-model", nil, "inference gateway model as id=api (repeatable; api is openai-responses, anthropic-messages or openai-completions)")
+	cmd.Flags().StringVar(&cfg.gatewayModelsFile, "inference-gateway-models-file", "", "local pi-inference-gateway config file listing the gateway models; validated and committed as "+gatewayModelsFileRepoPath)
 	cmd.Flags().StringVar(&cfg.appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print actions without making changes")
 	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
@@ -189,6 +200,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		return err
 	}
 	if err := validateCLISetupValues(cfg); err != nil {
+		return err
+	}
+	gatewayModelsFile, err := loadGatewayModelsFile(cfg)
+	if err != nil {
 		return err
 	}
 
@@ -374,6 +389,13 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			Mode:    "100644",
 		})
 	}
+	if gatewayModelsFile != nil {
+		files = append(files, forge.TreeFile{
+			Path:    gatewayModelsFileRepoPath,
+			Content: gatewayModelsFile,
+			Mode:    "100644",
+		})
+	}
 
 	// Mint/inference values are stored in layered config (ADR 0069
 	// Decision 1). Repo variables/secrets are ALSO written for backward
@@ -534,7 +556,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 // setupConfigFlags are the flags that target a key in .fullsend/config.yaml.
 // Any of them being passed explicitly turns a re-run from "keep the file"
 // into "change that key on the existing file".
-var setupConfigFlags = []string{"runtime", "agents", "mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider", "openai-audience", "openai-identity-provider-id", "openai-service-account-id"}
+var setupConfigFlags = []string{"runtime", "agents", "mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider", "openai-audience", "openai-identity-provider-id", "openai-service-account-id", "inference-gateway-url", "inference-gateway-audience", "inference-gateway-model", "inference-gateway-models-file"}
 
 // setupConfigFlagsChanged reports whether any config-targeting flag was
 // passed explicitly (cobra's Changed, recorded in changedFlags — value
@@ -683,6 +705,15 @@ func pinnedSetupFlags(cfg githubSetupConfig, inherited config.PerRepoConfigReade
 			warnings = append(warnings, setupPinWarning("inference.openai.service_account_id"))
 		}
 	}
+	if gatewayFlagsChanged(cfg) {
+		inheritedGW := inherited.ConfigInferenceGateway().Trimmed()
+		if u := strings.TrimSpace(cfg.gatewayURL); u != "" && u == inheritedGW.URL {
+			warnings = append(warnings, setupPinWarning("inference.gateway.url"))
+		}
+		if a := strings.TrimSpace(cfg.gatewayAudience); a != "" && a == inheritedGW.Audience {
+			warnings = append(warnings, setupPinWarning("inference.gateway.audience"))
+		}
+	}
 	return warnings
 }
 
@@ -732,6 +763,13 @@ func applySetupFlagsToConfig(cfg githubSetupConfig, w config.PerRepoConfigWriter
 	if openaiFlagsChanged(cfg) {
 		w.SetInferenceOpenAI(cfg.openaiIDs())
 		changed = append(changed, "inference.openai")
+	}
+	if gatewayFlagsChanged(cfg) {
+		// validateGatewaySetupFlags already ran, so the block parses.
+		if g, err := cfg.gatewayBlock(); err == nil {
+			w.SetInferenceGateway(g)
+			changed = append(changed, "inference.gateway")
+		}
 	}
 	return changed
 }
@@ -824,7 +862,10 @@ func validateCLISetupValues(cfg githubSetupConfig) error {
 			return err
 		}
 	}
-	return validateOpenAISetupFlags(cfg)
+	if err := validateOpenAISetupFlags(cfg); err != nil {
+		return err
+	}
+	return validateGatewaySetupFlags(cfg)
 }
 
 // validateSetupValueFormats checks the mint URL and inference WIF

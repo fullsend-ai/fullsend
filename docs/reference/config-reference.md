@@ -88,6 +88,11 @@ inference:
     audience: ""                     # OpenAI WIF audience
     identity_provider_id: ""         # OpenAI WIF identity provider ID
     service_account_id: ""           # OpenAI WIF service account ID
+  gateway:                           # Inference gateway credential route (ADR 0137)
+    url: ""                          # Gateway URL (https only)
+    audience: ""                     # OIDC audience the runner requests for the gateway
+    models: {}                       # Inline model list: id -> {api, compat, contextWindow, maxTokens}
+    models_file: ""                  # Or: repository path to a pi-inference-gateway config file
 
 # ── Model aliases ────────────────────────────────────────────
 models:
@@ -282,6 +287,37 @@ independently through the layered config system (an overlay can override
   `fullsend repos install` checks the same sources for repositories whose
   `inference.auth` is `openai-wif`. See
   [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+- **`gateway`** — a self-hosted, OpenAI/Anthropic-compatible inference
+  gateway that validates the job's forge OIDC token directly
+  ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). Models
+  with the `gateway/` prefix use this route. The runner does not act on this
+  block yet: `fullsend` parses and validates it, and the runner support for
+  the route lands in later changes (#8280). Fields:
+  - `url` — the gateway URL. Must be `https`, with no credentials, query or
+    fragment.
+  - `audience` — the OIDC audience the runner requests. The token is valid
+    only at the gateway.
+  - `models` — optional inline model list, a map of model id to settings:
+    `api` (one of `openai-responses`, `anthropic-messages`,
+    `openai-completions`), and optional `compat`, `contextWindow` and
+    `maxTokens`.
+  - `models_file` — optional repository path, for example
+    `.fullsend/inference-gateway.json`, to a file in the
+    [pi-inference-gateway config format](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file).
+    It must hold exactly one entry, `providers.gateway`, carrying only
+    `models`, `include`, `exclude` and `defaultApi`. A file that sets
+    `baseUrl`, `baseUrlEnv`, a credential key (`apiKey*`, `tokenFile`,
+    `username*`, `password*`), `headers`, `authHeader`, `modelsPath`,
+    `discovery` or `fallbackModels` is refused: the runner owns those.
+
+  `url` and `audience` are all or none: a block that resolves with only
+  one of them is an error. `models` and `models_file` are mutually
+  exclusive. A pi run on a `gateway/` model needs one of them, because pi
+  runs offline and cannot discover the gateway's models. `url` and
+  `audience` layer independently; the model list (either form) is one unit,
+  and a layer that sets it replaces the inherited list. There is no
+  runner-variable override for this block. `fullsend github setup
+  --inference-gateway-*` writes it.
 
 For setup instructions, see
 [Getting Inference](../guides/getting-started/getting-inference.md).
