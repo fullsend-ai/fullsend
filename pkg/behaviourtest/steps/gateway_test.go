@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -164,26 +166,69 @@ func TestProbeBodyRedactedJWT(t *testing.T) {
 // The api-key step commits url and auth only, and skips without the URL
 // or the test key.
 func TestGivenTestInferenceGatewayAPIKey(t *testing.T) {
+	const cfgKey = "org/repo/.fullsend/config.yaml"
+	newWorld := func() (*world.World, *forge.FakeClient) {
+		fc := forge.NewFakeClient()
+		fc.FileContents[cfgKey] = []byte("runtime: dummy\n")
+		return &world.World{Org: "org", RepoName: "repo", SCM: scmgh.New(fc)}, fc
+	}
+
 	t.Setenv(envInferenceGatewayURL, "https://gw.example")
 	t.Setenv(envInferenceGatewayTestKey, "")
-	w := &world.World{Org: "org", RepoName: "repo", SCM: &fakeCleanupSCM{fileContent: []byte("runtime: dummy\n")}}
+	w, fc := newWorld()
 	assert.ErrorIs(t, givenTestInferenceGatewayAPIKey(w), godog.ErrSkip, "no key: skip")
+	assert.Empty(t, fc.CreatedSecrets, "no key: no secret")
 
 	t.Setenv(envInferenceGatewayTestKey, "test-gateway-key-value")
-	scmDriver := &fakeCleanupSCM{fileContent: []byte("runtime: dummy\n")}
-	w = &world.World{Org: "org", RepoName: "repo", SCM: scmDriver}
+	w, fc = newWorld()
 	require.NoError(t, givenTestInferenceGatewayAPIKey(w))
-	require.Len(t, scmDriver.commits, 1)
+	assert.Equal(t, []forge.SecretRecord{{Owner: "org", Repo: "repo", Name: forge.SecretInferenceGatewayAPIKey, Value: "test-gateway-key-value"}},
+		fc.CreatedSecrets, "the step sets the enrolled repo's key secret")
+	assert.True(t, w.GatewayAPIKeySecretSet)
+	committed := fc.FileContents[cfgKey]
 	var doc map[string]any
-	require.NoError(t, yaml.Unmarshal(scmDriver.commits[0].content, &doc))
+	require.NoError(t, yaml.Unmarshal(committed, &doc))
 	gw := doc["inference"].(map[string]any)["gateway"].(map[string]any)
 	assert.Equal(t, "https://gw.example", gw["url"])
 	assert.Equal(t, "api-key", gw["auth"])
 	assert.NotContains(t, gw, "audience")
 	assert.Equal(t, map[string]any{"api": "anthropic-messages", "compat": map[string]any{"supportsStrictTools": false}},
 		gw["models"].(map[string]any)["claude-haiku-5-5"], "pi runs offline: the model list is committed")
-	assert.NotContains(t, string(scmDriver.commits[0].content), "test-gateway-key-value", "the key is never committed")
+	assert.NotContains(t, string(committed), "test-gateway-key-value", "the key is never committed")
+
+	require.NoError(t, deleteGatewayAPIKeySecret(w))
+	assert.Equal(t, []forge.SecretRecord{{Owner: "org", Repo: "repo", Name: forge.SecretInferenceGatewayAPIKey}},
+		stripSecretValues(fc.DeletedSecrets), "cleanup deletes the secret")
+	assert.False(t, w.GatewayAPIKeySecretSet)
+	require.NoError(t, deleteGatewayAPIKeySecret(w), "a second cleanup is a no-op")
+	assert.Len(t, fc.DeletedSecrets, 1)
 
 	t.Setenv(envInferenceGatewayURL, "")
-	assert.ErrorIs(t, givenTestInferenceGatewayAPIKey(&world.World{SCM: &fakeCleanupSCM{}}), godog.ErrSkip, "no URL: skip")
+	w, fc = newWorld()
+	assert.ErrorIs(t, givenTestInferenceGatewayAPIKey(w), godog.ErrSkip, "no URL: skip")
+	assert.Empty(t, fc.CreatedSecrets, "no URL: no secret")
+}
+
+func TestGivenTestInferenceGatewayAPIKey_RequiresGitHub(t *testing.T) {
+	t.Setenv(envInferenceGatewayURL, "https://gw.example")
+	t.Setenv(envInferenceGatewayTestKey, "test-gateway-key-value")
+	w := &world.World{Org: "org", RepoName: "repo", SCM: &fakeCleanupSCM{fileContent: []byte("runtime: dummy\n")}}
+	assert.ErrorContains(t, givenTestInferenceGatewayAPIKey(w), "requires GitHub SCM driver")
+	assert.False(t, w.GatewayAPIKeySecretSet)
+}
+
+func TestDeleteGatewayAPIKeySecret_NotFoundIsFine(t *testing.T) {
+	fc := forge.NewFakeClient()
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scmgh.New(fc), GatewayAPIKeySecretSet: true}
+	require.NoError(t, deleteGatewayAPIKeySecret(w))
+	assert.False(t, w.GatewayAPIKeySecretSet)
+}
+
+func stripSecretValues(in []forge.SecretRecord) []forge.SecretRecord {
+	out := make([]forge.SecretRecord, len(in))
+	for i, r := range in {
+		r.Value = ""
+		out[i] = r
+	}
+	return out
 }

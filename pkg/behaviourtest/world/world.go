@@ -148,6 +148,11 @@ type World struct {
 	GatewayConfigOverridden bool
 	GatewayConfigOriginal   []byte
 
+	// GatewayAPIKeySecretSet records that this scenario set the enrolled
+	// repo's FULLSEND_INFERENCE_GATEWAY_API_KEY secret to the test key.
+	// CleanupScenario deletes it before the leased repo is deallocated.
+	GatewayAPIKeySecretSet bool
+
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
 	// CleanupScenario removes both.

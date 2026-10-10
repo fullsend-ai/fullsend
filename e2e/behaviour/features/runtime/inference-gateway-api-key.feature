@@ -9,12 +9,10 @@
 # capabilities, which `make behaviour-test` declares by default (the key
 # reaches only the echo model, never a real one). It needs the durable
 # test gateway (#8286) with a test key authorised for the `echo` model
-# only, and that key provisioned two ways:
-#   - as the pool repositories' FULLSEND_INFERENCE_GATEWAY_API_KEY secret,
-#     passed through to the runner by the reusable workflow;
-#   - as E2E_INFERENCE_GATEWAY_TEST_KEY in the suite's environment, which
-#     gates the scenario and is registered for redaction (never
-#     committed).
+# only, in the suite's environment as E2E_INFERENCE_GATEWAY_TEST_KEY
+# (registered for redaction, never committed). The step sets it as the
+# enrolled repository's FULLSEND_INFERENCE_GATEWAY_API_KEY secret, which
+# the reusable workflow passes to the runner, and cleanup deletes it.
 # The scenario skips when E2E_INFERENCE_GATEWAY_URL or
 # E2E_INFERENCE_GATEWAY_TEST_KEY is unset. The gateway answers a model the
 # key is not authorised for with 403.

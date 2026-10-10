@@ -92,6 +92,11 @@ func CleanupScenario(w *world.World) {
 	}); err != nil {
 		worldLogf(w, "behaviour cleanup: restore config after inference gateway scenario: %v", err)
 	}
+	if err := cleanupRetry(w.Logf, "delete inference gateway api-key secret", func() error {
+		return deleteGatewayAPIKeySecret(w)
+	}); err != nil {
+		worldLogf(w, "behaviour cleanup: delete inference gateway api-key secret: %v", err)
+	}
 
 	// --- Issue / PR cleanup ---
 	if w.IssueNumber > 0 {

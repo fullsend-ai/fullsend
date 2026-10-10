@@ -13,8 +13,10 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
+	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -25,10 +27,10 @@ const (
 	envInferenceGatewayURL      = "E2E_INFERENCE_GATEWAY_URL"
 	envInferenceGatewayAudience = "E2E_INFERENCE_GATEWAY_AUDIENCE"
 	// envInferenceGatewayTestKey is the test gateway's API key for the
-	// api-key mode (ADR 0138), authorised for the echo model only. In the
-	// suite it only gates the scenario and is registered for redaction;
-	// the harness run gets it as the pool repository's
-	// FULLSEND_INFERENCE_GATEWAY_API_KEY secret, provisioned out of band.
+	// api-key mode (ADR 0138), authorised for the echo model only. It
+	// gates the scenario and is registered for redaction. The step sets it
+	// as the enrolled repository's FULLSEND_INFERENCE_GATEWAY_API_KEY
+	// secret for the harness run, and CleanupScenario deletes it.
 	envInferenceGatewayTestKey = "E2E_INFERENCE_GATEWAY_TEST_KEY"
 	defaultGatewayAudience     = "fullsend-e2e-gateway"
 	// gatewayPlaceholder is expanded in http_probe args to the test
@@ -151,7 +153,38 @@ func givenTestInferenceGatewayAPIKey(w *world.World) error {
 		return godog.ErrSkip
 	}
 	registerSecretForms(key)
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before configuring the inference gateway")
+	}
+	ghDriver, ok := w.SCM.(*scmgh.Driver)
+	if !ok {
+		return fmt.Errorf("inference gateway api-key test requires GitHub SCM driver")
+	}
+	// Mark first, so cleanup still runs after a partly failed create.
+	w.GatewayAPIKeySecretSet = true
+	if err := ghDriver.Client.CreateRepoSecret(context.Background(), w.Org, w.RepoName, forge.SecretInferenceGatewayAPIKey, key); err != nil {
+		return fmt.Errorf("setting repository secret %s: %w", forge.SecretInferenceGatewayAPIKey, err)
+	}
 	return commitInferenceGateway(w, map[string]any{"url": gatewayURL, "auth": config.GatewayAuthAPIKey, "models": testGatewayModels()})
+}
+
+// deleteGatewayAPIKeySecret deletes the repository secret that
+// givenTestInferenceGatewayAPIKey set. A secret that is already gone is
+// not an error.
+func deleteGatewayAPIKeySecret(w *world.World) error {
+	if !w.GatewayAPIKeySecretSet {
+		return nil
+	}
+	ghDriver, ok := w.SCM.(*scmgh.Driver)
+	if !ok {
+		return fmt.Errorf("inference gateway api-key test requires GitHub SCM driver")
+	}
+	err := ghDriver.Client.DeleteRepoSecret(context.Background(), w.Org, w.RepoName, forge.SecretInferenceGatewayAPIKey)
+	if err != nil && !forge.IsNotFound(err) {
+		return err
+	}
+	w.GatewayAPIKeySecretSet = false
+	return nil
 }
 
 // commitInferenceGateway commits gateway as the enrolled repo's

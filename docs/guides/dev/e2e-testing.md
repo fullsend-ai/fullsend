@@ -463,8 +463,10 @@ maintainer wires it in by hand; this script changes no workflow files:
    - `E2E_INFERENCE_GATEWAY_TEST_KEY`: the plaintext of the echo-only key
      whose hash is passed as `ECHO_KEY_HASH`. The gateway authorises it for
      the `echo` model only, so it reaches no real model. The suite
-     registers it for redaction. The pool repositories need the same key
-     as their `FULLSEND_INFERENCE_GATEWAY_API_KEY` secret.
+     registers it for redaction. The `api-key` scenario sets it as the
+     enrolled pool repository's `FULLSEND_INFERENCE_GATEWAY_API_KEY`
+     secret for the scenario and deletes it afterwards, so the pool needs
+     no standing key.
 
    `E2E_INFERENCE_GATEWAY_AUDIENCE` defaults to `fullsend-e2e-gateway` and
    needs setting only if it changes.
