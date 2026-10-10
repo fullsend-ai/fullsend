@@ -308,6 +308,11 @@ independently through the layered config system (an overlay can override
     credentials, query or fragment, no path other than `/`, and no port
     other than 443: the runner adds the `/v1/...` model API paths itself,
     and the egress profile allows the gateway host on port 443 only.
+    The run route accepts a gateway on a private address, but
+    [`fullsend inference gateway status`](../cli/inference.md#inference-gateway-status)
+    refuses loopback, private and other internal addresses, so it cannot
+    check one. For such a gateway, a run is the check: its first gateway
+    model call fails if the gateway is unreachable or refuses the token.
   - `audience` — the OIDC audience the runner requests. The token is valid
     only at the gateway.
   - `models` — optional inline model list, a map of model id to settings:

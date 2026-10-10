@@ -418,8 +418,9 @@ Status comment behavior is configured via `status_notifications` in
 
 ## Using an inference gateway (experimental)
 
-> **Experimental.** Local runs only, and behaviour may change. Hosted (CI) runs are not supported yet
-> ([#7480](https://github.com/fullsend-ai/fullsend/issues/7480)).
+> **Experimental.** Behaviour may change. This section covers local runs, where the harness ships
+> the extension as a plugin. Hosted (CI) runs use the runner-managed `inference.gateway` block in
+> `.fullsend/config.yaml` instead (see the [config reference](../../reference/config-reference.md)).
 
 On the [pi](../../runtimes/pi.md) runtime, an agent can reach its model through an
 OpenAI/Anthropic-compatible inference gateway (Praxis, LiteLLM, agentgateway, ...). The

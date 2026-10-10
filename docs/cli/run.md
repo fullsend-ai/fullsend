@@ -65,7 +65,10 @@ Google credentials before the harness pre-script:
 
 The run prints which source it used. For local and GitLab Vertex runs, point
 `GOOGLE_APPLICATION_CREDENTIALS` at a non-empty credential file when the harness mounts it.
-An OpenAI run uses the [OpenAI credential path](#openai-credentials-on-pi-and-codex). When both GCP
+An OpenAI run uses the [OpenAI credential path](#openai-credentials-on-pi-and-codex), and a pi run
+whose own model is `gateway/<id>` uses the
+[inference gateway credential path](#inference-gateway-credentials-on-pi); neither runs the Vertex
+setup above. When both GCP
 inputs are set, an OpenAI run on GitHub Actions also prepares Google WIF credentials for Vertex
 sub-agents; a failure there is a warning. The `dummy` and `dummy-playback` runtimes follow the
 same rule and need no GCP inputs. On GitHub Actions, a run whose parent does not use Vertex clears a
@@ -339,6 +342,28 @@ is already rejected). Give repository-specific providers and profiles their own 
 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+
+## Inference gateway credentials on pi
+
+A pi run that resolves a `gateway/<id>` model, for the parent or a configured sub-agent, uses the
+`inference.gateway` block of `.fullsend/config.yaml`
+([config reference](../reference/config-reference.md),
+[ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). When the block is complete and the
+run has a forge OIDC endpoint (a GitHub Actions job with `id-token: write`), the runner:
+
+- fetches the job's OIDC assertion for the block's `audience` and puts it behind a provider named
+  after the run, with a per-host egress profile for the gateway, in addition to every other
+  provider;
+- checks after sandbox creation that the sandbox policy reaches the gateway host only through an
+  inspected route, and deletes the sandbox if it does not;
+- seeds the provider's placeholder into a runner-owned token file before the agent-writable `.env`
+  is sourced, and refreshes the assertion before each token's own `exp`, re-seeding the file;
+- removes the provider when the run ends (or expires it in place under `--keep-sandbox`).
+
+A failure at any step fails the run; the route never falls back to another credential. With no
+block, or without an OIDC endpoint, the runner adds nothing, so a harness that loads the extension
+as a plugin keeps working. Check a block with
+[`fullsend inference gateway status`](inference.md#inference-gateway-status).
 
 ## GitLab role identity
 
