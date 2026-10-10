@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,6 +38,8 @@ type fakeSAAPI struct {
 	// project, on top of its direct membership.
 	inherited map[int64]int
 	failLevel error
+	// patScopes records the scopes of every PAT creation request.
+	patScopes [][]string
 }
 
 func newFakeSAAPI() *fakeSAAPI {
@@ -105,7 +108,7 @@ func TestServiceAccountCreationOwnershipFailureDeletesOnlyNewAccount(t *testing.
 	}
 	fc.Errors = map[string]error{"UpdateCIVariable": errors.New("ownership write failed")}
 	for range 2 {
-		_, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.CoderTokenName, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, "2027-01-01")
+		_, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.CoderTokenName, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, validRolePATExpiry())
 		require.Error(t, err)
 		assert.Equal(t, []GitLabServiceAccount{{ID: 77, Name: gitlabroles.CoderTokenName}}, sa.accounts)
 		assert.Empty(t, sa.tokens)
@@ -113,7 +116,7 @@ func TestServiceAccountCreationOwnershipFailureDeletesOnlyNewAccount(t *testing.
 	}
 	assert.Equal(t, []int{501, 502}, sa.deletedSAs)
 	fc.Errors = nil
-	_, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.CoderTokenName, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, "2027-01-01")
+	_, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.CoderTokenName, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, validRolePATExpiry())
 	require.NoError(t, err)
 	id, err := ManagedGitLabRoleAccountID(ctx, fc, "g", "p", gitlabroles.RoleCoder)
 	require.NoError(t, err)
@@ -133,10 +136,11 @@ func recordManagedAccountForTest(ctx context.Context, fc *forge.FakeClient, owne
 	return writeRotationState(ctx, fc, owner, repo, state)
 }
 
-func (f *fakeSAAPI) CreateServiceAccountPAT(_ context.Context, _, _ string, userID int, name string, _ []string, expiresAt string) (*ProjectAccessToken, error) {
+func (f *fakeSAAPI) CreateServiceAccountPAT(_ context.Context, _, _ string, userID int, name string, scopes []string, expiresAt string) (*ProjectAccessToken, error) {
 	if f.failPAT != nil {
 		return nil, f.failPAT
 	}
+	f.patScopes = append(f.patScopes, append([]string(nil), scopes...))
 	f.nextToken++
 	tok := ProjectAccessToken{ID: f.nextToken, Name: name, Token: leakToken + "-sa-" + name, Active: true, ExpiresAt: expiresAt}
 	listed := tok
@@ -204,7 +208,13 @@ func (f *fakeSAAPI) GetProjectMemberAccessLevel(_ context.Context, _, _ string, 
 
 func saCreate(t *testing.T, c ServiceAccountTokenClient, name string) (*ProjectAccessToken, error) {
 	t.Helper()
-	return c.CreateProjectAccessToken(context.Background(), "g", "p", name, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, "2027-01-01")
+	return c.CreateProjectAccessToken(context.Background(), "g", "p", name, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, validRolePATExpiry())
+}
+
+// validRolePATExpiry is the role credential lifetime from the real clock,
+// which ServiceAccountTokenClient uses when Now is nil.
+func validRolePATExpiry() string {
+	return GitLabPATExpiresAt(time.Now())
 }
 
 func TestServiceAccountTokenClient_CreateProvisionsDeveloperServiceAccount(t *testing.T) {
@@ -247,7 +257,7 @@ func TestServiceAccountTokenClient_CreateRefusesInheritedElevation(t *testing.T)
 			sa := newFakeSAAPI()
 			sa.accounts = []GitLabServiceAccount{{ID: 10, Name: name}}
 			sa.inherited = map[int64]int{10: forge.GitLabAccessLevelMaintainer}
-			c := ServiceAccountTokenClient{SA: sa, ManagedAccountIDs: sa.ownedIDs, Legacy: &fakeTokens{}}
+			c := ServiceAccountTokenClient{SA: sa, ManagedAccountIDs: sa.ownedIDs, Legacy: &fakeTokens{}, RoleRegistry: customRoleRegistry(t)}
 
 			tok, err := saCreate(t, c, name)
 
@@ -1102,7 +1112,7 @@ func TestLegacyCreationRecordsOwnershipBeforePublication(t *testing.T) {
 			}, LegacyTokenCreated: func(ctx context.Context, owner, repo string, tok *ProjectAccessToken) error {
 				return RecordManagedGitLabLegacyToken(ctx, fc, owner, repo, tok)
 			}}
-			tok, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.PollerTokenName, []string{"api"}, 30, "2027-01-01")
+			tok, err := c.CreateProjectAccessToken(ctx, "g", "p", gitlabroles.PollerTokenName, []string{"api"}, 30, validRolePATExpiry())
 			if fail {
 				require.Error(t, err)
 				assert.NotContains(t, err.Error(), leakToken)
@@ -1116,6 +1126,114 @@ func TestLegacyCreationRecordsOwnershipBeforePublication(t *testing.T) {
 				assert.Equal(t, []int{tok.ID}, ids)
 				require.NoError(t, c.RevokeProjectAccessToken(ctx, "g", "p", tok.ID))
 			}
+		})
+	}
+}
+
+// customRoleRegistry registers the custom role "custom" with its own credential.
+func customRoleRegistry(t *testing.T) func(context.Context, string, string) (gitlabroles.Registry, error) {
+	t.Helper()
+	reg, err := gitlabroles.ParseRegistry(`{"roles":[{"name":"custom","credential":"own","capabilities":["read_issues"],"agents":["custom"]},{"name":"shared","credential":"reuse","reuse":"coder","capabilities":["write_repository"],"agents":["shared"]}]}`)
+	require.NoError(t, err)
+	return func(context.Context, string, string) (gitlabroles.Registry, error) { return reg, nil }
+}
+
+// A custom role identity is authorized only by the trusted registry, never by
+// the bare name prefix; no account or membership is created otherwise.
+func TestServiceAccountTokenClient_CreateRequiresRegisteredRoleIdentity(t *testing.T) {
+	cases := map[string]ServiceAccountTokenClient{
+		"unregistered": {RoleRegistry: customRoleRegistry(t)},
+		"reuse-only":   {RoleRegistry: customRoleRegistry(t)},
+		"no registry":  {},
+		"unreadable": {RoleRegistry: func(context.Context, string, string) (gitlabroles.Registry, error) {
+			return gitlabroles.Registry{}, errors.New("boom")
+		}},
+	}
+	names := map[string]string{
+		"unregistered": gitlabroles.CustomTokenName("other"),
+		"reuse-only":   gitlabroles.CustomTokenName("shared"),
+		"no registry":  gitlabroles.CustomTokenName("custom"),
+		"unreadable":   gitlabroles.CustomTokenName("custom"),
+	}
+	for label, c := range cases {
+		t.Run(label, func(t *testing.T) {
+			sa := newFakeSAAPI()
+			c.SA, c.Legacy = sa, &fakeTokens{}
+			tok, err := saCreate(t, c, names[label])
+			require.Error(t, err)
+			assert.Nil(t, tok)
+			assert.Empty(t, sa.accounts, "no service account is created")
+			assert.Empty(t, sa.tokens)
+		})
+	}
+}
+
+// With no service-account client, identity authorization still runs before the
+// legacy backend is chosen: unregistered, reuse-only and unreadable-registry
+// role requests never create a legacy credential.
+func TestServiceAccountTokenClient_NilSARejectsUnauthorizedRoleBeforeLegacy(t *testing.T) {
+	cases := map[string]ServiceAccountTokenClient{
+		"unregistered": {RoleRegistry: customRoleRegistry(t)},
+		"reuse-only":   {RoleRegistry: customRoleRegistry(t)},
+		"no registry":  {},
+		"unreadable": {RoleRegistry: func(context.Context, string, string) (gitlabroles.Registry, error) {
+			return gitlabroles.Registry{}, errors.New("boom")
+		}},
+	}
+	names := map[string]string{
+		"unregistered": gitlabroles.CustomTokenName("other"),
+		"reuse-only":   gitlabroles.CustomTokenName("shared"),
+		"no registry":  gitlabroles.CustomTokenName("custom"),
+		"unreadable":   gitlabroles.CustomTokenName("custom"),
+	}
+	for label, c := range cases {
+		t.Run(label, func(t *testing.T) {
+			legacy := &fakeTokens{}
+			c.Legacy = legacy
+			tok, err := saCreate(t, c, names[label])
+			require.Error(t, err)
+			assert.Nil(t, tok)
+			assert.Empty(t, legacy.createdNames(), "legacy backend is never reached")
+		})
+	}
+
+	t.Run("registered role still reaches legacy", func(t *testing.T) {
+		legacy := &fakeTokens{}
+		c := ServiceAccountTokenClient{Legacy: legacy, RoleRegistry: customRoleRegistry(t)}
+		tok, err := saCreate(t, c, gitlabroles.CustomTokenName("custom"))
+		require.NoError(t, err)
+		require.NotNil(t, tok)
+		assert.Equal(t, []string{gitlabroles.CustomTokenName("custom")}, legacy.createdNames())
+	})
+}
+
+// With no service-account client the role credential policy still applies:
+// an invalid request never reaches the legacy backend.
+func TestServiceAccountTokenClient_CreateValidatesBeforeLegacyFallback(t *testing.T) {
+	legacy := &fakeTokens{}
+	c := ServiceAccountTokenClient{Legacy: legacy}
+	ctx := context.Background()
+	name := gitlabroles.PollerTokenName
+	expiry := validRolePATExpiry()
+	for label, call := range map[string]func() (*ProjectAccessToken, error){
+		"name": func() (*ProjectAccessToken, error) {
+			return c.CreateProjectAccessToken(ctx, "g", "p", "other", gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, expiry)
+		},
+		"scopes": func() (*ProjectAccessToken, error) {
+			return c.CreateProjectAccessToken(ctx, "g", "p", name, []string{"read_api"}, gitlabroles.DeveloperAccessLevel, expiry)
+		},
+		"level": func() (*ProjectAccessToken, error) {
+			return c.CreateProjectAccessToken(ctx, "g", "p", name, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel-10, expiry)
+		},
+		"expiry": func() (*ProjectAccessToken, error) {
+			return c.CreateProjectAccessToken(ctx, "g", "p", name, gitlabroles.TokenScopes(), gitlabroles.DeveloperAccessLevel, "2000-01-01")
+		},
+	} {
+		t.Run(label, func(t *testing.T) {
+			tok, err := call()
+			require.Error(t, err)
+			assert.Nil(t, tok)
+			assert.Empty(t, legacy.createdNames(), "legacy backend is never reached")
 		})
 	}
 }

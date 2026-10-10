@@ -344,9 +344,12 @@ authority.
 outgoing rotation obligation when an authoritative inventory positively
 locates an inactive token, or complete service-account and configured legacy
 inventories confirm absence. An active service-account token can be revoked
-even when legacy inventory is unavailable. Unavailable or forbidden
-inventories retain the obligation; a revocation 404 alone is insufficient.
-Generic revocation still reports unknown/unowned tokens as errors.
+even when legacy inventory is unavailable. The inactivity check is only an
+optimization: when it cannot establish inactivity (no service-account client,
+or an unavailable or forbidden inventory), grace cleanup falls back to the
+authorization-enforcing revocation and retains the obligation only if that
+revocation fails; a revocation 404 alone is insufficient. Generic revocation
+still reports unknown/unowned tokens as errors.
 
 Service-account PAT rotation preserves the account's user ID; replacing a
 legacy project-token bot changes it. Status reads the recorded managed-account
@@ -822,10 +825,13 @@ report:
 - `Missing`: registered roles whose secrets are absent
 - `Diagnostics`: human-readable lines with **names only**
 
-`repos uninstall` deletes the registry, rotation document, built-in and
-custom role secrets, and matching `fullsend-poller` / `fullsend-analyst`
-/ `fullsend-coder` / `fullsend-role-*` project access tokens. It does
-**not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a
+`repos uninstall` deletes the registry, built-in and custom role secrets,
+and matching `fullsend-poller` / `fullsend-analyst`
+/ `fullsend-coder` / `fullsend-role-*` project access tokens, and removes
+the rotation document last. A rotation document that records supplied-account
+exclusions is retained as an exclusions-only document, and uninstall fails
+closed before deleting anything when the rotation state is unreadable or
+malformed. It does **not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a
 matching `fullsend-bot` project access token — a repository installed
 before the role-only rollout requires manual cleanup of those. A
 token-revocation failure fails uninstall so the manifest entry remains

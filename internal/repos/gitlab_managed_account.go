@@ -49,6 +49,24 @@ func loadManagedAccountOwnership(ctx context.Context, client forge.Client, owner
 		if rs.ManagedUserID < 0 {
 			return rotationStateFile{}, fmt.Errorf("invalid GitLab role rotation state %q: managed account ID must not be negative", role)
 		}
+		if err := validateRecordedExclusionIDs(role, rs); err != nil {
+			return rotationStateFile{}, err
+		}
 	}
 	return state, nil
+}
+
+// validateRecordedExclusionIDs rejects malformed persisted exclusion evidence.
+// appendExcludedID drops nonpositive IDs, so a persisted one would silently
+// shrink the exclusion set. SuppliedUserID 0 means "not recorded" and is valid;
+// only a negative one is malformed.
+func validateRecordedExclusionIDs(role string, rs rotationRoleState) error {
+	invalid := rs.SuppliedUserID < 0
+	for _, id := range rs.ExcludedUserIDs {
+		invalid = invalid || id <= 0
+	}
+	if invalid {
+		return fmt.Errorf("invalid GitLab role rotation state %q: excluded account IDs must be positive and a supplied account ID must not be negative", role)
+	}
+	return nil
 }

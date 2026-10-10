@@ -362,6 +362,10 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	// before anything is removed. The lease is not reentrant, so the steps
 	// below call the already-locked helpers.
 	var triggersRevoked int
+	// cleanupPlan is the ownership resolution frozen under the project lease;
+	// the destructive role-identity cleanup reuses it rather than resolving
+	// supplied owners a second time.
+	var cleanupPlan *GitLabRoleCleanupPreflight
 	unlockProject := func() error { return nil }
 	if cfg.Forge == ForgeGitLab {
 		release, lockErr := LockGitLabProject(ctx, client, owner, repo, false)
@@ -380,6 +384,17 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 			return leaseErr
 		}
 		defer func() { _ = unlockProject() }()
+
+		// Ownership state must be verifiable before any teardown step runs:
+		// the webhook, scaffold, variables and secrets are removed only if
+		// role-identity cleanup can later proceed fail-closed.
+		var preflightErr error
+		cleanupPlan, preflightErr = PlanGitLabRoleCleanup(ctx, client, owner, repo, tokens)
+		if preflightErr != nil {
+			result.Error = errors.Join(fmt.Errorf("verifying managed-account ownership before uninstall: %w", preflightErr), unlockProject())
+			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", preflightErr))
+			return result
+		}
 
 		progress(fullName, "cleanup", "Removing GitLab webhook fast-path")
 		teardown, teardownErr := TeardownGitLabWebhookFastPathLocked(ctx, client, owner, repo)
@@ -410,6 +425,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		// and poll-state branch deletions below.
 		cleanup, cleanupErr := CleanupGitLabRoleIdentityLocked(ctx, GitLabRoleCleanupConfig{
 			Owner: owner, Repo: repo, Client: client, Tokens: tokens,
+			Preflight: cleanupPlan,
 		})
 		result.TokensRevoked = cleanup.TokensRevoked + triggersRevoked
 		result.VarsDeleted += cleanup.VarsDeleted
