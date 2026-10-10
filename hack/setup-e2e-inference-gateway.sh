@@ -329,9 +329,17 @@ if [[ "${DELETE}" == "true" ]]; then
 
   # The secrets and the service account are global. Never delete them while a
   # service of this name runs in another region (a mistyped --region).
-  elsewhere=$(gc run services list --filter="metadata.name=${NAME}" --format=json \
-    | jq -r --arg r "${REGION}" '[.[] | .metadata.labels["cloud.googleapis.com/location"] | select(. != $r)] | join(", ")') \
-    || die "could not list Cloud Run services."
+  # A listing that skipped unreachable regions is not proof, so any warning
+  # stops the delete.
+  gc run services list --filter="metadata.name=${NAME}" --format=json \
+    >"${TMP}/services.json" 2>"${TMP}/services.err" \
+    || die "could not list Cloud Run services: $(cat "${TMP}/services.err")"
+  if grep -qiE 'warning|unreachable|unavailable' "${TMP}/services.err"; then
+    die "the Cloud Run service listing may be incomplete; nothing deleted: $(cat "${TMP}/services.err")"
+  fi
+  elsewhere=$(jq -r --arg r "${REGION}" \
+    '[.[] | .metadata.labels["cloud.googleapis.com/location"] | select(. != $r)] | join(", ")' \
+    "${TMP}/services.json") || die "could not read the Cloud Run service listing."
   [[ -z "${elsewhere}" ]] \
     || die "Cloud Run service ${NAME} runs in ${elsewhere}, not ${REGION}; pass that --region. Nothing deleted."
 
@@ -674,10 +682,11 @@ secrets_newer_than_revision() {
   return 1
 }
 
-# traffic_to_latest reports whether all traffic goes to the latest revision.
+# traffic_to_latest reports whether all traffic goes to the latest revision
+# and no revision is reachable through a tag URL.
 traffic_to_latest() {
-  jq -e '[.spec.traffic[]? | select((.percent // 0) > 0)]
-    | length == 1 and .[0].latestRevision == true and .[0].percent == 100' >/dev/null
+  jq -e '[.spec.traffic[]?]
+    | length == 1 and .[0].latestRevision == true and .[0].percent == 100 and (.[0].tag // "") == ""' >/dev/null
 }
 
 if describe run services describe "${NAME}" --region="${REGION}"; then
@@ -697,13 +706,13 @@ if describe run services describe "${NAME}" --region="${REGION}"; then
   else
     ok "service is up to date"
   fi
-  # A deploy or update keeps an existing traffic split, so a service pinned
-  # to an older revision would keep serving it.
+  # A deploy or update keeps an existing traffic split and revision tags, so
+  # an older revision would stay reachable with an older config.
   if traffic_to_latest <<<"${svc_json}"; then
-    ok "all traffic goes to the latest revision"
+    ok "all traffic goes to the latest revision, with no tags"
   else
-    change "sent all traffic of Cloud Run service ${NAME} to the latest revision" \
-      gc run services update-traffic "${NAME}" --region="${REGION}" --to-latest
+    change "sent all traffic of Cloud Run service ${NAME} to the latest revision and cleared tags" \
+      gc run services update-traffic "${NAME}" --region="${REGION}" --to-latest --clear-tags
   fi
 else
   change "created Cloud Run service ${NAME}" gc "${deploy_args[@]}"
@@ -781,11 +790,13 @@ if [[ -n "${URL}" ]]; then
   echo "    repository; the inference-gateway behaviour test covers it."
 fi
 
+# In a dry run, pending changes come first: a failed check may be exactly what
+# they would fix.
+if [[ "${DRY_RUN}" == "true" && ${#CHANGES[@]} -gt 0 ]]; then
+  exit 3
+fi
 if (( verify_failed > 0 )); then
   echo >&2
   echo "==> Verification failed; see FAIL lines above." >&2
   exit 1
-fi
-if [[ "${DRY_RUN}" == "true" && ${#CHANGES[@]} -gt 0 ]]; then
-  exit 3
 fi

@@ -331,7 +331,7 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
 
    ==> Cloud Run service fullsend-e2e-gateway...
        OK: service is up to date
-       OK: all traffic goes to the latest revision
+       OK: all traffic goes to the latest revision, with no tags
 
    ==> Verifying...
        service Ready condition: True, revision fullsend-e2e-gateway-00009-abc
@@ -368,8 +368,8 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
    version is always rolled, which also finishes a rollout an earlier run
    left incomplete. Any other
    difference in the service's settings triggers a redeploy, and the script
-   names the setting that differed. Traffic pinned to an older revision is
-   moved back to the latest one.
+   names the setting that differed. Traffic pinned to an older revision, or
+   an older revision reachable through a tag, is moved back to the latest one.
 
    > **Not executed:** this real run has not happened yet. The durable
    > gateway was deployed by hand with the same names and settings, and the

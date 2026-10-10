@@ -107,6 +107,7 @@ case "$1 $2 $3" in
     tick > "${S}/secrets/$4.v${n}.time"
     echo "${n}" > "${S}/secrets/$4.latest" ;;
   "run services list")
+    [[ -f "${S}/list_partial" ]] && echo "WARNING: The following regions were unreachable: europe-west1" >&2
     { [[ -f "${S}/svc.json" ]] && jq '.metadata.labels["cloud.googleapis.com/location"] = "us-east5"' "${S}/svc.json"
       [[ -f "${S}/svc_elsewhere" ]] && jq -n '{metadata: {labels: {"cloud.googleapis.com/location": "europe-west1"}}}'
       true; } | jq -s . ;;
@@ -335,6 +336,8 @@ expect_out "drift redeploys and names the field" "redeployed Cloud Run service f
 echo False > "${STATE}/svc_ready"
 run_setup --project "${PROJECT}" --without-vertex || true
 expect_out "not-Ready service is redeployed" "redeployed Cloud Run service fullsend-e2e-gateway \\(was not Ready\\)"
+run_setup --project "${PROJECT}" --without-vertex --dry-run && rc=0 || rc=$?
+if [[ "${rc}" == "3" ]]; then pass "--dry-run on a not-Ready service exits 3 (pending change)"; else fail "not-Ready --dry-run exit ${rc}"; fi
 rm "${STATE}/svc_ready"
 
 # A config version added by an earlier run that stopped before the rollout.
@@ -359,6 +362,13 @@ expect_out "pinned traffic is sent to the latest revision" "sent all traffic of 
 run_setup --project "${PROJECT}" --without-vertex || fail "run after traffic fix failed"
 expect_out "after the traffic fix a re-run is a no-op" "No changes"
 
+# An older revision still reachable through a 0% tag.
+jq '.spec.traffic += [{revisionName: "old", percent: 0, tag: "old"}]' "${STATE}/svc.json" > "${STATE}/svc.tmp" \
+  && mv "${STATE}/svc.tmp" "${STATE}/svc.json"
+run_setup --project "${PROJECT}" --without-vertex || fail "tagged revision run failed"
+expect_out "a tagged older revision is cleared" "to the latest revision and cleared tags"
+if grep -q -- 'update-traffic .*--clear-tags' "${STATE}/gcloud.log"; then pass "update-traffic clears tags"; else fail "no --clear-tags"; fi
+
 # A conditional grant is not the script's grant.
 echo "roles/aiplatform.user ${SA} conditional" >> "${STATE}/project_policy"
 run_setup --project "${PROJECT}" --without-vertex || fail "conditional grant run failed"
@@ -380,6 +390,12 @@ expect_no_mutations "an unparseable timestamp mutates nothing" "${before}"
 echo 2026-12-31T00:00:00Z > "${STATE}/secrets/${CFG_SECRET}.v4.time"
 
 # --- 6. --delete removes exactly the named resources ---------------------------
+touch "${STATE}/list_partial"
+before=$(mutations | wc -l | tr -d ' ')
+if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete trusted a partial listing"; else
+  expect_out "--delete refuses a partial service listing" "listing may be incomplete"; fi
+expect_no_mutations "partial-listing --delete deletes nothing" "${before}"
+rm "${STATE}/list_partial"
 touch "${STATE}/svc_elsewhere"
 before=$(mutations | wc -l | tr -d ' ')
 if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete ignored a service in another region"; else
