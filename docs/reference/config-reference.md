@@ -290,14 +290,29 @@ independently through the layered config system (an overlay can override
 - **`gateway`** — a self-hosted, OpenAI/Anthropic-compatible inference
   gateway that validates the job's forge OIDC token directly
   ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). Models
-  with the `gateway/` prefix use this route. The runner does not act on this
-  block yet: `fullsend` parses and validates it, and the runner support for
-  the route lands in later changes (#8280). Fields:
+  with the `gateway/` prefix use this route. The block applies when it is
+  complete and the run has a forge OIDC endpoint (a GitHub Actions job with
+  `id-token: write`). The runner then fetches the job's OIDC assertion for
+  `audience` and puts it behind a run-scoped OpenShell provider with a
+  per-host egress profile. It seeds the provider's placeholder into a
+  runner-owned token file, and re-seeds it before each token's own `exp`.
+  This happens in addition to every other provider: `openai/` and Vertex
+  models in the same run keep their own routes. If the gateway cannot be
+  reached, or refuses the token, the run fails and does not fall back to
+  another credential. With no block, or on a local run without an OIDC
+  endpoint, the runner adds nothing, so a harness that loads the
+  inference-gateway extension as a plugin keeps working. A `gateway/` model
+  on a runtime without the route (Claude Code, Codex) is an error. Fields:
   - `url` — the gateway origin, for example `https://gateway.example.com`.
     Must be `https` (plain `http` only for a loopback test host), with no
     credentials, query or fragment, no path other than `/`, and no port
     other than 443: the runner adds the `/v1/...` model API paths itself,
     and the egress profile allows the gateway host on port 443 only.
+    The run route accepts a gateway on a private address, but
+    [`fullsend inference gateway status`](../cli/inference.md#inference-gateway-status)
+    refuses loopback, private and other internal addresses, so it cannot
+    check one. For such a gateway, a run is the check: its first gateway
+    model call fails if the gateway is unreachable or refuses the token.
   - `audience` — the OIDC audience the runner requests. The token is valid
     only at the gateway.
   - `models` — optional inline model list, a map of model id to settings:
@@ -328,10 +343,14 @@ independently through the layered config system (an overlay can override
     `baseUrl`, `baseUrlEnv`, a credential key (`apiKey*`, `tokenFile`,
     `username*`, `password*`), `headers`, `authHeader`, `modelsPath`,
     `discovery` or `fallbackModels` is refused: the runner owns those.
+    The runner reads the file from the repository checkout that
+    `config.yaml` came from, so it is read at the same ref (the base
+    branch on pull-request events), even when an org or managed layer set
+    the path.
 
   `url` and `audience` are all or none: `fullsend github setup` refuses to
-  leave a block with only one of them, and the runner support for the route
-  will refuse such a block when it lands. `models` and `models_file` are mutually
+  leave a block with only one of them, and the runner fails a run whose
+  resolved block is partial. `models` and `models_file` are mutually
   exclusive. A pi run on a `gateway/` model needs one of them, because pi
   runs offline and cannot discover the gateway's models. `url` and
   `audience` layer independently; the model list (either form) is one unit,

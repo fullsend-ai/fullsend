@@ -95,6 +95,9 @@ const (
 	// Run-scoped inference providers resolved from the selected agent.
 	runProviderVertex = "vertex"
 	runProviderOpenAI = "openai"
+	// runProviderGateway marks a pi parent on the inference gateway route
+	// (a gateway/ model, ADR 0137).
+	runProviderGateway = "gateway"
 	// runProviderNone marks runtimes that do no inference (dummy,
 	// dummy-playback).
 	runProviderNone = "none"
@@ -992,7 +995,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// stay parent-only: a Vertex parent with an OpenAI persona still needs
 	// its own Vertex ADC validated, regardless of what its children run on.
 	parentNeedsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
-	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider)
+	// parentNeedsGateway is the same parent-only decision for the inference
+	// gateway route (ADR 0137): a pi parent on a gateway/ model calls no
+	// Vertex, so it must not need Vertex credentials. It depends on the
+	// model alone, not on an inference.gateway block: with no block the
+	// harness may load the extension as a plugin (the local guide), which
+	// is no Vertex call either. Its children are classified on their own,
+	// as for openai (vertexGap below).
+	parentNeedsGateway := agentruntime.NeedsGatewayRoute(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
+	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider, parentNeedsGateway)
 	// openAIChildren are the configured pi children (subagents.<persona>,
 	// subagents.default, a persona's frontmatter model:) that resolve to
 	// the openai provider. They need the run-scoped OpenAI provider even
@@ -1370,6 +1381,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if len(sandboxName) > maxSandboxNameLen {
 		return fmt.Errorf("sandbox name %q is %d characters, exceeding the OpenShell limit of %d", sandboxName, len(sandboxName), maxSandboxNameLen)
 	}
+	// Inference gateway route (ADR 0137, #8280): selected per model by the
+	// gateway/ prefix, with no precedence against the OpenAI routes, and
+	// attached in addition to every other provider, never instead of
+	// them. Decided here, before Bootstrap, because the runtime renders
+	// its gateway config from the block (PrepareGatewayRun).
+	gatewayChildren := agentruntime.GatewayChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	gatewayModels := []string{agentruntime.EffectiveModel(resolvedModel, agentDefModel)}
+	for _, c := range gatewayChildren {
+		gatewayModels = append(gatewayModels, c.Spec)
+	}
+	needsGateway := parentNeedsGateway || len(gatewayChildren) > 0
+	gatewayPlan, err := planGatewayRoute(runCfg, runtimeBackend, sandboxName, gatewayModels, needsGateway)
+	if err != nil {
+		printer.StepFail("Inference gateway route unavailable")
+		return err
+	}
+	if gatewayPlan != nil && gatewayPlan.prepared != nil {
+		defer gatewayPlan.prepared.ClearGatewayRun(sandboxName)
+	}
 	// runScopedProviders maps a harness provider name to the run-scoped
 	// instance created for it; sandbox creation attaches the latter.
 	runScopedProviders := map[string]string{}
@@ -1587,6 +1617,35 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		allProviderNames = applyRunScopedProviderNames(dropSkippedProviders(sandboxProviderNames(h.Providers, result.Providers), skippedProviders), runScopedProviders)
 	}
 
+	// The gateway provider is the runner's, not the harness's: it is
+	// created whenever the route applies, alongside whatever the harness
+	// declared. Its refresher is independent of the OpenAI ones, so a run
+	// on both routes keeps two handoffs. Like them it reads the forge's
+	// OIDC env and spawns openshell, so it is paused around the pre-script
+	// remints, and the sandbox cleanup defer stops it before the sandbox
+	// is deleted (its own stop-defers would only fire after the
+	// post-script, under LIFO).
+	var gatewayHandles []gatewayProviderHandle
+	var stopGatewayRefreshers []func()
+	if gatewayPlan != nil {
+		if err := sandbox.EnableProvidersV2(); err != nil {
+			printer.StepFail("Failed to enable providers v2")
+			return fmt.Errorf("enabling providers v2: %w", err)
+		}
+		gwHandle, err := startGatewayRoute(ctx, gatewayPlan, sandboxName, printer)
+		if err != nil {
+			return err
+		}
+		gatewayHandles = append(gatewayHandles, gwHandle)
+		allProviderNames = append(allProviderNames, gwHandle.name)
+		// LIFO: the refresher stops before the provider is deleted.
+		defer cleanupRunScopedProvider(gwHandle.name, []string{gatewayCredentialKey}, keepSandbox, printer)
+		stopGatewayRefreshers = startGatewayRefreshers(gatewayHandles, printer)
+		for _, stop := range stopGatewayRefreshers {
+			defer stop()
+		}
+	}
+
 	// A subagents entry on openai with no openai provider to attach would
 	// only fail at Bootstrap, after the sandbox exists. Fail here instead,
 	// naming the entry and the fix (#7981). A persona's own frontmatter
@@ -1700,9 +1759,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		for _, stop := range stopOpenAIRefreshers {
 			stop()
 		}
+		for _, stop := range stopGatewayRefreshers {
+			stop()
+		}
 		preRestore, remintErr := maybeRemintAgentTokenForStage(ctx, h, mintURL, forgePlatform, harness.PrivilegeStagePreScript, runtimeLevel, printer)
 		stopOpenAIRefreshers = startOpenAIRefreshers(openAIHandles, printer)
 		for _, stop := range stopOpenAIRefreshers {
+			defer stop()
+		}
+		stopGatewayRefreshers = startGatewayRefreshers(gatewayHandles, printer)
+		for _, stop := range stopGatewayRefreshers {
 			defer stop()
 		}
 		if remintErr != nil {
@@ -1712,9 +1778,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		for _, stop := range stopOpenAIRefreshers {
 			stop()
 		}
+		for _, stop := range stopGatewayRefreshers {
+			stop()
+		}
 		preRestore()
 		stopOpenAIRefreshers = startOpenAIRefreshers(openAIHandles, printer)
 		for _, stop := range stopOpenAIRefreshers {
+			defer stop()
+		}
+		stopGatewayRefreshers = startGatewayRefreshers(gatewayHandles, printer)
+		for _, stop := range stopGatewayRefreshers {
 			defer stop()
 		}
 		if err != nil {
@@ -1780,13 +1853,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// after the agent has retried its first request.
 		if err := checkOpenAIEgressInspected(ctx, sandboxName); err != nil {
 			printer.StepFail("Sandbox policy cannot deliver the OpenAI credential")
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
 			return err
 		}
-		// From here a refresh must also re-seed the running agent's
-		// credential file (when its runtime has one).
-		for _, h := range openAIHandles {
-			h.sandboxUp.Store(true)
+	}
+	if gatewayPlan != nil {
+		// The same preflight for the configured gateway host: the token
+		// only reaches it through an inspected route.
+		if err := checkGatewayEgressInspected(ctx, sandboxName, gatewayPlan.host); err != nil {
+			printer.StepFail("Sandbox policy cannot deliver the inference gateway credential")
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
+			return err
 		}
+	}
+	// From here a refresh must also re-seed the running agent's credential
+	// file (when its runtime has one). Set only once every preflight has
+	// passed, so no refresher re-seeds a sandbox a failed one deletes.
+	for _, h := range openAIHandles {
+		h.sandboxUp.Store(true)
+	}
+	for _, gh := range gatewayHandles {
+		gh.sandboxUp.Store(true)
 	}
 
 	// repoExtractedOK tracks whether hostRepositoryDownloadDir is safe
@@ -1858,7 +1945,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// privilege-downgrade case it fails closed on instead.
 			// os.Setenv is safe here: sandbox streaming and OIDC refresh
 			// goroutines have already been torn down (LIFO defers). The
-			// OpenAI credential refreshers are the exception — their own
+			// OpenAI credential refreshers are the exception (the gateway
+			// refreshers were stopped by the sandbox cleanup defer) — their own
 			// stop-defers are registered earlier in the function, so under
 			// LIFO they would not fire until after this defer completes —
 			// so stop them explicitly first to avoid racing this os.Setenv
@@ -1955,6 +2043,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}()
 	}
 	defer func() {
+		// The gateway refreshers re-seed this sandbox; stop them before it
+		// goes, and before the post-script and its remint run.
+		for _, stop := range stopGatewayRefreshers {
+			stop()
+		}
 		// Collect OpenShell logs before sandbox deletion for post-mortem debugging.
 		collectOpenshellLogs(sandboxName, runDir, printer)
 
@@ -4386,12 +4479,43 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	}
 }
 
+// deleteSandboxFn deletes a sandbox (sandbox.Delete). Override in tests to
+// record the deletion or return an error without a gateway.
+var deleteSandboxFn = sandbox.Delete
+
+// collectOpenshellLogsFn copies a sandbox's OpenShell logs into the run
+// directory (collectOpenshellLogs). Override in tests to record the call
+// without a gateway.
+var collectOpenshellLogsFn = collectOpenshellLogs
+
+// discardSandbox deletes a sandbox that failed a credential egress
+// preflight. Those preflights run before the run's own sandbox cleanup
+// defer is registered (it must follow the post-script's), so without this
+// a failed preflight would leave the sandbox running. Like that defer it
+// collects the OpenShell logs first: a policy failure is when they help.
+// --keep-sandbox keeps it, as it does for every other failure.
+func discardSandbox(sandboxName, runDir string, keep bool, printer *ui.Printer) {
+	collectOpenshellLogsFn(sandboxName, runDir, printer)
+	if keep {
+		printer.StepWarn(fmt.Sprintf("Sandbox kept (--keep-sandbox): %s", sandboxName))
+		return
+	}
+	if err := deleteSandboxFn(sandboxName); err != nil {
+		printer.StepWarn("Sandbox cleanup failed: " + err.Error())
+		return
+	}
+	printer.StepDone("Sandbox deleted after the failed preflight")
+}
+
 // runInferenceProvider maps the resolved runtime to the provider the parent
-// agent calls.
-func runInferenceProvider(runtimeName string, needsOpenAI bool) string {
+// agent calls. A parent model resolves to at most one of openai and
+// gateway; every other pi, Claude Code or OpenCode parent stays on Vertex.
+func runInferenceProvider(runtimeName string, needsOpenAI, needsGateway bool) string {
 	switch {
 	case needsOpenAI:
 		return runProviderOpenAI
+	case needsGateway:
+		return runProviderGateway
 	case runtimeName == "dummy" || runtimeName == "dummy-playback":
 		return runProviderNone
 	default:

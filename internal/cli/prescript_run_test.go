@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -162,6 +163,37 @@ func TestRunAgent_OpenAISkipsVertexCredentialSetup(t *testing.T) {
 		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
 	require.ErrorContains(t, err, "creating sandbox")
 	assert.FileExists(t, marker)
+}
+
+// A pi parent on a gateway/ model calls no Vertex (ADR 0137), so a
+// GitHub Actions run with no GCP inputs must not fail the Vertex
+// credential setup before its pre-script; a Vertex pi parent still does.
+func TestRunAgent_GatewayParentSkipsVertexCredentialSetup(t *testing.T) {
+	for _, tc := range []struct {
+		model   string
+		wantErr string
+		ran     bool
+	}{
+		{model: "gateway/m1", wantErr: "creating sandbox", ran: true},
+		{model: "google-vertex/gemini-3-pro", wantErr: "FULLSEND_GCP_PROJECT_ID", ran: false},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			usePreScriptStub(t)
+			setActionsGCPEnv(t, "pi", "", "")
+			t.Setenv("FULLSEND_PI_MODEL", "")
+			t.Setenv("FULLSEND_PI_PROVIDER", "")
+			marker := filepath.Join(t.TempDir(), "pre-script-ran")
+			dir := newVertexChildDir(t, marker, "pi", tc.model, "", "")
+
+			err := runSkipHarnessAgent(t, dir, ui.New(io.Discard))
+			require.ErrorContains(t, err, tc.wantErr)
+			if tc.ran {
+				assert.FileExists(t, marker)
+			} else {
+				assert.NoFileExists(t, marker)
+			}
+		})
+	}
 }
 
 func TestRunAgent_VertexMissingGCPInputsFailsBeforePreScript(t *testing.T) {
@@ -603,11 +635,44 @@ func TestRunAgent_DummyRuntimeNeedsNoGCPInputs(t *testing.T) {
 }
 
 func TestRunInferenceProvider(t *testing.T) {
-	assert.Equal(t, runProviderOpenAI, runInferenceProvider("codex", true))
-	assert.Equal(t, runProviderNone, runInferenceProvider("dummy", false))
-	assert.Equal(t, runProviderNone, runInferenceProvider("dummy-playback", false))
-	assert.Equal(t, runProviderVertex, runInferenceProvider("opencode", false))
-	assert.Equal(t, runProviderVertex, runInferenceProvider("claude", false))
+	assert.Equal(t, runProviderOpenAI, runInferenceProvider("codex", true, false))
+	assert.Equal(t, runProviderGateway, runInferenceProvider("pi", false, true))
+	assert.Equal(t, runProviderVertex, runInferenceProvider("pi", false, false))
+	assert.Equal(t, runProviderNone, runInferenceProvider("dummy", false, false))
+	assert.Equal(t, runProviderNone, runInferenceProvider("dummy-playback", false, false))
+	assert.Equal(t, runProviderVertex, runInferenceProvider("opencode", false, false))
+	assert.Equal(t, runProviderVertex, runInferenceProvider("claude", false, false))
+}
+
+// A sandbox that fails a credential egress preflight is deleted, since
+// the run's own cleanup defer is not registered yet; --keep-sandbox keeps
+// it, and a delete failure is only a warning.
+func TestDiscardSandbox(t *testing.T) {
+	var deleted, logged []string
+	var delErr error
+	origDelete, origLogs := deleteSandboxFn, collectOpenshellLogsFn
+	deleteSandboxFn = func(name string) error {
+		deleted = append(deleted, name)
+		return delErr
+	}
+	collectOpenshellLogsFn = func(name, runDir string, _ *ui.Printer) {
+		logged = append(logged, name+"@"+runDir)
+	}
+	t.Cleanup(func() { deleteSandboxFn, collectOpenshellLogsFn = origDelete, origLogs })
+
+	discardSandbox("sb-kept", "/run", true, ui.New(io.Discard))
+	assert.Empty(t, deleted, "--keep-sandbox keeps it")
+	assert.Equal(t, []string{"sb-kept@/run"}, logged, "logs are collected either way")
+
+	discardSandbox("sb-1", "/run", false, ui.New(io.Discard))
+	assert.Equal(t, []string{"sb-1"}, deleted)
+	assert.Equal(t, []string{"sb-kept@/run", "sb-1@/run"}, logged)
+
+	delErr = errors.New("boom")
+	var out bytes.Buffer
+	discardSandbox("sb-2", "/run", false, ui.New(&out))
+	assert.Equal(t, []string{"sb-1", "sb-2"}, deleted)
+	assert.Contains(t, out.String(), "Sandbox cleanup failed: boom")
 }
 
 func TestValidateVertexGCPCredentials(t *testing.T) {

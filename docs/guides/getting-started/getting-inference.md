@@ -98,4 +98,6 @@ are written by `repos install --vertex-project`, not by this command.
 
 To run agents on the pi runtime through an OpenAI/Anthropic-compatible inference gateway instead,
 see [Using an inference gateway (experimental)](../user/running-agents-locally.md#using-an-inference-gateway-experimental).
-It covers local runs only for now.
+That page covers local runs. For GitHub Actions runs, set the `inference.gateway` block with
+`fullsend github setup --inference-gateway-*` (see the
+[config reference](../../reference/config-reference.md)).
