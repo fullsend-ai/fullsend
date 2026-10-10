@@ -226,19 +226,22 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 	}
 	// The gateway URL is the inference destination and the audience is
 	// the OIDC assertion binding, so changing an established value (or
-	// dropping it through the parent chain) must be declared locally.
-	// First configuration (no current value) is not a change.
-	if currentGW.URL != "" && candidateGW.URL != currentGW.URL && localGW.URL == "" {
+	// dropping it through the parent chain) must be declared locally, and
+	// so must introducing one where none is configured: a changed preset
+	// could otherwise add an inference endpoint no manifest declared. A
+	// pristine first install has no current configuration to protect and
+	// is exempted by the callers (pristineFirstInstall), not here.
+	if candidateGW.URL != currentGW.URL && localGW.URL == "" {
 		out = append(out, SafetyRelaxation{
 			Key:       "inference.gateway.url",
-			Current:   currentGW.URL,
+			Current:   formatUnset(currentGW.URL),
 			Candidate: formatUnset(candidateGW.URL),
 		})
 	}
-	if currentGW.Audience != "" && candidateGW.Audience != currentGW.Audience && localGW.Audience == "" {
+	if candidateGW.Audience != currentGW.Audience && localGW.Audience == "" {
 		out = append(out, SafetyRelaxation{
 			Key:       "inference.gateway.audience",
-			Current:   currentGW.Audience,
+			Current:   formatUnset(currentGW.Audience),
 			Candidate: formatUnset(candidateGW.Audience),
 		})
 	}

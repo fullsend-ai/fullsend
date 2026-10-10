@@ -312,10 +312,19 @@ func TestFormatSafetyRelaxationsAndKeys(t *testing.T) {
 
 const gatewayPinYAML = "inference:\n  gateway:\n    url: https://gw.example.com/v1\n    audience: gw-aud\n"
 
-func TestCheckManagedSafetyGate_GatewayFirstConfigurationNotARelaxation(t *testing.T) {
+func TestCheckManagedSafetyGate_GatewayFirstConfigurationDeclaredLocallyAllowed(t *testing.T) {
 	current := mustLayer(t, "", "")
 	candidate := mustLayer(t, gatewayPinYAML, "")
 	assert.Empty(t, CheckManagedSafetyGate(current, candidate))
+}
+
+func TestCheckManagedSafetyGate_GatewayIntroducedByPresetIsRelaxation(t *testing.T) {
+	current := mustLayer(t, "", "")
+	candidate := mustLayer(t, "", gatewayPinYAML)
+	got := CheckManagedSafetyGate(current, candidate)
+	assert.Equal(t, []string{"inference.gateway.url", "inference.gateway.audience"}, SafetyRelaxationKeys(got))
+	assert.Equal(t, "unset", got[0].Current)
+	assert.Equal(t, "https://gw.example.com/v1", got[0].Candidate)
 }
 
 func TestCheckManagedSafetyGate_GatewayOverlayPinRemovedIsRelaxation(t *testing.T) {

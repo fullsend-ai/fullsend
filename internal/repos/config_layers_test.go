@@ -144,6 +144,21 @@ func TestEvaluateManagedSafetyGate_UsesProposedPresetNotInstalledBase(t *testing
 	}
 }
 
+func TestEvaluateManagedSafetyGate_PresetIntroducingGatewayOnEstablishedInstall(t *testing.T) {
+	const gatewayPreset = "inference:\n  gateway:\n    url: https://gw.example.com/v1\n    audience: gw-aud\n"
+	for _, f := range layerForges {
+		fc := forge.NewFakeClient()
+		fc.FileContents["acme/api/"+preset.BasePath] = []byte("{}\n")
+		fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "{}\n")
+
+		// The established install has no gateway and the overlay declares
+		// none, so a preset that adds one is a relaxation.
+		got, err := evaluateManagedSafetyGate(context.Background(), layerCfg(f, fc, "p.yaml", []byte(gatewayPreset)))
+		require.NoError(t, err)
+		assert.Equal(t, []string{"inference.gateway.url", "inference.gateway.audience"}, config.SafetyRelaxationKeys(got), f)
+	}
+}
+
 func TestConvergePresetFiles_ZeroByteBaseIsUpdatedNotAdded(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+preset.BasePath] = []byte{}
