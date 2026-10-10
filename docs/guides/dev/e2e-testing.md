@@ -385,8 +385,10 @@ repository.
 The api-key behaviour test ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md))
 needs a gateway key for the `echo` model only. Pass its hash, never the key,
 as `ECHO_KEY_HASH=sha256:<64 hex>` on every run; a run without it removes
-the key. `REAL_KEY_HASH` does the same for a time-boxed `claude-haiku-5-5`
-key used in one local run, and is left unset afterwards. With a key, this
+the key. `REAL_KEY_HASH` does the same for a time-boxed key used in one local
+run, and is left unset afterwards. It may call one real model:
+`claude-haiku-5-5` by default, or `gpt-oss-120b` with
+`REAL_KEY_MODEL=gpt-oss-120b`. With a key, this
 test gateway serves both modes, so its OIDC check is permissive: a request
 with no credential passes authentication and each model then refuses it
 with a 403. That is a test-gateway arrangement, not a recommendation. An
@@ -445,11 +447,26 @@ The generated config (print it with `--print-config`):
   name can call the gateway. A model that a configured key may call also
   admits that key's `apiKey.purpose`.
 - strips `x-api-key` from every request it sends upstream.
+- caps each real model at 60 requests and 1,000,000 tokens per minute for
+  each kind of caller: the pool shares one budget per model, each configured
+  key has its own, and every other caller shares one separate budget. So no
+  caller can use up the behaviour tests' budget, not even with requests the
+  model refuses. `echo` and `echo-denied` allow 60 requests a second. Tokens
+  are counted after each response, including cached input. The budgets are
+  held in the single instance and start again with each new revision. A
+  refused request gets a 429 whose body is `rate limit exceeded`; the limit
+  appears only in its `x-ratelimit-limit` and `retry-after` headers. During
+  a flood of unauthenticated requests, a request with no credential can
+  receive that 429 instead of a 403. The script's tests check the rendered
+  rules but do not evaluate them; the separation between callers was
+  checked by sending requests to a running gateway as the pool, as a key,
+  and without credentials.
 - serves these models:
 
   | Model | Allowed for | Upstream |
   |-------|-------------|----------|
-  | `claude-haiku-5-5`, `gemini-3.8-flash` (`--with-vertex` only) | The pool, plus the real key for `claude-haiku-5-5` when `REAL_KEY_HASH` is set | Vertex AI, location `global`, as the runtime service account |
+  | `claude-haiku-5-5`, `gemini-3.8-flash` (`--with-vertex` only) | The pool, plus the real key for the model `REAL_KEY_MODEL` names (default `claude-haiku-5-5`) when `REAL_KEY_HASH` is set | Vertex AI, location `global`, as the runtime service account |
+  | `gpt-oss-120b` (`--with-vertex` only) | The pool, plus the real key when `REAL_KEY_HASH` is set and `REAL_KEY_MODEL=gpt-oss-120b` | The Vertex AI model-as-a-service model `openai/gpt-oss-120b-maas`, location `global`, as the runtime service account. It serves Responses clients such as Codex on `/v1/responses`, which the gateway translates to Chat Completions. Gemini 3 tool loops through Responses translation aren't supported on the test gateway, and the Claude models take no Responses requests. The gateway drops assistant messages that have neither content nor tool calls from requests to this model, because its chat template rejects them: a test-gateway requirement, not something fullsend needs from every gateway. |
   | `echo` | The pool, plus the echo key when `ECHO_KEY_HASH` is set | A header-echo listener in the same container. The gateway sends it the stub key. Its answer reports whether that key, and not the caller's credential, arrived, so the custody check can assert it. |
   | `echo-denied` | Only `fullsend-e2e-gateway-outside/not-a-pool-repo`, which is outside the pool | The same echo listener. A behaviour test calls it from a pool repository and expects 403. |
 

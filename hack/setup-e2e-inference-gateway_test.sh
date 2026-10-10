@@ -336,8 +336,18 @@ expect_out "--with-vertex grants aiplatform.user" "granted roles/aiplatform.user
 expect_out "--with-vertex rolls a revision" "rolled a new revision"
 CFG2="${STATE}/secrets/${CFG_SECRET}.v2"
 if grep -q 'name: claude-haiku-5-5' "${CFG2}" && grep -q 'name: gemini-3.8-flash' "${CFG2}" \
-    && [[ "$(grep -c "vertexProject: ${PROJECT}, vertexRegion: global" "${CFG2}")" == "2" ]]; then
-  pass "--with-vertex adds both Vertex models"; else fail "Vertex models"; fi
+    && grep -q 'name: gpt-oss-120b' "${CFG2}" \
+    && [[ "$(grep -c "vertexProject: ${PROJECT}, vertexRegion: global" "${CFG2}")" == "3" ]] \
+    && grep -q "vertexRegion: global, model: openai/gpt-oss-120b-maas }" "${CFG2}"; then
+  pass "--with-vertex adds the three Vertex models"; else fail "Vertex models"; fi
+if grep -q '^    localRateLimit:$' "${CFG2}" \
+    && [[ "$(grep -c '^      fillInterval: 60s$' "${CFG2}")" == "2" ]] \
+    && grep -q '^      maxTokens: 60$' "${CFG2}" && grep -q '^      maxTokens: 1000000$' "${CFG2}" \
+    && [[ "$(grep -c '"unknown/" + c' "${CFG2}")" == "2" ]]; then
+  pass "the config caps each real model, with a shared bucket for other callers"; else fail "rate limits"; fi
+if [[ "$(grep -c '^    finalTransformation:$' "${CFG2}")" == "1" ]] \
+    && grep -q "^      messages: 'llmRequest.messages.filter(m, !(m.role == \"assistant\"" "${CFG2}"; then
+  pass "gpt-oss-120b drops empty assistant messages"; else fail "gpt-oss finalTransformation"; fi
 if [[ "$(cat "${STATE}/secrets/${KEY_SECRET}.latest")" == "1" ]]; then
   pass "--with-vertex leaves the stub key alone"; else fail "stub key re-versioned"; fi
 if [[ "$(revisions)" == "2" ]] && grep -q '^gcloud .* run services update ' "${STATE}/gcloud.log"; then
