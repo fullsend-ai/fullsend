@@ -85,9 +85,23 @@ func TestIsGatewayModel(t *testing.T) {
 func TestValidateGatewayRuntime(t *testing.T) {
 	require.NoError(t, validateGatewayRuntime("pi", []string{"gateway/a", "openai/b"}))
 	require.NoError(t, validateGatewayRuntime("claude", []string{"opus"}))
-	for _, rt := range []string{"claude", "codex"} {
-		assert.ErrorContains(t, validateGatewayRuntime(rt, []string{"gateway/a"}), rt)
-	}
+	require.NoError(t, validateGatewayRuntime("claude", []string{"gateway/a"}))
+	assert.ErrorContains(t, validateGatewayRuntime("codex", []string{"gateway/a"}), "codex")
+}
+
+func TestValidateClaudeGatewayModels(t *testing.T) {
+	oidc := config.InferenceGatewayConfig{URL: "https://gw.example.com", Audience: "aud"}
+	apiKey := config.InferenceGatewayConfig{URL: "https://gw.example.com", Auth: config.GatewayAuthAPIKey}
+
+	require.NoError(t, validateClaudeGatewayModels([]string{"opus"}, config.InferenceGatewayConfig{}, false), "no gateway model, no block needed")
+	require.NoError(t, validateClaudeGatewayModels([]string{"gateway/claude-haiku-5-5"}, oidc, true))
+	require.NoError(t, validateClaudeGatewayModels([]string{"GATEWAY/vendor/org/model"}, apiKey, true), "the id may itself hold slashes")
+
+	assert.ErrorContains(t, validateClaudeGatewayModels([]string{"gateway/"}, oidc, true), "names no gateway model")
+	assert.ErrorContains(t, validateClaudeGatewayModels([]string{"gateway/ "}, oidc, true), "names no gateway model")
+	assert.ErrorContains(t, validateClaudeGatewayModels([]string{"gateway/m"}, config.InferenceGatewayConfig{}, false), "need an inference.gateway block")
+	assert.ErrorContains(t, validateClaudeGatewayModels([]string{"gateway/m"}, oidc, false), "auth: api-key for a local run")
+	assert.ErrorContains(t, validateClaudeGatewayModels([]string{"gateway/m"}, apiKey, false), "block that applies")
 }
 
 func stubGatewayOIDC(t *testing.T, reqURL, reqToken string) {

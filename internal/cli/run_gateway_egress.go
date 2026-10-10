@@ -86,34 +86,85 @@ func gatewayProfileID(host string) string {
 	return gatewayProfileTemplateID + "-" + hex.EncodeToString(sum[:])[:gatewayProfileIDHashLen]
 }
 
+// The Claude Code rendering (#8294) is a template of its own: Claude Code
+// calls only the Messages API, from its own binary, and the header the
+// credential travels in depends on the auth mode. OpenShell stores a static
+// credential's auth_style and header_name as placement metadata and still
+// resolves the env placeholder wherever the client puts it, so the
+// metadata records the header Claude Code sends in each mode. Each mode
+// gets its own id, so two runs on one shared OpenShell gateway never import
+// over each other's profile.
+const (
+	gatewayClaudeProfileTemplateID = "fullsend-inference-gateway-claude"
+	gatewayProfileAuthStyle        = "__INFERENCE_GATEWAY_AUTH_STYLE__"
+	gatewayProfileHeaderName       = "__INFERENCE_GATEWAY_HEADER_NAME__"
+)
+
+// gatewayProfile selects the rendering of the per-host gateway profile.
+type gatewayProfile struct {
+	// host is the gateway host the profile binds.
+	host string
+	// claude selects the Claude Code template.
+	claude bool
+	// apiKey is the block's api-key mode; it changes the Claude Code
+	// rendering only (pi presents the credential as a bearer token in
+	// both modes).
+	apiKey bool
+}
+
 // renderGatewayProfile renders the scaffold's inference gateway profile
-// template for host and returns its bytes and per-host profile id.
+// template for host (the pi rendering) and returns its bytes and per-host
+// profile id.
 func renderGatewayProfile(host string) ([]byte, string, error) {
-	h, err := validateGatewayHost(host)
+	return renderGatewayProfileFor(gatewayProfile{host: host})
+}
+
+// renderGatewayProfileFor renders the profile p selects and returns its
+// bytes and per-host id.
+func renderGatewayProfileFor(p gatewayProfile) ([]byte, string, error) {
+	h, err := validateGatewayHost(p.host)
 	if err != nil {
 		return nil, "", err
 	}
-	tmpl, err := scaffold.FullsendRepoFile("profiles/" + gatewayProfileTemplateID + ".yaml")
+	templateID := gatewayProfileTemplateID
+	var auth map[string]string
+	id := gatewayProfileID(h)
+	if p.claude {
+		templateID = gatewayClaudeProfileTemplateID
+		mode, style, header := "oidc", "bearer", "authorization"
+		if p.apiKey {
+			mode, style, header = "apikey", "header", "x-api-key"
+		}
+		auth = map[string]string{gatewayProfileAuthStyle: style, gatewayProfileHeaderName: header}
+		sum := sha256.Sum256([]byte(h))
+		id = templateID + "-" + mode + "-" + hex.EncodeToString(sum[:])[:gatewayProfileIDHashLen]
+	}
+	tmpl, err := scaffold.FullsendRepoFile("profiles/" + templateID + ".yaml")
 	if err != nil {
-		return nil, "", fmt.Errorf("provider profile %q is not shipped by this fullsend build: %w", gatewayProfileTemplateID, err)
+		return nil, "", fmt.Errorf("provider profile %q is not shipped by this fullsend build: %w", templateID, err)
 	}
 	s := string(tmpl)
-	idLine := "\nid: " + gatewayProfileTemplateID + "\n"
+	idLine := "\nid: " + templateID + "\n"
 	if strings.Count(s, idLine) != 1 || strings.Count(s, gatewayProfileHostPlaceholder) != 1 {
-		return nil, "", fmt.Errorf("embedded provider profile %q is not a valid gateway template (one id line and one host placeholder expected)", gatewayProfileTemplateID)
+		return nil, "", fmt.Errorf("embedded provider profile %q is not a valid gateway template (one id line and one host placeholder expected)", templateID)
 	}
-	id := gatewayProfileID(h)
+	for placeholder, value := range auth {
+		if strings.Count(s, placeholder) != 1 {
+			return nil, "", fmt.Errorf("embedded provider profile %q is not a valid gateway template (one %s placeholder expected)", templateID, placeholder)
+		}
+		s = strings.Replace(s, placeholder, value, 1)
+	}
 	s = strings.Replace(s, idLine, "\nid: "+id+"\n", 1)
 	s = strings.Replace(s, gatewayProfileHostPlaceholder, h, 1)
 	return []byte(s), id, nil
 }
 
-// ensureGatewayProfile renders the gateway profile for host and imports it
+// ensureGatewayProfile renders the gateway profile p selects and imports it
 // (importProfileBytes, the same verified import ensureEmbeddedProfile uses).
 // It returns the per-host profile id the run-scoped provider must use as its
 // type.
-func ensureGatewayProfile(ctx context.Context, host string, printer *ui.Printer) (string, error) {
-	data, id, err := renderGatewayProfile(host)
+func ensureGatewayProfile(ctx context.Context, p gatewayProfile, printer *ui.Printer) (string, error) {
+	data, id, err := renderGatewayProfileFor(p)
 	if err != nil {
 		return "", err
 	}
@@ -166,11 +217,11 @@ func validateGatewayAssertion(token string) error {
 // ensureOpenAIProvider. The token is registered for redaction first. It
 // returns the instance name the sandbox must attach and the profile id; the
 // caller registers cleanupRunScopedProvider for the name on success.
-func ensureGatewayProvider(ctx context.Context, host, sandboxName, token string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
+func ensureGatewayProvider(ctx context.Context, profile gatewayProfile, sandboxName, token string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
 	if err := validateGatewayAssertion(token); err != nil {
 		return "", "", err
 	}
-	return storeGatewayProvider(ctx, host, sandboxName, token, expiresAt, printer)
+	return storeGatewayProvider(ctx, profile, sandboxName, token, expiresAt, printer)
 }
 
 // ensureGatewayAPIKeyProvider is ensureGatewayProvider for the api-key
@@ -178,11 +229,11 @@ func ensureGatewayProvider(ctx context.Context, host, sandboxName, token string,
 // refused one with a line break, so it cannot break the `::add-mask::`
 // line), behind the same run-scoped placeholder, per-host profile and
 // guards. expiresAt bounds the provider instance, not the key.
-func ensureGatewayAPIKeyProvider(ctx context.Context, host, sandboxName, key string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
+func ensureGatewayAPIKeyProvider(ctx context.Context, profile gatewayProfile, sandboxName, key string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
 	if strings.ContainsAny(key, "\r\n\x00") || strings.TrimSpace(key) == "" {
 		return "", "", errors.New("inference gateway: the API key is empty or holds a control character; refusing to use it")
 	}
-	return storeGatewayProvider(ctx, host, sandboxName, key, expiresAt, printer)
+	return storeGatewayProvider(ctx, profile, sandboxName, key, expiresAt, printer)
 }
 
 // gatewayMaskData percent-encodes a value for a workflow command's data
@@ -194,14 +245,14 @@ var gatewayMaskData = strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
 // storeGatewayProvider registers token for redaction, imports the per-host
 // profile and creates the run-scoped provider carrying token with
 // expiresAt as its credential expiry.
-func storeGatewayProvider(ctx context.Context, host, sandboxName, token string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
+func storeGatewayProvider(ctx context.Context, profile gatewayProfile, sandboxName, token string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
 	if !security.RegisterRuntimeSecret(token) {
 		return "", "", errors.New("inference gateway: the token is too short to redact reliably; refusing to use it")
 	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", gatewayMaskData.Replace(token))
 	}
-	profileID, err = ensureGatewayProfile(ctx, host, printer)
+	profileID, err = ensureGatewayProfile(ctx, profile, printer)
 	if err != nil {
 		return "", "", err
 	}

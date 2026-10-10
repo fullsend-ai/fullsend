@@ -82,8 +82,30 @@ func TestPlanGatewayRoute(t *testing.T) {
 		assert.Nil(t, plan.prepared)
 		assert.True(t, plan.seed.IsZero())
 	})
-	t.Run("a gateway model on Claude Code is an error", func(t *testing.T) {
-		_, err := planGatewayRoute(rc, claude, "fs-plan-claude", []string{"gateway/m1"}, false)
+	t.Run("Claude Code on a gateway model prepares the runtime", func(t *testing.T) {
+		const sb = "fs-plan-claude"
+		plan, err := planGatewayRoute(rc, claude, sb, []string{"gateway/claude-haiku-5-5"}, true)
+		require.NoError(t, err)
+		require.NotNil(t, plan)
+		t.Cleanup(func() { plan.prepared.ClearGatewayRun(sb) })
+		require.NotNil(t, plan.prepared)
+		assert.Equal(t, runtime.ClaudeRuntime{}.GatewayCredentialSeed(), plan.seed)
+		assert.Equal(t, gatewayProfile{host: "gw.example.com", claude: true}, plan.profileSpec())
+	})
+	t.Run("Claude Code with no gateway model keeps its route", func(t *testing.T) {
+		plan, err := planGatewayRoute(rc, claude, "fs-plan-claude-vertex", []string{"opus"}, false)
+		require.NoError(t, err)
+		assert.Nil(t, plan)
+	})
+	t.Run("a gateway model on Claude Code without a block is an error", func(t *testing.T) {
+		_, err := planGatewayRoute(runConfig{}, claude, "fs-plan-claude-nocfg", []string{"gateway/m1"}, true)
+		assert.ErrorContains(t, err, "need an inference.gateway block")
+		none := gatewayTestRunConfig(t, "version: \"1\"\n", nil)
+		_, err = planGatewayRoute(none, claude, "fs-plan-claude-noblock", []string{"gateway/m1"}, true)
+		assert.ErrorContains(t, err, "need an inference.gateway block")
+	})
+	t.Run("a gateway model on Codex is an error", func(t *testing.T) {
+		_, err := planGatewayRoute(rc, runtime.Backend{Runtime: runtime.CodexRuntime{}}, "fs-plan-codex", []string{"gateway/m1"}, true)
 		assert.ErrorContains(t, err, "does not implement")
 	})
 	t.Run("no config file", func(t *testing.T) {
@@ -106,6 +128,21 @@ func TestPlanGatewayRoute(t *testing.T) {
 		plan, err := planGatewayRoute(rc, pi, "fs-plan-local", []string{"gateway/m1"}, true)
 		require.NoError(t, err)
 		assert.Nil(t, plan)
+	})
+	t.Run("a local oidc run is an error on Claude Code", func(t *testing.T) {
+		stubGatewayOIDC(t, "", "")
+		_, err := planGatewayRoute(rc, claude, "fs-plan-claude-local", []string{"gateway/m1"}, true)
+		assert.ErrorContains(t, err, "auth: api-key for a local run")
+	})
+	t.Run("a local api-key run on Claude Code uses the api-key profile", func(t *testing.T) {
+		stubGatewayOIDC(t, "", "")
+		keyed := gatewayTestRunConfig(t, "version: \"1\"\ninference:\n  gateway:\n    url: https://gw.example.com\n    auth: api-key\n", nil)
+		const sb = "fs-plan-claude-key"
+		plan, err := planGatewayRoute(keyed, claude, sb, []string{"gateway/m1"}, true)
+		require.NoError(t, err)
+		require.NotNil(t, plan)
+		t.Cleanup(func() { plan.prepared.ClearGatewayRun(sb) })
+		assert.Equal(t, gatewayProfile{host: "gw.example.com", claude: true, apiKey: true}, plan.profileSpec())
 	})
 }
 
@@ -173,8 +210,8 @@ func TestStartGatewayRoute(t *testing.T) {
 	var gotHost, gotToken string
 	orig := ensureGatewayProviderFn
 	t.Cleanup(func() { ensureGatewayProviderFn = orig })
-	ensureGatewayProviderFn = func(_ context.Context, host, sandboxName, token string, _ time.Time, _ *ui.Printer) (string, string, error) {
-		gotHost, gotToken = host, token
+	ensureGatewayProviderFn = func(_ context.Context, profile gatewayProfile, sandboxName, token string, _ time.Time, _ *ui.Printer) (string, string, error) {
+		gotHost, gotToken = profile.host, token
 		return "inference-gateway-x", "fullsend-inference-gateway-abc", nil
 	}
 	plan := &gatewayRoutePlan{block: config.InferenceGatewayConfig{URL: "https://gw.example.com", Audience: "aud"}, host: "gw.example.com", seed: runtime.PiRuntime{}.GatewayCredentialSeed()}
@@ -200,7 +237,7 @@ func TestStartGatewayRoute(t *testing.T) {
 	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
 		return &actionsoidc.Assertion{Value: gatewayTestJWT, IssuedAt: iat, ExpiresAt: iat.Add(5 * time.Minute)}, nil
 	})
-	ensureGatewayProviderFn = func(context.Context, string, string, string, time.Time, *ui.Printer) (string, string, error) {
+	ensureGatewayProviderFn = func(context.Context, gatewayProfile, string, string, time.Time, *ui.Printer) (string, string, error) {
 		return "", "", errors.New("gateway down")
 	}
 	_, err = startGatewayRoute(context.Background(), plan, "fs-start", ui.New(io.Discard))

@@ -104,6 +104,10 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
 	configDir := r.ConfigDir()
 
+	// On the gateway route a gateway/ model in the frontmatter must reach
+	// Claude Code as an explicit --model without the prefix.
+	setClaudeGatewayAgentModel(sandboxName, AgentDefinitionModel(agentPath))
+
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/agents %s/skills %s/plugins",
 		configDir, configDir, configDir)
 	if _, _, _, err := sandbox.Exec(sandboxName, mkdirCmd, 10*time.Second); err != nil {
@@ -157,10 +161,11 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 	if !ok {
 		return nil
 	}
-	return installClaudeHooks(sandboxName, hooksInput.SandboxHookConfig())
+	return installClaudeHooks(sandboxName, hooksInput.SandboxHookConfig(), r.claudeGatewaySettings(sandboxName))
 }
 
 func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
+	gw := claudeGatewayRunFor(params.SandboxName)
 	cmd := buildRunCommand(params)
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {
@@ -205,6 +210,9 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
+	}
+	if gw != nil && exitCode == piCredentialSeedFailedExit {
+		return exitCode, fmt.Errorf("the inference gateway credential seed failed (the sandbox's gateway provider placeholder is missing or malformed, or the token file in %s could not be written); this is a runner setup failure, not an agent failure", sandbox.SandboxClaudeConfig)
 	}
 
 	return exitCode, nil
@@ -363,13 +371,24 @@ func buildRunCommand(params RunParams) string {
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	safe := strings.ReplaceAll(params.AgentBaseName, "'", "'\\''")
 
+	// On the inference gateway route the runner owns the endpoint and the
+	// credential: the placeholder is checked (and, for oidc, seeded) before
+	// the agent-writable .env, and the route's variables are cleared and
+	// re-exported after it, so .env cannot override them.
+	gw := claudeGatewayRunFor(params.SandboxName)
+	preEnv, postEnv := "", ""
+	if gw != nil {
+		preEnv = " && " + ClaudeRuntime{}.claudeGatewayPreEnv(gw)
+		postEnv = " && " + claudeGatewayPostEnv(gw)
+	}
+
 	parts := []string{
 		// The pin comes before `. .env`; `unset -f` is a special builtin, which a
 		// function defined in .env (or an .env.d file it sources) cannot
 		// shadow, and the launch goes through the pinned path, which no
 		// function or alias can shadow either.
-		fmt.Sprintf("cd %s && %s && . %s && unset -f claude && %s && \"$%s\"",
-			params.RepoDir, claudeBinaryPin(), envFile, claudeLoaderEnvUnset, claudeBinaryVar),
+		fmt.Sprintf("cd %s && %s%s && . %s && unset -f claude && %s%s && \"$%s\"",
+			params.RepoDir, claudeBinaryPin(), preEnv, envFile, claudeLoaderEnvUnset, postEnv, claudeBinaryVar),
 		"--print",
 		"--verbose",
 		"--output-format stream-json",
@@ -377,6 +396,13 @@ func buildRunCommand(params RunParams) string {
 
 	if params.HooksSettingsPath != "" {
 		parts = append(parts, fmt.Sprintf("--settings '%s'", strings.ReplaceAll(params.HooksSettingsPath, "'", "'\\''")))
+	} else if extra := (ClaudeRuntime{}).claudeGatewaySettings(params.SandboxName); extra != nil {
+		// No hooks file to carry the oidc apiKeyHelper (installClaudeHooks
+		// writes it there), so pass it inline.
+		inline, err := json.Marshal(extra)
+		if err == nil {
+			parts = append(parts, "--settings "+shellQuote(string(inline)))
+		}
 	}
 
 	if params.Debug != "" {
@@ -386,11 +412,22 @@ func buildRunCommand(params RunParams) string {
 		}
 	}
 
+	model := ""
 	if params.Model != "" {
 		// When the repo configures models.aliases and the model is an
 		// alias key with an entry, pass the id to --model so the run uses
 		// the repo's chosen generation (#6882).
-		model := remapModel(params.Model, params.ModelAliases)
+		model = remapModel(params.Model, params.ModelAliases)
+	}
+	if gw != nil {
+		// The gateway serves <model>; gateway/ only selects the route. A
+		// frontmatter gateway/ model needs the explicit flag too, since
+		// Claude Code would otherwise send it with the prefix.
+		if id, ok := claudeGatewayModel(params.Model, gw.agentModel, params.ModelAliases); ok {
+			model = id
+		}
+	}
+	if model != "" {
 		parts = append(parts, fmt.Sprintf("--model '%s'", strings.ReplaceAll(model, "'", "'\\''")))
 	}
 
@@ -401,10 +438,15 @@ func buildRunCommand(params RunParams) string {
 	if len(params.FallbackModels) > 0 {
 		// Same remap as --model, so an *aliased* fallback entry follows the
 		// repo's retarget. A literal id in the chain is passed as written.
-		if len(params.ModelAliases) > 0 {
+		if len(params.ModelAliases) > 0 || gw != nil {
 			remapped := make([]string, len(params.FallbackModels))
 			for i, fb := range params.FallbackModels {
 				remapped[i] = remapModel(fb, params.ModelAliases)
+				// On the gateway route every fallback goes to the gateway
+				// too, so a gateway/ entry loses its prefix as --model does.
+				if id, ok := cutGatewayModel(remapped[i]); gw != nil && ok {
+					remapped[i] = id
+				}
 			}
 			params.FallbackModels = remapped
 		}
@@ -438,7 +480,12 @@ func buildRunCommand(params RunParams) string {
 // precedence over project/local settings. Hook scripts and wiring are
 // co-located under the runner-owned config directory, outside the
 // agent-writable workspace tree (#6358).
-func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig) error {
+//
+// extra are further settings for the same file: Claude Code reads one
+// --settings flag, so an oidc gateway run's apiKeyHelper
+// (claudeGatewaySettings) is written here; buildRunCommand passes it inline
+// when the run has no hooks file.
+func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, extra map[string]any) error {
 	// security.SandboxHooksDir is the directory the generated hooks.json
 	// commands point at; installHookScripts creates it.
 	if err := installHookScripts(sandboxName, security.SandboxHooksDir, hooks); err != nil {
@@ -448,6 +495,10 @@ func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig) er
 	hooksJSON, err := security.GenerateHooksConfig(hooks)
 	if err != nil {
 		return fmt.Errorf("generating hooks config: %w", err)
+	}
+	hooksJSON, err = mergeClaudeSettings(hooksJSON, extra)
+	if err != nil {
+		return fmt.Errorf("adding the inference gateway settings to the hooks config: %w", err)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "fullsend-hooks-")

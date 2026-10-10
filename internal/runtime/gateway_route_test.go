@@ -35,8 +35,9 @@ func TestPiGatewayCredentialSeed_IsItsOwnRoute(t *testing.T) {
 	assert.NotEqual(t, oa.File, gw.File, "independent handoffs per route")
 
 	var _ GatewayRouteRuntime = PiRuntime{}
-	_, ok := Runtime(ClaudeRuntime{}).(GatewayRouteRuntime)
-	assert.False(t, ok, "Claude Code has no gateway route yet")
+	var _ GatewayRouteRuntime = ClaudeRuntime{}
+	_, ok := Runtime(CodexRuntime{}).(GatewayRouteRuntime)
+	assert.False(t, ok, "codex has no gateway route")
 }
 
 // TestPiGatewayTokenSeed_Shell runs the seed under sh: a gateway
@@ -225,7 +226,8 @@ func TestNeedsGatewayRoute(t *testing.T) {
 	assert.True(t, NeedsGatewayRoute("pi", "", "gateway/m1", nil), "agent definition model")
 	assert.True(t, NeedsGatewayRoute("pi", "fast", "", map[string]string{"fast": "gateway/m1"}), "alias")
 	assert.False(t, NeedsGatewayRoute("pi", "openai/gpt-5", "", nil))
-	assert.False(t, NeedsGatewayRoute("claude", "gateway/m1", "", nil), "only pi carries the route")
+	assert.True(t, NeedsGatewayRoute("claude", "gateway/m1", "", nil), "Claude Code carries the route too (TestNeedsGatewayRoute_Claude)")
+	assert.False(t, NeedsGatewayRoute("codex", "gateway/m1", "", nil), "codex does not")
 }
 
 // A Vertex parent with gateway children: the children alone put the run

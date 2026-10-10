@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -116,11 +117,11 @@ func anyGatewayModel(models []string) bool {
 }
 
 // gatewayRouteRuntimes are the runtimes that implement the gateway route.
-var gatewayRouteRuntimes = []string{"pi"}
+var gatewayRouteRuntimes = []string{"pi", "claude"}
 
 // validateGatewayRuntime refuses a gateway/ model on a runtime without the
-// route (Claude Code, Codex): the model would otherwise fail later with an
-// unknown provider, or worse reach a different credential.
+// route (Codex): the model would otherwise fail later with an unknown
+// provider, or worse reach a different credential.
 func validateGatewayRuntime(runtimeName string, models []string) error {
 	if !anyGatewayModel(models) {
 		return nil
@@ -131,6 +132,35 @@ func validateGatewayRuntime(runtimeName string, models []string) error {
 		}
 	}
 	return fmt.Errorf("gateway/ models need the inference gateway route, which runtime %q does not implement (supported: %s)", runtimeName, strings.Join(gatewayRouteRuntimes, ", "))
+}
+
+// validateClaudeGatewayModels checks the gateway/ models of a Claude Code
+// run: each must name a model after the prefix, and the run needs a block
+// that applies. Claude Code has no harness-side way to reach a gateway (pi
+// has the extension as a plugin), so without the runner's route a gateway/
+// model would reach Vertex, or an endpoint set by hand, as a literal id.
+func validateClaudeGatewayModels(models []string, block config.InferenceGatewayConfig, applies bool) error {
+	if !anyGatewayModel(models) {
+		return nil
+	}
+	for _, m := range models {
+		if !isGatewayModel(m) {
+			continue
+		}
+		if _, id, _ := strings.Cut(strings.TrimSpace(m), "/"); strings.TrimSpace(id) == "" {
+			return fmt.Errorf("model %q names no gateway model after the gateway/ prefix", m)
+		}
+	}
+	if applies {
+		return nil
+	}
+	switch {
+	case block.IsZero():
+		return errors.New("gateway/ models on the claude runtime need an inference.gateway block in .fullsend/config.yaml; configure one with 'fullsend github setup --inference-gateway-url ...'")
+	case !block.IsAPIKey():
+		return errors.New("gateway/ models on the claude runtime need the inference.gateway block to apply, and the oidc mode applies only on a run with a forge OIDC endpoint (a GitHub Actions job with id-token: write); use auth: api-key for a local run")
+	}
+	return errors.New("gateway/ models on the claude runtime need an inference.gateway block that applies to this run")
 }
 
 // gatewayOIDCEnvFn returns the forge OIDC endpoint the runner fetches

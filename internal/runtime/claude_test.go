@@ -1094,7 +1094,7 @@ func TestInstallClaudeHooks_HappyPath(t *testing.T) {
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{} // default hooks (all enabled)
-	require.NoError(t, installClaudeHooks("test-sandbox", hooks))
+	require.NoError(t, installClaudeHooks("test-sandbox", hooks, nil))
 
 	logBytes, err := os.ReadFile(logPath)
 	require.NoError(t, err)
@@ -1113,7 +1113,7 @@ func TestInstallClaudeHooks_SettingsUploadError(t *testing.T) {
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{}
-	err := installClaudeHooks("test-sandbox", hooks)
+	err := installClaudeHooks("test-sandbox", hooks, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying hooks.json to sandbox")
 }
@@ -1124,7 +1124,7 @@ func TestInstallClaudeHooks_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	hooks := security.SandboxHookConfig{}
-	err := installClaudeHooks("test-sandbox", hooks)
+	err := installClaudeHooks("test-sandbox", hooks, nil)
 	require.Error(t, err)
 }
 
@@ -1150,7 +1150,7 @@ func TestInstallClaudeHooks_TempFileError(t *testing.T) {
 		UnicodePostTool:         &off,
 		ContextSuppressPostTool: &off,
 	}}}
-	err := installClaudeHooks("test-sandbox", security.SandboxHookConfigFromHarness(h))
+	err := installClaudeHooks("test-sandbox", security.SandboxHookConfigFromHarness(h), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating temp hooks file")
 }

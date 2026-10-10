@@ -28,6 +28,8 @@ type gatewayRoutePlan struct {
 	block config.InferenceGatewayConfig
 	// host is the gateway's host name, bound by the per-host profile.
 	host string
+	// profile is the rendering of the per-host profile the run imports.
+	profile gatewayProfile
 	// seed is the runtime's gateway credential seed; zero when the runtime
 	// has none (the dummy runtime), so a refresh only updates the provider.
 	seed runtime.CredentialSeed
@@ -37,6 +39,15 @@ type gatewayRoutePlan struct {
 	// apiKeyLifetime bounds the api-key mode's provider instance
 	// (gatewayAPIKeyLifetimeFor); zero means gatewayAPIKeyLifetime.
 	apiKeyLifetime time.Duration
+}
+
+// profileSpec returns the profile rendering the plan's provider uses: the
+// one planGatewayRoute chose, or the default (pi) rendering for plan.host.
+func (p *gatewayRoutePlan) profileSpec() gatewayProfile {
+	if p.profile.host == "" {
+		return gatewayProfile{host: p.host}
+	}
+	return p.profile
 }
 
 // isDummyRuntime reports whether name is a test runtime the gateway
@@ -60,13 +71,18 @@ func planGatewayRoute(rc runConfig, backend runtime.Backend, sandboxName string,
 	if err := validateGatewayRuntime(name, models); err != nil {
 		return nil, err
 	}
-	if rc.perRepo == nil {
-		return nil, nil
+	var block config.InferenceGatewayConfig
+	if rc.perRepo != nil {
+		block = rc.perRepo.ConfigInferenceGateway().Trimmed()
 	}
-	block := rc.perRepo.ConfigInferenceGateway().Trimmed()
 	applies, err := gatewayBlockApplies(block)
 	if err != nil {
 		return nil, err
+	}
+	if name == "claude" {
+		if err := validateClaudeGatewayModels(models, block, applies); err != nil {
+			return nil, err
+		}
 	}
 	if !applies {
 		return nil, nil
@@ -79,6 +95,7 @@ func planGatewayRoute(rc runConfig, backend runtime.Backend, sandboxName string,
 		return nil, fmt.Errorf("inference.gateway.url: %w", err)
 	}
 	plan := &gatewayRoutePlan{block: block, host: u.Hostname()}
+	plan.profile = gatewayProfile{host: plan.host, claude: name == "claude", apiKey: block.IsAPIKey()}
 	gr, ok := backend.Runtime.(runtime.GatewayRouteRuntime)
 	if !ok {
 		return plan, nil
@@ -191,7 +208,7 @@ func startGatewayRoute(ctx context.Context, plan *gatewayRoutePlan, sandboxName 
 		return gatewayProviderHandle{}, err
 	}
 	printer.StepDone(fmt.Sprintf("Inference gateway assertion ready (lifetime %s)", a.Lifetime().Round(time.Second)))
-	name, _, err := ensureGatewayProviderFn(ctx, plan.host, sandboxName, a.Value, a.ExpiresAt, printer)
+	name, _, err := ensureGatewayProviderFn(ctx, plan.profileSpec(), sandboxName, a.Value, a.ExpiresAt, printer)
 	if err != nil {
 		return gatewayProviderHandle{}, err
 	}
@@ -261,7 +278,7 @@ func startGatewayAPIKeyRoute(ctx context.Context, plan *gatewayRoutePlan, sandbo
 	}
 	printer.StepInfo(fmt.Sprintf("Inference gateway provider bounded at %s; a run that outlasts it fails closed", lifetime.Round(time.Minute)))
 	expiresAt := time.Now().Add(lifetime)
-	name, _, err := ensureGatewayAPIKeyProviderFn(ctx, plan.host, sandboxName, key, expiresAt, printer)
+	name, _, err := ensureGatewayAPIKeyProviderFn(ctx, plan.profileSpec(), sandboxName, key, expiresAt, printer)
 	if err != nil {
 		return gatewayProviderHandle{}, err
 	}

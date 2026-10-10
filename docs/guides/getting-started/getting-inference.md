@@ -385,4 +385,5 @@ To run agents on the pi runtime through an OpenAI/Anthropic-compatible inference
 see [Using an inference gateway (experimental)](../user/running-agents-locally.md#using-an-inference-gateway-experimental).
 That page covers local runs. For GitHub Actions runs, see
 [Inference gateway with GitHub OIDC (WIF)](#inference-gateway-with-github-oidc-wif). The same
-block also applies to local runs when it sets `auth: api-key`.
+block also applies to local runs when it sets `auth: api-key`. The Claude Code runtime uses the same block for `gateway/<model>`
+models; see [Claude Code § Inference gateway route](../../runtimes/claude.md#inference-gateway-route).

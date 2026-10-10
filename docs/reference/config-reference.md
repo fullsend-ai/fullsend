@@ -314,9 +314,14 @@ independently through the layered config system (an overlay can override
   models in the same run keep their own routes. If the gateway cannot be
   reached, or refuses the token, the run fails and does not fall back to
   another credential. With no block, or in the `oidc` mode on a local run
-  without an OIDC endpoint, the runner adds nothing, so a harness that loads the
-  inference-gateway extension as a plugin keeps working. A `gateway/` model
-  on a runtime without the route (Claude Code, Codex) is an error. Fields:
+  without an OIDC endpoint, the runner adds nothing on pi, so a harness that
+  loads the inference-gateway extension as a plugin keeps working. Claude Code
+  has no such setup, so there a `gateway/` model without a block that applies
+  is an error. On Claude Code the runner exports `url` as
+  `ANTHROPIC_BASE_URL` and passes the id after `gateway/` to `--model`; the
+  model list is not used
+  ([details](../runtimes/claude.md#inference-gateway-route)). A `gateway/`
+  model on a runtime without the route (Codex) is an error. Fields:
   - `url` — the gateway origin, for example `https://gateway.example.com`.
     Must be `https` (plain `http` only for a loopback test host), with no
     credentials, query or fragment, no path other than `/`, and no port

@@ -238,11 +238,27 @@ const (
 // the latter holds the sandbox lock), so each writer uses its own temp
 // file, named by its shell's pid, and removes it if the write fails.
 func PiGatewayTokenSeed(configDir string) string {
+	return gatewayTokenSeed(configDir)
+}
+
+// gatewayPlaceholderCheck is the POSIX sh fragment that fails the run
+// (piSeedExit) unless the sandbox environment carries a gateway
+// placeholder for INFERENCE_GATEWAY_API_KEY made only of placeholder
+// characters. Every runtime on the gateway route runs it before the
+// agent-writable .env is sourced.
+func gatewayPlaceholderCheck() string {
+	return `case "${` + piGatewayCredentialEnv + `:-}" in ` + piPlaceholderPrefix + `*` + piGatewayCredentialEnv + `) ;; *) echo 'fullsend: ` + piGatewayCredentialEnv + ` in the sandbox is not a gateway placeholder (inference gateway provider not attached, or a real token reached the sandbox); refusing to run the gateway provider' >&2; ` + piSeedExit + ` ;; esac` +
+		` && case "$` + piGatewayCredentialEnv + `" in *[!A-Za-z0-9_:]*) echo 'fullsend: ` + piGatewayCredentialEnv + ` placeholder has unexpected characters; refusing to run the gateway provider' >&2; ` + piSeedExit + ` ;; esac`
+}
+
+// gatewayTokenSeed is the runtime-neutral body of PiGatewayTokenSeed: the
+// placeholder check, then the atomic write of the placeholder into
+// configDir/inference-gateway.token.
+func gatewayTokenSeed(configDir string) string {
 	dir := shellQuote(configDir)
 	final := shellQuote(configDir + "/" + piInferenceGatewayTokenFile)
 	tmp := shellQuote(configDir+"/"+piInferenceGatewayTokenFile+".fullsend") + `.$$`
-	return `case "${` + piGatewayCredentialEnv + `:-}" in ` + piPlaceholderPrefix + `*` + piGatewayCredentialEnv + `) ;; *) echo 'fullsend: ` + piGatewayCredentialEnv + ` in the sandbox is not a gateway placeholder (inference gateway provider not attached, or a real token reached the sandbox); refusing to run the gateway provider' >&2; ` + piSeedExit + ` ;; esac` +
-		` && case "$` + piGatewayCredentialEnv + `" in *[!A-Za-z0-9_:]*) echo 'fullsend: ` + piGatewayCredentialEnv + ` placeholder has unexpected characters; refusing to run the gateway provider' >&2; ` + piSeedExit + ` ;; esac` +
+	return gatewayPlaceholderCheck() +
 		` && { command -p mkdir -p ` + dir +
 		` && printf '%s' "$` + piGatewayCredentialEnv + `" > ` + tmp +
 		` && command -p mv -f ` + tmp + ` ` + final +

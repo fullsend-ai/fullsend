@@ -93,7 +93,9 @@ func newInferenceGatewayStatusCmd() *cobra.Command {
 		Short: "Check inference gateway configuration and authentication",
 		Long: `Prints the resolved inference.gateway block (url, audience, auth mode
 and model list) and the config layer each value comes from (config.yaml
-or config.base.yaml), and flags a partial block.
+or config.base.yaml), and flags a partial block. For a complete block
+it also reports the Claude Code route: the ANTHROPIC_BASE_URL a
+gateway/<model> run gets and the header its credential travels in.
 
 In the api-key auth mode, warns that the mode relies on a long-lived
 secret, reports whether FULLSEND_INFERENCE_GATEWAY_API_KEY is set (never
@@ -230,6 +232,7 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 	}
 	if g.IsAPIKey() {
 		printer.StepDone("url is set")
+		printClaudeGatewayRoute(printer, g)
 		printer.StepWarn("auth is api-key: the route relies on a long-lived gateway API key (" + gatewayAPIKeyEnv + "); use it with caution, and prefer auth: oidc when the gateway can validate forge OIDC tokens")
 		if deps.getenv(gatewayAPIKeyEnv) == "" {
 			printer.StepInfo(gatewayAPIKeyEnv + " is not set in this environment; a run in the api-key mode fails without it")
@@ -239,6 +242,7 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 		return nil
 	}
 	printer.StepDone("url and audience are set")
+	printClaudeGatewayRoute(printer, g)
 	printer.Blank()
 
 	oidcURL := deps.getenv("ACTIONS_ID_TOKEN_REQUEST_URL")
@@ -319,6 +323,23 @@ func runInferenceGatewayStatus(ctx context.Context, printer *ui.Printer, repo, f
 		printer.StepInfo(fmt.Sprintf("(and %d more)", more))
 	}
 	return nil
+}
+
+// printClaudeGatewayRoute reports how a claude runtime run with a
+// gateway/<model> model reaches the gateway for a complete block g: the
+// base URL the runner exports and the header the credential travels in,
+// which differs per auth mode.
+func printClaudeGatewayRoute(printer *ui.Printer, g config.InferenceGatewayConfig) {
+	u, err := url.Parse(g.URL)
+	if err != nil {
+		return
+	}
+	printer.StepInfo("claude runtime: gateway/<model> runs Claude Code against ANTHROPIC_BASE_URL=" + u.Scheme + "://" + u.Host + " as <model> (the model list is not used)")
+	if g.IsAPIKey() {
+		printer.StepInfo("claude runtime: credential is an ANTHROPIC_API_KEY placeholder, sent as x-api-key")
+		return
+	}
+	printer.StepInfo("claude runtime: credential comes from an apiKeyHelper that re-reads the runner-seeded token file, sent as Authorization: Bearer")
 }
 
 // gatewayJWTPattern matches a JWT-shaped value (three base64url segments,
