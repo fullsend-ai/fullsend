@@ -222,15 +222,20 @@ const (
 // re-runs it through `sandbox exec` after every token refresh. A value
 // that is not a gateway placeholder fails the run: a real token in the
 // sandbox environment would mean the provider path was bypassed.
+//
+// The iteration-start seed and a refresher's re-seed can overlap (only
+// the latter holds the sandbox lock), so each writer uses its own temp
+// file, named by its shell's pid, and removes it if the write fails.
 func PiGatewayTokenSeed(configDir string) string {
 	dir := shellQuote(configDir)
 	final := shellQuote(configDir + "/" + piInferenceGatewayTokenFile)
-	tmp := shellQuote(configDir + "/" + piInferenceGatewayTokenFile + ".fullsend")
+	tmp := shellQuote(configDir+"/"+piInferenceGatewayTokenFile+".fullsend") + `.$$`
 	return `case "${` + piGatewayCredentialEnv + `:-}" in ` + piPlaceholderPrefix + `*` + piGatewayCredentialEnv + `) ;; *) echo 'fullsend: ` + piGatewayCredentialEnv + ` in the sandbox is not a gateway placeholder (inference gateway provider not attached, or a real token reached the sandbox); refusing to run the gateway provider' >&2; exit 1 ;; esac` +
 		` && case "$` + piGatewayCredentialEnv + `" in *[!A-Za-z0-9_:]*) echo 'fullsend: ` + piGatewayCredentialEnv + ` placeholder has unexpected characters; refusing to run the gateway provider' >&2; exit 1 ;; esac` +
 		` && command -p mkdir -p ` + dir +
-		` && printf '%s' "$` + piGatewayCredentialEnv + `" > ` + tmp +
-		` && command -p mv -f ` + tmp + ` ` + final
+		` && { printf '%s' "$` + piGatewayCredentialEnv + `" > ` + tmp +
+		` && command -p mv -f ` + tmp + ` ` + final +
+		` || { command -p rm -f ` + tmp + `; echo 'fullsend: writing the inference gateway token file failed' >&2; exit 1; }; }`
 }
 
 // PrepareGatewayRun implements GatewayRouteRuntime: it renders the

@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -69,6 +71,35 @@ func TestPiGatewayTokenSeed_Shell(t *testing.T) {
 		_, statErr := os.Stat(filepath.Join(dir, piInferenceGatewayTokenFile))
 		assert.True(t, os.IsNotExist(statErr), "%s: no token file", name)
 	}
+}
+
+// Overlapping seeds (iteration start and a refresher's re-seed) each
+// write their own temp file, so neither fails and none is left behind.
+func TestPiGatewayTokenSeed_Concurrent(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	dir := filepath.Join(t.TempDir(), "cfg")
+	errs := make(chan error, 16)
+	for i := 0; i < 16; i++ {
+		go func(i int) {
+			cmd := exec.Command("sh", "-c", PiGatewayTokenSeed(dir))
+			cmd.Env = append(os.Environ(), "INFERENCE_GATEWAY_API_KEY="+piPlaceholderPrefix+"v"+strconv.Itoa(i)+"_INFERENCE_GATEWAY_API_KEY")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				err = fmt.Errorf("%w: %s", err, out)
+			}
+			errs <- err
+		}(i)
+	}
+	for i := 0; i < 16; i++ {
+		require.NoError(t, <-errs)
+	}
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "only the token file: no temp file is left behind")
+	assert.Equal(t, piInferenceGatewayTokenFile, entries[0].Name())
+
 }
 
 func TestPiPrepareGatewayRun(t *testing.T) {
