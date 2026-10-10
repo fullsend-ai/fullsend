@@ -328,7 +328,8 @@ independently through the layered config system (an overlay can override
     `api-key` mode.
   - `auth` — the credential mode, `oidc` (the default) or `api-key`
     ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
-    There is no precedence and no fallback between them. `oidc` is the
+    New in fullsend v0.47.0: an older CLI or reusable workflow rejects a
+    config that sets it. There is no precedence and no fallback between them. `oidc` is the
     route described above. `api-key` is for gateways that cannot trust
     forge OIDC. It is supported, but it is not the primary or safest
     option, because it relies on a long-lived secret: use it with caution,

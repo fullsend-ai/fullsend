@@ -164,7 +164,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().StringVar(&cfg.openaiAudience, "openai-audience", "", "OpenAI Workload Identity audience (GPT on pi or codex; with --openai-identity-provider-id and --openai-service-account-id)")
 	cmd.Flags().StringVar(&cfg.openaiIdentityProviderID, "openai-identity-provider-id", "", "OpenAI Workload Identity provider ID")
 	cmd.Flags().StringVar(&cfg.openaiServiceAccountID, "openai-service-account-id", "", "OpenAI service account ID the provider maps this repository to")
-	cmd.Flags().StringVar(&cfg.gatewayURL, "inference-gateway-url", "", "inference gateway origin, https://host with no path and port 443 only (plain http and any port only for a loopback test host); gateway/ models on pi, with --inference-gateway-audience")
+	cmd.Flags().StringVar(&cfg.gatewayURL, "inference-gateway-url", "", "inference gateway origin, https://host with no path and port 443 only (plain http and any port only for a loopback test host); gateway/ models on pi, with --inference-gateway-audience in the oidc auth mode")
 	cmd.Flags().StringVar(&cfg.gatewayAudience, "inference-gateway-audience", "", "OIDC audience the runner requests for the inference gateway (required in the oidc auth mode)")
 	cmd.Flags().StringVar(&cfg.gatewayAuth, "inference-gateway-auth", "", "inference gateway credential mode: oidc (default; the job's OIDC token) or api-key (FULLSEND_INFERENCE_GATEWAY_API_KEY; supported for gateways that cannot trust forge OIDC, but relies on a long-lived secret, so use with caution)")
 	cmd.Flags().StringArrayVar(&cfg.gatewayModels, "inference-gateway-model", nil, "inference gateway model as id=api (repeatable; api is openai-responses, anthropic-messages or openai-completions)")
