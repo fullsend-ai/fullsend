@@ -622,6 +622,7 @@ func TestCodexHookScriptsGuard_Executes(t *testing.T) {
 // only thing standing between a real key that reached the sandbox and codex
 // putting it on the wire.
 func TestCodexOpenAIAuthSeed_Executes(t *testing.T) {
+	requireSeedLock(t)
 	dir := t.TempDir()
 	r := CodexRuntime{}
 	seed := strings.ReplaceAll(r.OpenAIAuthSeed(), sandbox.SandboxCodexConfig, dir)
@@ -640,8 +641,7 @@ func TestCodexOpenAIAuthSeed_Executes(t *testing.T) {
 		assert.Equal(t, placeholder, string(got))
 		// Written through a rename, so the auth command never reads a
 		// half-written file.
-		_, statErr := os.Stat(tokenPath + ".fullsend")
-		assert.True(t, os.IsNotExist(statErr), "the temp file must be renamed away")
+		assertOnlySeedFiles(t, dir, codexTokenFile)
 	})
 
 	for name, value := range map[string]string{

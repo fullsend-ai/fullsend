@@ -300,10 +300,13 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 		case <-time.After(openAIPlaceholderPoll):
 		}
 	}
-	// Seed, then confirm the file names the new generation: an iteration
-	// starting at this very moment seeds too (from its own exec
-	// environment, which may still carry the previous placeholder), and
-	// whichever write lands last wins. One re-seed closes that window.
+	// Seed, then confirm the file names the new generation. An iteration
+	// starting at this very moment seeds too, from its own exec
+	// environment, which may still carry the previous placeholder. The
+	// seed fragment keeps that older writer from replacing a newer
+	// generation (an in-sandbox lock and generation history, see the
+	// runtime's orderedSeedWrite). The verification and the one retry
+	// remain as a check that the write landed.
 	// Only the write is taken under the sandbox lock, and one exec at a
 	// time: the seed writes atomically (mv -f) but the between-iteration
 	// sweep must not kill it mid-run, whereas the grep below only reads and

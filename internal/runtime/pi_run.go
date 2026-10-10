@@ -785,20 +785,17 @@ const piOpenAIAuthShape = `[{]"openai":[{]"type":"api_key","key":"` + piPlacehol
 // The iteration-start seed and a refresher's re-seed can overlap (only
 // the latter holds the sandbox lock), so, as PiGatewayTokenSeed does, each
 // writer uses its own temp file, named by its shell's pid, and removes it
-// if the write fails. Whichever move lands last wins; the refresher's
-// re-seed verifies the file afterwards and re-seeds once if an older
-// writer replaced its value (reseedCredential), so a seed whose value was
-// replaced is not a failure here.
+// if the write fails. The write goes through orderedSeedWrite, so a seed
+// holding an older generation leaves a newer one in place instead of
+// replacing it. Leaving it is not a failure here.
 func PiOpenAIAuthSeed(configDir string) string {
-	dir := shellQuote(configDir)
-	final := shellQuote(configDir + "/" + piOpenAIAuthFile)
-	tmp := shellQuote(configDir+"/"+piOpenAIAuthFile+".fullsend") + `.$$`
+	final := configDir + "/" + piOpenAIAuthFile
+	tmp := shellQuote(final+".fullsend") + `.$$`
 	return `case "${OPENAI_API_KEY:-}" in ` + piPlaceholderPrefix + `*OPENAI_API_KEY) ;; *) echo 'fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run the openai provider' >&2; ` + piSeedExit + ` ;; esac` +
 		` && case "$OPENAI_API_KEY" in *[!A-Za-z0-9_:]*) echo 'fullsend: OPENAI_API_KEY placeholder has unexpected characters; refusing to run the openai provider' >&2; ` + piSeedExit + ` ;; esac` +
-		` && { command -p mkdir -p ` + dir +
-		` && printf '{"openai":{"type":"api_key","key":"%s"}}\n' "$OPENAI_API_KEY" > ` + tmp +
-		` && command -p mv -f ` + tmp + ` ` + final +
-		` || { command -p rm -f ` + tmp + `; echo 'fullsend: writing pi auth.json failed' >&2; ` + piSeedExit + `; }; }`
+		` && ` + orderedSeedWrite("OPENAI_API_KEY", configDir, final, tmp,
+		`printf '{"openai":{"type":"api_key","key":"%s"}}\n' "$OPENAI_API_KEY"`,
+		`fullsend: writing pi auth.json failed`, piSeedExit)
 }
 
 // OpenAIAuthSeed implements OpenAICredentialSeeder: the fragment that seeds
