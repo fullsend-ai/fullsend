@@ -381,8 +381,9 @@ func TestRouteCredentialKeysMatchRuntimeSeeds(t *testing.T) {
 
 // gatewayRecoveryStub puts an openshell on PATH whose placeholder read
 // answers nothing until dir/base exists, then the old generation, and the
-// new one once the provider was updated and dir/flip exists. Seed and
-// verify execs succeed; a provider update touches dir/updated.
+// new one once the provider was updated and dir/flip exists; a read after
+// the update touches dir/settling. Seed and verify execs succeed; a
+// provider update touches dir/updated.
 func gatewayRecoveryStub(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -390,7 +391,7 @@ func gatewayRecoveryStub(t *testing.T) string {
 	stubOpenshell(t, "case \"$*\" in\n"+
 		"  *grep*) exit 0 ;;\n"+
 		"  *inference-gateway.token*) exit 0 ;;\n"+
-		"  *INFERENCE_GATEWAY_API_KEY:-*) if test -f "+q("updated")+" && test -f "+q("flip")+"; then printf '"+ph("v222_INFERENCE_GATEWAY_API_KEY")+"'; elif test -f "+q("base")+"; then printf '"+ph("v111_INFERENCE_GATEWAY_API_KEY")+"'; fi; exit 0 ;;\n"+
+		"  *INFERENCE_GATEWAY_API_KEY:-*) if test -f "+q("updated")+"; then touch "+q("settling")+"; fi; if test -f "+q("updated")+" && test -f "+q("flip")+"; then printf '"+ph("v222_INFERENCE_GATEWAY_API_KEY")+"'; elif test -f "+q("base")+"; then printf '"+ph("v111_INFERENCE_GATEWAY_API_KEY")+"'; fi; exit 0 ;;\n"+
 		"  *'provider update'*) touch "+q("updated")+"; exit 0 ;;\n"+
 		"esac\nexit 0")
 	return dir
@@ -443,8 +444,9 @@ func TestRunGatewayRefresh_RetriesTheHandOffAlone(t *testing.T) {
 	stops := startGatewayRefreshers([]gatewayProviderHandle{h}, ui.New(&out))
 	t.Cleanup(stops[0])
 
-	require.Eventually(t, func() bool { return strings.Contains(out.String(), "failed again") }, 10*time.Second, 5*time.Millisecond, out.String())
-	assert.Equal(t, int32(1), calls.Load(), "the hand-off is retried without another fetch")
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "retrying the hand-off") }, 10*time.Second, 5*time.Millisecond, out.String())
+	assert.Never(t, func() bool { return calls.Load() > 1 }, 200*time.Millisecond, 5*time.Millisecond, "the hand-off is retried without another fetch")
+	assert.NotContains(t, out.String(), "still failing", "no warning per retry while the agent's token is valid")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "flip"), nil, 0o644))
 	require.Eventually(t, func() bool { return strings.Contains(out.String(), "handed off") }, 10*time.Second, 5*time.Millisecond, out.String())
 	assert.Equal(t, int32(1), calls.Load())
@@ -465,7 +467,7 @@ func TestRunGatewayRefresh_BaselineFailureIsRetried(t *testing.T) {
 
 	require.Eventually(t, func() bool { return strings.Count(out.String(), "deferred") >= 2 }, 10*time.Second, 5*time.Millisecond, out.String())
 	assert.Equal(t, int32(0), calls.Load(), "nothing rotated without the baseline")
-	assert.Contains(t, out.String(), "refreshing now", "a late refresh is not blamed on the token lifetime")
+	assert.Contains(t, out.String(), "running late", "a late refresh is not blamed on the token lifetime")
 	assert.NotContains(t, out.String(), "lifetime")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "base"), nil, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "flip"), nil, 0o644))
@@ -508,4 +510,77 @@ func TestStartGatewayRefreshers_RestartResumesState(t *testing.T) {
 	t.Cleanup(stops[0])
 	assert.Never(t, func() bool { return calls.Load() > 1 }, 200*time.Millisecond, 5*time.Millisecond, "no refresh: the provider's token is fresh")
 	assert.NotContains(t, out.String(), "refresh budget", "no false lifetime warning")
+}
+
+// A stop that interrupts a hand-off records the landed rotation as a
+// pending hand-off without warning, and the restarted refresher finishes
+// the hand-off without fetching again.
+func TestRunGatewayRefresh_StopDuringHandOff(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	dir := gatewayRecoveryStub(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "base"), nil, 0o644))
+	shrinkGatewayRefreshTimers(t)
+	openAIPlaceholderSettle = time.Minute // the hand-off waits until stopped
+	calls := countFiveMinuteAssertions(t)
+	handles := []gatewayProviderHandle{gatewayDueHandle(time.Minute)}
+	var out syncBuffer
+	stops := startGatewayRefreshers(handles, ui.New(&out))
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(dir, "settling"))
+		return err == nil
+	}, 10*time.Second, 5*time.Millisecond, "the hand-off is waiting for the new generation")
+	stops[0]()
+
+	st := handles[0].state
+	assert.True(t, st.handOffPending)
+	assert.True(t, st.expiresAt.After(time.Now().Add(4*time.Minute)), "the new token is recorded")
+	assert.NotContains(t, out.String(), "retrying the hand-off")
+
+	openAIPlaceholderSettle = 20 * time.Millisecond
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "flip"), nil, 0o644))
+	stops = startGatewayRefreshers(handles, ui.New(&out))
+	t.Cleanup(stops[0])
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "handed off") }, 10*time.Second, 5*time.Millisecond, out.String())
+	assert.Equal(t, int32(1), calls.Load())
+}
+
+// When a pending hand-off reaches the next rotation, the rotation hands
+// the agent the generation it creates, not the stale one in between: the
+// sandbox hands out the previous generation for one read after each
+// update, as a propagating provider does.
+func TestRunGatewayRefresh_PendingHandOffSeedsTheNewestGeneration(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	dir := t.TempDir()
+	q := func(name string) string { return shellQuoteForTest(filepath.Join(dir, name)) }
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "count"), []byte("0\n"), 0o644))
+	stubOpenshell(t, "case \"$*\" in\n"+
+		"  *grep*) exit 0 ;;\n"+
+		// The first hand-off fails at the seed; later ones succeed.
+		"  *inference-gateway.token*) test \"$(cat "+q("count")+")\" -ge 2 ;;\n"+
+		"  *INFERENCE_GATEWAY_API_KEY:-*) n=$(cat "+q("count")+"); if test -f "+q("lag")+"; then rm -f "+q("lag")+"; n=$((n-1)); fi; printf 'openshell:resolve:env:v%s_INFERENCE_GATEWAY_API_KEY' \"$n\" ;;\n"+
+		"  *'provider update'*) n=$(cat "+q("count")+"); echo $((n+1)) > "+q("count")+"; touch "+q("lag")+" ;;\n"+
+		"esac")
+	shrinkGatewayRefreshTimers(t)
+	var calls atomic.Int32
+	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
+		// The first token's lifetime is inside the refresh budget, so the
+		// next rotation is due at once and meets the pending hand-off.
+		lifetime := 5 * time.Minute
+		if calls.Add(1) == 1 {
+			lifetime = 40 * time.Second
+		}
+		now := time.Now()
+		return &actionsoidc.Assertion{Value: gatewayTestJWT, IssuedAt: now, ExpiresAt: now.Add(lifetime)}, nil
+	})
+	handles := []gatewayProviderHandle{gatewayDueHandle(20 * time.Second)}
+	var out syncBuffer
+	stops := startGatewayRefreshers(handles, ui.New(&out))
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "token refreshed for inference-gateway-x (next") }, 10*time.Second, 5*time.Millisecond, out.String())
+	stops[0]()
+
+	st := handles[0].state
+	assert.Equal(t, int32(2), calls.Load())
+	assert.False(t, st.handOffPending)
+	assert.Equal(t, ph("v2_INFERENCE_GATEWAY_API_KEY"), st.placeholder, "the agent holds the newest generation")
+	assert.Equal(t, st.expiresAt, st.heldExpiresAt)
 }

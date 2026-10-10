@@ -368,18 +368,28 @@ func waitGateway(ctx context.Context, d time.Duration) bool {
 func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui.Printer) {
 	st := h.refreshState()
 	var warnedFor time.Time
+	// warnedHeldExpired keeps a hand-off that keeps failing from warning
+	// on every retry: it warns once, when the agent's token expires.
+	warnedHeldExpired := false
 	for {
 		delay, fits := gatewayRefreshDelay(st.issuedAt, st.expiresAt, time.Now(), rand.Float64())
 		if st.handOffPending && delay > gatewayRefreshBackoff {
 			if !waitGateway(ctx, gatewayRefreshBackoff) {
 				return
 			}
-			held, err := handOffGateway(ctx, h, st.placeholder, printer)
+			// Each retry ends when the next rotation is due, so a slow
+			// settle cannot hold the rotation past the provider's exp.
+			retryCtx, cancel := context.WithTimeout(ctx, delay-gatewayRefreshBackoff)
+			held, err := handOffGateway(retryCtx, h, st.placeholder, printer)
+			cancel()
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				printer.StepWarn(fmt.Sprintf("Inference gateway hand-off for %s failed again: %v; the running agent's token expires at %s", h.name, err, st.heldExpiresAt.UTC().Format(time.RFC3339)))
+				if !warnedHeldExpired && !time.Now().Before(st.heldExpiresAt) {
+					warnedHeldExpired = true
+					printer.StepWarn(fmt.Sprintf("Inference gateway hand-off for %s still failing: %v; the running agent's token expired at %s, still retrying", h.name, err, st.heldExpiresAt.UTC().Format(time.RFC3339)))
+				}
 				continue
 			}
 			st.placeholder, st.heldExpiresAt, st.handOffPending = held, st.expiresAt, false
@@ -393,14 +403,24 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 				printer.StepWarn(fmt.Sprintf("Inference gateway token lifetime %s leaves less than the %s refresh budget; a refresh may not land before it expires", lifetime.Round(time.Second), budget.Round(time.Second)))
 			} else {
 				// A long lifetime that still does not fit: the refresh is
-				// late (a long pre-script, a suspended host).
-				printer.StepWarn(fmt.Sprintf("Inference gateway token for %s expires at %s, inside the %s refresh budget; refreshing now", h.name, st.expiresAt.UTC().Format(time.RFC3339), budget.Round(time.Second)))
+				// running late (a deferred refresh, a long pre-script, a
+				// suspended host).
+				printer.StepWarn(fmt.Sprintf("Inference gateway token for %s expires at %s, inside the %s refresh budget; the refresh is running late", h.name, st.expiresAt.UTC().Format(time.RFC3339), budget.Round(time.Second)))
 			}
 		}
 		if !waitGateway(ctx, delay) {
 			return
 		}
-		iat, exp, held, err := refreshGatewayProvider(ctx, h, st.placeholder, printer)
+		// With a hand-off still pending the sandbox already hands out a
+		// newer generation than the agent holds; an empty placeholder
+		// makes the refresh read that one as its baseline, so the hand-off
+		// waits for the generation this rotation creates, not the stale
+		// one in between.
+		previous := st.placeholder
+		if st.handOffPending {
+			previous = ""
+		}
+		iat, exp, held, err := refreshGatewayProvider(ctx, h, previous, printer)
 		// A rotation that landed is recorded even when the refresher was
 		// stopped meanwhile, so a restart resumes from it.
 		var baselineErr *gatewayBaselineError
@@ -416,6 +436,7 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 			printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s deferred: %v; retrying", h.name, err))
 		case errors.As(err, &reseedErr):
 			st.issuedAt, st.expiresAt, st.placeholder, st.handOffPending = iat, exp, held, true
+			warnedHeldExpired = false
 			if ctx.Err() != nil {
 				return
 			}
