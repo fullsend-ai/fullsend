@@ -323,6 +323,26 @@ variables is deployed.
 | `clearing stale iteration deadline (iteration N): ...` | The write failed and the previous iteration's file could not be removed either. The run stops rather than let the agent read a stale deadline. | Same as above. |
 | `FULLSEND_ITERATION_DEADLINE` unset inside the agent | The agent's shell was started without sourcing `/sandbox/workspace/.env`. | Runtimes that fullsend ships always source it; a custom command must do the same. |
 
+## How a run ends
+
+After the last iteration, `fullsend run` returns an error, and so exits non-zero, in these cases. A
+failed run skips the post-script.
+
+| Harness | Run fails when | Error |
+|---|---|---|
+| With `validation_loop` | No iteration validated and the last one was killed at the budget | `agent timed out after <elapsed> without completing (timeout: <budget>)` |
+| With `validation_loop` | No iteration validated | `validation failed after N iteration(s)` |
+| Without `validation_loop` | The iteration was killed at the budget | `agent timed out after <elapsed> without completing (timeout: <budget>)` |
+| Without `validation_loop` | The agent exited non-zero, or exited 0 with an error reported in its transcript | `agent failed with exit code <code>` |
+
+- With a `validation_loop`, validation is the success gate: an iteration that exits non-zero but
+  writes output that validates still succeeds.
+- Without a loop, a behavioral limit (`error_max_turns`, `error_max_budget_usd`) does not fail the
+  run, even though the agent exits non-zero. The post-script runs with
+  `FULLSEND_AGENT_EXIT_REASON` set so it can report the interruption.
+- `<code>` is the `Agent exit code` value in the Results block. It is `1` when the agent exited 0
+  but its transcript reported an error.
+
 ## OpenAI credentials on pi and codex
 
 A `fullsend-openai` provider (`providers: [openai]` on the harness, `openai/<id>` models on pi or codex)

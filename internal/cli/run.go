@@ -1914,8 +1914,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Post-script runs after sandbox cleanup (defers are LIFO).
 	// When a validation_loop is configured, the post-script only runs if
 	// validation passed (ADR 0022). When no validation_loop exists (e.g.,
-	// the code agent), the post-script runs unconditionally after a
-	// successful agent run — the post-script itself is responsible for
+	// the code agent), the post-script runs after a successful agent run —
+	// exit 0, or a behavioral limit exit (#6877); a failed agent fails the
+	// run and skips it (#8305). The post-script itself is responsible for
 	// any output checks it needs.
 	if h.PostScript != "" {
 		defer func() {
@@ -2641,7 +2642,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, genAISystem, rt.Name(), &metrics, transcriptErrMsg, toolSpans)
 
 		printer.Blank()
-		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
+		// Non-zero exit is a warning here, not a failure — with a loop, validation is
+		// the success gate; without one, runTerminalError fails the run (#8305).
 		if lastExitCode == 0 {
 			printer.StepDone(fmt.Sprintf("Agent exited with code %d (%.1fs)", exitCode, time.Since(agentStart).Seconds()))
 		} else {
@@ -2903,7 +2905,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.Blank()
 
-	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, runCount, lastIterElapsed, timeout)
+	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, lastExitCode, agentExitReason, runCount, lastIterElapsed, timeout)
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
@@ -3500,9 +3502,12 @@ func timeoutNoRetryMessage(elapsed, timeout time.Duration) string {
 
 // runTerminalError decides how the run ends after the post-loop steps. A
 // valid result wins; the timeout error replaces "validation failed" only when
-// nothing validated (#7042). Without a loop the timeout alone fails the run
-// (#5075).
-func runTerminalError(hasLoop, validationPassed, timedOut bool, runCount int, elapsed, timeout time.Duration) error {
+// nothing validated (#7042). Without a loop the timeout fails the run (#5075),
+// and so does a failed agent (#8305): exitCode is the runner's lastExitCode,
+// already 1 for an exit 0 with a transcript-reported error (#2786). A
+// behavioral limit exit (exitReason, #6877) does not fail a run without a
+// loop, so the post-script still runs and can report the interruption.
+func runTerminalError(hasLoop, validationPassed, timedOut bool, exitCode int, exitReason string, runCount int, elapsed, timeout time.Duration) error {
 	timeoutErr := fmt.Errorf("agent timed out after %s without completing (timeout: %s)", elapsed.Round(time.Second), timeout)
 	switch {
 	case hasLoop && !validationPassed && timedOut:
@@ -3511,6 +3516,8 @@ func runTerminalError(hasLoop, validationPassed, timedOut bool, runCount int, el
 		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
 	case !hasLoop && timedOut:
 		return timeoutErr
+	case !hasLoop && exitCode != 0 && !(exitCode > 0 && isBehavioralExitSubtype(exitReason)):
+		return fmt.Errorf("agent failed with exit code %d", exitCode)
 	}
 	return nil
 }
