@@ -271,8 +271,9 @@ compares the current effective configuration (installed overlay over
 installed base) with the proposed one (proposed overlay over the declared
 preset). If the replacement would implicitly relax a restriction the
 overlay does not declare — `kill_switch`, `roles`,
-`allowed_remote_resources`, agent suppressions, or
-`create_issues.allow_targets` — that repository fails before any write and
+`allowed_remote_resources`, agent suppressions,
+`create_issues.allow_targets`, `inference.gateway.url`, or
+`inference.gateway.audience` — that repository fails before any write and
 the output names the keys. Changing a preset source alone is not an
 explicit declaration of a less-restrictive setting.
 
@@ -374,10 +375,14 @@ drift, and convergence rewrites the file deterministically — unless the
 candidate would become less restrictive than the current effective
 configuration without an explicit manifest declaration. That pre-write
 safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
-agent `enabled: false` suppressions, and `create_issues.allow_targets`
-through the full overlay → base → code-defaults accessor chain. Omitted
+agent `enabled: false` suppressions, `create_issues.allow_targets`,
+`inference.gateway.url`, and `inference.gateway.audience` through the full
+overlay → base → code-defaults accessor chain. Omitted
 keys fall through rather than being treated as unset; an explicit empty
-`allowed_remote_resources: []` remains deny-all. Status and install output
+`allowed_remote_resources: []` remains deny-all. A change to either
+`inference.gateway` field, including a preset introducing a gateway where
+an established installation has none configured, must be declared in the
+manifest. Status and install output
 identify the affected keys. A blanket adoption acknowledgement is not
 enough. Both files are checked together, before any manifest or forge
 write: when the overlay needs adoption and the base needs action, install
