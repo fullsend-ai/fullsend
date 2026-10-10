@@ -316,7 +316,11 @@ independently through the layered config system (an overlay can override
   another credential. With no block, or in the `oidc` mode on a local run
   without an OIDC endpoint, the runner adds nothing, so a harness that loads the
   inference-gateway extension as a plugin keeps working. A `gateway/` model
-  on a runtime without the route (Claude Code, Codex) is an error. Fields:
+  on a runtime without the route (Claude Code) is an error. pi and codex
+  carry it; codex sends `gateway/` models to the gateway's
+  `POST /v1/responses` through a runner-owned `fullsend-gateway` provider
+  ([Codex › Models through an inference gateway](../runtimes/codex.md#models-through-an-inference-gateway-experimental)).
+  Fields:
   - `url` — the gateway origin, for example `https://gateway.example.com`.
     Must be `https` (plain `http` only for a loopback test host), with no
     credentials, query or fragment, no path other than `/`, and no port
@@ -383,7 +387,10 @@ independently through the layered config system (an overlay can override
   without them, and the runner fails a run whose resolved block is
   partial. `models` and `models_file` are mutually exclusive. A pi run on
   a `gateway/` model needs one of them, because pi runs offline and cannot
-  discover the gateway's models. `url`, `audience` and `auth` layer
+  discover the gateway's models. On codex the list is not used: fullsend
+  renders no catalog for codex, so the id after `gateway/` is the model it
+  sends (a configured `models_file` must still be readable).
+  `url`, `audience` and `auth` layer
   independently; the model list (either form) is one unit,
   and a layer that sets it replaces the inherited list. There is no
   runner-variable override for this block. `fullsend github setup

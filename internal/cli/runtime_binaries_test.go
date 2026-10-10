@@ -40,11 +40,13 @@ var runtimeEgressBinaries = map[string]map[string][]string{
 		"fullsend-vertex-ai": {"**/claude", "**/claude.exe"},
 	},
 	"pi": {
-		"fullsend-vertex-ai": {"**/node"},
-		"fullsend-openai":    {"**/node"},
+		"fullsend-vertex-ai":         {"**/node"},
+		"fullsend-openai":            {"**/node"},
+		"fullsend-inference-gateway": {"**/node"},
 	},
 	"codex": {
-		"fullsend-openai": {"**/node", "**/codex"},
+		"fullsend-openai":            {"**/node", "**/codex"},
+		"fullsend-inference-gateway": {"**/codex"},
 	},
 }
 

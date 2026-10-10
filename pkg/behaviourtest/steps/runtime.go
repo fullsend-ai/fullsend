@@ -54,6 +54,9 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the run metrics report tokens$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, assertRunMetricsReportTokens(world.FromContext(ctx))
 	})
+	sc.Step(`^the run metrics report tokens unless the requested model is "([^"]+)"$`, func(ctx context.Context, model string) (context.Context, error) {
+		return ctx, assertRunMetricsReportTokensUnless(world.FromContext(ctx), model)
+	})
 	sc.Step(`^the pi session transcript records at least one tool call$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, assertPiTranscriptHasToolCall(world.FromContext(ctx))
 	})
@@ -374,6 +377,26 @@ func assertRunMetricsReportTokens(w *world.World) error {
 	}
 	if m.TokenUsage.Input <= 0 || m.TokenUsage.Output <= 0 {
 		return fmt.Errorf("metrics.json token_usage = %+v, want input and output > 0", m.TokenUsage)
+	}
+	return nil
+}
+
+// assertRunMetricsReportTokensUnless is assertRunMetricsReportTokens, except
+// that a run whose requested model is exempt may report zero tokens as long
+// as it recorded a turn (num_turns > 0). A failed turn also counts, so pair
+// it with steps that prove the model answered (a successful workflow and a
+// recorded tool call). It is for a model whose usage the gateway delivers
+// after the finish chunk, which codex then records as 0.
+func assertRunMetricsReportTokensUnless(w *world.World, exempt string) error {
+	m, err := readRunMetrics(w)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(m.RequestedModel, exempt) {
+		return assertRunMetricsReportTokens(w)
+	}
+	if m.NumTurns <= 0 {
+		return fmt.Errorf("metrics.json num_turns = %d, want > 0 (no turn recorded for model %q)", m.NumTurns, m.RequestedModel)
 	}
 	return nil
 }

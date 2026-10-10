@@ -275,7 +275,8 @@ changes:
   (`pkg/behaviourtest/drivers/install/driver.go`). Edit `POOL_ORGS` or
   `POOL_REPOS` at the top of the script.
 - **agentgateway bump:** change `AGW_VERSION`.
-- **Model change:** edit `VERTEX_MODELS`.
+- **Model change:** edit `VERTEX_MODELS`, plus `vertex_params` for a
+  model-as-a-service model.
 
 The operator needs these roles on the project:
 
@@ -385,9 +386,11 @@ repository.
 The api-key behaviour test ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md))
 needs a gateway key for the `echo` model only. Pass its hash, never the key,
 as `ECHO_KEY_HASH=sha256:<64 hex>` on every run; a run without it removes
-the key. `REAL_KEY_HASH` does the same for a time-boxed `claude-haiku-5-5`
-key used in one local run, and is left unset afterwards. With a key, this
-test gateway serves both modes, so its OIDC check is permissive: a request
+the key. `REAL_KEY_HASH` does the same for a time-boxed key used in one local
+run, and is left unset afterwards. That key may call one real model:
+`claude-haiku-5-5` by default, or `gpt-oss-120b` with
+`REAL_KEY_MODEL=gpt-oss-120b`. With a key, this test gateway serves both
+modes, so its OIDC check is permissive: a request
 with no credential passes authentication and each model then refuses it
 with a 403. That is a test-gateway arrangement, not a recommendation. An
 OIDC-only gateway keeps strict `jwtAuth`, and a gateway that does mix the
@@ -424,15 +427,15 @@ The generated config (print it with `--print-config`):
   The mode depends on whether a key hash is set:
   - **No key hash:** `jwtAuth` runs in `strict` mode, and a request without
     a valid token gets a 401.
-  - **`ECHO_KEY_HASH` or `REAL_KEY_HASH` set** (the durable gateway has
-    `ECHO_KEY_HASH`): `jwtAuth` runs in `permissive` mode, followed by an
+  - **`ECHO_KEY_HASH` or `REAL_KEY_HASH` set:** `jwtAuth` runs in `permissive` mode, followed by an
     `apiKey` policy in `optional` mode. A valid JWT is checked and
     stripped first, so it never reaches the key check. A bearer that is not
     a JWT goes on to the key check, and a wrong key gets a 401. Each key
-    carries its own `allowedModels`: `[echo]` for the echo key and
-    `[claude-haiku-5-5]` for the real key. A request with no credential
+    carries its own `allowedModels`: `[echo]` for the echo key, and the one
+    model `REAL_KEY_MODEL` names for the real key. A request with no credential
     passes both checks, and each model's authorisation rules then deny it
-    with a 403.
+    with a 403. The durable gateway has `ECHO_KEY_HASH` only, and no real
+    key.
 
   This mixed setup exists so that one test gateway can serve both the
   `oidc` and `api-key` auth modes. Do not copy it to production. A
@@ -445,11 +448,30 @@ The generated config (print it with `--print-config`):
   name can call the gateway. A model that a configured key may call also
   admits that key's `apiKey.purpose`.
 - strips `x-api-key` from every request it sends upstream.
+- caps each real model at 60 requests and 1,000,000 tokens per minute for
+  each kind of caller: the pool shares one budget per model, each configured
+  key has its own, and every other caller shares one separate budget. So no
+  caller can use up the behaviour tests' budget, not even with requests the
+  model refuses. `echo` and `echo-denied` allow pool and key callers 60
+  requests a second; every other caller stays in its one shared bucket.
+  Tokens are counted after each response, including cached input, so the
+  token budget is a throttle rather than a hard ceiling: requests already in
+  flight when it runs out still finish, and only later ones are refused. The
+  budgets are held in the single instance and start again with each new
+  revision. On the durable gateway, a refused request gets a 429 whose body
+  is `rate limit exceeded`; the limit appears only in its
+  `x-ratelimit-limit` and `retry-after` headers. During a flood of
+  unauthenticated requests, a request with no credential can receive that
+  429 instead of a 403. The script's tests check the rendered rules but do
+  not evaluate them; the separation between callers was checked by sending
+  requests to a running gateway as the pool, as a key, and without
+  credentials.
 - serves these models:
 
   | Model | Allowed for | Upstream |
   |-------|-------------|----------|
-  | `claude-haiku-5-5`, `gemini-3.8-flash` (`--with-vertex` only) | The pool, plus the real key for `claude-haiku-5-5` when `REAL_KEY_HASH` is set | Vertex AI, location `global`, as the runtime service account |
+  | `claude-haiku-5-5`, `gemini-3.8-flash` (`--with-vertex` only) | The pool, plus the real key for `claude-haiku-5-5` when `REAL_KEY_HASH` is set and `REAL_KEY_MODEL` is left at its default | Vertex AI, location `global`, as the runtime service account |
+  | `gpt-oss-120b` (`--with-vertex` only) | The pool, plus the real key when `REAL_KEY_HASH` is set and `REAL_KEY_MODEL=gpt-oss-120b` | The Vertex AI model-as-a-service model `openai/gpt-oss-120b-maas`, location `global`, as the runtime service account. It serves Responses clients such as Codex on `/v1/responses`, which the gateway translates to Chat Completions. Gemini 3 tool loops through Responses translation aren't supported on the test gateway, and the Claude models take no Responses requests. The gateway drops assistant messages that have neither content nor tool calls from requests to this model, because its chat template rejects them: a test-gateway requirement, not something fullsend needs from every gateway. |
   | `echo` | The pool, plus the echo key when `ECHO_KEY_HASH` is set | A header-echo listener in the same container. The gateway sends it the stub key. Its answer reports whether that key, and not the caller's credential, arrived, so the custody check can assert it. |
   | `echo-denied` | Only `fullsend-e2e-gateway-outside/not-a-pool-repo`, which is outside the pool | The same echo listener. A behaviour test calls it from a pool repository and expects 403. |
 
@@ -492,6 +514,7 @@ are part of the `BEHAVIOUR_CAPABILITIES` default in the `Makefile`, which
 | `inference-gateway` | `features/runtime/inference-gateway.feature`: one dummy-runtime scenario covering the placeholder, credential custody on `echo`, egress scope and the `echo-denied` refusal | Yes |
 | `inference-gateway-api-key` | `features/runtime/inference-gateway-api-key.feature` (dummy runtime, echo-only key) | Yes |
 | `runtime-pi-gateway` | `features/runtime/pi-gateway.feature` (pi through the gateway to a real model, `claude-haiku-5-5`) | No: costs a real model run |
+| `runtime-codex-gateway` | `features/runtime/codex-gateway.feature` (codex through the gateway to a real model, `gpt-oss-120b`, on Responses) | No: costs a real model run |
 | `inference-gateway-reseed` | The token-rotation scenario in `features/runtime/inference-gateway.feature`, which also needs `inference-gateway` | No: holds the sandbox for a 330 s wait |
 
 To run the undeclared scenarios on demand, set `E2E_INFERENCE_GATEWAY_URL`
@@ -499,7 +522,7 @@ and pass the full capability list. This replaces the `Makefile` default
 rather than adding to it:
 
 ```bash
-BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,inference-gateway-reseed \
+BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,runtime-codex-gateway,inference-gateway-reseed \
   make behaviour-test
 ```
 

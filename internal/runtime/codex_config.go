@@ -123,13 +123,20 @@ const codexAuthTimeoutMS = 5000
 // it is on the V2 collaboration tools come back for every model (verified on
 // 0.159.3). On its own the key removes nothing.
 //
+// `[model_providers.fullsend-gateway]` is rendered only when an
+// inference.gateway block applies (codex_gateway.go): a second runner-owned
+// provider beside fullsend-openai, never instead of it, with its own
+// auth.command. The top-level `model_provider` names it then, since the
+// runner registers the gateway only for a gateway/ parent; Run's `-c`
+// override decides either way.
+//
 // `web_search` must be stated: codex's default is "cached", not off.
 // `history.persistence` governs `history.jsonl` (the prompt history) only —
 // session rollouts under sessions/, which are the transcripts, are unaffected.
 var codexConfigTemplate = template.Must(template.New("codex-config").Parse(
 	`# Written by fullsend (CodexRuntime.Bootstrap); do not edit.
 # Integrity-checked before every iteration — see buildCodexRunCommand.
-model_provider = "{{ .ProviderID }}"
+model_provider = "{{ .DefaultProviderID }}"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 web_search = "disabled"
@@ -168,16 +175,27 @@ wire_api = "responses"
 command = {{ .AuthCommand }}
 refresh_interval_ms = {{ .RefreshIntervalMS }}
 timeout_ms = {{ .TimeoutMS }}
-`))
+{{ if .GatewayBaseURL }}
+[model_providers.{{ .GatewayProviderID }}]
+name = "Inference gateway via the fullsend run-scoped provider"
+base_url = {{ .GatewayBaseURL }}
+wire_api = "responses"
 
-// codexBaseURL is the OpenAI Responses API base. It is also the only
-// `base_url` the run guard tolerates in the rendered file.
+[model_providers.{{ .GatewayProviderID }}.auth]
+command = {{ .GatewayAuthCommand }}
+refresh_interval_ms = {{ .RefreshIntervalMS }}
+timeout_ms = {{ .TimeoutMS }}
+{{ end }}`))
+
+// codexBaseURL is the OpenAI Responses API base of the fullsend-openai
+// provider.
 const codexBaseURL = "https://api.openai.com/v1"
 
 // codexConfigData is codexConfigTemplate's input. DeveloperInstructions and
 // AuthCommand arrive already quoted (codexTOMLString), so the template never
 // has to reason about escaping.
 type codexConfigData struct {
+	DefaultProviderID     string
 	ProviderID            string
 	BaseURL               string
 	DeveloperInstructions string
@@ -185,18 +203,26 @@ type codexConfigData struct {
 	ProjectKey            string
 	RefreshIntervalMS     int
 	TimeoutMS             int
+	// GatewayProviderID, GatewayBaseURL and GatewayAuthCommand render the
+	// fullsend-gateway provider; GatewayBaseURL (quoted) is empty when no
+	// inference.gateway block applies, and then nothing of it is rendered.
+	GatewayProviderID  string
+	GatewayBaseURL     string
+	GatewayAuthCommand string
 }
 
 // renderCodexConfig produces $CODEX_HOME/config.toml for one agent run.
 // repoDir is the target repository's path inside the sandbox, the directory
 // codex runs in. developerInstructions is the agent definition's body, which
-// is arbitrary markdown from the harness.
-func renderCodexConfig(configDir, repoDir, developerInstructions string) ([]byte, error) {
+// is arbitrary markdown from the harness. gatewayBaseURL is the
+// fullsend-gateway provider's base_url (codexGatewayBaseURL), or "" when no
+// inference.gateway block applies.
+func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL string) ([]byte, error) {
 	if repoDir == "" {
 		return nil, fmt.Errorf("rendering codex %s: the target repository path is required", codexConfigFile)
 	}
-	var buf strings.Builder
-	err := codexConfigTemplate.Execute(&buf, codexConfigData{
+	data := codexConfigData{
+		DefaultProviderID:     codexProviderID,
 		ProviderID:            codexProviderID,
 		BaseURL:               codexBaseURL,
 		DeveloperInstructions: codexTOMLString(developerInstructions),
@@ -204,7 +230,15 @@ func renderCodexConfig(configDir, repoDir, developerInstructions string) ([]byte
 		ProjectKey:            codexTOMLKey(repoDir),
 		RefreshIntervalMS:     codexAuthRefreshIntervalMS,
 		TimeoutMS:             codexAuthTimeoutMS,
-	})
+	}
+	if gatewayBaseURL != "" {
+		data.DefaultProviderID = codexGatewayProviderID
+		data.GatewayProviderID = codexGatewayProviderID
+		data.GatewayBaseURL = codexTOMLString(gatewayBaseURL)
+		data.GatewayAuthCommand = codexTOMLString(configDir + "/" + codexGatewayAuthScriptFile)
+	}
+	var buf strings.Builder
+	err := codexConfigTemplate.Execute(&buf, data)
 	if err != nil {
 		return nil, fmt.Errorf("rendering codex %s: %w", codexConfigFile, err)
 	}

@@ -26,8 +26,10 @@
 # Optional gateway API keys (the api-key mode, ADR 0138), each given only as
 # its hash, sha256:<64 hex>, never in plaintext:
 #   ECHO_KEY_HASH     a key for the echo model only (E2E_INFERENCE_GATEWAY_TEST_KEY)
-#   REAL_KEY_HASH     a time-boxed key for claude-haiku-5-5 only, for one local
+#   REAL_KEY_HASH     a time-boxed key for one real model only, for one local
 #                     run; leave it unset once that run is done
+#   REAL_KEY_MODEL    the model REAL_KEY_HASH may call: claude-haiku-5-5
+#                     (default) or gpt-oss-120b
 # With a key, this TEST gateway runs both modes on one gateway: its OIDC
 # check becomes permissive (a non-JWT bearer goes on to the key check),
 # each model also admits its key's purpose, and the post-deploy probe
@@ -75,8 +77,29 @@ POOL_REPOS=(test-repo-01 test-repo-02 test-repo-03 test-repo-04 test-repo-05 tes
 DENIED_REPO="fullsend-e2e-gateway-outside/not-a-pool-repo"
 
 # Real models on Vertex, reached with the runtime service account.
-VERTEX_MODELS=(claude-haiku-5-5 gemini-3.8-flash)
+# gpt-oss-120b is a Vertex MaaS model that serves Responses clients such as
+# Codex through the gateway's Responses-to-Chat-Completions translation.
+# Gemini 3 tool loops through that translation aren't supported on the test
+# gateway, and Claude models take no Responses requests here.
+VERTEX_MODELS=(claude-haiku-5-5 gemini-3.8-flash gpt-oss-120b)
 VERTEX_REGION="global"
+
+# gpt-oss streams an empty first content delta, which the Responses
+# translation keeps as an empty assistant message. Codex replays it, and the
+# model's chat template rejects an assistant message with neither content nor
+# tool calls, so the converted Chat request drops such messages.
+GPTOSS_FINAL="    finalTransformation:
+      messages: 'llmRequest.messages.filter(m, !(m.role == \"assistant\" && (!has(m.content) || type(m.content) == null_type || (type(m.content) == string && m.content == \"\")) && (!has(m.tool_calls) || type(m.tool_calls) == null_type || (type(m.tool_calls) == list && size(m.tool_calls) == 0))))'
+"
+
+# vertex_params prints a Vertex model's params. A MaaS model names its
+# publisher model upstream.
+vertex_params() {
+  case "$1" in
+    gpt-oss-120b) echo "{ vertexProject: ${PROJECT}, vertexRegion: ${VERTEX_REGION}, model: openai/gpt-oss-120b-maas }" ;;
+    *) echo "{ vertexProject: ${PROJECT}, vertexRegion: ${VERTEX_REGION} }" ;;
+  esac
+}
 
 # --- Fixed names and versions ---------------------------------------------
 NAME="fullsend-e2e-gateway"
@@ -173,14 +196,72 @@ pool_cel() {
   printf ']'
 }
 
+# Cost cap: per real model, RATE_RPM requests and RATE_TPM tokens per minute.
+# agentgateway v1.6.0 has no per-model limit, so these are llm-wide rules whose
+# CEL key picks the bucket. The request rule runs before the LLM request is
+# parsed and before model authorization, so its key reads the model from the
+# body. Each bucket is a (real model, caller class) pair. The caller class is
+# "pool" for a pool repository's token, "key/<purpose>" for a configured key,
+# and "other" for everyone else, who share a single bucket. So no caller can
+# use up the pool's budget, not even with requests the model then refuses.
+# Unknown model names share one bucket per class, and echo and echo-denied get
+# one bucket per class per second (60 requests a second), so no caller can
+# create enough buckets to evict the others (agentgateway keeps 65,536 per
+# rule) and reset the cap. The token rule is charged after each response (input including
+# cached tokens, plus output). Buckets live in the one instance
+# (max-instances 1) and reset when a new revision starts. A 429 names the limit
+# only in its x-ratelimit-limit and retry-after headers.
+RATE_RPM=60
+RATE_TPM=1000000
+ECHO_MODELS='["echo", "echo-denied"]'
+
+# pool_list prints the pool as a CEL list.
+pool_list() {
+  local cel
+  cel=$(pool_cel)
+  printf '%s' "${cel#jwt.repository in }"
+}
+
+# real_list prints the real models as a CEL list.
+real_list() {
+  local m sep=""
+  printf '['
+  for m in "${VERTEX_MODELS[@]}"; do
+    printf '%s"%s"' "${sep}" "${m}"
+    sep=", "
+  done
+  printf ']'
+}
+
+# rate_key prints the bucket key for a CEL expression that yields the model.
+rate_key() {
+  printf '(default(jwt.repository, "") in %s ? "pool" : (default(apiKey.purpose, "") != "" ? "key/" + string(apiKey.purpose) : "other")).with(c, c == "other" ? "other" : (%s in %s ? "echo/" + c + "/" + string(request.startTime).substring(0, 19) : (%s in %s ? string(%s) + "/" + c : "unknown/" + c)))' \
+    "$(pool_list)" "$1" "${ECHO_MODELS}" "$1" "$(real_list)" "$1"
+}
+
+# rate_limit_policy prints the llm localRateLimit policy.
+rate_limit_policy() {
+  printf '    localRateLimit:\n'
+  printf '    - type: requests\n      maxTokens: %s\n      tokensPerFill: %s\n      fillInterval: 60s\n' "${RATE_RPM}" "${RATE_RPM}"
+  printf "      key: 'coalesce(json(request.body).model, \"no-model\").with(m, %s)'\n" "$(rate_key m)"
+  printf '    - type: tokens\n      maxTokens: %s\n      tokensPerFill: %s\n      fillInterval: 60s\n' "${RATE_TPM}" "${RATE_TPM}"
+  printf "      key: '%s'\n" "$(rate_key llm.requestModel)"
+}
+
 # model prints one llm model. Arguments: name, provider, params, CEL rule,
-# and an optional second CEL rule (an API key's purpose).
+# an optional second CEL rule (an API key's purpose), and optional extra
+# lines placed before the authorization rules.
 model() {
   cat <<EOF
   - name: $1
     provider: $2
     params: $3
     requestHeaders: { remove: [x-api-key] }
+EOF
+  if [[ -n "${6:-}" ]]; then
+    printf '%s' "$6"
+  fi
+  cat <<EOF
     authorization:
       rules:
       - allow: '$4'
@@ -192,6 +273,11 @@ EOF
 
 ECHO_KEY_HASH="${ECHO_KEY_HASH:-}"
 REAL_KEY_HASH="${REAL_KEY_HASH:-}"
+REAL_KEY_MODEL="${REAL_KEY_MODEL:-claude-haiku-5-5}"
+case "${REAL_KEY_MODEL}" in
+  claude-haiku-5-5|gpt-oss-120b) ;;
+  *) echo "Error: REAL_KEY_MODEL must be claude-haiku-5-5 or gpt-oss-120b." >&2; exit 2 ;;
+esac
 for key_hash in "${ECHO_KEY_HASH}" "${REAL_KEY_HASH}"; do
   if [[ -n "${key_hash}" && ! "${key_hash}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "Error: ECHO_KEY_HASH and REAL_KEY_HASH must be sha256:<64 lowercase hex>, never a plaintext key." >&2
@@ -218,7 +304,7 @@ api_key_policy() {
     printf '      - keyHash: "%s"\n        metadata: { name: e2e-echo-test, purpose: e2e-echo-test }\n        allowedModels: [echo]\n' "${ECHO_KEY_HASH}"
   fi
   if [[ -n "${REAL_KEY_HASH}" ]]; then
-    printf '      - keyHash: "%s"\n        metadata: { name: e2e-real-run, purpose: e2e-real-run }\n        allowedModels: [claude-haiku-5-5]\n' "${REAL_KEY_HASH}"
+    printf '      - keyHash: "%s"\n        metadata: { name: e2e-real-run, purpose: e2e-real-run }\n        allowedModels: [%s]\n' "${REAL_KEY_HASH}" "${REAL_KEY_MODEL}"
   fi
 }
 
@@ -269,14 +355,19 @@ llm:
         jwks: { url: ${GITHUB_ISSUER}/.well-known/jwks }
 EOF
   api_key_policy
+  rate_limit_policy
   echo "  models:"
   if [[ "${VERTEX}" == "with" ]]; then
     for m in "${VERTEX_MODELS[@]}"; do
       local extra=""
-      if [[ "${m}" == "claude-haiku-5-5" && -n "${REAL_KEY_HASH}" ]]; then
+      if [[ "${m}" == "${REAL_KEY_MODEL}" && -n "${REAL_KEY_HASH}" ]]; then
         extra="${REAL_KEY_CEL}"
       fi
-      model "${m}" vertex "{ vertexProject: ${PROJECT}, vertexRegion: ${VERTEX_REGION} }" "${pool}" "${extra}"
+      local final=""
+      if [[ "${m}" == "gpt-oss-120b" ]]; then
+        final="${GPTOSS_FINAL}"
+      fi
+      model "${m}" vertex "$(vertex_params "${m}")" "${pool}" "${extra}" "${final}"
     done
   fi
   local echo_extra=""

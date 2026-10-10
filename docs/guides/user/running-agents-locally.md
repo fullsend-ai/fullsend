@@ -333,9 +333,11 @@ fullsend run triage \
   --runtime pi
 ```
 
-Codex is selected the same way (`--runtime codex`); it runs OpenAI models
-only, so pair it with `--model openai/gpt-5.6-luna` and the OpenAI key
-above.
+Codex is selected the same way (`--runtime codex`); pair it with
+`--model openai/gpt-5.6-luna` and the OpenAI key above. With an
+`inference.gateway` block in `auth: api-key` mode, codex can instead run
+`--model gateway/<model>` with `FULLSEND_INFERENCE_GATEWAY_API_KEY` set
+([Codex › Models through an inference gateway](../../runtimes/codex.md#models-through-an-inference-gateway-experimental)).
 
 Everything else about runtimes lives in one place: [Agent
 runtimes](../../runtimes.md) for selecting and overriding the runtime,

@@ -65,6 +65,9 @@ func TestCodexGolden(t *testing.T) {
 	noHooks.HooksJSON = ""
 	noHooks.HookScripts = nil
 	noHooks.SecurityEnv = nil
+	// What Bootstrap records when an inference.gateway block applies.
+	gatewayHooks := testRunnerHeldDigests
+	gatewayHooks.GatewayBaseURL = testCodexGatewayBaseURL
 
 	cases := []struct {
 		name string
@@ -72,9 +75,18 @@ func TestCodexGolden(t *testing.T) {
 	}{
 		{"config.toml", func(t *testing.T) string {
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("triage", def))
+				codexDeveloperInstructions("triage", def), "")
 			require.NoError(t, err)
 			return string(data)
+		}},
+		{"config-gateway.toml", func(t *testing.T) string {
+			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
+				codexDeveloperInstructions("triage", def), testCodexGatewayBaseURL)
+			require.NoError(t, err)
+			return string(data)
+		}},
+		{"launch-gateway.txt", func(t *testing.T) string {
+			return codexGoldenLaunch(buildCodexRunCommand(hooksOn, codexModel{ID: "vendor/org/model", Gateway: true}, "high", true, gatewayHooks))
 		}},
 		{"hooks-default.json", func(t *testing.T) string {
 			data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython,
@@ -88,10 +100,10 @@ func TestCodexGolden(t *testing.T) {
 			return string(data)
 		}},
 		{"launch-hooks.txt", func(t *testing.T) string {
-			return codexGoldenLaunch(buildCodexRunCommand(hooksOn, "gpt-5.6-luna", "high", true, testRunnerHeldDigests))
+			return codexGoldenLaunch(buildCodexRunCommand(hooksOn, codexModel{ID: "gpt-5.6-luna"}, "high", true, testRunnerHeldDigests))
 		}},
 		{"launch-nohooks.txt", func(t *testing.T) string {
-			return codexGoldenLaunch(buildCodexRunCommand(RunParams{RepoDir: repo}, "gpt-5.6-luna", "", false, noHooks))
+			return codexGoldenLaunch(buildCodexRunCommand(RunParams{RepoDir: repo}, codexModel{ID: "gpt-5.6-luna"}, "", false, noHooks))
 		}},
 	}
 	for _, tc := range cases {

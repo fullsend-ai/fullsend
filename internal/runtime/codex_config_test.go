@@ -65,7 +65,7 @@ func TestRenderCodexConfig_ParsesAsTOML(t *testing.T) {
 
 	// A directory name can carry quotes, backslashes and a newline too.
 	nastyRepo := sandbox.SandboxWorkspace + "/re\"po\\\\x]\ntrust_level = \"trusted\""
-	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, nastyRepo, nasty)
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, nastyRepo, nasty, "")
 	require.NoError(t, err)
 
 	path := filepath.Join(t.TempDir(), "config.toml")
@@ -113,7 +113,7 @@ print(json.dumps({
 }
 
 func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
-	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body")
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "")
 	require.NoError(t, err)
 	rendered := string(data)
 
@@ -160,6 +160,68 @@ func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
 	// Exactly the shapes codexConfigGuard pins.
 	assert.Equal(t, 1, strings.Count(rendered, "\nbase_url "))
 	assert.Equal(t, 1, strings.Count(rendered, "\ncommand "))
+	assert.NotContains(t, rendered, codexGatewayProviderID, "no block, no gateway provider")
+}
+
+// With an inference.gateway block the config carries both providers, each
+// with its own runner-owned auth.command, and still parses as the TOML
+// codex reads; the gateway provider is the default.
+func TestRenderCodexConfig_GatewayProvider(t *testing.T) {
+	python := pythonWithTomllib(t)
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", testCodexGatewayBaseURL)
+	require.NoError(t, err)
+	rendered := string(data)
+	assert.NotContains(t, rendered, "env_key", "the gateway credential comes from the auth script, never the environment")
+	assert.NotContains(t, rendered, "supports_websockets")
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	require.NoError(t, writeFileForTest(path, data))
+	script := `
+import json, sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    cfg = tomllib.load(fh)
+print(json.dumps({"default": cfg["model_provider"], "providers": cfg["model_providers"]}))
+`
+	out, err := exec.Command(python, "-c", script, path).CombinedOutput()
+	require.NoError(t, err, "rendered config.toml did not parse: %s", out)
+	var got struct {
+		Default   string `json:"default"`
+		Providers map[string]struct {
+			BaseURL string `json:"base_url"`
+			WireAPI string `json:"wire_api"`
+			Auth    struct {
+				Command           string `json:"command"`
+				RefreshIntervalMS int    `json:"refresh_interval_ms"`
+			} `json:"auth"`
+		} `json:"providers"`
+	}
+	require.NoError(t, json.Unmarshal(out, &got))
+	assert.Equal(t, codexGatewayProviderID, got.Default)
+	require.Len(t, got.Providers, 2)
+
+	openai := got.Providers[codexProviderID]
+	assert.Equal(t, codexBaseURL, openai.BaseURL, "the direct openai/ route is unchanged")
+	assert.Equal(t, sandbox.SandboxCodexConfig+"/"+codexAuthScriptFile, openai.Auth.Command)
+
+	gw := got.Providers[codexGatewayProviderID]
+	assert.Equal(t, testCodexGatewayBaseURL, gw.BaseURL)
+	assert.Equal(t, "responses", gw.WireAPI, "codex speaks Responses only")
+	assert.Equal(t, sandbox.SandboxCodexConfig+"/"+codexGatewayAuthScriptFile, gw.Auth.Command)
+	assert.Equal(t, codexAuthRefreshIntervalMS, gw.Auth.RefreshIntervalMS)
+}
+
+// The gateway config is a different file, so the whole-file digest guard
+// refuses the openai-only config in its place and vice versa: rendering a
+// second provider does not loosen it.
+func TestCodexConfigGuard_GatewayConfig(t *testing.T) {
+	plain, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "")
+	require.NoError(t, err)
+	withGateway, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", testCodexGatewayBaseURL)
+	require.NoError(t, err)
+	assert.NotEqual(t, codexAssetSHA256(plain), codexAssetSHA256(withGateway))
+	other, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "https://evil.example.com/v1")
+	require.NoError(t, err)
+	assert.NotEqual(t, codexAssetSHA256(withGateway), codexAssetSHA256(other), "the gateway base_url is covered by the digest")
 }
 
 func TestCodexMatcherFor(t *testing.T) {
@@ -346,6 +408,11 @@ func TestCodexAssetPathsMatchConstants(t *testing.T) {
 	// The placeholder namespace must never appear contiguously in the tree:
 	// OpenShell resets any model request whose body carries it (#6716).
 	assert.NotContains(t, string(codexAuthScriptSH), piPlaceholderPrefix)
+
+	// The same for the gateway provider's auth script.
+	assert.Contains(t, string(codexGatewayAuthScriptSH), `TOKEN_FILE="`+codexSandboxGatewayTokenFile+`"`)
+	assert.Equal(t, codexSandboxGatewayTokenFile, CodexRuntime{}.GatewayCredentialSeed().File)
+	assert.NotContains(t, string(codexGatewayAuthScriptSH), piPlaceholderPrefix)
 }
 
 // pythonWithTomllib returns a python3 that has the stdlib tomllib (3.11+),
@@ -368,7 +435,7 @@ func writeFileForTest(path string, data []byte) error {
 }
 
 func TestRenderCodexConfig_RequiresRepoDir(t *testing.T) {
-	_, err := renderCodexConfig(sandbox.SandboxCodexConfig, "", "body")
+	_, err := renderCodexConfig(sandbox.SandboxCodexConfig, "", "body", "")
 	require.Error(t, err, "an empty path would leave the project's trust unset")
 }
 

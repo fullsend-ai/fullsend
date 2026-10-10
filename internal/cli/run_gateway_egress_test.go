@@ -64,7 +64,7 @@ func TestRenderGatewayProfile(t *testing.T) {
 		rules = append(rules, r.Allow.Method+" "+r.Allow.Path)
 	}
 	assert.Equal(t, []string{"POST /v1/responses", "POST /v1/messages", "POST /v1/chat/completions"}, rules)
-	assert.Equal(t, []string{"**/node"}, p.Binaries)
+	assert.Equal(t, []string{"**/node", "**/codex"}, p.Binaries, "pi calls the gateway from node, codex from its native binary")
 
 	// Deterministic per host, case-insensitive, distinct across hosts.
 	_, again, err := renderGatewayProfile("gateway.example.com")

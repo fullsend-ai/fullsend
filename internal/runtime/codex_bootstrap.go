@@ -151,7 +151,10 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	if !ok || repoInput.RepoDir() == "" {
 		return fmt.Errorf("codex bootstrap: the target repository's sandbox path is required")
 	}
-	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(), codexDeveloperInstructions(agentName, def))
+	// The gateway provider is rendered only when the runner registered an
+	// inference.gateway block for this sandbox (PrepareGatewayRun).
+	gatewayBaseURL := codexGatewayRunFor(sandboxName)
+	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(), codexDeveloperInstructions(agentName, def), gatewayBaseURL)
 	if err != nil {
 		return err
 	}
@@ -161,8 +164,18 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	// A runner-held digest, not one recorded in the manifest: see
 	// codex_integrity.go for why nothing inside the sandbox can hold it.
 	digests := codexRunnerHeldDigestSet{
-		ConfigTOML: codexAssetSHA256(configTOML),
-		AgentModel: def.Model,
+		ConfigTOML:     codexAssetSHA256(configTOML),
+		AgentModel:     def.Model,
+		GatewayBaseURL: gatewayBaseURL,
+	}
+	if gatewayBaseURL != "" {
+		if err := uploadBytes(sandboxName, r.codexGatewayAuthScriptPath(), codexGatewayAuthScriptSH); err != nil {
+			return fmt.Errorf("writing %s: %w", codexGatewayAuthScriptFile, err)
+		}
+		chmodCmd := "chmod 755 " + shellQuote(r.codexGatewayAuthScriptPath())
+		if err := codexExecOK(sandboxName, chmodCmd, "chmod "+codexGatewayAuthScriptFile); err != nil {
+			return err
+		}
 	}
 
 	// uploadBytes does not set a mode, and codex executes this one.
