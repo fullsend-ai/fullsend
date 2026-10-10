@@ -280,12 +280,13 @@ The operator needs these roles on the project:
 
 | IAM role | Purpose |
 |----------|---------|
+| `roles/serviceusage.serviceUsageViewer` | Check that the required APIs are enabled |
 | `roles/run.admin` | Create and update the Cloud Run service and allow unauthenticated invocation |
 | `roles/secretmanager.admin` | Create the config and stub key secrets, add versions, grant per-secret access |
-| `roles/artifactregistry.admin` | Create the repository and copy the agentgateway image into it |
+| `roles/artifactregistry.admin` | Create the repository, copy the agentgateway image into it and read its digest |
 | `roles/iam.serviceAccountAdmin` | Create the runtime service account |
 | `roles/iam.serviceAccountUser` | Deploy the service as the runtime service account |
-| `roles/resourcemanager.projectIamAdmin` | Only to add or remove the `roles/aiplatform.user` grant (`--with-vertex`, `--without-vertex`) |
+| `roles/resourcemanager.projectIamAdmin` | Read the project IAM policy on every run, and add or remove the `roles/aiplatform.user` grant |
 
 ### Check it, then run it
 
@@ -330,6 +331,7 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
 
    ==> Cloud Run service fullsend-e2e-gateway...
        OK: service is up to date
+       OK: all traffic goes to the latest revision
 
    ==> Verifying...
        service Ready condition: True, revision fullsend-e2e-gateway-00009-abc
@@ -360,8 +362,14 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
 
    Each step prints `OK:` for what is already in place and `CHANGED:` for
    what it did. A config change adds one config secret version and rolls one
-   Cloud Run revision. Any other difference in the service's settings
-   triggers a redeploy, and the script names the setting that differed.
+   Cloud Run revision. The new version is live for any instance that reads
+   the mounted file as soon as it is added; the new revision makes sure the
+   gateway restarts on it. A serving revision older than the latest secret
+   version is always rolled, which also finishes a rollout an earlier run
+   left incomplete. Any other
+   difference in the service's settings triggers a redeploy, and the script
+   names the setting that differed. Traffic pinned to an older revision is
+   moved back to the latest one.
 
    > **Not executed:** this real run has not happened yet. The durable
    > gateway was deployed by hand with the same names and settings, and the
@@ -381,7 +389,7 @@ else.
 
 | Resource | Name | Settings |
 |----------|------|----------|
-| Artifact Registry repository | `fullsend-e2e-gateway` | Holds `ghcr.io/agentgateway/agentgateway:v1.6.0`, copied unchanged with `skopeo copy --all`. Every run checks that the copy's digest matches upstream, and refuses to continue if it does not. |
+| Artifact Registry repository | `fullsend-e2e-gateway` | Holds `ghcr.io/agentgateway/agentgateway:v1.6.0`, copied unchanged with `skopeo copy --all --preserve-digests`. Every run checks that the copy's digest matches upstream, and refuses to continue if it does not. |
 | Service account | `fullsend-e2e-gateway@<project>.iam.gserviceaccount.com` | Runtime identity. With `--with-vertex`, it holds `roles/aiplatform.user`. |
 | Secret | `fullsend-e2e-gateway-config` | The generated agentgateway config. |
 | Secret | `fullsend-e2e-gateway-stub-upstream-key` | The stub upstream key, a fixed non-secret value: `e2e-stub-upstream-key`. |
@@ -398,7 +406,9 @@ The generated config (print it with `--print-config`):
   caller's token is never forwarded upstream; that is agentgateway's default.
 - authorises each model with an exact-match list of `jwt.repository` values.
   The list covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
-  `halfsend-12` and in the STAGE org `halfsend`: 156 repositories.
+  `halfsend-12` and in the STAGE org `halfsend`: 156 repositories. It
+  matches names, so keep the pool orgs registered: whoever owns a pool org
+  name can call the gateway.
 - strips `x-api-key` from every request it sends upstream.
 - serves these models:
 
@@ -431,7 +441,9 @@ hack/setup-e2e-inference-gateway.sh --project "$E2E_GCP_PROJECT_ID" --delete
 `--delete` asks you to type the project ID (`--yes` skips the prompt). It
 then removes the resources above by name, plus the `roles/aiplatform.user`
 grant. It stops without deleting anything if the Cloud Run service lacks the
-`purpose=fullsend-e2e-gateway` label.
+`purpose=fullsend-e2e-gateway` label, or runs in a region other than
+`--region`: the secrets and the service account are global, so a mistyped
+region must not remove them from under a running gateway.
 
 > **Not executed:** `--delete` has not been run against the durable gateway,
 > which stays up.

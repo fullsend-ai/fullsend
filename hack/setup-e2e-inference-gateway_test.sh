@@ -43,8 +43,15 @@ flag() { # flag NAME ARGS... -> value of --NAME=VALUE
   local n="$1" a; shift
   for a in "$@"; do [[ "${a}" == "--${n}="* ]] && { echo "${a#--"${n}"=}"; return; }; done
 }
-policy_json() { # policy_json FILE -> bindings from "role member" lines
-  jq -Rn '[inputs | split(" ") | {role: .[0], members: [.[1]]}] | {bindings: .}' < "$1"
+policy_json() { # policy_json FILE -> bindings from "role member [conditional]" lines
+  jq -Rn '[inputs | split(" ") | {role: .[0], members: [.[1]]}
+    + (if .[2] then {condition: {expression: "false"}} else {} end)] | {bindings: .}' < "$1"
+}
+tick() { # advance the stub clock; print the new time
+  local n
+  n=$(( $(cat "${S}/clock" 2>/dev/null || echo 1000) + 10 ))
+  echo "${n}" > "${S}/clock"
+  jq -rn --argjson n "${n}" '$n | todate'
 }
 # volume NAME SECRET FILE -> a Cloud Run secret volume
 volume() {
@@ -61,9 +68,6 @@ case "$1 $2 $3" in
   "artifacts repositories describe") [[ -f "${S}/ar" ]] || notfound "repository"; echo '{}' ;;
   "artifacts repositories create") touch "${S}/ar" ;;
   "artifacts repositories delete") rm "${S}/ar" ;;
-  "artifacts docker images")
-    [[ -f "${S}/image" ]] || notfound "Requested entity was not found"
-    jq -n --arg d "$(cat "${S}/image")" '{image_summary: {digest: $d}}' ;;
   "iam service-accounts describe") [[ -f "${S}/sa" ]] || notfound "Unknown service account"; echo '{}' ;;
   "iam service-accounts create") touch "${S}/sa" ;;
   "iam service-accounts delete") rm "${S}/sa" ;;
@@ -81,6 +85,7 @@ case "$1 $2 $3" in
   "secrets create "*)
     touch "${S}/secrets/$3.exists"
     cp "$(flag data-file "$@")" "${S}/secrets/$3.v1"
+    tick > "${S}/secrets/$3.v1.time"
     echo 1 > "${S}/secrets/$3.latest" ;;
   "secrets delete "*) rm -f "${S}/secrets/$3".* ;;
   "secrets get-iam-policy "*)
@@ -88,18 +93,34 @@ case "$1 $2 $3" in
   "secrets add-iam-policy-binding "*)
     echo "$(flag role "$@") $(flag member "$@")" >> "${S}/secrets/$3.policy" ;;
   "secrets versions access")
+    [[ -f "${S}/deny_access" ]] && { echo "ERROR: PERMISSION_DENIED: secretmanager.versions.access" >&2; exit 1; }
     sec=$(flag secret "$@"); n=$(cat "${S}/secrets/${sec}.latest" 2>/dev/null) \
       || notfound "Secret [${sec}] not found or has no versions"
     cat "${S}/secrets/${sec}.v${n}" ;;
+  "secrets versions describe")
+    sec=$(flag secret "$@"); n=$(cat "${S}/secrets/${sec}.latest" 2>/dev/null) \
+      || notfound "Secret [${sec}] has no versions"
+    jq -n --arg t "$(cat "${S}/secrets/${sec}.v${n}.time")" '{createTime: $t}' ;;
   "secrets versions add")
     n=$(( $(cat "${S}/secrets/$4.latest" 2>/dev/null || echo 0) + 1 ))
     cp "$(flag data-file "$@")" "${S}/secrets/$4.v${n}"
+    tick > "${S}/secrets/$4.v${n}.time"
     echo "${n}" > "${S}/secrets/$4.latest" ;;
+  "run services list")
+    { [[ -f "${S}/svc.json" ]] && jq '.metadata.labels["cloud.googleapis.com/location"] = "us-east5"' "${S}/svc.json"
+      [[ -f "${S}/svc_elsewhere" ]] && jq -n '{metadata: {labels: {"cloud.googleapis.com/location": "europe-west1"}}}'
+      true; } | jq -s . ;;
   "run services describe")
     [[ -f "${S}/svc.json" ]] || { echo "ERROR: (gcloud.run.services.describe) Cannot find service [$4]" >&2; exit 1; }
     jq --arg r "$(cat "${S}/svc_ready" 2>/dev/null || echo True)" \
       '.status = {url: "https://gw.example.test", latestReadyRevisionName: "rev",
         conditions: [{type: "Ready", status: $r}]}' "${S}/svc.json" ;;
+  "run revisions describe")
+    jq -n --arg t "$(cat "${S}/revision_time")" '{metadata: {creationTimestamp: $t}}' ;;
+  "run services update-traffic")
+    jq '.spec.traffic = [{latestRevision: true, percent: 100}]' "${S}/svc.json" > "${S}/svc.tmp" \
+      && mv "${S}/svc.tmp" "${S}/svc.json"
+    echo traffic >> "${S}/traffic" ;;
   "run deploy "*)
     # Build the service the way Cloud Run would from the deploy flags.
     secrets=$(flag set-secrets "$@"); args=$(flag args "$@")
@@ -114,7 +135,7 @@ case "$1 $2 $3" in
       --arg noiam "$(printf '%s\n' "$@" | grep -qx -- --no-invoker-iam-check && echo true || echo false)" '
       {metadata: {labels: ($label | split("=") | {(.[0]): .[1]}),
                   annotations: {"run.googleapis.com/invoker-iam-disabled": $noiam}},
-       spec: {template: {
+       spec: {traffic: [{latestRevision: true, percent: 100}], template: {
          metadata: {annotations: {"autoscaling.knative.dev/maxScale": $max}},
          spec: {serviceAccountName: $sa, volumes: [$v1, $v2],
            containers: [{image: $img, args: ($args | split(",")),
@@ -122,16 +143,22 @@ case "$1 $2 $3" in
              resources: {limits: {cpu: $cpu, memory: $mem}},
              volumeMounts: [{mountPath: $cfgdir, name: "cfg-1"},
                             {mountPath: $keydir, name: "key-1"}]}]}}}}' > "${S}/svc.json"
+    tick > "${S}/revision_time"
     echo deploy >> "${S}/revisions" ;;
   "run services update")
     # Like Cloud Run: each --update-secrets adds a new volume and leaves the
     # old one unmounted.
     n=$(wc -l < "${S}/revisions" | tr -d ' ')
-    jq --argjson v "$(volume "cfg-u${n}" fullsend-e2e-gateway-config config.yaml)" '
-      .spec.template.spec.volumes += [$v]
+    # gcloud also pins the running image by digest when a template change
+    # carries no new image.
+    jq --argjson v "$(volume "cfg-u${n}" fullsend-e2e-gateway-config config.yaml)" \
+      --arg d "$(printf 'upstream-index' | shasum -a 256 | cut -d' ' -f1)" '
+      .spec.template.spec.containers[0].image |= (sub("(:v[0-9.]+|@sha256:[0-9a-f]+)$"; "") + "@sha256:" + $d)
+      | .spec.template.spec.volumes += [$v]
       | .spec.template.spec.containers[0].volumeMounts |= map(
           if .mountPath == "/etc/agw-config" then .name = $v.name else . end)' \
       "${S}/svc.json" > "${S}/svc.tmp" && mv "${S}/svc.tmp" "${S}/svc.json"
+    tick > "${S}/revision_time"
     echo update >> "${S}/revisions" ;;
   "run services delete") rm "${S}/svc.json" ;;
   *) echo "gcloud stub: unhandled: $*" >&2; exit 2 ;;
@@ -143,11 +170,18 @@ cat > "${SHIM_DIR}/skopeo" <<'EOF'
 #!/usr/bin/env bash
 S="${STUB_STATE}"
 echo "skopeo $*" >> "${S}/skopeo.log"
+ref="${*: -1}"
 case "$1" in
   login) cat > /dev/null ;;
-  inspect) printf 'upstream-index' ;;
-  copy) cat "${S}/copy_digest" 2>/dev/null > "${S}/image" \
-          || printf 'sha256:%s\n' "$(printf 'upstream-index' | shasum -a 256 | cut -d' ' -f1)" > "${S}/image" ;;
+  inspect)
+    case "${ref}" in
+      docker://ghcr.io/*)
+        [[ -f "${S}/upstream_down" ]] && { echo "FATAL: connection refused" >&2; exit 1; }
+        printf 'upstream-index' ;;
+      *) [[ -f "${S}/image_raw" ]] || { echo "FATAL: manifest unknown" >&2; exit 1; }
+         cat "${S}/image_raw" ;;
+    esac ;;
+  copy) cat "${S}/copy_raw" 2>/dev/null > "${S}/image_raw" || printf 'upstream-index' > "${S}/image_raw" ;;
 esac
 EOF
 
@@ -161,7 +195,10 @@ while [[ $# -gt 0 ]]; do
   [[ "$1" == "-o" ]] && { out="$2"; shift; }
   shift
 done
-if [[ -f "${S}/html_401" ]]; then
+if [[ -f "${S}/json_401" ]]; then
+  echo '{"error":"unauthorized"}' > "${out}"
+  printf '401 application/json'
+elif [[ -f "${S}/html_401" ]]; then
   echo '<html><body>401 Unauthorized</body></html>' > "${out}"
   printf '401 text/html; charset=UTF-8'
 else
@@ -200,7 +237,7 @@ revisions() { if [[ -f "${STATE}/revisions" ]]; then wc -l < "${STATE}/revisions
 # mutations prints every mutating gcloud or skopeo call made so far.
 mutations() {
   cat "${STATE}/gcloud.log" "${STATE}/skopeo.log" 2>/dev/null \
-    | grep -E ' (create|add|add-iam-policy-binding|remove-iam-policy-binding|deploy|update|delete|copy) ' || true
+    | grep -E ' (create|add|add-iam-policy-binding|remove-iam-policy-binding|deploy|update|update-traffic|delete|copy) ' || true
 }
 
 expect_no_mutations() { # expect_no_mutations NAME BEFORE_COUNT
@@ -283,6 +320,8 @@ if [[ "$(revisions)" == "2" ]] && grep -q '^gcloud .* run services update ' "${S
 before=$(mutations | wc -l | tr -d ' ')
 run_setup --project "${PROJECT}" --with-vertex || fail "repeat --with-vertex failed"
 expect_out "repeat --with-vertex is a no-op" "No changes"
+if jq -e '.spec.template.spec.containers[0].image | test("@sha256:")' "${STATE}/svc.json" >/dev/null; then
+  pass "an image pinned by digest after services update is not drift"; else fail "stub did not pin the image"; fi
 expect_no_mutations "an orphaned config volume is not drift" "${before}"
 
 # --- 4. no Vertex flag never removes the Vertex tier ---------------------------
@@ -305,7 +344,47 @@ run_setup --project "${PROJECT}" --without-vertex || true
 expect_out "not-Ready service is redeployed" "redeployed Cloud Run service fullsend-e2e-gateway \\(was not Ready\\)"
 rm "${STATE}/svc_ready"
 
+# A config version added by an earlier run that stopped before the rollout.
+cp "${STATE}/secrets/${CFG_SECRET}.v3" "${STATE}/secrets/${CFG_SECRET}.v4"
+later=$(( $(cat "${STATE}/clock") + 10 ))
+jq -rn --argjson n "${later}" '$n | todate' > "${STATE}/secrets/${CFG_SECRET}.v4.time"
+echo "${later}" > "${STATE}/clock"
+echo 4 > "${STATE}/secrets/${CFG_SECRET}.latest"
+revs=$(revisions)
+run_setup --project "${PROJECT}" --without-vertex || fail "interrupted rollout run failed"
+expect_out "an unfinished rollout is completed" "rolled a new revision of Cloud Run service fullsend-e2e-gateway for the latest secret versions"
+if [[ "$(revisions)" == "$((revs + 1))" && "$(cat "${STATE}/secrets/${CFG_SECRET}.latest")" == "4" ]]; then
+  pass "completing the rollout adds no secret version"; else fail "interrupted rollout"; fi
+run_setup --project "${PROJECT}" --without-vertex || fail "run after completed rollout failed"
+expect_out "after the rollout a re-run is a no-op" "No changes"
+
+# Traffic pinned to an older revision.
+jq '.spec.traffic = [{revisionName: "old", percent: 100}]' "${STATE}/svc.json" > "${STATE}/svc.tmp" \
+  && mv "${STATE}/svc.tmp" "${STATE}/svc.json"
+run_setup --project "${PROJECT}" --without-vertex || fail "pinned traffic run failed"
+expect_out "pinned traffic is sent to the latest revision" "sent all traffic of Cloud Run service fullsend-e2e-gateway to the latest revision"
+run_setup --project "${PROJECT}" --without-vertex || fail "run after traffic fix failed"
+expect_out "after the traffic fix a re-run is a no-op" "No changes"
+
+# A conditional grant is not the script's grant.
+echo "roles/aiplatform.user ${SA} conditional" >> "${STATE}/project_policy"
+run_setup --project "${PROJECT}" --without-vertex || fail "conditional grant run failed"
+expect_out "a conditional grant does not count as the Vertex grant" "No changes"
+
 # --- 6. --delete removes exactly the named resources ---------------------------
+touch "${STATE}/svc_elsewhere"
+before=$(mutations | wc -l | tr -d ' ')
+if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete ignored a service in another region"; else
+  expect_out "--delete refuses while the service runs in another region" "runs in europe-west1, not us-east5"; fi
+expect_no_mutations "region-mismatch --delete deletes nothing" "${before}"
+rm "${STATE}/svc_elsewhere"
+jq '.metadata.labels = {}' "${STATE}/svc.json" > "${STATE}/svc.tmp" && cp "${STATE}/svc.json" "${STATE}/svc.bak" \
+  && mv "${STATE}/svc.tmp" "${STATE}/svc.json"
+if run_setup --project "${PROJECT}" --delete --yes; then fail "--delete removed an unlabelled service"; else
+  expect_out "--delete refuses an unlabelled service" "lacks the label purpose=fullsend-e2e-gateway"; fi
+expect_no_mutations "unlabelled-service --delete deletes nothing" "${before}"
+mv "${STATE}/svc.bak" "${STATE}/svc.json"
+
 run_setup --project "${PROJECT}" --delete --yes || fail "--delete failed"
 for f in ar sa svc.json "secrets/${CFG_SECRET}.exists" "secrets/${KEY_SECRET}.exists"; do
   if [[ ! -e "${STATE}/${f}" ]]; then pass "--delete removed ${f}"; else fail "--delete left ${f}"; fi
@@ -319,13 +398,17 @@ expect_out "second --delete is a no-op" "Nothing to delete"
 fresh_state
 mkdir -p "${STATE}/secrets"
 touch "${STATE}/ar" "${STATE}/sa"
-echo "${UPSTREAM_DIGEST}" > "${STATE}/image"
+printf 'upstream-index' > "${STATE}/image_raw"
 echo "roles/aiplatform.user ${SA}" > "${STATE}/project_policy"
 PATH="${SHIM_DIR}:${PATH}" bash "${SETUP}" --project "${PROJECT}" --with-vertex --print-config \
   > "${STATE}/secrets/${CFG_SECRET}.v9"
 printf 'e2e-stub-upstream-key' > "${STATE}/secrets/${KEY_SECRET}.v1"
 echo 9 > "${STATE}/secrets/${CFG_SECRET}.latest"
 echo 1 > "${STATE}/secrets/${KEY_SECRET}.latest"
+# Real timestamp shapes: fractional seconds, secret versions before the revision.
+echo 2026-01-02T03:04:01.797859Z > "${STATE}/secrets/${CFG_SECRET}.v9.time"
+echo 2026-01-02T02:50:38.762068Z > "${STATE}/secrets/${KEY_SECRET}.v1.time"
+echo 2026-01-02T03:04:03.154420Z > "${STATE}/revision_time"
 for s in "${CFG_SECRET}" "${KEY_SECRET}"; do
   touch "${STATE}/secrets/${s}.exists"
   echo "roles/secretmanager.secretAccessor ${SA}" > "${STATE}/secrets/${s}.policy"
@@ -335,7 +418,7 @@ jq -n --arg img "us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentga
   def vol($n; $s; $f): {name: $n, secret: {secretName: $s, items: [{key: "latest", path: $f}]}};
   {metadata: {labels: {purpose: "fullsend-e2e-gateway", "cloud.googleapis.com/location": "us-east5"},
               annotations: {"run.googleapis.com/invoker-iam-disabled": "true", "run.googleapis.com/ingress": "all"}},
-   spec: {template: {
+   spec: {traffic: [{latestRevision: true, percent: 100}], template: {
      metadata: {annotations: {"autoscaling.knative.dev/maxScale": "1"}},
      spec: {serviceAccountName: $sa, containerConcurrency: 80,
        volumes: [vol("key-a"; $key; "key"), vol("cfg-old"; $cfg; "config.yaml"), vol("cfg-new"; $cfg; "config.yaml")],
@@ -351,17 +434,40 @@ expect_out "adopt run reports no changes" "No changes: everything was already in
 expect_no_mutations "adopt run mutates nothing" 0
 if run_setup --project "${PROJECT}"; then fail "adopt without a Vertex flag accepted"; else
   expect_out "adopt without a Vertex flag refuses" "serves Vertex models"; fi
+# The Vertex guard fails closed when the config cannot be read.
+: > "${STATE}/project_policy"
+touch "${STATE}/deny_access"
+if run_setup --project "${PROJECT}"; then fail "unreadable config treated as no Vertex"; else
+  expect_out "unreadable config fails closed" "could not read secret ${CFG_SECRET}"; fi
+expect_no_mutations "unreadable config mutates nothing" 0
+rm "${STATE}/deny_access"
 
 # --- 8. failures ------------------------------------------------------------------
 fresh_state
-echo "sha256:tampered" > "${STATE}/copy_digest"
+printf 'tampered' > "${STATE}/copy_raw"
 if run_setup --project "${PROJECT}" --without-vertex; then fail "digest mismatch accepted"; else
   expect_out "digest mismatch fails" "not upstream ${UPSTREAM_DIGEST}"; fi
 
 fresh_state
-echo "sha256:tampered" > "${STATE}/image"
+printf 'tampered' > "${STATE}/image_raw"
 if run_setup --project "${PROJECT}" --without-vertex; then fail "existing tampered image accepted"; else
   expect_out "existing tampered image is refused" "Refusing to overwrite it"; fi
+
+fresh_state
+run_setup --project "${PROJECT}" --without-vertex --dry-run && rc=0 || rc=$?
+if [[ "${rc}" == "3" ]]; then pass "--dry-run on an empty project exits 3"; else fail "empty --dry-run exit ${rc}"; fi
+expect_out "--dry-run on an empty project plans the service" "WOULD: created Cloud Run service"
+expect_no_mutations "--dry-run on an empty project mutates nothing" 0
+
+fresh_state
+touch "${STATE}/upstream_down"
+if run_setup --project "${PROJECT}" --without-vertex; then fail "unreadable upstream accepted"; else
+  expect_out "unreadable upstream fails" "could not read ghcr.io/agentgateway/agentgateway:v1.6.0"; fi
+
+fresh_state
+touch "${STATE}/json_401"
+if run_setup --project "${PROJECT}" --without-vertex; then fail "non-agentgateway 401 accepted"; else
+  expect_out "a 401 that is not agentgateway's fails verification" "not agentgateway's text/plain"; fi
 
 fresh_state
 touch "${STATE}/html_401"

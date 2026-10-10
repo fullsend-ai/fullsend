@@ -294,11 +294,13 @@ retry() {
   done
 }
 
-# has_binding reports whether the IAM policy JSON grants role to member.
+# has_binding reports whether the IAM policy JSON grants role to member
+# without a condition. Conditional bindings are not the script's, and may not
+# be in effect, so they never count.
 has_binding() {
   local policy="$1" role="$2" member="$3"
   jq -e --arg r "${role}" --arg m "${member}" \
-    '[.bindings[]? | select(.role == $r) | .members[]? | select(. == $m)] | length > 0' \
+    '[.bindings[]? | select(.role == $r and .condition == null) | .members[]? | select(. == $m)] | length > 0' \
     <<<"${policy}" >/dev/null
 }
 
@@ -324,6 +326,14 @@ if [[ "${DELETE}" == "true" ]]; then
     [[ "${confirm}" == "${PROJECT}" ]] || die "confirmation did not match; nothing deleted."
   fi
   echo
+
+  # The secrets and the service account are global. Never delete them while a
+  # service of this name runs in another region (a mistyped --region).
+  elsewhere=$(gc run services list --filter="metadata.name=${NAME}" --format=json \
+    | jq -r --arg r "${REGION}" '[.[] | .metadata.labels["cloud.googleapis.com/location"] | select(. != $r)] | join(", ")') \
+    || die "could not list Cloud Run services."
+  [[ -z "${elsewhere}" ]] \
+    || die "Cloud Run service ${NAME} runs in ${elsewhere}, not ${REGION}; pass that --region. Nothing deleted."
 
   echo "==> Cloud Run service ${NAME}"
   if describe run services describe "${NAME}" --region="${REGION}"; then
@@ -415,7 +425,12 @@ fi
 if [[ -z "${VERTEX}" ]]; then
   current_config=""
   if describe secrets describe "${CONFIG_SECRET}"; then
-    current_config=$(gc secrets versions access latest --secret="${CONFIG_SECRET}" 2>/dev/null || true)
+    if gc secrets versions access latest --secret="${CONFIG_SECRET}" \
+        >"${TMP}/current" 2>"${TMP}/access.err"; then
+      current_config=$(cat "${TMP}/current")
+    elif ! grep -qiE 'NOT_FOUND|not found' "${TMP}/access.err"; then
+      die "could not read secret ${CONFIG_SECRET}: $(cat "${TMP}/access.err")"
+    fi
   fi
   if [[ "${has_vertex_grant}" == "true" ]] || grep -q 'provider: vertex' <<<"${current_config}"; then
     die "this gateway serves Vertex models. Pass --with-vertex to keep them, or --without-vertex to remove them."
@@ -436,36 +451,48 @@ fi
 echo
 
 # --- 3. agentgateway image ----------------------------------------------------
-# Digests are of the multi-arch index on both sides: skopeo copies it with
-# --all, and Artifact Registry reports the digest of what the tag points to.
+# Both digests are of the raw multi-arch index, read with skopeo the same way.
+# A private auth file keeps the operator's own registry config untouched.
 echo "==> agentgateway ${AGW_VERSION} image..."
 upstream_digest="sha256:$(skopeo inspect --raw "docker://${UPSTREAM_IMAGE}" | sha256)" \
   || die "could not read ${UPSTREAM_IMAGE}."
 say "upstream ${UPSTREAM_IMAGE} is ${upstream_digest}"
+gcloud auth print-access-token \
+  | skopeo login --authfile "${TMP}/auth.json" -u oauth2accesstoken --password-stdin "${REGISTRY_HOST}" >/dev/null \
+  || die "skopeo could not log in to ${REGISTRY_HOST}."
 
-dest_digest=""
-if describe artifacts docker images describe "${DEST_IMAGE}"; then
-  dest_digest=$(jq -r '.image_summary.digest // empty' <<<"${DESCRIBED}")
-fi
-if [[ -n "${dest_digest}" ]]; then
-  [[ "${dest_digest}" == "${upstream_digest}" ]] \
-    || die "${DEST_IMAGE} is ${dest_digest}, not upstream ${upstream_digest}. Refusing to overwrite it; investigate before re-running."
+# dest_digest prints the digest of the copy in Artifact Registry, or nothing
+# when it does not exist yet. Any other error stops the script.
+dest_digest() {
+  local raw
+  if raw=$(skopeo inspect --raw --authfile "${TMP}/auth.json" "docker://${DEST_IMAGE}" 2>"${TMP}/skopeo.err"); then
+    printf 'sha256:%s\n' "$(printf '%s' "${raw}" | sha256)"
+  elif ! grep -qiE 'manifest unknown|name unknown|not found' "${TMP}/skopeo.err"; then
+    die "could not read ${DEST_IMAGE}: $(cat "${TMP}/skopeo.err")"
+  fi
+}
+
+copy_image() {
+  skopeo copy --all --preserve-digests --quiet --authfile "${TMP}/auth.json" \
+    "docker://${UPSTREAM_IMAGE}" "docker://${DEST_IMAGE}" \
+    || die "skopeo could not copy ${UPSTREAM_IMAGE} to ${DEST_IMAGE}."
+  local copied
+  copied=$(dest_digest)
+  [[ "${copied}" == "${upstream_digest}" ]] \
+    || die "copied ${DEST_IMAGE} is ${copied:-missing}, not upstream ${upstream_digest}."
+}
+
+current_digest=$(dest_digest)
+if [[ -n "${current_digest}" ]]; then
+  [[ "${current_digest}" == "${upstream_digest}" ]] \
+    || die "${DEST_IMAGE} is ${current_digest}, not upstream ${upstream_digest}. Refusing to overwrite it; investigate before re-running."
   ok "${DEST_IMAGE} matches upstream"
 else
-  copy_image() {
-    # A private auth file, so the operator's own registry config is untouched.
-    gcloud auth print-access-token \
-      | skopeo login --authfile "${TMP}/auth.json" -u oauth2accesstoken --password-stdin "${REGISTRY_HOST}" \
-      || return 1
-    skopeo copy --all --quiet --authfile "${TMP}/auth.json" \
-      "docker://${UPSTREAM_IMAGE}" "docker://${DEST_IMAGE}" || return 1
-    describe artifacts docker images describe "${DEST_IMAGE}" || return 1
-    dest_digest=$(jq -r '.image_summary.digest // empty' <<<"${DESCRIBED}")
-    [[ "${dest_digest}" == "${upstream_digest}" ]] \
-      || die "copied ${DEST_IMAGE} is ${dest_digest}, not upstream ${upstream_digest}."
-  }
   change "copied ${UPSTREAM_IMAGE} to ${DEST_IMAGE}" copy_image
 fi
+# gcloud run services update pins the running image by digest, so either form
+# of the verified image counts as current.
+DEST_IMAGE_BY_DIGEST="${DEST_IMAGE%:*}@${upstream_digest}"
 echo
 
 # --- 4. Runtime service account ---------------------------------------------
@@ -579,7 +606,7 @@ deploy_args=(
 # separated, or nothing. Secret mounts are resolved mountPath -> volume ->
 # secret, because each --update-secrets run leaves an unmounted volume behind.
 spec_drift() {
-  jq -r --arg img "${DEST_IMAGE}" --arg sa "${SA_EMAIL}" \
+  jq -r --arg img "${DEST_IMAGE}" --arg imgd "${DEST_IMAGE_BY_DIGEST}" --arg sa "${SA_EMAIL}" \
     --arg cfgdir "${CONFIG_DIR}" --arg keydir "${KEY_DIR}" \
     --arg cfg "${CONFIG_SECRET}" --arg key "${KEY_SECRET}" \
     --argjson port "${GATEWAY_PORT}" --arg name "${NAME}" '
@@ -589,7 +616,7 @@ spec_drift() {
       ([$t.spec.volumes[]? | select(.name == $v) | .secret][0] // {}) as $s |
       $s.secretName == $secret and $s.items == [{key: "latest", path: $file}];
     [
-      (if $c.image != $img then "image" else empty end),
+      (if $c.image != $img and $c.image != $imgd then "image" else empty end),
       (if $t.spec.serviceAccountName != $sa then "service account" else empty end),
       (if $c.args != ["-f", ($cfgdir + "/config.yaml")] then "args" else empty end),
       (if [$c.ports[]?.containerPort] != [$port] then "port" else empty end),
@@ -607,21 +634,66 @@ ready_of() {
   jq -r '[.status.conditions[]? | select(.type == "Ready") | .status][0] // "Unknown"'
 }
 
+# epoch_of converts an RFC 3339 timestamp, with or without fractional
+# seconds, to whole epoch seconds.
+epoch_of() {
+  jq -rn --arg t "$1" '$t | sub("\\.[0-9]+"; "") | fromdateiso8601'
+}
+
+# secrets_newer_than_revision reports whether either secret's latest version
+# was created after the given revision. Cloud Run serves a mounted :latest
+# secret's newest version as soon as it is added, but a running agentgateway
+# only sees it if its file watch fires on the secret volume, which is not
+# verified. Rolling a revision restarts the gateway on the new config for
+# certain. Comparing times, not what this run changed, also finishes a rollout
+# that an earlier run started but did not complete.
+secrets_newer_than_revision() {
+  local revision="$1" rev_time secret ver_time
+  [[ -n "${revision}" ]] || return 0
+  describe run revisions describe "${revision}" --region="${REGION}" \
+    || die "revision ${revision} of ${NAME} not found."
+  rev_time=$(epoch_of "$(jq -r '.metadata.creationTimestamp' <<<"${DESCRIBED}")")
+  for secret in "${CONFIG_SECRET}" "${KEY_SECRET}"; do
+    describe secrets versions describe latest --secret="${secret}" \
+      || die "secret ${secret} has no versions."
+    ver_time=$(epoch_of "$(jq -r '.createTime' <<<"${DESCRIBED}")")
+    if (( ver_time > rev_time )); then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# traffic_to_latest reports whether all traffic goes to the latest revision.
+traffic_to_latest() {
+  jq -e '[.spec.traffic[]? | select((.percent // 0) > 0)]
+    | length == 1 and .[0].latestRevision == true and .[0].percent == 100' >/dev/null
+}
+
 if describe run services describe "${NAME}" --region="${REGION}"; then
-  drift=$(spec_drift <<<"${DESCRIBED}")
-  ready=$(ready_of <<<"${DESCRIBED}")
+  svc_json="${DESCRIBED}"
+  drift=$(spec_drift <<<"${svc_json}")
+  ready=$(ready_of <<<"${svc_json}")
+  serving=$(jq -r '.status.latestReadyRevisionName // empty' <<<"${svc_json}")
   if [[ -n "${drift}" ]]; then
     change "redeployed Cloud Run service ${NAME} (differed in: ${drift})" gc "${deploy_args[@]}"
   elif [[ "${ready}" != "True" ]]; then
     change "redeployed Cloud Run service ${NAME} (was not Ready)" gc "${deploy_args[@]}"
-  elif [[ "${CONFIG_CHANGED}" == "true" || "${KEY_CHANGED}" == "true" ]]; then
-    # A mounted :latest secret is resolved when a revision starts, so a new
-    # secret version needs a new revision.
-    change "rolled a new revision of Cloud Run service ${NAME} for the new secret version" \
+  elif [[ "${CONFIG_CHANGED}" == "true" || "${KEY_CHANGED}" == "true" ]] \
+      || secrets_newer_than_revision "${serving}"; then
+    change "rolled a new revision of Cloud Run service ${NAME} for the latest secret versions" \
       gc run services update "${NAME}" --region="${REGION}" \
         "--update-secrets=${CONFIG_DIR}/config.yaml=${CONFIG_SECRET}:latest,${KEY_DIR}/key=${KEY_SECRET}:latest"
   else
     ok "service is up to date"
+  fi
+  # A deploy or update keeps an existing traffic split, so a service pinned
+  # to an older revision would keep serving it.
+  if traffic_to_latest <<<"${svc_json}"; then
+    ok "all traffic goes to the latest revision"
+  else
+    change "sent all traffic of Cloud Run service ${NAME} to the latest revision" \
+      gc run services update-traffic "${NAME}" --region="${REGION}" --to-latest
   fi
 else
   change "created Cloud Run service ${NAME}" gc "${deploy_args[@]}"
@@ -664,6 +736,9 @@ probe() {
     verify_failed=1
   elif [[ "${ctype}" == text/html* ]] || grep -qi '<html' "${TMP}/probe.body"; then
     echo "    FAIL: 401 is an HTML page; the invoker IAM check is still on." >&2
+    verify_failed=1
+  elif [[ "${ctype}" != text/plain* ]] || ! grep -q '^authentication failure: ' "${TMP}/probe.body"; then
+    echo "    FAIL: 401 is not agentgateway's text/plain authentication failure." >&2
     verify_failed=1
   fi
 }
