@@ -295,6 +295,12 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		Extensions:        extensions,
 	}
 
+	// The runner-rendered inference-gateway.json (only when an
+	// inference.gateway block applies); Run guards its digest.
+	if err := r.piWriteGatewayConfig(sandboxName); err != nil {
+		return err
+	}
+
 	if piEditRepairEnabled(tools) {
 		if err := uploadBytes(sandboxName, cfg+"/"+piEditRepairExtensionFile, piEditRepairExtensionJS); err != nil {
 			return fmt.Errorf("installing edit-repair extension: %w", err)
@@ -485,7 +491,12 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 			}
 		}
 	}
-	exts := append([]string{}, providerExts...)
+	gw := piGatewayRunFor(sandboxName)
+	var gatewayIDs []string
+	if gw != nil {
+		gatewayIDs = gw.ModelIDs
+	}
+	exts := piAgentProviderExtensions(providerExts, gw != nil)
 	hooksExt := r.ConfigDir() + "/" + piHooksExtensionFile
 	if hooksEnabled {
 		exts = append(exts, hooksExt)
@@ -499,7 +510,7 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		Extensions:       exts,
 		ExtensionDigests: piAgentExtensionDigests(hooksExt, hooksEnabled, editRepairExt, editRepair),
 		Models:           piAgentModels(def.Model, configAliases),
-		ProviderModels:   piAgentProviderModels(),
+		ProviderModels:   piAgentProviderModels(gatewayIDs),
 		Thinking:         piAgentThinking(),
 		Tools:            childTools,
 		ExploreTools:     append([]string{}, piExploreTools...),
@@ -689,11 +700,20 @@ var piXaiVertexModels = []string{"xai/grok-4.6"}
 // pi's built-in google-vertex and the vendored xai-vertex extension. The
 // remaining credential-free provider a run can be on (openai) needs no list
 // because the extension always accepts the parent's own model spec.
-func piAgentProviderModels() map[string][]string {
-	return map[string][]string{
+//
+// gatewayIDs are the model ids of the rendered inference-gateway.json
+// (RenderPiGatewayConfig); they are listed under "gateway" only when an
+// inference.gateway block applies, so without one no gateway child is
+// admitted.
+func piAgentProviderModels(gatewayIDs []string) map[string][]string {
+	models := map[string][]string{
 		piGoogleVertexProvider: append([]string(nil), piGoogleVertexModels...),
 		piXaiVertexProvider:    append([]string(nil), piXaiVertexModels...),
 	}
+	if len(gatewayIDs) > 0 {
+		models[piGatewayProvider] = append([]string(nil), gatewayIDs...)
+	}
+	return models
 }
 
 // piAgentThinking is the children's --thinking level: the env override when
@@ -715,12 +735,15 @@ func piAgentThinking() string {
 // one line for the binary, then one per existing directory.
 func piAgentProbeCommand() string {
 	return "command -v pi; for d in " + shellQuote(piVertexExtensionPath) + " " + shellQuote(piXaiVertexExtensionPath) +
+		" " + shellQuote(piInferenceGatewayExtensionPath) +
 		`; do test -d "$d" && echo "$d"; done; true`
 }
 
-// parsePiAgentProbe reads the probe output. Only the two known extension
-// paths are accepted as extensions; a missing binary line falls back to
-// PATH lookup when the child is spawned.
+// parsePiAgentProbe reads the probe output. Only the known provider
+// extension paths are accepted as extensions; a missing binary line falls
+// back to PATH lookup when the child is spawned. The inference-gateway
+// path is reported like the others; piAgentManifestFor drops it unless an
+// inference.gateway block applies.
 func parsePiAgentProbe(stdout string) (piBin string, exts []string) {
 	piBin = piAgentProbeFallbackBin
 	binSeen := false
@@ -730,7 +753,7 @@ func parsePiAgentProbe(stdout string) (piBin string, exts []string) {
 		line = strings.TrimSpace(sanitizeOutput(line))
 		switch {
 		case line == "":
-		case line == piVertexExtensionPath || line == piXaiVertexExtensionPath:
+		case line == piVertexExtensionPath || line == piXaiVertexExtensionPath || line == piInferenceGatewayExtensionPath:
 			// When `command -v pi` printed nothing the first line is an
 			// extension path; never mistake it for the binary.
 			exts = append(exts, line)

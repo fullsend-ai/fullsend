@@ -366,3 +366,107 @@ func TestGitHubSetupCmd_GatewayFlagsAllOrNone(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "inference.gateway would have no audience")
 }
+
+func gatewayClearSetupConfig() githubSetupConfig {
+	return githubSetupConfig{
+		target:       "acme/widget",
+		mintURL:      "https://mint-test-abc123.run.app",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: gatewayFlags("mint-url", "inference-gateway-url", "inference-gateway-audience"),
+	}
+}
+
+func newGatewayClearClient() *forge.FakeClient {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	return client
+}
+
+func committedTreeFile(client *forge.FakeClient, path string) (forge.TreeFile, bool) {
+	for _, batch := range client.CommittedFilesToBranch {
+		for _, f := range batch.Files {
+			if f.Path == path {
+				return f, true
+			}
+		}
+	}
+	return forge.TreeFile{}, false
+}
+
+func TestRunGitHubSetupPerRepo_GatewayClearRemovesModelsFile(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newGatewayClearClient()
+	client.FileContents["acme/widget/.fullsend/config.yaml"] = []byte("inference:\n  gateway:\n    url: https://gw.example.com\n    audience: aud\n    models_file: " + gatewayModelsFileRepoPath + "\n")
+	client.FileContents["acme/widget/"+gatewayModelsFileRepoPath] = []byte(testGatewayModelsFile)
+
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), gatewayClearSetupConfig())
+	require.NoError(t, err)
+
+	f, ok := committedTreeFile(client, gatewayModelsFileRepoPath)
+	require.True(t, ok, "the models file should be part of the setup commit")
+	assert.True(t, f.Delete)
+
+	cfgFile, ok := committedTreeFile(client, ".fullsend/config.yaml")
+	require.True(t, ok)
+	parsed, err := config.ParsePerRepoConfig(cfgFile.Content)
+	require.NoError(t, err)
+	assert.True(t, parsed.ConfigInferenceGateway().IsZero())
+}
+
+func TestRunGitHubSetupPerRepo_GatewayClearWithoutModelsFile(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newGatewayClearClient()
+
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), gatewayClearSetupConfig())
+	require.NoError(t, err)
+	_, ok := committedTreeFile(client, gatewayModelsFileRepoPath)
+	assert.False(t, ok, "nothing to remove when the file is absent")
+}
+
+func TestGatewayModelsFileRemoval(t *testing.T) {
+	ctx := context.Background()
+	key := "acme/widget/" + gatewayModelsFileRepoPath
+
+	client := forge.NewFakeClient()
+	client.FileContents[key] = []byte(testGatewayModelsFile)
+
+	// Not a clear: the file stays.
+	keep := githubSetupConfig{
+		gatewayURL:      "https://gw.example.com",
+		gatewayAudience: "aud",
+		changedFlags:    gatewayFlags("inference-gateway-url", "inference-gateway-audience"),
+	}
+	remove, err := gatewayModelsFileRemoval(ctx, client, "acme", "widget", keep)
+	require.NoError(t, err)
+	assert.False(t, remove)
+
+	// No gateway flags at all.
+	remove, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", githubSetupConfig{})
+	require.NoError(t, err)
+	assert.False(t, remove)
+
+	clear := githubSetupConfig{changedFlags: gatewayFlags("inference-gateway-url", "inference-gateway-audience")}
+	remove, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", clear)
+	require.NoError(t, err)
+	assert.True(t, remove)
+
+	// A read failure other than not-found is reported, not ignored.
+	client.GetFileContentErrors = map[string]error{key: assert.AnError}
+	_, err = gatewayModelsFileRemoval(ctx, client, "acme", "widget", clear)
+	require.Error(t, err)
+}
+
+func TestRunGitHubSetupPerRepo_GatewayClearDryRun(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newGatewayClearClient()
+	client.FileContents["acme/widget/"+gatewayModelsFileRepoPath] = []byte(testGatewayModelsFile)
+	var buf strings.Builder
+	cfg := gatewayClearSetupConfig()
+	cfg.dryRun = true
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&buf), cfg)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Would delete: "+gatewayModelsFileRepoPath)
+	assert.Empty(t, client.CommittedFilesToBranch)
+}

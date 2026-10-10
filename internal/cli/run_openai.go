@@ -502,6 +502,14 @@ func ensureEmbeddedProfile(ctx context.Context, profileID string, printer *ui.Pr
 	if err != nil {
 		return fmt.Errorf("provider profile %q is not shipped by this fullsend build: %w", profileID, err)
 	}
+	return importProfileBytes(ctx, profileID, data, printer)
+}
+
+// importProfileBytes imports a provider profile whose bytes the runner holds
+// in memory — an embedded scaffold file (ensureEmbeddedProfile) or one
+// rendered per run (ensureGatewayProfile, whose host is configured, not
+// fixed) — under profileID, and confirms the gateway lists it.
+func importProfileBytes(ctx context.Context, profileID string, data []byte, printer *ui.Printer) error {
 	tmp, err := os.CreateTemp("", profileID+"-*.yaml")
 	if err != nil {
 		return fmt.Errorf("writing provider profile %q: %w", profileID, err)
@@ -660,19 +668,33 @@ func policyHostMatches(pattern, host string) bool {
 // parsed: the run would only fail later, at pi's first request, with far
 // less to go on.
 func checkOpenAIEgressInspected(ctx context.Context, sandboxName string) error {
+	return checkEgressInspected(ctx, sandboxName, openAIAPIHost, "OpenAI",
+		"The sandbox image's default policy carries such a rule (`codex`): give the harness a `policy:` (the fleet uses policies/base.yaml) or make that endpoint `protocol: rest`")
+}
+
+// checkEgressInspected is the host-generic form of checkOpenAIEgressInspected:
+// it fails when the sandbox's effective policy admits host:443 over a route
+// the OpenShell proxy cannot inspect (uninspectedEndpointRules), or when the
+// policy cannot be read or parsed. label names the credential in errors;
+// hint, when set, ends the error with the remedy.
+func checkEgressInspected(ctx context.Context, sandboxName, host, label, hint string) error {
 	policy, err := sandbox.EffectivePolicy(ctx, sandboxName)
 	if err != nil {
-		return fmt.Errorf("checking the sandbox policy for uninspected OpenAI routes: %w", err)
+		return fmt.Errorf("checking the sandbox policy for uninspected %s routes: %w", label, err)
 	}
-	rules, err := uninspectedEndpointRules(policy, openAIAPIHost, 443)
+	rules, err := uninspectedEndpointRules(policy, host, 443)
 	if err != nil {
-		return fmt.Errorf("checking the sandbox policy for uninspected OpenAI routes: %w", err)
+		return fmt.Errorf("checking the sandbox policy for uninspected %s routes: %w", label, err)
 	}
 	if len(rules) == 0 {
 		return nil
 	}
-	return fmt.Errorf("sandbox policy rule %s allows %s:443 without L7 inspection (no `protocol`, `protocol: tcp`, or `tls: skip`); OpenShell 0.0.110+ will not inject the OpenAI credential over an uninspected route, so the agent would only see connection errors. The sandbox image's default policy carries such a rule (`codex`): give the harness a `policy:` (the fleet uses policies/base.yaml) or make that endpoint `protocol: rest`",
-		strings.Join(rules, ", "), openAIAPIHost)
+	msg := fmt.Sprintf("sandbox policy rule %s allows %s:443 without L7 inspection (no `protocol`, `protocol: tcp`, or `tls: skip`); OpenShell 0.0.110+ will not inject the %s credential over an uninspected route, so the agent would only see connection errors",
+		strings.Join(rules, ", "), host, label)
+	if hint != "" {
+		msg += ". " + hint
+	}
+	return errors.New(msg)
 }
 
 // openAICredentialError marks an ensureOpenAIProvider failure to resolve

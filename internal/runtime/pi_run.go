@@ -400,6 +400,16 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	// Bootstrap lists openai ids only when the provider is attached.
 	openai := provider == piOpenAIProvider ||
 		(agentEnabled && len(m.Agent.ProviderModels[piOpenAIProvider]) > 0)
+	// The gateway route is runner-owned only when an inference.gateway
+	// block applies (SetPiGatewayRun). Without one a gateway/ model keeps
+	// today's behaviour: no -e, no guard, plugin env untouched, so a
+	// harness that loads the extension as a plugin still works. With one,
+	// the config guard and the env clear/re-export run on every iteration
+	// (children inherit both), and the extension is loaded when the parent
+	// or a child (Bootstrap admitted gateway ids) can be on the provider.
+	gw := piGatewayRunFor(params.SandboxName)
+	gateway := gw != nil && (provider == piGatewayProvider ||
+		(agentEnabled && len(m.Agent.ProviderModels[piGatewayProvider]) > 0))
 
 	parts := []string{"cd " + shellQuote(params.RepoDir)}
 	// Resolve the pi binary before the agent-writable .env is sourced and
@@ -440,6 +450,12 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// carries before .env can replace OPENAI_API_KEY with another
 		// provider's placeholder.
 		parts = append(parts, "&& "+piOpenAIConfigGuard(r.ConfigDir()), "&& "+PiOpenAIAuthSeed(r.ConfigDir()))
+	}
+	if gw != nil {
+		// Same block, same reason as the manifest guard: the rendered
+		// inference-gateway.json must be the runner's, and no local
+		// overlay may sit beside it, before .env can shadow the tools.
+		parts = append(parts, "&& "+piGatewayConfigGuard(r.ConfigDir(), gw.configSum()))
 	}
 	parts = append(parts,
 		"&& . "+shellQuote(envFile),
@@ -552,6 +568,18 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	for _, export := range piExtensionEnvExports(exts) {
 		parts = append(parts, "&& "+export)
 	}
+	if gw != nil {
+		// Second pass of the gateway config guard (.env could have written
+		// the file just now), then the INFERENCE_GATEWAY_* family: the
+		// extension merges that env over the file, so it is cleared after
+		// .env and after the plugin env above, and only the runner's values
+		// are exported again.
+		parts = append(parts,
+			"&& unset -f test [ command sha256sum cut sed env",
+			"&& "+piGatewayConfigGuard(r.ConfigDir(), gw.configSum()),
+		)
+		parts = append(parts, piGatewayEnvParts(gw)...)
+	}
 	parts = append(parts,
 		`&& "$`+piBinaryVar+`"`,
 		"--print",
@@ -569,6 +597,9 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	}
 	if xaiVertex {
 		parts = append(parts, "-e "+shellQuote(piXaiVertexExtensionPath))
+	}
+	if gateway {
+		parts = append(parts, "-e "+shellQuote(piInferenceGatewayExtensionPath))
 	}
 	// The openai provider needs no -e extension and deliberately no
 	// --api-key: that flag outranks auth.json in pi's resolution order and
@@ -980,6 +1011,9 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 	if exitCode == piConfigTamperedExit {
 		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("pi config dir %s has models.json or an openai entry in auth.json; refusing to run the openai provider because either can redirect or replace the runner's credential (pi's own empty auth.json is fine; did the agent write there between iterations?)", r.ConfigDir())}
 	}
+	if exitCode == piGatewayConfigTamperedExit && piGatewayRunFor(params.SandboxName) != nil {
+		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("pi config dir %s has %s or an %s the runner did not render; refusing to run because either can redirect the inference gateway route (did the agent write there between iterations?)", r.ConfigDir(), PiInferenceGatewayLocalConfigFile, PiInferenceGatewayConfigFile)}
+	}
 	if exitCode == piExtensionTamperedExit && len(exts) > 0 {
 		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("a pi extension directory under %s is missing or was modified since Bootstrap uploaded it; refusing to load it (did the agent or the extension itself write there between iterations? extensions must not write into their own directory)", r.piExtensionsDir())}
 	}
@@ -1079,6 +1113,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	// config dir and could be rewritten together with an extension.
 	exts, err := piResolveRunPlugins(params.Plugins)
 	if err != nil {
+		return -1, err
+	}
+	if err := validatePiGatewayRun(piGatewayRunFor(params.SandboxName), params.Plugins); err != nil {
 		return -1, err
 	}
 	manifestSum := piManifestHash(params.SandboxName)

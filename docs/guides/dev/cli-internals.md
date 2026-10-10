@@ -35,6 +35,8 @@ fullsend
 │   ├── provision    <org|owner/repo>        # Create WIF pool/provider for Agent Platform
 │   ├── deprovision  <org|owner/repo>        # Remove WIF access for org or repo
 │   ├── status       <org|owner/repo>        # Check WIF health, print config
+│   ├── gateway                              # Inference gateway route (ADR 0137)
+│   │   └── status   <owner/repo>            # Resolved block and source, and the gateway inside Actions
 │   └── openai                               # OpenAI WIF enrolment (GPT on pi or codex)
 │       ├── request  <owner/repo>[,...]      # Generate the provider/mapping request for an admin
 │       │   ├── --audience <string>          #   Provider audience (default: fullsend://<owner>)

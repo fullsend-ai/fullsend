@@ -3,8 +3,11 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -814,4 +817,182 @@ func TestDummyRuntime_ClearIterationArtifacts_SweepFailureIsNotAnError(t *testin
 	require.NoError(t, rt.ClearIterationArtifacts("sb"))
 	require.Len(t, cmds, 2)
 	assert.Contains(t, cmds[1], "rm -rf")
+}
+
+func TestParseHTTPProbeArgs(t *testing.T) {
+	t.Parallel()
+
+	p, err := ParseHTTPProbeArgs(`POST https://gw.example/v1/chat/completions TOKEN_VAR {"model": "echo", "x": 1}`)
+	require.NoError(t, err)
+	assert.Equal(t, "POST", p.Method)
+	assert.Equal(t, "https://gw.example/v1/chat/completions", p.URL)
+	assert.Equal(t, "TOKEN_VAR", p.HeaderEnv)
+	assert.Equal(t, `{"model": "echo", "x": 1}`, p.Body)
+
+	p, err = ParseHTTPProbeArgs("GET http://gw.example/v1/models TOKEN_VAR")
+	require.NoError(t, err)
+	assert.Empty(t, p.Body)
+
+	for _, bad := range []string{
+		"",
+		"GET http://gw.example/",
+		"DELETE http://gw.example/ TOKEN",
+		"GET ftp://gw.example/ TOKEN",
+		"GET http://gw.example/ BAD-NAME",
+		"GET http://gw.example/ $(id)",
+		"GET http://gw.example/ TOKEN body-on-get",
+	} {
+		_, err := ParseHTTPProbeArgs(bad)
+		assert.Error(t, err, bad)
+	}
+}
+
+func TestHTTPProbeFromOpPrefersFields(t *testing.T) {
+	t.Parallel()
+
+	p, err := httpProbeFromOp(BehaviourOperation{Op: "http_probe", Args: "ignored", Method: "POST", URL: "https://gw.example/x", HeaderEnv: "TOK", Body: "{}"})
+	require.NoError(t, err)
+	assert.Equal(t, HTTPProbe{Method: "POST", URL: "https://gw.example/x", HeaderEnv: "TOK", Body: "{}"}, p)
+
+	_, err = httpProbeFromOp(BehaviourOperation{Op: "http_probe", Method: "PUT", URL: "https://gw.example/x", HeaderEnv: "TOK"})
+	assert.Error(t, err)
+}
+
+func TestHTTPProbeCommandNeverInterpolatesValues(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := httpProbeCommand(HTTPProbe{Method: "POST", URL: "https://gw.example/'; rm -rf /", HeaderEnv: "TOK", Body: `'$(id)'`})
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(cmd, "NODE_USE_ENV_PROXY=1 node -e "))
+	assert.NotContains(t, cmd, "rm -rf")
+	assert.NotContains(t, cmd, "$(id)")
+}
+
+func TestExecuteBehaviourScript_HTTPProbeRecordsStatusAndBody(t *testing.T) {
+	t.Parallel()
+
+	big := strings.Repeat("a", httpProbeBodyLimit+100)
+	responses := []string{
+		`{"status":200,"body":"{\"authorization\":\"Bearer stub\"}"}`,
+		`{"status":403,"body":"` + big + `"}`,
+		`{"error":"connect ECONNREFUSED"}`,
+		`not json`,
+	}
+	call := 0
+	rt := DummyRuntime{ExecFn: func(_, cmd string, _ time.Duration) (string, string, int, error) {
+		assert.Contains(t, cmd, "node -e ")
+		out := responses[call]
+		call++
+		code := 0
+		if strings.Contains(out, "error") {
+			code = 2
+		}
+		return "noise\n" + out + "\n", "stderr text", code, nil
+	}}
+	script := &BehaviourScript{Ops: []BehaviourOperation{
+		{Description: "ok", Op: "http_probe", Args: `POST https://gw.example/v1/chat/completions TOK {"model":"echo"}`},
+		{Description: "denied", Op: "http_probe", Method: "POST", URL: "https://gw.example/v1/chat/completions", HeaderEnv: "TOK"},
+		{Description: "refused", Op: "http_probe", Args: "GET https://other.example/ TOK"},
+		{Description: "garbled", Op: "http_probe", Args: "GET https://other.example/ TOK"},
+		{Description: "invalid", Op: "http_probe", Args: "PUT https://other.example/ TOK"},
+	}}
+	results, err := executeBehaviourScript(context.Background(), rt, "sb", "/sandbox/workspace/repo", script)
+	require.Error(t, err)
+	require.Len(t, results.Operations, 5)
+	assert.Equal(t, 4, call, "invalid op must not reach the sandbox")
+
+	assert.True(t, results.Operations[0].Success)
+	assert.Equal(t, 200, results.Operations[0].HTTPStatus)
+	assert.Contains(t, results.Operations[0].ResponseBody, "Bearer stub")
+
+	assert.False(t, results.Operations[1].Success)
+	assert.Equal(t, 403, results.Operations[1].HTTPStatus)
+	assert.Len(t, results.Operations[1].ResponseBody, httpProbeBodyLimit)
+	assert.Contains(t, results.Operations[1].Error, "HTTP 403")
+
+	assert.False(t, results.Operations[2].Success)
+	assert.Zero(t, results.Operations[2].HTTPStatus)
+	assert.Contains(t, results.Operations[2].Error, "ECONNREFUSED")
+
+	assert.False(t, results.Operations[3].Success)
+	assert.Contains(t, results.Operations[3].Error, "unreadable output")
+
+	assert.False(t, results.Operations[4].Success)
+	assert.Contains(t, results.Operations[4].Error, "GET or POST")
+}
+
+func TestExecuteBehaviourOp_HTTPProbeExecError(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "", 0, errors.New("boom")
+	}}
+	err := executeBehaviourOp(rt, "sb", "/sandbox/workspace/repo", BehaviourOperation{Op: "http_probe", Args: "GET https://gw.example/ TOK"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "http_probe exec")
+}
+
+// TestExecuteHTTPProbe_RealNode runs the generated command through a real
+// shell and node against a local server, proving the fixed script reads
+// its argument, sends the bearer from the named variable and records the
+// status and capped body.
+func TestExecuteHTTPProbe_RealNode(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("content-type", "application/json")
+		if r.URL.Path == "/denied" {
+			w.WriteHeader(http.StatusForbidden)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"method":        r.Method,
+			"authorization": r.Header.Get("Authorization"),
+			"content_type":  r.Header.Get("Content-Type"),
+			"body":          string(body),
+			"pad":           strings.Repeat("p", 5000),
+		})
+	}))
+	defer srv.Close()
+
+	var env []string
+	for _, kv := range os.Environ() {
+		k := strings.ToUpper(strings.SplitN(kv, "=", 2)[0])
+		if strings.HasSuffix(k, "_PROXY") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "PROBE_TOKEN=placeholder-value")
+	rt := DummyRuntime{ExecFn: func(_, cmd string, _ time.Duration) (string, string, int, error) {
+		c := exec.Command("sh", "-c", cmd)
+		c.Env = env
+		var stdout, stderr bytes.Buffer
+		c.Stdout, c.Stderr = &stdout, &stderr
+		err := c.Run()
+		code := 0
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			code, err = exitErr.ExitCode(), nil
+		}
+		return stdout.String(), stderr.String(), code, err
+	}}
+
+	status, body, err := executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "POST " + srv.URL + `/ok PROBE_TOKEN {"model": "echo"}`})
+	require.NoError(t, err)
+	assert.Equal(t, 200, status)
+	assert.Len(t, body, httpProbeBodyLimit)
+	assert.Contains(t, body, `"authorization":"Bearer placeholder-value"`)
+	assert.Contains(t, body, `"content_type":"application/json"`)
+	assert.Contains(t, body, `"method":"POST"`)
+
+	status, _, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/denied PROBE_TOKEN"})
+	require.Error(t, err)
+	assert.Equal(t, 403, status)
+
+	_, _, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/ok UNSET_PROBE_VAR"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "UNSET_PROBE_VAR is unset")
 }

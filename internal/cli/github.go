@@ -399,6 +399,13 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			Mode:    "100644",
 		})
 	}
+	removeModelsFile, err := gatewayModelsFileRemoval(ctx, client, owner, repo, cfg)
+	if err != nil {
+		return err
+	}
+	if removeModelsFile {
+		files = append(files, forge.TreeFile{Path: gatewayModelsFileRepoPath, Delete: true})
+	}
 
 	// Mint/inference values are stored in layered config (ADR 0069
 	// Decision 1). Repo variables/secrets are ALSO written for backward
@@ -499,6 +506,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		for _, f := range files {
+			if f.Delete {
+				printer.StepDone(fmt.Sprintf("Would delete: %s", f.Path))
+				continue
+			}
 			printer.StepDone(fmt.Sprintf("Would commit: %s (%d bytes)", f.Path, len(f.Content)))
 		}
 		if signOffTrailer != "" {

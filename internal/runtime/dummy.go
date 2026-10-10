@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -44,6 +45,13 @@ type BehaviourOperation struct {
 	Op          string `yaml:"op" json:"op"`
 	Args        string `yaml:"args" json:"args"`
 	Content     string `yaml:"content,omitempty" json:"content,omitempty"`
+	// http_probe fields (#8280). Fixed fields only — the op is not a
+	// general HTTP client. When they are empty, http_probe parses Args as
+	// "METHOD URL HEADER_ENV [BODY]" (see ParseHTTPProbeArgs).
+	Method    string `yaml:"method,omitempty" json:"method,omitempty"`
+	URL       string `yaml:"url,omitempty" json:"url,omitempty"`
+	HeaderEnv string `yaml:"header_env,omitempty" json:"header_env,omitempty"`
+	Body      string `yaml:"body,omitempty" json:"body,omitempty"`
 }
 
 // BehaviourScript is the YAML committed to .fullsend/behaviour/current-scenario.yaml.
@@ -56,6 +64,10 @@ type BehaviourOpResult struct {
 	Description string `json:"description"`
 	Success     bool   `json:"success"`
 	Error       string `json:"error,omitempty"`
+	// HTTPStatus and ResponseBody are recorded by http_probe only. The
+	// body is capped at httpProbeBodyLimit bytes.
+	HTTPStatus   int    `json:"http_status,omitempty"`
+	ResponseBody string `json:"response_body,omitempty"`
 }
 
 // BehaviourResults is written to output/behaviour-results.json in the sandbox.
@@ -209,7 +221,13 @@ func executeBehaviourScript(ctx context.Context, rt DummyRuntime, sandboxName, r
 			return results, fmt.Errorf("behaviour script cancelled: %w", err)
 		}
 		res := BehaviourOpResult{Description: op.Description}
-		if err := executeBehaviourOp(rt, sandboxName, repoDir, op); err != nil {
+		var err error
+		if op.Op == "http_probe" {
+			res.HTTPStatus, res.ResponseBody, err = executeHTTPProbe(rt, sandboxName, op)
+		} else {
+			err = executeBehaviourOp(rt, sandboxName, repoDir, op)
+		}
+		if err != nil {
 			res.Success = false
 			res.Error = err.Error()
 			if firstErr == nil {
@@ -363,6 +381,9 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return fmt.Errorf("assert_json %s at %s: %s", jsonPath, path, strings.TrimSpace(stderr))
 		}
 		return nil
+	case "http_probe":
+		_, _, err := executeHTTPProbe(rt, sandboxName, op)
+		return err
 	default:
 		return fmt.Errorf("unknown op %q", op.Op)
 	}
@@ -421,6 +442,144 @@ func validateHTTPURL(raw string) error {
 		return fmt.Errorf("url_get requires a host")
 	}
 	return nil
+}
+
+// httpProbeBodyLimit caps the response body http_probe records.
+const httpProbeBodyLimit = 4096
+
+// httpProbeScript is the fixed node program http_probe runs in the
+// sandbox. It runs through node so the request leaves through a binary
+// the inference profiles allow (`**/node`). Every caller-supplied value
+// arrives as one base64-encoded JSON argument — nothing is interpolated
+// into the code or the shell, and base64 never starts with "-", so node
+// cannot read the argument as an option. The bearer value is read from
+// the named environment variable inside the sandbox (the OpenShell
+// placeholder the proxy replaces), never passed on the command line. It
+// prints one JSON line: {"status":N,"body":"..."} or {"error":"..."}.
+const httpProbeScript = `const p=JSON.parse(Buffer.from(process.argv[1],"base64").toString("utf8"));` +
+	`const t=process.env[p.header_env];` +
+	`if(!t){console.log(JSON.stringify({error:"environment variable "+p.header_env+" is unset or empty"}));process.exit(3);}` +
+	`const h={authorization:"Bearer "+t};` +
+	`if(p.body){h["content-type"]="application/json";}` +
+	`fetch(p.url,{method:p.method,headers:h,body:p.body?p.body:undefined,redirect:"manual",signal:AbortSignal.timeout(45000)})` +
+	`.then(async r=>{const b=Buffer.from(await r.arrayBuffer());console.log(JSON.stringify({status:r.status,body:b.subarray(0,4096).toString("utf8")}));})` +
+	`.catch(e=>{console.log(JSON.stringify({error:String((e&&e.cause)||e)}));process.exit(2);});`
+
+// HTTPProbe holds the validated fields of one http_probe op.
+type HTTPProbe struct {
+	Method    string `json:"method"`
+	URL       string `json:"url"`
+	HeaderEnv string `json:"header_env"`
+	Body      string `json:"body,omitempty"`
+}
+
+// ParseHTTPProbeArgs splits the compact table form "METHOD URL HEADER_ENV
+// [BODY]" (whitespace-separated; BODY is the untouched remainder, so it may
+// contain spaces) and validates the result.
+func ParseHTTPProbeArgs(args string) (HTTPProbe, error) {
+	rest := strings.TrimSpace(args)
+	var fields [3]string
+	for i := range fields {
+		if rest == "" {
+			return HTTPProbe{}, fmt.Errorf("http_probe args must be METHOD URL HEADER_ENV [BODY]")
+		}
+		idx := strings.IndexAny(rest, " \t")
+		if idx < 0 {
+			fields[i], rest = rest, ""
+		} else {
+			fields[i], rest = rest[:idx], strings.TrimSpace(rest[idx:])
+		}
+	}
+	p := HTTPProbe{Method: fields[0], URL: fields[1], HeaderEnv: fields[2], Body: rest}
+	return p, p.Validate()
+}
+
+// httpProbeFromOp prefers the op's explicit fields and falls back to Args.
+func httpProbeFromOp(op BehaviourOperation) (HTTPProbe, error) {
+	if op.Method == "" && op.URL == "" && op.HeaderEnv == "" && op.Body == "" {
+		return ParseHTTPProbeArgs(op.Args)
+	}
+	p := HTTPProbe{Method: strings.TrimSpace(op.Method), URL: strings.TrimSpace(op.URL), HeaderEnv: strings.TrimSpace(op.HeaderEnv), Body: op.Body}
+	return p, p.Validate()
+}
+
+// Validate checks the probe's fixed fields.
+func (p HTTPProbe) Validate() error {
+	switch p.Method {
+	case "GET", "POST":
+	default:
+		return fmt.Errorf("http_probe method must be GET or POST, got %q", p.Method)
+	}
+	if p.URL == "" {
+		return fmt.Errorf("http_probe requires a url")
+	}
+	if err := validateHTTPURL(p.URL); err != nil {
+		return fmt.Errorf("http_probe: %w", err)
+	}
+	if !envVarNamePattern.MatchString(p.HeaderEnv) {
+		return fmt.Errorf("http_probe invalid header_env %q", p.HeaderEnv)
+	}
+	if p.Method == "GET" && p.Body != "" {
+		return fmt.Errorf("http_probe body is only allowed with POST")
+	}
+	return nil
+}
+
+// httpProbeCommand builds the sandbox command for a validated probe.
+// NODE_USE_ENV_PROXY makes node's fetch honour the sandbox's proxy
+// variables (a no-op where egress is transparent).
+func httpProbeCommand(p HTTPProbe) (string, error) {
+	payload, err := json.Marshal(p)
+	if err != nil {
+		return "", fmt.Errorf("http_probe encode: %w", err)
+	}
+	arg := base64.StdEncoding.EncodeToString(payload)
+	return fmt.Sprintf("NODE_USE_ENV_PROXY=1 node -e %s %s", shellQuote(httpProbeScript), shellQuote(arg)), nil
+}
+
+// executeHTTPProbe runs one http_probe op and returns the HTTP status and
+// the (capped) response body. The op succeeds only on a 2xx response; a
+// non-2xx status is still recorded so scenarios can assert on it (for
+// example a 403 from the gateway versus a refusal by the egress proxy).
+func executeHTTPProbe(rt DummyRuntime, sandboxName string, op BehaviourOperation) (int, string, error) {
+	p, err := httpProbeFromOp(op)
+	if err != nil {
+		return 0, "", err
+	}
+	cmd, err := httpProbeCommand(p)
+	if err != nil {
+		return 0, "", err
+	}
+	stdout, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 60*time.Second)
+	if err != nil {
+		return 0, "", fmt.Errorf("http_probe exec: %w", err)
+	}
+	var out struct {
+		Status int    `json:"status"`
+		Body   string `json:"body"`
+		Error  string `json:"error"`
+	}
+	line := strings.TrimSpace(stdout)
+	if i := strings.LastIndex(line, "\n"); i >= 0 {
+		line = line[i+1:]
+	}
+	if jsonErr := json.Unmarshal([]byte(line), &out); jsonErr != nil {
+		return 0, "", fmt.Errorf("http_probe %s %s: exit %d, unreadable output: %s", p.Method, p.URL, exitCode, strings.TrimSpace(stderr))
+	}
+	if len(out.Body) > httpProbeBodyLimit {
+		out.Body = out.Body[:httpProbeBodyLimit]
+	}
+	if out.Error != "" || exitCode != 0 {
+		msg := out.Error
+		if msg == "" {
+			msg = strings.TrimSpace(stderr)
+		}
+		return out.Status, out.Body, fmt.Errorf("http_probe %s %s failed: %s", p.Method, p.URL, msg)
+	}
+	if out.Status < 200 || out.Status > 299 {
+		return out.Status, out.Body, fmt.Errorf("http_probe %s %s returned HTTP %d", p.Method, p.URL, out.Status)
+	}
+	return out.Status, out.Body, nil
 }
 
 func resolveWriteFixture(op BehaviourOperation) (dest string, content string, err error) {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 )
 
@@ -152,4 +154,25 @@ func loadGatewayModelsFile(cfg githubSetupConfig) ([]byte, error) {
 		return nil, fmt.Errorf("--inference-gateway-models-file %q: %w", p, err)
 	}
 	return data, nil
+}
+
+// gatewayModelsFileRemoval reports whether setup should delete
+// gatewayModelsFileRepoPath in its commit: the flags clear the block
+// (gatewayClearRequested) and the repository holds the file setup
+// committed. A missing file is not an error — there is nothing to remove.
+func gatewayModelsFileRemoval(ctx context.Context, client forge.Client, owner, repo string, cfg githubSetupConfig) (bool, error) {
+	if !gatewayFlagsChanged(cfg) {
+		return false, nil
+	}
+	g, err := cfg.gatewayBlock()
+	if err != nil || !gatewayClearRequested(cfg, g) {
+		return false, nil
+	}
+	if _, err := client.GetFileContent(ctx, owner, repo, gatewayModelsFileRepoPath); err != nil {
+		if forge.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking %s on %s/%s: %w", gatewayModelsFileRepoPath, owner, repo, err)
+	}
+	return true, nil
 }

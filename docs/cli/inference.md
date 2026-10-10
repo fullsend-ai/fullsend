@@ -16,6 +16,7 @@ Manage the inference credentials agent runs use. `provision`, `deprovision` and 
 | `fullsend inference openai request <owner/repo>[,…]` | Generate WIF provider/mapping request for OpenAI admin |
 | `fullsend inference openai import [reply.json]` | Import OpenAI WIF identifiers into config |
 | `fullsend inference openai status <owner/repo>` | Check OpenAI WIF configuration and exchange status |
+| `fullsend inference gateway status <owner/repo>` | Check inference gateway configuration and authentication |
 
 ## `inference provision`
 
@@ -159,6 +160,19 @@ Prints the resolved OpenAI WIF identifiers and their source (config layer or env
 
 ```bash
 fullsend inference openai status <owner/repo> \
+  [--fullsend-dir ".fullsend"]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--fullsend-dir` | `.fullsend` | Path to the .fullsend configuration directory |
+
+## `inference gateway status`
+
+Prints the resolved `inference.gateway` block ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)) — `url`, `audience` and the model list (`models` or `models_file`) — with the config layer each comes from (`config.yaml` or `config.base.yaml`), and flags a partial block (url or audience missing). The block has no environment-variable override. When run inside a GitHub Actions job in `<owner/repo>` with `id-token: write`, fetches one GitHub OIDC assertion for the configured audience, reports its expiry (`exp`, lifetime, time left), and sends one authenticated request (`POST <url>/v1/chat/completions` with an empty message list and the assertion as a bearer token), reporting only the HTTP status: 401 or 403 means the gateway refused the assertion, 3xx (redirects are not followed) and 5xx are errors, and any other status means the assertion was accepted. The assertion is never printed. Outside Actions, it says so and stops at the config checks.
+
+```bash
+fullsend inference gateway status <owner/repo> \
   [--fullsend-dir ".fullsend"]
 ```
 

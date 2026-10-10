@@ -57,8 +57,10 @@ Given a dummy agent that would:
 | Column | Meaning |
 |--------|---------|
 | `description` | Human label matched by assertion steps |
-| `op` | `read_file`, `url_get`, `write_fixture`, `assert_env`, `assert_file`, `assert_json`, `checkout_branch` |
+| `op` | `read_file`, `url_get`, `write_fixture`, `assert_env`, `assert_file`, `assert_json`, `checkout_branch`, `http_probe` |
 | `args` | Op-specific; see below |
+
+**`http_probe`:** `METHOD URL HEADER_ENV [BODY]` — `GET` or `POST` (body only with `POST`), sent through `node` from inside the sandbox with `Authorization: Bearer $HEADER_ENV`. `<gateway>` expands to `E2E_INFERENCE_GATEWAY_URL`. The HTTP status and the first 4 KiB of the response body are recorded in `behaviour-results.json`; the op succeeds only on a 2xx. Assert with `the agent's probe "<description>" returned HTTP <code>` and `... response contains|does not contain "<text>"`.
 
 **`write_fixture`:** `dest_path, fixtures/...` — content lives in `e2e/behaviour/fixtures/`, embedded in the committed scenario script at `.fullsend/behaviour/current-scenario.yaml`.
 
