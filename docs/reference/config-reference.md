@@ -88,6 +88,11 @@ inference:
     audience: ""                     # OpenAI WIF audience
     identity_provider_id: ""         # OpenAI WIF identity provider ID
     service_account_id: ""           # OpenAI WIF service account ID
+  gateway:                           # Inference gateway credential route (ADR 0137)
+    url: ""                          # Gateway URL (https; plain http only for a loopback test host)
+    audience: ""                     # OIDC audience the runner requests for the gateway
+    models: {}                       # Inline model list: id -> {api, compat, contextWindow, maxTokens}
+    models_file: ""                  # Or: repository path to a pi-inference-gateway config file
 
 # ── Model aliases ────────────────────────────────────────────
 models:
@@ -282,6 +287,56 @@ independently through the layered config system (an overlay can override
   `fullsend repos install` checks the same sources for repositories whose
   `inference.auth` is `openai-wif`. See
   [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+- **`gateway`** — a self-hosted, OpenAI/Anthropic-compatible inference
+  gateway that validates the job's forge OIDC token directly
+  ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). Models
+  with the `gateway/` prefix use this route. The runner does not act on this
+  block yet: `fullsend` parses and validates it, and the runner support for
+  the route lands in later changes (#8280). Fields:
+  - `url` — the gateway URL. Must be `https` (plain `http` only for a loopback test host), with no credentials, query or
+    fragment.
+  - `audience` — the OIDC audience the runner requests. The token is valid
+    only at the gateway.
+  - `models` — optional inline model list, a map of model id to settings:
+    `api` (one of `openai-responses`, `anthropic-messages`,
+    `openai-completions`), and optional `compat`, `contextWindow` and
+    `maxTokens`. `compat` holds pi request-feature flags: each value is a
+    boolean, string or number, a flag that pi-inference-gateway v0.1.1
+    knows must have that flag's type for the model's `api`, list-valued
+    flags such as `allowedFallbackModels` are refused, and an unknown flag
+    whose name looks like a credential or header is refused.
+  - `models_file` — optional repository path, for example
+    `.fullsend/inference-gateway.json`, to a file in the
+    [pi-inference-gateway config format](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file).
+    It must hold exactly one entry, `providers.gateway`, carrying only
+    `models`, `include`, `exclude` and `defaultApi`, and every model must
+    set its own `api`: pi runs offline, and the extension offers a
+    configured model only when its entry names an `api`. Per-model values
+    follow the extension's types: `compat` as for inline models,
+    `contextWindow` and `maxTokens` positive whole numbers, `cost` only
+    `input`, `output`, `cacheRead` and `cacheWrite` as non-negative
+    numbers, and `thinkingLevelMap` thinking levels mapped to a string or
+    `null`. Duplicate JSON keys are refused. These checks validate the
+    file's shape; they are not secret detection. `fullsend github setup`
+    commits the file as written, so keep credentials out of free-text
+    values such as model names. `include`,
+    `exclude` and `defaultApi` only apply to models discovered from the
+    gateway, so they have no effect on a pi run. A file that sets
+    `baseUrl`, `baseUrlEnv`, a credential key (`apiKey*`, `tokenFile`,
+    `username*`, `password*`), `headers`, `authHeader`, `modelsPath`,
+    `discovery` or `fallbackModels` is refused: the runner owns those.
+
+  `url` and `audience` are all or none: `fullsend github setup` refuses to
+  leave a block with only one of them, and the runner support for the route
+  will refuse such a block when it lands. `models` and `models_file` are mutually
+  exclusive. A pi run on a `gateway/` model needs one of them, because pi
+  runs offline and cannot discover the gateway's models. `url` and
+  `audience` layer independently; the model list (either form) is one unit,
+  and a layer that sets it replaces the inherited list. There is no
+  runner-variable override for this block. `fullsend github setup
+  --inference-gateway-*` writes it and changes only the keys you pass, so
+  a repository can add its models under a `url` and `audience` inherited
+  from `config.base.yaml`.
 
 For setup instructions, see
 [Getting Inference](../guides/getting-started/getting-inference.md).
