@@ -251,6 +251,210 @@ stored as repository secrets `TEST_ACTOR_WRITE_PAT`,
 `TEST_ACTOR_TRIAGE_PAT`, and `TEST_ACTOR_OUTSIDER_PAT` on
 `fullsend-ai/fullsend`.
 
+## Inference gateway test gateway
+
+The inference gateway behaviour tests
+([#8280](https://github.com/fullsend-ai/fullsend/issues/8280),
+[ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md)) call a
+durable [agentgateway](https://github.com/agentgateway/agentgateway) v1.6.0
+instance on Cloud Run in the E2E GCP project. The gateway accepts GitHub
+Actions OIDC tokens from the pool repositories only.
+`hack/setup-e2e-inference-gateway.sh` creates it, or adopts an existing one
+with the same names, and keeps it in sync. The scenarios stay behind
+`@requires:capability:inference-gateway` until the gateway exists and the
+capability is declared.
+
+### Who runs it, and when
+
+An E2E project admin runs the script from a workstation with `gcloud`
+(authenticated), `skopeo`, `jq` and `curl`. Run it again after any of these
+changes:
+
+- **Pool change:** a new pool org, or a different `DefaultPoolSize`
+  (`pkg/behaviourtest/drivers/install/driver.go`). Edit `POOL_ORGS` or
+  `POOL_REPOS` at the top of the script.
+- **agentgateway bump:** change `AGW_VERSION`.
+- **Model change:** edit `VERTEX_MODELS`.
+
+The operator needs these roles on the project:
+
+| IAM role | Purpose |
+|----------|---------|
+| `roles/serviceusage.serviceUsageViewer` | Check that the required APIs are enabled |
+| `roles/run.admin` | Create and update the Cloud Run service and allow unauthenticated invocation |
+| `roles/secretmanager.admin` | Create the config and stub key secrets, add versions, grant per-secret access |
+| `roles/artifactregistry.admin` | Create the repository, copy the agentgateway image into it and read its digest |
+| `roles/iam.serviceAccountAdmin` | Create the runtime service account |
+| `roles/iam.serviceAccountUser` | Deploy the service as the runtime service account |
+| `roles/resourcemanager.projectIamAdmin` | Read the project IAM policy on every run, and add or remove the `roles/aiplatform.user` grant |
+
+### Check it, then run it
+
+The project comes from `--project` or `E2E_GCP_PROJECT_ID`, and the region
+defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
+`--with-vertex` on every run. A run with neither `--with-vertex` nor
+`--without-vertex` stops rather than remove them.
+
+1. Preview with `--dry-run`. It only reads, prints what it would change, and
+   exits 3 if anything would change:
+
+   ```bash
+   hack/setup-e2e-inference-gateway.sh --project "$E2E_GCP_PROJECT_ID" --with-vertex --dry-run
+   ```
+
+   Output against the durable gateway, with the project ID, URL, revision and config hash replaced
+   by example values. "No changes" means a real run would be a no-op:
+
+   ```text
+   ==> Dry run (read only) for the e2e inference gateway in project example-project (us-east5)
+
+   ==> Checking required APIs...
+       OK: required APIs are enabled
+
+   ==> Artifact Registry repository fullsend-e2e-gateway...
+       OK: repository fullsend-e2e-gateway exists
+
+   ==> agentgateway v1.6.0 image...
+       upstream ghcr.io/agentgateway/agentgateway:v1.6.0 is sha256:9d3e6044ddcdc0878b1787f77bd401252b95e22684203fb5e874c4c42d2ed90c
+       OK: us-east5-docker.pkg.dev/example-project/fullsend-e2e-gateway/agentgateway:v1.6.0 matches upstream
+
+   ==> Service account fullsend-e2e-gateway@example-project.iam.gserviceaccount.com...
+       OK: service account exists
+       OK: service account has roles/aiplatform.user
+
+   ==> Secrets...
+       rendered config sha256 <sha256 of the rendered config>
+       OK: secret fullsend-e2e-gateway-config is up to date
+       OK: service account can read secret fullsend-e2e-gateway-config
+       OK: secret fullsend-e2e-gateway-stub-upstream-key is up to date
+       OK: service account can read secret fullsend-e2e-gateway-stub-upstream-key
+
+   ==> Cloud Run service fullsend-e2e-gateway...
+       OK: service is up to date
+       OK: all traffic goes to the latest revision, with no tags
+
+   ==> Verifying...
+       service Ready condition: True, revision fullsend-e2e-gateway-00009-abc
+       no token: GET /v1/models -> HTTP 401 text/plain
+         body: authentication failure: no bearer token found
+       x-api-key only: GET /v1/models -> HTTP 401 text/plain
+         body: authentication failure: no bearer token found
+       non-JWT bearer: GET /v1/models -> HTTP 401 text/plain
+         body: authentication failure: the token header is malformed: Error(InvalidToken)
+
+   ==> No changes: everything was already in place.
+
+   ==> Behaviour test settings (set the URL as a variable in the dev and stage
+       environments; it embeds the project number, so never commit it):
+
+       E2E_INFERENCE_GATEWAY_URL=https://fullsend-e2e-gateway-abc123-ul.a.run.app
+       E2E_INFERENCE_GATEWAY_AUDIENCE=fullsend-e2e-gateway
+
+       A positive check needs a GitHub Actions OIDC token for a pool
+       repository; the inference-gateway behaviour test covers it.
+   ```
+
+2. Apply the changes:
+
+   ```bash
+   hack/setup-e2e-inference-gateway.sh --project "$E2E_GCP_PROJECT_ID" --with-vertex
+   ```
+
+   Each step prints `OK:` for what is already in place and `CHANGED:` for
+   what it did. A config change adds one config secret version and rolls one
+   Cloud Run revision. The new version is live for any instance that reads
+   the mounted file as soon as it is added; the new revision makes sure the
+   gateway restarts on it. A serving revision older than the latest secret
+   version is always rolled, which also finishes a rollout an earlier run
+   left incomplete. Any other
+   difference in the service's settings triggers a redeploy, and the script
+   names the setting that differed. Traffic pinned to an older revision, or
+   an older revision reachable through a tag, is moved back to the latest one.
+
+   > **Not executed:** this real run has not happened yet. The durable
+   > gateway was deployed by hand with the same names and settings, and the
+   > dry run above shows the script adopts it unchanged.
+
+The 401s must be `text/plain` from agentgateway. An HTML 401 comes from
+Cloud Run's invoker check, which means `--no-invoker-iam-check` is missing,
+and the script fails. The probes need no token, so a positive check is left
+to the behaviour test, which mints a GitHub Actions OIDC token for a pool
+repository.
+
+### What it manages
+
+Every resource is named `fullsend-e2e-gateway*`. Those names are reserved for
+this script: it adopts resources that already have them and touches nothing
+else. What it creates carries the marker `purpose=fullsend-e2e-gateway`: a
+label, or the description of the service account. Adopted resources keep
+whatever they had.
+
+| Resource | Name | Settings |
+|----------|------|----------|
+| Artifact Registry repository | `fullsend-e2e-gateway` | Holds `ghcr.io/agentgateway/agentgateway:v1.6.0`, copied unchanged with `skopeo copy --all --preserve-digests`. Every run checks that the copy's digest matches upstream, and refuses to continue if it does not. |
+| Service account | `fullsend-e2e-gateway@<project>.iam.gserviceaccount.com` | Runtime identity. With `--with-vertex`, it holds `roles/aiplatform.user`. |
+| Secret | `fullsend-e2e-gateway-config` | The generated agentgateway config. |
+| Secret | `fullsend-e2e-gateway-stub-upstream-key` | The stub upstream key, a fixed non-secret value: `e2e-stub-upstream-key`. |
+| Cloud Run service | `fullsend-e2e-gateway` | `--allow-unauthenticated --no-invoker-iam-check`, 1 vCPU / 512 MiB, at most 1 instance, label `purpose=fullsend-e2e-gateway`. Deployed by the verified image digest; every run checks that the serving revision runs that image. Both secrets are mounted as files at `:latest`. |
+
+The service account gets `roles/secretmanager.secretAccessor` on each secret,
+not on the project.
+
+The generated config (print it with `--print-config`):
+
+- validates tokens with `jwtAuth` in `strict` mode. The issuer is
+  `https://token.actions.githubusercontent.com`, its JWKS is fetched from
+  GitHub, and the only accepted audience is `fullsend-e2e-gateway`. The
+  caller's token is never forwarded upstream; that is agentgateway's default.
+- authorises each model with an exact-match list of `jwt.repository` values.
+  The list covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
+  `halfsend-12` and in the STAGE org `halfsend`: 156 repositories. It
+  matches names, so keep the pool orgs registered: whoever owns a pool org
+  name can call the gateway.
+- strips `x-api-key` from every request it sends upstream.
+- serves these models:
+
+  | Model | Allowed for | Upstream |
+  |-------|-------------|----------|
+  | `claude-haiku-5-5`, `gemini-3.8-flash` (`--with-vertex` only) | The pool | Vertex AI, location `global`, as the runtime service account |
+  | `echo` | The pool | A header-echo listener in the same container. The gateway sends it the stub key. Its answer reports whether that key, and not the caller's credential, arrived, so the custody check can assert it. |
+  | `echo-denied` | Only `fullsend-e2e-gateway-outside/not-a-pool-repo`, which is outside the pool | The same echo listener. A behaviour test calls it from a pool repository and expects 403. |
+
+### Wiring it into the behaviour tests
+
+The gateway URL embeds the E2E project number, so it is never committed. A
+maintainer wires it in by hand; this script changes no workflow files:
+
+1. Set the printed URL as the variable `E2E_INFERENCE_GATEWAY_URL` in the
+   `dev` and `stage` GitHub environments. `E2E_INFERENCE_GATEWAY_AUDIENCE`
+   defaults to `fullsend-e2e-gateway` and needs setting only if it changes.
+2. Pass the variable to the `behaviour` job in `e2e.yml`.
+3. Once a behaviour test run passes with
+   `BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway`, declare
+   `inference-gateway` in `BEHAVIOUR_CAPABILITIES` (`Makefile`) and in the
+   `behaviour` job.
+
+### Removing it
+
+```bash
+hack/setup-e2e-inference-gateway.sh --project "$E2E_GCP_PROJECT_ID" --delete
+```
+
+`--delete` asks you to type the project ID (`--yes` skips the prompt). It
+then removes the resources above, plus the `roles/aiplatform.user` grant. It
+checks first and stops without deleting anything when:
+
+- a resource lacks the `purpose=fullsend-e2e-gateway` marker, so the script may
+  not have created it. The durable gateway was deployed by hand and adopted, so
+  removing it needs `--include-unlabelled`.
+- a service of that name runs in a region other than `--region`, or the
+  service listing reports an unreachable region. The secrets and the service
+  account are global, so a mistyped region must not remove them from under a
+  running gateway.
+
+> **Not executed:** `--delete` has not been run against the durable gateway,
+> which stays up.
+
 ## CI authorization
 
 Pull requests trigger e2e via `pull_request_target` in
