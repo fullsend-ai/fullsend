@@ -1825,3 +1825,54 @@ func TestRunOpenAIRefresh_SettleTimeoutFailsClosed(t *testing.T) {
 	assert.Contains(t, buf.String(), "stopped")
 	assert.NotContains(t, buf.String(), "attempt 2/")
 }
+
+// On the OpenAI route too, a placeholder read that fails after the
+// rotation fails the route closed instead of rotating again.
+func TestRunOpenAIRefresh_ReadFailureAfterRotationFailsClosed(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	binDir := t.TempDir()
+	argsLog := filepath.Join(binDir, "args")
+	stage := filepath.Join(binDir, "stage")
+	// The baseline read answers v111; after the provider update every read fails.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(argsLog) + "\n" +
+		"case \"$1 $2\" in 'provider update') touch " + shellQuoteForTest(stage) + "; exit 0 ;; esac\n" +
+		"case \"$*\" in *'printf %s'*) if [ -e " + shellQuoteForTest(stage) + " ]; then exit 1; fi; printf '" + ph("v111_OPENAI_API_KEY") + "'; exit 0 ;; esac; exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldPoll := openAIPlaceholderPoll
+	openAIPlaceholderPoll = time.Millisecond
+	t.Cleanup(func() { openAIPlaceholderPoll = oldPoll })
+	var expiries []time.Time
+	origExpiry := setProviderCredentialExpiryFn
+	setProviderCredentialExpiryFn = func(_ context.Context, _, _ string, at time.Time) error {
+		expiries = append(expiries, at)
+		return nil
+	}
+	t.Cleanup(func() { setProviderCredentialExpiryFn = origExpiry })
+
+	held := time.Now().Truncate(time.Second)
+	up := &atomic.Bool{}
+	up.Store(true)
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "static", expiresAt: held,
+		sandbox: "fs-x", authSeed: "seed auth.json", authFile: "/sandbox/pi-config/auth.json", sandboxUp: up}
+	var buf syncBuffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(context.Background(), h, ui.New(&buf))
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not stop after the failed read")
+	}
+	var rotations int
+	for _, l := range readArgLines(t, argsLog) {
+		if strings.HasPrefix(l, "provider update openai-abc") {
+			rotations++
+		}
+	}
+	assert.Equal(t, 1, rotations, "no second rotation after the failed read")
+	assert.Equal(t, []time.Time{held}, expiries)
+	assert.Contains(t, buf.String(), "not observed in the sandbox")
+}

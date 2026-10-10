@@ -12,6 +12,7 @@ import (
 	"github.com/cucumber/godog"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -150,7 +151,7 @@ func givenTestInferenceGatewayAPIKey(w *world.World) error {
 		return godog.ErrSkip
 	}
 	registerSecretForms(key)
-	return commitInferenceGateway(w, map[string]any{"url": gatewayURL, "auth": "api-key", "models": testGatewayModels()})
+	return commitInferenceGateway(w, map[string]any{"url": gatewayURL, "auth": config.GatewayAuthAPIKey, "models": testGatewayModels()})
 }
 
 // commitInferenceGateway commits gateway as the enrolled repo's

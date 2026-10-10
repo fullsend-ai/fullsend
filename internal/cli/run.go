@@ -1393,19 +1393,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	needsGateway := parentNeedsGateway || len(gatewayChildren) > 0
 	gatewayPlan, err := planGatewayRoute(runCfg, runtimeBackend, sandboxName, gatewayModels, needsGateway)
-	if err == nil && gatewayPlan != nil {
+	if err != nil {
+		printer.StepFail("Inference gateway route unavailable")
+		return err
+	}
+	if gatewayPlan != nil {
 		iterations := 1
 		if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
 			iterations = h.ValidationLoop.MaxIterations
 		}
 		gatewayPlan.apiKeyLifetime = gatewayAPIKeyLifetimeFor(iterations, time.Duration(effectiveTimeoutMinutes(h))*time.Minute)
-	}
-	if err != nil {
-		printer.StepFail("Inference gateway route unavailable")
-		return err
-	}
-	if gatewayPlan != nil && gatewayPlan.prepared != nil {
-		defer gatewayPlan.prepared.ClearGatewayRun(sandboxName)
+		if gatewayPlan.prepared != nil {
+			defer gatewayPlan.prepared.ClearGatewayRun(sandboxName)
+		}
 	}
 	// runScopedProviders maps a harness provider name to the run-scoped
 	// instance created for it; sandbox creation attaches the latter.

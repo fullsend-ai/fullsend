@@ -382,7 +382,8 @@ func TestRouteCredentialKeysMatchRuntimeSeeds(t *testing.T) {
 // gatewayRecoveryStub puts an openshell on PATH whose placeholder read
 // answers nothing until dir/base exists, then the old generation, and the
 // new one once the provider was updated and dir/flip exists; a read after
-// the update touches dir/settling. Seed execs fail while dir/seedfail
+// the update touches dir/settling (and fails while dir/readfail exists).
+// Seed execs fail while dir/seedfail
 // exists and verify execs succeed; a provider update touches dir/updated.
 func gatewayRecoveryStub(t *testing.T) string {
 	t.Helper()
@@ -391,7 +392,7 @@ func gatewayRecoveryStub(t *testing.T) string {
 	stubOpenshell(t, "case \"$*\" in\n"+
 		"  *grep*) exit 0 ;;\n"+
 		"  *inference-gateway.token*) if test -f "+q("seedfail")+"; then exit 1; fi; exit 0 ;;\n"+
-		"  *INFERENCE_GATEWAY_API_KEY:-*) if test -f "+q("updated")+"; then touch "+q("settling")+"; fi; if test -f "+q("updated")+" && test -f "+q("flip")+"; then printf '"+ph("v222_INFERENCE_GATEWAY_API_KEY")+"'; elif test -f "+q("base")+"; then printf '"+ph("v111_INFERENCE_GATEWAY_API_KEY")+"'; fi; exit 0 ;;\n"+
+		"  *INFERENCE_GATEWAY_API_KEY:-*) if test -f "+q("updated")+" && test -f "+q("readfail")+"; then exit 1; fi; if test -f "+q("updated")+"; then touch "+q("settling")+"; fi; if test -f "+q("updated")+" && test -f "+q("flip")+"; then printf '"+ph("v222_INFERENCE_GATEWAY_API_KEY")+"'; elif test -f "+q("base")+"; then printf '"+ph("v111_INFERENCE_GATEWAY_API_KEY")+"'; fi; exit 0 ;;\n"+
 		"  *'provider update'*) touch "+q("updated")+"; exit 0 ;;\n"+
 		"esac\nexit 0")
 	return dir
@@ -632,4 +633,40 @@ func TestRunGatewayRefresh_SettleTimeoutFailsClosed(t *testing.T) {
 func TestHandOffTimeout_CoversEveryAttempt(t *testing.T) {
 	want := openAIPlaceholderSettle + openAIPlaceholderPoll + time.Duration(1+2*reseedSeedAttempts)*openAIPlaceholderExecTimeout
 	assert.Equal(t, want, handOffTimeout())
+}
+
+// A placeholder read that fails after the rotation is no evidence of the
+// new generation either: the route fails closed instead of rotating again.
+func TestRunGatewayRefresh_ReadFailureAfterRotationFailsClosed(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	dir := gatewayRecoveryStub(t)
+	for _, f := range []string{"base", "readfail"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, f), nil, 0o644))
+	}
+	shrinkGatewayRefreshTimers(t)
+	calls := countFiveMinuteAssertions(t)
+	var expiries []time.Time
+	orig := setProviderCredentialExpiryFn
+	setProviderCredentialExpiryFn = func(_ context.Context, _, _ string, at time.Time) error {
+		expiries = append(expiries, at)
+		return nil
+	}
+	t.Cleanup(func() { setProviderCredentialExpiryFn = orig })
+	h := gatewayDueHandle(time.Minute)
+	h.refreshState()
+	held := h.expiresAt
+	var out syncBuffer
+	done := make(chan struct{})
+	go func() {
+		runGatewayRefresh(context.Background(), h, ui.New(&out))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not stop after the failed read")
+	}
+	assert.Equal(t, int32(1), calls.Load(), "no second rotation")
+	assert.Equal(t, []time.Time{held}, expiries)
+	assert.Contains(t, out.String(), "not observed in the sandbox")
 }

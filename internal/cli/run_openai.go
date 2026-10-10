@@ -251,17 +251,26 @@ func failOpenAIClosed(h openAIProviderHandle, heldExpiresAt time.Time, cause err
 	}
 }
 
-// placeholderSettleTimeoutError is reseedCredential's error when the
-// sandbox still hands out the previous placeholder after the settle wait:
-// the new generation never reached the sandbox, so nothing was seeded.
-type placeholderSettleTimeoutError struct {
+// generationNotObservedError is reseedCredential's error when the new
+// generation was never seen in the sandbox: the settle wait ran out
+// (cause nil), or reading the placeholder failed or was cut short before
+// it changed (cause set). Nothing was seeded, and there is no evidence of
+// which rotation a generation that shows up later belongs to, so the
+// refreshers fail closed on it rather than rotating again.
+type generationNotObservedError struct {
 	label  string
 	settle time.Duration
+	cause  error
 }
 
-func (e *placeholderSettleTimeoutError) Error() string {
+func (e *generationNotObservedError) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("the new %s placeholder was not observed in the sandbox: %v; the agent keeps the generation it holds", e.label, e.cause)
+	}
 	return fmt.Sprintf("the sandbox still hands out the previous %s placeholder after %s; the agent keeps the generation it holds", e.label, e.settle)
 }
+
+func (e *generationNotObservedError) Unwrap() error { return e.cause }
 
 // reseedCredential is reseedOpenAIAuth for any credential route: it waits
 // for the sandbox to hand out a placeholder other than previous under
@@ -276,18 +285,18 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 	for {
 		p, err := sandboxPlaceholder(ctx, sandboxName, seed.PlaceholderEnv)
 		if err != nil {
-			return "", err
+			return "", &generationNotObservedError{label: label, cause: err}
 		}
 		if p != "" && p != previous {
 			current = p
 			break
 		}
 		if time.Now().After(deadline) {
-			return "", &placeholderSettleTimeoutError{label: label, settle: openAIPlaceholderSettle}
+			return "", &generationNotObservedError{label: label, settle: openAIPlaceholderSettle}
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", &generationNotObservedError{label: label, cause: ctx.Err()}
 		case <-time.After(openAIPlaceholderPoll):
 		}
 	}
@@ -1024,12 +1033,12 @@ func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.P
 			if ctx.Err() != nil {
 				return
 			}
-			// A new generation that never reached the sandbox: a later
-			// rotation could take it for its own (OpenShell's placeholder
-			// says nothing about the rotation it belongs to), so fail
-			// closed rather than rotating again (failOpenAIClosed).
-			var settleErr *placeholderSettleTimeoutError
-			if errors.As(err, &settleErr) {
+			// A new generation that was never observed in the sandbox: a
+			// later rotation could take it for its own (OpenShell's
+			// placeholder says nothing about the rotation it belongs to),
+			// so fail closed rather than rotating again (failOpenAIClosed).
+			var notObserved *generationNotObservedError
+			if errors.As(err, &notObserved) {
 				failOpenAIClosed(h, expiresAt, err, printer)
 				return
 			}

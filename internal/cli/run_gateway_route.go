@@ -464,12 +464,14 @@ func waitGateway(ctx context.Context, d time.Duration) bool {
 //   - When the placeholder the agent holds cannot be read, nothing is
 //     rotated and the refresh is retried shortly, until the provider's
 //     token expires.
-//   - When the sandbox does not hand out the new generation within the
-//     settle wait, the route fails closed (failGatewayClosed): the
+//   - When the new generation is not observed in the sandbox (the settle
+//     wait runs out, or reading the placeholder fails before it changes;
+//     generationNotObservedError), the route fails closed (failGatewayClosed): the
 //     provider's expiry moves back to the token the agent holds and the
 //     refresher stops. OpenShell gives no per-rotation evidence, so a late
 //     generation could not be told apart from a later rotation's own.
-//   - When the hand-off fails otherwise (a seed or verify exec), the
+//   - When the hand-off fails after the new generation was observed (a
+//     seed or verify exec), the
 //     provider already holds the new token; only the hand-off is retried,
 //     every gatewayRefreshBackoff, until the provider's next refresh is
 //     due (which hands off again itself).
@@ -498,8 +500,8 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 				if ctx.Err() != nil {
 					return
 				}
-				var settleErr *placeholderSettleTimeoutError
-				if errors.As(err, &settleErr) {
+				var notObserved *generationNotObservedError
+				if errors.As(err, &notObserved) {
 					failGatewayClosed(h, st, err, printer)
 					return
 				}
@@ -556,8 +558,8 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 			if ctx.Err() != nil {
 				return
 			}
-			var settleErr *placeholderSettleTimeoutError
-			if errors.As(err, &settleErr) {
+			var notObserved *generationNotObservedError
+			if errors.As(err, &notObserved) {
 				failGatewayClosed(h, st, reseedErr.err, printer)
 				return
 			}
