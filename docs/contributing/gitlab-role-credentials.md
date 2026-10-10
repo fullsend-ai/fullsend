@@ -416,9 +416,13 @@ It records each step in `FULLSEND_GITLAB_POLLER_GENERATIONS` before acting:
    create request cannot be fenced once sent, so it is never retried.
 4. Revoke the bootstrap token, verify no personal access token is active,
    demote to Developer, and verify Developer through an independent read.
-5. Require a confirmed trigger owned by the new account, record the generation
-   as verified, and prove the trigger starts a pipeline on the protected
-   default branch at Developer access. Branch protection is never broadened.
+5. Require a confirmed trigger owned by the new account, re-check the
+   project-wide trigger-safety invariants, and prove the trigger starts a
+   pipeline on the protected default branch at Developer access. Branch
+   protection is never broadened. Only after both checks pass is the
+   generation recorded as verified; a failed safety check or probe attempts to
+   revoke the trigger and quarantines the generation, so it never reaches the
+   verified phase.
 
 A failure after step 3 publishes nothing and quarantines the generation with an
 operator-facing reason. A quarantined generation, a lost account ID, a verified
