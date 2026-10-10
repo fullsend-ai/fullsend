@@ -532,3 +532,26 @@ func TestManagedConfig_MarshalOmitsUnset(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, strings.Contains(string(encoded), "config:"), "unset overlay must be omitted")
 }
+
+func TestManagedConfig_WithCreateIssuesReposAndRoles(t *testing.T) {
+	var base ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte("keep_history: false\n"), &base))
+
+	withIssues := base.WithCreateIssuesRepos([]string{"fullsend-ai/fullsend"})
+	require.True(t, withIssues.IsSet())
+	ci := withIssues.Writer().IssueCreationConfig()
+	require.NotNil(t, ci)
+	assert.Equal(t, []string{"fullsend-ai/fullsend"}, ci.AllowTargets.Repos)
+	assert.False(t, withIssues.Writer().ConfigKeepHistory(), "existing values are kept")
+	assert.Nil(t, base.Writer().IssueCreationConfig(), "the receiver is not modified")
+
+	withRoles := withIssues.WithRoles([]string{"fix"})
+	assert.Equal(t, []string{"fix"}, withRoles.Writer().ConfigRoles())
+	assert.NotNil(t, withRoles.Writer().IssueCreationConfig())
+
+	// An unset receiver yields a set, otherwise-empty configuration.
+	fromZero := ManagedConfig{}.WithRoles([]string{"triage"})
+	require.True(t, fromZero.IsSet())
+	assert.Equal(t, []string{"triage"}, fromZero.Writer().ConfigRoles())
+	assert.Nil(t, fromZero.Writer().IssueCreationConfig())
+}

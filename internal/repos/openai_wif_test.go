@@ -231,7 +231,14 @@ func TestConverge_OpenAIWIFCommittedConfigSatisfiesReadiness(t *testing.T) {
 	sc := &fakeScaffoldCommit{}
 	result, err := Converge(context.Background(), openAIWIFConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
 	require.NoError(t, err)
-	require.Empty(t, result.Failed())
+	// Readiness is satisfied by the committed identifiers; the markerless
+	// file then blocks the fresh install on adoption before any write.
+	failed := result.Failed()
+	require.Len(t, failed, 1)
+	assert.Contains(t, failed[0].Error.Error(), "adoption required")
+	assert.NotContains(t, failed[0].Error.Error(), "no OpenAI WIF identifiers")
+	assert.False(t, sc.called, "no scaffold commit while adoption is required")
+	assertNoForgeWrites(t, fc)
 }
 
 func TestConverge_OpenAIWIFFreshInstallPreservesCommittedConfig(t *testing.T) {
@@ -244,7 +251,10 @@ func TestConverge_OpenAIWIFFreshInstallPreservesCommittedConfig(t *testing.T) {
 	sc := &spyScaffoldCommit{}
 	result, err := Converge(context.Background(), openAIWIFConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
 	require.NoError(t, err)
-	require.Empty(t, result.Failed())
+	failed := result.Failed()
+	require.Len(t, failed, 1)
+	assert.Contains(t, failed[0].Error.Error(), "adoption required")
+	assertNoForgeWrites(t, fc)
 
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -254,8 +264,11 @@ func TestConverge_OpenAIWIFFreshInstallPreservesCommittedConfig(t *testing.T) {
 			delivered = f.Content
 		}
 	}
-	require.NotNil(t, delivered, "scaffold commit must deliver %s", preset.OverlayPath)
-	assert.Equal(t, string(committed), string(delivered), "existing configuration must survive delivery unchanged")
+	// A markerless overlay is an adoption case even without a config key
+	// (#8218): the fresh install stops before any write, so the existing
+	// configuration and its identifiers survive unchanged.
+	assert.Nil(t, delivered, "markerless %s must not be replaced by delivery", preset.OverlayPath)
+	assert.Equal(t, string(committed), string(fc.FileContents["acme/api/"+preset.OverlayPath]))
 }
 
 func TestConverge_OpenAIWIFMissingOrPartialIdentifiersFailBeforeWrites(t *testing.T) {
@@ -389,13 +402,15 @@ func TestConverge_OpenAIWIFReadinessUsesExistingConfigWhenAdoptionBlocksOverlay(
 	sc := &spyScaffoldCommit{}
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	require.NoError(t, err)
-	require.Empty(t, result.Failed())
+	failed := result.Failed()
+	require.Len(t, failed, 1)
+	assert.Contains(t, failed[0].Error.Error(), "adoption required")
+	assert.NotContains(t, failed[0].Error.Error(), "no OpenAI WIF identifiers")
+	assertNoForgeWrites(t, fc)
 
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	for _, f := range sc.files {
-		assert.NotEqual(t, preset.OverlayPath, f.Path, "adoption-blocked overlay must not be written")
-	}
+	assert.Empty(t, sc.files, "adoption-blocked fresh install must not commit anything")
 }
 
 func TestConverge_OpenAIWIFReadinessIgnoresManagedOverlayRejectedBySafetyGate(t *testing.T) {
@@ -449,7 +464,7 @@ func TestConverge_SwitchFromOpenAIWIFRejectedWhileIdentifiersRemain(t *testing.T
 		assert.Empty(t, fc.CreatedSecrets, "no credential written before the rejection")
 		assert.Contains(t, fc.VariableValues, "acme/api/"+forge.VarOpenAIAudience, "user-owned variables are never deleted")
 	})
-	t.Run("committed configuration block", func(t *testing.T) {
+	t.Run("markerless committed configuration is rejected at the overlay gate", func(t *testing.T) {
 		fc, cfg := installedOpenAISwitchFixture(t)
 		fc.FileContents["acme/api/"+preset.OverlayPath] = openAIWIFConfigYAML(t, config.OpenAIWIFConfig{Audience: "aud"})
 
@@ -458,7 +473,7 @@ func TestConverge_SwitchFromOpenAIWIFRejectedWhileIdentifiersRemain(t *testing.T
 		require.NoError(t, err)
 		failed := result.Failed()
 		require.Len(t, failed, 1)
-		assert.Contains(t, failed[0].Error.Error(), "inference.openai block")
+		assert.Contains(t, failed[0].Error.Error(), "adoption required")
 		assert.False(t, sc.called)
 		assert.Empty(t, fc.CreatedSecrets)
 	})

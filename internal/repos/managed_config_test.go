@@ -406,13 +406,15 @@ github:
 	assert.True(t, managed.ConfigManaged)
 	assert.False(t, managed.Managed.ConfigKeepHistory())
 
-	unmanaged, ok := m.ResolveConfig("acme", "unmanaged")
+	// Without a config key the repository is still managed, with an
+	// empty sparse configuration (#8218).
+	plain, ok := m.ResolveConfig("acme", "unmanaged")
 	require.True(t, ok)
-	assert.False(t, unmanaged.ConfigManaged)
-	assert.Nil(t, unmanaged.Managed)
+	assert.True(t, plain.ConfigManaged)
+	require.NotNil(t, plain.Managed)
 }
 
-func TestResolveConfig_NoConfigLeavesOverlayUnmanaged(t *testing.T) {
+func TestResolveConfig_NoConfigIsManagedAndSparse(t *testing.T) {
 	input := `
 version: 1
 github:
@@ -425,8 +427,8 @@ github:
 
 	cfg, ok := m.ResolveConfig("acme", "plain")
 	require.True(t, ok)
-	assert.False(t, cfg.ConfigManaged)
-	assert.Nil(t, cfg.Managed)
+	assert.True(t, cfg.ConfigManaged)
+	require.NotNil(t, cfg.Managed)
 }
 
 func TestRenderManagedConfig_SparseAndExplicitValues(t *testing.T) {
@@ -523,15 +525,15 @@ github:
 	assert.NotContains(t, text, "mint_url:")
 }
 
-func TestRenderManagedConfig_Unmanaged(t *testing.T) {
+func TestRenderManagedConfig_NoConfigKeyRendersEmptySparseBody(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		GitHub:  &PlatformConfig{Repos: []RepoEntry{{Name: "acme/plain"}}},
 	}
 	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
 	require.NoError(t, err)
-	assert.False(t, ok)
-	assert.Nil(t, body)
+	assert.True(t, ok)
+	assert.Equal(t, "{}\n", string(body))
 }
 
 func TestLayeredConfig_OverlayBaseThenCodeDefaults(t *testing.T) {

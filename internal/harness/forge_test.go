@@ -1571,13 +1571,15 @@ func TestBuildConfigMap_AllFields(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, arr, "https://example.com/*")
 
-	// Issue creation config (set by NewPerRepoConfig with targetRepo)
+	// Issue creation config (set by NewPerRepoConfig): the default
+	// allowlist is upstream-only; the target repo is always implicitly
+	// allowed and needs no entry.
 	ci, ok := m["create_issues"].(map[string]any)
 	require.True(t, ok)
 	repos, ok := ci["allow_repos"].([]any)
 	require.True(t, ok)
-	assert.Contains(t, repos, "org/repo")
-	assert.Contains(t, repos, "fullsend-ai/fullsend")
+	assert.Equal(t, []any{"fullsend-ai/fullsend"}, repos)
+	assert.NotContains(t, repos, "org/repo")
 }
 
 func TestBuildConfigMap_ForgeAndTracker(t *testing.T) {

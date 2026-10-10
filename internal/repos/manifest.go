@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -251,6 +252,48 @@ type DefaultsConfig struct {
 	Config config.ManagedConfig `yaml:"config,omitempty"`
 }
 
+// allowedRemoteResourcesKey is the manifest key whose nil-versus-empty
+// distinction is semantic: nil inherits, an explicit empty list denies
+// every remote resource.
+const allowedRemoteResourcesKey = "allowed_remote_resources"
+
+// marshalKeepingEmptyAllowlist encodes plain (a method-free alias of the
+// owning struct) and, when allowed is an explicit empty list, appends
+// `allowed_remote_resources: []` that the omitempty tag would drop. Without
+// it a manifest rewrite turns a deny-all declaration into an inherited
+// default (#8218).
+func marshalKeepingEmptyAllowlist(plain any, allowed []string) (any, error) {
+	node := &yaml.Node{}
+	if err := node.Encode(plain); err != nil {
+		return nil, err
+	}
+	if allowed != nil && len(allowed) == 0 && node.Kind == yaml.MappingNode {
+		node.Content = append(node.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: allowedRemoteResourcesKey},
+			&yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle})
+	}
+	return node, nil
+}
+
+// MarshalYAML preserves an explicit empty allowed_remote_resources list.
+func (e RepoEntry) MarshalYAML() (interface{}, error) {
+	type plain RepoEntry
+	return marshalKeepingEmptyAllowlist(plain(e), e.AllowedRemoteResources)
+}
+
+// MarshalYAML preserves an explicit empty allowed_remote_resources list.
+func (d DefaultsConfig) MarshalYAML() (interface{}, error) {
+	type plain DefaultsConfig
+	return marshalKeepingEmptyAllowlist(plain(d), d.AllowedRemoteResources)
+}
+
+// IsZero reports whether no default is declared. An explicit empty
+// allowed_remote_resources list counts as declared, so omitempty on the
+// parent keeps `defaults: {allowed_remote_resources: []}`.
+func (d DefaultsConfig) IsZero() bool {
+	return reflect.DeepEqual(d, DefaultsConfig{})
+}
+
 // DefaultGitHubURL is the default forge URL for GitHub.com.
 const DefaultGitHubURL = "https://github.com"
 
@@ -300,14 +343,28 @@ type ResolvedConfig struct {
 	// (entry, then forge section, then defaults; default false).
 	Signoff bool
 	// Config is the resolved preset source; empty means no preset is
-	// declared and an existing base file is preserved without comparison.
+	// declared, so the desired state is no base file and an existing one
+	// is drift (#8218).
 	Config string
+	// ProposedBase holds the validated bytes of the declared preset once a
+	// caller has loaded it (the convergence pre-write stage and status).
+	// The ADR 0122 safety gate layers the proposed overlay on these bytes,
+	// not on the installed base, so replacing a base cannot bypass
+	// restrictions. Nil when no preset is declared or not yet loaded.
+	ProposedBase []byte
+	// FreshInstall is set by convergence and status when the repository has
+	// no Fullsend installation yet. Together with the absence of both
+	// configuration files it marks a pristine first install: there is no
+	// existing effective configuration to relax, so the ADR 0122 safety
+	// gate has nothing to compare against and must not reject values the
+	// declared preset supplies (#8218).
+	FreshInstall bool
 	// ConfigHash is the resolved SHA-256 hex digest; empty skips
 	// digest validation.
 	ConfigHash string
-	// ConfigManaged reports whether this repository is opted into a
-	// managed .fullsend/config.yaml (ADR 0122). defaults.config opts every
-	// repository in; a repository config block opts in only that repository.
+	// ConfigManaged reports whether this repository's
+	// .fullsend/config.yaml is managed (ADR 0122). It is true for every
+	// repository; no config key is required to opt in (#8218).
 	ConfigManaged bool
 	// Managed is the sparse managed configuration: defaults.config merged with
 	// the repository config, plus authoritative runtime and
@@ -1137,10 +1194,10 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 	} else {
 		cfg.ConfigHash = resolveField(entry.ConfigBase.SHA256, m.Defaults.ConfigBase.SHA256, "")
 	}
-	cfg.ConfigManaged = configManaged(m.Defaults.Config, entry.Config)
-	if cfg.ConfigManaged {
-		cfg.Managed = m.mergeManagedConfig(entry)
-	}
+	// Every manifest repository's .fullsend/config.yaml is managed; no
+	// config key is required to opt in (#8218).
+	cfg.ConfigManaged = true
+	cfg.Managed = m.mergeManagedConfig(entry)
 
 	// Source infrastructure config from the platform-level section,
 	// with per-repo overrides via the string fallback chain.

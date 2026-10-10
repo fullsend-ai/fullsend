@@ -2,11 +2,13 @@ package repos
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 	"gopkg.in/yaml.v3"
 )
@@ -32,10 +34,29 @@ func hasManagedConfigMarker(content []byte) bool {
 	return bytes.HasPrefix(content, []byte(managedConfigMarker))
 }
 
-// configManaged reports whether defaults.config or the repository config
-// block opts this repository into a managed .fullsend/config.yaml.
-func configManaged(defaults, entry config.ManagedConfig) bool {
-	return defaults.IsSet() || entry.IsSet()
+// readExistingFile reads path on the default branch and reports whether
+// the file exists. A zero-byte file exists: it returns found with empty,
+// non-nil content so callers do not mistake it for an absent file. Read
+// errors other than not-found are returned unwrapped.
+func readExistingFile(ctx context.Context, client forge.Client, owner, repo, path string) (data []byte, found bool, err error) {
+	data, err = client.GetFileContent(ctx, owner, repo, path)
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if data == nil {
+		data = []byte{}
+	}
+	return data, true, nil
+}
+
+// overlayNeedsAdoption reports whether an existing .fullsend/config.yaml
+// requires adoption: any existing file, including a zero-byte one, that
+// lacks the ownership marker.
+func overlayNeedsAdoption(found bool, content []byte) bool {
+	return found && !hasManagedConfigMarker(content)
 }
 
 // mergeManagedConfig flattens defaults.config, the repository config, and
@@ -58,9 +79,11 @@ func managedAllowlist(entry RepoEntry, defaults DefaultsConfig) []string {
 }
 
 // RenderManagedConfig returns the canonical sparse configuration YAML body
-// for a config-managed repository — the explicitly supplied manifest
-// values, with no code defaults or config.base.yaml baked in. ok is false
-// when the repository is not config-managed; data is then nil.
+// for a repository — the explicitly supplied manifest values, with no code
+// defaults or config.base.yaml baked in. Every manifest repository is
+// managed (#8218), so ok is always true; an omitted config renders only
+// the values the manifest declares, so omitted values still inherit from
+// presets and code defaults.
 //
 // The returned bytes deliberately carry no file header. perRepoConfig's
 // Marshal() prepends perRepoConfigHeader, the unmanaged per-repo-install
@@ -76,9 +99,6 @@ func managedAllowlist(entry RepoEntry, defaults DefaultsConfig) []string {
 // managed_config_lifecycle.go, which also implement the adoption gate for
 // an existing markerless file.
 func (m *Manifest) RenderManagedConfig(entry RepoEntry) (data []byte, ok bool, err error) {
-	if !configManaged(m.Defaults.Config, entry.Config) {
-		return nil, false, nil
-	}
 	body, err := marshalManagedConfig(m.mergeManagedConfig(entry))
 	if err != nil {
 		return nil, true, err
@@ -130,13 +150,9 @@ func marshalManagedConfig(cfg config.PerRepoConfigWriter) ([]byte, error) {
 
 // LayeredConfig returns the effective per-repo configuration for entry:
 // managed configuration → config.base.yaml (baseYAML) → code defaults.
-// Unmanaged repositories skip the managed layer. baseYAML may be empty.
+// baseYAML may be empty.
 func (m *Manifest) LayeredConfig(entry RepoEntry, baseYAML []byte) (config.PerRepoConfigReader, error) {
-	var managed config.PerRepoConfigWriter
-	if configManaged(m.Defaults.Config, entry.Config) {
-		managed = m.mergeManagedConfig(entry)
-	}
-	return config.LayerOnBase(managed, baseYAML)
+	return config.LayerOnBase(m.mergeManagedConfig(entry), baseYAML)
 }
 
 func validateManifestManaged(m *Manifest) error {
@@ -157,9 +173,6 @@ func validateManifestManaged(m *Manifest) error {
 			}
 			if err := validateManagedBlock(field, entry.Config); err != nil {
 				return err
-			}
-			if !configManaged(m.Defaults.Config, entry.Config) {
-				continue
 			}
 			merged := m.mergeManagedConfig(entry)
 			if err := config.ValidateMergedManaged(merged); err != nil {

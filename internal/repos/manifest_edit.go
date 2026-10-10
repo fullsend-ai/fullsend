@@ -782,7 +782,17 @@ func validateRepoName(forgeName, name string) error {
 	return nil
 }
 
+// WriteManifest persists m to path in one write. `repos install` plans every
+// manifest edit in memory and calls it once the layered safety comparison has
+// passed, so a rejected install leaves the file untouched.
+func WriteManifest(path string, m *Manifest) error {
+	return writeManifest(path, m)
+}
+
 func writeManifest(path string, m *Manifest) error {
+	if ManifestReadOnly(m, path) {
+		return fmt.Errorf("manifest %s is read-only; apply the equivalent edit to its source, then re-run", path)
+	}
 	data, err := MarshalWithHeader(m)
 	if err != nil {
 		return fmt.Errorf("marshalling manifest: %w", err)

@@ -109,6 +109,46 @@ func (o ManagedConfig) Writer() PerRepoConfigWriter {
 	return o.cfg
 }
 
+// clone returns a deep copy of the managed configuration, or an empty
+// sparse configuration when the receiver is unset.
+func (o ManagedConfig) clone() *perRepoConfig {
+	if o.cfg == nil {
+		return &perRepoConfig{parent: &perRepoDefaults{}}
+	}
+	return clonePerRepo(o.cfg)
+}
+
+// WithCreateIssuesRepos returns a copy of o whose create_issues allowlist
+// permits exactly the given repositories. It is how repos install records
+// the upstream-only cross-repo permission on a manifest entry (#8218).
+// The receiver is not modified.
+func (o ManagedConfig) WithCreateIssuesRepos(repos []string) ManagedConfig {
+	cp := o.clone()
+	cp.CreateIssues = &CreateIssuesConfig{
+		AllowTargets: AllowTargets{Repos: cloneStringSlice(repos)},
+	}
+	return ManagedConfig{cfg: cp}
+}
+
+// WithRoles returns a copy of o with the given agent roles set. The
+// receiver is not modified.
+func (o ManagedConfig) WithRoles(roles []string) ManagedConfig {
+	cp := o.clone()
+	cp.Roles = cloneStringSlice(roles)
+	return ManagedConfig{cfg: cp}
+}
+
+// ExplicitRoles returns the roles declared by this layer and whether the
+// layer declares roles at all. Unlike the layered ConfigRoles accessor it
+// does not fall back to code defaults, so an explicit value that equals a
+// default is still reported as declared.
+func (o ManagedConfig) ExplicitRoles() ([]string, bool) {
+	if o.cfg == nil || o.cfg.Roles == nil {
+		return nil, false
+	}
+	return cloneStringSlice(o.cfg.Roles), true
+}
+
 // UnmarshalYAML strictly decodes a mapping into a sparse per-repo managed
 // configuration. Unknown fields and the runtime / allowed_remote_resources
 // shorthands are rejected with field-specific errors.

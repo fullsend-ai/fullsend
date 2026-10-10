@@ -71,14 +71,17 @@ func TestMarshalManagedConfig_InvalidMintURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "mint_url")
 }
 
-func TestDesiredManagedConfig_Unmanaged(t *testing.T) {
+// TestDesiredManagedConfig_NoConfigKeyIsStillManaged: a repository with no
+// config key renders the canonical sparse overlay: the ownership marker
+// over an empty body, with no baked-in code defaults (#8218).
+func TestDesiredManagedConfig_NoConfigKeyIsStillManaged(t *testing.T) {
 	m := newConvergeManifest("acme/api")
 	cfg, ok := m.ResolveConfig("acme", "api")
 	require.True(t, ok)
 	body, managed, err := desiredManagedConfig(cfg)
 	require.NoError(t, err)
-	assert.False(t, managed)
-	assert.Nil(t, body)
+	assert.True(t, managed)
+	assert.Equal(t, managedConfigMarker+"{}\n", string(body))
 }
 
 func TestConvergeManagedConfigFiles_IdempotentWhenUnchanged(t *testing.T) {
@@ -170,15 +173,19 @@ func TestConvergeManagedConfigFiles_DryRunAddAndUpdate(t *testing.T) {
 	assert.Contains(t, actions[0].Detail, "would update")
 }
 
-func TestConvergeManagedConfigFiles_UnmanagedIsNoOp(t *testing.T) {
+// TestConvergeManagedConfigFiles_NoConfigKeyMarkerlessRequiresAdoption: an
+// existing markerless overlay is an adoption case even when the
+// repository has no config key; it is reported and left untouched.
+func TestConvergeManagedConfigFiles_NoConfigKeyMarkerlessRequiresAdoption(t *testing.T) {
 	m := newConvergeManifest("acme/api")
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("version: \"1\"\n# keep me\n")
 	resolved := managedResolved(t, fc, m, "acme", "api")
 
-	files, actions := convergeManagedConfigFiles(context.Background(), resolved, []byte("kill_switch: true\n"), false, noopProgress)
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, mustDesiredManaged(t, m, "acme", "api"), false, noopProgress)
 	assert.Empty(t, files)
-	assert.Empty(t, actions)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ActionAdoptionRequired, actions[0].Action)
 }
 
 func TestConvergeManagedConfigFiles_ReadError(t *testing.T) {
@@ -207,6 +214,7 @@ func TestCheckManagedConfigDrift_ReportsMissingAndChanged(t *testing.T) {
 	fc := forge.NewFakeClient()
 	status := RepoStatus{}
 	cfg := managedResolved(t, fc, m, "acme", "api")
+	status.Installed = true
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	require.Len(t, status.Drifts, 1)
 	assert.Equal(t, preset.OverlayPath, status.Drifts[0].Field)
@@ -215,6 +223,7 @@ func TestCheckManagedConfigDrift_ReportsMissingAndChanged(t *testing.T) {
 
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("kill_switch: false\n")
 	status = RepoStatus{}
+	status.Installed = true
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	require.Len(t, status.Drifts, 1)
 	assert.Equal(t, "managed configuration (adoption required)", status.Drifts[0].Expected)
@@ -222,24 +231,29 @@ func TestCheckManagedConfigDrift_ReportsMissingAndChanged(t *testing.T) {
 
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: false\n")
 	status = RepoStatus{}
+	status.Installed = true
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	require.Len(t, status.Drifts, 1)
 	assert.Equal(t, "installed content differs", status.Drifts[0].Actual)
 
 	fc.FileContents["acme/api/"+preset.OverlayPath] = desired
 	status = RepoStatus{}
+	status.Installed = true
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	assert.Empty(t, status.Drifts)
 }
 
-func TestCheckManagedConfigDrift_UnmanagedDoesNotCompare(t *testing.T) {
+func TestCheckManagedConfigDrift_NoConfigKeyMarkerlessRequiresAdoption(t *testing.T) {
 	m := newConvergeManifest("acme/api")
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("version: \"1\"\n# local edit\n")
 	status := RepoStatus{}
 	cfg := managedResolved(t, fc, m, "acme", "api")
+	status.Installed = true
 	checkManagedConfigDrift(context.Background(), cfg, &status)
-	assert.Empty(t, status.Drifts)
+	require.Len(t, status.Drifts, 1)
+	assert.Equal(t, preset.OverlayPath, status.Drifts[0].Field)
+	assert.Contains(t, status.Drifts[0].Actual, "ownership marker")
 	assert.Empty(t, status.Error)
 }
 
@@ -252,6 +266,7 @@ func TestCheckManagedConfigDrift_ReadError(t *testing.T) {
 	}
 	status := RepoStatus{}
 	cfg := managedResolved(t, fc, m, "acme", "api")
+	status.Installed = true
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	assert.Contains(t, status.Error, "reading")
 }
@@ -262,6 +277,7 @@ func TestCheckManagedConfigDrift_InvalidManaged(t *testing.T) {
 	fc := forge.NewFakeClient()
 	status := RepoStatus{}
 	cfg := managedResolved(t, fc, m, "acme", "api")
+	status.Installed = true
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	assert.Contains(t, status.Error, "rendering managed config")
 	assert.Contains(t, status.Error, "invalid role")
@@ -325,15 +341,14 @@ func TestConverge_ManagedConfigFreshInstallUnmarkedExistingRequiresAdoption(t *t
 	if err != nil {
 		t.Fatalf("Converge() error: %v", err)
 	}
-	if result.Results[0].Error != nil {
-		t.Fatalf("repo error: %v", result.Results[0].Error)
+	if result.Results[0].Error == nil || !strings.Contains(result.Results[0].Error.Error(), "adoption required") {
+		t.Fatalf("repo error = %v, want adoption required", result.Results[0].Error)
 	}
 
-	for _, f := range sc.files {
-		if f.Path == preset.OverlayPath {
-			t.Errorf("adoption-required fresh install must not write config.yaml, got content %q", f.Content)
-		}
+	if len(sc.files) != 0 {
+		t.Errorf("adoption-required fresh install must not commit scaffold files, got %d", len(sc.files))
 	}
+	assertNoForgeWrites(t, fc)
 	if got := fc.FileContents["acme/api/"+preset.OverlayPath]; string(got) != string(original) {
 		t.Error("unmarked overlay bytes must be preserved until adopted")
 	}
@@ -348,7 +363,7 @@ func TestConverge_ManagedConfigFreshInstallUnmarkedExistingRequiresAdoption(t *t
 	}
 }
 
-func TestConverge_ManagedConfigUnmanagedFreshInstallKeepsInstallerOverlay(t *testing.T) {
+func TestConverge_NoConfigKeyFreshInstallWritesSparseManagedOverlay(t *testing.T) {
 	repoNames := []string{"acme/api"}
 	fc := newFakeClientForBatch(repoNames...)
 	m := newConvergeManifest(repoNames...)
@@ -371,10 +386,10 @@ func TestConverge_ManagedConfigUnmanagedFreshInstallKeepsInstallerOverlay(t *tes
 		}
 	}
 	if overlay == nil {
-		t.Fatal("unmanaged fresh install must still write installer overlay")
+		t.Fatal("fresh install must write the managed overlay even without a config key")
 	}
-	if !strings.Contains(string(overlay), "roles:") {
-		t.Errorf("unmanaged installer overlay should include roles, got %s", overlay)
+	if string(overlay) != managedConfigMarker+"{}\n" {
+		t.Errorf("overlay must be the marked sparse file with no baked-in defaults, got %q", overlay)
 	}
 }
 
@@ -408,30 +423,15 @@ func TestConverge_ManagedConfigUnmarkedManualEditRequiresAdoption(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Converge() error: %v", err)
 	}
-	if result.Results[0].Error != nil {
-		t.Fatalf("repo error: %v", result.Results[0].Error)
-	}
-
-	for _, f := range committedFiles {
-		if f.Path == preset.OverlayPath {
-			t.Error("an unmarked hand-authored overlay must not be silently rewritten; it requires adoption")
-		}
-	}
+	// The established gate rejects the repository before any write, so a
+	// markerless overlay is never converged around (#8218).
+	require.Error(t, result.Results[0].Error)
+	assert.Contains(t, result.Results[0].Error.Error(), "adoption required")
+	assert.Empty(t, committedFiles, "a markerless overlay must stop scaffold commits")
 	if got := fc.FileContents["acme/api/"+preset.OverlayPath]; string(got) != string(original) {
 		t.Error("unmarked overlay bytes must be preserved until adopted")
 	}
-	var sawAdoptionRequired bool
-	for _, a := range result.Results[0].Actions {
-		if a.Component == preset.OverlayPath && strings.Contains(a.Detail, "adoption required") {
-			sawAdoptionRequired = true
-		}
-	}
-	if !sawAdoptionRequired {
-		t.Errorf("expected adoption-required action for config.yaml, got %v", result.Results[0].Actions)
-	}
-	// A pending adoption is outstanding work, not "already current": repos
-	// status simultaneously reports this repo as needing adoption, so
-	// repos install must not exit as if nothing were left to do.
+	assertNoForgeWrites(t, fc)
 	if result.Results[0].AlreadyCurrent {
 		t.Error("a repo with a pending managed-configuration adoption must not be reported AlreadyCurrent")
 	}
@@ -516,7 +516,7 @@ func TestConverge_ManagedConfigExactMatchIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestConverge_ManagedConfigUnmanagedLeavesExisting(t *testing.T) {
+func TestConverge_ManagedConfigWithoutConfigBlockRejectsMarkerlessOverlay(t *testing.T) {
 	repoNames := []string{"acme/api"}
 	fc := newFakeClientForBatch(repoNames...)
 	markFullyInstalled(fc, "acme", "api")
@@ -536,16 +536,13 @@ func TestConverge_ManagedConfigUnmanagedLeavesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Converge() error: %v", err)
 	}
-	if result.Results[0].Error != nil {
-		t.Fatalf("repo error: %v", result.Results[0].Error)
-	}
-	for _, f := range committedFiles {
-		if f.Path == preset.OverlayPath {
-			t.Error("unmanaged configuration must not be rewritten")
-		}
-	}
+	// A manifest without a config block still manages the overlay, so a
+	// markerless file is an adoption case, never silently kept or rewritten.
+	require.Error(t, result.Results[0].Error)
+	assert.Contains(t, result.Results[0].Error.Error(), "adoption required")
+	assert.Empty(t, committedFiles)
 	if got := fc.FileContents["acme/api/"+preset.OverlayPath]; string(got) != string(overlay) {
-		t.Error("unmanaged configuration bytes must be preserved")
+		t.Error("markerless configuration bytes must be preserved")
 	}
 }
 
@@ -881,7 +878,7 @@ func TestStatus_OverlayDrift(t *testing.T) {
 	}
 }
 
-func TestStatus_UnmanagedConfigDoesNotCompare(t *testing.T) {
+func TestStatus_NoConfigKeyMarkerlessOverlayRequiresAdoption(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
@@ -895,8 +892,8 @@ func TestStatus_UnmanagedConfigDoesNotCompare(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Summary.Drifted != 0 {
-		t.Errorf("drifted = %d, want 0 when overlay is unmanaged", result.Summary.Drifted)
+	if result.Summary.Drifted != 1 {
+		t.Errorf("drifted = %d, want 1: the markerless overlay needs adoption even without a config key", result.Summary.Drifted)
 	}
 }
 
@@ -996,6 +993,10 @@ func TestConverge_ManagedConfigOnlyOneRepoManaged(t *testing.T) {
 		populateScaffoldContent(t, fc, "acme", repo, "v1.0.0", "https://mint.example.com")
 		fc.FileContents["acme/"+repo+"/"+preset.OverlayPath] = []byte("version: \"1\"\n# local\n")
 	}
+	// The sibling declares no config but its overlay is managed too: it
+	// carries the marker and already matches, so it is left unchanged.
+	siblingOverlay := emptyManagedOverlay(t)
+	fc.FileContents["acme/unmanaged/"+preset.OverlayPath] = siblingOverlay
 
 	m := &Manifest{
 		Version:  1,
@@ -1048,7 +1049,7 @@ func TestConverge_ManagedConfigOnlyOneRepoManaged(t *testing.T) {
 			t.Error("unmanaged sibling must not rewrite overlay")
 		}
 	}
-	if got := fc.FileContents["acme/unmanaged/"+preset.OverlayPath]; string(got) != "version: \"1\"\n# local\n" {
+	if got := fc.FileContents["acme/unmanaged/"+preset.OverlayPath]; string(got) != string(siblingOverlay) {
 		t.Error("unmanaged sibling overlay bytes must be preserved")
 	}
 }
@@ -1264,6 +1265,7 @@ func TestCheckManagedConfigDrift_AdoptionIncludesSafetyKeys(t *testing.T) {
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("kill_switch: true\n")
 	status := RepoStatus{}
 	cfg := managedResolved(t, fc, m, "acme", "api")
+	status.Installed = true
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	require.Len(t, status.Drifts, 1)
 	assert.Equal(t, "managed configuration (adoption required; safety gate)", status.Drifts[0].Expected)
@@ -1277,8 +1279,70 @@ func TestCheckManagedConfigDrift_SafetyGateParseError(t *testing.T) {
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + ": not yaml\n")
 	status := RepoStatus{}
 	cfg := managedResolved(t, fc, m, "acme", "api")
+	status.Installed = true
 	checkManagedConfigDrift(context.Background(), cfg, &status)
-	assert.Contains(t, status.Error, "safety gate")
+	assert.Contains(t, status.Error, "not a per-repo configuration")
+}
+
+// A marked overlay with parseable but invalid values is a validation error
+// in status, not ordinary drift, and a markerless one stops the established
+// convergence gate instead of being reported as adoption-required.
+func TestExistingOverlayInvalidValues(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+	for name, body := range map[string]string{
+		"marked":     managedConfigMarker + "runtime: nonexistent\n",
+		"markerless": "runtime: nonexistent\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(body)
+			cfg := managedResolved(t, fc, m, "acme", "api")
+
+			status := RepoStatus{}
+			status.Installed = true
+			checkManagedConfigDrift(context.Background(), cfg, &status)
+			assert.Contains(t, status.Error, "invalid runtime")
+			assert.Empty(t, status.Drifts)
+
+			desired, _, err := desiredManagedConfig(cfg)
+			require.NoError(t, err)
+			err = checkEstablishedOverlayGate(context.Background(), cfg, desired)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid runtime")
+			assert.Error(t, validateExistingOverlay([]byte(body)))
+		})
+	}
+}
+
+// A fresh install validates an existing overlay's decoded values as the
+// established path does, so an invalid marked or markerless overlay stops
+// the repository before any forge write, in dry and live runs alike.
+func TestConverge_ManagedConfigFreshInstallInvalidOverlayErrors(t *testing.T) {
+	for _, dryRun := range []bool{true, false} {
+		for name, body := range map[string]string{
+			"marked":     managedConfigMarker + "runtime: nonexistent\n",
+			"markerless": "runtime: nonexistent\n",
+		} {
+			t.Run(fmt.Sprintf("%s/dryRun=%t", name, dryRun), func(t *testing.T) {
+				repoNames := []string{"acme/api"}
+				fc := newFakeClientForBatch(repoNames...)
+				fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(body)
+				m := newConvergeManifest(repoNames...)
+				m.Defaults.Config = mustManagedConfig(t, "{}")
+				cfg := convergeCfgWithDefaults(m)
+				cfg.DryRun = dryRun
+
+				sc := &spyScaffoldCommit{}
+				result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+				require.NoError(t, err)
+				require.Error(t, result.Results[0].Error)
+				assert.Contains(t, result.Results[0].Error.Error(), "invalid runtime")
+				assert.Empty(t, sc.files, "invalid overlay must not reach scaffold commit")
+				assertNoForgeWrites(t, fc)
+			})
+		}
+	}
 }
 
 func TestCheckManagedConfigDrift_SafetyGate(t *testing.T) {
@@ -1288,6 +1352,7 @@ func TestCheckManagedConfigDrift_SafetyGate(t *testing.T) {
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: true\n")
 	status := RepoStatus{}
 	cfg := managedResolved(t, fc, m, "acme", "api")
+	status.Installed = true
 	checkManagedConfigDrift(context.Background(), cfg, &status)
 	require.Len(t, status.Drifts, 1)
 	assert.Equal(t, "managed configuration (safety gate)", status.Drifts[0].Expected)

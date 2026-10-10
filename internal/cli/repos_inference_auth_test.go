@@ -233,9 +233,19 @@ func TestRunReposInstall_GlobOnlySelectionIsKept(t *testing.T) {
 	opts.forge = repos.ForgeGitHub
 	require.NoError(t, runReposInstall(context.Background(), opts))
 
-	data, err := os.ReadFile(manifestPath)
+	// The first install records the upstream create_issues default on an
+	// explicit entry for that repo only (#8218). The entry is copied from
+	// the glob so the glob selection is kept, and the glob is unchanged.
+	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, err)
-	assert.Equal(t, manifest, string(data), "a glob-covered repo must not gain an entry that drops the glob selection")
+	require.Len(t, reloaded.GitHub.Repos, 2)
+	assert.Equal(t, "acme/*", reloaded.GitHub.Repos[0].Name)
+	assert.False(t, reloaded.GitHub.Repos[0].Config.IsSet(), "the glob entry must not gain the per-repo default")
+	assert.Equal(t, "acme/api", reloaded.GitHub.Repos[1].Name)
+	assert.True(t, reloaded.GitHub.Repos[1].Config.IsSet())
+	resolved, ok := reloaded.ResolveConfig("acme", "api")
+	require.True(t, ok)
+	assert.Equal(t, repos.InferenceAuthOpenAIAPIKey, resolved.InferenceAuth, "the carved entry keeps the glob selection")
 }
 
 func TestRunReposInstall_GlobSelectionWinsOverConflictingDefaults(t *testing.T) {
@@ -249,7 +259,7 @@ func TestRunReposInstall_GlobSelectionWinsOverConflictingDefaults(t *testing.T) 
 
 	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, err)
-	require.Len(t, reloaded.GitHub.Repos, 1, "the glob is retained without an explicit copy")
+	require.Len(t, reloaded.GitHub.Repos, 2, "the glob is retained; the repo gets an explicit copy carrying the upstream create_issues default (#8218)")
 	resolved, ok := reloaded.ResolveConfigWithGlobs("acme", "api")
 	require.True(t, ok)
 	assert.Equal(t, repos.InferenceAuthOpenAIAPIKey, resolved.InferenceAuth, "the glob selection must beat the conflicting default")

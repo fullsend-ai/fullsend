@@ -374,8 +374,14 @@ fullsend repos install acme/api --forge github --inference-auth openai-wif
   `.fullsend/config.yaml` over `config.base.yaml`. `repos install` also counts the managed
   configuration and configuration preset it is delivering. A repository with no identifiers or a
   partial set fails before anything is written, and the error names only the missing identifiers.
-- Migrating from `fullsend github setup --openai-*` needs no new values: the existing
-  `inference.openai` block or repository variables are used as they are.
+- Migrating from `fullsend github setup --openai-*` needs no new OpenAI values: the existing
+  `inference.openai` block or repository variables are still read as they are. The existing
+  `.fullsend/config.yaml` has no ownership marker, though, so `repos install` stops before any
+  write until it is adopted: move the settings you want to keep, including `inference.openai`,
+  into the repository's `repos.yaml` entry, then remove or replace the file (see
+  [Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration)).
+  An existing `.fullsend/config.base.yaml` likewise blocks install unless a `config_base` preset
+  is declared for the repository.
 - Switching from `openai-api-key` keeps `FULLSEND_OPENAI_API_KEY` until a complete identifier set is
   on the default branch. If the identifiers arrive in an unmerged initialization pull request, merge
   it and re-run `repos install` to remove the key.
@@ -395,8 +401,10 @@ runtime tests retain regression coverage.
 `TestOpenAIWIFLiveInstallAndRun` automates the live install → readiness → successful agent
 check. It is opt-in because it writes to a dedicated repository and incurs inference cost.
 Prepare that repository with mint enrollment, the three `FULLSEND_OPENAI_*` variables,
-and a working OpenAI-model triage agent triggered by new issues. Use an existing unmanaged
-configuration or preset; the test preserves it. The repository must have none of
+and a working OpenAI-model triage agent triggered by new issues. Unmanaged configuration is no
+longer preserved: a markerless `.fullsend/config.yaml`, or a `.fullsend/config.base.yaml` with no
+declared preset, makes `repos install` fail before any write. Start from a repository with neither
+file, or adopt them into `repos.yaml` first. The repository must have none of
 `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, or `FULLSEND_OPENAI_API_KEY`.
 The configured GitHub identity needs permission to install workflows, inspect secret
 names, create/close issues, and read Actions runs/logs. Allow no concurrent issue-triggered
