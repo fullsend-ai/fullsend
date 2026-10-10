@@ -68,7 +68,21 @@ func (c *LiveClient) ListPipelineTriggerTokens(ctx context.Context, owner, repo 
 		if err := decodeJSON(resp, &tokens); err != nil {
 			return nil, fmt.Errorf("decode pipeline trigger tokens page %d: %w", page, err)
 		}
+		// A JSON null inventory decodes to a nil slice, while a valid
+		// empty inventory ([]) decodes to a non-nil empty slice. Reject
+		// null so a malformed page cannot be mistaken for "no tokens".
+		if tokens == nil {
+			return nil, fmt.Errorf("decode pipeline trigger tokens page %d: inventory is null", page)
+		}
 		for _, t := range tokens {
+			if t.ID <= 0 {
+				return nil, fmt.Errorf("decode pipeline trigger tokens page %d: invalid trigger id %d", page, t.ID)
+			}
+			// owner: null (nil) means an unknown owner and is preserved;
+			// a present owner object must carry a positive id.
+			if t.Owner != nil && t.Owner.ID <= 0 {
+				return nil, fmt.Errorf("decode pipeline trigger tokens page %d: trigger %d has invalid owner id %d", page, t.ID, t.Owner.ID)
+			}
 			tok := t.toForge()
 			tok.Token = "" // Token is populated only on creation; never on list.
 			result = append(result, tok)
