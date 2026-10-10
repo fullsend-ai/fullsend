@@ -263,7 +263,7 @@ agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=ab
 
 **Scripts are local-only** — `pre_script`, `post_script`, and `validation_loop.script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed.
 
-**`validation_loop.preflight_check` is a command, not a script resource** — The runner expands `${VAR}` references from its permitted host environment, then passes the result to `sh -c` on the host; it does not fetch or stage a file named by the command. Do not interpolate untrusted values or credentials, even within shell quotes: on failure or timeout the expanded command currently appears in diagnostics.
+**`validation_loop.preflight_check` is a command, not a script resource** — The runner expands `${VAR}` references using a denylist (OIDC/WIF credential vars, `OPENAI_API_KEY`, and `GH_WORKFLOW_TOKEN`; see `harnessExpansionDenied` in `internal/cli/run.go`), then passes the result to `sh -c` on the host; it does not fetch or stage a file named by the command. This denylist does not exclude forge or mint tokens (e.g. `GH_TOKEN`, `GITHUB_TOKEN`, `PUSH_TOKEN`, `GITLAB_TOKEN`, `FULLSEND_FETCH_TOKEN`), and failure/timeout diagnostics are not redacted. Do not interpolate untrusted values or credentials, even within shell quotes: on failure or timeout the expanded command currently appears in diagnostics. An allowlisted, redacted environment for this expansion is planned but not yet implemented — see [ADR 0128 Decision 1](../ADRs/0128-preflight-check-literal-command.md#decision).
 
 ## See also
 
