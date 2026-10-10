@@ -79,9 +79,12 @@ forge stores no reusable provider key.
   hard-codes 300 s. The runner fetches a fresh assertion, updates the
   provider, and re-seeds the in-sandbox placeholder through the ADR 0092
   refresh path. The placeholder is pinned per credential generation, so after
-  each refresh the runner waits for the new generation and then re-seeds a
-  token file that the extension re-reads on every request
-  (`INFERENCE_GATEWAY_TOKEN_FILE`, which wins over
+  each refresh the runner waits for the new generation and then re-seeds the
+  runtime's credential file through the runtime-neutral seeder interface
+  (`runtime.OpenAICredentialSeeder`,
+  [ADR 0099](0099-codex-agent-runtime.md)). Each runtime that joins the route
+  supplies its own seed. pi's seed is a token file that its extension re-reads
+  on every request (`INFERENCE_GATEWAY_TOKEN_FILE`, which wins over
   `INFERENCE_GATEWAY_API_KEY`).
 - **The refresh margin already adapts to the token lifetime.** ADR 0092's
   `openAIRefreshDelay` caps the refresh lead at half the remaining lifetime
@@ -119,29 +122,16 @@ inference:
   purpose-specific value lets `url` change (a custom domain, a load balancer,
   another region) without reconfiguring the gateway, and keeps the token from
   being accepted by another service on the same host that uses its own URL as
-  audience. There is no `providers` field: for pi, the `gateway/`
-  model prefix opts a model into this route. A field for other runtimes comes
-  with their own decisions.
-- **The model list takes exactly one of two forms.** Setting both is an error;
-  setting neither is a partial block.
-  - `models`, inline: a map of model id to settings. `api` is one of
-    `openai-responses`, `anthropic-messages` or `openai-completions`, with
-    optional `compat`, `contextWindow` and `maxTokens`.
-  - `models_file`: a repository path, for example
-    `.fullsend/inference-gateway.json`, to a file in the extension's own
-    config format. It lets a repository use every per-model key the extension
-    supports, plus `include` and `exclude`, without fullsend mirroring that
-    schema. It is read from the same ref as `config.yaml`, so pull-request
-    events read it from the base branch. It must hold exactly one entry,
-    `providers.gateway`, and the runner accepts only `models`, `include`,
-    `exclude` and `defaultApi` in it. The runner refuses a file that sets
-    `baseUrl`, `baseUrlEnv`, any credential key, `headers`, `authHeader`,
-    `modelsPath`, `discovery` or `fallbackModels`: the runner owns those, and
-    discovery is off under `PI_OFFLINE`. The runner validates the file and
-    renders it into its own guarded `inference-gateway.json`; the agent never
-    reads the committed file directly.
-- **All or none.** After the layers merge, a block missing `url`, `audience`
-  or a model list is an error.
+  audience. There is no `providers` field: each runtime selects the route in
+  its own way (see Route selection).
+- **The model list is for runtimes that cannot discover models.** It takes
+  one of two forms, inline `models` or a `models_file` path read from the same
+  ref as `config.yaml`; setting both is an error. A runtime that needs a list
+  requires it, and a runtime that does not ignores it. pi needs it, and its
+  formats are described under the pi section below.
+- **All or none.** After the layers merge, a block missing `url` or `audience`
+  is an error. The model list is checked only when a run resolves a model
+  that needs it.
 - **Pull-request events read the block from the base branch** (ADR 0033), so a
   pull request cannot redirect its own run.
 - **There is no runner-variable form.** The `inference.openai` block has
@@ -153,12 +143,15 @@ inference:
 
 ### Route selection and coexistence
 
-The gateway is an additional route, chosen **per model by its provider
-prefix**. There is no precedence order between it and the WIF or static-key
-routes. The route (where requests go) and the credential (what the runner
+The gateway is an additional route, **chosen per model**. On pi the selector
+is the `gateway/` provider prefix; other runtimes define theirs when they
+join the route. There is no precedence order between it and the WIF or
+static-key routes. The route (where requests go) and the credential (what the runner
 presents) are separate choices: this decision presents the forge OIDC token
 directly, and a gateway that expects a token exchanged through a WIF or STS
 service is a later credential mode of the same route, not a fallback.
+
+On pi today:
 
 - `gateway/` models use the gateway route;
 - `openai/` models keep the ADR 0092 resolution (WIF, then static key);
@@ -173,21 +166,21 @@ The rules that follow from that:
   each route's provider and egress profile side by side. The gateway profile
   only adds its own host.
 - **A block changes nothing else.** Configuring `inference.gateway` does not
-  move `openai/` or any other model onto the gateway. It also has no effect on
-  runtimes without this route (Claude Code and Codex, deferred below); a
-  `gateway/` model on such a runtime is an error.
+  move `openai/` or any other model onto the gateway. Until Claude Code and
+  Codex join the route (deferred below), it has no effect on them.
 - **A configured gateway never falls back.** If it is unreachable or refuses
   the token, the run fails. It never switches the model to the `openai`
   provider or a static key, otherwise that key could never be deleted. A
   partial block is an error.
 - **The runner owns the route only when a block applies.** A block applies when
   it is complete and the run has a forge OIDC endpoint. With no block, or on a
-  run without an OIDC endpoint such as a local run, the runner adds nothing.
-  The harness-plugin setup in the local guide (`running-agents-locally.md`),
-  which carries the extension and its `INFERENCE_GATEWAY_*` settings in plugin
-  env, keeps working as documented. When a block applies, a harness that also
-  carries the extension or `INFERENCE_GATEWAY_*` plugin env is refused, so the
-  route never has two owners.
+  run without an OIDC endpoint such as a local run, the runner adds nothing,
+  and any setup the user configured directly keeps working. On pi that is the
+  harness-plugin setup in the local guide (`running-agents-locally.md`), which
+  carries the extension and its `INFERENCE_GATEWAY_*` settings in plugin env.
+  When a block applies, a harness that also carries the extension or
+  `INFERENCE_GATEWAY_*` plugin env is refused, so the route never has two
+  owners.
 
 ### pi reaches the gateway through a separate `gateway` provider
 
@@ -202,12 +195,33 @@ provider.
 | Existing guards (`piOpenAIConfigGuard`) | must change | unchanged |
 | Validated live | no | yes (2026-10-09 result on #7480) |
 
-This choice has two consequences:
+The extension is a convenience, not a requirement of the route. pi's own
+provider config (`models.json`) can also point at a gateway, and Claude Code
+and Codex have their own base-URL settings. fullsend uses the extension on pi
+because it serves every API through one provider, re-reads a token file on
+each request, and leaves the existing `models.json` guard unchanged. This
+choice has these consequences:
 
-- **The runner renders the model list.** The sandbox runs `PI_OFFLINE=1`, so
-  the extension never fetches `/v1/models`. The runner renders
-  `inference-gateway.json` from the config block, either from the inline
-  `models` map or from the validated `models_file`. The extension also reads
+- **pi needs the model list, and the runner renders it.** The sandbox runs
+  `PI_OFFLINE=1`, so the extension never fetches `/v1/models`. The list comes
+  in one of two forms:
+  - `models`, inline: a map of model id to settings. `api` is one of
+    `openai-responses`, `anthropic-messages` or `openai-completions`, with
+    optional `compat`, `contextWindow` and `maxTokens`.
+  - `models_file`: a repository path, for example
+    `.fullsend/inference-gateway.json`, to a file in the extension's own
+    config format. It lets a repository use every per-model key the extension
+    supports, plus `include` and `exclude`, without fullsend mirroring that
+    schema. It must hold exactly one entry, `providers.gateway`, and the
+    runner accepts only `models`, `include`, `exclude` and `defaultApi` in it.
+    The runner refuses a file that sets `baseUrl`, `baseUrlEnv`, any
+    credential key, `headers`, `authHeader`, `modelsPath`, `discovery` or
+    `fallbackModels`: the runner owns those, and discovery is off under
+    `PI_OFFLINE`.
+
+  A pi `gateway/` model with no list is an error. The runner renders
+  `inference-gateway.json` from the list; the agent never reads the committed
+  file directly. The extension also reads
   an `inference-gateway.local.json` overlay that can replace `baseUrl` and
   `headers`, and the pi config directory is agent-writable between
   iterations. So the rendered file is runner-owned and digest-checked twice,
@@ -220,8 +234,8 @@ This choice has two consequences:
   the `gateway` provider and takes its model ids from the block.
 - **The `anthropic-messages` auth header is `authorization`.** agentgateway
   reads `Authorization: Bearer` by default, and the header is configurable
-  with `location`. The runner sets this in the rendered file, so the token never travels in pi's native `x-api-key`
-  header.
+  with `location`. The runner sets this in the rendered file, so the token
+  never travels in pi's native `x-api-key` header.
 
 ### Request flow
 
@@ -291,15 +305,19 @@ Deploying and operating the gateway are out of scope.
   is a concentrated risk to every repository that uses it.
 - **The forge stores nothing reusable.** Once the gateway route is live,
   `FULLSEND_OPENAI_API_KEY` can be deleted.
-- **The agent cannot set the base URL.** When a block applies, the runner owns
-  the `INFERENCE_GATEWAY_*` variables and refuses to launch a `gateway/` model
-  without its own base URL. Neither the agent-writable `.env` nor plugin env
-  can override them:
-  after both are applied, the runner unsets the whole `INFERENCE_GATEWAY_*`
-  family and re-exports only its own values (`BASE_URL`, `TOKEN_FILE` and, if
-  needed, `PROVIDER_ID`). This is a new ordering, because plugin env is
-  exported last today and only a deny-list protects it. With a block applied,
-  plugin env may not use the `INFERENCE_GATEWAY_` prefix.
+- **The agent cannot set the base URL.** Whatever the runtime, the gateway URL
+  and the credential's destination stay runner-owned and guarded, so the
+  agent cannot redirect the token. Codex's runner-written `config.toml`,
+  checked against runner-held digests (ADR 0099), already works this way. On
+  pi, when a block applies:
+  - the runner owns the `INFERENCE_GATEWAY_*` variables and refuses to launch
+    a `gateway/` model without its own base URL;
+  - neither the agent-writable `.env` nor plugin env can override them: after
+    both are applied, the runner unsets the whole family and re-exports only
+    its own values (`BASE_URL`, `TOKEN_FILE` and, if needed, `PROVIDER_ID`).
+    This is a new ordering, because plugin env is exported last today and only
+    a deny-list protects it;
+  - plugin env may not use the `INFERENCE_GATEWAY_` prefix.
 - **The egress rules are scoped to the gateway host.** The gateway gets its
   own egress profile and provider, rendered per configured host with a
   per-host id, so two gateways on one shared OpenShell gateway do not collide
@@ -330,7 +348,7 @@ These are deferred and named:
   models have moved to `gateway/`, because the gateway route never falls back
   to it.
 - A gateway outage fails runs for every repository behind it, by design.
-- Every gateway model must be listed, inline or in `models_file`, because pi
+- Every pi gateway model must be listed, inline or in `models_file`, because pi
   cannot discover models offline.
 - Rotating the placeholder inside one running iteration before the token's
   `exp` is still to be proven live, in the implementation tracked in
