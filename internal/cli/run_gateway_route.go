@@ -406,7 +406,7 @@ func failGatewayClosed(h gatewayProviderHandle, st *gatewayRefreshState, cause e
 func handOffGateway(ctx context.Context, h gatewayProviderHandle, previous string, printer *ui.Printer) (string, error) {
 	settleCtx, cancel := context.WithTimeout(ctx, handOffTimeout())
 	defer cancel()
-	return reseedCredential(settleCtx, h.sandbox, "inference gateway", h.seed, previous, printer)
+	return reseedCredential(settleCtx, h.sandbox, "inference gateway", h.seed, previous, nil, printer)
 }
 
 // refreshGatewayProvider rotates the provider's token (rotateGatewayToken)

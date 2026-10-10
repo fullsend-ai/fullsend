@@ -251,6 +251,49 @@ func TestOrderedSeed_StaleWriterCannotReplaceNewer(t *testing.T) {
 			c.holds(t, dir, "2")
 		})
 
+		// Generation 2 was seen by the refresher, but its own hand-off failed
+		// before anything recorded it, so the retry rotated on to 3 and
+		// re-seeds retiring both 1 and 2. A seed that captured 2 and stalled
+		// before the lock must then leave 3 in place (fullsend#8311).
+		t.Run(c.name+"/generation whose hand-off failed is retired by the next re-seed", func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "cfg")
+			sync := t.TempDir()
+			ready, release := filepath.Join(sync, "ready"), filepath.Join(sync, "release")
+			c.run(t, dir, "1")
+
+			old := c.command(pausedAt(t, c.seed(dir), "command -p flock", ready, release), "2")
+			var oldOut strings.Builder
+			old.Stdout, old.Stderr = &oldOut, &oldOut
+			require.NoError(t, old.Start())
+			waitForFile(t, ready)
+
+			out, err := c.command(SeedReplacing(c.seed(dir), c.placeholder("1"), c.placeholder("2")), "3").CombinedOutput()
+			require.NoError(t, err, string(out))
+			c.holds(t, dir, "3")
+
+			require.NoError(t, os.WriteFile(release, nil, 0o600))
+			require.NoError(t, old.Wait(), "a stale seed is not a failure: %s", oldOut.String())
+			assert.Contains(t, oldOut.String(), "older generation")
+			c.holds(t, dir, "3")
+			assertOnlySeedFiles(t, dir, c.file)
+		})
+
+		// The history is an agent-writable file. When it no longer matches
+		// the credential file, a skipped write must not report success.
+		t.Run(c.name+"/skipped write fails when the file lacks the newest generation", func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "cfg")
+			c.run(t, dir, "1")
+			c.run(t, dir, "2")
+			// The history is rewritten to end with a generation the file
+			// does not hold, as a truncated or reordered one could.
+			gens := filepath.Join(dir, c.file+seedGenerationsSuffix)
+			require.NoError(t, os.WriteFile(gens, []byte(c.placeholder("1")+"\n"+c.placeholder("2")+"\n"+c.placeholder("3")+"\n"), 0o600))
+			out, err := c.command(c.seed(dir), "1").CombinedOutput()
+			require.Error(t, err, string(out))
+			assert.Contains(t, string(out), "not treating the skipped write as done")
+			c.holds(t, dir, "2")
+		})
+
 		t.Run(c.name+"/lock does not collide with pi's auth.json.lock", func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "cfg")
 			c.run(t, dir, "1")

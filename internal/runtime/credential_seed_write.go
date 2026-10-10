@@ -1,6 +1,9 @@
 package runtime
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // seedLockWaitSeconds bounds how long a credential seed waits for the
 // seed lock. The lock is held only for the few commands that write one
@@ -22,21 +25,30 @@ const (
 	seedTempSuffix        = ".fullsend"
 )
 
-// seedPreviousEnv names the variable a re-seed sets to the placeholder it
-// replaces. See SeedReplacing.
+// seedPreviousEnv names the variable a re-seed sets to the placeholders it
+// retires, space-separated. See SeedReplacing.
 const seedPreviousEnv = "FULLSEND_SEED_PREVIOUS"
 
 // SeedReplacing returns seed, a fragment built on orderedSeedWrite, run so
-// that it first records previous, the placeholder the re-seed replaces, as
-// rotated out. The refresher knows previous from the rotation it observed;
-// a seed holding it may not have written yet, and without this record that
-// seed would not be recognized as stale (fullsend#8311). An empty previous
-// returns seed unchanged.
-func SeedReplacing(seed, previous string) string {
-	if previous == "" {
+// that it first records previous, the placeholders the re-seed retires, as
+// rotated out. The refresher knows them from the rotations it observed; a
+// seed holding one may not have written yet, and without this record that
+// seed would not be recognized as stale (fullsend#8311). previous holds the
+// placeholder the file named and any generation the refresher saw in the
+// sandbox whose own hand-off failed before it was recorded: a later rotation
+// retires those too. Empty entries are dropped; with none left, seed is
+// returned unchanged.
+func SeedReplacing(seed string, previous ...string) string {
+	var kept []string
+	for _, p := range previous {
+		if p != "" {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
 		return seed
 	}
-	return seedPreviousEnv + "=" + shellQuote(previous) + "; export " + seedPreviousEnv + "; " + seed
+	return seedPreviousEnv + "=" + shellQuote(strings.Join(kept, " ")) + "; export " + seedPreviousEnv + "; " + seed
 }
 
 // orderedSeedWrite renders the POSIX sh fragment a credential seed uses to
@@ -51,16 +63,22 @@ func SeedReplacing(seed, previous string) string {
 // append-only history file (final + seedGenerationsSuffix) before its
 // rename. A placeholder that appears in the history but is not its last
 // line was replaced by a newer generation, and its writer skips the rename.
-// Skipping is not a failure: the file already holds a newer generation.
+// Skipping is not a failure when the file already holds that newer
+// generation, so the writer first checks that the file names the history's
+// last entry. The history is a plain file in a directory the agent can
+// write: an agent that truncates or reorders it must not turn a skipped
+// write into a silent success while the file holds something else. A file
+// that does not name the last entry fails the seed instead.
 //
 // A stalled seed may not have recorded its placeholder when the refresher
 // rotates past it, so arrival order alone cannot mark it stale. The
 // refresher therefore runs its re-seed through SeedReplacing, which names
-// the placeholder being replaced in seedPreviousEnv. Under the lock, before
-// anything else, a re-seed puts that placeholder in the history ahead of
-// every other entry unless it is already there. The refresher rotates one
-// generation at a time and re-seeds each, so every generation it rotates out
-// is recorded this way.
+// the placeholders being retired in seedPreviousEnv. Under the lock, before
+// anything else, a re-seed puts each of them that is missing in the history
+// ahead of every other entry. The refresher rotates one generation at a time
+// and re-seeds each, and it carries a generation whose hand-off failed over
+// to the next re-seed, so every generation it rotates out is recorded this
+// way.
 //
 // The check, the history append and the rename run under flock(1) on
 // final + seedLockSuffix. That makes them one step against every other
@@ -71,9 +89,10 @@ func SeedReplacing(seed, previous string) string {
 //
 // The placeholder is recorded before the rename. A seed that dies between
 // the two leaves the history one step ahead of the file, and that is safe:
-// the placeholder the file still holds is older and stays refused, and
-// any newer placeholder can still be written. Recording after the rename
-// would let the generation it replaced be written back.
+// the placeholder the file still holds is older and stays refused (the seed
+// fails rather than skip, per the check above, until a newer placeholder is
+// written), and any newer placeholder can still be written. Recording after
+// the rename would let the generation it replaced be written back.
 //
 // envVar names the variable holding the placeholder; the caller must have
 // validated its value to placeholder characters first. dir and final are
@@ -87,16 +106,18 @@ func orderedSeedWrite(envVar, dir, final, write, failMsg, failStmt string) strin
 	generationsTmp := generations + `.$$`
 	v := `"$` + envVar + `"`
 	last := `"$(command -p tail -n 1 ` + generations + ` 2>/dev/null)"`
-	prev := `"$` + seedPreviousEnv + `"`
-	validatePrev := `case "${` + seedPreviousEnv + `:-}" in *[!A-Za-z0-9_:]*) echo 'fullsend: ` + seedPreviousEnv + ` has unexpected characters; refusing to seed' >&2; ` + failStmt + ` ;; esac`
-	recordPrev := `{ test -z "${` + seedPreviousEnv + `:-}" || command -p grep -qxF -e ` + prev + ` ` + generations + ` 2>/dev/null ||` +
-		` { { printf '%s\n' ` + prev + `; command -p cat ` + generations + ` 2>/dev/null || :; } > ` + generationsTmp +
+	validatePrev := `case "${` + seedPreviousEnv + `:-}" in *[!A-Za-z0-9_:\ ]*) echo 'fullsend: ` + seedPreviousEnv + ` has unexpected characters; refusing to seed' >&2; ` + failStmt + ` ;; esac`
+	recordPrev := `{ test -z "${` + seedPreviousEnv + `:-}" ||` +
+		` { { for fullsend_g in $` + seedPreviousEnv + `; do command -p grep -qxF -e "$fullsend_g" ` + generations + ` 2>/dev/null || printf '%s\n' "$fullsend_g"; done;` +
+		` command -p cat ` + generations + ` 2>/dev/null || :; } > ` + generationsTmp +
 		` && command -p mv -f ` + generationsTmp + ` ` + generations + `; }; }`
 	return `{ ` + validatePrev + ` && command -p mkdir -p ` + shellQuote(dir) +
 		` && { command -p flock -w ` + strconv.Itoa(seedLockWaitSeconds) + ` 9` +
 		` && ` + recordPrev +
 		` && if test ` + last + ` != ` + v + ` && command -p grep -qxF -e ` + v + ` ` + generations + ` 2>/dev/null;` +
+		` then if command -p grep -Fq -e ` + last + ` ` + shellQuote(final) + ` 2>/dev/null;` +
 		` then echo 'fullsend: ` + envVar + ` is an older generation than the credential file holds; leaving the file as it is' >&2;` +
+		` else echo 'fullsend: ` + envVar + ` is older than the newest generation in the history, but the credential file does not hold that one; not treating the skipped write as done' >&2; command -p false; fi;` +
 		` else { test ` + last + ` = ` + v + ` || printf '%s\n' ` + v + ` >> ` + generations + `; }` +
 		` && ` + write + ` > ` + tmp +
 		` && command -p mv -f ` + tmp + ` ` + shellQuote(final) + `; fi; } 9>>` + lock +
