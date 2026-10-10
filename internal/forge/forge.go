@@ -138,6 +138,12 @@ const (
 	// document (per-role lock, token IDs, expiry dates, phase). It
 	// never stores token values. See internal/gitlabroles and #7500.
 	VarGitLabRoleRotation = "FULLSEND_GITLAB_ROLE_ROTATION"
+
+	// VarGitLabPollerGenerations is the protected, unmasked Poller
+	// identity-generation document (current, pending, and retiring Poller
+	// account IDs and the pending generation's handoff phase). It never
+	// stores token values. Not yet written by any command. See #8210.
+	VarGitLabPollerGenerations = "FULLSEND_GITLAB_POLLER_GENERATIONS"
 )
 
 // GitLab CI pipeline-variable minimum-override roles.

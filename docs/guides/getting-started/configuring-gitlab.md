@@ -425,14 +425,14 @@ cleanup of those. See [Operations § Uninstalling](operations.md#uninstalling).
 > ([#8243](https://github.com/fullsend-ai/fullsend/issues/8243)) merges and is
 > validated.
 
-> **Poller elevation safety:** Creating or rotating a Poller-owned trigger
-> requires a verified server-side guarantee that requests accepted before
-> credential revocation, including asynchronous credential and job creation,
-> have finished. The current GitLab adapter cannot establish that guarantee,
-> so it defers temporary Maintainer elevation and new trigger creation. Polling
-> continues with Developer credentials; compliant existing triggers can still
-> be reused. Revocation and empty resource inventories alone do not prove that
-> requests have drained.
+> **Poller elevation safety:** Re-elevating a Poller identity that ever held a
+> distributed runtime credential requires a verified server-side guarantee
+> that requests accepted before credential revocation, including asynchronous
+> credential and job creation, have finished. The current GitLab adapter
+> cannot establish that guarantee, so it defers temporary Maintainer elevation
+> and new trigger creation. Polling continues with Developer credentials;
+> compliant existing triggers can still be reused. Revocation and empty
+> resource inventories alone do not prove that requests have drained.
 
 Once activated, fresh installs create a separate project service account for
 the Poller, Analyst, and Coder roles where the instance supports project
@@ -472,42 +472,57 @@ Remaining SSH credentials, unfinished jobs, schedules or triggers prevent
 account deletion; address the reported resource and retry uninstall.
 
 GitLab ties a trigger token to the user who creates it, and creating one needs
-Maintainer. The target design therefore creates it as the Poller service
-account instead of the installing Maintainer. This stays deferred until an
-adapter can verify server-side request draining (see the safety note above).
-When enabled, install:
+Maintainer. The target design therefore creates it as a fresh replacement
+Poller service account that has never held a distributed credential, instead
+of the installing Maintainer or the current Poller. Re-elevating an identity
+whose runtime credential was distributed is unsafe, because GitLab has no
+drain barrier for requests accepted before revocation. This stays deferred
+until the live handoff
+([#8243](https://github.com/fullsend-ai/fullsend/issues/8243)) is wired to an
+adapter. When enabled, install:
 
-1. Revokes the Poller's distributed runtime credential
-   (`FULLSEND_GITLAB_POLLER_TOKEN` and its personal access token) and the
-   managed trigger tokens the Poller already owns, so nothing distributed
-   stays valid while the Poller is elevated.
+1. Creates the replacement Poller service account at Developer and records
+   its ID in `FULLSEND_GITLAB_POLLER_GENERATIONS` before acting.
 2. Creates an installer-only bootstrap personal access token for the
-   Poller. The bootstrap token is never stored in a CI/CD variable, log,
-   or agent environment.
-3. Grants the Poller Maintainer temporarily and creates the token
-   authenticated with the bootstrap credential.
-4. Restores Developer and verifies the Poller's effective access.
-5. Revokes the bootstrap token and verifies the revocation.
-6. Publishes a replacement runtime credential.
+   replacement account. The bootstrap token is never stored in a CI/CD
+   variable, log, or agent environment.
+3. Grants the replacement account Maintainer temporarily and creates the
+   trigger authenticated with the bootstrap credential. The trigger-create
+   request is attempted once and never retried.
+4. Revokes the bootstrap token, restores Developer, and verifies the
+   replacement account's effective access and the revocation.
+5. Confirms the trigger is owned by the replacement account, re-checks the
+   project-wide trigger-safety invariants (pipeline-variable override policy,
+   no other protected branches or tags, the standard CI configuration path,
+   and trigger pipelines that run only the dispatcher), and starts a pipeline
+   on the protected default branch at Developer access. The same invariants
+   are checked before the account is raised, so an unsafe or unverifiable
+   project defers the handoff before any trigger exists. A trigger owned by a
+   different user than the replacement account is quarantined with an
+   instruction to delete that exact trigger and confirm it is gone.
+6. Publishes the replacement runtime credential and cuts over; the previous
+   Poller is then retired.
 
-The webhook is enabled or updated only after step 6 succeeds. If the restore,
-the check, or the bootstrap revocation fails, install revokes the token,
-publishes no runtime credential, disables the managed fast path, revokes the
-Poller's personal access tokens, removes `FULLSEND_GITLAB_POLLER_TOKEN`, and
-fails with instructions to set the Poller member back to Developer. After that
-containment, polling and webhook dispatch are unavailable until install
-provisions a replacement credential. If an install is killed part way, the
-next install restores Developer, revokes any leftover bootstrap token, and
-provisions the missing runtime credential, without depending on the revoked
-one.
+The current Poller is never elevated or modified, and keeps polling
+throughout, so polling and in-flight jobs that authenticate as the current
+Poller are not interrupted. The webhook is enabled or updated only after the
+replacement is verified. If any step after the trigger-create request fails,
+install publishes nothing and quarantines the generation with an
+operator-facing reason. A quarantined generation or a lost account ID blocks
+any new generation until an administrator reviews
+`FULLSEND_GITLAB_POLLER_GENERATIONS`, deletes any pipeline trigger the
+replacement account owns, removes the replacement account, and then removes
+only the `pending` generation, keeping `version`, `current_user_id` and
+`retiring_user_id` so the running Poller is still recorded and retired at the
+next cutover. Removing `pending` forgets the account and its trigger, so do it
+only after both are gone.
 
-Because the runtime credential is revoked before the elevation, polling jobs
-and in-flight jobs that authenticate as the Poller are interrupted from step 1
-until step 6 while a trigger is created or rotated. With this lifecycle,
-`--rotate-gitlab-trigger-token` revokes the existing Poller-owned managed
-trigger tokens before minting rather than after the webhook is updated. Run
-install or `--rotate-gitlab-trigger-token` when a short polling gap is
-acceptable; the next scheduled poll picks the work up again.
+An unresolved retiring Poller is a separate condition: it blocks any new
+generation and cutover, and removing `pending` does not clear it. Retirement
+completes only after the recorded retiring account's schedules, credentials,
+triggers and account are removed and its `retiring_user_id` is then cleared
+through the retirement step (`finishPollerRetirement`). Polling continues with
+the current Poller in the meantime.
 
 Install refuses to raise the Poller, and defers the fast path, when the Poller
 service account holds an active personal access token that fullsend does not

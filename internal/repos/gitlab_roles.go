@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -170,6 +171,36 @@ func LockGitLabProject(ctx context.Context, client forge.Client, owner, repo str
 	}, nil
 }
 
+// GitLabProjectLease is an opaque capability proving that its holder took the
+// cross-process project lease for one project. It is issued only by
+// LockGitLabProjectLease after a successful non-dry-run remote acquisition and
+// stops being valid when the lease is released.
+type GitLabProjectLease struct {
+	owner, repo string
+	held        atomic.Bool
+}
+
+// holds reports whether the lease is still held for owner/repo.
+func (l *GitLabProjectLease) holds(owner, repo string) bool {
+	return l != nil && l.owner == owner && l.repo == repo && l.held.Load()
+}
+
+// LockGitLabProjectLease is LockGitLabProject for a non-dry-run transaction
+// that must prove it holds the project lease: it also returns the lease
+// capability, which is invalidated before the lease is released.
+func LockGitLabProjectLease(ctx context.Context, client forge.Client, owner, repo string) (*GitLabProjectLease, func(errp *error), error) {
+	release, err := LockGitLabProject(ctx, client, owner, repo, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	lease := &GitLabProjectLease{owner: owner, repo: repo}
+	lease.held.Store(true)
+	return lease, func(errp *error) {
+		lease.held.Store(false)
+		release(errp)
+	}, nil
+}
+
 // newGitLabLeaseHolder returns a value unique to this lock acquisition. It
 // contains only an opaque nonce, without local machine identifiers.
 func newGitLabLeaseHolder() (string, error) {
@@ -276,7 +307,7 @@ func GitLabPATExpiresAt(now time.Time) string {
 func IsGitLabRoleManagedVar(name string) bool {
 	switch name {
 	case forge.SecretForgeToken, forge.VarGitLabRoleRegistry,
-		forge.VarGitLabRoleRotation,
+		forge.VarGitLabRoleRotation, forge.VarGitLabPollerGenerations,
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken,
 		forge.SecretGitLabCoderToken:
 		return true
@@ -582,6 +613,14 @@ func extraGitLabRoleUninstallVars(ctx context.Context, client forge.Client, owne
 		// though IsGitLabRoleManagedVar still recognizes the name for
 		// orphan-detection purposes elsewhere.
 		if name == forge.SecretForgeToken {
+			return
+		}
+		// The Poller generation document records quarantine and retirement
+		// obligations for replacement Poller accounts and triggers.
+		// Deleting it would forget them, so uninstall retains it until an
+		// operator has reconciled those obligations; the live handoff
+		// (#8243) and uninstall cleanup (#8210) may revisit this.
+		if name == forge.VarGitLabPollerGenerations {
 			return
 		}
 		if !IsGitLabRoleManagedVar(name) {

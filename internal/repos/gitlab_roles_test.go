@@ -669,6 +669,7 @@ func TestIsGitLabRoleManagedVar(t *testing.T) {
 	t.Parallel()
 	assert.True(t, IsGitLabRoleManagedVar(forge.VarGitLabRoleRegistry))
 	assert.True(t, IsGitLabRoleManagedVar(forge.VarGitLabRoleRotation))
+	assert.True(t, IsGitLabRoleManagedVar(forge.VarGitLabPollerGenerations))
 	assert.True(t, IsGitLabRoleManagedVar(forge.SecretGitLabPollerToken))
 	assert.True(t, IsGitLabRoleManagedVar(forge.SecretGitLabAnalystToken))
 	assert.True(t, IsGitLabRoleManagedVar(forge.SecretGitLabCoderToken))

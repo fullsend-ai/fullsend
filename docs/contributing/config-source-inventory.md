@@ -134,5 +134,5 @@ The Go accessor layers these. The bash steps in `.github/workflows/reusable-disp
 These are credentials or CI plumbing. They do not belong in `config.base.yaml`.
 
 - Tokens and API keys: `GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, role PATs (`FULLSEND_GITLAB_POLLER_TOKEN` and the analyst and coder equivalents), `FULLSEND_FORGE_TOKEN`, `FULLSEND_OPENAI_API_KEY`, `OPENAI_API_KEY`, `JIRA_TOKEN`.
-- GitLab install machinery: `FULLSEND_DISPATCH_SECRET`, `FULLSEND_TRIGGER_TOKEN`, `FULLSEND_WEBHOOK_SECRET`, `FULLSEND_GITLAB_ROLE_MIGRATION`, `FULLSEND_GITLAB_ROLE_REGISTRY`, `FULLSEND_GITLAB_ROLE_ROTATION`.
+- GitLab install machinery: `FULLSEND_DISPATCH_SECRET`, `FULLSEND_TRIGGER_TOKEN`, `FULLSEND_WEBHOOK_SECRET`, `FULLSEND_GITLAB_ROLE_MIGRATION`, `FULLSEND_GITLAB_ROLE_REGISTRY`, `FULLSEND_GITLAB_ROLE_ROTATION`, `FULLSEND_GITLAB_POLLER_GENERATIONS`.
 - One-run context the workflow already knows: issue and PR numbers, `GITHUB_SHA`, `TRACEPARENT`, `FULLSEND_DIR`.
