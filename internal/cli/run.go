@@ -1370,6 +1370,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if len(sandboxName) > maxSandboxNameLen {
 		return fmt.Errorf("sandbox name %q is %d characters, exceeding the OpenShell limit of %d", sandboxName, len(sandboxName), maxSandboxNameLen)
 	}
+	// Inference gateway route (ADR 0137, #8280): selected per model by the
+	// gateway/ prefix, with no precedence against the OpenAI routes, and
+	// attached in addition to every other provider, never instead of
+	// them. Decided here, before Bootstrap, because the runtime renders
+	// its gateway config from the block (PrepareGatewayRun).
+	gatewayChildren := agentruntime.GatewayChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	gatewayModels := []string{agentruntime.EffectiveModel(resolvedModel, agentDefModel)}
+	for _, c := range gatewayChildren {
+		gatewayModels = append(gatewayModels, c.Spec)
+	}
+	needsGateway := agentruntime.NeedsGatewayRoute(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases) || len(gatewayChildren) > 0
+	gatewayPlan, err := planGatewayRoute(runCfg, runtimeBackend, sandboxName, gatewayModels, needsGateway)
+	if err != nil {
+		printer.StepFail("Inference gateway route unavailable")
+		return err
+	}
+	if gatewayPlan != nil && gatewayPlan.prepared != nil {
+		defer gatewayPlan.prepared.ClearGatewayRun(sandboxName)
+	}
 	// runScopedProviders maps a harness provider name to the run-scoped
 	// instance created for it; sandbox creation attaches the latter.
 	runScopedProviders := map[string]string{}
@@ -1587,6 +1606,30 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		allProviderNames = applyRunScopedProviderNames(dropSkippedProviders(sandboxProviderNames(h.Providers, result.Providers), skippedProviders), runScopedProviders)
 	}
 
+	// The gateway provider is the runner's, not the harness's: it is
+	// created whenever the route applies, alongside whatever the harness
+	// declared. Its refresher is independent of the OpenAI ones, so a run
+	// on both routes keeps two handoffs. It reads no reminted token env,
+	// so the pre-/post-script remints need not pause it.
+	var gatewayHandles []gatewayProviderHandle
+	if gatewayPlan != nil {
+		if err := sandbox.EnableProvidersV2(); err != nil {
+			printer.StepFail("Failed to enable providers v2")
+			return fmt.Errorf("enabling providers v2: %w", err)
+		}
+		gwHandle, err := startGatewayRoute(ctx, gatewayPlan, sandboxName, printer)
+		if err != nil {
+			return err
+		}
+		gatewayHandles = append(gatewayHandles, gwHandle)
+		allProviderNames = append(allProviderNames, gwHandle.name)
+		// LIFO: the refresher stops before the provider is deleted.
+		defer cleanupRunScopedProvider(gwHandle.name, []string{gatewayCredentialKey}, keepSandbox, printer)
+		for _, stop := range startGatewayRefreshers(gatewayHandles, printer) {
+			defer stop()
+		}
+	}
+
 	// A subagents entry on openai with no openai provider to attach would
 	// only fail at Bootstrap, after the sandbox exists. Fail here instead,
 	// naming the entry and the fix (#7981). A persona's own frontmatter
@@ -1786,6 +1829,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// credential file (when its runtime has one).
 		for _, h := range openAIHandles {
 			h.sandboxUp.Store(true)
+		}
+	}
+	if gatewayPlan != nil {
+		// The same preflight for the configured gateway host: the token
+		// only reaches it through an inspected route.
+		if err := checkGatewayEgressInspected(ctx, sandboxName, gatewayPlan.host); err != nil {
+			printer.StepFail("Sandbox policy cannot deliver the inference gateway credential")
+			return err
+		}
+		for _, gh := range gatewayHandles {
+			gh.sandboxUp.Store(true)
 		}
 	}
 

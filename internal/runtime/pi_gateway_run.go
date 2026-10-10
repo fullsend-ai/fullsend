@@ -114,9 +114,9 @@ func ValidatePiGatewayPluginEnv(plugins []PluginInput) error {
 // INFERENCE_GATEWAY_API_KEY included, so without the file pi would start
 // with no gateway credential at all.
 //
-// The token file's seed (part 3) must run before the agent-writable .env
-// is sourced, as PiOpenAIAuthSeed does in buildPiRunCommand, so .env
-// cannot replace the placeholder it writes.
+// The token file's seed (PiGatewayTokenSeed) runs before the
+// agent-writable .env is sourced, as PiOpenAIAuthSeed does in
+// buildPiRunCommand, so .env cannot replace the placeholder it writes.
 func validatePiGatewayRun(g *PiGatewayRun, plugins []PluginInput) error {
 	if g == nil {
 		return nil
@@ -198,4 +198,66 @@ func piGatewayEnvParts(g *PiGatewayRun) []string {
 		parts = append(parts, "&& export "+piInferenceGatewayTokenFileEnv+"="+shellQuote(g.TokenFile))
 	}
 	return parts
+}
+
+const (
+	// piInferenceGatewayTokenFile is the gateway token file under the pi
+	// config dir. The extension re-reads INFERENCE_GATEWAY_TOKEN_FILE on
+	// every request, and it wins over INFERENCE_GATEWAY_API_KEY, so a
+	// running iteration follows a re-seed.
+	piInferenceGatewayTokenFile = "inference-gateway.token"
+	// piGatewayCredentialEnv is the gateway provider's credential key: the
+	// env var the run-scoped provider's placeholder reaches the sandbox in
+	// (profiles/fullsend-inference-gateway.yaml).
+	piGatewayCredentialEnv = "INFERENCE_GATEWAY_API_KEY"
+)
+
+// PiGatewayTokenSeed is the POSIX sh fragment that writes the placeholder
+// the sandbox environment carries for INFERENCE_GATEWAY_API_KEY into the
+// gateway token file under configDir, atomically via rename. It runs at
+// iteration start, before the agent-writable .env is sourced (and before
+// the run command clears the INFERENCE_GATEWAY_* family), and the runner
+// re-runs it through `sandbox exec` after every token refresh. A value
+// that is not a gateway placeholder fails the run: a real token in the
+// sandbox environment would mean the provider path was bypassed.
+func PiGatewayTokenSeed(configDir string) string {
+	dir := shellQuote(configDir)
+	final := shellQuote(configDir + "/" + piInferenceGatewayTokenFile)
+	tmp := shellQuote(configDir + "/" + piInferenceGatewayTokenFile + ".fullsend")
+	return `case "${` + piGatewayCredentialEnv + `:-}" in ` + piPlaceholderPrefix + `*` + piGatewayCredentialEnv + `) ;; *) echo 'fullsend: ` + piGatewayCredentialEnv + ` in the sandbox is not a gateway placeholder (inference gateway provider not attached, or a real token reached the sandbox); refusing to run the gateway provider' >&2; exit 1 ;; esac` +
+		` && case "$` + piGatewayCredentialEnv + `" in *[!A-Za-z0-9_:]*) echo 'fullsend: ` + piGatewayCredentialEnv + ` placeholder has unexpected characters; refusing to run the gateway provider' >&2; exit 1 ;; esac` +
+		` && command -p mkdir -p ` + dir +
+		` && printf '%s' "$` + piGatewayCredentialEnv + `" > ` + tmp +
+		` && command -p mv -f ` + tmp + ` ` + final
+}
+
+// PrepareGatewayRun implements GatewayRouteRuntime: it renders the
+// runner-owned inference-gateway.json from the block and registers the
+// run for the sandbox (SetPiGatewayRun), with the token file under the
+// pi config dir.
+func (r PiRuntime) PrepareGatewayRun(sandboxName string, run GatewayRun) error {
+	cfg, ids, err := RenderPiGatewayConfig(run.Block, run.ModelsFile)
+	if err != nil {
+		return err
+	}
+	SetPiGatewayRun(sandboxName, &PiGatewayRun{
+		Config:    cfg,
+		ModelIDs:  ids,
+		BaseURL:   run.BaseURL,
+		TokenFile: r.ConfigDir() + "/" + piInferenceGatewayTokenFile,
+	})
+	return nil
+}
+
+// ClearGatewayRun implements GatewayRouteRuntime.
+func (r PiRuntime) ClearGatewayRun(sandboxName string) { SetPiGatewayRun(sandboxName, nil) }
+
+// GatewayCredentialSeed implements GatewayRouteRuntime: the gateway
+// placeholder key, the token file seed and the token file.
+func (r PiRuntime) GatewayCredentialSeed() CredentialSeed {
+	return CredentialSeed{
+		PlaceholderEnv: piGatewayCredentialEnv,
+		Seed:           PiGatewayTokenSeed(r.ConfigDir()),
+		File:           r.ConfigDir() + "/" + piInferenceGatewayTokenFile,
+	}
 }

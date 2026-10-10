@@ -146,16 +146,25 @@ const openAIBaselineAttempts = 3
 // gateway still lists the deleted sandbox as attached (see openAIDeleteRetries).
 var openAIDeleteBackoff = 3 * time.Second
 
-// sandboxOpenAIPlaceholder returns the OPENAI_API_KEY placeholder a new
-// process in the sandbox receives right now.
-func sandboxOpenAIPlaceholder(ctx context.Context, sandboxName string) (string, error) {
+// placeholderEnvKeyPattern is a shell identifier: a route's placeholder
+// env key must match it before it is interpolated into a command.
+var placeholderEnvKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// sandboxPlaceholder returns the placeholder a new process in the sandbox
+// receives right now under envKey, a route's placeholder env key
+// (runtime.CredentialSeed.PlaceholderEnv). envKey is a runner constant, but
+// it is checked anyway because it is interpolated into a shell command.
+func sandboxPlaceholder(ctx context.Context, sandboxName, envKey string) (string, error) {
+	if !placeholderEnvKeyPattern.MatchString(envKey) {
+		return "", fmt.Errorf("reading the sandbox placeholder: %q is not an env var name", envKey)
+	}
 	// ExecContext already wraps the command in `sh -c`. Held under the
 	// sandbox lock so the between-iteration sweep never kills this exec.
 	var out, stderr string
 	var code int
 	err := withSandboxLock(ctx, nil, func() error {
 		var execErr error
-		out, stderr, code, execErr = sandbox.ExecContext(ctx, sandboxName, `printf %s "${OPENAI_API_KEY:-}"`, openAIPlaceholderExecTimeout)
+		out, stderr, code, execErr = sandbox.ExecContext(ctx, sandboxName, `printf %s "${`+envKey+`:-}"`, openAIPlaceholderExecTimeout)
 		return execErr
 	})
 	if err != nil {
@@ -170,6 +179,12 @@ func sandboxOpenAIPlaceholder(ctx context.Context, sandboxName string) (string, 
 // baselineOpenAIPlaceholder reads the placeholder the agent currently
 // holds, with bounded retries; it runs before the provider is rotated.
 func baselineOpenAIPlaceholder(ctx context.Context, sandboxName string) (string, error) {
+	return baselinePlaceholder(ctx, sandboxName, openAIDefaultCredentialKey)
+}
+
+// baselinePlaceholder is baselineOpenAIPlaceholder for any route's
+// placeholder env key.
+func baselinePlaceholder(ctx context.Context, sandboxName, envKey string) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt < openAIBaselineAttempts; attempt++ {
 		if attempt > 0 {
@@ -179,12 +194,12 @@ func baselineOpenAIPlaceholder(ctx context.Context, sandboxName string) (string,
 			case <-time.After(openAIPlaceholderPoll):
 			}
 		}
-		p, err := sandboxOpenAIPlaceholder(ctx, sandboxName)
+		p, err := sandboxPlaceholder(ctx, sandboxName, envKey)
 		if err == nil && p != "" {
 			return p, nil
 		}
 		if err == nil {
-			err = errors.New("the sandbox environment has no OPENAI_API_KEY placeholder")
+			err = fmt.Errorf("the sandbox environment has no %s placeholder", envKey)
 		}
 		lastErr = err
 	}
@@ -203,13 +218,25 @@ func baselineOpenAIPlaceholder(ctx context.Context, sandboxName string) (string,
 // placeholder and retries, rather than recording a generation the agent
 // may not hold.
 func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous string, printer *ui.Printer) (string, error) {
+	return reseedCredential(ctx, h.sandbox, "OpenAI", runtime.CredentialSeed{
+		PlaceholderEnv: openAIDefaultCredentialKey,
+		Seed:           h.authSeed,
+		File:           h.authFile,
+	}, previous, printer)
+}
+
+// reseedCredential is reseedOpenAIAuth for any credential route: it waits
+// for the sandbox to hand out a placeholder other than previous under
+// seed.PlaceholderEnv, re-runs seed.Seed and verifies seed.File names the
+// new placeholder. label names the route in errors and the log line.
+func reseedCredential(ctx context.Context, sandboxName, label string, seed runtime.CredentialSeed, previous string, printer *ui.Printer) (string, error) {
 	if previous == "" {
-		return "", errors.New("re-seeding the OpenAI credential file: the placeholder the agent currently holds is unknown")
+		return "", fmt.Errorf("re-seeding the %s credential file: the placeholder the agent currently holds is unknown", label)
 	}
 	deadline := time.Now().Add(openAIPlaceholderSettle)
 	var current string
 	for {
-		p, err := sandboxOpenAIPlaceholder(ctx, h.sandbox)
+		p, err := sandboxPlaceholder(ctx, sandboxName, seed.PlaceholderEnv)
 		if err != nil {
 			return "", err
 		}
@@ -218,7 +245,7 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 			break
 		}
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("the sandbox still hands out the previous OpenAI placeholder after %s; the agent keeps the generation it holds", openAIPlaceholderSettle)
+			return "", fmt.Errorf("the sandbox still hands out the previous %s placeholder after %s; the agent keeps the generation it holds", label, openAIPlaceholderSettle)
 		}
 		select {
 		case <-ctx.Done():
@@ -241,41 +268,41 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 	// refresher records the new placeholder while the file may still name
 	// the old one — and the next settle wait would then compare against a
 	// generation the agent never held.
-	seed := func() error {
+	doSeed := func() error {
 		var lastErr error
 		for attempt := 0; attempt < 2; attempt++ {
 			var stderr string
 			var code int
 			err := withSandboxLock(ctx, nil, func() error {
 				var execErr error
-				_, stderr, code, execErr = sandbox.ExecContext(ctx, h.sandbox, h.authSeed, openAIPlaceholderExecTimeout)
+				_, stderr, code, execErr = sandbox.ExecContext(ctx, sandboxName, seed.Seed, openAIPlaceholderExecTimeout)
 				return execErr
 			})
 			if err != nil {
-				return fmt.Errorf("re-seeding the OpenAI credential file: %w", err)
+				return fmt.Errorf("re-seeding the %s credential file: %w", label, err)
 			}
 			if code != 0 {
-				return fmt.Errorf("re-seeding the OpenAI credential file: exit %d: %s", code, strings.TrimSpace(stderr))
+				return fmt.Errorf("re-seeding the %s credential file: exit %d: %s", label, code, strings.TrimSpace(stderr))
 			}
-			if h.authFile == "" {
+			if seed.File == "" {
 				return nil
 			}
-			_, _, code, err = sandbox.ExecContext(ctx, h.sandbox, "command -p grep -qF "+shellQuote(current)+" "+shellQuote(h.authFile), openAIPlaceholderExecTimeout)
+			_, _, code, err = sandbox.ExecContext(ctx, sandboxName, "command -p grep -qF "+shellQuote(current)+" "+shellQuote(seed.File), openAIPlaceholderExecTimeout)
 			if err == nil && code == 0 {
 				return nil
 			}
 			if err != nil {
-				lastErr = fmt.Errorf("verifying the re-seeded OpenAI credential file: %w", err)
+				lastErr = fmt.Errorf("verifying the re-seeded %s credential file: %w", label, err)
 				continue
 			}
-			lastErr = fmt.Errorf("verifying the re-seeded OpenAI credential file: %s does not name the refreshed placeholder (grep exit %d)", h.authFile, code)
+			lastErr = fmt.Errorf("verifying the re-seeded %s credential file: %s does not name the refreshed placeholder (grep exit %d)", label, seed.File, code)
 		}
 		return lastErr
 	}
-	if err := seed(); err != nil {
+	if err := doSeed(); err != nil {
 		return "", err
 	}
-	printer.StepInfo("the runtime's OpenAI credential file was re-seeded with the refreshed placeholder")
+	printer.StepInfo("the runtime's " + label + " credential file was re-seeded with the refreshed placeholder")
 	return current, nil
 }
 
@@ -807,15 +834,11 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 // fragment to write it would only make a refresh verify a file nothing
 // seeds.
 func openAICredentialFiles(backend runtime.Backend) (seed, file string) {
-	s, ok := backend.Runtime.(runtime.OpenAICredentialSeeder)
-	if !ok {
+	rs := runtime.OpenAIRouteSeed(backend.Runtime)
+	if rs.IsZero() {
 		return "", ""
 	}
-	seed = s.OpenAIAuthSeed()
-	if seed == "" {
-		return "", ""
-	}
-	return seed, s.OpenAIAuthFile()
+	return rs.Seed, rs.File
 }
 
 // openAIRefreshDelay is how long to wait before the next refresh of a

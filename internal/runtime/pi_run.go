@@ -455,7 +455,13 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 		// Same block, same reason as the manifest guard: the rendered
 		// inference-gateway.json must be the runner's, and no local
 		// overlay may sit beside it, before .env can shadow the tools.
-		parts = append(parts, "&& "+piGatewayConfigGuard(r.ConfigDir(), gw.configSum()))
+		// Then seed the token file with the placeholder the environment
+		// carries, before .env can replace INFERENCE_GATEWAY_API_KEY (and
+		// before the env clear below removes it), as the openai seed does.
+		parts = append(parts,
+			"&& "+piGatewayConfigGuard(r.ConfigDir(), gw.configSum()),
+			"&& "+PiGatewayTokenSeed(r.ConfigDir()),
+		)
 	}
 	parts = append(parts,
 		"&& . "+shellQuote(envFile),
