@@ -648,24 +648,29 @@ func TestRunInferenceProvider(t *testing.T) {
 // the run's own cleanup defer is not registered yet; --keep-sandbox keeps
 // it, and a delete failure is only a warning.
 func TestDiscardSandbox(t *testing.T) {
-	var deleted []string
+	var deleted, logged []string
 	var delErr error
-	orig := deleteSandboxFn
+	origDelete, origLogs := deleteSandboxFn, collectOpenshellLogsFn
 	deleteSandboxFn = func(name string) error {
 		deleted = append(deleted, name)
 		return delErr
 	}
-	t.Cleanup(func() { deleteSandboxFn = orig })
+	collectOpenshellLogsFn = func(name, runDir string, _ *ui.Printer) {
+		logged = append(logged, name+"@"+runDir)
+	}
+	t.Cleanup(func() { deleteSandboxFn, collectOpenshellLogsFn = origDelete, origLogs })
 
-	discardSandbox("sb-kept", true, ui.New(io.Discard))
+	discardSandbox("sb-kept", "/run", true, ui.New(io.Discard))
 	assert.Empty(t, deleted, "--keep-sandbox keeps it")
+	assert.Equal(t, []string{"sb-kept@/run"}, logged, "logs are collected either way")
 
-	discardSandbox("sb-1", false, ui.New(io.Discard))
+	discardSandbox("sb-1", "/run", false, ui.New(io.Discard))
 	assert.Equal(t, []string{"sb-1"}, deleted)
+	assert.Equal(t, []string{"sb-kept@/run", "sb-1@/run"}, logged)
 
 	delErr = errors.New("boom")
 	var out bytes.Buffer
-	discardSandbox("sb-2", false, ui.New(&out))
+	discardSandbox("sb-2", "/run", false, ui.New(&out))
 	assert.Equal(t, []string{"sb-1", "sb-2"}, deleted)
 	assert.Contains(t, out.String(), "Sandbox cleanup failed: boom")
 }

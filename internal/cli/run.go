@@ -997,8 +997,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	parentNeedsOpenAIProvider := agentruntime.NeedsOpenAIProvider(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
 	// parentNeedsGateway is the same parent-only decision for the inference
 	// gateway route (ADR 0137): a pi parent on a gateway/ model calls no
-	// Vertex, so it must not need Vertex credentials. Its children are
-	// classified on their own, as for openai (vertexGap below).
+	// Vertex, so it must not need Vertex credentials. It depends on the
+	// model alone, not on an inference.gateway block: with no block the
+	// harness may load the extension as a plugin (the local guide), which
+	// is no Vertex call either. Its children are classified on their own,
+	// as for openai (vertexGap below).
 	parentNeedsGateway := agentruntime.NeedsGatewayRoute(runtimeBackend.Runtime.Name(), h.Model, agentDefModel, configModelAliases)
 	provider := runInferenceProvider(runtimeBackend.Runtime.Name(), parentNeedsOpenAIProvider, parentNeedsGateway)
 	// openAIChildren are the configured pi children (subagents.<persona>,
@@ -1850,13 +1853,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// after the agent has retried its first request.
 		if err := checkOpenAIEgressInspected(ctx, sandboxName); err != nil {
 			printer.StepFail("Sandbox policy cannot deliver the OpenAI credential")
-			discardSandbox(sandboxName, keepSandbox, printer)
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
 			return err
-		}
-		// From here a refresh must also re-seed the running agent's
-		// credential file (when its runtime has one).
-		for _, h := range openAIHandles {
-			h.sandboxUp.Store(true)
 		}
 	}
 	if gatewayPlan != nil {
@@ -1864,12 +1862,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// only reaches it through an inspected route.
 		if err := checkGatewayEgressInspected(ctx, sandboxName, gatewayPlan.host); err != nil {
 			printer.StepFail("Sandbox policy cannot deliver the inference gateway credential")
-			discardSandbox(sandboxName, keepSandbox, printer)
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
 			return err
 		}
-		for _, gh := range gatewayHandles {
-			gh.sandboxUp.Store(true)
-		}
+	}
+	// From here a refresh must also re-seed the running agent's credential
+	// file (when its runtime has one). Set only once every preflight has
+	// passed, so no refresher re-seeds a sandbox a failed one deletes.
+	for _, h := range openAIHandles {
+		h.sandboxUp.Store(true)
+	}
+	for _, gh := range gatewayHandles {
+		gh.sandboxUp.Store(true)
 	}
 
 	// repoExtractedOK tracks whether hostRepositoryDownloadDir is safe
@@ -4475,15 +4479,21 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 	}
 }
 
-// deleteSandboxFn is sandbox.Delete; tests replace it.
-var deleteSandboxFn = sandbox.Delete
+// deleteSandboxFn and collectOpenshellLogsFn are sandbox.Delete and
+// collectOpenshellLogs; tests replace them.
+var (
+	deleteSandboxFn        = sandbox.Delete
+	collectOpenshellLogsFn = collectOpenshellLogs
+)
 
 // discardSandbox deletes a sandbox that failed a credential egress
 // preflight. Those preflights run before the run's own sandbox cleanup
 // defer is registered (it must follow the post-script's), so without this
-// a failed preflight would leave the sandbox running. --keep-sandbox
-// keeps it, as it does for every other failure.
-func discardSandbox(sandboxName string, keep bool, printer *ui.Printer) {
+// a failed preflight would leave the sandbox running. Like that defer it
+// collects the OpenShell logs first: a policy failure is when they help.
+// --keep-sandbox keeps it, as it does for every other failure.
+func discardSandbox(sandboxName, runDir string, keep bool, printer *ui.Printer) {
+	collectOpenshellLogsFn(sandboxName, runDir, printer)
 	if keep {
 		printer.StepWarn(fmt.Sprintf("Sandbox kept (--keep-sandbox): %s", sandboxName))
 		return
