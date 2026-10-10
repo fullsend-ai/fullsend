@@ -314,6 +314,9 @@ These are deferred and named:
 - Claude Code and Codex on the gateway route
 - a gateway credential exchanged through a WIF or STS service instead of the
   forge OIDC token itself
+- more than one gateway per repository. This decision supports one, which can
+  front several upstreams. Each extra gateway would need its own audience,
+  token, placeholder and model-prefix id.
 - GitLab ID tokens, which arrive as an `id_tokens:` job variable rather than
   a request URL
 - operator guides for gateways beyond agentgateway and Praxis (LiteLLM,
