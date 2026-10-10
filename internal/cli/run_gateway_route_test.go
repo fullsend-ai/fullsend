@@ -162,6 +162,15 @@ func TestPlanGatewayRoute_ModelsFile(t *testing.T) {
 	missing := gatewayTestRunConfig(t, cfg, nil)
 	_, err = planGatewayRoute(missing, pi, "fs-plan-file-missing", []string{"gateway/from-file"}, true)
 	assert.ErrorContains(t, err, "models_file")
+
+	// Claude Code does not use the model list, so a configured but missing
+	// models_file does not stop its run.
+	const csb = "fs-plan-file-claude"
+	claude := runtime.Backend{Runtime: runtime.ClaudeRuntime{}}
+	cplan, err := planGatewayRoute(missing, claude, csb, []string{"gateway/from-file"}, true)
+	require.NoError(t, err)
+	require.NotNil(t, cplan)
+	t.Cleanup(func() { cplan.prepared.ClearGatewayRun(csb) })
 }
 
 func TestReadGatewayModelsFile(t *testing.T) {

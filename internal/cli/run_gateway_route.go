@@ -100,9 +100,14 @@ func planGatewayRoute(rc runConfig, backend runtime.Backend, sandboxName string,
 	if !ok {
 		return plan, nil
 	}
-	modelsFile, err := readGatewayModelsFile(rc, block)
-	if err != nil {
-		return nil, err
+	// Claude Code needs no model list, so a models_file configured for pi
+	// is not read (and cannot fail) on its runs.
+	var modelsFile []byte
+	if name != "claude" {
+		modelsFile, err = readGatewayModelsFile(rc, block)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := gr.PrepareGatewayRun(sandboxName, runtime.GatewayRun{
 		Block:      block,

@@ -343,7 +343,9 @@ is already rejected). Give repository-specific providers and profiles their own 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
 
-## Inference gateway credentials on pi
+<a id="inference-gateway-credentials-on-pi"></a>
+
+## Inference gateway credentials on pi and Claude Code
 
 A pi run that resolves a `gateway/<id>` model, for the parent or a configured sub-agent, uses the
 `inference.gateway` block of `.fullsend/config.yaml`

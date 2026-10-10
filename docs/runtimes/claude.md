@@ -75,7 +75,10 @@ prefix only selects the route, so `gateway/claude-haiku-5-5` calls `claude-haiku
 - the credential, per mode (below).
 
 `.env` cannot override any of these. A variable that `.env` makes `readonly` stops the launch rather
-than reaching Claude Code. The placeholder is read from the sandbox before `.env` runs.
+than reaching Claude Code. The placeholder is read from the sandbox before `.env` runs. This
+covers the environment Claude Code is launched with: the `env` block of the repository's own
+`.claude/settings.json` is applied by Claude Code after launch and can still replace the advertised
+routing (see [Environment the launch clears](#environment-the-launch-clears)).
 
 **Credential per `auth` mode.** Gateways differ in which header they accept. For example, one tested
 gateway refuses `Authorization: Bearer` on `/v1/messages` for static keys. Check that your gateway

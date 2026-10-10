@@ -340,10 +340,15 @@ func TestBuildRunCommand_GatewayPlaceholderRequired(t *testing.T) {
 		}
 		registerClaudeGateway(t, sb, apiKey)
 		tmp := t.TempDir()
+		// The launch pins the claude binary before the seed runs, so the
+		// test needs one on PATH (CI has none installed).
+		binDir := filepath.Join(tmp, "bin")
+		require.NoError(t, os.MkdirAll(binDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\necho REAL-CLAUDE\n"), 0o755))
 		cmd := buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: tmp, Model: "gateway/m"})
 		cmd = strings.ReplaceAll(cmd, sandbox.SandboxClaudeConfig, filepath.Join(tmp, "cfg"))
 		c := exec.Command("/bin/sh", "-c", cmd)
-		c.Env = []string{"PATH=/usr/bin:/bin", "INFERENCE_GATEWAY_API_KEY=eyJhbGciOi.eyJzdWIiOi.sig"}
+		c.Env = []string{"PATH=" + binDir + ":/usr/bin:/bin", "INFERENCE_GATEWAY_API_KEY=eyJhbGciOi.eyJzdWIiOi.sig"}
 		out, err := c.CombinedOutput()
 		var exitErr *exec.ExitError
 		require.ErrorAs(t, err, &exitErr, string(out))
