@@ -353,6 +353,10 @@ export default defineConfig({
               link: "/guides/infrastructure/openai-workload-identity",
             },
             {
+              text: "Inference Gateway Operator",
+              link: "/guides/infrastructure/inference-gateway-operator",
+            },
+            {
               text: "Layered Config Reference",
               link: "/guides/infrastructure/layered-config-reference",
             },

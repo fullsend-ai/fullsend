@@ -1,0 +1,4 @@
+# docs/guides/infrastructure/inference-gateway-operator.md: the curl in step 6 sends the
+# literal placeholder "not-a-google-token" to show that the gateway, not Cloud Run, answers
+# a non-Google bearer (fullsend#8312). It is not a credential.
+docs/guides/infrastructure/inference-gateway-operator.md:curl-auth-header:321

@@ -421,6 +421,7 @@ Status comment behavior is configured via `status_notifications` in
 > **Experimental.** Behaviour may change. This section covers local runs, where the harness ships
 > the extension as a plugin. Hosted (CI) runs use the runner-managed `inference.gateway` block in
 > `.fullsend/config.yaml` instead (see the [config reference](../../reference/config-reference.md)).
+> For the CI setup, see [Inference gateway with GitHub OIDC (WIF)](../getting-started/getting-inference.md#inference-gateway-with-github-oidc-wif).
 > A local run can use that block too with `auth: api-key`, which reads the gateway key from
 > `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no OIDC endpoint
 > ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)).

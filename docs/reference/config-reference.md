@@ -386,7 +386,8 @@ independently through the layered config system (an overlay can override
   runner-variable override for this block. `fullsend github setup
   --inference-gateway-*` writes it and changes only the keys you pass, so
   a repository can add its models under a `url` and `audience` inherited
-  from `config.base.yaml`.
+  from `config.base.yaml`. For a walkthrough, see
+  [Inference gateway with GitHub OIDC (WIF)](../guides/getting-started/getting-inference.md#inference-gateway-with-github-oidc-wif).
 
 For setup instructions, see
 [Getting Inference](../guides/getting-started/getting-inference.md).
