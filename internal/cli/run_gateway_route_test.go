@@ -243,9 +243,10 @@ func TestRefreshGatewayProvider_ReseedsTheTokenFile(t *testing.T) {
 	// is updated, then the new one; the seed and verify execs succeed.
 	script := "#!/bin/sh\n" +
 		// The seed fragment also names the placeholder variable, so the
-		// grep and seed arms come before the placeholder read.
+		// verify and seed arms come before the placeholder read. The seed
+		// runs grep -qxF itself, so the verify arm matches grep -qF.
 		"case \"$*\" in\n" +
-		"  *grep*) exit 0 ;;\n" +
+		"  *'grep -qF'*) exit 0 ;;\n" +
 		"  *inference-gateway.token*) echo seeded >> " + shellQuoteForTest(log) + "; exit 0 ;;\n" +
 		"  *INFERENCE_GATEWAY_API_KEY:-*) if test -f " + shellQuoteForTest(counter) + "; then printf '" + ph("v222_INFERENCE_GATEWAY_API_KEY") + "'; else printf '" + ph("v111_INFERENCE_GATEWAY_API_KEY") + "'; fi; exit 0 ;;\n" +
 		"  *'provider update'*) touch " + shellQuoteForTest(counter) + "; exit 0 ;;\n" +
@@ -390,7 +391,7 @@ func gatewayRecoveryStub(t *testing.T) string {
 	dir := t.TempDir()
 	q := func(name string) string { return shellQuoteForTest(filepath.Join(dir, name)) }
 	stubOpenshell(t, "case \"$*\" in\n"+
-		"  *grep*) exit 0 ;;\n"+
+		"  *'grep -qF'*) exit 0 ;;\n"+
 		"  *inference-gateway.token*) if test -f "+q("seedfail")+"; then exit 1; fi; exit 0 ;;\n"+
 		"  *INFERENCE_GATEWAY_API_KEY:-*) if test -f "+q("updated")+" && test -f "+q("readfail")+"; then exit 1; fi; if test -f "+q("updated")+"; then touch "+q("settling")+"; fi; if test -f "+q("updated")+" && test -f "+q("flip")+"; then printf '"+ph("v222_INFERENCE_GATEWAY_API_KEY")+"'; elif test -f "+q("base")+"; then printf '"+ph("v111_INFERENCE_GATEWAY_API_KEY")+"'; fi; exit 0 ;;\n"+
 		"  *'provider update'*) touch "+q("updated")+"; exit 0 ;;\n"+
@@ -559,7 +560,7 @@ func TestRunGatewayRefresh_PendingHandOffSeedsTheNewestGeneration(t *testing.T) 
 	q := func(name string) string { return shellQuoteForTest(filepath.Join(dir, name)) }
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "count"), []byte("0\n"), 0o644))
 	stubOpenshell(t, "case \"$*\" in\n"+
-		"  *grep*) exit 0 ;;\n"+
+		"  *'grep -qF'*) exit 0 ;;\n"+
 		// The first hand-off fails at the seed; later ones succeed.
 		"  *inference-gateway.token*) test \"$(cat "+q("count")+")\" -ge 2 ;;\n"+
 		"  *INFERENCE_GATEWAY_API_KEY:-*) n=$(cat "+q("count")+"); if test -f "+q("lag")+"; then rm -f "+q("lag")+"; n=$((n-1)); fi; printf 'openshell:resolve:env:v%s_INFERENCE_GATEWAY_API_KEY' \"$n\" ;;\n"+
