@@ -199,6 +199,11 @@ jobs:
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          # Inference gateway BTs (#8280): the E2E test gateway URL (embeds
+          # the project number, so a secret) and its echo-only API key. The
+          # gateway scenarios skip when these are unset.
+          E2E_INFERENCE_GATEWAY_URL: ${{ secrets.E2E_INFERENCE_GATEWAY_URL }}
+          E2E_INFERENCE_GATEWAY_TEST_KEY: ${{ secrets.E2E_INFERENCE_GATEWAY_TEST_KEY }}
           # CF mint BT path: temp Worker deploy needs role PEMs + Cloudflare creds
           TEST_FULLSEND_PEM: ${{ secrets.TEST_FULLSEND_PEM }}
           TEST_TRIAGE_PEM: ${{ secrets.TEST_TRIAGE_PEM }}
