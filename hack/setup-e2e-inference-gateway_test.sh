@@ -36,6 +36,7 @@ cat > "${SHIM_DIR}/gcloud" <<'EOF'
 #!/usr/bin/env bash
 S="${STUB_STATE}"
 echo "gcloud $*" >> "${S}/gcloud.log"
+stub_sha256() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 # Drop the global flags the script always passes.
 while [[ "${1:-}" == --project=* || "${1:-}" == --quiet ]]; do shift; done
 notfound() { echo "ERROR: NOT_FOUND: $1" >&2; exit 1; }
@@ -149,7 +150,7 @@ case "$1 $2 $3" in
   "run services update")
     # Like gcloud 588: the mount keeps its volume, a new revision rolls, and
     # the running image is pinned by digest when no new image is given.
-    jq --arg d "$(printf 'upstream-index' | shasum -a 256 | cut -d' ' -f1)" '
+    jq --arg d "$(printf 'upstream-index' | stub_sha256)" '
       .spec.template.spec.containers[0].image |= (sub("(:v[0-9.]+|@sha256:[0-9a-f]+)$"; "") + "@sha256:" + $d)' \
       "${S}/svc.json" > "${S}/svc.tmp" && mv "${S}/svc.tmp" "${S}/svc.json"
     tick > "${S}/revision_time"
@@ -164,6 +165,7 @@ cat > "${SHIM_DIR}/skopeo" <<'EOF'
 #!/usr/bin/env bash
 S="${STUB_STATE}"
 echo "skopeo $*" >> "${S}/skopeo.log"
+stub_sha256() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 ref="${*: -1}"
 case "$1" in
   login) cat > /dev/null ;;
@@ -202,7 +204,8 @@ fi
 EOF
 chmod +x "${SHIM_DIR}"/*
 
-UPSTREAM_DIGEST="sha256:$(printf 'upstream-index' | shasum -a 256 | cut -d' ' -f1)"
+stub_sha256() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
+UPSTREAM_DIGEST="sha256:$(printf 'upstream-index' | stub_sha256)"
 SA="serviceAccount:fullsend-e2e-gateway@${PROJECT}.iam.gserviceaccount.com"
 CFG_SECRET="fullsend-e2e-gateway-config"
 KEY_SECRET="fullsend-e2e-gateway-stub-upstream-key"
@@ -508,6 +511,10 @@ if run_setup --project "${PROJECT}" --without-vertex; then fail "describe error 
   expect_out "describe error fails closed" "PERMISSION_DENIED"; fi
 if ! grep -q 'secrets create' "${STATE}/gcloud.log"; then
   pass "describe error creates nothing"; else fail "describe error created a secret"; fi
+
+fresh_state
+if bash "${SETUP}" --help 2>/dev/null | grep -q '^Usage: hack/setup-e2e-inference-gateway.sh'; then
+  pass "--help prints usage to stdout"; else fail "--help output"; fi
 
 fresh_state
 if run_setup --project; then fail "--project without a value accepted"; else

@@ -74,7 +74,7 @@ LABEL="purpose=${NAME}"
 
 # --- Arguments --------------------------------------------------------------
 usage() {
-  sed -n '2,/^$/{s/^# \{0,1\}//;p}' "$0" >&2
+  sed -n '2,/^$/{s/^# \{0,1\}//;p;}' "$0"
 }
 
 PROJECT="${E2E_GCP_PROJECT_ID:-}"
@@ -102,7 +102,7 @@ while [[ $# -gt 0 ]]; do
     --delete) DELETE=true; shift ;;
     --yes) YES=true; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "Error: unknown argument: $1" >&2; usage; exit 1 ;;
+    *) echo "Error: unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
 
