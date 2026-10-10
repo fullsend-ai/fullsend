@@ -269,7 +269,7 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 		PlaceholderEnv: openAIDefaultCredentialKey,
 		Seed:           h.authSeed,
 		File:           h.authFile,
-	}, previous, h.unrecorded, printer)
+	}, previous, h.unrecorded, nil, printer)
 }
 
 // reseedSeedAttempts is how many times reseedCredential seeds and verifies
@@ -329,7 +329,12 @@ func (e *generationNotObservedError) Unwrap() error { return e.cause }
 // never recorded. The re-seed retires them along with previous, and the
 // settle wait does not take one for the new generation. A generation seen
 // here whose seed then fails is added to it; a successful re-seed empties it.
-func reseedCredential(ctx context.Context, sandboxName, label string, seed runtime.CredentialSeed, previous string, unrecorded *seedGenerations, printer *ui.Printer) (string, error) {
+//
+// superseded lists further older generations the re-seed retires, for a
+// route whose pending hand-off was passed over by a later rotation (the
+// gateway route). Unlike unrecorded it is not touched here: the route that
+// owns it decides when it is spent, and the settle wait does not exclude it.
+func reseedCredential(ctx context.Context, sandboxName, label string, seed runtime.CredentialSeed, previous string, unrecorded *seedGenerations, superseded []string, printer *ui.Printer) (string, error) {
 	if previous == "" {
 		return "", fmt.Errorf("re-seeding the %s credential file: the placeholder the agent currently holds is unknown", label)
 	}
@@ -374,6 +379,11 @@ func reseedCredential(ctx context.Context, sandboxName, label string, seed runti
 	// the old one — and the next settle wait would then compare against a
 	// generation the agent never held.
 	retired := append([]string{previous}, unrecorded.snapshot()...)
+	for _, p := range superseded {
+		if !slices.Contains(retired, p) {
+			retired = append(retired, p)
+		}
+	}
 	doSeed := func() error {
 		var lastErr error
 		for attempt := 0; attempt < reseedSeedAttempts; attempt++ {

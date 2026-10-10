@@ -592,6 +592,59 @@ func TestRunGatewayRefresh_PendingHandOffSeedsTheNewestGeneration(t *testing.T) 
 	assert.Equal(t, st.expiresAt, st.heldExpiresAt)
 }
 
+// A hand-off that fails at the seed leaves generation 1 seen but never
+// recorded, with the agent still on generation 0. When the next rotation
+// meets that pending hand-off it reads 1 as its baseline, so the re-seed
+// must retire 0 as well, or a stalled writer holding 0 would not be
+// recognized as stale and could replace the verified generation 2
+// (fullsend#8311).
+func TestRunGatewayRefresh_PendingHandOffRetiresTheHeldGenerationToo(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	dir := t.TempDir()
+	q := func(name string) string { return shellQuoteForTest(filepath.Join(dir, name)) }
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "count"), []byte("0\n"), 0o644))
+	stubOpenshell(t, "case \"$*\" in\n"+
+		"  *'grep -qF'*) exit 0 ;;\n"+
+		// The first hand-off fails at the seed; later ones succeed.
+		// Each seed attempt logs the placeholders it retires.
+		"  *inference-gateway.token*) echo \"$*\" | grep -o \"FULLSEND_SEED_PREVIOUS='[^']*'\" | head -n 1 >> "+q("seeds")+"; test \"$(cat "+q("count")+")\" -ge 2 ;;\n"+
+		"  *INFERENCE_GATEWAY_API_KEY:-*) n=$(cat "+q("count")+"); if test -f "+q("lag")+"; then rm -f "+q("lag")+"; n=$((n-1)); fi; printf 'openshell:resolve:env:v%s_INFERENCE_GATEWAY_API_KEY' \"$n\" ;;\n"+
+		"  *'provider update'*) n=$(cat "+q("count")+"); echo $((n+1)) > "+q("count")+"; touch "+q("lag")+" ;;\n"+
+		"esac")
+	shrinkGatewayRefreshTimers(t)
+	var calls atomic.Int32
+	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
+		lifetime := 5 * time.Minute
+		if calls.Add(1) == 1 {
+			lifetime = 40 * time.Second
+		}
+		now := time.Now()
+		return &actionsoidc.Assertion{Value: gatewayTestJWT, IssuedAt: now, ExpiresAt: now.Add(lifetime)}, nil
+	})
+	handles := []gatewayProviderHandle{gatewayDueHandle(20 * time.Second)}
+	var out syncBuffer
+	stops := startGatewayRefreshers(handles, ui.New(&out))
+	t.Cleanup(stops[0])
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "token refreshed for inference-gateway-x (next") }, 10*time.Second, 5*time.Millisecond, out.String())
+	stops[0]()
+
+	st := handles[0].state
+	assert.Equal(t, ph("v2_INFERENCE_GATEWAY_API_KEY"), st.placeholder)
+	assert.Empty(t, st.superseded, "a landed hand-off empties the superseded set")
+
+	data, err := os.ReadFile(filepath.Join(dir, "seeds"))
+	require.NoError(t, err)
+	seeds := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.GreaterOrEqual(t, len(seeds), 2, "the failed hand-off's attempts, then the rotation's")
+	v0, v1 := ph("v0_INFERENCE_GATEWAY_API_KEY"), ph("v1_INFERENCE_GATEWAY_API_KEY")
+	for _, failed := range seeds[:len(seeds)-1] {
+		assert.Equal(t, "FULLSEND_SEED_PREVIOUS='"+v0+"'", failed, "generation 1 is the one being handed off, so only 0 is retired")
+	}
+	last := seeds[len(seeds)-1]
+	assert.Contains(t, last, v0, "the generation the agent held is retired")
+	assert.Contains(t, last, v1, "the generation seen but never recorded is retired")
+}
+
 // A new generation that never reaches the sandbox within the settle wait
 // fails the route closed: no second rotation, the provider's expiry moves
 // back to the token the agent holds, and the refresher stops.

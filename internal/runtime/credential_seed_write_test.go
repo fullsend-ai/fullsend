@@ -294,6 +294,33 @@ func TestOrderedSeed_StaleWriterCannotReplaceNewer(t *testing.T) {
 			c.holds(t, dir, "2")
 		})
 
+		// A history that ends in a blank line, or in an entry that is only a
+		// fragment of what the file holds, must not let a skipped write pass
+		// as done: the file is not shown to hold the newest generation.
+		for _, tc := range []struct {
+			name string
+			tail func() string
+		}{
+			{"a blank last entry", func() string { return "\n" }},
+			{"a last entry that is a substring of the credential", func() string {
+				p := c.placeholder("2")
+				return p[:len(p)-len("_"+c.env)+1] + "\n"
+			}},
+			{"a last entry with unexpected characters", func() string { return "v2 v2\n" }},
+		} {
+			t.Run(c.name+"/skipped write fails on "+tc.name, func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "cfg")
+				c.run(t, dir, "1")
+				c.run(t, dir, "2")
+				gens := filepath.Join(dir, c.file+seedGenerationsSuffix)
+				require.NoError(t, os.WriteFile(gens, []byte(c.placeholder("1")+"\n"+c.placeholder("2")+"\n"+tc.tail()), 0o600))
+				out, err := c.command(c.seed(dir), "1").CombinedOutput()
+				require.Error(t, err, string(out))
+				assert.Contains(t, string(out), "not treating the skipped write as done")
+				c.holds(t, dir, "2")
+			})
+		}
+
 		t.Run(c.name+"/lock does not collide with pi's auth.json.lock", func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "cfg")
 			c.run(t, dir, "1")

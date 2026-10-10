@@ -65,7 +65,8 @@ func SeedReplacing(seed string, previous ...string) string {
 // line was replaced by a newer generation, and its writer skips the rename.
 // Skipping is not a failure when the file already holds that newer
 // generation, so the writer first checks that the file names the history's
-// last entry. The history is a plain file in a directory the agent can
+// last entry, which must be a well-formed placeholder that the file holds as
+// a whole token, not a blank line or a fragment of some other value. The history is a plain file in a directory the agent can
 // write: an agent that truncates or reorders it must not turn a skipped
 // write into a silent success while the file holds something else. A file
 // that does not name the last entry fails the seed instead.
@@ -105,7 +106,14 @@ func orderedSeedWrite(envVar, dir, final, write, failMsg, failStmt string) strin
 	tmp := shellQuote(final+seedTempSuffix) + `.$$`
 	generationsTmp := generations + `.$$`
 	v := `"$` + envVar + `"`
-	last := `"$(command -p tail -n 1 ` + generations + ` 2>/dev/null)"`
+	last := `"$fullsend_last"`
+	readLast := `{ fullsend_last=$(command -p tail -n 1 ` + generations + ` 2>/dev/null) || :; }`
+	// lastHeld succeeds only when the history's last entry is a well-formed
+	// placeholder and the credential file holds it as a whole token. A blank
+	// or truncated entry, or one that is merely part of some other value,
+	// does not show that the file holds the newest generation.
+	lastHeld := `{ case ` + last + ` in ''|*[!A-Za-z0-9_:]*) command -p false ;;` +
+		` *) command -p grep -Eq -e "(^|[^A-Za-z0-9_:])${fullsend_last}([^A-Za-z0-9_:]|\$)" ` + shellQuote(final) + ` 2>/dev/null ;; esac; }`
 	validatePrev := `case "${` + seedPreviousEnv + `:-}" in *[!A-Za-z0-9_:\ ]*) echo 'fullsend: ` + seedPreviousEnv + ` has unexpected characters; refusing to seed' >&2; ` + failStmt + ` ;; esac`
 	recordPrev := `{ test -z "${` + seedPreviousEnv + `:-}" ||` +
 		` { { for fullsend_g in $` + seedPreviousEnv + `; do command -p grep -qxF -e "$fullsend_g" ` + generations + ` 2>/dev/null || printf '%s\n' "$fullsend_g"; done;` +
@@ -114,8 +122,9 @@ func orderedSeedWrite(envVar, dir, final, write, failMsg, failStmt string) strin
 	return `{ ` + validatePrev + ` && command -p mkdir -p ` + shellQuote(dir) +
 		` && { command -p flock -w ` + strconv.Itoa(seedLockWaitSeconds) + ` 9` +
 		` && ` + recordPrev +
+		` && ` + readLast +
 		` && if test ` + last + ` != ` + v + ` && command -p grep -qxF -e ` + v + ` ` + generations + ` 2>/dev/null;` +
-		` then if command -p grep -Fq -e ` + last + ` ` + shellQuote(final) + ` 2>/dev/null;` +
+		` then if ` + lastHeld + `;` +
 		` then echo 'fullsend: ` + envVar + ` is an older generation than the credential file holds; leaving the file as it is' >&2;` +
 		` else echo 'fullsend: ` + envVar + ` is older than the newest generation in the history, but the credential file does not hold that one; not treating the skipped write as done' >&2; command -p false; fi;` +
 		` else { test ` + last + ` = ` + v + ` || printf '%s\n' ` + v + ` >> ` + generations + `; }` +
