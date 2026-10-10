@@ -2,6 +2,7 @@ package steps
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -219,9 +220,18 @@ func TestGivenTestInferenceGatewayAPIKey_RequiresGitHub(t *testing.T) {
 
 func TestDeleteGatewayAPIKeySecret_NotFoundIsFine(t *testing.T) {
 	fc := forge.NewFakeClient()
+	fc.Errors = map[string]error{"DeleteRepoSecret": fmt.Errorf("%w: secret", forge.ErrNotFound)}
 	w := &world.World{Org: "org", RepoName: "repo", SCM: scmgh.New(fc), GatewayAPIKeySecretSet: true}
-	require.NoError(t, deleteGatewayAPIKeySecret(w))
+	require.NoError(t, deleteGatewayAPIKeySecret(w), "an already-deleted secret is not an error")
 	assert.False(t, w.GatewayAPIKeySecretSet)
+}
+
+func TestDeleteGatewayAPIKeySecret_ErrorKeepsFlagForRetry(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors = map[string]error{"DeleteRepoSecret": errors.New("boom")}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scmgh.New(fc), GatewayAPIKeySecretSet: true}
+	require.ErrorContains(t, deleteGatewayAPIKeySecret(w), "boom")
+	assert.True(t, w.GatewayAPIKeySecretSet, "a failed delete is retried by cleanupRetry")
 }
 
 func stripSecretValues(in []forge.SecretRecord) []forge.SecretRecord {
