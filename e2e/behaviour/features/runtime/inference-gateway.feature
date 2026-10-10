@@ -20,15 +20,14 @@
 #
 # http_probe args: METHOD URL HEADER_ENV [BODY].
 #
-# Known gaps (no step or op exists yet):
-#   - the placeholder variable is the gateway provider's credential key,
-#     INFERENCE_GATEWAY_API_KEY (profiles/fullsend-inference-gateway.yaml);
-#   - assert_file cannot expand $INFERENCE_GATEWAY_TOKEN_FILE, and no op
-#     asserts a file or variable does NOT hold a JWT;
-#   - there is no dummy wait op, so the re-seed scenario cannot yet wait
-#     past one token lifetime (exp - iat) between probes;
-#   - the run-scoped provider cleanup has no harness-logs step (only the
-#     triage variant exists, steps/owners.go).
+# The placeholder variable is the gateway provider's credential key,
+# INFERENCE_GATEWAY_API_KEY (profiles/fullsend-inference-gateway.yaml).
+# assert_not_jwt checks that a variable does not hold a JWT and, when it
+# names a file (INFERENCE_GATEWAY_TOKEN_FILE), that the file does not
+# either. wait sleeps between ops, so the re-seed scenario outlasts one
+# token lifetime (exp - iat). "the harness workflow logs show the inference
+# gateway provider was cleaned up" checks the run-scoped provider's removal
+# in the completed harness run's logs.
 Feature: inference gateway route under the dummy runtime
 
   Background:
@@ -56,12 +55,16 @@ Feature: inference gateway route under the dummy runtime
       | description             | op            | args                                                      |
       | See the token file path | assert_env    | INFERENCE_GATEWAY_TOKEN_FILE                              |
       | See the placeholder     | assert_env    | INFERENCE_GATEWAY_API_KEY                                  |
+      | Token file has no JWT   | assert_not_jwt | INFERENCE_GATEWAY_TOKEN_FILE                             |
+      | Placeholder is no JWT   | assert_not_jwt | INFERENCE_GATEWAY_API_KEY                                |
       | Emit triage JSON        | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
     And an issue
     When the issue is labeled "ready-for-gateway-probe"
     Then the harness "gateway-probe" workflow completes successfully
     And the agent will succeed to See the token file path
     And the agent will succeed to See the placeholder
+    And the agent will succeed to Token file has no JWT
+    And the agent will succeed to Placeholder is no JWT
     And the agent will succeed to Emit triage JSON
 
   @requires:capability:inference-gateway
@@ -80,6 +83,7 @@ Feature: inference gateway route under the dummy runtime
     # forge OIDC token (a JWT, "eyJ...") never reaches the upstream.
     And the agent's probe "Call the gateway" response contains "x-api-key"
     And the agent's probe "Call the gateway" response does not contain "eyJ"
+    And the harness workflow logs show the inference gateway provider was cleaned up
 
   @requires:capability:inference-gateway
   Scenario: egress is scoped to the gateway's inference path
@@ -109,15 +113,16 @@ Feature: inference gateway route under the dummy runtime
     And the agent will fail to Call denied model
     And the agent's probe "Call denied model" returned HTTP 403
 
-  # Re-seed: the probe must still succeed after one token lifetime. Until a
-  # dummy wait op exists (see gaps above) this runs two probes back to back
-  # and is additionally gated on an undeclared capability so it cannot pass
-  # vacuously.
+  # Re-seed: the probe must still succeed after one token lifetime. The wait
+  # outlasts a 300 s GitHub OIDC token. Because it holds the sandbox for
+  # more than five minutes, it is also gated on its own capability, which
+  # a maintainer declares when the CI budget allows.
   @requires:capability:inference-gateway @requires:capability:inference-gateway-reseed
   Scenario: the credential is re-seeded after the token expires
     Given a dummy agent that would:
       | description       | op            | args                                                                                                                       |
       | Call before wait  | http_probe    | POST <gateway>/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model":"echo","messages":[{"role":"user","content":"ping"}]} |
+      | Outlast the token | wait          | 330                                                                                                                        |
       | Call after expiry | http_probe    | POST <gateway>/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model":"echo","messages":[{"role":"user","content":"ping"}]} |
       | Emit triage JSON  | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json                                                                  |
     And an issue

@@ -24,6 +24,26 @@ const (
 	GatewayAPIOpenAICompletions = "openai-completions"
 )
 
+// Inference gateway credential modes (inference.gateway.auth). There is no
+// implicit precedence and no fallback between them: the block names one.
+const (
+	// GatewayAuthOIDC presents the job's forge OIDC assertion for the
+	// block's audience (ADR 0137). It is the default and the recommended
+	// mode: the forge stores no reusable key.
+	GatewayAuthOIDC = "oidc"
+	// GatewayAuthAPIKey presents a gateway API key the runner reads from
+	// FULLSEND_INFERENCE_GATEWAY_API_KEY (a forge secret or the local
+	// environment). It is supported for gateways that cannot trust forge
+	// OIDC, but it relies on a long-lived secret: use it with caution and
+	// prefer oidc when the gateway supports it.
+	GatewayAuthAPIKey = "api-key"
+)
+
+// ValidGatewayAuthModes returns the accepted inference.gateway.auth values.
+func ValidGatewayAuthModes() []string {
+	return []string{GatewayAuthOIDC, GatewayAuthAPIKey}
+}
+
 // ValidGatewayAPIs returns the accepted per-model "api" values for an
 // inference.gateway model list.
 func ValidGatewayAPIs() []string {
@@ -31,9 +51,10 @@ func ValidGatewayAPIs() []string {
 }
 
 // InferenceGatewayConfig is the inference.gateway block (ADR 0137): a
-// self-hosted, OpenAI/Anthropic-compatible gateway that validates the job's
-// forge OIDC token directly. URL and Audience are all-or-none (see
-// Missing). The model list is optional at block level and takes exactly
+// self-hosted, OpenAI/Anthropic-compatible gateway. Auth selects the
+// credential mode (EffectiveAuth): oidc (the default) presents the job's
+// forge OIDC token and requires Audience; api-key presents a gateway API
+// key and needs no audience. URL is always required (see Missing). The model list is optional at block level and takes exactly
 // one of two forms: Models (inline) or ModelsFile (a repository path to a
 // file in the pi-inference-gateway extension's own config format). A
 // runtime that cannot discover models (pi under PI_OFFLINE) requires one
@@ -45,6 +66,7 @@ func ValidGatewayAPIs() []string {
 type InferenceGatewayConfig struct {
 	URL        string                           `yaml:"url,omitempty"`
 	Audience   string                           `yaml:"audience,omitempty"`
+	Auth       string                           `yaml:"auth,omitempty"`
 	Models     map[string]InferenceGatewayModel `yaml:"models,omitempty"`
 	ModelsFile string                           `yaml:"models_file,omitempty"`
 }
@@ -67,6 +89,7 @@ func (c InferenceGatewayConfig) Trimmed() InferenceGatewayConfig {
 	out := InferenceGatewayConfig{
 		URL:        strings.TrimSpace(c.URL),
 		Audience:   strings.TrimSpace(c.Audience),
+		Auth:       strings.TrimSpace(c.Auth),
 		ModelsFile: strings.TrimSpace(c.ModelsFile),
 	}
 	if c.Models != nil {
@@ -81,7 +104,21 @@ func (c InferenceGatewayConfig) Trimmed() InferenceGatewayConfig {
 
 // IsZero reports whether no field is set.
 func (c InferenceGatewayConfig) IsZero() bool {
-	return c.URL == "" && c.Audience == "" && len(c.Models) == 0 && c.ModelsFile == ""
+	return c.URL == "" && c.Audience == "" && c.Auth == "" && len(c.Models) == 0 && c.ModelsFile == ""
+}
+
+// EffectiveAuth returns the block's credential mode: Auth, or
+// GatewayAuthOIDC when it is unset.
+func (c InferenceGatewayConfig) EffectiveAuth() string {
+	if a := strings.TrimSpace(c.Auth); a != "" {
+		return a
+	}
+	return GatewayAuthOIDC
+}
+
+// IsAPIKey reports whether the block uses the api-key credential mode.
+func (c InferenceGatewayConfig) IsAPIKey() bool {
+	return c.EffectiveAuth() == GatewayAuthAPIKey
 }
 
 // HasModelList reports whether either model-list form is set.
@@ -89,8 +126,9 @@ func (c InferenceGatewayConfig) HasModelList() bool {
 	return len(c.Models) > 0 || c.ModelsFile != ""
 }
 
-// Missing lists the required fields still unset (url, audience), in a
-// fixed order, so a partial block can be reported precisely. The model
+// Missing lists the required fields still unset, in a fixed order, so a
+// partial block can be reported precisely: url always, and audience in the
+// oidc mode (the api-key mode requests no OIDC assertion). The model
 // list is not required at block level: it is checked when a runtime that
 // needs it resolves a gateway/ model.
 func (c InferenceGatewayConfig) Missing() []string {
@@ -98,7 +136,7 @@ func (c InferenceGatewayConfig) Missing() []string {
 	if c.URL == "" {
 		missing = append(missing, "url")
 	}
-	if c.Audience == "" {
+	if c.Audience == "" && !c.IsAPIKey() {
 		missing = append(missing, "audience")
 	}
 	return missing
@@ -123,6 +161,9 @@ func (c InferenceGatewayConfig) Validate() error {
 		if err := ValidateGatewayURL(c.URL); err != nil {
 			return err
 		}
+	}
+	if c.Auth != "" && !slices.Contains(ValidGatewayAuthModes(), c.Auth) {
+		return fmt.Errorf("inference.gateway.auth: invalid value %q: must be one of %s", c.Auth, strings.Join(ValidGatewayAuthModes(), ", "))
 	}
 	if len(c.Models) > 0 && c.ModelsFile != "" {
 		return fmt.Errorf("inference.gateway: models and models_file are mutually exclusive")
@@ -452,8 +493,8 @@ func validateGatewayModel(id string, m InferenceGatewayModel) error {
 	return nil
 }
 
-// mergeGateway layers child over parent field by field: url and audience
-// resolve independently, and the model list (either form) is one unit — a
+// mergeGateway layers child over parent field by field: url, audience and
+// auth resolve independently, and the model list (either form) is one unit — a
 // layer that states a list replaces the parent's list, so the two forms
 // never combine across layers.
 func mergeGateway(parent InferenceGatewayConfig, child *InferenceGatewayConfig) InferenceGatewayConfig {
@@ -466,6 +507,9 @@ func mergeGateway(parent InferenceGatewayConfig, child *InferenceGatewayConfig) 
 	}
 	if child.Audience != "" {
 		out.Audience = child.Audience
+	}
+	if child.Auth != "" {
+		out.Auth = child.Auth
 	}
 	if child.HasModelList() {
 		out.Models = cloneGatewayModels(child.Models)

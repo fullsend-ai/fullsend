@@ -39,6 +39,42 @@ func registerGatewaySteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the agent's probe "([^"]+)" response (contains|does not contain) "([^"]*)"$`, func(ctx context.Context, description, mode, needle string) (context.Context, error) {
 		return ctx, assertProbeBody(world.FromContext(ctx), description, mode == "contains", needle)
 	})
+	sc.Step(`^the harness workflow logs show the inference gateway provider was cleaned up$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, thenGatewayProviderCleanedUp(world.FromContext(ctx))
+	})
+}
+
+// gatewayProviderCleanupMarkers are the runner's log lines for a removed
+// run-scoped gateway provider (cleanupRunScopedProvider): deleted, or
+// already gone. The provider name starts with "inference-gateway-".
+var gatewayProviderCleanupMarkers = []string{
+	"Run-scoped provider deleted: inference-gateway-",
+	"Run-scoped provider already gone: inference-gateway-",
+}
+
+// thenGatewayProviderCleanedUp checks the completed harness run's logs
+// (recorded by "the harness ... workflow completes successfully") for the
+// gateway provider's cleanup.
+func thenGatewayProviderCleanedUp(w *world.World) error {
+	if w.WorkflowRun == nil {
+		return fmt.Errorf("no workflow run recorded; assert the harness workflow completed first")
+	}
+	logs, err := w.CI.GetRunLogs(context.Background(), w.RepoOwner, w.RepoName, w.WorkflowRun.ID)
+	if err != nil {
+		return fmt.Errorf("reading workflow logs: %w", err)
+	}
+	return gatewayProviderCleanupLogged(logs)
+}
+
+// gatewayProviderCleanupLogged reports an error unless logs show the
+// run-scoped gateway provider was removed.
+func gatewayProviderCleanupLogged(logs string) error {
+	for _, m := range gatewayProviderCleanupMarkers {
+		if strings.Contains(logs, m) {
+			return nil
+		}
+	}
+	return fmt.Errorf("workflow logs do not show the run-scoped inference gateway provider was cleaned up (want one of %q)", gatewayProviderCleanupMarkers)
 }
 
 // testGatewayFromEnv returns the gateway URL and audience, or ok=false

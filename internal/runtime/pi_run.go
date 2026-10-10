@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -348,6 +349,23 @@ const piManifestTamperedExit = 95
 // piHooksMissingExit so Run can name the actual cause instead of reporting a
 // hook-adapter problem.
 const piConfigTamperedExit = 98
+
+// piCredentialSeedFailedExit is the exit code of a failed credential seed
+// (PiOpenAIAuthSeed, PiGatewayTokenSeed): the sandbox's placeholder is
+// missing or malformed, or the credential file could not be written or
+// was replaced by another writer. Distinct from an agent failure so the
+// runner can name the cause.
+const piCredentialSeedFailedExit = 91
+
+// piSeedExit is the shell `exit` statement of a failed credential seed.
+var piSeedExit = "exit " + strconv.Itoa(piCredentialSeedFailedExit)
+
+// piRunSeedsCredential reports whether the run command cmd carries a
+// credential seed, so piCredentialSeedFailedExit is attributed to the seed
+// only when one ran.
+func piRunSeedsCredential(cmd, configDir string) bool {
+	return strings.Contains(cmd, PiOpenAIAuthSeed(configDir)) || strings.Contains(cmd, PiGatewayTokenSeed(configDir))
+}
 
 // buildPiRunCommand renders the in-sandbox command line. Security-relevant
 // flags: --no-approve and defaultProjectTrust "never" keep repo-owned .pi/
@@ -763,15 +781,25 @@ const piOpenAIAuthShape = `[{]"openai":[{]"type":"api_key","key":"` + piPlacehol
 // placeholder fails the run: a real key in the sandbox environment would
 // mean the provider path was bypassed, and forwarding it would defeat the
 // design.
+//
+// The iteration-start seed and a refresher's re-seed can overlap (only
+// the latter holds the sandbox lock), so, as PiGatewayTokenSeed does, each
+// writer uses its own temp file, named by its shell's pid, and removes it
+// if the write fails. After the move the writer checks that auth.json
+// still holds its own placeholder, so a writer whose value another writer
+// replaced fails rather than reporting a seed that did not stick.
 func PiOpenAIAuthSeed(configDir string) string {
 	dir := shellQuote(configDir)
 	final := shellQuote(configDir + "/" + piOpenAIAuthFile)
-	tmp := shellQuote(configDir + "/" + piOpenAIAuthFile + ".fullsend")
-	return `case "${OPENAI_API_KEY:-}" in ` + piPlaceholderPrefix + `*OPENAI_API_KEY) ;; *) echo 'fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run the openai provider' >&2; exit 1 ;; esac` +
-		` && case "$OPENAI_API_KEY" in *[!A-Za-z0-9_:]*) echo 'fullsend: OPENAI_API_KEY placeholder has unexpected characters; refusing to run the openai provider' >&2; exit 1 ;; esac` +
-		` && command -p mkdir -p ` + dir +
+	tmp := shellQuote(configDir+"/"+piOpenAIAuthFile+".fullsend") + `.$$`
+	return `case "${OPENAI_API_KEY:-}" in ` + piPlaceholderPrefix + `*OPENAI_API_KEY) ;; *) echo 'fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run the openai provider' >&2; ` + piSeedExit + ` ;; esac` +
+		` && case "$OPENAI_API_KEY" in *[!A-Za-z0-9_:]*) echo 'fullsend: OPENAI_API_KEY placeholder has unexpected characters; refusing to run the openai provider' >&2; ` + piSeedExit + ` ;; esac` +
+		` && { command -p mkdir -p ` + dir +
 		` && printf '{"openai":{"type":"api_key","key":"%s"}}\n' "$OPENAI_API_KEY" > ` + tmp +
-		` && command -p mv -f ` + tmp + ` ` + final
+		` && command -p mv -f ` + tmp + ` ` + final +
+		` || { command -p rm -f ` + tmp + `; echo 'fullsend: writing pi auth.json failed' >&2; ` + piSeedExit + `; }; }` +
+		` && { command -p grep -qF "\"key\":\"$OPENAI_API_KEY\"" ` + final +
+		` || { echo 'fullsend: pi auth.json was replaced by another writer after this seed; refusing to report it seeded' >&2; ` + piSeedExit + `; }; }`
 }
 
 // OpenAIAuthSeed implements OpenAICredentialSeeder: the fragment that seeds
@@ -1019,6 +1047,9 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 	}
 	if exitCode == piGatewayConfigTamperedExit && piGatewayRunFor(params.SandboxName) != nil {
 		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("pi config dir %s has %s or an %s the runner did not render; refusing to run because either can redirect the inference gateway route (did the agent write there between iterations?)", r.ConfigDir(), PiInferenceGatewayLocalConfigFile, PiInferenceGatewayConfigFile)}
+	}
+	if exitCode == piCredentialSeedFailedExit && piRunSeedsCredential(cmd, r.ConfigDir()) {
+		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("the credential seed in %s failed (the sandbox's provider placeholder is missing or malformed, or the credential file could not be written); this is a runner setup failure, not an agent failure", r.ConfigDir())}
 	}
 	if exitCode == piExtensionTamperedExit && len(exts) > 0 {
 		return piRunResult{exitCode: exitCode, modelSpec: modelSpec, guardErr: fmt.Errorf("a pi extension directory under %s is missing or was modified since Bootstrap uploaded it; refusing to load it (did the agent or the extension itself write there between iterations? extensions must not write into their own directory)", r.piExtensionsDir())}

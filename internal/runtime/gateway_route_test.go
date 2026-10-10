@@ -102,6 +102,87 @@ func TestPiGatewayTokenSeed_Concurrent(t *testing.T) {
 
 }
 
+// Overlapping OpenAI seeds write their own temp files, as the gateway seed
+// does: none is left behind, auth.json holds one writer's whole value, and
+// a writer that fails does so only because another writer replaced its
+// value after its move.
+func TestPiOpenAIAuthSeed_Concurrent(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	dir := filepath.Join(t.TempDir(), "cfg")
+	errs := make(chan error, 16)
+	for i := range 16 {
+		go func(i int) {
+			cmd := exec.Command("sh", "-c", PiOpenAIAuthSeed(dir))
+			cmd.Env = append(os.Environ(), "OPENAI_API_KEY="+piPlaceholderPrefix+"v"+strconv.Itoa(i)+"_OPENAI_API_KEY")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				err = fmt.Errorf("%w: %s", err, out)
+			}
+			errs <- err
+		}(i)
+	}
+	succeeded := 0
+	for range 16 {
+		if err := <-errs; err != nil {
+			assert.Contains(t, err.Error(), "replaced by another writer")
+			continue
+		}
+		succeeded++
+	}
+	assert.Positive(t, succeeded, "at least the last writer succeeds")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "only auth.json: no temp file is left behind")
+	assert.Equal(t, piOpenAIAuthFile, entries[0].Name())
+	data, err := os.ReadFile(filepath.Join(dir, piOpenAIAuthFile))
+	require.NoError(t, err)
+	assert.Regexp(t, `^\{"openai":\{"type":"api_key","key":"`+piPlaceholderPrefix+`v[0-9]+_OPENAI_API_KEY"\}\}\n$`, string(data))
+}
+
+// Both credential seeds fail with their own exit code, so the runner can
+// tell a failed seed from an agent failure, and Run attributes that code
+// to the seed only when the command carries one.
+func TestPiCredentialSeeds_DedicatedExitCode(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	dir := filepath.Join(t.TempDir(), "cfg")
+	for name, seed := range map[string]string{
+		"openai":  PiOpenAIAuthSeed(dir),
+		"gateway": PiGatewayTokenSeed(dir),
+	} {
+		cmd := exec.Command("sh", "-c", seed)
+		cmd.Env = append(os.Environ(), "OPENAI_API_KEY=sk-real", "INFERENCE_GATEWAY_API_KEY=real-token")
+		out, err := cmd.CombinedOutput()
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr, "%s: %s", name, out)
+		assert.Equal(t, piCredentialSeedFailedExit, exitErr.ExitCode(), name)
+	}
+	assert.True(t, piRunSeedsCredential("x && "+PiOpenAIAuthSeed(dir)+" && y", dir))
+	assert.True(t, piRunSeedsCredential("x && "+PiGatewayTokenSeed(dir)+" && y", dir))
+	assert.False(t, piRunSeedsCredential("pi --model anthropic-vertex/claude", dir))
+}
+
+// A seed whose value another writer replaced after its move fails.
+func TestPiOpenAIAuthSeed_DetectsReplacement(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	dir := filepath.Join(t.TempDir(), "cfg")
+	bin := t.TempDir()
+	// A mv that lands the file, then lets a "second writer" replace it.
+	other := `{"openai":{"type":"api_key","key":"` + piPlaceholderPrefix + `v9_OPENAI_API_KEY"}}`
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "mv"), []byte("#!/bin/sh\n/bin/mv \"$@\" && printf '%s\\n' '"+other+"' > \"$3\"\n"), 0o755))
+	seed := strings.ReplaceAll(PiOpenAIAuthSeed(dir), "command -p mv", shellQuote(filepath.Join(bin, "mv")))
+	cmd := exec.Command("sh", "-c", seed)
+	cmd.Env = append(os.Environ(), "OPENAI_API_KEY="+piPlaceholderPrefix+"v1_OPENAI_API_KEY")
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err)
+	assert.Contains(t, string(out), "replaced by another writer")
+}
+
 func TestPiPrepareGatewayRun(t *testing.T) {
 	const sb = "sb-gw-prepare"
 	t.Cleanup(func() { SetPiGatewayRun(sb, nil) })

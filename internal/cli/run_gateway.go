@@ -139,23 +139,59 @@ var gatewayOIDCEnvFn = func() (requestURL, requestToken string) {
 }
 
 // gatewayBlockApplies reports whether the runner owns the gateway route
-// for this run: a complete inference.gateway block and a run with a forge
-// OIDC endpoint. A partial block is an error. With no block, or without an
-// OIDC endpoint (a local run), the runner adds nothing for gateway/ models,
-// so the harness-plugin setup in the local guide keeps working.
+// for this run. A partial block is an error. In the oidc mode (the
+// default) the block applies only on a run with a forge OIDC endpoint:
+// with no block, or without an endpoint (a local run), the runner adds
+// nothing for gateway/ models, so the harness-plugin setup in the local
+// guide keeps working. In the api-key mode the block applies on every
+// run, local runs included, so the runner owns the setup there too.
 func gatewayBlockApplies(g config.InferenceGatewayConfig) (bool, error) {
 	g = g.Trimmed()
 	if g.IsZero() {
 		return false, nil
 	}
 	if missing := g.Missing(); len(missing) > 0 {
-		return false, fmt.Errorf("inference.gateway is partial: missing %s (url and audience are all or none)", strings.Join(missing, " and "))
+		return false, fmt.Errorf("inference.gateway is partial: missing %s (the %s mode needs url%s)", strings.Join(missing, " and "), g.EffectiveAuth(), gatewayAudienceHint(g))
 	}
 	if err := g.Validate(); err != nil {
 		return false, err
 	}
+	if g.IsAPIKey() {
+		return true, nil
+	}
 	reqURL, _ := gatewayOIDCEnvFn()
 	return reqURL != "", nil
+}
+
+// gatewayAudienceHint names audience in a partial-block error when the
+// block's mode requires it.
+func gatewayAudienceHint(g config.InferenceGatewayConfig) string {
+	if g.IsAPIKey() {
+		return ""
+	}
+	return " and audience"
+}
+
+// gatewayAPIKeyEnv is where the api-key mode reads the gateway API key: a
+// forge secret in CI or the local environment. It is never written to
+// config.
+const gatewayAPIKeyEnv = "FULLSEND_INFERENCE_GATEWAY_API_KEY"
+
+// gatewayAPIKeyEnvFn reads gatewayAPIKeyEnv. Override in tests.
+var gatewayAPIKeyEnvFn = func() string { return os.Getenv(gatewayAPIKeyEnv) }
+
+// gatewayAPIKey returns the api-key mode's credential. A missing key fails
+// the run: there is no fallback to the oidc mode, the openai provider, WIF
+// or a static OpenAI key. The error never carries the value.
+func gatewayAPIKey() (string, error) {
+	key := strings.TrimSpace(gatewayAPIKeyEnvFn())
+	if key == "" {
+		return "", fmt.Errorf("inference.gateway.auth is %s but %s is not set; set it as a forge secret (or in the local environment)", config.GatewayAuthAPIKey, gatewayAPIKeyEnv)
+	}
+	if strings.ContainsAny(key, "\r\n\x00") {
+		return "", fmt.Errorf("%s holds a control character; refusing to use it", gatewayAPIKeyEnv)
+	}
+	return key, nil
 }
 
 // fetchGatewayAssertionFn fetches the job's OIDC assertion (defaults to

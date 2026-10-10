@@ -227,9 +227,12 @@ func executeBehaviourScript(ctx context.Context, rt DummyRuntime, sandboxName, r
 		}
 		res := BehaviourOpResult{Description: op.Description}
 		var err error
-		if op.Op == "http_probe" {
+		switch op.Op {
+		case "http_probe":
 			res.HTTPStatus, res.ResponseBody, res.BodyHadJWT, err = executeHTTPProbe(rt, sandboxName, op)
-		} else {
+		case "wait":
+			err = executeWait(ctx, op)
+		default:
 			err = executeBehaviourOp(rt, sandboxName, repoDir, op)
 		}
 		if err != nil {
@@ -345,6 +348,27 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return fmt.Errorf("assert_env %s unset or empty: %s", varName, strings.TrimSpace(stderr))
 		}
 		return nil
+	case "assert_not_jwt":
+		varName := strings.TrimSpace(op.Args)
+		if varName == "" {
+			return fmt.Errorf("assert_not_jwt requires a variable name")
+		}
+		if !envVarNamePattern.MatchString(varName) {
+			return fmt.Errorf("assert_not_jwt invalid variable name %q", varName)
+		}
+		_, stderr, exitCode, err := rt.execFn()(sandboxName, assertNotJWTCommand(varName), 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("assert_not_jwt exec: %w", err)
+		}
+		switch exitCode {
+		case 0:
+			return nil
+		case assertNotJWTUnset:
+			return fmt.Errorf("assert_not_jwt %s unset or empty", varName)
+		case assertNotJWTFound:
+			return fmt.Errorf("assert_not_jwt %s holds a JWT, or names a file that does", varName)
+		}
+		return fmt.Errorf("assert_not_jwt %s failed: %s", varName, strings.TrimSpace(stderr))
 	case "assert_file":
 		path := strings.TrimSpace(op.Args)
 		if path == "" {
@@ -578,6 +602,50 @@ func httpProbeCommand(p HTTPProbe) (string, error) {
 	}
 	arg := base64.StdEncoding.EncodeToString(payload)
 	return fmt.Sprintf("NODE_USE_ENV_PROXY=1 node -e %s %s", shellQuote(httpProbeScript), shellQuote(arg)), nil
+}
+
+// maxWaitSeconds bounds the wait op, so a scenario cannot hold a sandbox
+// for longer than a CI job reasonably allows. Several GitHub OIDC token
+// lifetimes (300 s) fit.
+const maxWaitSeconds = 1200
+
+// executeWait runs one wait op: it sleeps for the op's whole number of
+// seconds (1 to maxWaitSeconds) on the host, between the ops before and
+// after it, so a scenario can outlast a credential lifetime. It returns
+// early with an error when ctx ends.
+func executeWait(ctx context.Context, op BehaviourOperation) error {
+	raw := strings.TrimSpace(op.Args)
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs < 1 || secs > maxWaitSeconds {
+		return fmt.Errorf("wait requires a whole number of seconds from 1 to %d, got %q", maxWaitSeconds, raw)
+	}
+	timer := time.NewTimer(time.Duration(secs) * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("wait cancelled: %w", ctx.Err())
+	case <-timer.C:
+		return nil
+	}
+}
+
+// assert_not_jwt exit codes.
+const (
+	assertNotJWTUnset = 3
+	assertNotJWTFound = 4
+)
+
+// assertNotJWTCommand checks, inside the sandbox, that the variable
+// varName is set and does not hold a JWT and, when its value is a readable
+// file path (a token-file variable), that the file does not hold one
+// either. A JWT is three base64url segments, the first starting "eyJ".
+// varName has been checked against envVarNamePattern.
+func assertNotJWTCommand(varName string) string {
+	jwt := shellQuote(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.`)
+	return fmt.Sprintf(`v=$(printenv -- %s); test -n "$v" || exit %d; `+
+		`if printf '%%s' "$v" | grep -Eq %s; then exit %d; fi; `+
+		`case "$v" in /*) if test -f "$v" && test -r "$v"; then if grep -Eq %s -- "$v"; then exit %d; fi; fi ;; esac; exit 0`,
+		shellQuote(varName), assertNotJWTUnset, jwt, assertNotJWTFound, jwt, assertNotJWTFound)
 }
 
 // executeHTTPProbe runs one http_probe op and returns the HTTP status,

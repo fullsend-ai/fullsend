@@ -362,7 +362,15 @@ run has a forge OIDC endpoint (a GitHub Actions job with `id-token: write`), the
 
 A failure at any step fails the run; the route never falls back to another credential. With no
 block, or without an OIDC endpoint, the runner adds nothing, so a harness that loads the extension
-as a plugin keeps working. Check a block with
+as a plugin keeps working.
+
+With `auth: api-key` in the block
+([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)), the runner reads the
+gateway key from `FULLSEND_INFERENCE_GATEWAY_API_KEY` (a forge secret, or the local environment)
+instead of fetching an assertion. It puts the key behind the same provider, egress profile and
+guards, with no refresh and no re-seed. The block then applies on local runs too. A missing key
+fails the run. The mode relies on a long-lived secret, so the run log warns about it; prefer
+`oidc` when the gateway supports it. Check a block with
 [`fullsend inference gateway status`](inference.md#inference-gateway-status).
 
 ## GitLab role identity

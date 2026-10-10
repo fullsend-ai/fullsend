@@ -230,12 +230,12 @@ func PiGatewayTokenSeed(configDir string) string {
 	dir := shellQuote(configDir)
 	final := shellQuote(configDir + "/" + piInferenceGatewayTokenFile)
 	tmp := shellQuote(configDir+"/"+piInferenceGatewayTokenFile+".fullsend") + `.$$`
-	return `case "${` + piGatewayCredentialEnv + `:-}" in ` + piPlaceholderPrefix + `*` + piGatewayCredentialEnv + `) ;; *) echo 'fullsend: ` + piGatewayCredentialEnv + ` in the sandbox is not a gateway placeholder (inference gateway provider not attached, or a real token reached the sandbox); refusing to run the gateway provider' >&2; exit 1 ;; esac` +
-		` && case "$` + piGatewayCredentialEnv + `" in *[!A-Za-z0-9_:]*) echo 'fullsend: ` + piGatewayCredentialEnv + ` placeholder has unexpected characters; refusing to run the gateway provider' >&2; exit 1 ;; esac` +
-		` && command -p mkdir -p ` + dir +
-		` && { printf '%s' "$` + piGatewayCredentialEnv + `" > ` + tmp +
+	return `case "${` + piGatewayCredentialEnv + `:-}" in ` + piPlaceholderPrefix + `*` + piGatewayCredentialEnv + `) ;; *) echo 'fullsend: ` + piGatewayCredentialEnv + ` in the sandbox is not a gateway placeholder (inference gateway provider not attached, or a real token reached the sandbox); refusing to run the gateway provider' >&2; ` + piSeedExit + ` ;; esac` +
+		` && case "$` + piGatewayCredentialEnv + `" in *[!A-Za-z0-9_:]*) echo 'fullsend: ` + piGatewayCredentialEnv + ` placeholder has unexpected characters; refusing to run the gateway provider' >&2; ` + piSeedExit + ` ;; esac` +
+		` && { command -p mkdir -p ` + dir +
+		` && printf '%s' "$` + piGatewayCredentialEnv + `" > ` + tmp +
 		` && command -p mv -f ` + tmp + ` ` + final +
-		` || { command -p rm -f ` + tmp + `; echo 'fullsend: writing the inference gateway token file failed' >&2; exit 1; }; }`
+		` || { command -p rm -f ` + tmp + `; echo 'fullsend: writing the inference gateway token file failed' >&2; ` + piSeedExit + `; }; }`
 }
 
 // PrepareGatewayRun implements GatewayRouteRuntime: it renders the

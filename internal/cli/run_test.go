@@ -2509,6 +2509,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"OPENAI_API_KEY",
 		// The GitLab CI/CD variable carrying the real key must stay runner-only.
 		"FULLSEND_OPENAI_API_KEY",
+		// The inference gateway's api-key credential (ADR 0138).
+		"FULLSEND_INFERENCE_GATEWAY_API_KEY",
 		// The GitLab webhook fast-path credentials must stay runner-only.
 		"FULLSEND_TRIGGER_TOKEN",
 		"FULLSEND_WEBHOOK_SECRET",

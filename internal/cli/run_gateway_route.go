@@ -150,6 +150,9 @@ type gatewayProviderHandle struct {
 	block   config.InferenceGatewayConfig
 	sandbox string
 	seed    runtime.CredentialSeed
+	// apiKey is set in the api-key mode: the credential is not rotated, so
+	// the refresher does nothing.
+	apiKey bool
 	// issuedAt/expiresAt are the current token's iat and exp.
 	issuedAt  time.Time
 	expiresAt time.Time
@@ -175,6 +178,9 @@ var ensureGatewayProviderFn = ensureGatewayProvider
 // failure fails the run: the route never falls back to the openai
 // provider, WIF or a static key.
 func startGatewayRoute(ctx context.Context, plan *gatewayRoutePlan, sandboxName string, printer *ui.Printer) (gatewayProviderHandle, error) {
+	if plan.block.IsAPIKey() {
+		return startGatewayAPIKeyRoute(ctx, plan, sandboxName, printer)
+	}
 	printer.StepStart("Fetching the OIDC assertion for the inference gateway")
 	a, err := fetchGatewayToken(ctx, plan.block)
 	if err != nil {
@@ -195,6 +201,52 @@ func startGatewayRoute(ctx context.Context, plan *gatewayRoutePlan, sandboxName 
 		expiresAt: a.ExpiresAt,
 		sandboxUp: &atomic.Bool{},
 		state:     &gatewayRefreshState{issuedAt: a.IssuedAt, expiresAt: a.ExpiresAt, heldExpiresAt: a.ExpiresAt},
+	}, nil
+}
+
+// gatewayAPIKeyLifetime bounds the run-scoped provider instance in the
+// api-key mode. The key itself does not expire, but the instance must: if
+// the runner dies before the deferred delete, placeholder resolution fails
+// closed after this long instead of serving the key indefinitely. It is
+// set once, at creation, and never extended: on OpenShell even an expiry
+// update mints a new placeholder generation the running agent would have
+// to be re-seeded with, and the api-key mode has no re-seed loop. So it is
+// sized above any run (a GitHub-hosted job ends after 6 hours). A variable
+// so tests can shrink it.
+var gatewayAPIKeyLifetime = 24 * time.Hour
+
+// ensureGatewayAPIKeyProviderFn creates the api-key mode's run-scoped
+// provider (ensureGatewayAPIKeyProvider). Override in tests.
+var ensureGatewayAPIKeyProviderFn = ensureGatewayAPIKeyProvider
+
+// startGatewayAPIKeyRoute reads the api-key mode's credential
+// (FULLSEND_INFERENCE_GATEWAY_API_KEY) and creates the run-scoped gateway
+// provider carrying it. A missing key fails the run; there is no fallback
+// to the oidc mode. The key is not rotated, so there is no re-seed: the
+// placeholder the agent is seeded with stays valid for the run.
+func startGatewayAPIKeyRoute(ctx context.Context, plan *gatewayRoutePlan, sandboxName string, printer *ui.Printer) (gatewayProviderHandle, error) {
+	printer.StepStart("Reading the inference gateway API key")
+	key, err := gatewayAPIKey()
+	if err != nil {
+		printer.StepFail("Inference gateway credential unavailable")
+		return gatewayProviderHandle{}, err
+	}
+	printer.StepDone("Inference gateway API key ready (" + gatewayAPIKeyEnv + ")")
+	printer.StepWarn("inference.gateway.auth is api-key: the route relies on a long-lived gateway API key; prefer auth: oidc when the gateway can validate forge OIDC tokens")
+	expiresAt := time.Now().Add(gatewayAPIKeyLifetime)
+	name, _, err := ensureGatewayAPIKeyProviderFn(ctx, plan.host, sandboxName, key, expiresAt, printer)
+	if err != nil {
+		return gatewayProviderHandle{}, err
+	}
+	return gatewayProviderHandle{
+		name:      name,
+		block:     plan.block,
+		sandbox:   sandboxName,
+		seed:      plan.seed,
+		apiKey:    true,
+		expiresAt: expiresAt,
+		sandboxUp: &atomic.Bool{},
+		state:     &gatewayRefreshState{expiresAt: expiresAt, heldExpiresAt: expiresAt},
 	}, nil
 }
 
@@ -368,6 +420,10 @@ func waitGateway(ctx context.Context, d time.Duration) bool {
 //     only the hand-off is retried, every gatewayRefreshBackoff, until the
 //     provider's next refresh is due (which hands off again itself).
 func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui.Printer) {
+	if h.apiKey {
+		// The api-key mode rotates nothing and has no re-seed loop.
+		return
+	}
 	st := h.refreshState()
 	var warnedFor time.Time
 	// warnedHeldExpiry keeps a hand-off that keeps failing from warning

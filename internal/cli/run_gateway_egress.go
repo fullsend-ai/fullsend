@@ -170,6 +170,25 @@ func ensureGatewayProvider(ctx context.Context, host, sandboxName, token string,
 	if err := validateGatewayAssertion(token); err != nil {
 		return "", "", err
 	}
+	return storeGatewayProvider(ctx, host, sandboxName, token, expiresAt, printer)
+}
+
+// ensureGatewayAPIKeyProvider is ensureGatewayProvider for the api-key
+// mode: the credential is the gateway API key (gatewayAPIKey has already
+// refused one with a line break, so it cannot break the `::add-mask::`
+// line), behind the same run-scoped placeholder, per-host profile and
+// guards. expiresAt bounds the provider instance, not the key.
+func ensureGatewayAPIKeyProvider(ctx context.Context, host, sandboxName, key string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
+	if strings.ContainsAny(key, "\r\n\x00") || strings.TrimSpace(key) == "" {
+		return "", "", errors.New("inference gateway: the API key is empty or holds a control character; refusing to use it")
+	}
+	return storeGatewayProvider(ctx, host, sandboxName, key, expiresAt, printer)
+}
+
+// storeGatewayProvider registers token for redaction, imports the per-host
+// profile and creates the run-scoped provider carrying token with
+// expiresAt as its credential expiry.
+func storeGatewayProvider(ctx context.Context, host, sandboxName, token string, expiresAt time.Time, printer *ui.Printer) (name, profileID string, err error) {
 	if !security.RegisterRuntimeSecret(token) {
 		return "", "", errors.New("inference gateway: the token is too short to redact reliably; refusing to use it")
 	}

@@ -12,6 +12,19 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
+func TestGatewayProviderCleanupLogged(t *testing.T) {
+	require.NoError(t, gatewayProviderCleanupLogged("x\n  ✓ Run-scoped provider deleted: inference-gateway-0123456789ab\n"))
+	require.NoError(t, gatewayProviderCleanupLogged("Run-scoped provider already gone: inference-gateway-abc"))
+	err := gatewayProviderCleanupLogged("Run-scoped provider deleted: openai-0123")
+	require.Error(t, err, "another provider's cleanup does not count")
+	assert.Contains(t, err.Error(), "inference gateway provider")
+}
+
+func TestThenGatewayProviderCleanedUp_NoRun(t *testing.T) {
+	err := thenGatewayProviderCleanedUp(&world.World{})
+	require.ErrorContains(t, err, "no workflow run recorded")
+}
+
 func TestTestGatewayFromEnv(t *testing.T) {
 	t.Setenv(envInferenceGatewayURL, "")
 	_, _, ok := testGatewayFromEnv()
