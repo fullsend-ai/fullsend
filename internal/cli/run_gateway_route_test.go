@@ -733,3 +733,131 @@ func TestRunGatewayRefresh_ReadFailureAfterRotationFailsClosed(t *testing.T) {
 	assert.Equal(t, []time.Time{held}, expiries)
 	assert.Contains(t, out.String(), "not observed in the sandbox")
 }
+
+// Claude Code's oidc provider gets the run deadline as its OpenShell expiry
+// at creation, not the token's exp (#8316); the refresh schedule still
+// follows the token. pi's provider keeps the token's exp.
+func TestStartGatewayRoute_ClaudeRunDeadline(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	iat := time.Now().Truncate(time.Second)
+	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
+		return &actionsoidc.Assertion{Value: gatewayTestJWT, IssuedAt: iat, ExpiresAt: iat.Add(5 * time.Minute)}, nil
+	})
+	var gotExpiry time.Time
+	orig := ensureGatewayProviderFn
+	t.Cleanup(func() { ensureGatewayProviderFn = orig })
+	ensureGatewayProviderFn = func(_ context.Context, _ gatewayProfile, _, _ string, at time.Time, _ *ui.Printer) (string, string, error) {
+		gotExpiry = at
+		return "inference-gateway-x", "fullsend-inference-gateway-claude-abc", nil
+	}
+	block := config.InferenceGatewayConfig{URL: "https://gw.example.com", Audience: "aud"}
+	claude := &gatewayRoutePlan{block: block, host: "gw.example.com", profile: gatewayProfile{host: "gw.example.com", claude: true}, runLifetime: 30 * time.Hour}
+
+	before := time.Now()
+	h, err := startGatewayRoute(context.Background(), claude, "fs-claude", ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.False(t, gotExpiry.Before(before.Add(30*time.Hour)), "the generation expires at the run deadline")
+	assert.False(t, gotExpiry.After(time.Now().Add(30*time.Hour)))
+	assert.Equal(t, gotExpiry, h.runDeadline)
+	assert.Equal(t, iat.Add(5*time.Minute), h.expiresAt, "the refresh schedule follows the token's exp")
+	assert.Equal(t, iat.Add(5*time.Minute), h.state.heldExpiresAt)
+
+	// With no run lifetime set, the deadline uses the api-key mode's bound.
+	claude.runLifetime = 0
+	before = time.Now()
+	h, err = startGatewayRoute(context.Background(), claude, "fs-claude", ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.False(t, h.runDeadline.Before(before.Add(gatewayAPIKeyLifetime)))
+	assert.False(t, h.runDeadline.After(time.Now().Add(gatewayAPIKeyLifetime)))
+
+	// pi's provider keeps the token's exp and has no run deadline.
+	pi := &gatewayRoutePlan{block: block, host: "gw.example.com", profile: gatewayProfile{host: "gw.example.com"}, runLifetime: 30 * time.Hour}
+	h, err = startGatewayRoute(context.Background(), pi, "fs-pi", ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.Equal(t, iat.Add(5*time.Minute), gotExpiry)
+	assert.True(t, h.runDeadline.IsZero())
+}
+
+// Each rotation creates the new generation with the run deadline as its
+// expiry on Claude Code's provider, and with the token's exp on pi's.
+func TestRefreshGatewayProvider_GenerationExpiry(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	iat := time.Now().Truncate(time.Second)
+	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
+		return &actionsoidc.Assertion{Value: gatewayTestJWT, IssuedAt: iat, ExpiresAt: iat.Add(5 * time.Minute)}, nil
+	})
+	var expiries []time.Time
+	orig := updateGatewayProviderFn
+	updateGatewayProviderFn = func(_ context.Context, name string, creds map[string]string, at time.Time) error {
+		assert.Equal(t, "inference-gateway-x", name)
+		assert.Equal(t, map[string]string{gatewayCredentialKey: gatewayTestJWT}, creds)
+		expiries = append(expiries, at)
+		return nil
+	}
+	t.Cleanup(func() { updateGatewayProviderFn = orig })
+
+	deadline := iat.Add(26 * time.Hour)
+	h := gatewayProviderHandle{name: "inference-gateway-x", block: config.InferenceGatewayConfig{Audience: "aud"}, sandbox: "fs-x", runDeadline: deadline, sandboxUp: &atomic.Bool{}}
+	_, gotExp, _, err := refreshGatewayProvider(context.Background(), h, "", ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.Equal(t, iat.Add(5*time.Minute), gotExp, "the next refresh is scheduled from the token's exp")
+
+	h.runDeadline = time.Time{}
+	_, _, _, err = refreshGatewayProvider(context.Background(), h, "", ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.Equal(t, []time.Time{deadline, iat.Add(5 * time.Minute)}, expiries)
+}
+
+func TestGatewayRunDeadline(t *testing.T) {
+	now := time.Now()
+	assert.True(t, gatewayRunDeadline(&gatewayRoutePlan{profile: gatewayProfile{host: "gw"}}, now).IsZero(), "pi keeps the token's exp")
+	assert.Equal(t, now.Add(gatewayAPIKeyLifetime), gatewayRunDeadline(&gatewayRoutePlan{profile: gatewayProfile{host: "gw", claude: true}}, now))
+	assert.Equal(t, now.Add(40*time.Hour), gatewayRunDeadline(&gatewayRoutePlan{profile: gatewayProfile{host: "gw", claude: true}, runLifetime: 40 * time.Hour}, now))
+}
+
+// On Claude Code's provider a hand-off that is never observed stops the
+// refresher without moving the provider's expiry back: no expiry update
+// is made, and the gateway's exp check is the fail-closed layer.
+func TestRunGatewayRefresh_SettleTimeoutKeepsRunDeadline(t *testing.T) {
+	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
+	dir := gatewayRecoveryStub(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "base"), nil, 0o644)) // no flip: the old generation stays
+	shrinkGatewayRefreshTimers(t)
+	calls := countFiveMinuteAssertions(t)
+	var expiryUpdates atomic.Int32
+	orig := setProviderCredentialExpiryFn
+	setProviderCredentialExpiryFn = func(context.Context, string, string, time.Time) error {
+		expiryUpdates.Add(1)
+		return nil
+	}
+	t.Cleanup(func() { setProviderCredentialExpiryFn = orig })
+	var generations []time.Time
+	origUpdate := updateGatewayProviderFn
+	updateGatewayProviderFn = func(ctx context.Context, name string, creds map[string]string, at time.Time) error {
+		generations = append(generations, at)
+		return origUpdate(ctx, name, creds, at)
+	}
+	t.Cleanup(func() { updateGatewayProviderFn = origUpdate })
+	h := gatewayDueHandle(time.Minute)
+	h.runDeadline = time.Now().Add(24 * time.Hour)
+	h.refreshState()
+	held := h.expiresAt
+	var out syncBuffer
+	done := make(chan struct{})
+	go func() {
+		runGatewayRefresh(context.Background(), h, ui.New(&out))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not stop after the settle wait ran out")
+	}
+	assert.Equal(t, int32(1), calls.Load(), "no second rotation")
+	assert.Equal(t, int32(0), expiryUpdates.Load(), "the expiry is not moved back")
+	assert.Equal(t, []time.Time{h.runDeadline}, generations, "the new generation got the run deadline at creation")
+	assert.Contains(t, out.String(), "stopped")
+	assert.Contains(t, out.String(), "gateway refuses")
+	assert.Equal(t, held, h.state.heldExpiresAt)
+	assert.True(t, h.state.expiresAt.After(held), "the provider's token is the new one")
+}

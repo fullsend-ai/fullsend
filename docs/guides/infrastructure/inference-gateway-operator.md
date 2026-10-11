@@ -7,6 +7,8 @@ service on Cloud Run that:
 - accepts a GitHub Actions job's OIDC token as its only credential, and only for the repositories
   you list;
 - holds the upstream model credential itself, so no forge secret stores a reusable key;
+- refuses an expired token with `401` (agentgateway's `jwtAuth` does, after a 60 s leeway). Claude
+  Code recovers from a stale credential only on a `401` or `403`, never on a `5xx`;
 - serves the three APIs the runtimes use: `/v1/messages` (pi, Claude Code), `/v1/chat/completions`
   (pi) and `/v1/responses` (pi, codex).
 

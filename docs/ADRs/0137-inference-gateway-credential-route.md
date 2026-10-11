@@ -370,3 +370,4 @@ These are deferred and named:
 - ADR 0092: OpenAI WIF and static-key routes; the refresh path this route
   reuses
 - [#8262](https://github.com/fullsend-ai/fullsend/issues/8262): pi-inference-gateway in the sandbox image
+- [#8316](https://github.com/fullsend-ai/fullsend/issues/8316): Claude Code's gateway provider generations expire at the run deadline, leaving the gateway's `exp` check as the fail-closed layer ([Claude Code](../runtimes/claude.md#inference-gateway-route))

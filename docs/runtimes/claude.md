@@ -119,15 +119,35 @@ placeholder is handed over at least that margin (15 s) before expiry, typically 
 is answered 401 or 403. Otherwise it re-runs it in the background once
 `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` has passed, and sends its cached value meanwhile, however old.
 
-**Limit: long gaps between model requests in the `oidc` mode.** A model request after a gap that
-spans a hand-off and outlasts the old token still carries the old placeholder. Such a gap is
-typically one tool call of more than about 2 minutes. OpenShell refuses to resolve an expired
-placeholder and answers `500` (`credential_unavailable`), not 401, so Claude Code retries with the
-same value until it gives up, and the run ends with a credential error. This fails closed: no wrong
-or expired credential reaches the gateway. For agents with long tool calls, use the `api-key` mode,
-whose credential does not rotate. The same runs on pi are not affected: pi reads the token file on
-every request. A way to recover from the stale value is tracked in
-[#8316](https://github.com/fullsend-ai/fullsend/issues/8316).
+**Long gaps between model requests in the `oidc` mode.** A model request after a gap that spans a
+hand-off and outlasts the old token still carries the old placeholder. Such a gap is typically one
+tool call of more than about 2 minutes. Claude Code recovers from it:
+
+- Every placeholder generation of Claude Code's gateway provider is created with the run's deadline
+  as its OpenShell expiry, not the token's `exp`. The deadline is the run's time budget, with the
+  same bound as the `api-key` mode's provider (at least 24 hours). It is set once, when the
+  generation is created, and never updated, because on OpenShell an expiry update mints a new
+  generation. The provider is still deleted when the run ends.
+- So OpenShell still resolves the stale placeholder, to the old JWT, which has already expired. The
+  gateway refuses an expired token, as
+  [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) requires of every gateway. Claude
+  Code then re-runs its helper and retries with the re-seeded generation. This needs the gateway
+  to answer `401` or `403`, not a `5xx`. agentgateway's `jwtAuth` and Praxis both answer `401`,
+  after a default 60 s leeway past `exp`.
+- The JWT's own `exp` does not change, and the gateway's `exp` check becomes the layer that fails
+  closed. A gateway with clock-skew leeway (60 s by default on agentgateway and Praxis) accepts a
+  stale token for that long after `exp`. Before, OpenShell stopped resolving it at `exp`. With the token's `exp` as the expiry, OpenShell would resolve the stale
+  placeholder to nothing and answer `500` (`credential_unavailable`). Claude Code does not treat a
+  500 as an auth failure, so it would retry the same value until the run failed.
+- A fixed grace period past `exp` would only move that cliff to a tool call longer than the grace.
+- The refresh schedule does not change: each token is still re-seeded before its own `exp`.
+- If a hand-off fails closed (the new generation never reaches the sandbox), the refresher stops.
+  The provider's expiry is not moved back. Once the token the agent holds expires, the gateway
+  refuses it, and so it refuses every retry, because the token file is not re-seeded again.
+
+pi does not need this, because it reads the token file on every request, so its provider keeps
+each token's `exp`. Codex caches its `auth.command` value for 30 s only, and then re-runs the
+command before the next request, so a long tool call does not leave it with a stale value.
 
 **Egress.** The runner imports a per-host profile for the gateway, rendered for Claude Code. It
 allows `POST /v1/messages` and `POST /v1/messages/count_tokens`, from the binaries `**/claude` and

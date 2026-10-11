@@ -1410,7 +1410,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
 			iterations = h.ValidationLoop.MaxIterations
 		}
-		gatewayPlan.apiKeyLifetime = gatewayAPIKeyLifetimeFor(iterations, time.Duration(effectiveTimeoutMinutes(h))*time.Minute)
+		gatewayPlan.runLifetime = gatewayAPIKeyLifetimeFor(iterations, time.Duration(effectiveTimeoutMinutes(h))*time.Minute)
 		if gatewayPlan.prepared != nil {
 			defer gatewayPlan.prepared.ClearGatewayRun(sandboxName)
 		}
