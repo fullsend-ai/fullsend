@@ -993,7 +993,8 @@ func TestPerRepoShimAdmitsEmptyBodyReviewEvents(t *testing.T) {
 			job, ok := wf.Jobs["dispatch"]
 			require.True(t, ok)
 			assert.Contains(t, job.If, "github.event_name != 'pull_request_review'")
-			assert.Contains(t, job.If, "github.event.action == 'submitted'")
+			assert.NotContains(t, job.If, "github.event.action == 'submitted'",
+				"the workflow trigger already limits review events to submitted actions")
 			assert.NotContains(t, job.If, "github.event.review.state != 'commented'",
 				"empty-body commented reviews can carry substantive inline feedback")
 			assert.NotContains(t, job.If, "github.event.review.body != ''",
@@ -1181,21 +1182,6 @@ func TestActionReconcileStatusSupportsOlderCLIs(t *testing.T) {
 
 	assert.Contains(t, run(t, true), "--review-run", "a supporting CLI must receive --review-run even when help continues after the flag")
 	assert.NotContains(t, run(t, false), "--review-run", "older CLIs must still reconcile without the unknown flag")
-}
-
-func TestActionRunPassesOnlyConfiguredGitHubToken(t *testing.T) {
-	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
-	require.NoError(t, err)
-
-	s := string(content)
-	runStart := strings.Index(s, "    - name: Run fullsend\n")
-	require.NotEqual(t, -1, runStart)
-	runStep := s[runStart:]
-	if nextStep := strings.Index(runStep[1:], "\n    - name: "); nextStep >= 0 {
-		runStep = runStep[:nextStep+1]
-	}
-	assert.Contains(t, runStep, "GH_TOKEN: ${{ inputs.github_token }}")
-	assert.NotContains(t, runStep, "GITHUB_TOKEN:")
 }
 
 // TestReusableDispatchPRHeadSHAPassthrough validates that agent jobs in

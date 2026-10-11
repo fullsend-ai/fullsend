@@ -309,8 +309,8 @@ func TestNewReconcileStatusCmd_ReviewRunDoesNotEnableGitHubGuidanceOnGitLab(t *t
 
 	origReconcile := reconcileOrphaned
 	var capturedGuidance string
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, guidance string) error {
-		capturedGuidance = guidance
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, options statuscomment.ReconcileOptions) error {
+		capturedGuidance = options.CancellationGuidance
 		return nil
 	}
 	defer func() { reconcileOrphaned = origReconcile }()
@@ -342,8 +342,8 @@ func TestNewReconcileStatusCmd_ReviewRunEnablesGitHubGuidance(t *testing.T) {
 
 	origReconcile := reconcileOrphaned
 	var capturedGuidance string
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, guidance string) error {
-		capturedGuidance = guidance
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, options statuscomment.ReconcileOptions) error {
+		capturedGuidance = options.CancellationGuidance
 		return nil
 	}
 	defer func() { reconcileOrphaned = origReconcile }()
@@ -445,7 +445,7 @@ func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus 
 	reconcileNewTrackerClient = func(fc forge.Client) tracker.Client {
 		return tracker.NewForgeClient(fc)
 	}
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, _ string) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, _ statuscomment.ReconcileOptions) error {
 		onReconcile(completionMode, jobStatus, wasSkipped, agentDescription)
 		return nil
 	}
@@ -692,7 +692,7 @@ func TestNewReconcileStatusCmd_Jira(t *testing.T) {
 	var gotNumber int
 	origReconcile := reconcileOrphaned
 	origJira := reconcileNewJiraTrackerClient
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ string) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ statuscomment.ReconcileOptions) error {
 		gotProject = project
 		gotNumber = number
 		return nil
@@ -779,7 +779,7 @@ func TestNewReconcileStatusCmd_Jira_ViaGitHubEventPath(t *testing.T) {
 	var gotNumber int
 	origReconcile := reconcileOrphaned
 	origJira := reconcileNewJiraTrackerClient
-	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ string) error {
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, project string, number int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, _ statuscomment.ReconcileOptions) error {
 		gotProject = project
 		gotNumber = number
 		return nil

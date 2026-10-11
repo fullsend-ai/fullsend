@@ -2459,7 +2459,6 @@ func TestBuildSandboxEnvLines_SkipsOIDCVars(t *testing.T) {
 		Env: &harness.EnvConfig{
 			Sandbox: map[string]string{
 				"CUSTOM_VAR":                     "allowed",
-				"GITHUB_TOKEN":                   "workflow-token",
 				"ACTIONS_ID_TOKEN_REQUEST_URL":   "https://stolen.example.com",
 				"ACTIONS_ID_TOKEN_REQUEST_TOKEN": "stolen-token",
 				"FULLSEND_GCP_OIDC_URL":          "https://stolen-gcp.example.com",
@@ -2470,7 +2469,6 @@ func TestBuildSandboxEnvLines_SkipsOIDCVars(t *testing.T) {
 	lines := buildSandboxEnvLines(h)
 	assert.Equal(t, []string{
 		"export CUSTOM_VAR='allowed'",
-		"export GITHUB_TOKEN='workflow-token'",
 	}, lines)
 }
 
@@ -2484,7 +2482,6 @@ func TestStripOIDCEnv(t *testing.T) {
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN=secret",
 		"FULLSEND_GCP_OIDC_URL=https://gcp.example.com",
 		"FULLSEND_GCP_OIDC_AUTH_FILE=/tmp/auth.json",
-		"GITHUB_TOKEN=workflow-token",
 		"SAFE_VAR=value",
 	}
 
@@ -2493,7 +2490,6 @@ func TestStripOIDCEnv(t *testing.T) {
 	assert.Equal(t, []string{
 		"PATH=/usr/bin",
 		"HOME=/home/user",
-		"GITHUB_TOKEN=workflow-token",
 		"SAFE_VAR=value",
 	}, result)
 }

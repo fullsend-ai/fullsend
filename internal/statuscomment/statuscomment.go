@@ -718,6 +718,12 @@ func statusEmoji(status string) string {
 	}
 }
 
+// ReconcileOptions controls optional reconciliation behavior.
+type ReconcileOptions struct {
+	// CancellationGuidance is appended to a cancelled status comment.
+	CancellationGuidance string
+}
+
 // ReconcileOrphaned finds and finalizes a status comment that was left in
 // "Started" state because the process was hard-killed (SIGKILL, OOM, etc.)
 // before the deferred PostCompletion call could run.
@@ -767,13 +773,7 @@ func statusEmoji(status string) string {
 // hard-killed run can leave a stray 👀 reaction behind indefinitely.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
-	return ReconcileOrphanedWithCancellationGuidance(ctx, client, project, number, runID, runURL, sha, reason, completionMode, jobStatus, wasSkipped, agentDescription, "")
-}
-
-// ReconcileOrphanedWithCancellationGuidance finalizes an orphaned status
-// comment and appends cancellationGuidance when the run was cancelled.
-func ReconcileOrphanedWithCancellationGuidance(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription, guidance string) error {
+func ReconcileOrphaned(ctx context.Context, client tracker.Client, project string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string, options ReconcileOptions) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -807,7 +807,7 @@ func ReconcileOrphanedWithCancellationGuidance(ctx context.Context, client track
 		// Still in "Started" state — finalize it.
 		desc, startTimeStr := parseStartBody(string(matched.Body))
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason, guidance)
+		body := buildInterruptedBody(marker, runURL, sha, desc, startTimeStr, endTime, reason, options.CancellationGuidance)
 		if err := updateStatusComment(ctx, client, project, number, matched.ID, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("updating orphaned comment: %w", err)
 		}
@@ -844,7 +844,7 @@ func ReconcileOrphanedWithCancellationGuidance(ctx context.Context, client track
 
 	if shouldSynthesize {
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason, guidance)
+		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, synthReason, options.CancellationGuidance)
 		if _, err := createStatusComment(ctx, client, project, number, tracker.Body(body), marker, true); err != nil {
 			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
 		}
