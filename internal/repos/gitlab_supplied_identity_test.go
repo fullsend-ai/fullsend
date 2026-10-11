@@ -362,6 +362,32 @@ func TestRotateGitLabRoleCredentials_RevokedSuppliedCredentialNotMaskedByHealthy
 	assert.Contains(t, result.Rotated, gitlabroles.RoleCoder)
 }
 
+// A historical managed token whose expiry equals the fresh expiry must not make
+// an unforced rotation read as already fresh when the enrolled supplied
+// credential beside it is revoked.
+func TestRotateGitLabRoleCredentials_RevokedSuppliedNotMaskedByFreshExpiryHistoricalToken(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	fc := seededRoleClient(t, gitlabroles.RoleCoder)
+	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
+		`{"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777],"created_token_ids":[9],"managed_user_id":600}}}`, true))
+	tokenName := gitlabroles.BuiltinRegistry().Registrations()[2].Credential.TokenName
+	legacy := &fakeTokens{}
+	legacy.seed(ProjectAccessToken{ID: 9, Name: tokenName, Active: true, ExpiresAt: GitLabPATExpiresAt(now), UserID: 600})
+	legacy.seed(ProjectAccessToken{ID: 13, Name: tokenName, Active: false, Revoked: true, ExpiresAt: "2026-10-03", UserID: 777})
+
+	result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: legacy,
+		Registry: gitlabroles.BuiltinRegistry(), Roles: []gitlabroles.Role{gitlabroles.RoleCoder},
+		Now: now,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Failed)
+	assert.NotContains(t, result.Skipped, gitlabroles.RoleCoder, "a revoked supplied credential is not reported already fresh")
+	assert.Contains(t, result.Rotated, gitlabroles.RoleCoder)
+}
+
 func TestRotateGitLabRoleCredentials_UnrecordableSuppliedOwnerFailsClosed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

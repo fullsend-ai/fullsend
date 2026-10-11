@@ -249,7 +249,7 @@ func TestRotationGenericClientConsultsSuppliedOwnerCapability(t *testing.T) {
 		fc := seededRoleClient(t, gitlabroles.RoleCoder)
 		require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
 			"coder": {
-				Supplied: true, IncomingID: 12, OutgoingIDs: []int{13}, Phase: rotationPhaseOverlapping,
+				Supplied: true, IncomingID: 12, OutgoingIDs: []int{13}, CreatedTokenIDs: []int{12, 13}, Phase: rotationPhaseOverlapping,
 				DistributedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
 			},
 		}}))

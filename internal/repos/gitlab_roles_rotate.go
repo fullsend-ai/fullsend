@@ -487,6 +487,10 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	if provenanceOf(rs).Supplied {
 		if supplied := suppliedCredentialTokens(rs, matches); len(supplied) > 0 {
 			reportMatches = supplied
+			// The idempotency and distribution checks below must also judge the
+			// enrolled credential, not a historical managed token whose expiry
+			// happens to equal the fresh expiry.
+			current = currentListed(supplied)
 		}
 	}
 	rr := roleReportFrom(ctx, cfg, rec, reportMatches, now, lead)
@@ -660,6 +664,16 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	outgoing := activeIDsExcept(tokensWithClearedOwner(matches, excludedOwners), tok.ID)
 	if current.ID != 0 && current.ID != tok.ID && len(tokensWithClearedOwner(tokensWithID(matches, current.ID), excludedOwners)) > 0 {
 		outgoing = uniqueInts(append(outgoing, current.ID))
+	}
+	// An earlier outgoing obligation that grace cleanup could not discharge stays
+	// owed even when the token is absent from this run's operational matches
+	// (renamed, or omitted because its owner is unverified). It is dropped only
+	// when an excluded owner positively owns it.
+	for _, id := range rs.OutgoingIDs {
+		if id == tok.ID || id == 0 || listedTokenOwnedByExcluded(*listed, id, excludedOwners) {
+			continue
+		}
+		outgoing = uniqueInts(append(outgoing, id))
 	}
 	if len(excludedOwners) > 0 {
 		unverified := 0
