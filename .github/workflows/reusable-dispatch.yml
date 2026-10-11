@@ -774,7 +774,13 @@ jobs:
   authorization-notice:
     name: Authorization notice
     needs: [route, harness-dispatch]
-    if: ${{ always() && !cancelled() && (needs.route.outputs.authorization_denied == 'true' || (needs.harness-dispatch.outputs.authorization_denied == 'true' && (needs.route.outputs.legacy_command_applicable != 'true' || needs.route.outputs.authorization_check_failed == 'true'))) }}
+    if: >-
+      ${{ always() && !cancelled() &&
+          (needs.route.outputs.authorization_denied == 'true' ||
+           (needs.harness-dispatch.outputs.authorization_denied == 'true' &&
+            (needs.route.outputs.stage == '' ||
+             needs.route.outputs.legacy_command_applicable != 'true' ||
+             needs.route.outputs.authorization_check_failed == 'true'))) }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
       issues: write
