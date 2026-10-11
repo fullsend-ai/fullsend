@@ -171,7 +171,7 @@ func isExplicitHumanSlashCommand(event *normevent.Event) bool {
 		return false
 	}
 	command := strings.TrimSpace(event.Transition.Comment.Command)
-	return strings.HasPrefix(command, "/fs-") && len(command) > len("/fs-")
+	return strings.HasPrefix(command, "/") && len(command) > 1
 }
 
 func validGitHubLogin(login string) bool {

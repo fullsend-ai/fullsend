@@ -46,7 +46,7 @@ func TestWriteAuthorizationOutputSupportsCustomSlashCommand(t *testing.T) {
 		Actor:  normevent.Actor{ID: "alice", NumericID: 1234, Kind: normevent.ActorHuman},
 		Transition: normevent.Transition{
 			Kind:    normevent.TransitionCommentAdded,
-			Comment: &normevent.Comment{Command: "/fs-analyze"},
+			Comment: &normevent.Comment{Command: "/analyze"},
 		},
 		Source: normevent.Source{RawType: "issue_comment"},
 	}

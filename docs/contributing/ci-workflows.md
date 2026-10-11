@@ -170,6 +170,17 @@ When refactoring between action types, audit every `job.*` and `github.*` refere
 - Never use `permissions: write-all` or omit permissions (which defaults to the repo's broad default token permissions).
 - Separate jobs that need elevated permissions (e.g., `pull-requests: write`) from jobs that check out untrusted code.
 
+### Serialized authorization notices
+
+When multiple dispatch paths can detect the same authorization denial, route their
+metadata to one notification job. The job should use the existing
+`fullsend issues post-comment` command, backed by `forge.Client`, for marker
+deduplication and comment creation. This may cost an additional runner, but it
+keeps the check-and-create operation serialized and prevents legacy and CEL
+dispatch paths from racing to create duplicate notices. The dispatch binary
+should emit only the metadata needed by that job; it should not introduce a
+second comment-posting implementation.
+
 ## Secrets in pull_request_target jobs
 
 Jobs triggered by `pull_request_target` that check out and execute PR-head code can expose secrets to untrusted authors. This is the well-documented "pwn request" vulnerability class. Five components form the attack chain:
