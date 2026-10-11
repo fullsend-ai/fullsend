@@ -18,7 +18,7 @@ fullsend run <agent-name> [flags]
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`; when omitted and `.fullsend` does not exist in the current directory, the command stops and names the flag) |
 | `--runtime` | Override the agent runtime from `config.yaml` for this run (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`); also `FULLSEND_RUNTIME` |
-| `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi and codex — codex takes OpenAI ids only); also `FULLSEND_MODEL` |
+| `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi and codex — codex takes OpenAI ids and `gateway/<model>` only); also `FULLSEND_MODEL` |
 | `--effort` | Override the harness effort level for this run (`low`…`max`); also `FULLSEND_EFFORT` |
 | `--output-dir` | Base directory for run output (default: `/tmp/fullsend`) |
 | `--target-repo` | Path to the target repository |
@@ -66,8 +66,8 @@ Google credentials before the harness pre-script:
 The run prints which source it used. For local and GitLab Vertex runs, point
 `GOOGLE_APPLICATION_CREDENTIALS` at a non-empty credential file when the harness mounts it.
 An OpenAI run uses the [OpenAI credential path](#openai-credentials-on-pi-and-codex), and a pi or
-Claude Code run whose own model is `gateway/<id>` uses the
-[inference gateway credential path](#inference-gateway-credentials-on-pi); neither runs the Vertex
+codex or Claude Code run whose own model is `gateway/<id>` uses the
+[inference gateway credential path](#inference-gateway-credentials-on-pi-codex-and-claude-code); neither runs the Vertex
 setup above. When both GCP
 inputs are set, an OpenAI run on GitHub Actions also prepares Google WIF credentials for Vertex
 sub-agents; a failure there is a warning. The `dummy` and `dummy-playback` runtimes follow the
@@ -344,8 +344,9 @@ Both paths create a provider named after the run and remove it when the run ends
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
 
 <a id="inference-gateway-credentials-on-pi"></a>
+<a id="inference-gateway-credentials-on-pi-and-codex"></a>
 
-## Inference gateway credentials on pi and Claude Code
+## Inference gateway credentials on pi, codex and Claude Code
 
 A pi run that resolves a `gateway/<id>` model, for the parent or a configured sub-agent, uses the
 `inference.gateway` block of `.fullsend/config.yaml`
@@ -374,6 +375,11 @@ guards, with no refresh and no re-seed. The block then applies on local runs too
 fails the run. The mode relies on a long-lived secret, so the run log warns about it; prefer
 `oidc` when the gateway supports it. Check a block with
 [`fullsend inference gateway status`](inference.md#inference-gateway-status).
+
+A codex run whose model is `gateway/<model>` uses the same route, credential modes and guards. The
+token file is codex's `gateway-token`, which the runner-owned `fullsend-gateway` provider's
+`auth.command` re-reads. The run needs no `openai` provider. See
+[Codex › Models through an inference gateway](../runtimes/codex.md#models-through-an-inference-gateway-experimental).
 
 **Claude Code.** A claude runtime run whose own model is `gateway/<id>` uses the same block, provider
 and refresh. The runner exports the gateway origin as `ANTHROPIC_BASE_URL`, passes `<id>` to

@@ -104,10 +104,6 @@ func TestPlanGatewayRoute(t *testing.T) {
 		_, err = planGatewayRoute(none, claude, "fs-plan-claude-noblock", []string{"gateway/m1"}, true)
 		assert.ErrorContains(t, err, "need an inference.gateway block")
 	})
-	t.Run("a gateway model on Codex is an error", func(t *testing.T) {
-		_, err := planGatewayRoute(rc, runtime.Backend{Runtime: runtime.CodexRuntime{}}, "fs-plan-codex", []string{"gateway/m1"}, true)
-		assert.ErrorContains(t, err, "does not implement")
-	})
 	t.Run("no config file", func(t *testing.T) {
 		plan, err := planGatewayRoute(runConfig{}, pi, "fs-plan-nocfg", []string{"gateway/m1"}, true)
 		require.NoError(t, err)
@@ -143,6 +139,27 @@ func TestPlanGatewayRoute(t *testing.T) {
 		require.NotNil(t, plan)
 		t.Cleanup(func() { plan.prepared.ClearGatewayRun(sb) })
 		assert.Equal(t, gatewayProfile{host: "gw.example.com", claude: true}, plan.profileSpec())
+	})
+	t.Run("codex on a gateway model prepares the runtime without a model list", func(t *testing.T) {
+		codex := runtime.Backend{Runtime: runtime.CodexRuntime{}}
+		bare := gatewayTestRunConfig(t, "version: \"1\"\ninference:\n  gateway:\n    url: https://gw.example.com\n    audience: aud\n", nil)
+		const sb = "fs-plan-codex"
+		plan, err := planGatewayRoute(bare, codex, sb, []string{"gateway/m1"}, true)
+		require.NoError(t, err)
+		require.NotNil(t, plan)
+		t.Cleanup(func() { plan.prepared.ClearGatewayRun(sb) })
+		assert.Equal(t, runtime.CodexRuntime{}.GatewayCredentialSeed(), plan.seed)
+	})
+	t.Run("codex on a gateway model with no applying block fails early", func(t *testing.T) {
+		codex := runtime.Backend{Runtime: runtime.CodexRuntime{}}
+		_, err := planGatewayRoute(runConfig{}, codex, "fs-plan-codex-nocfg", []string{"gateway/m1"}, true)
+		assert.ErrorContains(t, err, "need an inference.gateway block")
+		plan, err := planGatewayRoute(rc, codex, "fs-plan-codex-openai", []string{"openai/gpt-5"}, false)
+		require.NoError(t, err)
+		assert.Nil(t, plan)
+		stubGatewayOIDC(t, "", "")
+		_, err = planGatewayRoute(rc, codex, "fs-plan-codex-local", []string{"gateway/m1"}, true)
+		assert.ErrorContains(t, err, "need an inference.gateway block")
 	})
 }
 

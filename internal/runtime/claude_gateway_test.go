@@ -51,7 +51,6 @@ func TestNeedsGatewayRoute_Claude(t *testing.T) {
 	} {
 		assert.Equal(t, tc.want, NeedsGatewayRoute("claude", tc.run, tc.agent, aliases), tc.name)
 	}
-	assert.False(t, NeedsGatewayRoute("codex", "gateway/m", "", nil), "codex has no route")
 	assert.Nil(t, GatewayChildren("claude", "", nil, nil, "", nil), "Claude Code children are not classified")
 }
 

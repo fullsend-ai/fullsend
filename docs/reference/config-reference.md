@@ -315,13 +315,14 @@ independently through the layered config system (an overlay can override
   reached, or refuses the token, the run fails and does not fall back to
   another credential. With no block, or in the `oidc` mode on a local run
   without an OIDC endpoint, the runner adds nothing on pi, so a harness that
-  loads the inference-gateway extension as a plugin keeps working. Claude Code
-  has no such setup, so there a `gateway/` model without a block that applies
-  is an error. On Claude Code the runner exports `url` as
-  `ANTHROPIC_BASE_URL` and passes the id after `gateway/` to `--model`; the
-  model list is not used
-  ([details](../runtimes/claude.md#inference-gateway-route)). A `gateway/`
-  model on a runtime without the route (Codex) is an error. Fields:
+  loads the inference-gateway extension as a plugin keeps working. codex and
+  Claude Code have no such setup, so there a `gateway/` model without a block
+  that applies is an error. codex sends `gateway/` models to the gateway's
+  `POST /v1/responses` through a runner-owned `fullsend-gateway` provider
+  ([Codex › Models through an inference gateway](../runtimes/codex.md#models-through-an-inference-gateway-experimental)).
+  On Claude Code the runner exports `url` as `ANTHROPIC_BASE_URL` and passes
+  the id after `gateway/` to `--model`; the model list is not used
+  ([details](../runtimes/claude.md#inference-gateway-route)). Fields:
   - `url` — the gateway origin, for example `https://gateway.example.com`.
     Must be `https` (plain `http` only for a loopback test host), with no
     credentials, query or fragment, no path other than `/`, and no port
@@ -388,7 +389,10 @@ independently through the layered config system (an overlay can override
   without them, and the runner fails a run whose resolved block is
   partial. `models` and `models_file` are mutually exclusive. A pi run on
   a `gateway/` model needs one of them, because pi runs offline and cannot
-  discover the gateway's models. `url`, `audience` and `auth` layer
+  discover the gateway's models. On codex the list is not used: fullsend
+  renders no catalog for codex, so the id after `gateway/` is the model it
+  sends (a configured `models_file` must still be readable).
+  `url`, `audience` and `auth` layer
   independently; the model list (either form) is one unit,
   and a layer that sets it replaces the inherited list. There is no
   runner-variable override for this block. `fullsend github setup

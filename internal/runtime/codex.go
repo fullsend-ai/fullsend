@@ -24,12 +24,20 @@ type CodexRuntime struct{}
 
 func (CodexRuntime) Name() string { return "codex" }
 
-// System returns the OTEL GenAI provider identity. Unlike pi, which is
-// multi-provider and implements ProviderResolver, codex serves a single
-// model vendor — it speaks the OpenAI Responses API and has no Vertex,
-// Anthropic or Gemini path — so the system is the vendor ("openai"), not
-// the runtime name.
+// System returns the OTEL GenAI provider identity of codex's direct route:
+// it speaks the OpenAI Responses API, so the system is the vendor
+// ("openai"), not the runtime name.
 func (CodexRuntime) System() string { return "openai" }
+
+// ProviderFor returns "gateway" for a gateway/ model, which the inference
+// gateway serves (ADR 0137), and "" otherwise, so GenAISystemFor falls back
+// to System().
+func (CodexRuntime) ProviderFor(model, agentModel string, _ map[string]string) string {
+	if isCodexGatewayModel(EffectiveModel(model, agentModel)) {
+		return codexGatewayModelProvider
+	}
+	return ""
+}
 
 // ConfigDir returns the codex config directory inside the sandbox. It is
 // exported to the agent process as CODEX_HOME (see EnvExports) and lives
@@ -103,6 +111,7 @@ var (
 	_ Runtime           = CodexRuntime{}
 	_ TranscriptHandler = CodexRuntime{}
 	_ DebugLogNamer     = CodexRuntime{}
+	_ ProviderResolver  = CodexRuntime{}
 
 	_ OpenAICredentialSeeder = CodexRuntime{}
 )

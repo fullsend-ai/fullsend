@@ -8,7 +8,8 @@
 # one revision; spec drift and a not-Ready service redeploy; a run without a
 # Vertex flag never removes the Vertex models; --delete removes exactly the
 # named resources; an image digest mismatch, an HTML 401 from Cloud Run's
-# front end and an unreadable resource fail the run.
+# front end and an unreadable resource fail the run; REAL_KEY_MODEL decides
+# the one model the real key may call.
 #
 # Run from the repo root:
 #   bash hack/setup-e2e-inference-gateway_test.sh
@@ -336,8 +337,18 @@ expect_out "--with-vertex grants aiplatform.user" "granted roles/aiplatform.user
 expect_out "--with-vertex rolls a revision" "rolled a new revision"
 CFG2="${STATE}/secrets/${CFG_SECRET}.v2"
 if grep -q 'name: claude-haiku-5-5' "${CFG2}" && grep -q 'name: gemini-3.8-flash' "${CFG2}" \
-    && [[ "$(grep -c "vertexProject: ${PROJECT}, vertexRegion: global" "${CFG2}")" == "2" ]]; then
-  pass "--with-vertex adds both Vertex models"; else fail "Vertex models"; fi
+    && grep -q 'name: gpt-oss-120b' "${CFG2}" \
+    && [[ "$(grep -c "vertexProject: ${PROJECT}, vertexRegion: global" "${CFG2}")" == "3" ]] \
+    && grep -q "vertexRegion: global, model: openai/gpt-oss-120b-maas }" "${CFG2}"; then
+  pass "--with-vertex adds the three Vertex models"; else fail "Vertex models"; fi
+if grep -q '^    localRateLimit:$' "${CFG2}" \
+    && [[ "$(grep -c '^      fillInterval: 60s$' "${CFG2}")" == "2" ]] \
+    && grep -q '^      maxTokens: 60$' "${CFG2}" && grep -q '^      maxTokens: 1000000$' "${CFG2}" \
+    && [[ "$(grep -c '"unknown/" + c' "${CFG2}")" == "2" ]]; then
+  pass "the config caps each real model, with a shared bucket for other callers"; else fail "rate limits"; fi
+if [[ "$(grep -c '^    finalTransformation:$' "${CFG2}")" == "1" ]] \
+    && grep -q "^      messages: 'llmRequest.messages.filter(m, !(m.role == \"assistant\"" "${CFG2}"; then
+  pass "gpt-oss-120b drops empty assistant messages"; else fail "gpt-oss finalTransformation"; fi
 if [[ "$(cat "${STATE}/secrets/${KEY_SECRET}.latest")" == "1" ]]; then
   pass "--with-vertex leaves the stub key alone"; else fail "stub key re-versioned"; fi
 if [[ "$(revisions)" == "2" ]] && grep -q '^gcloud .* run services update ' "${STATE}/gcloud.log"; then
@@ -629,6 +640,26 @@ if run_setup --without-vertex; then fail "ran without a project"; else
 if E2E_GCP_PROJECT_ID="${PROJECT}" env PATH="${SHIM_DIR}:${PATH}" STUB_STATE="${STATE}" \
     bash "${SETUP}" --without-vertex > "${STATE}/out" 2>&1; then
   pass "E2E_GCP_PROJECT_ID is the default project"; else fail "E2E_GCP_PROJECT_ID ignored"; fi
+
+# --- real key: REAL_KEY_MODEL picks the one model it may call -------------------
+REAL_HASH="sha256:$(printf 'b%.0s' {1..64})"
+# real_key_models FILE: the models whose rules admit the real key, then its allowedModels.
+real_key_models() {
+  awk '/^  - name: /{m=$3} /apiKey.purpose == "e2e-real-run"/{print m}' "$1" | tr '\n' ' '
+  grep -A1 'purpose: e2e-real-run' "$1" | sed -n 's/.*allowedModels: //p'
+}
+for want in claude-haiku-5-5 gpt-oss-120b; do
+  if [[ "${want}" == claude-haiku-5-5 ]]; then sel=(); else sel=(REAL_KEY_MODEL="${want}"); fi
+  env ${sel[@]+"${sel[@]}"} REAL_KEY_HASH="${REAL_HASH}" PATH="${SHIM_DIR}:${PATH}" \
+    bash "${SETUP}" --project "${PROJECT}" --with-vertex --print-config > "${STATE}/real.yaml"
+  got=$(real_key_models "${STATE}/real.yaml")
+  if [[ "${got}" == "${want} [${want}]" ]]; then
+    pass "the real key may call only ${want}"; else fail "real key for ${want}: ${got}"; fi
+done
+if env REAL_KEY_MODEL=gemini-3.8-flash REAL_KEY_HASH="${REAL_HASH}" PATH="${SHIM_DIR}:${PATH}" \
+    bash "${SETUP}" --project "${PROJECT}" --with-vertex --print-config > "${STATE}/out" 2>&1; then
+  fail "unsupported REAL_KEY_MODEL accepted"; else
+  expect_out "REAL_KEY_MODEL is limited to two models" "REAL_KEY_MODEL must be"; fi
 
 echo
 if (( FAILURES > 0 )); then

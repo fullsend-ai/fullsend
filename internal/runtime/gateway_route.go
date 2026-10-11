@@ -63,8 +63,8 @@ type GatewayRun struct {
 // route's placeholder env key, seed fragment and credential file, which
 // the runner's gateway refresher re-runs after each token refresh.
 //
-// pi and Claude Code implement it. Runtimes without the route do not
-// implement the interface, and the runner refuses a gateway/ model on
+// pi, codex and Claude Code implement it. Runtimes without the route do
+// not implement the interface, and the runner refuses a gateway/ model on
 // them.
 type GatewayRouteRuntime interface {
 	PrepareGatewayRun(sandboxName string, run GatewayRun) error
@@ -75,17 +75,22 @@ type GatewayRouteRuntime interface {
 // NeedsGatewayRoute reports whether the parent's effective model on the
 // named backend resolves to the gateway provider. On pi it uses the same
 // resolution buildPiRunCommand gates on (provider prefix, case-folded,
-// models.aliases, the FULLSEND_PI_PROVIDER default for a bare id). On
-// Claude Code it uses the model buildRunCommand passes (claudeGatewayModel).
+// models.aliases, the FULLSEND_PI_PROVIDER default for a bare id). On codex
+// the gateway/ prefix alone decides, as in translateCodexModel: codex
+// consults no alias table. On Claude Code it uses the model buildRunCommand
+// passes (claudeGatewayModel). pi, codex and Claude Code carry the route.
 func NeedsGatewayRoute(backend, runModel, agentModel string, configAliases map[string]string) bool {
 	switch backend {
 	case "pi":
 		return piModelProvider(EffectiveModel(runModel, agentModel), configAliases) == piGatewayProvider
+	case "codex":
+		return isCodexGatewayModel(EffectiveModel(runModel, agentModel))
 	case "claude":
 		_, ok := claudeGatewayModel(runModel, agentModel, configAliases)
 		return ok
+	default:
+		return false
 	}
-	return false
 }
 
 // GatewayChildren lists the configured pi children whose model resolves

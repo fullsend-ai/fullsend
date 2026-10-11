@@ -135,16 +135,26 @@ var codexClaudeAliases = map[string]bool{"opus": true, "sonnet": true, "haiku": 
 // codexModelHelp names both ways to give codex a model it can serve.
 const codexModelHelp = "set FULLSEND_CODEX_MODEL=" + codexOpenAIProvider +
 	"/<id> for the repo, or model: " + codexOpenAIProvider +
-	"/<id> on the agent's agents: entry or the harness"
+	"/<id> on the agent's agents: entry or the harness (or " + codexGatewayModelProvider +
+	"/<model> with an inference.gateway block)"
 
 // ValidateCodexModel reports whether model is one fullsend's codex
-// integration can serve. Empty, a Claude alias, or a non-openai provider
-// prefix are errors; the message names both ways to set a valid id. Used by
-// `agent new` so `--runtime codex` cannot generate a harness the runtime
-// will refuse (#7264).
+// integration can serve. Empty, a Claude alias, or a provider prefix other
+// than openai/ or gateway/ are errors; the message names both ways to set a
+// valid id. Used by `agent new` so `--runtime codex` cannot generate a harness
+// the runtime will refuse (#7264). A gateway/ model is accepted by shape:
+// whether an inference.gateway block applies is known only at run time.
 func ValidateCodexModel(model string) error {
-	_, err := translateCodexModel(model)
+	_, err := translateCodexModel(model, true)
 	return err
+}
+
+// codexModel is a resolved codex model: the --model value and whether it is
+// served through the inference gateway route (the fullsend-gateway
+// provider) rather than the direct OpenAI one (fullsend-openai).
+type codexModel struct {
+	ID      string
+	Gateway bool
 }
 
 // translateCodexModel resolves a model spec into codex's --model value: a bare
@@ -153,29 +163,47 @@ func ValidateCodexModel(model string) error {
 // otherwise send the whole string as a model id and get a 404 from OpenAI with
 // nothing to tune — which is exactly what the local smoke showed: five error
 // reconnects and a turn.failed carrying "Model not found".
-func translateCodexModel(model string) (string, error) {
+//
+// `gateway/<model>` selects the inference gateway route (ADR 0137) and passes
+// everything after the first slash to codex, so a multi-segment id such as
+// `gateway/vendor/org/model` reaches the gateway as `vendor/org/model`. It is
+// accepted only when gateway is true — an inference.gateway block applies and
+// Bootstrap rendered the gateway provider — and is an error otherwise.
+func translateCodexModel(model string, gateway bool) (codexModel, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return "", fmt.Errorf("codex takes OpenAI model ids only and no model was named: %s", codexModelHelp)
+		return codexModel{}, fmt.Errorf("codex takes OpenAI model ids or gateway/<model> only and no model was named: %s", codexModelHelp)
 	}
 	provider, id, hasSlash := strings.Cut(model, "/")
 	if !hasSlash {
 		if codexClaudeAliases[strings.ToLower(model)] {
-			return "", fmt.Errorf(
-				"codex takes OpenAI model ids only, and the Claude model aliases do not apply to it: %q is one of them. To run this agent on codex, %s",
+			return codexModel{}, fmt.Errorf(
+				"codex takes OpenAI model ids or gateway/<model> only, and the Claude model aliases do not apply to it: %q is one of them. To run this agent on codex, %s",
 				model, codexModelHelp)
 		}
-		return model, nil
+		return codexModel{ID: model}, nil
+	}
+	if strings.EqualFold(provider, codexGatewayModelProvider) {
+		if !gateway {
+			return codexModel{}, fmt.Errorf(
+				"model %q selects the inference gateway route, but no inference.gateway block applies to this run: add one to .fullsend/config.yaml (with auth: oidc it applies on a run with a forge OIDC endpoint, with auth: api-key on every run), or %s",
+				model, codexModelHelp)
+		}
+		id = strings.TrimSpace(id)
+		if id == "" || strings.HasPrefix(id, "/") || strings.HasSuffix(id, "/") {
+			return codexModel{}, fmt.Errorf("model %q has an empty model id after the %q prefix", model, codexGatewayModelProvider)
+		}
+		return codexModel{ID: id, Gateway: true}, nil
 	}
 	if !strings.EqualFold(provider, codexOpenAIProvider) {
-		return "", fmt.Errorf(
-			"codex takes OpenAI model ids only, so %q is not available on it: %s",
+		return codexModel{}, fmt.Errorf(
+			"codex takes OpenAI model ids or gateway/<model> only, so %q is not available on it: %s",
 			model, codexModelHelp)
 	}
 	if strings.TrimSpace(id) == "" {
-		return "", fmt.Errorf("model %q has an empty model id after the %q prefix: %s", model, codexOpenAIProvider, codexModelHelp)
+		return codexModel{}, fmt.Errorf("model %q has an empty model id after the %q prefix: %s", model, codexOpenAIProvider, codexModelHelp)
 	}
-	return id, nil
+	return codexModel{ID: id}, nil
 }
 
 // codexBinaryPin is the POSIX sh fragment that records where codex is; see
@@ -201,6 +229,14 @@ func codexAssetGuard(r CodexRuntime, hooksEnabled bool, digests codexRunnerHeldD
 		"test -f " + shellQuote(r.codexConfigPath()),
 		"test -f " + shellQuote(r.codexAuthScriptPath()),
 		codexSHACheck(r.codexAuthScriptPath(), codexAssetSHA256(codexAuthScriptSH)),
+	}
+	if digests.GatewayBaseURL != "" {
+		// The gateway provider's auth.command, pinned exactly as the OpenAI
+		// one is: Bootstrap uploads it only when a block applies.
+		checks = append(checks,
+			"test -f "+shellQuote(r.codexGatewayAuthScriptPath()),
+			codexSHACheck(r.codexGatewayAuthScriptPath(), codexAssetSHA256(codexGatewayAuthScriptSH)),
+		)
 	}
 	if hooksEnabled {
 		checks = append(checks,
@@ -322,9 +358,29 @@ func codexConfigGuard(r CodexRuntime, digests codexRunnerHeldDigestSet) string {
 //     --settings), never from the agent-writable manifest;
 //   - models_cache.json is removed before .env and again just before launch,
 //     so codex starts from its bundled model catalog.
-func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled bool, digests codexRunnerHeldDigestSet) string {
+//
+// A gateway/ model (model.Gateway, ADR 0137) swaps the route, never the
+// guards: the gateway token is seeded instead of the OpenAI one, the
+// gateway placeholder is unset after .env as well, and the `-c` overrides
+// select and pin fullsend-gateway — its base_url and auth.command — in
+// place of fullsend-openai. The gateway values come from the runner
+// (digests.GatewayBaseURL, the rendered config.toml), never from .env.
+func buildCodexRunCommand(params RunParams, model codexModel, effort string, hooksEnabled bool, digests codexRunnerHeldDigestSet) string {
 	r := CodexRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
+
+	providerID := codexProviderID
+	baseURL := codexBaseURL
+	authScript := r.codexAuthScriptPath()
+	seed := r.OpenAIAuthSeed()
+	unset := "OPENAI_BASE_URL OPENAI_API_KEY CODEX_API_KEY"
+	if model.Gateway {
+		providerID = codexGatewayProviderID
+		baseURL = digests.GatewayBaseURL
+		authScript = r.codexGatewayAuthScriptPath()
+		seed = r.gatewayAuthSeed()
+		unset += " " + codexGatewayCredentialEnv
+	}
 
 	parts := []string{"cd " + shellQuote(params.RepoDir)}
 	parts = append(parts,
@@ -340,7 +396,7 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		"&& "+codexAssetGuard(r, hooksEnabled, digests),
 		"&& "+codexConfigGuard(r, digests),
 		"&& "+codexModelsCacheRemoval(r),
-		"&& "+r.OpenAIAuthSeed(),
+		"&& "+seed,
 		"&& . "+shellQuote(envFile),
 		// .env is agent-writable; re-pin the runner-owned config location
 		// after it so a rewritten .env cannot move codex's home out from
@@ -358,7 +414,7 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		// LD_* would load code into any dynamically linked binary the run
 		// starts — codex's own native binary, tirith, git — before its main
 		// runs, which no digest of ours would see.
-		"&& unset OPENAI_BASE_URL OPENAI_API_KEY CODEX_API_KEY NODE_OPTIONS NODE_PATH PYTHONPATH PYTHONHOME PYTHONSTARTUP LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT",
+		"&& unset "+unset+" NODE_OPTIONS NODE_PATH PYTHONPATH PYTHONHOME PYTHONSTARTUP LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT",
 		// `unset -f` is a special builtin, which a function .env defined
 		// cannot shadow, so it restores the real utilities before the second
 		// pass; `command -p` inside the guard defeats a PATH swap.
@@ -418,8 +474,8 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 	}
 	parts = append(parts,
 		"-C "+shellQuote(params.RepoDir),
-		"--model "+shellQuote(model),
-		"-c "+shellQuote("model_provider="+codexProviderID),
+		"--model "+shellQuote(model.ID),
+		"-c "+shellQuote("model_provider="+providerID),
 		"-c "+shellQuote("approval_policy=never"),
 		"-c "+shellQuote("sandbox_mode=danger-full-access"),
 		// The endpoint and the credential command as SessionFlags too, so
@@ -430,8 +486,8 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		// trust — `-c projects={}` and a scalar `trust_level="untrusted"` were
 		// both tried and neither overrides the file — so the untrusted entry
 		// lives in config.toml, whose integrity is enforced by digest.
-		"-c "+shellQuote(fmt.Sprintf("model_providers.%s.base_url=%q", codexProviderID, codexBaseURL)),
-		"-c "+shellQuote(fmt.Sprintf("model_providers.%s.auth.command=%q", codexProviderID, r.codexAuthScriptPath())),
+		"-c "+shellQuote(fmt.Sprintf("model_providers.%s.base_url=%q", providerID, baseURL)),
+		"-c "+shellQuote(fmt.Sprintf("model_providers.%s.auth.command=%q", providerID, authScript)),
 	)
 	if effort != "" {
 		parts = append(parts, "-c "+shellQuote("model_reasoning_effort="+effort))
@@ -500,10 +556,15 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	// directory and carries no digest, so reading the model from there would
 	// let an agent move a validation retry onto a different model, and a
 	// different cost tier, than the one the run was authorised for.
-	modelID, err := translateCodexModel(EffectiveModel(params.Model, digests.AgentModel))
+	//
+	// Whether a gateway/ model is admitted comes from the runner-held
+	// record of what Bootstrap rendered, so the route and config.toml
+	// cannot disagree.
+	model, err := translateCodexModel(EffectiveModel(params.Model, digests.AgentModel), digests.GatewayBaseURL != "")
 	if err != nil {
 		return -1, err
 	}
+	modelID := model.ID
 	effort, ok := codexEffortFor(params.Effort)
 	if !ok {
 		printer.StepWarn(fmt.Sprintf(
@@ -517,7 +578,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 			sanitizeOutput(strings.Join(params.FallbackModels, ","))))
 	}
 
-	cmd := buildCodexRunCommand(params, modelID, effort, hooksEnabled, digests)
+	cmd := buildCodexRunCommand(params, model, effort, hooksEnabled, digests)
 
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {

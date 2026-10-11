@@ -8,7 +8,7 @@ sandbox, the credentials, and the verdict.
 |---|---|---|
 | **[`claude`](runtimes/claude.md)** | Production agent runs (Claude Code) | Default |
 | **[`pi`](runtimes/pi.md)** | Second runtime, opt-in per repo — Claude, Grok and Gemini on Vertex; GPT via OpenAI WIF (wired, not yet exercised live) | Supported for all roles |
-| **[`codex`](runtimes/codex.md)** | Third runtime, opt-in per repo or agent — OpenAI models only, via the same secretless credential path (wired, not yet exercised live) | Opt-in |
+| **[`codex`](runtimes/codex.md)** | Third runtime, opt-in per repo or agent — OpenAI models via the same secretless credential path (wired, not yet exercised live), or Responses-capable models through an inference gateway (`gateway/<model>`) | Opt-in |
 | `dummy` | Behaviour tests — scripted ops, no inference | Internal |
 | `dummy-playback` | Behaviour tests — replays canned agent results from a playlist, no inference | Internal |
 | `opencode` | Not yet functional | Stub |
@@ -54,14 +54,14 @@ sequenceDiagram
 
 | | Claude Code | pi | codex |
 |---|---|---|---|
-| Models | Anthropic on Vertex | Claude, **Grok** and **Gemini** on Vertex; **GPT** via OpenAI WIF (opt-in, [not yet exercised live](runtimes/pi.md#models-and-providers)) | **GPT only**, via OpenAI WIF ([not yet exercised live](runtimes/codex.md#not-yet-exercised)) |
+| Models | Anthropic on Vertex | Claude, **Grok** and **Gemini** on Vertex; **GPT** via OpenAI WIF (opt-in, [not yet exercised live](runtimes/pi.md#models-and-providers)) | **GPT**, via OpenAI WIF ([not yet exercised live](runtimes/codex.md#not-yet-exercised)); any Responses-capable model through an [inference gateway](runtimes/codex.md#models-through-an-inference-gateway-experimental) (`gateway/<model>`, experimental) |
 | Sub-agents | Native (`Agent` tool) | `Agent`/`Task` via a fullsend extension | Not available |
 | Fallback model chain | `FULLSEND_FALLBACK_MODELS`, tried in order | Top-level run only: alias requests tried in order when Vertex does not serve the model ([two 404/403 messages](runtimes/pi.md#per-repo-alias-overrides)), same provider only; pinned ids and sub-agent children fail loudly | Ignored with a warning |
 | Roles | All | All; `review`/`retro` at `--thinking medium` by default | Same recommendation as before — no sub-agent roster on codex |
 | Effort | `--effort low..max` | `--thinking`, same levels (`high` when unset) | `model_reasoning_effort`, same levels |
 | Tools | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | Shell + `apply_patch` only; `tools:` is recorded, not enforced (the allowlist hook is opt-in) |
 | Security controls | Full matrix | Full matrix; stricter on failed-call sanitizing | Full matrix; post-tool hooks detect and block but cannot rewrite output |
-| Inference gateway route (`gateway/<model>`, [ADR 0137](ADRs/0137-inference-gateway-credential-route.md)) | Runner-owned `ANTHROPIC_BASE_URL`, cleared and re-exported after `.env`; credential via an `apiKeyHelper` on a re-seeded token file (`oidc`) or an `ANTHROPIC_AUTH_TOKEN` placeholder (`api-key`), sent as `Authorization: Bearer` in both modes (`oidc` also copies it into `x-api-key`); no model list; needs a block ([details](runtimes/claude.md#inference-gateway-route)) | Runner-owned `INFERENCE_GATEWAY_*` and a digest-guarded config for the pi-inference-gateway extension; credential via a re-seeded token file, sent as `Authorization: Bearer` in both modes; model list required ([details](cli/run.md#inference-gateway-credentials-on-pi)) | Not available: a `gateway/` model is an error |
+| Inference gateway route (`gateway/<model>`, [ADR 0137](ADRs/0137-inference-gateway-credential-route.md)) | Runner-owned `ANTHROPIC_BASE_URL`, cleared and re-exported after `.env`; credential via an `apiKeyHelper` on a re-seeded token file (`oidc`) or an `ANTHROPIC_AUTH_TOKEN` placeholder (`api-key`), sent as `Authorization: Bearer` in both modes (`oidc` also copies it into `x-api-key`); no model list; needs a block ([details](runtimes/claude.md#inference-gateway-route)) | `gateway/<model>` through the runner-loaded inference-gateway extension; Responses, Messages or Chat Completions | `gateway/<model>` through a runner-owned `fullsend-gateway` provider in the digest-guarded `config.toml`; Responses only. On every runtime the sandbox holds only the run-scoped provider's placeholder |
 | Cost in `metrics.json` | Reported | Reported | Not reported — codex sends none |
 | Content capture (Level 3) | Text, reasoning, tool calls and tool results (correlating ids) | Text, reasoning, tool calls (no correlating ids) — pi's parser emits neither ids nor tool results yet ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) | Text, reasoning, tool calls (no correlating ids) — codex's parser emits neither ids nor tool results ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) |
 | Tool spans (`execute_tool`) | One per id-bearing tool call (server-side tools get none), up to 1,024 per iteration, a child of the iteration's `agent` span, timed at receipt | None — the parser emits no call ids ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) | None — the parser emits no call ids ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)) |
@@ -183,7 +183,9 @@ On pi, a model is `provider/id` — aliases and bare ids still work, and the pro
 `FULLSEND_PI_PROVIDER` (default `anthropic-vertex`). pi reaches Claude, Gemini **and** Grok, each
 through its own provider; see [Pi › Models and providers](runtimes/pi.md#models-and-providers).
 
-On codex, a model is an OpenAI id — `openai/<id>` or the bare id. The Claude aliases above do
+On codex, a model is an OpenAI id — `openai/<id>` or the bare id — or `gateway/<model>` when an
+`inference.gateway` block applies
+([Codex › Models through an inference gateway](runtimes/codex.md#models-through-an-inference-gateway-experimental)). The Claude aliases above do
 **not** apply: codex serves the OpenAI Responses API only, so `opus` and friends are refused rather
 than remapped to a GPT model. Because the fleet harnesses say `model: opus`, a repo moving to codex
 names its model either once on the runner with `FULLSEND_CODEX_MODEL=openai/gpt-5.6-luna` or per
@@ -229,7 +231,7 @@ and are omitted from this table.
 
 | Harness key | Claude Code | pi | codex |
 |---|---|---|---|
-| `model` | `--model` | alias table (merged with `models.aliases`), then `provider/id`; see [Models](#models) | `--model <id>`; OpenAI ids only |
+| `model` | `--model` | alias table (merged with `models.aliases`), then `provider/id`; see [Models](#models) | `--model <id>`; OpenAI ids and `gateway/<model>` only |
 | `effort` | `--effort` | `--thinking` (superset of the harness levels; `high` when unset) | `model_reasoning_effort` (same levels) |
 | `tools:` | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | No native allowlist. `Bash(...)` lists are recorded but not enforced, entries with no codex tool are dropped with a warning, and the tool-allowlist hook is opt-in (`FULLSEND_TOOL_ALLOWLIST`) |
 | `skills` | `CLAUDE_CONFIG_DIR/skills/` | `PI_CODING_AGENT_DIR/skills/`, discovered natively | `CODEX_HOME/skills/`, discovered natively |
