@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # setup-e2e-inference-gateway_test.sh — tests for
-# setup-e2e-inference-gateway.sh against stubbed gcloud, skopeo and curl.
+# setup-e2e-inference-gateway.sh against stubbed gcloud, skopeo, curl and gh.
 #
 # Covers: a fresh run creates every resource; a second run is a no-op; a
 # gateway deployed by hand with the same names is adopted without changes;
@@ -9,7 +9,9 @@
 # Vertex flag never removes the Vertex models; --delete removes exactly the
 # named resources; an image digest mismatch, an HTML 401 from Cloud Run's
 # front end and an unreadable resource fail the run; REAL_KEY_MODEL decides
-# the one model the real key may call.
+# the one model the real key may call. Change control: a config change that
+# touches a frozen part exits 4, a busy gateway exits 6, a failed post-deploy
+# check exits 5 with the restore command, and a no-change run is a no-op.
 #
 # Run from the repo root:
 #   bash hack/setup-e2e-inference-gateway_test.sh
@@ -111,11 +113,13 @@ case "$1 $2 $3" in
     [[ -f "${S}/deny_access" ]] && { echo "ERROR: PERMISSION_DENIED: secretmanager.versions.access" >&2; exit 1; }
     sec=$(flag secret "$@"); n=$(cat "${S}/secrets/${sec}.latest" 2>/dev/null) \
       || notfound "Secret [${sec}] not found or has no versions"
+    [[ "$4" == latest ]] || n="$4"
     cat "${S}/secrets/${sec}.v${n}" ;;
   "secrets versions describe")
     sec=$(flag secret "$@"); n=$(cat "${S}/secrets/${sec}.latest" 2>/dev/null) \
       || notfound "Secret [${sec}] has no versions"
-    jq -n --arg t "$(cat "${S}/secrets/${sec}.v${n}.time")" '{createTime: $t}' ;;
+    jq -n --arg t "$(cat "${S}/secrets/${sec}.v${n}.time")" \
+      --arg name "projects/123/secrets/${sec}/versions/${n}" '{name: $name, createTime: $t}' ;;
   "secrets versions add")
     n=$(( $(cat "${S}/secrets/$4.latest" 2>/dev/null || echo 0) + 1 ))
     cp "$(flag data-file "$@")" "${S}/secrets/$4.v${n}"
@@ -209,28 +213,76 @@ esac
 EOF
 
 # --- curl: the gateway's answer to unauthenticated probes -------------------
+# GET /v1/models is the authentication probe. A POST is a post-deploy check
+# call: a bearer gets 401 (or ${S}/wrong_key_status), and no credential gets
+# 403 from a permissive gateway (the latest config has keys) or 401 from a
+# strict one. A "MODEL ENDPOINT" line in ${S}/anon_open answers 200 instead.
 cat > "${SHIM_DIR}/curl" <<'EOF'
 #!/usr/bin/env bash
 S="${STUB_STATE}"
 echo "curl $*" >> "${S}/curl.log"
-out=""
+out="" url="" data="" bearer=false
 while [[ $# -gt 0 ]]; do
-  [[ "$1" == "-o" ]] && { out="$2"; shift; }
+  case "$1" in
+    -o) out="$2"; shift ;;
+    --data) data="$2"; shift ;;
+    -H) case "$2" in [Aa]uthorization:*) bearer=true ;; esac; shift ;;
+    -m|-w|-X) shift ;;
+    https://*) url="$1" ;;
+  esac
   shift
 done
+endpoint="${url#https://gw.example.test}"
 if [[ -f "${S}/curl_down" ]]; then
   echo "curl: (6) Could not resolve host" >&2
   exit 6
+elif [[ "${endpoint}" != /v1/models ]]; then
+  echo "{}" > "${out}"
+  model=$(jq -r .model <<<"${data}")
+  cfg="${S}/secrets/fullsend-e2e-gateway-config.v$(cat "${S}/secrets/fullsend-e2e-gateway-config.latest")"
+  if [[ "${bearer}" == true ]]; then
+    printf '%s' "$(cat "${S}/wrong_key_status" 2>/dev/null || echo 401)"
+  elif grep -qx "${model} ${endpoint}" "${S}/anon_open" 2>/dev/null; then
+    printf '200'
+  elif grep -q 'mode: permissive' "${cfg}"; then
+    printf '403'
+  else
+    printf '401'
+  fi
 elif [[ -f "${S}/json_401" ]]; then
   echo '{"error":"unauthorized"}' > "${out}"
   printf '401 application/json'
 elif [[ -f "${S}/html_401" ]]; then
   echo '<html><body>401 Unauthorized</body></html>' > "${out}"
   printf '401 text/html; charset=UTF-8'
+elif [[ "${bearer}" == true ]] && grep -q 'mode: permissive' \
+    "${S}/secrets/fullsend-e2e-gateway-config.v$(cat "${S}/secrets/fullsend-e2e-gateway-config.latest")"; then
+  echo 'api key authentication failure: invalid key' > "${out}"
+  printf '401 text/plain'
 else
   echo 'authentication failure: no bearer token found' > "${out}"
   printf '401 text/plain'
 fi
+EOF
+
+# --- gh: workflow runs that use the gateway -------------------------------------
+# ${S}/runs_<workflow> holds the run list for a workflow; e2e.yml runs are
+# returned only to a merge_group query.
+cat > "${SHIM_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+S="${STUB_STATE}"
+echo "gh $*" >> "${S}/gh.log"
+[[ -f "${S}/gh_down" ]] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
+wf="" event=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workflow) wf="$2"; shift ;;
+    --event) event="$2"; shift ;;
+  esac
+  shift
+done
+if [[ "${wf}" == e2e.yml && "${event}" != merge_group ]]; then echo '[]'; exit 0; fi
+cat "${S}/runs_${wf}" 2>/dev/null || echo '[]'
 EOF
 chmod +x "${SHIM_DIR}"/*
 
@@ -327,11 +379,16 @@ if [[ "$(revisions)" == "1" ]]; then pass "second run rolls no revision"; else f
 # --- 3. config change: --with-vertex adds a version and rolls one revision ------
 before=$(mutations | wc -l | tr -d ' ')
 run_setup --project "${PROJECT}" --with-vertex --dry-run && rc=0 || rc=$?
+if [[ "${rc}" == "4" ]]; then pass "--dry-run refuses a frozen change (new models) with exit 4"; else fail "frozen --dry-run exit ${rc}"; fi
+run_setup --project "${PROJECT}" --with-vertex --dry-run --allow-frozen-change && rc=0 || rc=$?
 if [[ "${rc}" == "3" ]]; then pass "--dry-run with pending changes exits 3"; else fail "--dry-run exit ${rc}"; fi
 expect_out "--dry-run lists the config change" "WOULD: added a new version of secret ${CFG_SECRET}"
+expect_out "--dry-run skips the busy check" "busy check skipped \\(--dry-run\\)"
 expect_no_mutations "--dry-run mutates nothing" "${before}"
 
-run_setup --project "${PROJECT}" --with-vertex || fail "--with-vertex run failed"
+run_setup --project "${PROJECT}" --with-vertex --allow-frozen-change || fail "--with-vertex run failed"
+expect_out "the post-deploy check calls each Vertex model on each endpoint" \
+  "OK: no credential: POST /v1/responses model gpt-oss-120b -> HTTP 401"
 expect_out "--with-vertex adds a config version" "added a new version of secret ${CFG_SECRET}"
 expect_out "--with-vertex grants aiplatform.user" "granted roles/aiplatform.user"
 expect_out "--with-vertex rolls a revision" "rolled a new revision"
@@ -343,7 +400,7 @@ if grep -q 'name: claude-haiku-5-5' "${CFG2}" && grep -q 'name: gemini-3.8-flash
   pass "--with-vertex adds the three Vertex models"; else fail "Vertex models"; fi
 if grep -q '^    localRateLimit:$' "${CFG2}" \
     && [[ "$(grep -c '^      fillInterval: 60s$' "${CFG2}")" == "2" ]] \
-    && grep -q '^      maxTokens: 60$' "${CFG2}" && grep -q '^      maxTokens: 1000000$' "${CFG2}" \
+    && grep -q '^      maxTokens: 60$' "${CFG2}" && grep -q '^      maxTokens: 200000$' "${CFG2}" \
     && [[ "$(grep -c '"unknown/" + c' "${CFG2}")" == "2" ]]; then
   pass "the config caps each real model, with a shared bucket for other callers"; else fail "rate limits"; fi
 if [[ "$(grep -c '^    finalTransformation:$' "${CFG2}")" == "1" ]] \
@@ -366,7 +423,7 @@ before=$(mutations | wc -l | tr -d ' ')
 if run_setup --project "${PROJECT}"; then fail "run without a Vertex flag removed Vertex"; else
   expect_out "run without a Vertex flag refuses" "Pass --with-vertex to keep them"; fi
 expect_no_mutations "refused run mutates nothing" "${before}"
-run_setup --project "${PROJECT}" --without-vertex || fail "--without-vertex failed"
+run_setup --project "${PROJECT}" --without-vertex --allow-frozen-change || fail "--without-vertex failed"
 expect_out "--without-vertex removes the grant" "removed roles/aiplatform.user"
 if ! grep -q 'provider: vertex' "${STATE}/secrets/${CFG_SECRET}.v3"; then
   pass "--without-vertex removes the Vertex models"; else fail "Vertex models left"; fi
@@ -660,6 +717,149 @@ if env REAL_KEY_MODEL=gemini-3.8-flash REAL_KEY_HASH="${REAL_HASH}" PATH="${SHIM
     bash "${SETUP}" --project "${PROJECT}" --with-vertex --print-config > "${STATE}/out" 2>&1; then
   fail "unsupported REAL_KEY_MODEL accepted"; else
   expect_out "REAL_KEY_MODEL is limited to two models" "REAL_KEY_MODEL must be"; fi
+
+# --- change control: busy check, frozen-path diff, post-deploy check ------------
+# The seed is shaped like the durable gateway: Vertex models and the echo key.
+ECHO_HASH="sha256:$(printf 'e%.0s' {1..64})"
+OTHER_ECHO_HASH="sha256:$(printf 'f%.0s' {1..64})"
+CC_SEED="${SHIM_DIR}/cc-seed"
+fresh_state
+ECHO_KEY_HASH="${ECHO_HASH}" run_setup --project "${PROJECT}" --with-vertex \
+  || { fail "change-control seed failed"; cat "${STATE}/out" >&2; }
+if [[ "$(grep -c 'OK: no credential: POST .* -> HTTP 403' "${STATE}/out")" == "12" ]]; then
+  pass "the post-deploy check makes 12 anonymous calls, each refused with 403"; else fail "anonymous calls"; fi
+for m in claude-haiku-5-5 gemini-3.8-flash gpt-oss-120b echo; do
+  for e in /v1/chat/completions /v1/messages /v1/responses; do
+    grep -q "OK: no credential: POST ${e} model ${m} -> HTTP 403" "${STATE}/out" \
+      || fail "post-deploy check skipped ${m} on ${e}"
+  done
+done
+expect_out "the post-deploy check sends a wrong key" "OK: wrong key: POST /v1/chat/completions model echo -> HTTP 401"
+mkdir -p "${CC_SEED}" && cp -R "${STATE}/." "${CC_SEED}/"
+
+# cc_reset restores the seeded gateway and clears the logs.
+cc_reset() {
+  fresh_state
+  cp -R "${CC_SEED}/." "${STATE}/"
+  rm -f "${STATE}/gcloud.log" "${STATE}/skopeo.log" "${STATE}/gh.log" "${STATE}/curl.log"
+}
+# live_edit SED_EXPR edits the live (latest) config version in place.
+live_edit() {
+  local f
+  f="${STATE}/secrets/${CFG_SECRET}.v$(cat "${STATE}/secrets/${CFG_SECRET}.latest")"
+  sed -e "$1" "${f}" > "${f}.tmp" && mv "${f}.tmp" "${f}"
+}
+cfg_version() { cat "${STATE}/secrets/${CFG_SECRET}.latest"; }
+# cc_run ARGS... runs the script against the seeded gateway with the echo key.
+cc_run() { ECHO_KEY_HASH="${ECHO_HASH}" run_setup --project "${PROJECT}" --with-vertex "$@"; }
+# expect_refused NAME CODE: the last run exited CODE and changed nothing.
+expect_refused() {
+  if [[ "${rc}" == "$2" ]]; then pass "$1 exits $2"; else fail "$1: exit ${rc}, want $2"; sed 's/^/         /' "${STATE}/out" >&2; fi
+  expect_no_mutations "$1 changes nothing" 0
+  if [[ "$(cfg_version)" == "${seed_version}" ]]; then pass "$1 adds no secret version"; else fail "$1 added a secret version"; fi
+}
+seed_version=$(cat "${CC_SEED}/secrets/${CFG_SECRET}.latest")
+
+# A no-change run is still a no-op: no busy check and no post-deploy calls.
+cc_reset
+cc_run || fail "no-change run failed"
+expect_out "a no-change run reports no changes" "No changes: everything was already in place"
+expect_no_mutations "a no-change run mutates nothing" 0
+if [[ ! -e "${STATE}/gh.log" ]] && ! grep -q -- '-X POST' "${STATE}/curl.log"; then
+  pass "a no-change run skips the busy and post-deploy checks"; else fail "no-change run ran change control"; fi
+
+# Allowed: extra allowlist repositories after the pool list.
+cc_reset
+live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+cc_run || fail "extra allowlist repo run failed"
+expect_out "an extra allowlist repo passes the diff" "only where a change is allowed"
+if [[ "$(cfg_version)" == "$((seed_version + 1))" ]]; then pass "an extra allowlist repo change rolls out"; else fail "extra repo version"; fi
+if grep -q -- '--event merge_group' "${STATE}/gh.log" && grep -q -- '--workflow release.yml' "${STATE}/gh.log"; then
+  pass "the busy check queries merge_group e2e runs and release runs"; else fail "busy check queries"; fi
+
+# Allowed: adding, then removing, the time-boxed real key.
+cc_reset
+REAL_KEY_HASH="${REAL_HASH}" cc_run || fail "adding REAL_KEY_HASH failed"
+expect_out "adding REAL_KEY_HASH passes the diff" "only where a change is allowed"
+cc_run || fail "removing REAL_KEY_HASH failed"
+expect_out "removing REAL_KEY_HASH passes the diff" "only where a change is allowed"
+if [[ "$(cfg_version)" == "$((seed_version + 2))" ]]; then pass "both real key changes roll out"; else fail "real key versions"; fi
+
+# Frozen: the echo key hash, the pool list, the auth mode and the RPM cap.
+cc_reset
+ECHO_KEY_HASH="${OTHER_ECHO_HASH}" run_setup --project "${PROJECT}" --with-vertex && rc=0 || rc=$?
+expect_refused "an echo key hash change" 4
+expect_out "a frozen change prints the diff" "\\| \\+.*keyHash: \"${OTHER_ECHO_HASH}\""
+cc_reset
+live_edit 's|"halfsend-05/test-repo-03"|"halfsend-05/test-repo-99"|g'
+cc_run && rc=0 || rc=$?
+expect_refused "a pool list change" 4
+cc_reset
+run_setup --project "${PROJECT}" --with-vertex && rc=0 || rc=$?
+expect_refused "an auth mode change (permissive to strict)" 4
+cc_reset
+live_edit 's|^      maxTokens: 60$|      maxTokens: 30|; s|^      tokensPerFill: 60$|      tokensPerFill: 30|'
+cc_run && rc=0 || rc=$?
+expect_refused "an RPM change" 4
+cc_run --allow-tpm-change && rc=0 || rc=$?
+expect_refused "an RPM change with --allow-tpm-change" 4
+cc_run --allow-frozen-change || fail "--allow-frozen-change run failed"
+expect_out "--allow-frozen-change proceeds with a warning" "WARNING: changing a frozen part"
+
+# TPM: frozen without --allow-tpm-change, allowed with it.
+cc_reset
+live_edit 's|^      maxTokens: 200000$|      maxTokens: 1000000|; s|^      tokensPerFill: 200000$|      tokensPerFill: 1000000|'
+cc_run && rc=0 || rc=$?
+expect_refused "a TPM change without --allow-tpm-change" 4
+cc_run --allow-tpm-change || fail "TPM change with --allow-tpm-change failed"
+if [[ "$(cfg_version)" == "$((seed_version + 1))" ]]; then pass "a TPM change passes with --allow-tpm-change"; else fail "TPM version"; fi
+
+# Busy: a running merge_group run or an unfinished release refuses (exit 6).
+for busy in "e2e.yml in_progress" "e2e.yml queued" "release.yml waiting"; do
+  cc_reset
+  live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+  wf="${busy% *}" status="${busy#* }"
+  printf '[{"databaseId":7,"status":"completed","url":"https://runs/6"},{"databaseId":8,"status":"%s","url":"https://runs/8"}]' \
+    "${status}" > "${STATE}/runs_${wf}"
+  cc_run && rc=0 || rc=$?
+  expect_refused "a ${wf} run that is ${status}" 6
+  expect_out "the busy check names the ${wf} run" "busy: ${wf} run 8 is ${status}: https://runs/8"
+done
+cc_run --force-busy || fail "--force-busy run failed"
+expect_out "--force-busy proceeds" "WARNING: busy check skipped \\(--force-busy\\)"
+cc_reset
+live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+echo '[{"databaseId":7,"status":"completed","url":"https://runs/7"}]' > "${STATE}/runs_release.yml"
+cc_run || fail "completed runs blocked the deploy"
+expect_out "completed runs do not block" "no merge_group e2e run or release run is using the gateway"
+cc_reset
+live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+touch "${STATE}/gh_down"
+cc_run && rc=0 || rc=$?
+if [[ "${rc}" != "0" ]]; then pass "a failed run lookup fails closed"; else fail "a failed run lookup passed"; fi
+expect_no_mutations "a failed run lookup changes nothing" 0
+
+# Post-deploy: a call that is not refused exits 5 with the restore command.
+cc_reset
+live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+echo "gemini-3.8-flash /v1/responses" > "${STATE}/anon_open"
+cc_run && rc=0 || rc=$?
+if [[ "${rc}" == "5" ]]; then pass "an anonymous call that is not refused exits 5"; else fail "anonymous leak exit ${rc}"; fi
+expect_out "the failing call is named" "FAIL: no credential: POST /v1/responses model gemini-3.8-flash -> HTTP 200, expected 403"
+expect_out "the previous version is printed" "previous config is version ${seed_version} of secret ${CFG_SECRET}"
+restore=$(grep '^    gcloud secrets versions access ' "${STATE}/out" | sed 's/^    //')
+if [[ -n "${restore}" ]] && (cd "${STATE}" && PATH="${SHIM_DIR}:${PATH}" STUB_STATE="${STATE}" bash -c "${restore}") \
+    && cmp -s "${STATE}/secrets/${CFG_SECRET}.v${seed_version}" "${STATE}/secrets/${CFG_SECRET}.v$(cfg_version)" \
+    && [[ "$(cfg_version)" == "$((seed_version + 2))" ]]; then
+  pass "the restore command makes the previous config the latest"; else fail "restore command: ${restore}"; fi
+if grep -q -- "run services update fullsend-e2e-gateway .*--update-secrets=" "${STATE}/gcloud.log"; then
+  pass "the restore command rolls a revision"; else fail "restore command rolls no revision"; fi
+cc_reset
+live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+echo 403 > "${STATE}/wrong_key_status"
+cc_run && rc=0 || rc=$?
+if [[ "${rc}" == "5" ]]; then pass "a wrong key that does not get 401 exits 5"; else fail "wrong key exit ${rc}"; fi
+expect_out "the wrong-key failure is named" "FAIL: wrong key: POST /v1/chat/completions model echo -> HTTP 403, expected 401"
 
 echo
 if (( FAILURES > 0 )); then

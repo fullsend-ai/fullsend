@@ -268,7 +268,9 @@ lists the capabilities CI declares and how to run the rest.
 ### Who runs it, and when
 
 An E2E project admin runs the script from a workstation with `gcloud`
-(authenticated), `skopeo`, `jq` and `curl`. Run it again after any of these
+(authenticated), `skopeo`, `jq`, `curl` and `gh` (authenticated, to read
+this repository's workflow runs for the
+[busy check](#change-control)). Run it again after any of these
 changes:
 
 - **Pool change:** a new pool org, or a different `DefaultPoolSize`
@@ -312,6 +314,9 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
 
    ==> Checking required APIs...
        OK: required APIs are enabled
+
+   ==> Change control...
+       OK: config is unchanged; no change control needed
 
    ==> Artifact Registry repository fullsend-e2e-gateway...
        OK: repository fullsend-e2e-gateway exists
@@ -399,6 +404,72 @@ therefore expects a 401 (`api key authentication failure: ...`) for a
 bearer that is neither a valid token nor a configured key, instead of the
 three probes above.
 
+### Change control
+
+The merge queue's `behaviour` job and the release workflow's behaviour and
+e2e jobs call this gateway on every run. A bad deploy, or a deploy in the
+middle of a run, fails the queue or a release. So a run that changes the
+gateway config goes through three checks. A run that leaves the config
+unchanged skips them and is still a no-op.
+
+1. **Frozen-path diff.** Before it changes anything, the script renders the
+   new config, reads the live config secret version, and compares the two
+   after masking only the changes that are allowed:
+   - extra allowlist repositories after the pool list, such as temporary
+     repositories added to the live config by hand;
+   - the time-boxed `REAL_KEY_HASH` entry and its per-model allow rule;
+   - the tokens-per-minute cap, only with `--allow-tpm-change`.
+
+   Any other difference refuses the deploy with exit 4 and prints the masked
+   diff. That covers the `echo` and `echo-denied` models, the pool list, the
+   `jwtAuth` and `apiKey` modes, the echo key hash, the requests-per-minute
+   cap, and the Vertex models. To make such a change, pass
+   `--allow-frozen-change`. Use it only outside a release window, and tell
+   the maintainers first. `--dry-run` runs this check too.
+2. **Busy check.** The script refuses with exit 6 while a `merge_group` run
+   of `e2e.yml` is queued or in progress, or while a `release.yml` run is not
+   completed. It reads both from `fullsend-ai/fullsend` with `gh`. A failed
+   lookup also stops the run, because an unknown state is not an idle
+   gateway. `--force-busy` skips the check. Use it only for an outage fix.
+   `--dry-run` skips it, because it changes nothing.
+3. **Post-deploy check.** After the new revision serves traffic, the script
+   calls `claude-haiku-5-5`, `gemini-3.8-flash`, `gpt-oss-120b` and `echo`,
+   each on `/v1/chat/completions`, `/v1/messages` and `/v1/responses`, with
+   no credential. All 12 calls must return 403. Then one call with a wrong
+   API key must return 401. On a gateway without `--with-vertex`, only `echo`
+   is called. On a gateway without a key hash, the anonymous calls must
+   return 401, because strict `jwtAuth` refuses them before any model does.
+   If a call gets any other status, the script prints the previous config
+   secret version and the command that restores it, then exits 5.
+
+Exit codes:
+
+| Exit | Meaning |
+|------|---------|
+| 0 | Done, or nothing to do |
+| 1 | An error, or a verification probe failed |
+| 3 | `--dry-run` found pending changes |
+| 4 | The config change touches a frozen part of the config |
+| 5 | The post-deploy check failed. Roll back. |
+| 6 | A merge queue or release run is using the gateway |
+
+**Rolling back.** The post-deploy failure prints one command line, with the
+values filled in. It copies the previous version into a new latest version,
+then rolls a revision onto it:
+
+```bash
+gcloud secrets versions access <previous> --secret=fullsend-e2e-gateway-config --project="$E2E_GCP_PROJECT_ID" > fullsend-e2e-gateway-config-v<previous>.yaml \
+  && gcloud secrets versions add fullsend-e2e-gateway-config --project="$E2E_GCP_PROJECT_ID" --data-file=fullsend-e2e-gateway-config-v<previous>.yaml \
+  && gcloud run services update fullsend-e2e-gateway --project="$E2E_GCP_PROJECT_ID" --region=us-east5 \
+       --update-secrets=/etc/agw-config/config.yaml=fullsend-e2e-gateway-config:latest,/etc/agw-upstream/key=fullsend-e2e-gateway-stub-upstream-key:latest
+```
+
+The restored config is the latest version again, so the service still
+mounts `:latest` and the script sees no drift in the service settings. Fix
+the change in the script before you re-run it. The next run compares the
+fixed config with the restored version and goes through the three checks
+again.
+
 ### What it manages
 
 Every resource is named `fullsend-e2e-gateway*`. Those names are reserved for
@@ -448,7 +519,7 @@ The generated config (print it with `--print-config`):
   name can call the gateway. A model that a configured key may call also
   admits that key's `apiKey.purpose`.
 - strips `x-api-key` from every request it sends upstream.
-- caps each real model at 60 requests and 1,000,000 tokens per minute for
+- caps each real model at 60 requests and 200,000 tokens per minute for
   each kind of caller: the pool shares one budget per model, each configured
   key has its own, and every other caller shares one separate budget. So no
   caller can use up the behaviour tests' budget, not even with requests the

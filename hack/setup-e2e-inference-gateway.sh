@@ -4,6 +4,7 @@
 #
 # Usage: hack/setup-e2e-inference-gateway.sh [--project <id>] [--region us-east5]
 #            [--with-vertex | --without-vertex] [--dry-run | --print-config]
+#            [--force-busy] [--allow-tpm-change] [--allow-frozen-change]
 #        hack/setup-e2e-inference-gateway.sh [--project <id>] [--region us-east5]
 #            --delete [--yes] [--include-unlabelled]
 #   --project         GCP project (default: $E2E_GCP_PROJECT_ID; no other default)
@@ -22,6 +23,24 @@
 #                     lack the purpose=fullsend-e2e-gateway marker (for example
 #                     a gateway deployed by hand and adopted). Without it, any
 #                     unmarked resource stops the delete before anything goes.
+#
+# Change control: the merge queue and releases call this gateway, so a run
+# that changes its config is guarded (see "Change control" in
+# docs/guides/dev/e2e-testing.md):
+#   - busy check: refuses (exit 6) while a merge_group run of e2e.yml is
+#     queued or in progress, or a release.yml run is not completed
+#   - frozen-path diff: refuses (exit 4) any config difference except extra
+#     allowlist repositories after the pool list, the REAL_KEY_HASH entry and
+#     its allow rule, and (with --allow-tpm-change) the tokens-per-minute cap
+#   - post-deploy check: anonymous calls to every model and endpoint must be
+#     refused and a wrong key must get a 401; otherwise it prints the previous
+#     config version and the command that restores it (exit 5)
+#   --force-busy      skip the busy check (an outage fix only)
+#   --allow-tpm-change
+#                     allow a change of the tokens-per-minute cap
+#   --allow-frozen-change
+#                     allow any config change; only outside a release window,
+#                     with the maintainers told first
 #
 # Optional gateway API keys (the api-key mode, ADR 0138), each given only as
 # its hash, sha256:<64 hex>, never in plaintext:
@@ -59,7 +78,8 @@
 # carry the marker purpose=fullsend-e2e-gateway (a label, or the description
 # of the service account); --delete removes unmarked ones only on request.
 #
-# Requires: gcloud (authenticated), skopeo, jq, curl.
+# Requires: gcloud (authenticated), skopeo, jq, curl, and gh (authenticated)
+# for the busy check.
 # See docs/guides/dev/e2e-testing.md#inference-gateway-test-gateway for the
 # IAM roles the operator needs.
 
@@ -116,6 +136,16 @@ ECHO_PORT=9000
 GITHUB_ISSUER="https://token.actions.githubusercontent.com"
 LABEL="purpose=${NAME}"
 
+# Change control: the repository whose runs use the gateway, and the
+# workflows whose merge_group runs call it.
+BUSY_REPO="fullsend-ai/fullsend"
+BUSY_MERGE_GROUP_WORKFLOWS=(e2e.yml)
+BUSY_RELEASE_WORKFLOW="release.yml"
+# The endpoints the post-deploy check calls on every served model, and the
+# bearer it sends as a wrong API key.
+CHECK_ENDPOINTS=(/v1/chat/completions /v1/messages /v1/responses)
+WRONG_KEY="wrong-key-for-the-post-deploy-check"
+
 # --- Arguments --------------------------------------------------------------
 usage() {
   sed -n '2,/^$/{s/^# \{0,1\}//;p;}' "$0"
@@ -129,6 +159,9 @@ YES=false
 INCLUDE_UNLABELLED=false
 DRY_RUN=false
 PRINT_CONFIG=false
+FORCE_BUSY=false
+ALLOW_TPM_CHANGE=false
+ALLOW_FROZEN_CHANGE=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project|--region)
@@ -147,6 +180,9 @@ while [[ $# -gt 0 ]]; do
     --delete) DELETE=true; shift ;;
     --yes) YES=true; shift ;;
     --include-unlabelled) INCLUDE_UNLABELLED=true; shift ;;
+    --force-busy) FORCE_BUSY=true; shift ;;
+    --allow-tpm-change) ALLOW_TPM_CHANGE=true; shift ;;
+    --allow-frozen-change) ALLOW_FROZEN_CHANGE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Error: unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -164,7 +200,8 @@ if ! [[ "${REGION}" =~ ^[a-z]+-[a-z]+[0-9]+$ ]]; then
   echo "Error: '${REGION}' is not a valid GCP region." >&2
   exit 1
 fi
-if [[ "${DELETE}" == "true" && ( -n "${VERTEX}" || "${DRY_RUN}" == "true" || "${PRINT_CONFIG}" == "true" ) ]]; then
+if [[ "${DELETE}" == "true" && ( -n "${VERTEX}" || "${DRY_RUN}" == "true" || "${PRINT_CONFIG}" == "true" \
+    || "${FORCE_BUSY}" == "true" || "${ALLOW_TPM_CHANGE}" == "true" || "${ALLOW_FROZEN_CHANGE}" == "true" ) ]]; then
   echo "Error: --delete cannot be combined with other modes." >&2
   exit 1
 fi
@@ -212,7 +249,7 @@ pool_cel() {
 # (max-instances 1) and reset when a new revision starts. A 429 names the limit
 # only in its x-ratelimit-limit and retry-after headers.
 RATE_RPM=60
-RATE_TPM=1000000
+RATE_TPM=200000
 ECHO_MODELS='["echo", "echo-denied"]'
 
 # pool_list prints the pool as a CEL list.
@@ -638,6 +675,125 @@ if [[ -z "${VERTEX}" ]]; then
   VERTEX=without
 fi
 
+# --- Change control -------------------------------------------------------------
+# The merge queue and releases call this gateway on every run, so a run that
+# changes its config is checked before anything changes: the config must
+# differ from the live one only where a change is allowed, and nothing may be
+# using the gateway.
+
+# mask_config prints a config with the allowed changes masked out: extra
+# allowlist repositories after the pool list (temporary repositories added to
+# the live config), the time-boxed real key's entry and its per-model allow
+# rule, and, with --allow-tpm-change, the tokens-per-minute cap. The header
+# line that counts the pool stays unmasked, so a smaller pool cannot pass as
+# removed extra repositories.
+mask_config() {
+  local pool
+  pool=$(pool_list)
+  jq -Rrs --arg pool "${pool%]}" --argjson tpm "${ALLOW_TPM_CHANGE}" \
+    --arg allow "      - allow: '${REAL_KEY_CEL}'" '
+    (split($pool) | [.[0]] + (.[1:] | map(sub("^(, \"[^\"]*\")*\\]"; "]"))) | join($pool))
+    | split("\n") | . as $l
+    | reduce range(0; length) as $i ({out: [], skip: 0, type: ""};
+        if .skip > 0 then .skip -= 1
+        elif ($l[$i] | test("^      - keyHash: "))
+            and (($l[$i + 1] // "") | test("purpose: e2e-real-run }$"))
+            and (($l[$i + 2] // "") | test("^        allowedModels: ")) then .skip = 2
+        elif $l[$i] == $allow then .
+        else
+          (if ($l[$i] | test("^    - type: ")) then .type = ($l[$i] | ltrimstr("    - type: ")) else . end)
+          | .out += [if $tpm and .type == "tokens" and ($l[$i] | test("^      (maxTokens|tokensPerFill): [0-9]+$"))
+              then ($l[$i] | sub("[0-9]+$"; "<tokens-per-minute>")) else $l[$i] end]
+        end)
+    | .out | join("\n")' "$1"
+}
+
+# check_busy exits 6 while a merge_group run of the e2e workflows is queued or
+# in progress, or a release run is not completed. A failed lookup stops the
+# script: an unknown state is not an idle gateway.
+check_busy() {
+  local wf runs found busy=()
+  command -v gh &>/dev/null \
+    || die "gh is required for the busy check. Pass --force-busy only for an outage fix."
+  for wf in "${BUSY_MERGE_GROUP_WORKFLOWS[@]}" "${BUSY_RELEASE_WORKFLOW}"; do
+    local event_args=()
+    if [[ "${wf}" != "${BUSY_RELEASE_WORKFLOW}" ]]; then
+      event_args=(--event merge_group)
+    fi
+    runs=$(gh run list --repo "${BUSY_REPO}" --workflow "${wf}" ${event_args[@]+"${event_args[@]}"} \
+        --limit 100 --json databaseId,status,url 2>"${TMP}/gh.err") \
+      || die "could not list ${wf} runs in ${BUSY_REPO}: $(cat "${TMP}/gh.err")"
+    found=$(jq -r --arg wf "${wf}" '.[] | select(.status != "completed")
+        | "\($wf) run \(.databaseId) is \(.status): \(.url)"' <<<"${runs}") \
+      || die "could not read the ${wf} run list."
+    if [[ -n "${found}" ]]; then
+      busy+=("${found}")
+    fi
+  done
+  if (( ${#busy[@]} > 0 )); then
+    printf '%s\n' "${busy[@]}" | sed 's/^/    busy: /' >&2
+    echo "    ERROR: the gateway is in use; nothing changed. Re-run when these runs finish, or pass --force-busy for an outage fix only." >&2
+    exit 6
+  fi
+  ok "no merge_group e2e run or release run is using the gateway"
+}
+
+echo "==> Change control..."
+render_config > "${TMP}/config.yaml"
+if grep -q '\$' "${TMP}/config.yaml"; then
+  die "rendered config contains '\$', which agentgateway would expand."
+fi
+# LIVE_VERSION is the config secret version serving now: the one to restore
+# if the post-deploy check fails.
+LIVE_VERSION=""
+config_will_change=true
+if describe secrets versions describe latest --secret="${CONFIG_SECRET}"; then
+  LIVE_VERSION=$(jq -r '.name // empty | split("/") | last' <<<"${DESCRIBED}")
+  [[ "${LIVE_VERSION}" =~ ^[0-9]+$ ]] \
+    || die "could not read the latest version number of secret ${CONFIG_SECRET}."
+  gc secrets versions access "${LIVE_VERSION}" --secret="${CONFIG_SECRET}" \
+      >"${TMP}/live.yaml" 2>"${TMP}/access.err" \
+    || die "could not read version ${LIVE_VERSION} of secret ${CONFIG_SECRET}: $(cat "${TMP}/access.err")"
+  if cmp -s "${TMP}/live.yaml" "${TMP}/config.yaml"; then
+    config_will_change=false
+  fi
+fi
+if [[ "${config_will_change}" != "true" ]]; then
+  ok "config is unchanged; no change control needed"
+else
+  if [[ -z "${LIVE_VERSION}" ]]; then
+    say "no live config to compare: the config secret has no version yet"
+  else
+    mask_config "${TMP}/live.yaml" > "${TMP}/live.masked"
+    mask_config "${TMP}/config.yaml" > "${TMP}/config.masked"
+    if cmp -s "${TMP}/live.masked" "${TMP}/config.masked"; then
+      ok "config differs from version ${LIVE_VERSION} only where a change is allowed"
+    else
+      {
+        echo "--- live config (version ${LIVE_VERSION})"
+        echo "+++ new config"
+        diff -u "${TMP}/live.masked" "${TMP}/config.masked" | tail -n +3 | head -n 80 || true
+      } | sed 's/^/    | /' >&2
+      if [[ "${ALLOW_FROZEN_CHANGE}" == "true" ]]; then
+        say "WARNING: changing a frozen part of the config (--allow-frozen-change)"
+      else
+        echo "    ERROR: the config change above touches a frozen part of the gateway config; nothing changed." >&2
+        echo "    Pass --allow-tpm-change for a tokens-per-minute change. Any other change needs" >&2
+        echo "    --allow-frozen-change, outside a release window and with the maintainers told first." >&2
+        exit 4
+      fi
+    fi
+  fi
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    say "busy check skipped (--dry-run)"
+  elif [[ "${FORCE_BUSY}" == "true" ]]; then
+    say "WARNING: busy check skipped (--force-busy)"
+  else
+    check_busy
+  fi
+fi
+echo
+
 # --- 2. Artifact Registry repository ---------------------------------------
 echo "==> Artifact Registry repository ${NAME}..."
 if describe artifacts repositories describe "${NAME}" --location="${REGION}"; then
@@ -775,10 +931,6 @@ ensure_secret() {
 }
 
 echo "==> Secrets..."
-render_config > "${TMP}/config.yaml"
-if grep -q '\$' "${TMP}/config.yaml"; then
-  die "rendered config contains '\$', which agentgateway would expand."
-fi
 say "rendered config sha256 $(sha256 < "${TMP}/config.yaml")"
 ensure_secret "${CONFIG_SECRET}" "${TMP}/config.yaml"
 CONFIG_CHANGED="${SECRET_CHANGED}"
@@ -988,6 +1140,68 @@ elif [[ -n "${URL}" ]]; then
 fi
 echo
 
+# --- 8. Post-deploy check -----------------------------------------------------
+# After a config change, every served model is called on each endpoint with
+# no credential, and must refuse it: a 403 from its authorization rules when
+# keys make jwtAuth permissive (the durable gateway), a 401 from strict
+# jwtAuth otherwise. Then a wrong API key must get a 401. A failure points at
+# the config version to restore.
+post_failed=0
+
+# request_body prints a minimal request for an endpoint and model.
+request_body() {
+  case "$1" in
+    /v1/responses) jq -nc --arg m "$2" '{model: $m, max_output_tokens: 16, input: "ping"}' ;;
+    *) jq -nc --arg m "$2" '{model: $m, max_tokens: 1, messages: [{role: "user", content: "ping"}]}' ;;
+  esac
+}
+
+# check_call LABEL WANT ENDPOINT MODEL [CURL_ARGS...] posts one request and
+# expects HTTP status WANT.
+check_call() {
+  local label="$1" want="$2" endpoint="$3" model="$4" status
+  shift 4
+  status=$(curl -sS -m 30 -o /dev/null -w '%{http_code}' -X POST \
+      -H "content-type: application/json" "$@" \
+      --data "$(request_body "${endpoint}" "${model}")" "${URL}${endpoint}") \
+    || status="curl-failed"
+  if [[ "${status}" == "${want}" ]]; then
+    ok "${label}: POST ${endpoint} model ${model} -> HTTP ${status}"
+  else
+    echo "    FAIL: ${label}: POST ${endpoint} model ${model} -> HTTP ${status}, expected ${want}." >&2
+    post_failed=1
+  fi
+}
+
+# restore_command prints the one command that makes the previous config
+# version the latest again and rolls a revision onto it.
+restore_command() {
+  local file="${CONFIG_SECRET}-v${LIVE_VERSION}.yaml"
+  printf '%s' "gcloud secrets versions access ${LIVE_VERSION} --secret=${CONFIG_SECRET} --project=${PROJECT} > ${file}" \
+    " && gcloud secrets versions add ${CONFIG_SECRET} --project=${PROJECT} --data-file=${file}" \
+    " && gcloud run services update ${NAME} --project=${PROJECT} --region=${REGION}" \
+    " --update-secrets=${CONFIG_DIR}/config.yaml=${CONFIG_SECRET}:latest,${KEY_DIR}/key=${KEY_SECRET}:latest"
+}
+
+if [[ "${CONFIG_CHANGED}" == "true" && "${DRY_RUN}" != "true" && -n "${URL}" ]]; then
+  echo "==> Post-deploy check..."
+  anon_status=401
+  if [[ "${HAS_KEYS}" == "true" ]]; then
+    anon_status=403
+  fi
+  check_models=(echo)
+  if [[ "${VERTEX}" == "with" ]]; then
+    check_models=("${VERTEX_MODELS[@]}" echo)
+  fi
+  for m in "${check_models[@]}"; do
+    for endpoint in "${CHECK_ENDPOINTS[@]}"; do
+      check_call "no credential" "${anon_status}" "${endpoint}" "${m}"
+    done
+  done
+  check_call "wrong key" 401 /v1/chat/completions echo -H "authorization: Bearer ${WRONG_KEY}"
+  echo
+fi
+
 # --- Summary ------------------------------------------------------------------
 if (( ${#CHANGES[@]} == 0 )); then
   echo "==> No changes: everything was already in place."
@@ -1014,6 +1228,18 @@ fi
 # they would fix.
 if [[ "${DRY_RUN}" == "true" && ${#CHANGES[@]} -gt 0 ]]; then
   exit 3
+fi
+if (( post_failed > 0 )); then
+  echo >&2
+  echo "==> Post-deploy check failed; see FAIL lines above." >&2
+  if [[ -n "${LIVE_VERSION}" ]]; then
+    echo "    The previous config is version ${LIVE_VERSION} of secret ${CONFIG_SECRET}. Restore it with:" >&2
+    echo >&2
+    echo "    $(restore_command)" >&2
+  else
+    echo "    There is no previous config version to restore: this run created the config." >&2
+  fi
+  exit 5
 fi
 if (( verify_failed > 0 )); then
   echo >&2
