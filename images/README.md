@@ -82,25 +82,38 @@ regardless of trigger event.
 
 ## How images are built
 
-The workflow has two jobs that run sequentially:
+Each image is built per platform on a native runner (`ubuntu-24.04` for
+`linux/amd64`, `ubuntu-24.04-arm` for `linux/arm64`), then a merge job
+publishes the multi-arch index. The jobs run in this order:
 
-1. **`build-base`** builds `fullsend-sandbox` from `images/sandbox/Containerfile`.
-   On push/dispatch, it pushes the multi-arch manifest list and outputs the
-   immutable digest (`@sha256:...`) for the next job.
+1. **`build-base`** builds `fullsend-sandbox` from `images/sandbox/Containerfile`,
+   one leg per platform. On push/dispatch each leg pushes its image by digest.
 
-2. **`build-code`** builds `fullsend-code` from `images/code/Containerfile`,
-   passing the base image reference as `--build-arg BASE_IMAGE=<ref>`.
-   On push/dispatch it uses the digest from step 1.  On PRs (where no
-   digest is available because nothing was pushed), it falls back to the
-   `:dev` tag on the registry.
+2. **`merge-base`** waits for both legs, publishes the multi-arch index under
+   the release tags with `docker buildx imagetools create`, and outputs the
+   index's immutable digest (`@sha256:...`) for the next job. It refuses to
+   publish unless both platform digests are present.
 
-Cross-platform builds use [QEMU](https://github.com/docker/setup-qemu-action)
-for user-mode emulation and [Docker Buildx](https://github.com/docker/setup-buildx-action)
-with GitHub Actions cache (`type=gha`).
+3. **`build-code`** builds `fullsend-code` from `images/code/Containerfile`,
+   one leg per platform, passing the base image reference as
+   `--build-arg BASE_IMAGE=<ref>`. On push/dispatch it uses the digest from
+   `merge-base`. On PRs (where nothing was pushed), it falls back to the
+   `:dev` tag on the registry. Each leg smoke-tests its own image.
+
+4. **`merge-code`** publishes the `fullsend-code` index once both legs pass.
+
+`runner-image.yml` follows the same pattern with `build-runner` and
+`merge-runner`.
+
+No QEMU is involved, and nothing is pulled from Docker Hub:
+[Docker Buildx](https://github.com/docker/setup-buildx-action) uses the
+`docker-container` driver with a pinned BuildKit image from `mirror.gcr.io`
+(the `docker` driver cannot push by digest), and the GitHub Actions cache
+(`type=gha`, one scope per platform).
 
 ### PR build and the `:dev` fallback
 
-PR builds set `push: false`, so `build-base` produces no registry digest.
+PR builds do not push, so `merge-base` has no registry digest to output.
 The `build-code` job needs a base image reference to build against.  It
 falls back to `fullsend-sandbox:dev` — a multi-arch image that is always
 kept current by non-PR builds.

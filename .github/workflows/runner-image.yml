@@ -32,18 +32,46 @@ on:
 # published alongside every release (#5183). Branch pushes and PRs still
 # respect the paths filter.
 
+# Each platform builds on a native runner and pushes by digest only;
+# merge-runner then publishes the multi-arch index under the tags below.
+# No step pulls from Docker Hub, whose anonymous rate limit failed
+# release builds (#8289): there is no QEMU (tonistiigi/binfmt), and the
+# docker-container buildx driver runs BuildKit from mirror.gcr.io
+# instead of docker.io/moby/buildkit. The docker driver cannot push by
+# digest.
+env:
+  BUILDKIT_IMAGE: mirror.gcr.io/moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+  RUNNER_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/fullsend-runner
+  # Shared by the per-platform labels and the merged index tags.
+  # No raw `latest` on main pushes (unlike the sandbox images): main
+  # builds carry a dev pseudo-version binary. The default `latest=auto`
+  # flavor still tags `latest` on non-prerelease semver tag pushes. `dev`
+  # is scoped to main-branch pushes so release builds never move it onto
+  # a release image.
+  RUNNER_IMAGE_TAGS: |
+    type=semver,pattern={{version}}
+    type=semver,pattern={{major}}.{{minor}}
+    type=sha,prefix=
+    type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' }}
+
 jobs:
   build-runner:
-    runs-on: ubuntu-24.04
-    # Generous: the multi-arch push builds the arm64 leg under QEMU, and
-    # since #6522 that leg compiles cgo (hugot/ONNX Runtime) and fetches a
-    # ~740 MB model, so a cold build is slow.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    # Generous: since #6522 the build compiles cgo (hugot/ONNX Runtime)
+    # and fetches a ~740 MB model, so a cold build is slow.
     timeout-minutes: 90
     permissions:
       contents: read
       packages: write
-    env:
-      RUNNER_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/fullsend-runner
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -54,11 +82,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
 
       # Mirror GoReleaser's version format: the tag without the leading v on
       # tag pushes, a dev pseudo-version everywhere else. Injected into the
@@ -77,38 +104,26 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.RUNNER_IMAGE_NAME }}
-          # No raw `latest` on main pushes (unlike the sandbox images):
-          # main builds carry a dev pseudo-version binary. The default
-          # `latest=auto` flavor still tags `latest` on non-prerelease
-          # semver tag pushes. `dev` is scoped to main-branch pushes so
-          # release builds never move it onto a release image.
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' }}
+          tags: ${{ env.RUNNER_IMAGE_TAGS }}
 
-      # Build a single-platform image locally and smoke-test the dependency
+      # Build this platform's image locally and smoke-test the dependency
       # surface BEFORE anything is pushed — a broken tool must never reach
-      # the registry under a release tag or `latest`. Multi-arch builds
-      # cannot --load, so this is a separate linux/amd64 build; it seeds
-      # the GHA cache that the push build below reuses. The smoke test only
-      # exercises linux/amd64 — arm64 correctness is enforced by the
-      # per-arch checksum verification during the multi-arch build, which
-      # fails the workflow (before push) on a wrong-arch download.
+      # the registry under a release tag or `latest`. Each platform runs
+      # natively, so both linux/amd64 and linux/arm64 are smoke-tested.
+      # This build seeds the cache that the push build below reuses.
       - name: Build runner image for smoke test
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: images/runner/Containerfile
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           load: true
           tags: fullsend-runner:ci-smoke
           build-args: |
             FULLSEND_VERSION=${{ steps.version.outputs.value }}
             FULLSEND_COMMIT=${{ github.sha }}
-          cache-from: type=gha,scope=runner
-          cache-to: type=gha,mode=max,scope=runner
+          cache-from: type=gha,scope=runner-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=runner-${{ matrix.arch }}
 
       - name: Validate host-side dependency surface
         env:
@@ -156,20 +171,92 @@ jobs:
               || fail "ML scan flagged benign input: ${benign}"
           '
 
-      # Multi-arch build and push, gated on the smoke test above. The
-      # amd64 leg replays from the GHA cache seeded by the smoke-test
-      # build; only the arm64 leg builds fresh here.
-      - name: Build and push
+      # Push this platform's image by digest, gated on the smoke test
+      # above. Replays from the build cache seeded by the smoke-test build.
+      - name: Build and push by digest
+        id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: images/runner/Containerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           build-args: |
             FULLSEND_VERSION=${{ steps.version.outputs.value }}
             FULLSEND_COMMIT=${{ github.sha }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=runner
-          cache-to: type=gha,mode=max,scope=runner
+          outputs: type=image,name=${{ env.RUNNER_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=runner-${{ matrix.arch }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-runner-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publish the multi-arch index once both platform legs have passed the
+  # smoke test and pushed by digest.
+  merge-runner:
+    needs: build-runner
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-runner-*
+          merge-multiple: true
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.RUNNER_IMAGE_NAME }}
+          tags: ${{ env.RUNNER_IMAGE_TAGS }}
+
+      - name: Create and push manifest list
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          IMAGE_NAME: ${{ env.RUNNER_IMAGE_NAME }}
+          META_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          # Never publish a partial index.
+          count=$(find . -maxdepth 1 -type f | wc -l)
+          if [ "${count}" -ne 2 ]; then
+            echo "::error::expected 2 platform digests, found ${count}"
+            exit 1
+          fi
+          for hex in *; do
+            if ! grep -Eqx '[0-9a-f]{64}' <<<"${hex}"; then
+              echo "::error::not a sha256 digest: ${hex}"
+              exit 1
+            fi
+          done
+          mapfile -t tag_args < <(jq -r '.tags[] | "--tag=" + .' <<<"${META_JSON}")
+          sources=()
+          for hex in *; do
+            sources+=("${IMAGE_NAME}@sha256:${hex}")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
