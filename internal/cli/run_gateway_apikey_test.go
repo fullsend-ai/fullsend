@@ -105,12 +105,12 @@ func TestStartGatewayRoute_APIKey(t *testing.T) {
 	assert.NotContains(t, out.String(), gatewayTestAPIKey, "the key is never printed")
 
 	// A plan sized for a longer run bounds the instance by it.
-	plan.apiKeyLifetime = 30 * time.Hour
+	plan.runLifetime = 30 * time.Hour
 	before = time.Now()
 	_, err = startGatewayRoute(context.Background(), plan, "fs-key", ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.False(t, gotExpiry.Before(before.Add(30*time.Hour)), "the run's own bound is used")
-	plan.apiKeyLifetime = 0
+	plan.runLifetime = 0
 
 	// The refresher does nothing in this mode: it returns at once.
 	done := make(chan struct{})

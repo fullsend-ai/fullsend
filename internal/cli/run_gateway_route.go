@@ -36,9 +36,19 @@ type gatewayRoutePlan struct {
 	// prepared is the runtime that registered a gateway run for the
 	// sandbox (PrepareGatewayRun); nil when none did.
 	prepared runtime.GatewayRouteRuntime
-	// apiKeyLifetime bounds the api-key mode's provider instance
-	// (gatewayAPIKeyLifetimeFor); zero means gatewayAPIKeyLifetime.
-	apiKeyLifetime time.Duration
+	// runLifetime bounds the api-key mode's provider instance and sets the
+	// run deadline of Claude Code's oidc provider (gatewayRunDeadline);
+	// see gatewayAPIKeyLifetimeFor. Zero means gatewayAPIKeyLifetime.
+	runLifetime time.Duration
+}
+
+// lifetime returns the plan's run lifetime, or gatewayAPIKeyLifetime when
+// none was set.
+func (p *gatewayRoutePlan) lifetime() time.Duration {
+	if p.runLifetime <= 0 {
+		return gatewayAPIKeyLifetime
+	}
+	return p.runLifetime
 }
 
 // profileSpec returns the profile rendering the plan's provider uses: the
@@ -194,6 +204,10 @@ type gatewayProviderHandle struct {
 	// issuedAt/expiresAt are the current token's iat and exp.
 	issuedAt  time.Time
 	expiresAt time.Time
+	// runDeadline, when set, is the OpenShell expiry every placeholder
+	// generation of the provider gets when it is created, in place of the
+	// token's exp (gatewayRunDeadline). It is never moved afterwards.
+	runDeadline time.Time
 	// sandboxUp is set once the sandbox is Ready: from then a refresh also
 	// re-seeds the runtime's token file.
 	sandboxUp *atomic.Bool
@@ -226,20 +240,55 @@ func startGatewayRoute(ctx context.Context, plan *gatewayRoutePlan, sandboxName 
 		return gatewayProviderHandle{}, err
 	}
 	printer.StepDone(fmt.Sprintf("Inference gateway assertion ready (lifetime %s)", a.Lifetime().Round(time.Second)))
-	name, _, err := ensureGatewayProviderFn(ctx, plan.profileSpec(), sandboxName, a.Value, a.ExpiresAt, printer)
+	runDeadline := gatewayRunDeadline(plan, time.Now())
+	providerExpiry := a.ExpiresAt
+	if !runDeadline.IsZero() {
+		providerExpiry = runDeadline
+		printer.StepInfo(fmt.Sprintf("Inference gateway provider generations expire at the run deadline, %s; the gateway's exp check refuses a stale token", runDeadline.UTC().Format(time.RFC3339)))
+	}
+	name, _, err := ensureGatewayProviderFn(ctx, plan.profileSpec(), sandboxName, a.Value, providerExpiry, printer)
 	if err != nil {
 		return gatewayProviderHandle{}, err
 	}
 	return gatewayProviderHandle{
-		name:      name,
-		block:     plan.block,
-		sandbox:   sandboxName,
-		seed:      plan.seed,
-		issuedAt:  a.IssuedAt,
-		expiresAt: a.ExpiresAt,
-		sandboxUp: &atomic.Bool{},
-		state:     &gatewayRefreshState{issuedAt: a.IssuedAt, expiresAt: a.ExpiresAt, heldExpiresAt: a.ExpiresAt},
+		name:        name,
+		block:       plan.block,
+		sandbox:     sandboxName,
+		seed:        plan.seed,
+		issuedAt:    a.IssuedAt,
+		expiresAt:   a.ExpiresAt,
+		runDeadline: runDeadline,
+		sandboxUp:   &atomic.Bool{},
+		state:       &gatewayRefreshState{issuedAt: a.IssuedAt, expiresAt: a.ExpiresAt, heldExpiresAt: a.ExpiresAt},
 	}, nil
+}
+
+// gatewayRunDeadline returns the OpenShell expiry for every placeholder
+// generation of an oidc-mode provider created at now, or the zero time
+// when each generation keeps its token's exp.
+//
+// Claude Code caches its apiKeyHelper value (#8316). After a gap between
+// model requests that spans a hand-off and outlasts the old token (one
+// long tool call), it still sends the old placeholder. With the token's
+// exp as the generation's expiry, OpenShell resolves that placeholder to
+// nothing and answers 500, which Claude Code does not treat as an auth
+// failure, so the run ends. With the run deadline, the stale placeholder
+// resolves to the old, already expired JWT; the gateway's exp check, which
+// ADR 0137 requires of every gateway, answers 401, and Claude Code re-runs
+// the helper and picks up the re-seeded generation. No credential lives
+// longer: the JWT is expired either way. A fixed grace past exp would only
+// move the cliff to a tool call longer than the grace.
+//
+// The deadline is the run's bound (the plan's run lifetime, the api-key
+// mode's bound), set once when the route starts. Each generation gets it at
+// creation and it is never updated: on OpenShell an expiry update mints a
+// new generation. The provider is still deleted when the run ends. pi reads
+// its token file on every request, so its provider keeps the token's exp.
+func gatewayRunDeadline(plan *gatewayRoutePlan, now time.Time) time.Time {
+	if !plan.profile.claude {
+		return time.Time{}
+	}
+	return now.Add(plan.lifetime())
 }
 
 // gatewayAPIKeyLifetime is the floor of the bound on the api-key mode's
@@ -290,10 +339,7 @@ func startGatewayAPIKeyRoute(ctx context.Context, plan *gatewayRoutePlan, sandbo
 	}
 	printer.StepDone("Inference gateway API key ready (" + gatewayAPIKeyEnv + ")")
 	printer.StepWarn("inference.gateway.auth is api-key: the route relies on a long-lived gateway API key; prefer auth: oidc when the gateway can validate forge OIDC tokens")
-	lifetime := plan.apiKeyLifetime
-	if lifetime <= 0 {
-		lifetime = gatewayAPIKeyLifetime
-	}
+	lifetime := plan.lifetime()
 	printer.StepInfo(fmt.Sprintf("Inference gateway provider bounded at %s; a run that outlasts it fails closed", lifetime.Round(time.Minute)))
 	expiresAt := time.Now().Add(lifetime)
 	name, _, err := ensureGatewayAPIKeyProviderFn(ctx, plan.profileSpec(), sandboxName, key, expiresAt, printer)
@@ -363,10 +409,10 @@ func (e *gatewayReseedError) Error() string {
 func (e *gatewayReseedError) Unwrap() error { return e.err }
 
 // rotateGatewayToken fetches a fresh assertion and hot-updates it into the
-// provider with its own exp, retrying the fetch and update (and only
-// those) up to gatewayRefreshRetries times. Each attempt is bounded by
-// gatewayFetchTimeout, so the retries stay inside the fetch share of
-// gatewayRefreshWork.
+// provider with its own exp (or the handle's run deadline), retrying the
+// fetch and update (and only those) up to gatewayRefreshRetries times.
+// Each attempt is bounded by gatewayFetchTimeout, so the retries stay
+// inside the fetch share of gatewayRefreshWork.
 func rotateGatewayToken(ctx context.Context, h gatewayProviderHandle, printer *ui.Printer) (*actionsoidc.Assertion, error) {
 	var lastErr error
 	for attempt := 0; attempt <= gatewayRefreshRetries; attempt++ {
@@ -408,11 +454,22 @@ func rotateGatewayTokenOnce(ctx context.Context, h gatewayProviderHandle) (*acti
 		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", a.Value)
 	}
 	creds := map[string]string{gatewayCredentialKey: a.Value}
-	if err := sandbox.UpdateProviderLiteralWithExpiry(updateCtx, h.name, creds, a.ExpiresAt); err != nil {
+	// The update creates the new generation, so this is its creation-time
+	// expiry (gatewayRunDeadline), not a later update.
+	expiry := a.ExpiresAt
+	if !h.runDeadline.IsZero() {
+		expiry = h.runDeadline
+	}
+	if err := updateGatewayProviderFn(updateCtx, h.name, creds, expiry); err != nil {
 		return nil, err
 	}
 	return a, nil
 }
+
+// updateGatewayProviderFn stores a refreshed token in the provider with its
+// credential expiry (sandbox.UpdateProviderLiteralWithExpiry). Override in
+// tests to record the expiry.
+var updateGatewayProviderFn = sandbox.UpdateProviderLiteralWithExpiry
 
 // setProviderCredentialExpiryFn records a provider credential's expiry
 // (sandbox.SetProviderCredentialExpiry). Override in tests to record the
@@ -426,7 +483,22 @@ var setProviderCredentialExpiryFn = sandbox.SetProviderCredentialExpiry
 // whose expiry it does not know. Instead the provider's expiry is moved
 // back to the token the agent holds, so placeholder resolution fails
 // closed then, and the refresher stops.
+//
+// A provider with a run deadline (gatewayRunDeadline, Claude Code's) keeps
+// its expiry: the refresher stops, but the expiry is not moved back to the
+// held token's exp. Moving it would be an expiry update, which on OpenShell
+// mints a new generation the agent does not hold. The gateway's exp check
+// is this provider's fail-closed layer instead. After the held token's exp the
+// agent's placeholder resolves to that expired JWT and the gateway answers
+// 401. Claude Code re-runs its helper, but the token file is not re-seeded
+// again, so it still names the held generation and is refused again. The
+// generation that was not observed carries a token no longer-lived than any
+// rotation's, and the gateway refuses it at its exp.
 func failGatewayClosed(h gatewayProviderHandle, st *gatewayRefreshState, cause error, printer *ui.Printer) {
+	if !h.runDeadline.IsZero() {
+		printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s stopped: %v. The gateway refuses the token the running agent holds once it expires, %s", h.name, cause, st.heldExpiresAt.UTC().Format(time.RFC3339)))
+		return
+	}
 	printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s stopped: %v. The route fails closed at the expiry of the token the running agent holds, %s", h.name, cause, st.heldExpiresAt.UTC().Format(time.RFC3339)))
 	if err := setProviderCredentialExpiryFn(context.Background(), h.name, gatewayCredentialKey, st.heldExpiresAt); err != nil {
 		printer.StepWarn(fmt.Sprintf("Inference gateway provider %s: moving its expiry back to %s failed: %v", h.name, st.heldExpiresAt.UTC().Format(time.RFC3339), err))
