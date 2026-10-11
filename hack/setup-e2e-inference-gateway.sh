@@ -27,14 +27,18 @@
 # Change control: the merge queue and releases call this gateway, so a run
 # that changes its config is guarded (see "Change control" in
 # docs/guides/dev/e2e-testing.md):
-#   - busy check: refuses (exit 6) while a merge_group run of e2e.yml is
-#     queued or in progress, or a release.yml run is not completed
+#   - busy check: before the first change of any kind (--delete too),
+#     refuses (exit 6) while a merge_group run of e2e.yml or a release.yml
+#     run is not completed
 #   - frozen-path diff: refuses (exit 4) any config difference except extra
 #     allowlist repositories after the pool list, the REAL_KEY_HASH entry and
-#     its allow rule, and (with --allow-tpm-change) the tokens-per-minute cap
-#   - post-deploy check: anonymous calls to every model and endpoint must be
-#     refused and a wrong key must get a 401; otherwise it prints the previous
-#     config version and the command that restores it (exit 5)
+#     its allow rule on a real model, and (with --allow-tpm-change) the
+#     tokens-per-minute cap. The base is the config version that the
+#     revision getting the traffic started with.
+#   - post-deploy check: after any new revision, anonymous calls to every
+#     model and endpoint must be refused and a wrong key must get a 401;
+#     otherwise it prints the served config version and the command that
+#     restores it (exit 5)
 #   --force-busy      skip the busy check (an outage fix only)
 #   --allow-tpm-change
 #                     allow a change of the tokens-per-minute cap
@@ -141,6 +145,8 @@ LABEL="purpose=${NAME}"
 BUSY_REPO="fullsend-ai/fullsend"
 BUSY_MERGE_GROUP_WORKFLOWS=(e2e.yml)
 BUSY_RELEASE_WORKFLOW="release.yml"
+# The run statuses that mean a run is not completed.
+BUSY_STATUSES=(queued in_progress waiting requested pending)
 # The endpoints the post-deploy check calls on every served model, and the
 # bearer it sends as a wrong API key.
 CHECK_ENDPOINTS=(/v1/chat/completions /v1/messages /v1/responses)
@@ -201,7 +207,7 @@ if ! [[ "${REGION}" =~ ^[a-z]+-[a-z]+[0-9]+$ ]]; then
   exit 1
 fi
 if [[ "${DELETE}" == "true" && ( -n "${VERTEX}" || "${DRY_RUN}" == "true" || "${PRINT_CONFIG}" == "true" \
-    || "${FORCE_BUSY}" == "true" || "${ALLOW_TPM_CHANGE}" == "true" || "${ALLOW_FROZEN_CHANGE}" == "true" ) ]]; then
+    || "${ALLOW_TPM_CHANGE}" == "true" || "${ALLOW_FROZEN_CHANGE}" == "true" ) ]]; then
   echo "Error: --delete cannot be combined with other modes." >&2
   exit 1
 fi
@@ -432,8 +438,43 @@ die() {
   exit 1
 }
 
+# check_busy exits 6 while a merge_group run of the e2e workflows or a release
+# run is not completed. It asks for each unfinished status, so no run hides
+# behind a page of completed ones. A failed lookup stops the script: an
+# unknown state is not an idle gateway.
+check_busy() {
+  local wf st runs found busy=()
+  command -v gh &>/dev/null \
+    || die "gh is required for the busy check. Pass --force-busy only for an outage fix."
+  for wf in "${BUSY_MERGE_GROUP_WORKFLOWS[@]}" "${BUSY_RELEASE_WORKFLOW}"; do
+    local event_args=()
+    if [[ "${wf}" != "${BUSY_RELEASE_WORKFLOW}" ]]; then
+      event_args=(--event merge_group)
+    fi
+    for st in "${BUSY_STATUSES[@]}"; do
+      runs=$(gh run list --repo "${BUSY_REPO}" --workflow "${wf}" ${event_args[@]+"${event_args[@]}"} \
+          --status "${st}" --limit 20 --json databaseId,status,url 2>"${TMP}/gh.err") \
+        || die "could not list ${st} ${wf} runs in ${BUSY_REPO}: $(cat "${TMP}/gh.err")"
+      found=$(jq -r --arg wf "${wf}" '.[] | "\($wf) run \(.databaseId) is \(.status): \(.url)"' <<<"${runs}") \
+        || die "could not read the ${wf} run list."
+      if [[ -n "${found}" ]]; then
+        busy+=("${found}")
+      fi
+    done
+  done
+  if (( ${#busy[@]} > 0 )); then
+    printf '%s\n' "${busy[@]}" | sed 's/^/    busy: /' >&2
+    echo "    ERROR: the gateway is in use; nothing changed. Re-run when these runs finish, or pass --force-busy for an outage fix only." >&2
+    exit 6
+  fi
+  ok "no merge_group e2e run or release run is using the gateway"
+}
+
 # change records a change and runs its command, or only prints it with
-# --dry-run. Arguments: description, command...
+# --dry-run. Before the first real change the busy check runs, so nothing
+# changes while the merge queue or a release uses the gateway. Arguments:
+# description, command...
+BUSY_CHECKED=false
 change() {
   local what="$1"
   shift
@@ -441,6 +482,14 @@ change() {
   if [[ "${DRY_RUN}" == "true" ]]; then
     say "WOULD: ${what}"
     return 0
+  fi
+  if [[ "${BUSY_CHECKED}" != "true" ]]; then
+    BUSY_CHECKED=true
+    if [[ "${FORCE_BUSY}" == "true" ]]; then
+      say "WARNING: busy check skipped (--force-busy)"
+    else
+      check_busy
+    fi
   fi
   "$@" >/dev/null
   say "CHANGED: ${what}"
@@ -683,59 +732,36 @@ fi
 
 # mask_config prints a config with the allowed changes masked out: extra
 # allowlist repositories after the pool list (temporary repositories added to
-# the live config), the time-boxed real key's entry and its per-model allow
-# rule, and, with --allow-tpm-change, the tokens-per-minute cap. The header
-# line that counts the pool stays unmasked, so a smaller pool cannot pass as
-# removed extra repositories.
+# the live config), the time-boxed real key's entry when it may call exactly
+# one real model, its allow rule inside a real model's block, and, with
+# --allow-tpm-change, the tokens-per-minute cap. The real key's rule on echo
+# or echo-denied, or a real key that may call another model, stays visible.
+# The header line that counts the pool stays unmasked, so a smaller pool
+# cannot pass as removed extra repositories.
 mask_config() {
   local pool
   pool=$(pool_list)
   jq -Rrs --arg pool "${pool%]}" --argjson tpm "${ALLOW_TPM_CHANGE}" \
+    --argjson real "$(printf '%s\n' "${VERTEX_MODELS[@]}" | jq -R . | jq -sc .)" \
     --arg allow "      - allow: '${REAL_KEY_CEL}'" '
     (split($pool) | [.[0]] + (.[1:] | map(sub("^(, \"[^\"]*\")*\\]"; "]"))) | join($pool))
     | split("\n") | . as $l
-    | reduce range(0; length) as $i ({out: [], skip: 0, type: ""};
-        if .skip > 0 then .skip -= 1
+    | def real_model($m): $m != null and ($real | index([$m])) != null;
+      reduce range(0; length) as $i ({out: [], skip: 0, type: "", model: null};
+        . as $st
+        | if .skip > 0 then .skip -= 1
         elif ($l[$i] | test("^      - keyHash: "))
             and (($l[$i + 1] // "") | test("purpose: e2e-real-run }$"))
-            and (($l[$i + 2] // "") | test("^        allowedModels: ")) then .skip = 2
-        elif $l[$i] == $allow then .
+            and real_model(((($l[$i + 2] // "") | capture("^        allowedModels: \\[(?<m>[^],]+)\\]$")) // {}).m)
+          then .skip = 2
+        elif $l[$i] == $allow and real_model($st.model) then .
         else
-          (if ($l[$i] | test("^    - type: ")) then .type = ($l[$i] | ltrimstr("    - type: ")) else . end)
+          (if ($l[$i] | test("^  - name: ")) then .model = ($l[$i] | ltrimstr("  - name: ")) else . end)
+          | (if ($l[$i] | test("^    - type: ")) then .type = ($l[$i] | ltrimstr("    - type: ")) else . end)
           | .out += [if $tpm and .type == "tokens" and ($l[$i] | test("^      (maxTokens|tokensPerFill): [0-9]+$"))
               then ($l[$i] | sub("[0-9]+$"; "<tokens-per-minute>")) else $l[$i] end]
         end)
     | .out | join("\n")' "$1"
-}
-
-# check_busy exits 6 while a merge_group run of the e2e workflows is queued or
-# in progress, or a release run is not completed. A failed lookup stops the
-# script: an unknown state is not an idle gateway.
-check_busy() {
-  local wf runs found busy=()
-  command -v gh &>/dev/null \
-    || die "gh is required for the busy check. Pass --force-busy only for an outage fix."
-  for wf in "${BUSY_MERGE_GROUP_WORKFLOWS[@]}" "${BUSY_RELEASE_WORKFLOW}"; do
-    local event_args=()
-    if [[ "${wf}" != "${BUSY_RELEASE_WORKFLOW}" ]]; then
-      event_args=(--event merge_group)
-    fi
-    runs=$(gh run list --repo "${BUSY_REPO}" --workflow "${wf}" ${event_args[@]+"${event_args[@]}"} \
-        --limit 100 --json databaseId,status,url 2>"${TMP}/gh.err") \
-      || die "could not list ${wf} runs in ${BUSY_REPO}: $(cat "${TMP}/gh.err")"
-    found=$(jq -r --arg wf "${wf}" '.[] | select(.status != "completed")
-        | "\($wf) run \(.databaseId) is \(.status): \(.url)"' <<<"${runs}") \
-      || die "could not read the ${wf} run list."
-    if [[ -n "${found}" ]]; then
-      busy+=("${found}")
-    fi
-  done
-  if (( ${#busy[@]} > 0 )); then
-    printf '%s\n' "${busy[@]}" | sed 's/^/    busy: /' >&2
-    echo "    ERROR: the gateway is in use; nothing changed. Re-run when these runs finish, or pass --force-busy for an outage fix only." >&2
-    exit 6
-  fi
-  ok "no merge_group e2e run or release run is using the gateway"
 }
 
 echo "==> Change control..."
@@ -743,53 +769,100 @@ render_config > "${TMP}/config.yaml"
 if grep -q '\$' "${TMP}/config.yaml"; then
   die "rendered config contains '\$', which agentgateway would expand."
 fi
-# LIVE_VERSION is the config secret version serving now: the one to restore
-# if the post-deploy check fails.
+# created_after reports whether RFC 3339 timestamp $1 is later than $2, to the
+# nanosecond. It exits on a timestamp it cannot parse.
+created_after() {
+  local result
+  result=$(jq -rn --arg a "$1" --arg b "$2" '
+    def norm: (capture("^(?<s>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.(?<f>[0-9]+))?Z$")
+        // error("unparseable timestamp"))
+      | .s + "." + (((.f // "") + "000000000")[0:9]);
+    ($a | norm) > ($b | norm)') || die "could not compare timestamps '$1' and '$2'."
+  [[ "${result}" == "true" ]]
+}
+
+# LIVE_VERSION is the config secret version the serving revision started
+# with: the base for the frozen-path diff and the one to restore if the
+# post-deploy check fails. The serving revision is the one that gets the
+# service's traffic. It mounts the secret's latest version, so it started
+# with the newest version created before it was, and the post-deploy check
+# of the run that rolled it verified that version. A version added after the
+# revision is a pending rollout. An instance that restarts may already load
+# it, so the script warns about it, but it was never verified, so it is not
+# the rollback baseline.
 LIVE_VERSION=""
 config_will_change=true
-if describe secrets versions describe latest --secret="${CONFIG_SECRET}"; then
-  LIVE_VERSION=$(jq -r '.name // empty | split("/") | last' <<<"${DESCRIBED}")
-  [[ "${LIVE_VERSION}" =~ ^[0-9]+$ ]] \
-    || die "could not read the latest version number of secret ${CONFIG_SECRET}."
-  gc secrets versions access "${LIVE_VERSION}" --secret="${CONFIG_SECRET}" \
-      >"${TMP}/live.yaml" 2>"${TMP}/access.err" \
-    || die "could not read version ${LIVE_VERSION} of secret ${CONFIG_SECRET}: $(cat "${TMP}/access.err")"
-  if cmp -s "${TMP}/live.yaml" "${TMP}/config.yaml"; then
-    config_will_change=false
+if describe run services describe "${NAME}" --region="${REGION}"; then
+  svc_status="${DESCRIBED}"
+  serving_revisions=$(jq -r '[.status.traffic[]? | select((.percent // 0) > 0) | .revisionName // empty]
+      | unique | join(" ")' <<<"${svc_status}")
+  if [[ "${serving_revisions}" == *" "* ]]; then
+    die "the traffic of ${NAME} is split across revisions ${serving_revisions}, so the live config is ambiguous; nothing changed. Send all traffic to one revision first."
+  fi
+  serving="${serving_revisions:-$(jq -r '.status.latestReadyRevisionName // empty' <<<"${svc_status}")}"
+  if [[ -z "${serving}" ]]; then
+    say "service ${NAME} has no ready revision, so there is no served config to compare"
+  elif describe secrets describe "${CONFIG_SECRET}"; then
+    describe run revisions describe "${serving}" --region="${REGION}" \
+      || die "revision ${serving} of ${NAME} not found."
+    rev_time=$(jq -r '.metadata.creationTimestamp // empty' <<<"${DESCRIBED}")
+    [[ -n "${rev_time}" ]] || die "revision ${serving} has no creation time."
+    gc secrets versions list "${CONFIG_SECRET}" --format=json >"${TMP}/versions.json" 2>"${TMP}/versions.err" \
+      || die "could not list the versions of secret ${CONFIG_SECRET}: $(cat "${TMP}/versions.err")"
+    versions=$(jq -r '.[] | [(.name | split("/") | last), .createTime, .state] | @tsv' "${TMP}/versions.json") \
+      || die "could not read the versions of secret ${CONFIG_SECRET}."
+    live_state=""
+    pending=()
+    while IFS=$'\t' read -r v v_time v_state; do
+      [[ "${v}" =~ ^[0-9]+$ ]] || continue
+      if created_after "${v_time}" "${rev_time}"; then
+        if [[ "${v_state}" == "ENABLED" ]]; then
+          pending+=("${v}")
+        fi
+      elif [[ -z "${LIVE_VERSION}" || "${v}" -gt "${LIVE_VERSION}" ]]; then
+        LIVE_VERSION="${v}"
+        live_state="${v_state}"
+      fi
+    done <<<"${versions}"
+    if (( ${#pending[@]} > 0 )); then
+      say "WARNING: version(s) ${pending[*]} of secret ${CONFIG_SECRET} came after revision ${serving}; a restarted instance may already serve the newest. The diff and the restore use version ${LIVE_VERSION:-none}, which the revision started with."
+    fi
+    [[ -n "${LIVE_VERSION}" ]] \
+      || die "no version of secret ${CONFIG_SECRET} predates revision ${serving}, so the served config is unknown."
+    if [[ "${live_state}" != "ENABLED" ]]; then
+      die "revision ${serving} loaded version ${LIVE_VERSION} of secret ${CONFIG_SECRET}, which is ${live_state}, so it can be neither compared nor restored. Choose a rollback baseline first: enable that version, or roll a revision onto an enabled one."
+    fi
+    gc secrets versions access "${LIVE_VERSION}" --secret="${CONFIG_SECRET}" \
+        >"${TMP}/live.yaml" 2>"${TMP}/access.err" \
+      || die "could not read version ${LIVE_VERSION} of secret ${CONFIG_SECRET}: $(cat "${TMP}/access.err")"
+    if cmp -s "${TMP}/live.yaml" "${TMP}/config.yaml"; then
+      config_will_change=false
+    fi
   fi
 fi
 if [[ "${config_will_change}" != "true" ]]; then
-  ok "config is unchanged; no change control needed"
+  ok "config matches version ${LIVE_VERSION}, which the serving revision started with"
+elif [[ -z "${LIVE_VERSION}" ]]; then
+  say "no live config to compare: no serving revision has loaded a config yet"
 else
-  if [[ -z "${LIVE_VERSION}" ]]; then
-    say "no live config to compare: the config secret has no version yet"
+  mask_config "${TMP}/live.yaml" > "${TMP}/live.masked"
+  mask_config "${TMP}/config.yaml" > "${TMP}/config.masked"
+  if cmp -s "${TMP}/live.masked" "${TMP}/config.masked"; then
+    ok "config differs from version ${LIVE_VERSION} only where a change is allowed"
   else
-    mask_config "${TMP}/live.yaml" > "${TMP}/live.masked"
-    mask_config "${TMP}/config.yaml" > "${TMP}/config.masked"
-    if cmp -s "${TMP}/live.masked" "${TMP}/config.masked"; then
-      ok "config differs from version ${LIVE_VERSION} only where a change is allowed"
+    {
+      echo "--- live config (version ${LIVE_VERSION})"
+      echo "+++ new config"
+      diff -u "${TMP}/live.masked" "${TMP}/config.masked" | tail -n +3 | head -n 80 || true
+    } | sed 's/^/    | /' >&2
+    if [[ "${ALLOW_FROZEN_CHANGE}" == "true" ]]; then
+      say "WARNING: changing a frozen part of the config (--allow-frozen-change)"
     else
-      {
-        echo "--- live config (version ${LIVE_VERSION})"
-        echo "+++ new config"
-        diff -u "${TMP}/live.masked" "${TMP}/config.masked" | tail -n +3 | head -n 80 || true
-      } | sed 's/^/    | /' >&2
-      if [[ "${ALLOW_FROZEN_CHANGE}" == "true" ]]; then
-        say "WARNING: changing a frozen part of the config (--allow-frozen-change)"
-      else
-        echo "    ERROR: the config change above touches a frozen part of the gateway config; nothing changed." >&2
-        echo "    Pass --allow-tpm-change for a tokens-per-minute change. Any other change needs" >&2
-        echo "    --allow-frozen-change, outside a release window and with the maintainers told first." >&2
-        exit 4
-      fi
+      echo "    ERROR: the config change above touches a frozen part of the gateway config; nothing changed." >&2
+      echo "    Pass --allow-tpm-change for a tokens-per-minute change. Any other change needs" >&2
+      echo "    --allow-frozen-change, outside a release window and with the maintainers told first." >&2
+      exit 4
     fi
-  fi
-  if [[ "${DRY_RUN}" == "true" ]]; then
-    say "busy check skipped (--dry-run)"
-  elif [[ "${FORCE_BUSY}" == "true" ]]; then
-    say "WARNING: busy check skipped (--force-busy)"
-  else
-    check_busy
   fi
 fi
 echo
@@ -944,6 +1017,7 @@ echo
 
 # --- 6. Cloud Run service -----------------------------------------------------
 echo "==> Cloud Run service ${NAME}..."
+service_changes_before=${#CHANGES[@]}
 deploy_args=(
   run deploy "${NAME}"
   --region="${REGION}"
@@ -993,18 +1067,6 @@ spec_drift() {
 
 ready_of() {
   jq -r '[.status.conditions[]? | select(.type == "Ready") | .status][0] // "Unknown"'
-}
-
-# created_after reports whether RFC 3339 timestamp $1 is later than $2, to the
-# nanosecond. It exits on a timestamp it cannot parse.
-created_after() {
-  local result
-  result=$(jq -rn --arg a "$1" --arg b "$2" '
-    def norm: (capture("^(?<s>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.(?<f>[0-9]+))?Z$")
-        // error("unparseable timestamp"))
-      | .s + "." + (((.f // "") + "000000000")[0:9]);
-    ($a | norm) > ($b | norm)') || die "could not compare timestamps '$1' and '$2'."
-  [[ "${result}" == "true" ]]
 }
 
 # secrets_newer_than_revision reports whether either secret's latest version
@@ -1141,7 +1203,8 @@ fi
 echo
 
 # --- 8. Post-deploy check -----------------------------------------------------
-# After a config change, every served model is called on each endpoint with
+# After this run rolled or created a revision, every served model is called
+# on each endpoint with
 # no credential, and must refuse it: a 403 from its authorization rules when
 # keys make jwtAuth permissive (the durable gateway), a 401 from strict
 # jwtAuth otherwise. Then a wrong API key must get a 401. A failure points at
@@ -1183,7 +1246,7 @@ restore_command() {
     " --update-secrets=${CONFIG_DIR}/config.yaml=${CONFIG_SECRET}:latest,${KEY_DIR}/key=${KEY_SECRET}:latest"
 }
 
-if [[ "${CONFIG_CHANGED}" == "true" && "${DRY_RUN}" != "true" && -n "${URL}" ]]; then
+if (( ${#CHANGES[@]} > service_changes_before )) && [[ "${DRY_RUN}" != "true" && -n "${URL}" ]]; then
   echo "==> Post-deploy check..."
   anon_status=401
   if [[ "${HAS_KEYS}" == "true" ]]; then

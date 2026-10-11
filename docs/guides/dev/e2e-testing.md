@@ -316,7 +316,7 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
        OK: required APIs are enabled
 
    ==> Change control...
-       OK: config is unchanged; no change control needed
+       OK: config matches version 27, which the serving revision started with
 
    ==> Artifact Registry repository fullsend-e2e-gateway...
        OK: repository fullsend-e2e-gateway exists
@@ -406,41 +406,56 @@ three probes above.
 
 ### Change control
 
-The merge queue's `behaviour` job and the release workflow's behaviour and
-e2e jobs call this gateway on every run. A bad deploy, or a deploy in the
-middle of a run, fails the queue or a release. So a run that changes the
-gateway config goes through three checks. A run that leaves the config
-unchanged skips them and is still a no-op.
+The `behaviour` job of `e2e.yml` calls this gateway on every run, and the
+merge queue requires that job. A bad deploy, or a deploy in the middle of a
+run, fails the queue. `release.yml` does not call the gateway, but the
+script also waits for release runs, so nothing changes while a release is
+cut. So a run that changes the gateway goes through three checks. A run that
+changes nothing skips them and is still a no-op.
 
 1. **Frozen-path diff.** Before it changes anything, the script renders the
-   new config, reads the live config secret version, and compares the two
-   after masking only the changes that are allowed:
+   new config and compares it with the live config: the config secret
+   version that the revision getting the traffic started with. The service
+   mounts the secret's latest version, so that is the newest version
+   created before the revision was, and the post-deploy check of the run
+   that rolled the revision verified it. A version added later is a pending
+   rollout: an instance that restarts may load it, so the script warns
+   about it, but it is not the baseline. If the traffic is split across
+   revisions, the script stops before it changes anything. The comparison
+   masks only the changes that are allowed:
    - extra allowlist repositories after the pool list, such as temporary
      repositories added to the live config by hand;
-   - the time-boxed `REAL_KEY_HASH` entry and its per-model allow rule;
+   - the time-boxed `REAL_KEY_HASH` entry, when it may call exactly one
+     real model, and its allow rule on that model;
    - the tokens-per-minute cap, only with `--allow-tpm-change`.
 
    Any other difference refuses the deploy with exit 4 and prints the masked
    diff. That covers the `echo` and `echo-denied` models, the pool list, the
    `jwtAuth` and `apiKey` modes, the echo key hash, the requests-per-minute
-   cap, and the Vertex models. To make such a change, pass
+   cap, the Vertex models, and the real key's rule on `echo` or
+   `echo-denied`. To make such a change, pass
    `--allow-frozen-change`. Use it only outside a release window, and tell
    the maintainers first. `--dry-run` runs this check too.
-2. **Busy check.** The script refuses with exit 6 while a `merge_group` run
-   of `e2e.yml` is queued or in progress, or while a `release.yml` run is not
-   completed. It reads both from `fullsend-ai/fullsend` with `gh`. A failed
-   lookup also stops the run, because an unknown state is not an idle
-   gateway. `--force-busy` skips the check. Use it only for an outage fix.
-   `--dry-run` skips it, because it changes nothing.
-3. **Post-deploy check.** After the new revision serves traffic, the script
+2. **Busy check.** Before its first change of any kind, including a pending
+   rollout, an image or IAM change and `--delete`, the script refuses with
+   exit 6 while a `merge_group` run of `e2e.yml` or a `release.yml` run is
+   not completed. It asks `fullsend-ai/fullsend` with `gh` for each
+   unfinished status, so a run behind a page of completed runs still
+   counts. A failed lookup also stops the run, because an unknown state is
+   not an idle gateway. `--force-busy` skips the check. Use it only for an
+   outage fix. `--dry-run` skips it, because it changes nothing.
+3. **Post-deploy check.** After any new revision serves traffic, the script
    calls `claude-haiku-5-5`, `gemini-3.8-flash`, `gpt-oss-120b` and `echo`,
    each on `/v1/chat/completions`, `/v1/messages` and `/v1/responses`, with
    no credential. All 12 calls must return 403. Then one call with a wrong
    API key must return 401. On a gateway without `--with-vertex`, only `echo`
    is called. On a gateway without a key hash, the anonymous calls must
    return 401, because strict `jwtAuth` refuses them before any model does.
-   If a call gets any other status, the script prints the previous config
-   secret version and the command that restores it, then exits 5.
+   If a call gets any other status, the script prints the config secret
+   version that was serving before the run and the command that restores
+   it, then exits 5. If that version is disabled, the script stops before
+   it changes anything: enable it, or roll a revision onto an enabled
+   version, to choose a rollback baseline first.
 
 Exit codes:
 

@@ -10,8 +10,11 @@
 # named resources; an image digest mismatch, an HTML 401 from Cloud Run's
 # front end and an unreadable resource fail the run; REAL_KEY_MODEL decides
 # the one model the real key may call. Change control: a config change that
-# touches a frozen part exits 4, a busy gateway exits 6, a failed post-deploy
-# check exits 5 with the restore command, and a no-change run is a no-op.
+# touches a frozen part exits 4 (the real key's rule or entry beyond one real
+# model included), a busy gateway exits 6 before any change (a pending
+# rollout and --delete included), a failed post-deploy check exits 5 with the
+# served version's restore command, a disabled served version stops the run,
+# and a no-change run is a no-op.
 #
 # Run from the repo root:
 #   bash hack/setup-e2e-inference-gateway_test.sh
@@ -120,6 +123,15 @@ case "$1 $2 $3" in
       || notfound "Secret [${sec}] has no versions"
     jq -n --arg t "$(cat "${S}/secrets/${sec}.v${n}.time")" \
       --arg name "projects/123/secrets/${sec}/versions/${n}" '{name: $name, createTime: $t}' ;;
+  "secrets versions list")
+    # Every version with its create time; ${sec}.v<n>.state overrides ENABLED.
+    for f in "${S}/secrets/$4".v*.time; do
+      [[ -f "${f}" ]] || continue
+      n="${f%.time}"; n="${n##*.v}"
+      jq -n --arg name "projects/123/secrets/$4/versions/${n}" --arg t "$(cat "${f}")" \
+        --arg st "$(cat "${S}/secrets/$4.v${n}.state" 2>/dev/null || echo ENABLED)" \
+        '{name: $name, createTime: $t, state: $st}'
+    done | jq -s . ;;
   "secrets versions add")
     n=$(( $(cat "${S}/secrets/$4.latest" 2>/dev/null || echo 0) + 1 ))
     cp "$(flag data-file "$@")" "${S}/secrets/$4.v${n}"
@@ -139,11 +151,15 @@ case "$1 $2 $3" in
       true; } | jq -s . ;;
   "run services describe")
     [[ -f "${S}/svc.json" ]] || { echo "ERROR: (gcloud.run.services.describe) Cannot find service [$4]" >&2; exit 1; }
+    # ${S}/status_traffic, if present, is the status.traffic list.
     jq --arg r "$(cat "${S}/svc_ready" 2>/dev/null || echo True)" \
+      --argjson tr "$(cat "${S}/status_traffic" 2>/dev/null || echo null)" \
       '.status = {url: "https://gw.example.test", latestReadyRevisionName: "rev",
-        conditions: [{type: "Ready", status: $r}]}' "${S}/svc.json" ;;
+        conditions: [{type: "Ready", status: $r}]} | if $tr then .status.traffic = $tr else . end' "${S}/svc.json" ;;
   "run revisions describe")
-    jq -n --arg t "$(cat "${S}/revision_time")" --arg i "$(cat "${S}/revision_image")" \
+    # ${S}/revision_time_<name> overrides the creation time of revision <name>.
+    t=$(cat "${S}/revision_time_$4" 2>/dev/null || cat "${S}/revision_time")
+    jq -n --arg t "${t}" --arg i "$(cat "${S}/revision_image")" \
       '{metadata: {creationTimestamp: $t}, status: {imageDigest: $i}}' ;;
   "run services update-traffic")
     jq '.spec.traffic = [{latestRevision: true, percent: 100}]' "${S}/svc.json" > "${S}/svc.tmp" \
@@ -267,22 +283,26 @@ EOF
 
 # --- gh: workflow runs that use the gateway -------------------------------------
 # ${S}/runs_<workflow> holds the run list for a workflow; e2e.yml runs are
-# returned only to a merge_group query.
+# returned only to a merge_group query, and a --status query returns only the
+# runs with that status, like the API's server-side filter, at most --limit.
 cat > "${SHIM_DIR}/gh" <<'EOF'
 #!/usr/bin/env bash
 S="${STUB_STATE}"
 echo "gh $*" >> "${S}/gh.log"
 [[ -f "${S}/gh_down" ]] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
-wf="" event=""
+wf="" event="" status="" limit=20
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --workflow) wf="$2"; shift ;;
     --event) event="$2"; shift ;;
+    --status) status="$2"; shift ;;
+    --limit) limit="$2"; shift ;;
   esac
   shift
 done
 if [[ "${wf}" == e2e.yml && "${event}" != merge_group ]]; then echo '[]'; exit 0; fi
-cat "${S}/runs_${wf}" 2>/dev/null || echo '[]'
+{ cat "${S}/runs_${wf}" 2>/dev/null || echo '[]'; } \
+  | jq -c --arg s "${status}" --argjson n "${limit}" 'map(select($s == "" or .status == $s)) | .[:$n]'
 EOF
 chmod +x "${SHIM_DIR}"/*
 
@@ -378,12 +398,13 @@ if [[ "$(revisions)" == "1" ]]; then pass "second run rolls no revision"; else f
 
 # --- 3. config change: --with-vertex adds a version and rolls one revision ------
 before=$(mutations | wc -l | tr -d ' ')
+rm -f "${STATE}/gh.log"
 run_setup --project "${PROJECT}" --with-vertex --dry-run && rc=0 || rc=$?
 if [[ "${rc}" == "4" ]]; then pass "--dry-run refuses a frozen change (new models) with exit 4"; else fail "frozen --dry-run exit ${rc}"; fi
 run_setup --project "${PROJECT}" --with-vertex --dry-run --allow-frozen-change && rc=0 || rc=$?
 if [[ "${rc}" == "3" ]]; then pass "--dry-run with pending changes exits 3"; else fail "--dry-run exit ${rc}"; fi
 expect_out "--dry-run lists the config change" "WOULD: added a new version of secret ${CFG_SECRET}"
-expect_out "--dry-run skips the busy check" "busy check skipped \\(--dry-run\\)"
+if [[ ! -e "${STATE}/gh.log" ]]; then pass "--dry-run never runs the busy check"; else fail "--dry-run queried runs"; fi
 expect_no_mutations "--dry-run mutates nothing" "${before}"
 
 run_setup --project "${PROJECT}" --with-vertex --allow-frozen-change || fail "--with-vertex run failed"
@@ -596,8 +617,11 @@ expect_no_mutations "unverified-image --dry-run mutates nothing" 0
 # re-run: the pinned linux/amd64 image is not drift.
 cp "${STATE}/svc.adopted" "${STATE}/svc.json"
 echo "us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway@${AMD64_DIGEST}" > "${STATE}/revision_image"
+# v8 is the version the serving revision loaded; v9 is newer and pending.
+cp "${STATE}/secrets/${CFG_SECRET}.v9" "${STATE}/secrets/${CFG_SECRET}.v8"
+echo 2026-01-02T03:04:00Z > "${STATE}/secrets/${CFG_SECRET}.v8.time"
 echo 2099-01-01T00:00:00Z > "${STATE}/secrets/${CFG_SECRET}.v9.time"
-run_setup --project "${PROJECT}" --with-vertex || fail "adopted rollout failed"
+run_setup --project "${PROJECT}" --with-vertex || { fail "adopted rollout failed"; cat "${STATE}/out" >&2; }
 expect_out "the adopted gateway rolls for a newer secret" "rolled a new revision"
 echo 2099-01-01T00:00:05Z > "${STATE}/revision_time"  # the new revision is newer
 before=$(mutations | wc -l | tr -d ' ')
@@ -750,6 +774,24 @@ live_edit() {
   sed -e "$1" "${f}" > "${f}.tmp" && mv "${f}.tmp" "${f}"
 }
 cfg_version() { cat "${STATE}/secrets/${CFG_SECRET}.latest"; }
+# live_append PATTERN LINE... adds LINEs after every line of the live config
+# version that matches the extended regex PATTERN.
+live_append() {
+  local f pat="$1"
+  shift
+  f="${STATE}/secrets/${CFG_SECRET}.v$(cat "${STATE}/secrets/${CFG_SECRET}.latest")"
+  PAT="${pat}" ADD="$(printf '%s\n' "$@")" awk '{ print } $0 ~ ENVIRON["PAT"] { print ENVIRON["ADD"] }' "${f}" > "${f}.tmp" \
+    && mv "${f}.tmp" "${f}"
+}
+# add_pending_version [SED_EXPR] adds a config version newer than the serving
+# revision (a rollout that has not happened), optionally edited by SED_EXPR.
+add_pending_version() {
+  local n
+  n=$(( $(cfg_version) + 1 ))
+  sed -e "${1:-}" "${STATE}/secrets/${CFG_SECRET}.v$(cfg_version)" > "${STATE}/secrets/${CFG_SECRET}.v${n}"
+  echo 2099-01-01T00:00:00Z > "${STATE}/secrets/${CFG_SECRET}.v${n}.time"
+  echo "${n}" > "${STATE}/secrets/${CFG_SECRET}.latest"
+}
 # cc_run ARGS... runs the script against the seeded gateway with the echo key.
 cc_run() { ECHO_KEY_HASH="${ECHO_HASH}" run_setup --project "${PROJECT}" --with-vertex "$@"; }
 # expect_refused NAME CODE: the last run exited CODE and changed nothing.
@@ -860,6 +902,95 @@ echo 403 > "${STATE}/wrong_key_status"
 cc_run && rc=0 || rc=$?
 if [[ "${rc}" == "5" ]]; then pass "a wrong key that does not get 401 exits 5"; else fail "wrong key exit ${rc}"; fi
 expect_out "the wrong-key failure is named" "FAIL: wrong key: POST /v1/chat/completions model echo -> HTTP 403, expected 401"
+
+# The real key's allow rule is masked only on a real model: on echo-denied it
+# is a frozen change.
+cc_reset
+live_append 'allow: .jwt.repository == "fullsend-e2e-gateway-outside/not-a-pool-repo".' \
+  "      - allow: 'apiKey.purpose == \"e2e-real-run\"'"
+cc_run && rc=0 || rc=$?
+expect_refused "the real key's rule on echo-denied" 4
+# A real key entry is masked only when it may call exactly one real model.
+for models in "[echo]" "[claude-haiku-5-5, echo]"; do
+  cc_reset
+  live_append '^        allowedModels: \[echo\]$' \
+    "      - keyHash: \"${REAL_HASH}\"" \
+    "        metadata: { name: e2e-real-run, purpose: e2e-real-run }" \
+    "        allowedModels: ${models}"
+  cc_run && rc=0 || rc=$?
+  expect_refused "a real key that may call ${models}" 4
+done
+
+# The busy check guards every change, not only a config change: here the
+# config matches the served version, but a newer pending version would roll.
+cc_reset
+add_pending_version
+printf '[{"databaseId":8,"status":"in_progress","url":"https://runs/8"}]' > "${STATE}/runs_e2e.yml"
+cc_run && rc=0 || rc=$?
+if [[ "${rc}" == "6" ]]; then pass "a pending rollout while busy exits 6"; else fail "pending rollout while busy: exit ${rc}"; fi
+expect_no_mutations "a pending rollout while busy changes nothing" 0
+rm "${STATE}/runs_e2e.yml"
+cc_run || fail "pending rollout run failed"
+expect_out "a pending rollout rolls a revision" "rolled a new revision"
+expect_out "the post-deploy check runs after a rollout without a config change" "OK: wrong key: POST"
+
+# The restore target is the version the serving revision loaded, not the
+# newest secret version.
+cc_reset
+add_pending_version 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+echo "gemini-3.8-flash /v1/responses" > "${STATE}/anon_open"
+REAL_KEY_HASH="${REAL_HASH}" cc_run && rc=0 || rc=$?
+if [[ "${rc}" == "5" ]]; then pass "a failed check after a pending rollout exits 5"; else fail "pending rollout post-check exit ${rc}"; fi
+expect_out "the restore target is the served version, not the pending one" \
+  "previous config is version ${seed_version} of secret ${CFG_SECRET}"
+
+# A served version that is disabled cannot be the rollback baseline.
+cc_reset
+echo DISABLED > "${STATE}/secrets/${CFG_SECRET}.v${seed_version}.state"
+REAL_KEY_HASH="${REAL_HASH}" cc_run && rc=0 || rc=$?
+if [[ "${rc}" == "1" ]]; then pass "a disabled served version stops the run"; else fail "disabled served version: exit ${rc}"; fi
+expect_out "a disabled served version asks for a baseline" "Choose a rollback baseline first"
+expect_no_mutations "a disabled served version changes nothing" 0
+
+# The baseline is the revision that gets the traffic, not the latest ready one:
+# after a rollback to an older revision, that revision's start version counts.
+cc_reset
+add_pending_version 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+echo 2099-01-01T00:00:01Z > "${STATE}/revision_time"  # "rev" started on the newer version
+cp "${STATE}/secrets/${CFG_SECRET}.v${seed_version}.time" "${STATE}/revision_time_rev-old"
+echo '[{"revisionName": "rev-old", "percent": 100}]' > "${STATE}/status_traffic"
+echo "gemini-3.8-flash /v1/responses" > "${STATE}/anon_open"
+REAL_KEY_HASH="${REAL_HASH}" cc_run && rc=0 || rc=$?
+expect_out "the baseline follows the traffic to the older revision" \
+  "previous config is version ${seed_version} of secret ${CFG_SECRET}"
+expect_out "a version newer than the serving revision is a warned pending rollout" \
+  "WARNING: version\\(s\\) $((seed_version + 1)) of secret ${CFG_SECRET} came after revision rev-old"
+# Traffic split across revisions is ambiguous: stop before any change.
+cc_reset
+live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+echo '[{"revisionName": "rev", "percent": 90}, {"revisionName": "rev-old", "percent": 10}]' > "${STATE}/status_traffic"
+cc_run && rc=0 || rc=$?
+if [[ "${rc}" == "1" ]]; then pass "split traffic stops the run"; else fail "split traffic: exit ${rc}"; fi
+expect_out "split traffic is named" "split across revisions rev rev-old"
+expect_no_mutations "split traffic changes nothing" 0
+
+# --delete is guarded too; --force-busy lets it through.
+cc_reset
+printf '[{"databaseId":8,"status":"queued","url":"https://runs/8"}]' > "${STATE}/runs_e2e.yml"
+run_setup --project "${PROJECT}" --delete --yes && rc=0 || rc=$?
+if [[ "${rc}" == "6" ]]; then pass "--delete while busy exits 6"; else fail "--delete while busy: exit ${rc}"; fi
+if [[ -f "${STATE}/svc.json" ]]; then pass "--delete while busy deletes nothing"; else fail "--delete while busy deleted the service"; fi
+run_setup --project "${PROJECT}" --delete --yes --force-busy || fail "--delete --force-busy failed"
+if [[ ! -f "${STATE}/svc.json" ]]; then pass "--delete --force-busy proceeds"; else fail "--delete --force-busy kept the service"; fi
+
+# An unfinished run behind a page of completed ones is still found.
+cc_reset
+live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+jq -nc '[range(0; 150) | {databaseId: ., status: "completed", url: "https://runs/\(.)"}]
+  + [{databaseId: 999, status: "waiting", url: "https://runs/999"}]' > "${STATE}/runs_release.yml"
+cc_run && rc=0 || rc=$?
+expect_refused "a waiting release run behind 150 completed runs" 6
+expect_out "the busy check names the older run" "busy: release.yml run 999 is waiting"
 
 echo
 if (( FAILURES > 0 )); then
