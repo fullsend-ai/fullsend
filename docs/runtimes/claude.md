@@ -113,9 +113,9 @@ strip both headers before it calls upstream, as
 
 In the `oidc` mode the token is the job's forge OIDC token, which lives about 300 s. Each refresh
 pins a new placeholder generation, so Claude Code cannot keep one in an environment variable.
-Instead, the runner re-seeds the token file after every refresh, as it does for pi, and hands the new
-placeholder over at least the refresh work plus a safety margin before the old token expires
-(typically about two minutes). Claude Code (checked on 2.1.296) re-runs the helper when a request
+Instead, the runner re-seeds the token file after every refresh, as it does for pi. It starts each
+refresh with at least the refresh work plus a safety margin left on the old token, so the new
+placeholder is handed over at least that margin (15 s) before expiry, typically about two minutes. Claude Code (checked on 2.1.296) re-runs the helper when a request
 is answered 401 or 403. Otherwise it re-runs it in the background once
 `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` has passed, and sends its cached value meanwhile, however old.
 
@@ -132,7 +132,7 @@ every request. A way to recover from the stale value is tracked in
 **Egress.** The runner imports a per-host profile for the gateway, rendered for Claude Code. It
 allows `POST /v1/messages` and `POST /v1/messages/count_tokens`, from the binaries `**/claude` and
 `**/claude.exe` (the sandbox image's native binary). OpenShell also admits a process whose ancestor
-matches ([egress binary identity](../contributing/runtime-implementation.md#pinned-runtime-binaries-in-the-sandbox-image)),
+matches ([egress binary identity](../contributing/runtime-implementation.md#egress-binary-identity-per-runtime)),
 so the tools Claude Code starts share this access. Its credential metadata names
 `Authorization: Bearer`. OpenShell
 resolves the placeholder only on requests to that host and path.
