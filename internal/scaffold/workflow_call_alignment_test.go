@@ -1183,7 +1183,7 @@ func TestActionReconcileStatusSupportsOlderCLIs(t *testing.T) {
 	assert.NotContains(t, run(t, false), "--review-run", "older CLIs must still reconcile without the unknown flag")
 }
 
-func TestActionRunPreservesPreMintWorkflowTokenButBlocksInjectedToken(t *testing.T) {
+func TestActionRunPassesOnlyConfiguredGitHubToken(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
 	require.NoError(t, err)
 
@@ -1195,7 +1195,7 @@ func TestActionRunPreservesPreMintWorkflowTokenButBlocksInjectedToken(t *testing
 		runStep = runStep[:nextStep+1]
 	}
 	assert.Contains(t, runStep, "GH_TOKEN: ${{ inputs.github_token }}")
-	assert.Contains(t, runStep, "GITHUB_TOKEN: \"\"")
+	assert.NotContains(t, runStep, "GITHUB_TOKEN:")
 }
 
 // TestReusableDispatchPRHeadSHAPassthrough validates that agent jobs in

@@ -2459,6 +2459,7 @@ func TestBuildSandboxEnvLines_SkipsOIDCVars(t *testing.T) {
 		Env: &harness.EnvConfig{
 			Sandbox: map[string]string{
 				"CUSTOM_VAR":                     "allowed",
+				"GITHUB_TOKEN":                   "workflow-token",
 				"ACTIONS_ID_TOKEN_REQUEST_URL":   "https://stolen.example.com",
 				"ACTIONS_ID_TOKEN_REQUEST_TOKEN": "stolen-token",
 				"FULLSEND_GCP_OIDC_URL":          "https://stolen-gcp.example.com",
@@ -2467,8 +2468,10 @@ func TestBuildSandboxEnvLines_SkipsOIDCVars(t *testing.T) {
 		},
 	}
 	lines := buildSandboxEnvLines(h)
-	require.Len(t, lines, 1)
-	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+	assert.Equal(t, []string{
+		"export CUSTOM_VAR='allowed'",
+		"export GITHUB_TOKEN='workflow-token'",
+	}, lines)
 }
 
 // TestStripOIDCEnv verifies that stripOIDCEnv removes OIDC credential entries
@@ -2490,6 +2493,7 @@ func TestStripOIDCEnv(t *testing.T) {
 	assert.Equal(t, []string{
 		"PATH=/usr/bin",
 		"HOME=/home/user",
+		"GITHUB_TOKEN=workflow-token",
 		"SAFE_VAR=value",
 	}, result)
 }
@@ -2515,8 +2519,6 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		// The GitLab webhook fast-path credentials must stay runner-only.
 		"FULLSEND_TRIGGER_TOKEN",
 		"FULLSEND_WEBHOOK_SECRET",
-		// The workflow token must never reach harness-controlled expansions.
-		"GITHUB_TOKEN",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)

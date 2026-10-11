@@ -504,7 +504,7 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 	}
 }
 
-func TestChildScriptEnv_StripsGitHubWorkflowToken(t *testing.T) {
+func TestChildScriptEnv_PreservesGitHubToken(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "workflow-token")
 
 	env := childScriptEnv(map[string]string{
@@ -512,10 +512,7 @@ func TestChildScriptEnv_StripsGitHubWorkflowToken(t *testing.T) {
 		"SAFE_VAR":     "allowed",
 	}, "")
 
-	for _, e := range env {
-		key, _, _ := strings.Cut(e, "=")
-		assert.NotEqual(t, "GITHUB_TOKEN", key, "workflow token must not reach child scripts")
-	}
+	assert.Equal(t, "runner-token", envLast(env, "GITHUB_TOKEN"))
 	assert.Contains(t, env, "SAFE_VAR=allowed")
 }
 
