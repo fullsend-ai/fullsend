@@ -129,11 +129,14 @@ tool call of more than about 2 minutes. Claude Code recovers from it:
   generation is created, and never updated, because on OpenShell an expiry update mints a new
   generation. The provider is still deleted when the run ends.
 - So OpenShell still resolves the stale placeholder, to the old JWT, which has already expired. The
-  gateway refuses an expired token with `401`, as
+  gateway refuses an expired token, as
   [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) requires of every gateway. Claude
-  Code then re-runs its helper and retries with the re-seeded generation.
-- No credential lives longer. The JWT is expired either way, and the gateway's `exp` check is the
-  layer that fails closed. With the token's `exp` as the expiry, OpenShell would resolve the stale
+  Code then re-runs its helper and retries with the re-seeded generation. This needs the gateway
+  to answer `401` or `403`, not a `5xx`. agentgateway's `jwtAuth` and Praxis both answer `401`,
+  after a default 60 s leeway past `exp`.
+- The JWT's own `exp` does not change, and the gateway's `exp` check becomes the layer that fails
+  closed. A gateway with clock-skew leeway (60 s by default on agentgateway and Praxis) accepts a
+  stale token for that long after `exp`. Before, OpenShell stopped resolving it at `exp`. With the token's `exp` as the expiry, OpenShell would resolve the stale
   placeholder to nothing and answer `500` (`credential_unavailable`). Claude Code does not treat a
   500 as an auth failure, so it would retry the same value until the run failed.
 - A fixed grace period past `exp` would only move that cliff to a tool call longer than the grace.

@@ -273,11 +273,12 @@ func startGatewayRoute(ctx context.Context, plan *gatewayRoutePlan, sandboxName 
 // exp as the generation's expiry, OpenShell resolves that placeholder to
 // nothing and answers 500, which Claude Code does not treat as an auth
 // failure, so the run ends. With the run deadline, the stale placeholder
-// resolves to the old, already expired JWT; the gateway's exp check, which
-// ADR 0137 requires of every gateway, answers 401, and Claude Code re-runs
-// the helper and picks up the re-seeded generation. No credential lives
-// longer: the JWT is expired either way. A fixed grace past exp would only
-// move the cliff to a tool call longer than the grace.
+// resolves to the old, already expired JWT; the gateway refuses it (ADR
+// 0137 requires every gateway to refuse an expired token), and on a 401 or
+// 403 Claude Code re-runs the helper and picks up the re-seeded generation.
+// The JWT's exp is unchanged; the gateway's exp check, after its clock-skew
+// leeway, is the fail-closed layer. A fixed grace past exp would only move
+// the cliff to a tool call longer than the grace.
 //
 // The deadline is the run's bound (the plan's run lifetime, the api-key
 // mode's bound), set once when the route starts. Each generation gets it at
@@ -486,17 +487,19 @@ var setProviderCredentialExpiryFn = sandbox.SetProviderCredentialExpiry
 //
 // A provider with a run deadline (gatewayRunDeadline, Claude Code's) keeps
 // its expiry: the refresher stops, but the expiry is not moved back to the
-// held token's exp. Moving it would be an expiry update, which on OpenShell
-// mints a new generation the agent does not hold. The gateway's exp check
-// is this provider's fail-closed layer instead. After the held token's exp the
-// agent's placeholder resolves to that expired JWT and the gateway answers
-// 401. Claude Code re-runs its helper, but the token file is not re-seeded
+// held token's exp. On OpenShell an expiry update mints a new generation
+// and cannot shorten the held generation's own expiry (each generation
+// snapshots its expiry when installed), so a move-back would not reach the
+// agent's placeholder. The gateway's exp check is this provider's
+// fail-closed layer instead. After the held token's exp (and the gateway's
+// leeway) the agent's placeholder resolves to that expired JWT and the
+// gateway refuses it. Claude Code re-runs its helper, but the token file is not re-seeded
 // again, so it still names the held generation and is refused again. The
 // generation that was not observed carries a token no longer-lived than any
 // rotation's, and the gateway refuses it at its exp.
 func failGatewayClosed(h gatewayProviderHandle, st *gatewayRefreshState, cause error, printer *ui.Printer) {
 	if !h.runDeadline.IsZero() {
-		printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s stopped: %v. The gateway refuses the token the running agent holds once it expires, %s", h.name, cause, st.heldExpiresAt.UTC().Format(time.RFC3339)))
+		printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s stopped: %v. The gateway refuses the token the running agent holds once it expires, %s (plus the gateway's clock-skew leeway)", h.name, cause, st.heldExpiresAt.UTC().Format(time.RFC3339)))
 		return
 	}
 	printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s stopped: %v. The route fails closed at the expiry of the token the running agent holds, %s", h.name, cause, st.heldExpiresAt.UTC().Format(time.RFC3339)))
@@ -567,15 +570,17 @@ func waitGateway(ctx context.Context, d time.Duration) bool {
 //
 //   - When the fetch retries are exhausted it stops and says so: the
 //     provider's recorded expiry makes the proxy fail closed at that
-//     instant, so the run fails visibly.
+//     instant (on a provider with a run deadline, the gateway refuses the
+//     held token after its exp instead), so the run fails visibly.
 //   - When the placeholder the agent holds cannot be read, nothing is
 //     rotated and the refresh is retried shortly, until the provider's
 //     token expires.
 //   - When the new generation is not observed in the sandbox (the settle
 //     wait runs out, or reading the placeholder fails before it changes;
 //     generationNotObservedError), the route fails closed (failGatewayClosed): the
-//     provider's expiry moves back to the token the agent holds and the
-//     refresher stops. OpenShell gives no per-rotation evidence, so a late
+//     provider's expiry moves back to the token the agent holds (a provider
+//     with a run deadline keeps it and relies on the gateway's exp check)
+//     and the refresher stops. OpenShell gives no per-rotation evidence, so a late
 //     generation could not be told apart from a later rotation's own.
 //   - When the hand-off fails after the new generation was observed (a
 //     seed or verify exec), the
