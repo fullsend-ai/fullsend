@@ -120,6 +120,12 @@ a single-key map of that source to file overrides; a `plugins[]` entry can be
 a path string or a `{path, env, pi}` map. Scalar security leaf values retain
 their own validation and defaults; this type table does not override them.
 
+Normalized-event actor metadata is separate from harness composition. The
+optional `actor.numeric_id` is a stable forge-native identifier populated by
+event adapters when available; it is suitable for identity-stable bookkeeping
+but is not a harness field, a CEL authorization input, or a replacement for
+the human-readable `actor.id`.
+
 The planned `schema_version` field (absent = `1` once implemented) will declare
 this contract; an incompatible field-type change will require a version bump
 and an update to this table in the same change. Backward-compatible field

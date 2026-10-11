@@ -171,6 +171,11 @@ the repository (typically `write`), not `none` — the collaborator API often
 returns 404 for `[bot]` accounts even when the app has write access via
 installation token.
 
+GitHub adapters also populate the optional `actor.numeric_id` from the event
+sender's stable numeric account ID when it is present. This field is intended
+for identity-stable bookkeeping such as notification deduplication; it is not
+an authorization input and must not replace the login in user-facing mentions.
+
 ### Fork security (`state.change_proposal.is_fork`)
 
 `is_fork` is `true` when `head_repo` differs from `base_repo` (fork-based

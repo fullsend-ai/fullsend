@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -73,6 +75,7 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 
 	sender := nestedMap(raw, "sender")
 	actorID := stringField(sender, "login")
+	actorNumericID := int64Field(sender, "id")
 	if actorID == "" {
 		actorID = opts.GitHubActor
 	}
@@ -101,6 +104,7 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 		Repo: opts.Repository,
 		Actor: normevent.Actor{
 			ID:             actorID,
+			NumericID:      actorNumericID,
 			Kind:           actorKind,
 			Role:           role,
 			IsEntityAuthor: false,
@@ -464,6 +468,34 @@ func intField(m map[string]any, key string) int {
 	case json.Number:
 		i, _ := v.Int64()
 		return int(i)
+	default:
+		return 0
+	}
+}
+
+func int64Field(m map[string]any, key string) int64 {
+	switch v := m[key].(type) {
+	case float64:
+		if v < 1 || v >= float64(math.MaxInt64) || math.Trunc(v) != v {
+			return 0
+		}
+		return int64(v)
+	case int:
+		if v < 1 {
+			return 0
+		}
+		return int64(v)
+	case int64:
+		if v < 1 {
+			return 0
+		}
+		return v
+	case json.Number:
+		i, err := strconv.ParseInt(string(v), 10, 64)
+		if err != nil || i < 1 {
+			return 0
+		}
+		return i
 	default:
 		return 0
 	}

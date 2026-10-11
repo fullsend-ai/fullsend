@@ -142,24 +142,40 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 }
 
 func writeAuthorizationOutput(event *normevent.Event, denied bool) error {
-	if event == nil || event.Actor.Kind != normevent.ActorHuman || !denied {
+	if !isExplicitHumanSlashCommand(event) || !denied {
 		return nil
 	}
 	path := os.Getenv("GITHUB_OUTPUT")
-	if path == "" || event.Entity.ID < 1 || !validGitHubLogin(event.Actor.ID) {
+	if path == "" || event.Entity.ID < 1 || event.Actor.NumericID < 1 || !validGitHubLogin(event.Actor.ID) {
 		return nil
 	}
 
-	if err := writeGitHubOutput(path, "authorization_denied", "true"); err != nil {
-		return fmt.Errorf("write authorization output authorization_denied: %w", err)
+	outputs := [][2]string{
+		{"authorization_denied", "true"},
+		{"authorization_actor", event.Actor.ID},
+		{"authorization_actor_id", strconv.FormatInt(event.Actor.NumericID, 10)},
+		{"authorization_number", strconv.Itoa(event.Entity.ID)},
 	}
-	if err := writeGitHubOutput(path, "authorization_actor", event.Actor.ID); err != nil {
-		return fmt.Errorf("write authorization output authorization_actor: %w", err)
-	}
-	if err := writeGitHubOutput(path, "authorization_number", strconv.Itoa(event.Entity.ID)); err != nil {
-		return fmt.Errorf("write authorization output authorization_number: %w", err)
+	for _, output := range outputs {
+		if err := writeGitHubOutput(path, output[0], output[1]); err != nil {
+			return fmt.Errorf("write authorization output %s: %w", output[0], err)
+		}
 	}
 	return nil
+}
+
+func isExplicitHumanSlashCommand(event *normevent.Event) bool {
+	if event == nil || event.Source.RawType != "issue_comment" ||
+		event.Transition.Kind != normevent.TransitionCommentAdded ||
+		event.Actor.Kind != normevent.ActorHuman || event.Transition.Comment == nil {
+		return false
+	}
+	switch event.Transition.Comment.Command {
+	case "/fs-triage", "/fs-code", "/fs-review", "/fs-fix", "/fs-retro", "/fs-prioritize":
+		return true
+	default:
+		return false
+	}
 }
 
 func validGitHubLogin(login string) bool {

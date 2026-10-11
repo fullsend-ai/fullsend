@@ -143,6 +143,7 @@ const (
 // Actor is the user or service account that caused the transition.
 type Actor struct {
 	ID             string    `json:"id"`
+	NumericID      int64     `json:"numeric_id,omitempty"`
 	Kind           ActorKind `json:"kind"`
 	Role           ActorRole `json:"role"`
 	IsEntityAuthor bool      `json:"is_entity_author"`

@@ -193,7 +193,7 @@ func TestLoadGHAEvent_IssueComment(t *testing.T) {
 		"comment": map[string]any{
 			"body": "/fs-fix please repair",
 		},
-		"sender": map[string]any{"login": "alice", "type": "User"},
+		"sender": map[string]any{"login": "alice", "id": float64(1234), "type": "User"},
 	}
 	path := writeEventFile(t, raw)
 
@@ -220,6 +220,7 @@ func TestLoadGHAEvent_IssueComment(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, normevent.TransitionCommentAdded, ev.Transition.Kind)
+	assert.Equal(t, int64(1234), ev.Actor.NumericID)
 	assert.Equal(t, "/fs-fix", ev.Transition.Comment.Command)
 	assert.NotNil(t, ev.Entity.LinkedChangeProposal)
 	assert.Equal(t, 42, ev.Entity.LinkedChangeProposal.ID)
