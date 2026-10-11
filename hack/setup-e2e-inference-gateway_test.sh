@@ -158,9 +158,15 @@ case "$1 $2 $3" in
         conditions: [{type: "Ready", status: $r}]} | if $tr then .status.traffic = $tr else . end' "${S}/svc.json" ;;
   "run revisions describe")
     # ${S}/revision_time_<name> overrides the creation time of revision <name>.
+    # ${S}/revision_pin, if present, pins the config mount to that version.
     t=$(cat "${S}/revision_time_$4" 2>/dev/null || cat "${S}/revision_time")
     jq -n --arg t "${t}" --arg i "$(cat "${S}/revision_image")" \
-      '{metadata: {creationTimestamp: $t}, status: {imageDigest: $i}}' ;;
+      --arg pin "$(cat "${S}/revision_pin" 2>/dev/null || echo latest)" '
+      {metadata: {creationTimestamp: $t}, status: {imageDigest: $i},
+       spec: {containers: [{volumeMounts: [{mountPath: "/etc/agw-config", name: "cfg-old"},
+                                           {mountPath: "/etc/agw-config", name: "cfg-1"}]}],
+              volumes: [{name: "cfg-1", secret: {secretName: "fullsend-e2e-gateway-config", items: [{key: $pin}]}},
+                        {name: "cfg-unused", secret: {secretName: "fullsend-e2e-gateway-config", items: [{key: "1"}]}}]}}' ;;
   "run services update-traffic")
     jq '.spec.traffic = [{latestRevision: true, percent: 100}]' "${S}/svc.json" > "${S}/svc.tmp" \
       && mv "${S}/svc.tmp" "${S}/svc.json"
@@ -301,8 +307,10 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 if [[ "${wf}" == e2e.yml && "${event}" != merge_group ]]; then echo '[]'; exit 0; fi
-{ cat "${S}/runs_${wf}" 2>/dev/null || echo '[]'; } \
-  | jq -c --arg s "${status}" --argjson n "${limit}" 'map(select($s == "" or .status == $s)) | .[:$n]'
+runs=$(cat "${S}/runs_${wf}" 2>/dev/null || echo '[]')
+# A run list that is not an array comes back as it is.
+jq -e 'type == "array"' <<<"${runs}" >/dev/null || { echo "${runs}"; exit 0; }
+jq -c --arg s "${status}" --argjson n "${limit}" 'map(select($s == "" or .status == $s)) | .[:$n]' <<<"${runs}"
 EOF
 chmod +x "${SHIM_DIR}"/*
 
@@ -965,6 +973,25 @@ expect_out "the baseline follows the traffic to the older revision" \
   "previous config is version ${seed_version} of secret ${CFG_SECRET}"
 expect_out "a version newer than the serving revision is a warned pending rollout" \
   "WARNING: version\\(s\\) $((seed_version + 1)) of secret ${CFG_SECRET} came after revision rev-old"
+# A revision pinned to a version number serves that version, even when a later
+# version also predates the revision.
+cc_reset
+add_pending_version 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+cp "${STATE}/revision_time" "${STATE}/secrets/${CFG_SECRET}.v$(cfg_version).time"  # predates the revision too
+echo "${seed_version}" > "${STATE}/revision_pin"
+echo "gemini-3.8-flash /v1/responses" > "${STATE}/anon_open"
+REAL_KEY_HASH="${REAL_HASH}" cc_run && rc=0 || rc=$?
+expect_out "a pinned revision's version is the baseline" \
+  "previous config is version ${seed_version} of secret ${CFG_SECRET}"
+# A run that removed the Vertex grant restores it with the config.
+cc_reset
+live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+echo "echo /v1/responses" > "${STATE}/anon_open"
+ECHO_KEY_HASH="${ECHO_HASH}" run_setup --project "${PROJECT}" --without-vertex --allow-frozen-change && rc=0 || rc=$?
+if [[ "${rc}" == "5" ]]; then pass "a failed check after removing Vertex exits 5"; else fail "removed-Vertex post-check exit ${rc}"; fi
+expect_out "the restore command grants Vertex again" \
+  "gcloud projects add-iam-policy-binding ${PROJECT} --member=${SA} --role=roles/aiplatform.user --condition=None && gcloud secrets versions access"
+
 # Traffic split across revisions is ambiguous: stop before any change.
 cc_reset
 live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
@@ -973,6 +1000,14 @@ cc_run && rc=0 || rc=$?
 if [[ "${rc}" == "1" ]]; then pass "split traffic stops the run"; else fail "split traffic: exit ${rc}"; fi
 expect_out "split traffic is named" "split across revisions rev rev-old"
 expect_no_mutations "split traffic changes nothing" 0
+
+# A gh answer that is not a run list fails closed.
+cc_reset
+live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+echo '{}' > "${STATE}/runs_release.yml"
+cc_run && rc=0 || rc=$?
+if [[ "${rc}" == "1" ]]; then pass "a run list that is not an array fails closed"; else fail "non-array run list: exit ${rc}"; fi
+expect_no_mutations "a run list that is not an array changes nothing" 0
 
 # --delete is guarded too; --force-busy lets it through.
 cc_reset

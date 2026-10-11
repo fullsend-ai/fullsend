@@ -415,8 +415,9 @@ changes nothing skips them and is still a no-op.
 
 1. **Frozen-path diff.** Before it changes anything, the script renders the
    new config and compares it with the live config: the config secret
-   version that the revision getting the traffic started with. The service
-   mounts the secret's latest version, so that is the newest version
+   version that the revision getting the traffic started with. A revision
+   pinned to a version number serves that version. The service mounts the
+   secret's latest version, so otherwise that is the newest version
    created before the revision was, and the post-deploy check of the run
    that rolled the revision verified it. A version added later is a pending
    rollout: an instance that restarts may load it, so the script warns
@@ -451,9 +452,10 @@ changes nothing skips them and is still a no-op.
    API key must return 401. On a gateway without `--with-vertex`, only `echo`
    is called. On a gateway without a key hash, the anonymous calls must
    return 401, because strict `jwtAuth` refuses them before any model does.
-   If a call gets any other status, the script prints the config secret
-   version that was serving before the run and the command that restores
-   it, then exits 5. If that version is disabled, the script stops before
+   If a call gets any other status, or the new revision has no URL to
+   call, the script prints the config secret version that was serving
+   before the run and the command that restores it, then exits 5. If the
+   run removed the Vertex grant, the command grants it again first. If that version is disabled, the script stops before
    it changes anything: enable it, or roll a revision onto an enabled
    version, to choose a rollback baseline first.
 
@@ -463,6 +465,7 @@ Exit codes:
 |------|---------|
 | 0 | Done, or nothing to do |
 | 1 | An error, or a verification probe failed |
+| 2 | `REAL_KEY_MODEL` names a model the real key may not call |
 | 3 | `--dry-run` found pending changes |
 | 4 | The config change touches a frozen part of the config |
 | 5 | The post-deploy check failed. Roll back. |

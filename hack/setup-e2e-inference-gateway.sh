@@ -455,6 +455,8 @@ check_busy() {
       runs=$(gh run list --repo "${BUSY_REPO}" --workflow "${wf}" ${event_args[@]+"${event_args[@]}"} \
           --status "${st}" --limit 20 --json databaseId,status,url 2>"${TMP}/gh.err") \
         || die "could not list ${st} ${wf} runs in ${BUSY_REPO}: $(cat "${TMP}/gh.err")"
+      jq -e 'type == "array"' <<<"${runs}" >/dev/null 2>&1 \
+        || die "the ${st} ${wf} run list from gh is not a JSON array, so the gateway may be in use."
       found=$(jq -r --arg wf "${wf}" '.[] | "\($wf) run \(.databaseId) is \(.status): \(.url)"' <<<"${runs}") \
         || die "could not read the ${wf} run list."
       if [[ -n "${found}" ]]; then
@@ -807,6 +809,12 @@ if describe run services describe "${NAME}" --region="${REGION}"; then
       || die "revision ${serving} of ${NAME} not found."
     rev_time=$(jq -r '.metadata.creationTimestamp // empty' <<<"${DESCRIBED}")
     [[ -n "${rev_time}" ]] || die "revision ${serving} has no creation time."
+    # The config secret version the revision mounts at CONFIG_DIR: "latest",
+    # or a number when the revision is pinned to one version.
+    mounted_version=$(jq -r --arg dir "${CONFIG_DIR}" --arg sec "${CONFIG_SECRET}" '
+        [.spec.containers[0].volumeMounts[]? | select(.mountPath == $dir) | .name] as $names
+        | [.spec.volumes[]? | select((.name as $n | $names | index($n)) and .secret.secretName == $sec)
+            | .secret.items[0].key // "latest"] | first // "latest"' <<<"${DESCRIBED}")
     gc secrets versions list "${CONFIG_SECRET}" --format=json >"${TMP}/versions.json" 2>"${TMP}/versions.err" \
       || die "could not list the versions of secret ${CONFIG_SECRET}: $(cat "${TMP}/versions.err")"
     versions=$(jq -r '.[] | [(.name | split("/") | last), .createTime, .state] | @tsv' "${TMP}/versions.json") \
@@ -815,7 +823,13 @@ if describe run services describe "${NAME}" --region="${REGION}"; then
     pending=()
     while IFS=$'\t' read -r v v_time v_state; do
       [[ "${v}" =~ ^[0-9]+$ ]] || continue
-      if created_after "${v_time}" "${rev_time}"; then
+      if [[ "${mounted_version}" =~ ^[0-9]+$ ]]; then
+        # A pinned revision serves exactly the version it names.
+        if [[ "${v}" == "${mounted_version}" ]]; then
+          LIVE_VERSION="${v}"
+          live_state="${v_state}"
+        fi
+      elif created_after "${v_time}" "${rev_time}"; then
         if [[ "${v_state}" == "ENABLED" ]]; then
           pending+=("${v}")
         fi
@@ -942,6 +956,7 @@ else
       --display-name="fullsend e2e inference gateway runtime" --description="${LABEL}"
 fi
 
+VERTEX_GRANT_REMOVED=false
 if [[ "${VERTEX}" == "with" ]]; then
   if [[ "${has_vertex_grant}" == "true" ]]; then
     ok "service account has roles/aiplatform.user"
@@ -954,6 +969,7 @@ elif [[ "${has_vertex_grant}" == "true" ]]; then
   change "removed roles/aiplatform.user from ${SA_EMAIL}" \
     gc projects remove-iam-policy-binding "${PROJECT}" \
       --member="${SA_MEMBER}" --role=roles/aiplatform.user --condition=None
+  VERTEX_GRANT_REMOVED=true
 else
   ok "service account has no Vertex grant (--without-vertex)"
 fi
@@ -1237,16 +1253,24 @@ check_call() {
 }
 
 # restore_command prints the one command that makes the previous config
-# version the latest again and rolls a revision onto it.
+# version the latest again and rolls a revision onto it. If this run removed
+# the Vertex grant, the command grants it again first, because the restored
+# config serves the Vertex models.
 restore_command() {
   local file="${CONFIG_SECRET}-v${LIVE_VERSION}.yaml"
+  if [[ "${VERTEX_GRANT_REMOVED}" == "true" ]]; then
+    printf '%s' "gcloud projects add-iam-policy-binding ${PROJECT} --member=${SA_MEMBER} --role=roles/aiplatform.user --condition=None && "
+  fi
   printf '%s' "gcloud secrets versions access ${LIVE_VERSION} --secret=${CONFIG_SECRET} --project=${PROJECT} > ${file}" \
     " && gcloud secrets versions add ${CONFIG_SECRET} --project=${PROJECT} --data-file=${file}" \
     " && gcloud run services update ${NAME} --project=${PROJECT} --region=${REGION}" \
     " --update-secrets=${CONFIG_DIR}/config.yaml=${CONFIG_SECRET}:latest,${KEY_DIR}/key=${KEY_SECRET}:latest"
 }
 
-if (( ${#CHANGES[@]} > service_changes_before )) && [[ "${DRY_RUN}" != "true" && -n "${URL}" ]]; then
+if (( ${#CHANGES[@]} > service_changes_before )) && [[ "${DRY_RUN}" != "true" && -z "${URL}" ]]; then
+  echo "    FAIL: the service has a new revision but no URL, so the post-deploy check cannot run." >&2
+  post_failed=1
+elif (( ${#CHANGES[@]} > service_changes_before )) && [[ "${DRY_RUN}" != "true" ]]; then
   echo "==> Post-deploy check..."
   anon_status=401
   if [[ "${HAS_KEYS}" == "true" ]]; then
