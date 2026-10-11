@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -149,13 +150,14 @@ func writeAuthorizationOutput(event *normevent.Event, denied bool) error {
 		return nil
 	}
 
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
-	if err != nil {
-		return fmt.Errorf("open GitHub output file: %w", err)
+	if err := writeGitHubOutput(path, "authorization_denied", "true"); err != nil {
+		return fmt.Errorf("write authorization output authorization_denied: %w", err)
 	}
-	defer f.Close()
-	if _, err := fmt.Fprintf(f, "authorization_denied=true\nauthorization_actor=%s\nauthorization_number=%d\n", event.Actor.ID, event.Entity.ID); err != nil {
-		return fmt.Errorf("write authorization output: %w", err)
+	if err := writeGitHubOutput(path, "authorization_actor", event.Actor.ID); err != nil {
+		return fmt.Errorf("write authorization output authorization_actor: %w", err)
+	}
+	if err := writeGitHubOutput(path, "authorization_number", strconv.Itoa(event.Entity.ID)); err != nil {
+		return fmt.Errorf("write authorization output authorization_number: %w", err)
 	}
 	return nil
 }

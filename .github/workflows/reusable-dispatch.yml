@@ -117,6 +117,7 @@ jobs:
       authorization_actor: ${{ steps.route.outputs.authorization_actor || '' }}
       authorization_number: ${{ steps.route.outputs.authorization_number || '' }}
       legacy_command_applicable: ${{ steps.route.outputs.command_applicable || 'false' }}
+      authorization_check_failed: ${{ steps.route.outputs.authorization_check_failed || 'false' }}
     steps:
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}
@@ -449,6 +450,7 @@ jobs:
             {
               echo "stage="
               echo "command_applicable=${COMMAND_APPLICABLE}"
+              echo "authorization_check_failed=${AUTH_CHECK_FAILED}"
             } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -458,6 +460,7 @@ jobs:
             echo "stage=${STAGE}"
             echo "trigger_source=${TRIGGER_SOURCE}"
             echo "command_applicable=${COMMAND_APPLICABLE}"
+            echo "authorization_check_failed=${AUTH_CHECK_FAILED}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Check for existing PRs
@@ -710,7 +713,7 @@ jobs:
   authorization-notice:
     name: Authorization notice
     needs: [route, harness-dispatch]
-    if: ${{ always() && !cancelled() && (needs.route.outputs.authorization_denied == 'true' || (needs.harness-dispatch.outputs.authorization_denied == 'true' && needs.route.outputs.legacy_command_applicable != 'true')) }}
+    if: ${{ always() && !cancelled() && (needs.route.outputs.authorization_denied == 'true' || (needs.harness-dispatch.outputs.authorization_denied == 'true' && (needs.route.outputs.legacy_command_applicable != 'true' || needs.route.outputs.authorization_check_failed == 'true'))) }}
     runs-on: ${{ inputs.runner_image }}
     timeout-minutes: 5
     permissions:
