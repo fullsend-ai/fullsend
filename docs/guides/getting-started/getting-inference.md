@@ -111,8 +111,10 @@ The examples use `example-org/example-repo` and `https://gateway.example.com`.
 Prerequisites for the repository owner:
 
 - The three values from the operator, with your repository among the allowed repositories.
-- A repository [set up with fullsend](configuring-github.md) on the pi runtime. Claude Code and
-  Codex do not use this route; a run that asks them for a `gateway/` model fails.
+- A repository [set up with fullsend](configuring-github.md) on the pi, codex or Claude Code runtime.
+  pi needs the model list below; codex and Claude Code do not need one. See
+  [Claude Code § Inference gateway route](../../runtimes/claude.md#inference-gateway-route) and
+  [Codex › Models through an inference gateway](../../runtimes/codex.md#models-through-an-inference-gateway-experimental).
 - The latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
 
 ### The config block

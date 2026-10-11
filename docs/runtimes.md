@@ -54,7 +54,7 @@ sequenceDiagram
 
 | | Claude Code | pi | codex |
 |---|---|---|---|
-| Models | Anthropic on Vertex | Claude, **Grok** and **Gemini** on Vertex; **GPT** via OpenAI WIF (opt-in, [not yet exercised live](runtimes/pi.md#models-and-providers)) | **GPT**, via OpenAI WIF ([not yet exercised live](runtimes/codex.md#not-yet-exercised)); any Responses-capable model through an [inference gateway](runtimes/codex.md#models-through-an-inference-gateway-experimental) (`gateway/<model>`, experimental) |
+| Models | Anthropic on Vertex; any Messages-capable model through an [inference gateway](runtimes/claude.md#inference-gateway-route) (`gateway/<model>`) | Claude, **Grok** and **Gemini** on Vertex; **GPT** via OpenAI WIF (opt-in, [not yet exercised live](runtimes/pi.md#models-and-providers)) | **GPT**, via OpenAI WIF ([not yet exercised live](runtimes/codex.md#not-yet-exercised)); any Responses-capable model through an [inference gateway](runtimes/codex.md#models-through-an-inference-gateway-experimental) (`gateway/<model>`, experimental) |
 | Sub-agents | Native (`Agent` tool) | `Agent`/`Task` via a fullsend extension | Not available |
 | Fallback model chain | `FULLSEND_FALLBACK_MODELS`, tried in order | Top-level run only: alias requests tried in order when Vertex does not serve the model ([two 404/403 messages](runtimes/pi.md#per-repo-alias-overrides)), same provider only; pinned ids and sub-agent children fail loudly | Ignored with a warning |
 | Roles | All | All; `review`/`retro` at `--thinking medium` by default | Same recommendation as before — no sub-agent roster on codex |
