@@ -377,3 +377,144 @@ func TestRotationServiceAccountClientDropsExcludedOutgoing(t *testing.T) {
 	assert.Empty(t, state.Roles["coder"].OutgoingIDs)
 	assert.Equal(t, rotationPhaseIdle, state.Roles["coder"].Phase)
 }
+
+// completedWriteFailer fails the rotation-state write that follows a successful
+// publication of the role secret, so the completed-state write never lands.
+type completedWriteFailer struct {
+	*forge.FakeClient
+	published bool
+}
+
+func (c *completedWriteFailer) CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
+	if err := c.FakeClient.CreateRepoSecret(ctx, owner, repo, name, value); err != nil {
+		return err
+	}
+	c.published = true
+	return nil
+}
+
+func (c *completedWriteFailer) UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error {
+	if c.published && name == forge.VarGitLabRoleRotation {
+		return forge.ErrForbidden
+	}
+	return c.FakeClient.UpdateCIVariable(ctx, owner, repo, name, value, protected)
+}
+
+// A capability-resolved owner is recorded before the replacement is published,
+// so a failed completed-state write or an interrupted publication still leaves
+// the replaced supplied credential's owner excluded.
+func TestRotationReplacementRecordsResolvedOwnerBeforePublication(t *testing.T) {
+	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	rec, _ := gitlabroles.BuiltinRegistry().Lookup(gitlabroles.RoleCoder)
+	seed := func(t *testing.T, fc *forge.FakeClient) *fakeTokens {
+		require.NoError(t, writeRotationState(context.Background(), fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+			"coder": {
+				Supplied: true, IncomingID: 12, OutgoingIDs: []int{40}, CreatedTokenIDs: []int{12, 40}, Phase: rotationPhaseOverlapping,
+				DistributedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
+			},
+		}}))
+		tokens := &fakeTokens{}
+		tokens.seed(ProjectAccessToken{ID: 12, Name: rec.Credential.TokenName, Active: true, UserID: 70, ExpiresAt: GitLabPATExpiresAt(now.AddDate(0, 0, 5))})
+		return tokens
+	}
+
+	t.Run("completed state write fails after publication", func(t *testing.T) {
+		ctx := context.Background()
+		inner := seededRoleClient(t, gitlabroles.RoleCoder)
+		fc := &completedWriteFailer{FakeClient: inner}
+		tokens := seed(t, inner)
+		result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+			Owner: "g", Repo: "p", Client: fc, Tokens: ownerAwareTokens{fakeTokens: tokens, ids: []int{501}},
+			Roles: []gitlabroles.Role{gitlabroles.RoleCoder}, Force: true, Now: now,
+		})
+		require.NoError(t, err)
+		require.True(t, fc.published)
+		require.NotEmpty(t, result.Failed, "the completed-state write failed")
+		assert.Empty(t, tokens.revoked)
+
+		state, _, err := loadRotationState(ctx, inner, "g", "p")
+		require.NoError(t, err)
+		rs := state.Roles["coder"]
+		assert.Contains(t, rs.ExcludedUserIDs, 501, "the owner was recorded before publication")
+		assert.Contains(t, rs.OutgoingIDs, 40)
+
+		// A rerun past the grace period must not revoke the carried token.
+		later := now.Add(72 * time.Hour)
+		_, err = RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+			Owner: "g", Repo: "p", Client: inner, Tokens: tokens,
+			Roles: []gitlabroles.Role{gitlabroles.RoleCoder}, Now: later,
+		})
+		require.NoError(t, err)
+		assert.NotContains(t, tokens.revoked, 40)
+	})
+
+	t.Run("provided replacement whose publication fails", func(t *testing.T) {
+		ctx := context.Background()
+		inner := seededRoleClient(t, gitlabroles.RoleCoder)
+		tokens := seed(t, inner)
+		fc := &selectiveSecretClient{Client: inner, fail: map[string]error{rec.Credential.SecretName: forge.ErrForbidden}}
+		result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+			Owner: "g", Repo: "p", Client: fc, Tokens: ownerAwareTokens{fakeTokens: tokens, ids: []int{501}},
+			Roles:          []gitlabroles.Role{gitlabroles.RoleCoder},
+			ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RoleCoder: "providedXXXX"}, Force: true, Now: now,
+		})
+		require.NoError(t, err)
+		require.NotEmpty(t, result.Failed)
+
+		state, _, err := loadRotationState(ctx, inner, "g", "p")
+		require.NoError(t, err)
+		assert.Contains(t, state.Roles["coder"].ExcludedUserIDs, 501, "the resolved owner is excluded on the provided-token path")
+	})
+
+	t.Run("supplied to supplied replacement succeeds", func(t *testing.T) {
+		ctx := context.Background()
+		inner := seededRoleClient(t, gitlabroles.RoleCoder)
+		tokens := seed(t, inner)
+		result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+			Owner: "g", Repo: "p", Client: inner, Tokens: ownerAwareTokens{fakeTokens: tokens, ids: []int{501}},
+			Roles:          []gitlabroles.Role{gitlabroles.RoleCoder},
+			ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RoleCoder: "providedXXXX"}, Force: true, Now: now,
+		})
+		require.NoError(t, err)
+		require.Empty(t, result.Failed)
+		state, _, err := loadRotationState(ctx, inner, "g", "p")
+		require.NoError(t, err)
+		assert.Contains(t, state.Roles["coder"].ExcludedUserIDs, 501)
+	})
+}
+
+// Owners resolved through SuppliedAccountIDs are persisted before a managed
+// replacement even when the optional AttributeSuppliedOwners callback is nil.
+func TestRotationServiceAccountClientPersistsResolvedOwnersWithoutCallback(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	fc := seededRoleClient(t, gitlabroles.RoleCoder)
+	rec, _ := gitlabroles.BuiltinRegistry().Lookup(gitlabroles.RoleCoder)
+	require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+		"coder": {
+			Supplied: true, IncomingID: 12, CreatedTokenIDs: []int{12}, Phase: rotationPhaseIdle,
+			DistributedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
+		},
+	}}))
+	legacy := &fakeTokens{}
+	legacy.seed(ProjectAccessToken{ID: 12, Name: rec.Credential.TokenName, Active: true, UserID: 70, ExpiresAt: GitLabPATExpiresAt(now.AddDate(0, 0, 5))})
+	c := ServiceAccountTokenClient{
+		SA: newFakeSAAPI(), Legacy: legacy, VerifyToken: acceptReplacementToken,
+		ManagedLegacyTokenIDs: recordedLegacyTokens(legacy),
+		SuppliedAccountIDs:    func(context.Context, string, string) ([]int, error) { return []int{501}, nil },
+	}
+	require.Nil(t, c.AttributeSuppliedOwners)
+
+	result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+		Owner: "g", Repo: "p", Client: fc, Tokens: c, Roles: []gitlabroles.Role{gitlabroles.RoleCoder}, Force: true, Now: now,
+	})
+	require.NoError(t, err)
+	require.Empty(t, result.Failed)
+	require.Contains(t, result.Rotated, gitlabroles.RoleCoder)
+
+	state, _, err := loadRotationState(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	rs := state.Roles["coder"]
+	assert.False(t, rs.Supplied)
+	assert.Contains(t, rs.ExcludedUserIDs, 501, "the frozen resolved owner is persisted without the attribution callback")
+}

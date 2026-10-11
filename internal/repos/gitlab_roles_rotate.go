@@ -365,6 +365,16 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 			state = fresh
 			rs = state.Roles[string(rec.Name)]
 		}
+		// Frozen owners that are not yet recorded were learned only through
+		// SuppliedAccountIDs. Persist them whether or not the optional
+		// AttributeSuppliedOwners callback is set, so a replacement that
+		// clears the supplied provenance never loses them.
+		recorded := recordedExcludedOwners(state)
+		for _, id := range frozen {
+			if !containsInt(recorded, id) {
+				resolvedOwners = appendExcludedID(resolvedOwners, id)
+			}
+		}
 	} else {
 		// A supplied credential whose owner was never recorded cannot be
 		// attributed by recorded exclusions alone, so a same-named
@@ -438,6 +448,18 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 		// reverted the next time this role's state is persisted.
 		state = claimed
 		rs = state.Roles[string(rec.Name)]
+	}
+	// Owners resolved only through the client capability become permanent
+	// exclusions in rs before any replacement is published, so every write of rs
+	// below (the provided-token transition, the distributing phase before
+	// CreateRepoSecret, failure records and the completed state) carries them.
+	// Both publishing paths refuse to publish when their pre-publication write
+	// fails, so an interrupted or partly failed publication cannot leave the
+	// replaced credential's owner unrecorded.
+	if !cfg.DryRun {
+		for _, id := range resolvedOwners {
+			rs.excludeOwner(id)
+		}
 	}
 	defer func() {
 		if cfg.DryRun {
@@ -754,14 +776,10 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	rs.Error = ""
 	// The managed replacement is now the published credential, so the previous
 	// supplied credential's provenance no longer describes it. Its owner stays
-	// permanently excluded, including owners resolved only through the client
-	// capability: clearing Supplied would otherwise leave nothing recorded, and
-	// carried-forward outgoing IDs whose owner is unverified could later be
-	// revoked through a generic client.
+	// permanently excluded; owners resolved only through the client capability
+	// were already added to rs and persisted by the distributing-phase write
+	// before publication.
 	rs.excludeOwner(rs.SuppliedUserID)
-	for _, id := range resolvedOwners {
-		rs.excludeOwner(id)
-	}
 	rs.Supplied, rs.SuppliedUserID, rs.SuppliedTokenID, rs.SuppliedDistributed = false, 0, 0, false
 	if err := mergeRoleState(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, holder, now, rs, &state); err != nil {
 		result.Failed = append(result.Failed, RoleProvisionFailure{
