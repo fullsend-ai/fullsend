@@ -274,11 +274,6 @@ func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, ev *normeve
 		return nil, fmt.Errorf("issue_comment missing issue")
 	}
 
-	sender := nestedMap(raw, "sender")
-	if strings.HasSuffix(strings.ToLower(actorID), "[bot]") || stringField(sender, "type") == "Bot" {
-		ev.Actor.Kind = normevent.ActorBot
-	}
-
 	ev.Entity = entityFromIssue(issue)
 	ev.Actor.IsEntityAuthor = strings.EqualFold(stringField(issue, "user", "login"), actorID)
 	ev.State.Labels = labelNames(issue)

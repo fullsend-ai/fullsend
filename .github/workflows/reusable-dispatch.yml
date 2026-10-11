@@ -715,7 +715,6 @@ jobs:
     needs: [route, harness-dispatch]
     if: ${{ always() && !cancelled() && (needs.route.outputs.authorization_denied == 'true' || (needs.harness-dispatch.outputs.authorization_denied == 'true' && (needs.route.outputs.legacy_command_applicable != 'true' || needs.route.outputs.authorization_check_failed == 'true'))) }}
     runs-on: ${{ inputs.runner_image }}
-    timeout-minutes: 5
     permissions:
       issues: write
     concurrency:
