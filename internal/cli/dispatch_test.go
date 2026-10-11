@@ -37,6 +37,26 @@ func TestWriteAuthorizationOutput(t *testing.T) {
 	assert.Equal(t, "authorization_denied=true\nauthorization_actor=alice\nauthorization_actor_id=1234\nauthorization_number=42\n", string(data))
 }
 
+func TestWriteAuthorizationOutputSupportsCustomSlashCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	event := &normevent.Event{
+		Entity: normevent.Entity{ID: 42},
+		Actor:  normevent.Actor{ID: "alice", NumericID: 1234, Kind: normevent.ActorHuman},
+		Transition: normevent.Transition{
+			Kind:    normevent.TransitionCommentAdded,
+			Comment: &normevent.Comment{Command: "/fs-analyze"},
+		},
+		Source: normevent.Source{RawType: "issue_comment"},
+	}
+
+	require.NoError(t, writeAuthorizationOutput(event, true))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "authorization_actor_id=1234")
+}
+
 func TestWriteAuthorizationOutputSkipsNonDeniedOrNonHuman(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_OUTPUT", path)

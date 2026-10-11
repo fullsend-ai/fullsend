@@ -803,6 +803,8 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 				"notification concurrency must use the CEL fallback work-item number")
 			assert.Contains(t, s, "needs.route.outputs.authorization_check_failed == 'true'",
 				"a failed legacy permission lookup must not suppress a confirmed CEL denial")
+			assert.Contains(t, s, `if [[ -z "${REQUESTED_STAGE}" && -n "${STAGE}" ]]`,
+				"automatic routes must pass through the same stage availability checks as slash commands")
 
 			assert.Contains(t, s, "has_repo_permission",
 				"permission helper should be parameterized by min role")

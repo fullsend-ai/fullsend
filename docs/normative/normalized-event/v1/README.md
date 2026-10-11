@@ -175,6 +175,9 @@ GitHub adapters also populate the optional `actor.numeric_id` from the event
 sender's stable numeric account ID when it is present. This field is intended
 for identity-stable bookkeeping such as notification deduplication; it is not
 an authorization input and must not replace the login in user-facing mentions.
+Events that omit this optional field remain valid; consumers validating against
+a pinned strict schema must update that schema before accepting events that
+include it.
 
 ### Fork security (`state.change_proposal.is_fork`)
 

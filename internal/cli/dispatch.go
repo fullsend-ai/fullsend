@@ -170,12 +170,8 @@ func isExplicitHumanSlashCommand(event *normevent.Event) bool {
 		event.Actor.Kind != normevent.ActorHuman || event.Transition.Comment == nil {
 		return false
 	}
-	switch event.Transition.Comment.Command {
-	case "/fs-triage", "/fs-code", "/fs-review", "/fs-fix", "/fs-retro", "/fs-prioritize":
-		return true
-	default:
-		return false
-	}
+	command := strings.TrimSpace(event.Transition.Comment.Command)
+	return strings.HasPrefix(command, "/fs-") && len(command) > len("/fs-")
 }
 
 func validGitHubLogin(login string) bool {

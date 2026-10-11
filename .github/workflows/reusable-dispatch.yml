@@ -437,6 +437,13 @@ jobs:
               ;;
           esac
 
+          # Automatic webhook routes set STAGE directly. Mirror it into the
+          # requested-stage guard so kill-switch, role, and agent checks apply
+          # to those routes as well as explicit slash commands.
+          if [[ -z "${REQUESTED_STAGE}" && -n "${STAGE}" ]]; then
+            REQUESTED_STAGE="${STAGE}"
+          fi
+
           if [[ -z "${STAGE}" ]]; then
             echo "No stage matched — skipping dispatch"
             {
@@ -536,12 +543,16 @@ jobs:
           if [[ -f .fullsend/config.yaml ]]; then
             KILL_SWITCH=$(yq '.kill_switch // false' .fullsend/config.yaml)
             if [[ "$KILL_SWITCH" == "true" ]]; then
+              # Keep routing successful while marking the stage unavailable;
+              # authorization metadata must not be emitted for a disabled
+              # stage.
               echo "::notice::Stage '${REQUESTED_STAGE}' skipped — kill switch is active"
               echo "skipped=true" >> "${GITHUB_OUTPUT}"
             fi
           fi
 
       - name: Validate agents config
+        id: validate-agents
         if: steps.route.outputs.requested_stage != '' && steps.kill-switch.outputs.skipped != 'true'
         run: |
           set -euo pipefail
@@ -688,6 +699,11 @@ jobs:
           ROLE_SKIPPED: ${{ steps.role-check.outputs.skipped }}
           AGENT_SKIPPED: ${{ steps.agent-check.outputs.skipped }}
           PR_SKIPPED: ${{ steps.pr-check.outputs.skipped }}
+          KILL_SWITCH_OUTCOME: ${{ steps.kill-switch.outcome }}
+          VALIDATE_AGENTS_OUTCOME: ${{ steps.validate-agents.outcome }}
+          ROLE_CHECK_OUTCOME: ${{ steps.role-check.outcome }}
+          AGENT_CHECK_OUTCOME: ${{ steps.agent-check.outcome }}
+          PR_CHECK_OUTCOME: ${{ steps.pr-check.outcome }}
         run: |
           set -euo pipefail
           echo "authorization_denied=false" >> "${GITHUB_OUTPUT}"
@@ -700,10 +716,16 @@ jobs:
             || "${KILL_SWITCH_SKIPPED}" == "true" \
             || "${ROLE_SKIPPED}" == "true" \
             || "${AGENT_SKIPPED}" == "true" \
-            || "${PR_SKIPPED}" == "true" \
             || ! "${COMMENT_USER_ID}" =~ ^[1-9][0-9]*$ \
             || ! "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ \
             || ! "${COMMENT_USER_LOGIN}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            exit 0
+          fi
+          [[ "${KILL_SWITCH_OUTCOME}" == "success" ]] || exit 0
+          [[ "${VALIDATE_AGENTS_OUTCOME}" == "success" ]] || exit 0
+          [[ "${ROLE_CHECK_OUTCOME}" == "success" ]] || exit 0
+          [[ "${AGENT_CHECK_OUTCOME}" == "success" ]] || exit 0
+          if [[ "${REQUESTED_STAGE}" == "code" && ("${PR_SKIPPED}" == "true" || "${PR_CHECK_OUTCOME}" != "success") ]]; then
             exit 0
           fi
           echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to launch the requested agent"
@@ -756,7 +778,6 @@ jobs:
     runs-on: ${{ inputs.runner_image }}
     permissions:
       issues: write
-      actions: write
       contents: read
     concurrency:
       group: fullsend-authorization-notice-${{ github.repository }}-${{ needs.route.outputs.authorization_number || needs.harness-dispatch.outputs.authorization_number }}-${{ needs.route.outputs.authorization_actor_id || needs.harness-dispatch.outputs.authorization_actor_id }}
