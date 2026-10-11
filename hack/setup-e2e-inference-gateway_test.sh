@@ -165,8 +165,10 @@ case "$1 $2 $3" in
       {metadata: {creationTimestamp: $t}, status: {imageDigest: $i},
        spec: {containers: [{volumeMounts: [{mountPath: "/etc/agw-config", name: "cfg-old"},
                                            {mountPath: "/etc/agw-config", name: "cfg-1"}]}],
-              volumes: [{name: "cfg-1", secret: {secretName: "fullsend-e2e-gateway-config", items: [{key: $pin}]}},
-                        {name: "cfg-unused", secret: {secretName: "fullsend-e2e-gateway-config", items: [{key: "1"}]}}]}}' ;;
+              volumes: [{name: "cfg-1", secret: {secretName: "fullsend-e2e-gateway-config",
+                         items: [{key: "1", path: "other.yaml"}, {key: $pin, path: "config.yaml"}]}},
+                        {name: "cfg-unused", secret: {secretName: "fullsend-e2e-gateway-config",
+                         items: [{key: "1", path: "config.yaml"}]}}]}}' ;;
   "run services update-traffic")
     jq '.spec.traffic = [{latestRevision: true, percent: 100}]' "${S}/svc.json" > "${S}/svc.tmp" \
       && mv "${S}/svc.tmp" "${S}/svc.json"
@@ -1000,6 +1002,15 @@ cc_run && rc=0 || rc=$?
 if [[ "${rc}" == "1" ]]; then pass "split traffic stops the run"; else fail "split traffic: exit ${rc}"; fi
 expect_out "split traffic is named" "split across revisions rev rev-old"
 expect_no_mutations "split traffic changes nothing" 0
+
+# A config mount the script cannot read stops the run.
+cc_reset
+live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+echo "" > "${STATE}/revision_pin"
+cc_run && rc=0 || rc=$?
+if [[ "${rc}" == "1" ]]; then pass "an unreadable config mount stops the run"; else fail "unreadable config mount: exit ${rc}"; fi
+expect_out "an unreadable config mount is named" "mounts no readable version"
+expect_no_mutations "an unreadable config mount changes nothing" 0
 
 # A gh answer that is not a run list fails closed.
 cc_reset

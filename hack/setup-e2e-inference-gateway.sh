@@ -809,12 +809,16 @@ if describe run services describe "${NAME}" --region="${REGION}"; then
       || die "revision ${serving} of ${NAME} not found."
     rev_time=$(jq -r '.metadata.creationTimestamp // empty' <<<"${DESCRIBED}")
     [[ -n "${rev_time}" ]] || die "revision ${serving} has no creation time."
-    # The config secret version the revision mounts at CONFIG_DIR: "latest",
-    # or a number when the revision is pinned to one version.
+    # The config secret version the revision mounts as CONFIG_DIR/config.yaml:
+    # "latest", or a number when the revision is pinned to one version. A
+    # mount the script cannot read stops the run: the served config is unknown.
     mounted_version=$(jq -r --arg dir "${CONFIG_DIR}" --arg sec "${CONFIG_SECRET}" '
         [.spec.containers[0].volumeMounts[]? | select(.mountPath == $dir) | .name] as $names
         | [.spec.volumes[]? | select((.name as $n | $names | index($n)) and .secret.secretName == $sec)
-            | .secret.items[0].key // "latest"] | first // "latest"' <<<"${DESCRIBED}")
+            | .secret.items[]? | select(.path == "config.yaml") | .key] | first // empty' <<<"${DESCRIBED}")
+    if [[ "${mounted_version}" != "latest" && ! "${mounted_version}" =~ ^[0-9]+$ ]]; then
+      die "revision ${serving} mounts no readable version of secret ${CONFIG_SECRET} as ${CONFIG_DIR}/config.yaml (found '${mounted_version}'), so the served config is unknown; nothing changed."
+    fi
     gc secrets versions list "${CONFIG_SECRET}" --format=json >"${TMP}/versions.json" 2>"${TMP}/versions.err" \
       || die "could not list the versions of secret ${CONFIG_SECRET}: $(cat "${TMP}/versions.err")"
     versions=$(jq -r '.[] | [(.name | split("/") | last), .createTime, .state] | @tsv' "${TMP}/versions.json") \
