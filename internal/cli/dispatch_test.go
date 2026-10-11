@@ -14,7 +14,49 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
+
+func TestWriteAuthorizationOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	event := &normevent.Event{
+		Entity: normevent.Entity{ID: 42},
+		Actor:  normevent.Actor{ID: "alice", Kind: normevent.ActorHuman},
+	}
+
+	require.NoError(t, writeAuthorizationOutput(event, true))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "authorization_denied=true\nauthorization_actor=alice\nauthorization_number=42\n", string(data))
+}
+
+func TestWriteAuthorizationOutputSkipsNonDeniedOrNonHuman(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	for _, event := range []*normevent.Event{
+		{Entity: normevent.Entity{ID: 42}, Actor: normevent.Actor{ID: "alice", Kind: normevent.ActorHuman}},
+		{Entity: normevent.Entity{ID: 42}, Actor: normevent.Actor{ID: "agent[bot]", Kind: normevent.ActorBot}},
+	} {
+		require.NoError(t, writeAuthorizationOutput(event, false))
+	}
+	_, err := os.Stat(path)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestWriteAuthorizationOutputSkipsInvalidLogin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	event := &normevent.Event{
+		Entity: normevent.Entity{ID: 42},
+		Actor:  normevent.Actor{ID: "alice\nforged", Kind: normevent.ActorHuman},
+	}
+
+	require.NoError(t, writeAuthorizationOutput(event, true))
+	_, err := os.Stat(path)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
 
 func TestRunDispatch_JSONDriver(t *testing.T) {
 	dir := t.TempDir()

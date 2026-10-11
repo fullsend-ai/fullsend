@@ -82,12 +82,14 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 	}
 
 	role := normevent.RoleNone
+	authorizationUnavailable := true
 	if opts.Forge != nil && actorID != "" {
 		parts := strings.SplitN(opts.Repository, "/", 2)
 		if len(parts) == 2 {
 			if gh, ok := opts.Forge.(forge.GitHubExtensions); ok {
 				if perm, err := gh.GetCollaboratorPermission(ctx, parts[0], parts[1], actorID); err == nil {
 					role = normevent.MapGitHubPermission(perm)
+					authorizationUnavailable = false
 				} else {
 					log.Printf("harness dispatch: collaborator permission lookup failed for %s on %s: %v", actorID, opts.Repository, err)
 				}
@@ -110,6 +112,9 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 		State: normevent.State{
 			Labels: []string{},
 		},
+	}
+	if authorizationUnavailable {
+		ev.MarkAuthorizationUnavailable()
 	}
 	if action != "" {
 		ev.Source.RawAction = action
@@ -293,16 +298,23 @@ func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, raw map[str
 		ev.Actor.Kind = normevent.ActorBot
 	}
 	if opts.Forge != nil && actorID != "" {
+		authorizationUnavailable := true
 		parts := strings.SplitN(opts.Repository, "/", 2)
 		if len(parts) == 2 {
 			if gh, ok := opts.Forge.(forge.GitHubExtensions); ok {
 				if perm, err := gh.GetCollaboratorPermission(ctx, parts[0], parts[1], actorID); err == nil {
 					ev.Actor.Role = normevent.MapGitHubPermission(perm)
+					authorizationUnavailable = false
 				} else {
 					log.Printf("harness dispatch: collaborator permission lookup failed for %s on %s: %v", actorID, opts.Repository, err)
 				}
 			}
 		}
+		if authorizationUnavailable {
+			ev.MarkAuthorizationUnavailable()
+		}
+	} else {
+		ev.MarkAuthorizationUnavailable()
 	}
 
 	ev.Entity = entityFromIssue(issue)

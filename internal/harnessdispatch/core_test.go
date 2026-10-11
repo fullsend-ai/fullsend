@@ -33,9 +33,43 @@ func TestDispatch_AuthDeny(t *testing.T) {
 	writeHarnessConfig(t, dir, issuePingHarnessYAML())
 
 	ev := mustEvent(t, "issue-opened.json")
-	refs, err := Dispatch(context.Background(), Options{ConfigDir: dir, Event: ev})
+	result, err := DispatchResult(context.Background(), Options{ConfigDir: dir, Event: ev})
 	require.NoError(t, err)
-	assert.Empty(t, refs)
+	assert.Empty(t, result.Refs)
+	assert.False(t, result.AuthorizationDenied, "an unauthorized event with no matching harness is not a launch attempt")
+}
+
+func TestDispatchResult_AuthDenyOnlyForMatchingHarness(t *testing.T) {
+	dir := t.TempDir()
+	writeHarnessConfigSubdir(t, dir, issueOpenedHarnessYAML())
+
+	result, err := DispatchResult(context.Background(), Options{
+		ConfigDir: filepath.Join(dir, ".fullsend"),
+		Event:     mustEvent(t, "issue-opened.json"),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Refs)
+	assert.True(t, result.AuthorizationDenied)
+}
+
+func TestDispatchResult_PermissionLookupFailureDoesNotNotify(t *testing.T) {
+	dir := t.TempDir()
+	writeHarnessConfigSubdir(t, dir, issueOpenedHarnessYAML())
+	ev := mustEvent(t, "issue-opened.json")
+	ev.MarkAuthorizationUnavailable()
+
+	result, err := DispatchResult(context.Background(), Options{
+		ConfigDir: filepath.Join(dir, ".fullsend"),
+		Event:     ev,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Refs)
+	assert.False(t, result.AuthorizationDenied)
+}
+
+func TestDispatchResult_EmptyConfigDir(t *testing.T) {
+	_, err := DispatchResult(context.Background(), Options{Event: mustEvent(t, "issue-opened.json")})
+	require.EqualError(t, err, "config dir is required")
 }
 
 func TestDispatch_CELIssueMatch(t *testing.T) {

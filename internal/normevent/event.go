@@ -16,6 +16,26 @@ type Event struct {
 	Actor      Actor      `json:"actor"`
 	State      State      `json:"state"`
 	Source     Source     `json:"source"`
+
+	// authorizationUnavailable is input-driver metadata. It is deliberately
+	// not serialized into normalized events: a failed live permission lookup
+	// must fail closed without being mistaken for a confirmed denial notice.
+	authorizationUnavailable bool
+}
+
+// MarkAuthorizationUnavailable records that the live permission lookup could
+// not be completed for this event. Dispatch remains fail-closed, but callers
+// must not present the result as a confirmed authorization denial.
+func (e *Event) MarkAuthorizationUnavailable() {
+	if e != nil {
+		e.authorizationUnavailable = true
+	}
+}
+
+// AuthorizationAvailable reports whether the input driver resolved the
+// actor's live authorization state.
+func (e *Event) AuthorizationAvailable() bool {
+	return e != nil && !e.authorizationUnavailable
 }
 
 // EntityKind identifies work items, change proposals, or conversations.
