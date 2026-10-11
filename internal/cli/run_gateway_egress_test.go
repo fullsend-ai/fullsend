@@ -77,6 +77,80 @@ func TestRenderGatewayProfile(t *testing.T) {
 	assert.NotContains(t, string(data2), "gateway.example.com")
 }
 
+type renderedClaudeGatewayProfile struct {
+	ID          string `yaml:"id"`
+	Credentials []struct {
+		EnvVars    []string `yaml:"env_vars"`
+		AuthStyle  string   `yaml:"auth_style"`
+		HeaderName string   `yaml:"header_name"`
+	} `yaml:"credentials"`
+	Endpoints []struct {
+		Host                        string `yaml:"host"`
+		Path                        string `yaml:"path"`
+		AllowUninspectedCredentials bool   `yaml:"allow_uninspected_credentials"`
+		Rules                       []struct {
+			Allow struct {
+				Method string `yaml:"method"`
+				Path   string `yaml:"path"`
+			} `yaml:"allow"`
+		} `yaml:"rules"`
+	} `yaml:"endpoints"`
+	Binaries []string `yaml:"binaries"`
+}
+
+func TestRenderGatewayProfile_Claude(t *testing.T) {
+	data, id, err := renderGatewayProfileFor(gatewayProfile{host: "Gateway.Example.com", claude: true})
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "__INFERENCE_GATEWAY_", "every placeholder is filled in")
+	var p renderedClaudeGatewayProfile
+	require.NoError(t, yaml.Unmarshal(data, &p))
+	assert.Equal(t, id, p.ID)
+	_, piID, err := renderGatewayProfile("gateway.example.com")
+	require.NoError(t, err)
+
+	assert.Regexp(t, `^fullsend-inference-gateway-claude-[0-9a-f]{12}$`, id)
+	assert.NotEqual(t, piID, id, "pi and Claude Code never share a profile id")
+	assert.Equal(t, strings.TrimPrefix(piID, gatewayProfileTemplateID+"-"), id[len(id)-gatewayProfileIDHashLen:], "the same host hash")
+
+	// Both auth modes send Authorization: Bearer (ADR 0137), so one
+	// rendering serves both.
+	require.Len(t, p.Credentials, 1)
+	assert.Equal(t, []string{gatewayCredentialKey}, p.Credentials[0].EnvVars)
+	assert.Equal(t, "bearer", p.Credentials[0].AuthStyle)
+	assert.Equal(t, "authorization", p.Credentials[0].HeaderName)
+
+	{
+		require.Len(t, p.Endpoints, 1)
+		ep := p.Endpoints[0]
+		assert.Equal(t, "gateway.example.com", ep.Host)
+		assert.Equal(t, "/v1/**", ep.Path)
+		assert.True(t, ep.AllowUninspectedCredentials)
+		var rules []string
+		for _, r := range ep.Rules {
+			rules = append(rules, r.Allow.Method+" "+r.Allow.Path)
+		}
+		assert.Equal(t, []string{"POST /v1/messages", "POST /v1/messages/count_tokens"}, rules)
+		assert.Equal(t, []string{"**/claude", "**/claude.exe"}, p.Binaries, "the sandbox binary is claude.exe, a native binary")
+	}
+
+	_, _, err = renderGatewayProfileFor(gatewayProfile{host: "https://gw.example.com", claude: true})
+	assert.Error(t, err, "the renderer validates the host")
+}
+
+func TestEnsureGatewayProfile_Claude(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	p := gatewayProfile{host: "gateway.example.com", claude: true}
+	_, id, err := renderGatewayProfileFor(p)
+	require.NoError(t, err)
+	argsLog := profileListingStub(t, "Available Provider Profiles:\n    "+id+"  Fullsend inference gateway (Claude Code)  endpoints: 1")
+	got, err := ensureGatewayProfile(context.Background(), p, ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.Equal(t, id, got)
+	lines := readArgLines(t, argsLog)
+	require.NotEmpty(t, lines)
+	assert.Equal(t, "provider profile delete "+id, lines[0])
+}
+
 func TestValidateGatewayHost(t *testing.T) {
 	for _, ok := range []string{"gateway.example.com", "GW-1.Example.COM", "localhost", "10.0.0.1"} {
 		_, err := validateGatewayHost(ok)
@@ -157,7 +231,7 @@ func TestEnsureGatewayProfile_ImportsPerHostID(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	id := gatewayProfileID("gateway.example.com")
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    "+id+"  Fullsend inference gateway  endpoints: 1")
-	got, err := ensureGatewayProfile(context.Background(), "gateway.example.com", ui.New(io.Discard))
+	got, err := ensureGatewayProfile(context.Background(), gatewayProfile{host: "gateway.example.com"}, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.Equal(t, id, got)
 	lines := readArgLines(t, argsLog)
@@ -172,7 +246,7 @@ func TestEnsureGatewayProvider(t *testing.T) {
 	id := gatewayProfileID("gateway.example.com")
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    "+id+"  Fullsend inference gateway  endpoints: 1")
 	expires := time.Now().Add(5 * time.Minute).UTC()
-	name, gotID, err := ensureGatewayProvider(context.Background(), "gateway.example.com", "fs-tri-0123456789abcdef", "eyJhbGciOiJSUzI1NiJ9.gateway-test-token.sig", expires, ui.New(io.Discard))
+	name, gotID, err := ensureGatewayProvider(context.Background(), gatewayProfile{host: "gateway.example.com"}, "fs-tri-0123456789abcdef", "eyJhbGciOiJSUzI1NiJ9.gateway-test-token.sig", expires, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.Equal(t, "inference-gateway-0123456789ab", name)
 	assert.Equal(t, id, gotID)
@@ -181,7 +255,7 @@ func TestEnsureGatewayProvider(t *testing.T) {
 	assert.Equal(t, "provider create --name inference-gateway-0123456789ab --type "+id+" --credential "+gatewayCredentialKey, lines[3])
 	assert.True(t, strings.HasPrefix(lines[4], "provider update inference-gateway-0123456789ab --credential "+gatewayCredentialKey+" --credential-expires-at "), lines[4])
 
-	_, _, err = ensureGatewayProvider(context.Background(), "gateway.example.com", "fs-x-1", "a.b.c", expires, ui.New(io.Discard))
+	_, _, err = ensureGatewayProvider(context.Background(), gatewayProfile{host: "gateway.example.com"}, "fs-x-1", "a.b.c", expires, ui.New(io.Discard))
 	require.Error(t, err, "a token too short to redact is refused")
 }
 
@@ -223,7 +297,7 @@ func TestEnsureGatewayProvider_RejectsNonJWT(t *testing.T) {
 	malicious := "eyJhbGciOiJSUzI1NiJ9.eyJpYXQiOjF9.c2lnbmF0dXJl\n::error::pwned"
 	var err error
 	stderr := captureStderr(t, func() {
-		_, _, err = ensureGatewayProvider(context.Background(), "gateway.example.com", "fs-x-1", malicious, time.Now().Add(5*time.Minute), ui.New(io.Discard))
+		_, _, err = ensureGatewayProvider(context.Background(), gatewayProfile{host: "gateway.example.com"}, "fs-x-1", malicious, time.Now().Add(5*time.Minute), ui.New(io.Discard))
 	})
 	require.ErrorContains(t, err, "not a compact JWT")
 	assert.NotContains(t, err.Error(), "pwned")

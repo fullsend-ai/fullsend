@@ -66,8 +66,8 @@ Google credentials before the harness pre-script:
 The run prints which source it used. For local and GitLab Vertex runs, point
 `GOOGLE_APPLICATION_CREDENTIALS` at a non-empty credential file when the harness mounts it.
 An OpenAI run uses the [OpenAI credential path](#openai-credentials-on-pi-and-codex), and a pi or
-codex run whose own model is `gateway/<id>` uses the
-[inference gateway credential path](#inference-gateway-credentials-on-pi-and-codex); neither runs the Vertex
+codex or Claude Code run whose own model is `gateway/<id>` uses the
+[inference gateway credential path](#inference-gateway-credentials-on-pi-codex-and-claude-code); neither runs the Vertex
 setup above. When both GCP
 inputs are set, an OpenAI run on GitHub Actions also prepares Google WIF credentials for Vertex
 sub-agents; a failure there is a warning. The `dummy` and `dummy-playback` runtimes follow the
@@ -343,7 +343,10 @@ is already rejected). Give repository-specific providers and profiles their own 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
 
-## Inference gateway credentials on pi and codex
+<a id="inference-gateway-credentials-on-pi"></a>
+<a id="inference-gateway-credentials-on-pi-and-codex"></a>
+
+## Inference gateway credentials on pi, codex and Claude Code
 
 A pi run that resolves a `gateway/<id>` model, for the parent or a configured sub-agent, uses the
 `inference.gateway` block of `.fullsend/config.yaml`
@@ -377,6 +380,17 @@ A codex run whose model is `gateway/<model>` uses the same route, credential mod
 token file is codex's `gateway-token`, which the runner-owned `fullsend-gateway` provider's
 `auth.command` re-reads. The run needs no `openai` provider. See
 [Codex › Models through an inference gateway](../runtimes/codex.md#models-through-an-inference-gateway-experimental).
+
+**Claude Code.** A claude runtime run whose own model is `gateway/<id>` uses the same block, provider
+and refresh. The runner exports the gateway origin as `ANTHROPIC_BASE_URL`, passes `<id>` to
+`--model`, and skips the Vertex credential checks. The credential reaches Claude Code through an
+`apiKeyHelper` that re-reads the re-seeded token file in the `oidc` mode, or as an
+`ANTHROPIC_AUTH_TOKEN` placeholder in the `api-key` mode. Both are sent as `Authorization: Bearer`,
+as on pi. The per-host egress profile is a Claude Code rendering that admits only
+`POST /v1/messages` and `POST /v1/messages/count_tokens`. Claude Code has no plugin-carried
+setup, so a `gateway/` model without a block that applies (no block, or an `oidc` block on a run
+without an OIDC endpoint) is an error. Details:
+[Claude Code § Inference gateway route](../runtimes/claude.md#inference-gateway-route).
 
 ## GitLab role identity
 

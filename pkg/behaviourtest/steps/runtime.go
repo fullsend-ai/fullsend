@@ -39,6 +39,9 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a codex agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
 	})
+	sc.Step(`^a claude agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
+	})
 	sc.Step(`^the repository agents are configured with:$`, func(ctx context.Context, doc string) (context.Context, error) {
 		return ctx, givenRepositoryAgentSettings(world.FromContext(ctx), doc)
 	})
@@ -126,9 +129,9 @@ var fixturePlaceholder = regexp.MustCompile(`\{\{fixture:([^}]+)\}\}`)
 // this step runs after it and replaces the placeholder with a body whose
 // tool use is deliberate, so the transcript assertions are grounded.
 //
-// Nothing here is runtime-specific: the "a pi agent" and "a codex agent"
-// steps both land here, and the step wording only says which runtime the
-// scenario is exercising.
+// Nothing here is runtime-specific: the "a pi agent", "a codex agent" and
+// "a claude agent" steps all land here, and the step wording only says
+// which runtime the scenario is exercising.
 func givenRuntimeAgent(w *world.World, name, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before agent operations")

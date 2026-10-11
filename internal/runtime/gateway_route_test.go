@@ -35,8 +35,8 @@ func TestPiGatewayCredentialSeed_IsItsOwnRoute(t *testing.T) {
 	assert.NotEqual(t, oa.File, gw.File, "independent handoffs per route")
 
 	var _ GatewayRouteRuntime = PiRuntime{}
-	_, ok := Runtime(ClaudeRuntime{}).(GatewayRouteRuntime)
-	assert.False(t, ok, "Claude Code has no gateway route yet")
+	var _ GatewayRouteRuntime = ClaudeRuntime{}
+	var _ GatewayRouteRuntime = CodexRuntime{}
 }
 
 // TestPiGatewayTokenSeed_Shell runs the seed under sh: a gateway
@@ -225,7 +225,7 @@ func TestNeedsGatewayRoute(t *testing.T) {
 	assert.True(t, NeedsGatewayRoute("pi", "", "gateway/m1", nil), "agent definition model")
 	assert.True(t, NeedsGatewayRoute("pi", "fast", "", map[string]string{"fast": "gateway/m1"}), "alias")
 	assert.False(t, NeedsGatewayRoute("pi", "openai/gpt-5", "", nil))
-	assert.False(t, NeedsGatewayRoute("claude", "gateway/m1", "", nil), "Claude Code does not carry the route")
+	assert.True(t, NeedsGatewayRoute("claude", "gateway/m1", "", nil), "Claude Code carries the route too (TestNeedsGatewayRoute_Claude)")
 
 	assert.True(t, NeedsGatewayRoute("codex", "gateway/vendor/org/model", "", nil), "codex, multi-segment id")
 	assert.True(t, NeedsGatewayRoute("codex", "GATEWAY/m1", "", nil), "codex, case-folded")

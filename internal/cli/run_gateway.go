@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -116,11 +117,11 @@ func anyGatewayModel(models []string) bool {
 }
 
 // gatewayRouteRuntimes are the runtimes that implement the gateway route.
-var gatewayRouteRuntimes = []string{"pi", "codex"}
+var gatewayRouteRuntimes = []string{"pi", "codex", "claude"}
 
 // validateGatewayRuntime refuses a gateway/ model on a runtime without the
-// route (Claude Code): the model would otherwise fail later with an
-// unknown provider, or worse reach a different credential.
+// route: the model would otherwise fail later with an unknown provider, or
+// worse reach a different credential.
 func validateGatewayRuntime(runtimeName string, models []string) error {
 	if !anyGatewayModel(models) {
 		return nil
@@ -131,6 +132,61 @@ func validateGatewayRuntime(runtimeName string, models []string) error {
 		}
 	}
 	return fmt.Errorf("gateway/ models need the inference gateway route, which runtime %q does not implement (supported: %s)", runtimeName, strings.Join(gatewayRouteRuntimes, ", "))
+}
+
+// validateClaudeGatewayModels checks the gateway/ models of a Claude Code
+// run: each must name a model after the prefix, and the run needs a block
+// that applies. Claude Code has no harness-side way to reach a gateway (pi
+// has the extension as a plugin), so without the runner's route a gateway/
+// model would reach Vertex, or an endpoint set by hand, as a literal id.
+func validateClaudeGatewayModels(models []string, block config.InferenceGatewayConfig, applies bool) error {
+	if !anyGatewayModel(models) {
+		return nil
+	}
+	for _, m := range models {
+		if !isGatewayModel(m) {
+			continue
+		}
+		if _, id, _ := strings.Cut(strings.TrimSpace(m), "/"); strings.TrimSpace(id) == "" {
+			return fmt.Errorf("model %q names no gateway model after the gateway/ prefix", m)
+		}
+	}
+	if applies {
+		return nil
+	}
+	switch {
+	case block.IsZero():
+		return errors.New("gateway/ models on the claude runtime need an inference.gateway block in .fullsend/config.yaml; configure one with 'fullsend github setup --inference-gateway-url ...'")
+	case !block.IsAPIKey():
+		return errors.New("gateway/ models on the claude runtime need the inference.gateway block to apply, and the oidc mode applies only on a run with a forge OIDC endpoint (a GitHub Actions job with id-token: write); use auth: api-key for a local run")
+	}
+	return errors.New("gateway/ models on the claude runtime need an inference.gateway block that applies to this run")
+}
+
+// validateClaudeGatewayFallbacks checks a Claude Code run's fallback chain
+// after models.aliases, as buildRunCommand remaps it. On the gateway route
+// every fallback goes to the gateway, so a gateway/ entry is fine there.
+// Off the route Claude Code would send a gateway/ entry to Vertex as a
+// literal id, so it is refused: the route is selected by the run's own
+// model, never by a fallback. On either side a gateway/ entry must name a
+// model, or Claude Code would get an empty fallback id.
+func validateClaudeGatewayFallbacks(parentGateway bool, fallbacks []string, aliases map[string]string) error {
+	for _, fb := range fallbacks {
+		target := fb
+		if id, ok := aliases[fb]; ok {
+			target = id
+		}
+		if !isGatewayModel(target) {
+			continue
+		}
+		if _, id, _ := strings.Cut(strings.TrimSpace(target), "/"); strings.TrimSpace(id) == "" {
+			return fmt.Errorf("fallback model %q names no gateway model after the gateway/ prefix", fb)
+		}
+		if !parentGateway {
+			return fmt.Errorf("fallback model %q selects the inference gateway, but the run's own model does not; on the claude runtime only the run's model selects the gateway route, and every fallback then goes to the gateway too", fb)
+		}
+	}
+	return nil
 }
 
 // gatewayOIDCEnvFn returns the forge OIDC endpoint the runner fetches

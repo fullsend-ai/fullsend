@@ -1157,8 +1157,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Anthropic model id. The syntax is accepted for every runtime (ids are
 	// not a closed set), so flag the likely mismatch instead of rejecting it.
 	// Check the resolved value: an alias whose entry is a provider/id spec
-	// reaches Claude Code as that spec.
-	if runtimeBackend.Runtime.Name() == "claude" && strings.Contains(resolvedModel, "/") {
+	// reaches Claude Code as that spec. A gateway/ model is the exception:
+	// it selects the inference gateway route, and Claude Code is given the
+	// id after the prefix (planGatewayRoute refuses it without a block).
+	if runtimeBackend.Runtime.Name() == "claude" && strings.Contains(resolvedModel, "/") && !isGatewayModel(resolvedModel) {
 		printer.StepWarn(fmt.Sprintf("model %q has a provider/id form, which is pi's; Claude Code expects an alias (opus, sonnet, ...) or an Anthropic model id", resolvedModel))
 	}
 	if overrides.effort != "" {
@@ -1392,6 +1394,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		gatewayModels = append(gatewayModels, c.Spec)
 	}
 	needsGateway := parentNeedsGateway || len(gatewayChildren) > 0
+	if runtimeBackend.Runtime.Name() == "claude" {
+		if err := validateClaudeGatewayFallbacks(parentNeedsGateway, overrides.fallbackModels, configModelAliases); err != nil {
+			printer.StepFail("Inference gateway route unavailable")
+			return err
+		}
+	}
 	gatewayPlan, err := planGatewayRoute(runCfg, runtimeBackend, sandboxName, gatewayModels, needsGateway)
 	if err != nil {
 		printer.StepFail("Inference gateway route unavailable")

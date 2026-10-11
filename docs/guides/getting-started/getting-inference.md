@@ -111,8 +111,10 @@ The examples use `example-org/example-repo` and `https://gateway.example.com`.
 Prerequisites for the repository owner:
 
 - The three values from the operator, with your repository among the allowed repositories.
-- A repository [set up with fullsend](configuring-github.md) on the pi runtime. Claude Code and
-  Codex do not use this route; a run that asks them for a `gateway/` model fails.
+- A repository [set up with fullsend](configuring-github.md) on the pi, codex or Claude Code runtime.
+  pi needs the model list below; codex and Claude Code do not need one. See
+  [Claude Code § Inference gateway route](../../runtimes/claude.md#inference-gateway-route) and
+  [Codex › Models through an inference gateway](../../runtimes/codex.md#models-through-an-inference-gateway-experimental).
 - The latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
 
 ### The config block
@@ -369,7 +371,6 @@ If you call fullsend from a workflow of your own, add `id-token: write` to that 
 | `inference.gateway is partial: missing audience (the oidc mode needs url and audience)`, or from `status`: `inference.gateway is partially configured: missing audience` | The block, after its layers merge, lacks `url`, or lacks `audience` in the `oidc` mode. | Set the missing field with `fullsend github setup --inference-gateway-url` or `--inference-gateway-audience`, or remove the block. |
 | `pi gateway/ models need a model list: set inference.gateway.models or inference.gateway.models_file (pi runs offline and cannot discover gateway models)` | An agent uses a `gateway/` model, and the block has no model list. | List the models with `--inference-gateway-model id=api` or `--inference-gateway-models-file`. |
 | `inference.gateway.auth is "api-key" but FULLSEND_INFERENCE_GATEWAY_API_KEY is not set; set it as a forge secret (or in the local environment)` | The block is in the `api-key` mode and the run has no key. | Set the repository secret as shown in [Choosing `auth`](#choosing-auth), or export the variable for a local run. |
-| `gateway/ models need the inference gateway route, which runtime "claude" does not implement (supported: pi)` | A Claude Code or Codex agent was given a `gateway/` model. | Run that agent on pi, or give it a model that does not use the gateway. |
 | From `status`: `Gateway refused the assertion (HTTP 401)` or `(HTTP 403)`; in a run, the model call fails with the gateway's `401` or `403` | The gateway did not accept the credential: a different audience, a repository not on its allowed list, or a revoked key. | Check the audience and allowed repositories with the operator. The gateway's exact error text and its fixes are in the operator guide's [troubleshooting table](../infrastructure/inference-gateway-operator.md#troubleshooting). |
 | Any other gateway error, such as `authentication failure: ...` or `model_authorization_denied` | The gateway refused the request for its own reasons. | See the operator guide's [troubleshooting table](../infrastructure/inference-gateway-operator.md#troubleshooting). |
 
@@ -385,4 +386,5 @@ To run agents on the pi or codex runtime through an inference gateway instead (c
 see [Using an inference gateway (experimental)](../user/running-agents-locally.md#using-an-inference-gateway-experimental).
 That page covers local runs. For GitHub Actions runs, see
 [Inference gateway with GitHub OIDC (WIF)](#inference-gateway-with-github-oidc-wif). The same
-block also applies to local runs when it sets `auth: api-key`.
+block also applies to local runs when it sets `auth: api-key`. The Claude Code runtime uses the same block for `gateway/<model>`
+models; see [Claude Code § Inference gateway route](../../runtimes/claude.md#inference-gateway-route).

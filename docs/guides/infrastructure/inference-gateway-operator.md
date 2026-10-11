@@ -1,15 +1,16 @@
 # Run an inference gateway that trusts GitHub Actions OIDC
 
-This guide is for the **platform operator** who runs the inference gateway that fullsend's pi agents
-call. When you finish, you have an [agentgateway](https://github.com/agentgateway/agentgateway)
+This guide is for the **platform operator** who runs the inference gateway that fullsend's agents
+call (pi, codex and Claude Code). When you finish, you have an [agentgateway](https://github.com/agentgateway/agentgateway)
 service on Cloud Run that:
 
 - accepts a GitHub Actions job's OIDC token as its only credential, and only for the repositories
   you list;
 - holds the upstream model credential itself, so no forge secret stores a reusable key;
-- serves the three APIs pi uses: `/v1/messages`, `/v1/chat/completions` and `/v1/responses`.
+- serves the three APIs the runtimes use: `/v1/messages` (pi, Claude Code), `/v1/chat/completions`
+  (pi) and `/v1/responses` (pi, codex).
 
-The runner side (how a fullsend run fetches the token and points pi at the gateway) is in the
+The runner side (how a fullsend run fetches the token and points the agent's runtime at the gateway) is in the
 [user guide for the hosted gateway route](../getting-started/getting-inference.md#inference-gateway-with-github-oidc-wif).
 This page covers only the gateway.
 

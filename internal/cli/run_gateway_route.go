@@ -28,6 +28,8 @@ type gatewayRoutePlan struct {
 	block config.InferenceGatewayConfig
 	// host is the gateway's host name, bound by the per-host profile.
 	host string
+	// profile is the rendering of the per-host profile the run imports.
+	profile gatewayProfile
 	// seed is the runtime's gateway credential seed; zero when the runtime
 	// has none (the dummy runtime), so a refresh only updates the provider.
 	seed runtime.CredentialSeed
@@ -37,6 +39,15 @@ type gatewayRoutePlan struct {
 	// apiKeyLifetime bounds the api-key mode's provider instance
 	// (gatewayAPIKeyLifetimeFor); zero means gatewayAPIKeyLifetime.
 	apiKeyLifetime time.Duration
+}
+
+// profileSpec returns the profile rendering the plan's provider uses: the
+// one planGatewayRoute chose, or the default (pi) rendering for plan.host.
+func (p *gatewayRoutePlan) profileSpec() gatewayProfile {
+	if p.profile.host == "" {
+		return gatewayProfile{host: p.host}
+	}
+	return p.profile
 }
 
 // isDummyRuntime reports whether name is a test runtime the gateway
@@ -63,21 +74,28 @@ func codexGatewayNeedsBlock(runtimeName string, needsGateway bool) error {
 // A gateway/ model on a runtime without the route is an error, and so is
 // a partial block. With no block, or on a run with no forge OIDC endpoint,
 // the runner adds nothing, so the harness-plugin setup in the local guide
-// keeps working. codex has no plugin fallback, so a gateway/ model on codex
-// with no applying block fails here, before the sandbox is created. Under the dummy runtime the provider is attached whenever
-// a block applies, so behaviour tests can probe the route.
+// keeps working. codex and Claude Code have no plugin fallback, so a
+// gateway/ model on them with no applying block fails here, before the
+// sandbox is created (codexGatewayNeedsBlock, validateClaudeGatewayModels).
+// Under the dummy runtime the provider is attached whenever a block applies,
+// so behaviour tests can probe the route.
 func planGatewayRoute(rc runConfig, backend runtime.Backend, sandboxName string, models []string, needsGateway bool) (*gatewayRoutePlan, error) {
 	name := backend.Runtime.Name()
 	if err := validateGatewayRuntime(name, models); err != nil {
 		return nil, err
 	}
-	if rc.perRepo == nil {
-		return nil, codexGatewayNeedsBlock(name, needsGateway)
+	var block config.InferenceGatewayConfig
+	if rc.perRepo != nil {
+		block = rc.perRepo.ConfigInferenceGateway().Trimmed()
 	}
-	block := rc.perRepo.ConfigInferenceGateway().Trimmed()
 	applies, err := gatewayBlockApplies(block)
 	if err != nil {
 		return nil, err
+	}
+	if name == "claude" {
+		if err := validateClaudeGatewayModels(models, block, applies); err != nil {
+			return nil, err
+		}
 	}
 	if !applies {
 		return nil, codexGatewayNeedsBlock(name, needsGateway)
@@ -90,13 +108,19 @@ func planGatewayRoute(rc runConfig, backend runtime.Backend, sandboxName string,
 		return nil, fmt.Errorf("inference.gateway.url: %w", err)
 	}
 	plan := &gatewayRoutePlan{block: block, host: u.Hostname()}
+	plan.profile = gatewayProfile{host: plan.host, claude: name == "claude"}
 	gr, ok := backend.Runtime.(runtime.GatewayRouteRuntime)
 	if !ok {
 		return plan, nil
 	}
-	modelsFile, err := readGatewayModelsFile(rc, block)
-	if err != nil {
-		return nil, err
+	// Claude Code needs no model list, so a models_file configured for pi
+	// is not read (and cannot fail) on its runs.
+	var modelsFile []byte
+	if name != "claude" {
+		modelsFile, err = readGatewayModelsFile(rc, block)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := gr.PrepareGatewayRun(sandboxName, runtime.GatewayRun{
 		Block:      block,
@@ -202,7 +226,7 @@ func startGatewayRoute(ctx context.Context, plan *gatewayRoutePlan, sandboxName 
 		return gatewayProviderHandle{}, err
 	}
 	printer.StepDone(fmt.Sprintf("Inference gateway assertion ready (lifetime %s)", a.Lifetime().Round(time.Second)))
-	name, _, err := ensureGatewayProviderFn(ctx, plan.host, sandboxName, a.Value, a.ExpiresAt, printer)
+	name, _, err := ensureGatewayProviderFn(ctx, plan.profileSpec(), sandboxName, a.Value, a.ExpiresAt, printer)
 	if err != nil {
 		return gatewayProviderHandle{}, err
 	}
@@ -272,7 +296,7 @@ func startGatewayAPIKeyRoute(ctx context.Context, plan *gatewayRoutePlan, sandbo
 	}
 	printer.StepInfo(fmt.Sprintf("Inference gateway provider bounded at %s; a run that outlasts it fails closed", lifetime.Round(time.Minute)))
 	expiresAt := time.Now().Add(lifetime)
-	name, _, err := ensureGatewayAPIKeyProviderFn(ctx, plan.host, sandboxName, key, expiresAt, printer)
+	name, _, err := ensureGatewayAPIKeyProviderFn(ctx, plan.profileSpec(), sandboxName, key, expiresAt, printer)
 	if err != nil {
 		return gatewayProviderHandle{}, err
 	}
