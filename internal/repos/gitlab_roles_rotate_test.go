@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -319,6 +320,34 @@ func TestRotateGitLabRoleCredentials_GraceCleanupRevokesOutgoing(t *testing.T) {
 	assert.Contains(t, result.Cleaned, gitlabroles.RolePoller)
 	assert.Empty(t, result.Rotated, "new token is not due")
 	assert.Equal(t, []int{1}, tokens.revoked)
+}
+
+// A forced replacement keeps an earlier outgoing obligation that grace cleanup
+// could not discharge, even when that token is absent from the operational
+// listing, so a later cleanup can still retry it.
+func TestRotateGitLabRoleCredentials_ReplacementKeepsUndischargedOutgoingObligation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	fc := seededRoleClient(t, gitlabroles.RolePoller)
+	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
+		`{"roles":{"poller":{"phase":"overlapping","incoming_id":5,"outgoing_ids":[4],"distributed_at":"2026-09-01T00:00:00Z","created_token_ids":[4,5]}}}`, true))
+	tokens := &fakeTokens{failRevoke: errors.New("revoke unavailable")}
+	tokens.seed(ProjectAccessToken{ID: 5, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-09-01"})
+
+	result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+		Registry: gitlabroles.BuiltinRegistry(), Roles: []gitlabroles.Role{gitlabroles.RolePoller},
+		Force: true, Now: now,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Failed)
+	assert.Contains(t, result.Rotated, gitlabroles.RolePoller)
+
+	rs := readRoleState(t, fc, gitlabroles.RolePoller)
+	assert.Contains(t, rs.OutgoingIDs, 4, "the undischarged earlier obligation is retained")
+	assert.Contains(t, rs.OutgoingIDs, 5)
+	assert.Equal(t, rotationPhaseOverlapping, rs.Phase)
 }
 
 func TestRotateGitLabRoleCredentials_DryRunDoesNotWrite(t *testing.T) {

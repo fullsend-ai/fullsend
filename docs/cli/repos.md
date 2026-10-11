@@ -234,7 +234,7 @@ The values, validation, WIF provider derivation, and the `FULLSEND_GCP_*` secret
 | `--gitlab-role-token` | | Administrator-provided GitLab role PAT (`role=token`, repeatable) for free-tier enrollment or a custom `own` credential. Values are never logged. |
 | `--rotate-gitlab-roles` | `false` | Force-rotate GitLab role credentials even if they are not near expiry. Auto-rotation of expiring, expired, revoked, or unverified own-credential roles runs during every `repos install`. |
 | `--rotate-gitlab-role` | | Rotate a specific GitLab role (repeatable). Default is all own-credential roles that are due. A `reuse` role follows its target. |
-| `--rotate-gitlab-trigger-token` | `false` | Force-rotate the GitLab webhook fast-path pipeline trigger token (`FULLSEND_TRIGGER_TOKEN`). The webhook is updated to the new token first; the previous token is revoked afterwards. |
+| `--rotate-gitlab-trigger-token` | `false` | Force-rotate the GitLab webhook fast-path pipeline trigger token (`FULLSEND_TRIGGER_TOKEN`). The webhook is updated to the new token first; the previous token is revoked afterwards. While the Poller is a managed project service account, rotation stays deferred and the existing compliant token is kept (see [Poller-owned trigger token (deferred)](#poller-owned-trigger-token-deferred)). |
 
 ### GitLab role credentials
 
@@ -262,17 +262,14 @@ fullsend repos install group/subgroup/project --forge gitlab --gitlab-role-token
 
 ### GitLab project service-account lifecycle
 
-> **Status: rolling out, not active yet.** This section describes the target
-> GitLab role-identity lifecycle that
-> [#7772](https://github.com/fullsend-ai/fullsend/issues/7772) delivers as a
-> series of small changes. Until the CLI activation change
-> ([#8242](https://github.com/fullsend-ai/fullsend/issues/8242)) merges,
-> `repos install` keeps provisioning role project access tokens as described in
-> [GitLab role credentials](#gitlab-role-credentials). Until then, `repos status`
-> does not report `gitlab_service_accounts` and `repos uninstall` behaves as
-> described in [`repos uninstall`](#repos-uninstall). The webhook fast path stays
-> deferred and cron polling stays the dispatch path until the live
-> fresh-identity Poller handoff
+> **Status: active.** `repos install`, rotation, `repos status` and
+> `repos uninstall` manage GitLab role identities as project service accounts
+> ([#8242](https://github.com/fullsend-ai/fullsend/issues/8242)), and write
+> rotation state in the versioned format described in
+> [Upgrade compatibility](#upgrade-compatibility). Every operator who runs
+> install or converge against a project must use a CLI with this change. The
+> webhook fast path stays deferred and cron polling stays the dispatch path
+> until the live fresh-identity Poller handoff
 > ([#8243](https://github.com/fullsend-ai/fullsend/issues/8243)) merges and is
 > validated. Nothing in this section enables the fast path.
 
@@ -314,9 +311,59 @@ Legacy GitLab role tokens without explicit creation records are preserved during
 service-account convergence, grace cleanup, and uninstall. A matching token name
 or a historical distribution record does not prove ownership. Install reports
 manual recovery or explicit supplied-credential enrollment when creation
-provenance is unverified. Version 1 rotation state stores positively created
+provenance is unverified. Version 2 rotation state stores positively created
 token IDs in `created_token_ids`; older state without those records does not
 authorize destructive legacy-token cleanup.
+
+#### Re-adopting a role credential of unknown provenance
+
+Install is fail-static for an installed role credential that rotation state
+does not record (for example, one installed before rotation state existed). It
+leaves every credential untouched and reports that supplied credential
+ownership is unresolved, or that the credential should be re-enrolled with
+`--gitlab-role-token`. While such a credential is installed, project-wide
+account exclusions cannot be resolved, so service-account convergence and
+rotation stop for the whole project, not only for that role. Install never
+duplicates, revokes or adopts the credential on its own.
+
+To re-adopt it, for **every** role reported in the same run:
+
+1. In **Settings → CI/CD → Variables**, remove the role's credential variable
+   (`FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`,
+   `FULLSEND_GITLAB_CODER_TOKEN`, or `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`).
+   Running jobs keep the copy they already hold.
+2. Re-run `fullsend repos install`:
+   - to keep the same credential, pass it once with
+     `--gitlab-role-token <role>=<token>`. Install records it as
+     administrator-supplied, and rotation manages its lifecycle from then on.
+   - or, to let Fullsend take over, omit it. Install provisions a managed
+     service-account credential. The previous token is not recorded as
+     Fullsend-created, so it is never revoked automatically: revoke it
+     manually once in-flight jobs have finished.
+
+Passing `--gitlab-role-token` while the old variable is still installed does
+not re-adopt it, because provisioning keeps present credentials and rotation
+stops at the unresolved exclusions first.
+
+#### Recovering a supplied credential recorded without an owner
+
+Enrolling or rotating to an administrator-supplied credential records its owner
+by authenticating with it. When that lookup fails, the role is recorded as
+supplied without an owner, and the same state is kept when storing a replacement
+fails after GitLab may already have accepted it. While the installed credential
+authenticates, the next install or rotation attributes and records the owner
+itself. If it expires, is revoked, or its variable is removed first, install and
+rotation stop for the whole project with a failure that says so, and passing
+`--gitlab-role-token` again does **not** recover: the project-wide exclusions
+are resolved before any provided credential is processed. To recover:
+
+1. In **Settings → CI/CD → Variables**, set the role's credential variable
+   (`FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`,
+   `FULLSEND_GITLAB_CODER_TOKEN`, or `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`) by
+   hand to a working credential of the account that should own it.
+2. Re-run `fullsend repos install`. Attribution authenticates with the
+   installed credential and records its owner, after which the normal lifecycle
+   resumes.
 
 #### Poller-owned trigger token (deferred)
 
@@ -406,14 +453,28 @@ all project installers, restore and verify effective Developer access for the
 Poller, then remove the lease in **Settings → CI/CD → Variables** and rerun
 install. Never delete a live installer's lease.
 
-The rotation-state format changes in two steps. A tolerant reader
-([#8233](https://github.com/fullsend-ai/fullsend/issues/8233)) lands first and
-accepts both the prior unversioned format and `version: 1`; new writes to
-`FULLSEND_GITLAB_ROLE_ROTATION` include `version: 1` only after the writer flips
-in [#8242](https://github.com/fullsend-ai/fullsend/issues/8242). The upgraded
-CLI refuses unsupported versions without rewriting them. This marker does not
-make older CLIs safe: versions that ignore unknown fields can still erase
-ownership records when writing.
+> **Operators must upgrade.** Every write to `FULLSEND_GITLAB_ROLE_ROTATION`
+> now carries `"version": 2`. Upgrade every CLI that runs `repos install` or
+> converge against a project before running this version against it.
+> Dispatch is unaffected: the polling path never reads rotation state.
+
+The current CLI reads the prior unversioned format and versions 1 and 2, and
+always writes version 2. Version 1 is never written. CLIs built with the
+tolerant reader ([#8233](https://github.com/fullsend-ai/fullsend/issues/8233))
+accept version 1 but ignore the ownership fields (`created_token_ids`,
+`supplied_token_id`, `supplied`, `excluded_user_ids`) when they select outgoing
+tokens or run grace cleanup, so a version 1 document could let them revoke an
+administrator-supplied credential. They reject version 2 before touching any
+credential, and older CLIs reject the unknown `version` key, so a
+mixed-version rotation or status run, which reads rotation state before it
+mutates anything, is rejected before it touches a credential. That guarantee
+does not cover every older code path: older provisioning can publish missing
+supplied or minted secrets before it records distribution state, and older
+uninstall cleanup never reads rotation state, so it deletes identity variables
+and revokes active role-named project tokens, supplied ones included. Never run
+an older CLI for install or uninstall against a project this version manages.
+No CLI refuses state silently and then rewrites it: an unsupported version is
+never rewritten.
 
 Use the upgraded CLI consistently for install, rotation, status and uninstall
 after service-account convergence. Mixed-version lifecycle operations and
@@ -428,7 +489,7 @@ operations, uninstall using the upgraded CLI, confirm managed cleanup
 succeeded, then reinstall with the older version. Administrator-supplied
 accounts remain untouched.
 
-Upgrade notes for when convergence activates: Convergence replaces managed
+Upgrade notes: Convergence replaces managed
 project-access-token bot identities with project service-account identities;
 consumers must not rely on the previous bot user ID. Status JSON adds
 `gitlab_service_accounts`; managed accounts not exactly Developer produce
@@ -545,7 +606,7 @@ not ready. These checks do not retire the shared
 token. Status also reports `protected-ref-pipeline` drift when the poller
 cannot create pipelines on the protected default branch (Developer merge/push
 is absent and the poller user is not in `allowed_to_merge` / `allowed_to_push`).
-For the service-account diagnostics that are rolling out, see
+For the service-account diagnostics, see
 [GitLab project service-account lifecycle § Service-account status](#service-account-status).
 
 **JSON output** (`--json`) returns the full `StatusResult` object with per-repo details and aggregate summary counts.
@@ -566,7 +627,7 @@ File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.y
 
 GitLab uninstall holds the `FULLSEND_GITLAB_INSTALL_LEASE` project lease for the whole teardown, from webhook removal through the final variable, secret, branch, and token deletions, so no concurrent installer can publish a replacement hook, trigger token, or role credential mid-teardown. It fails closed: if another installer holds the lease or the client cannot take it, uninstall stops before removing anything and the manifest entry is left in place for retry. See [Upgrade compatibility](#upgrade-compatibility) for stranded-lease recovery.
 
-For the service-account cleanup that is rolling out, see
+For the service-account cleanup, see
 [GitLab project service-account lifecycle § Service-account uninstall](#service-account-uninstall).
 
 Uninstall PR delivery intentionally reuses the same branch as `repos install`/`converge` (`fullsend/scaffold-install`), since already-deployed per-repo shims only exclude that branch name from dispatch. **Known limitation:** if an install PR is still open on that branch when uninstall runs (or an uninstall PR is open when install/converge runs), the existing PR is updated with the new commit but its title and body are left unchanged — the PR may show an install-oriented title while its diff now removes files, or vice versa. Check the PR's diff, not just its title, before merging when install and uninstall run close together against the same repo.

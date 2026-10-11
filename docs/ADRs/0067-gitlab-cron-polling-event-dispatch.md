@@ -463,6 +463,10 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > account by default once its CLI activation change merges; a project access
 > token remains the fallback.
 >
+> **Update (#8242):** that CLI activation change has merged, so the Poller is a
+> project service account by default. Trigger creation and rotation as the
+> Poller remain deferred, and cron polling remains the dispatch path.
+>
 > **Update (#7667):** a failed `CreatePipeline` (including that 403) now
 > fails the poll cycle after persisting retry state. The permission gap
 > is unchanged; the poll job no longer reports success when no agent

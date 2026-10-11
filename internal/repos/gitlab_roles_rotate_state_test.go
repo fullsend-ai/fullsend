@@ -9,9 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// legacyRotationStateBlob is the exact unversioned document the writer
-// emits today for a state that uses every legacy field.
+// legacyRotationStateBlob is the exact unversioned document earlier writers
+// emitted for a state that uses every legacy field.
 const legacyRotationStateBlob = `{"roles":{"analyst":{"phase":"idle"},"poller":{"phase":"overlapping","holder":"h1","lock_until":"2026-09-21T12:00:00Z","incoming_id":7,"outgoing_ids":[3,4],"distributed_at":"2026-09-21T11:00:00Z","expires_at":"2026-10-01","error":"boom"}}}`
+
+// versionedLegacyRotationStateBlob is legacyRotationStateBlob as the current
+// writer emits it: the same roles behind the version marker.
+const versionedLegacyRotationStateBlob = `{"version":2,` + `"roles":{"analyst":{"phase":"idle"},"poller":{"phase":"overlapping","holder":"h1","lock_until":"2026-09-21T12:00:00Z","incoming_id":7,"outgoing_ids":[3,4],"distributed_at":"2026-09-21T11:00:00Z","expires_at":"2026-10-01","error":"boom"}}}`
 
 func legacyRotationState() rotationStateFile {
 	return rotationStateFile{Roles: map[string]rotationRoleState{
@@ -82,6 +86,16 @@ func TestLoadRotationState_Formats(t *testing.T) {
 			want: rotationStateFile{Roles: map[string]rotationRoleState{"poller": fullV1}},
 		},
 		{
+			name: "version 2 blob with all new fields",
+			raw: `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":9,` +
+				`"distributed_at":"2026-09-21T11:00:00Z","created_token_ids":[9,11],` +
+				`"managed_user_id":101,"supplied_user_id":202,"supplied_token_id":303,` +
+				`"supplied":true,"supplied_distributed":true,"excluded_user_ids":[404,505],` +
+				`"generation_current_user_id":101,"generation_pending_user_id":606,` +
+				`"generation_pending_phase":"elevated","generation_retiring_user_id":707}}}`,
+			want: rotationStateFile{Roles: map[string]rotationRoleState{"poller": fullV1}},
+		},
+		{
 			name: "unknown keys at envelope and role level",
 			raw:  `{"version":1,"future":{"x":1},"roles":{"poller":{"phase":"idle","future_role_key":[1,2]}}}`,
 			want: rotationStateFile{Roles: map[string]rotationRoleState{"poller": {Phase: rotationPhaseIdle}}},
@@ -103,8 +117,8 @@ func TestLoadRotationState_Formats(t *testing.T) {
 		},
 		{
 			name:    "unsupported future version",
-			raw:     `{"version":2,"roles":{}}`,
-			wantErr: "unsupported GitLab role rotation state version 2",
+			raw:     `{"version":3,"roles":{}}`,
+			wantErr: "unsupported GitLab role rotation state version 3",
 		},
 		{
 			name:    "negative version",
@@ -137,17 +151,26 @@ func TestLoadRotationState_Formats(t *testing.T) {
 	}
 }
 
-// TestWriteRotationState_LegacyBytesUnchanged is the golden check that the
-// writer still emits the unversioned format byte-for-byte.
-func TestWriteRotationState_LegacyBytesUnchanged(t *testing.T) {
+// TestWriteRotationState_VersionedBytes is the golden check that the writer
+// emits the version 2 format byte-for-byte, with the marker first.
+func TestWriteRotationState_VersionedBytes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
 		state rotationStateFile
 		want  string
 	}{
-		{name: "nil roles", state: rotationStateFile{}, want: `{"roles":{}}`},
-		{name: "legacy fields", state: legacyRotationState(), want: legacyRotationStateBlob},
+		{name: "nil roles", state: rotationStateFile{}, want: `{"version":2,"roles":{}}`},
+		{name: "legacy fields", state: legacyRotationState(), want: versionedLegacyRotationStateBlob},
+		{
+			name: "ownership fields",
+			state: rotationStateFile{Roles: map[string]rotationRoleState{"coder": {
+				Phase: rotationPhaseIdle, CreatedTokenIDs: []int{5}, ManagedUserID: 42,
+				SuppliedUserID: 7, SuppliedTokenID: 8, Supplied: true, ExcludedUserIDs: []int{7},
+			}}},
+			want: `{"version":2,"roles":{"coder":{"phase":"idle","created_token_ids":[5],"managed_user_id":42,` +
+				`"supplied_user_id":7,"supplied_token_id":8,"supplied":true,"excluded_user_ids":[7]}}}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -163,17 +186,21 @@ func TestRotationState_RoundTrip(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	t.Run("legacy blob rewrites byte-identically", func(t *testing.T) {
+	t.Run("legacy blob rewrites with the version marker", func(t *testing.T) {
 		t.Parallel()
 		fc := provisionClient(t)
 		require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation, legacyRotationStateBlob, true))
 		file, _, err := loadRotationState(ctx, fc, "group", "project")
 		require.NoError(t, err)
 		require.NoError(t, writeRotationState(ctx, fc, "group", "project", file))
-		assert.Equal(t, legacyRotationStateBlob, fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation])
+		assert.Equal(t, versionedLegacyRotationStateBlob, fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation])
+
+		reloaded, _, err := loadRotationState(ctx, fc, "group", "project")
+		require.NoError(t, err)
+		assert.Equal(t, file, reloaded)
 	})
 
-	t.Run("version 1 blob keeps known fields without a version wrapper", func(t *testing.T) {
+	t.Run("version 1 blob keeps known fields and is rewritten as version 2", func(t *testing.T) {
 		t.Parallel()
 		fc := provisionClient(t)
 		raw := `{"version":1,"extra":true,"roles":{"poller":{"phase":"idle","created_token_ids":[5],"managed_user_id":42,"generation_pending_phase":"verified","unknown":1}}}`
@@ -182,7 +209,7 @@ func TestRotationState_RoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, writeRotationState(ctx, fc, "group", "project", file))
 		assert.Equal(t,
-			`{"roles":{"poller":{"phase":"idle","created_token_ids":[5],"managed_user_id":42,"generation_pending_phase":"verified"}}}`,
+			`{"version":2,"roles":{"poller":{"phase":"idle","created_token_ids":[5],"managed_user_id":42,"generation_pending_phase":"verified"}}}`,
 			fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation])
 
 		reloaded, _, err := loadRotationState(ctx, fc, "group", "project")
