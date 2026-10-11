@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -2540,8 +2541,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// later spans. Nil when the Level 3 gate is off; nil is inert. The
 		// tool-span tracker is per iteration for the same reason and is not
 		// gated: execute_tool spans are metadata.
-		collector := newContentCollectorIfEnabled()
+		collector := newContentCollectorIfEnabled(h.RunnerEnv)
+		collector.attachInput(agentSpan, agentPrompt)
 		toolSpans := newToolSpanTracker(tracer, agentCtx)
+		toolSpans.runnerEnv = h.RunnerEnv
 		var metrics agentruntime.RunMetrics
 		hooksSettings := ""
 		if h.SecurityEnabled() {
@@ -3888,28 +3891,60 @@ const minRedactableSecretLen = 8
 // never passed through our env (a key baked into a fixture, a hook printing
 // its own).
 func redactFeedback(feedback string, runnerEnv map[string]string) string {
-	for key, value := range runnerEnv {
-		if len(value) < minRedactableSecretLen || !sensitiveEnvKey(key) {
-			continue
-		}
-		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
-	}
-	// Provider-only keys live in the process environment, not RunnerEnv.
-	// Redact their literals the same way so they cannot reach the agent
-	// prompt or the uploaded run directory (#6649).
-	for key := range providerOnlyKeys {
-		value := os.Getenv(key)
-		if len(value) < minRedactableSecretLen {
-			continue
-		}
-		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
-	}
+	// Provider-only keys live in the process environment, not RunnerEnv;
+	// replaceEnvSecrets redacts their literals in the same pass so they
+	// cannot reach the agent prompt or the uploaded run directory (#6649).
+	feedback, _ = replaceEnvSecrets(feedback, runnerEnv)
 	// ScanResult.Sanitized is empty when the scanner changed nothing, so the
 	// original text is the fallback — not an empty prompt.
 	if res := security.NewSecretRedactor().Scan(feedback); res.Sanitized != "" {
 		return res.Sanitized
 	}
 	return feedback
+}
+
+// replaceEnvSecrets is the literal pass: the value of each sensitive runner
+// env key, and of each providerOnlyKeys entry in the process environment
+// (kept out of RunnerEnv, #6649), when it holds minRedactableSecretLen bytes
+// or more and occurs in text, becomes [REDACTED:<key>]. It returns the keys
+// it replaced. Both sources go in one pass, longer values first, then key
+// order: a value that contains another is replaced whole, whichever source
+// holds it, and the text is the same on every run.
+func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []string) {
+	var replaced []string
+	for _, l := range envLiterals(runnerEnv) {
+		if !strings.Contains(text, l.value) {
+			continue
+		}
+		text = strings.ReplaceAll(text, l.value, "[REDACTED:"+l.key+"]")
+		replaced = append(replaced, l.key)
+	}
+	return text, replaced
+}
+
+// envLiteral is one value the literal pass replaces, with the key it
+// names in the mask.
+type envLiteral struct{ key, value string }
+
+// envLiterals lists the values replaceEnvSecrets replaces — longer values
+// first, then key order, so a value that contains another is replaced
+// whole whichever source holds it.
+func envLiterals(runnerEnv map[string]string) []envLiteral {
+	var literals []envLiteral
+	for key, value := range runnerEnv {
+		if len(value) >= minRedactableSecretLen && sensitiveEnvKey(key) {
+			literals = append(literals, envLiteral{key, value})
+		}
+	}
+	for key := range providerOnlyKeys {
+		if value := os.Getenv(key); len(value) >= minRedactableSecretLen {
+			literals = append(literals, envLiteral{key, value})
+		}
+	}
+	slices.SortFunc(literals, func(a, b envLiteral) int {
+		return cmp.Or(cmp.Compare(len(b.value), len(a.value)), cmp.Compare(a.key, b.key), cmp.Compare(a.value, b.value))
+	})
+	return literals
 }
 
 // writeValidationFeedback writes the validation failure output to a file in

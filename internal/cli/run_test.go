@@ -3169,6 +3169,19 @@ func TestTruncateUTF8_ShortInputUnchanged(t *testing.T) {
 	assert.NotContains(t, truncateUTF8("short", maxFeedbackBytes), "[truncated]")
 }
 
+func TestReplaceEnvSecrets_LongerValuesGoFirst(t *testing.T) {
+	// One value inside another: replacing the short one first would leave
+	// the rest of the long one in the text, and map order would pick.
+	short := strings.Repeat("v", minRedactableSecretLen)
+	long := short + "-and-more"
+	env := map[string]string{"A_TOKEN": short, "B_TOKEN": long}
+	for range 50 {
+		got, keys := replaceEnvSecrets("x "+long+" y "+short, env)
+		require.Equal(t, "x [REDACTED:B_TOKEN] y [REDACTED:A_TOKEN]", got)
+		require.Equal(t, []string{"B_TOKEN", "A_TOKEN"}, keys)
+	}
+}
+
 func TestRedactFeedback_RedactsRunnerCredentialLiterals(t *testing.T) {
 	// The validation script runs with the full runner env, which for the code
 	// and fix harnesses includes PUSH_TOKEN \u2014 a credential that must never
@@ -3228,6 +3241,43 @@ func TestWriteValidationFeedback_RedactsBeforeWritingFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "s3cret-push-value-1234")
 	assert.Contains(t, string(data), "[REDACTED:PUSH_TOKEN]")
+}
+
+func TestReplaceEnvSecrets_OneLongestFirstPassOverBothSources(t *testing.T) {
+	short := strings.Repeat("v", minRedactableSecretLen)
+	long := short + "-and-more"
+	for name, tc := range map[string]struct{ runner, process string }{
+		"runner value inside the provider value": {short, long},
+		"provider value inside the runner value": {long, short},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(workflowTokenEnv, tc.process)
+			env := map[string]string{"PUSH_TOKEN": tc.runner}
+			got, _ := replaceEnvSecrets("a "+long+" b "+short, env)
+			longKey, shortKey := "PUSH_TOKEN", workflowTokenEnv
+			if tc.process == long {
+				longKey, shortKey = workflowTokenEnv, "PUSH_TOKEN"
+			}
+			assert.Equal(t, "a [REDACTED:"+longKey+"] b [REDACTED:"+shortKey+"]", got)
+			assert.Equal(t, got, redactFeedback("a "+long+" b "+short, env), "redactFeedback runs the same pass")
+		})
+	}
+}
+
+func TestReplaceEnvSecrets_ProviderOnlyValues(t *testing.T) {
+	t.Setenv(workflowTokenEnv, "abcdefgh")
+	got, keys := replaceEnvSecrets("x abcdefgh y", nil)
+	assert.Equal(t, "x [REDACTED:"+workflowTokenEnv+"] y", got)
+	assert.Equal(t, []string{workflowTokenEnv}, keys)
+
+	got, keys = replaceEnvSecrets("nothing here", nil)
+	assert.Equal(t, "nothing here", got)
+	assert.Empty(t, keys, "a value absent from the text is not reported")
+
+	t.Setenv(workflowTokenEnv, "abcdefg") // under minRedactableSecretLen
+	got, keys = replaceEnvSecrets("x abcdefg y", nil)
+	assert.Equal(t, "x abcdefg y", got)
+	assert.Empty(t, keys)
 }
 
 func TestRedactFeedback_RedactsWorkflowTokenFromProcessEnv(t *testing.T) {

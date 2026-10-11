@@ -473,7 +473,9 @@ function in `internal/cli/run.go` is the canonical implementation.
    `_SECRET`, `_PASSWORD`, `_KEY`, `_CREDENTIALS`) with
    `[REDACTED:<key>]`. Skip values shorter than
    `minRedactableSecretLen` (currently 8) — short values like `"main"`
-   or `"true"` cause false-positive mangling.
+   or `"true"` cause false-positive mangling. `replaceEnvSecrets` is that
+   pass: it takes longer values first, so a value that contains another
+   is replaced whole.
 
 2. **Scan `providerOnlyKeys` from the process environment
    (`os.Getenv`) for credential literal values.** Provider-only
@@ -482,8 +484,9 @@ function in `internal/cli/run.go` is the canonical implementation.
    can't reach them, which means the `RunnerEnv` scan in invariant 1
    never sees them. Iterate `providerOnlyKeys`, read each value with
    `os.Getenv`, and replace it the same way (skipping values shorter
-   than `minRedactableSecretLen`). A future credential class kept out
-   of `RunnerEnv` for the same reason needs the same treatment here.
+   than `minRedactableSecretLen`). `replaceEnvSecrets` does this in the
+   same longest-first pass as invariant 1. A future credential class kept
+   out of `RunnerEnv` for the same reason needs the same treatment here.
 
 3. **Apply `security.SecretRedactor` as a fallback pass.**
    The `RunnerEnv` and `providerOnlyKeys` scans only catch credentials

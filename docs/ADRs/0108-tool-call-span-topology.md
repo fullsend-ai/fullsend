@@ -121,3 +121,14 @@ convention bump.
   call ids and results ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)).
 - This settles the span-granularity question in #294; retention and access
   remain open there.
+
+## Annotations
+
+**2026-09-18 — Tool arguments on the message record:** the Decision's "full
+arguments next" is in place for the members that name what was called:
+`tool_call` parts on the `agent` span's `gen_ai.output.messages` record
+carry the call's path, pattern, command and the like, redacted, where the
+runtime's stream provides them, Claude Code today; a file body, an edit or
+a prompt is not recorded. The list, the bound and the drop rules are in the
+[reference](../guides/infrastructure/distributed-tracing.md#content-capture-level-3).
+`execute_tool` spans still carry metadata only.

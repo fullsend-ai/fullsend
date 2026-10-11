@@ -73,8 +73,9 @@ const maxToolSpanNameBytes = 128
 // a server-side tool: its result never arrives as a tool_result, so the parser
 // reports it without an id (stream_event lines) or not at all (assistant
 // lines, the live path). The
-// name and the call id go through the same output pipeline as span content
-// (Unicode normalization, then secret redaction): the name is bounded, the id
+// name and the call id get the same redaction as span content (redactText:
+// the runner env literal pass on both sides of the output pipeline): the
+// name is bounded, the id
 // is dropped on any finding (safeID) — both land on a Level 1 span in the
 // telemetry file the output scan exempts on the strength of that treatment.
 // Delivery is synchronous on one goroutine, so no lock.
@@ -82,9 +83,11 @@ type toolSpanTracker struct {
 	tracer   trace.Tracer
 	ctx      context.Context
 	pipeline *security.Pipeline
-	open     map[string]trace.Span
-	created  int
-	dropped  int
+	// runnerEnv feeds the literal pass on names and ids (redactText).
+	runnerEnv map[string]string
+	open      map[string]trace.Span
+	created   int
+	dropped   int
 }
 
 func newToolSpanTracker(tracer trace.Tracer, agentCtx context.Context) *toolSpanTracker {
@@ -174,12 +177,8 @@ func (t *toolSpanTracker) allow() bool {
 // result with findings means the whole name was sanitized away (the same
 // reading contentCollector.redact applies), so nothing is shown.
 func (t *toolSpanTracker) safeName(name string) string {
-	scanned := t.pipeline.Scan(name)
-	if scanned.Sanitized != "" {
-		name = scanned.Sanitized
-	} else if len(scanned.Findings) > 0 {
-		return ""
-	}
+	var findings []security.Finding
+	name = redactText(t.pipeline, t.runnerEnv, name, &findings)
 	return strings.ToValidUTF8(truncateStatusMsgTo(name, maxToolNameBytes), "")
 }
 
@@ -188,7 +187,8 @@ func (t *toolSpanTracker) safeName(name string) string {
 // id could falsely collide with another call's. The raw id still keys
 // use/result correlation, so a dropped attribute never breaks a pair.
 func (t *toolSpanTracker) safeID(id string) string {
-	if len(t.pipeline.Scan(id).Findings) > 0 {
+	var findings []security.Finding
+	if redactText(t.pipeline, t.runnerEnv, id, &findings); len(findings) > 0 {
 		return ""
 	}
 	return id
