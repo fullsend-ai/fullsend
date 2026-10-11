@@ -518,3 +518,40 @@ func TestRotationServiceAccountClientPersistsResolvedOwnersWithoutCallback(t *te
 	assert.False(t, rs.Supplied)
 	assert.Contains(t, rs.ExcludedUserIDs, 501, "the frozen resolved owner is persisted without the attribution callback")
 }
+
+// A managed replacement of an outside-inventory supplied credential whose
+// completed-state write failed leaves phase=distributing with the replacement
+// current. The supplied-credential retention shortcut must not mask that
+// interrupted recovery: an unforced rerun recovers the lifecycle state, clears
+// the supplied provenance, and keeps the owner excluded.
+func TestRotateGitLabRoleCredentials_RecoversInterruptedManagedReplacementOfSuppliedCredential(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	rec, _ := gitlabroles.BuiltinRegistry().Lookup(gitlabroles.RoleCoder)
+	fc := seededRoleClient(t, gitlabroles.RoleCoder)
+	require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+		"coder": {
+			Supplied: true, SuppliedUserID: 777, SuppliedTokenID: 13, ExcludedUserIDs: []int{777},
+			IncomingID: 12, CreatedTokenIDs: []int{12}, Phase: rotationPhaseDistributing,
+			DistributedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
+		},
+	}}))
+	tokens := &fakeTokens{}
+	tokens.seed(ProjectAccessToken{ID: 12, Name: rec.Credential.TokenName, Active: true, UserID: 70, ExpiresAt: GitLabPATExpiresAt(now.AddDate(0, 0, 5))})
+
+	result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+		Owner: "g", Repo: "p", Client: fc, Tokens: tokens,
+		Roles: []gitlabroles.Role{gitlabroles.RoleCoder}, Now: now,
+	})
+	require.NoError(t, err)
+	require.Empty(t, result.Failed)
+	assert.Contains(t, result.Rotated, gitlabroles.RoleCoder, "the interrupted replacement is recovered, not retained")
+	assert.Empty(t, tokens.revoked)
+
+	state, _, err := loadRotationState(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	rs := state.Roles["coder"]
+	assert.False(t, rs.Supplied, "the incomplete supplied provenance is cleared")
+	assert.NotEqual(t, rotationPhaseDistributing, rs.Phase)
+	assert.Contains(t, rs.ExcludedUserIDs, 777, "the supplied owner stays excluded")
+}

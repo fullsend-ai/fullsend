@@ -551,8 +551,10 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	// has no snapshot to verify. A healthy supplied enrollment with distribution
 	// proof is retained rather than read as unverified and replaced on every
 	// unforced run; its replacement is an explicit --gitlab-role-token
-	// enrollment or a forced rotation.
-	if !cfg.Force && distributionProven && provenanceOf(rs).Supplied && !suppliedCredentialListed(rs, matches) &&
+	// enrollment or a forced rotation. An interrupted managed replacement
+	// (needsRecovery) is not retained: its recovery must still run so the
+	// incomplete phase and the supplied provenance are resolved.
+	if !cfg.Force && distributionProven && !needsRecovery && provenanceOf(rs).Supplied && !suppliedCredentialListed(rs, matches) &&
 		strings.TrimSpace(cfg.ProvidedTokens[rec.Name]) == "" {
 		result.Skipped = append(result.Skipped, rec.Name)
 		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
