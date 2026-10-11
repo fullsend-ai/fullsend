@@ -320,6 +320,10 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	// revoked at grace cleanup, whatever the concrete token client.
 	unresolvedOwner := false
 	var excludedOwners []int
+	// resolvedOwners are the supplied-credential owners learned only through the
+	// token client's SuppliedOwnerIDs capability. They are persisted when the
+	// supplied provenance is cleared, so a later run still excludes them.
+	var resolvedOwners []int
 	if sa, ok := normalizeServiceAccountClient(cfg.Tokens).(ServiceAccountTokenClient); ok {
 		wrapped, frozen, exclErr := sa.withProjectExclusions(ctx, cfg.Owner, cfg.Repo, state)
 		if exclErr != nil {
@@ -377,6 +381,7 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 			} else {
 				for _, id := range ids {
 					excludedOwners = appendExcludedID(excludedOwners, id)
+					resolvedOwners = appendExcludedID(resolvedOwners, id)
 				}
 				sort.Ints(excludedOwners)
 			}
@@ -749,8 +754,14 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	rs.Error = ""
 	// The managed replacement is now the published credential, so the previous
 	// supplied credential's provenance no longer describes it. Its owner stays
-	// permanently excluded.
+	// permanently excluded, including owners resolved only through the client
+	// capability: clearing Supplied would otherwise leave nothing recorded, and
+	// carried-forward outgoing IDs whose owner is unverified could later be
+	// revoked through a generic client.
 	rs.excludeOwner(rs.SuppliedUserID)
+	for _, id := range resolvedOwners {
+		rs.excludeOwner(id)
+	}
 	rs.Supplied, rs.SuppliedUserID, rs.SuppliedTokenID, rs.SuppliedDistributed = false, 0, 0, false
 	if err := mergeRoleState(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, holder, now, rs, &state); err != nil {
 		result.Failed = append(result.Failed, RoleProvisionFailure{

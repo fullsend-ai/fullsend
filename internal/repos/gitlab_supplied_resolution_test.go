@@ -287,6 +287,62 @@ func TestRotationGenericClientConsultsSuppliedOwnerCapability(t *testing.T) {
 	}
 }
 
+// Owners resolved only through the SuppliedOwnerIDs capability are persisted
+// before a managed replacement clears the supplied provenance, so a carried-
+// forward outgoing token that is absent from the listing or ownerless is still
+// never revoked by a later grace cleanup through a generic client.
+func TestRotationReplacementPersistsCapabilityResolvedExclusions(t *testing.T) {
+	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	rec, _ := gitlabroles.BuiltinRegistry().Lookup(gitlabroles.RoleCoder)
+	cases := map[string][]ProjectAccessToken{
+		"absent":    nil,
+		"ownerless": {{ID: 40, Name: "renamed", Active: true, UserID: 0}},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			fc := seededRoleClient(t, gitlabroles.RoleCoder)
+			require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+				"coder": {
+					Supplied: true, IncomingID: 12, OutgoingIDs: []int{40}, CreatedTokenIDs: []int{12, 40}, Phase: rotationPhaseOverlapping,
+					DistributedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
+				},
+			}}))
+			tokens := &fakeTokens{}
+			tokens.seed(ProjectAccessToken{ID: 12, Name: rec.Credential.TokenName, Active: true, UserID: 70, ExpiresAt: GitLabPATExpiresAt(now.AddDate(0, 0, 5))})
+			for _, tok := range extra {
+				tokens.seed(tok)
+			}
+			client := ownerAwareTokens{fakeTokens: tokens, ids: []int{501}}
+			result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+				Owner: "g", Repo: "p", Client: fc, Tokens: client, Roles: []gitlabroles.Role{gitlabroles.RoleCoder},
+				Force: true, Now: now,
+			})
+			require.NoError(t, err)
+			require.Empty(t, result.Failed)
+			require.Contains(t, result.Rotated, gitlabroles.RoleCoder)
+			assert.Empty(t, tokens.revoked)
+
+			state, _, err := loadRotationState(ctx, fc, "g", "p")
+			require.NoError(t, err)
+			rs := state.Roles["coder"]
+			assert.False(t, rs.Supplied, "supplied provenance is cleared by the managed replacement")
+			assert.Contains(t, rs.ExcludedUserIDs, 501, "the capability-resolved owner stays excluded")
+			assert.Contains(t, rs.OutgoingIDs, 40, "the undischarged obligation is carried forward")
+
+			// A later run past the grace period, with no ownership capability and no
+			// supplied provenance left, must still refuse to revoke the carried token.
+			later := now.Add(72 * time.Hour)
+			_, err = RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+				Owner: "g", Repo: "p", Client: fc, Tokens: tokens, Roles: []gitlabroles.Role{gitlabroles.RoleCoder},
+				Now: later,
+			})
+			require.NoError(t, err)
+			assert.NotContains(t, tokens.revoked, 40, "an unverified carried-forward token is never revoked")
+		})
+	}
+}
+
 // The service-account branch freezes project-wide exclusions into grace
 // cleanup, so an excluded owner's outgoing obligation is dropped rather than
 // left overlapping behind a refused revocation.
