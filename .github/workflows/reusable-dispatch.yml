@@ -710,13 +710,13 @@ jobs:
   authorization-notice:
     name: Authorization notice
     needs: [route, harness-dispatch]
-    if: ${{ always() && !cancelled() && (needs.route.outputs.authorization_denied == 'true' || needs.harness-dispatch.outputs.authorization_denied == 'true') }}
+    if: ${{ always() && !cancelled() && (needs.route.outputs.authorization_denied == 'true' || (needs.harness-dispatch.outputs.authorization_denied == 'true' && needs.route.outputs.legacy_command_applicable != 'true')) }}
     runs-on: ${{ inputs.runner_image }}
     timeout-minutes: 5
     permissions:
       issues: write
     concurrency:
-      group: fullsend-authorization-notice-${{ github.repository }}-${{ needs.route.outputs.authorization_number }}
+      group: fullsend-authorization-notice-${{ github.repository }}-${{ needs.route.outputs.authorization_number || needs.harness-dispatch.outputs.authorization_number }}-${{ needs.route.outputs.authorization_actor || needs.harness-dispatch.outputs.authorization_actor }}
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
@@ -1604,8 +1604,7 @@ jobs:
 
   harness-dispatch:
     name: Harness dispatch
-    needs: route
-    if: ${{ inputs.matrix == '' && needs.route.outputs.legacy_command_applicable != 'true' }}
+    if: ${{ inputs.matrix == '' }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write

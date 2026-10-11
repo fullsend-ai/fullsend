@@ -102,9 +102,6 @@ func DispatchResult(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	if !authorized {
-		if !opts.Event.AuthorizationAvailable() {
-			return Result{}, nil
-		}
 		return Result{AuthorizationDenied: len(matched) > 0}, nil
 	}
 

@@ -20,6 +20,9 @@ type Event struct {
 	// authorizationUnavailable is input-driver metadata. It is deliberately
 	// not serialized into normalized events: a failed live permission lookup
 	// must fail closed without being mistaken for a confirmed denial notice.
+	// Its zero value means available for hand-built and JSON events, whose
+	// normalized role is already explicit; the gha-event driver marks live
+	// lookup failures unavailable.
 	authorizationUnavailable bool
 }
 

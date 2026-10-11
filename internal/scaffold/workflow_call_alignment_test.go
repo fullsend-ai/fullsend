@@ -797,8 +797,10 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 				"route must retain least-privilege issue read access")
 			assert.Regexp(t, `authorization-notice:\n(?s:.*?)permissions:\n\s+issues: write`, s,
 				"only the notification job needs issue-comment write access")
-			assert.NotContains(t, s, "harness-dispatch:\n    name: Harness dispatch\n    if: ${{ inputs.matrix == '' }}\n    runs-on: ${{ inputs.runner_image }}\n    permissions:\n      actions: write\n      contents: read\n      issues: write",
-				"harness dispatch must not receive issue-comment write access")
+			assert.Contains(t, s, "harness-dispatch:\n    name: Harness dispatch\n    if: ${{ inputs.matrix == '' }}",
+				"CEL dispatch must remain enabled for legacy slash-command events")
+			assert.Contains(t, s, "needs.route.outputs.authorization_number || needs.harness-dispatch.outputs.authorization_number",
+				"notification concurrency must use the CEL fallback work-item number")
 
 			assert.Contains(t, s, "has_repo_permission",
 				"permission helper should be parameterized by min role")

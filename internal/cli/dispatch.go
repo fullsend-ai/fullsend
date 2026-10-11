@@ -110,6 +110,8 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	if err != nil {
 		return err
 	}
+	// Only gha-event has live GitHub authorization context. JSON evaluation
+	// remains read-only and never writes workflow notification metadata.
 	if inDriver == "gha-event" {
 		if err := writeAuthorizationOutput(event, result.AuthorizationDenied); err != nil {
 			return err
@@ -147,7 +149,7 @@ func writeAuthorizationOutput(event *normevent.Event, denied bool) error {
 		return nil
 	}
 
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return fmt.Errorf("open GitHub output file: %w", err)
 	}
