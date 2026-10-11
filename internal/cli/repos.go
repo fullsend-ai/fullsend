@@ -327,6 +327,7 @@ type reposInstallConfig struct {
 	testClient               forge.Client
 	testFactory              repos.ForgeClientFactory
 	testGitLabTokenInventory repos.ProjectAccessTokenClient
+	testGitLabTriggerOwner   repos.GitLabTriggerOwner
 	testProjectNumberFn      func(ctx context.Context, projectID string) (string, error)
 }
 
@@ -1370,6 +1371,19 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				if item.fresh {
 					roleFailInstalledCount++
 				}
+				continue
+			}
+			// A Poller left elevated by an interrupted rotation is restored,
+			// or its credential contained, on every install, before any role
+			// lifecycle operation and whether or not webhook work is pending.
+			if err := reconcileGitLabPollerElevation(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab Poller membership reconciliation failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
 			if err := maybeProvisionGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {

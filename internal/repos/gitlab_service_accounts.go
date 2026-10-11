@@ -122,6 +122,17 @@ type ServiceAccountTokenClient struct {
 	// nil, every supplied owner is treated as current. An error fails the
 	// operation closed.
 	CurrentSuppliedAccountIDs func(ctx context.Context, owner, repo string) ([]int, error)
+	// SuppliedCredentialIdentity authenticates an administrator-supplied
+	// credential value and returns the owner and token ID it belongs to, so
+	// enrollment can record them while the credential still authenticates. An
+	// error leaves the enrollment unrecorded, which later operations resolve
+	// by authenticating or fail closed.
+	SuppliedCredentialIdentity func(ctx context.Context, token string) (SuppliedIdentity, error)
+	// AttributeSuppliedOwners attributes, by authenticating with the installed
+	// secrets, the owner of every supplied credential whose rotation entry
+	// records none, keyed by role, so rotation can persist them before it can
+	// replace the credential. An error fails the operation closed.
+	AttributeSuppliedOwners func(ctx context.Context, owner, repo string) (map[gitlabroles.Role]int, error)
 }
 
 // SuppliedTokenRef is an enrolled administrator-supplied credential's GitLab

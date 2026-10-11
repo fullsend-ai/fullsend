@@ -17,6 +17,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/gitlablifecycle"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/repos"
@@ -753,8 +754,14 @@ func TestGitLabUninstallTokens(t *testing.T) {
 		require.NoError(t, err)
 		got := gitLabUninstallTokens(&reposUninstallConfig{}, newSingleClientFactory(glClient), printer, manifest, []string{"group/project"})
 		require.NotNil(t, got)
-		_, ok := got.(gitlabTokenAdapter)
-		assert.True(t, ok)
+		wrapped, ok := got.(gitlablifecycle.UninstallTokenClient)
+		require.True(t, ok, "live uninstall inventory must reconcile Pollers and honor supplied exclusions, got %T", got)
+		assert.NotNil(t, wrapped.ManagedAccountIDs)
+		assert.NotNil(t, wrapped.ManagedAccountNames)
+		assert.NotNil(t, wrapped.SuppliedAccountIDs)
+		assert.NotNil(t, wrapped.VerifyAccountDeletion)
+		_, reconciles := got.(repos.GitLabPollerUninstallReconciler)
+		assert.True(t, reconciles)
 	})
 }
 
@@ -870,8 +877,11 @@ func TestGitLabTokenInventory(t *testing.T) {
 	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL("http://127.0.0.1:1"))
 	require.NoError(t, err)
 	inv := gitLabTokenInventory(&reposInstallConfig{}, glClient)
-	_, ok := inv.(gitlabTokenAdapter)
-	assert.True(t, ok)
+	sa, ok := inv.(repos.ServiceAccountTokenClient)
+	require.True(t, ok, "live inventory must merge service-account and legacy tokens, got %T", inv)
+	assert.NotNil(t, sa.ManagedAccountIDs)
+	assert.NotNil(t, sa.ManagedAccountNames)
+	assert.NotNil(t, sa.SuppliedAccountIDs)
 }
 
 func TestAnnotateGitLabRoleLifecycleReportsPipelineRefDrift(t *testing.T) {
@@ -1078,4 +1088,19 @@ func TestAnnotateGitLabRoleLifecycleSkipsConfigRejectedRepos(t *testing.T) {
 	assert.Empty(t, calledPaths, "rejected repo must not be inspected, got requests: %v", calledPaths)
 	assert.Empty(t, result.Repos[0].Drifts)
 	assert.Equal(t, 0, result.Summary.Drifted)
+}
+
+// A per-role rotation failure reported without a top-level error still fails
+// the install stage, as the sibling provisioning path does.
+func TestMaybeRotateGitLabRoles_PerRoleFailureReturnsError(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	var buf bytes.Buffer
+	opts := &reposInstallConfig{gitlabRoleProvided: map[gitlabroles.Role]string{gitlabroles.RolePoller: "short"}}
+
+	err := maybeRotateGitLabRoles(ctx, opts, fake, ui.New(&buf), "group", "project")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GitLab role rotation incomplete")
+	assert.Contains(t, buf.String(), "role rotation pending")
 }

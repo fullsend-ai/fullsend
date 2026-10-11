@@ -79,33 +79,47 @@ type RoleRotateResult struct {
 	Diagnostics []string
 }
 
-// rotationStateFile is the in-memory rotation-state document and the
-// shape writeRotationState persists. The writer intentionally still
-// emits the legacy unversioned form ({"roles":...}, no "version" key)
-// so binaries that predate the tolerant reader keep decoding it; the
-// versioned writer lands separately once every converging operator
-// carries this reader (#8242).
+// rotationStateFile is the in-memory rotation-state document.
+// writeRotationState persists it inside a rotationStateEnvelope carrying
+// gitLabRoleRotationStateVersion; the version is wire metadata only.
 type rotationStateFile struct {
 	Roles map[string]rotationRoleState `json:"roles"`
 }
 
-// rotationStateEnvelope is the read-side view of the persisted
-// rotation-state document. Version zero is the legacy unversioned form;
-// version gitLabRoleRotationStateVersion is the versioned form a later
-// writer emits. The version is wire metadata only and is not carried
-// into rotationStateFile.
+// rotationStateEnvelope is the persisted rotation-state document. Version
+// zero is the legacy unversioned form ({"roles":...}, no "version" key);
+// writeRotationState always emits gitLabRoleRotationStateVersion.
 type rotationStateEnvelope struct {
 	Version int                          `json:"version"`
 	Roles   map[string]rotationRoleState `json:"roles"`
 }
 
-// gitLabRoleRotationStateVersion is the highest rotation-state format
-// version this binary understands.
-const gitLabRoleRotationStateVersion = 1
+// gitLabRoleRotationStateVersion is the rotation-state format version this
+// binary writes and the highest version it reads.
+//
+// Version 2 is the first version ever written with a version marker. It
+// carries the ownership fields (created_token_ids, managed_user_id,
+// supplied_user_id, supplied_token_id, supplied, excluded_user_ids) that
+// decide which tokens may be selected as outgoing credentials and revoked
+// by grace cleanup. Version 1 is deliberately skipped: CLIs built with the
+// tolerant reader (#8233) accept versions 0 and 1 but do not apply those
+// ownership rules, so a version 1 document could let them select or revoke
+// an administrator-supplied credential and rewrite the document without
+// its marker. Those CLIs reject version 2 before touching any credential,
+// and CLIs older still reject the unknown "version" key, so rotation and
+// status operations of those CLIs, which consult rotation state before they
+// mutate, fail closed (#8242). Older provisioning and uninstall paths do not
+// consult it first and can still publish or revoke credentials, so operators
+// must upgrade every CLI.
+const gitLabRoleRotationStateVersion = 2
+
+// maxReadableRotationStateVersion is the highest rotation-state version
+// loadRotationState accepts. It equals gitLabRoleRotationStateVersion;
+// tests lower it to exercise the reader of an older CLI.
+var maxReadableRotationStateVersion = gitLabRoleRotationStateVersion
 
 // rotationRoleState is the persisted per-role rotation state. Every
-// field is omitempty so a state that only uses the legacy fields
-// serializes byte-identically to the legacy format.
+// field is omitempty so unused fields are not written.
 type rotationRoleState struct {
 	Phase         string `json:"phase,omitempty"`
 	Holder        string `json:"holder,omitempty"`
@@ -309,8 +323,12 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	if sa, ok := normalizeServiceAccountClient(cfg.Tokens).(ServiceAccountTokenClient); ok {
 		wrapped, frozen, exclErr := sa.withProjectExclusions(ctx, cfg.Owner, cfg.Repo, state)
 		if exclErr != nil {
+			reason := "project-wide account exclusions could not be resolved; no credential created"
+			if errors.Is(exclErr, ErrSuppliedCredentialUnresolved) && unresolvedSuppliedOwner(state) {
+				reason += ownerlessSuppliedRecoveryHint
+			}
 			result.Failed = append(result.Failed, RoleProvisionFailure{
-				Role: rec.Name, Secret: secret, Reason: "project-wide account exclusions could not be resolved; no credential created",
+				Role: rec.Name, Secret: secret, Reason: reason,
 			})
 			return
 		}
@@ -318,6 +336,31 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 		// is published, whatever the configured verifier checks.
 		cfg.Tokens = wrapped.withPollerPipelineAccess(cfg.Client)
 		excludedOwners = frozen
+		// Owners attributed only by authenticating are persisted before this
+		// run can replace or retire any credential, so a replacement never
+		// loses the original owner's exclusion and a later expiry of the
+		// credential does not make its owner unattributable.
+		if !cfg.DryRun && wrapped.AttributeSuppliedOwners != nil && unresolvedSuppliedOwner(state) {
+			attributed, attrErr := wrapped.AttributeSuppliedOwners(ctx, cfg.Owner, cfg.Repo)
+			if attrErr == nil {
+				attrErr = RecordSuppliedOwners(ctx, cfg.Client, cfg.Owner, cfg.Repo, attributed)
+			}
+			if attrErr != nil {
+				result.Failed = append(result.Failed, RoleProvisionFailure{
+					Role: rec.Name, Secret: secret, Reason: "supplied credential owners could not be recorded; no credential rotated" + ownerlessSuppliedRecoveryHint,
+				})
+				return
+			}
+			fresh, _, freshErr := loadRotationState(ctx, cfg.Client, cfg.Owner, cfg.Repo)
+			if freshErr != nil {
+				result.Failed = append(result.Failed, RoleProvisionFailure{
+					Role: rec.Name, Secret: secret, Reason: "reading rotation state failed",
+				})
+				return
+			}
+			state = fresh
+			rs = state.Roles[string(rec.Name)]
+		}
 	} else {
 		// A supplied credential whose owner was never recorded cannot be
 		// attributed by recorded exclusions alone, so a same-named
@@ -436,7 +479,17 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 		}
 	}
 
-	rr := roleReportFrom(ctx, cfg, rec, matches, now, lead)
+	// An enrolled supplied credential listed under the role's token name is
+	// judged on its own lifecycle. Historical managed tokens that stay listed
+	// after a managed-to-supplied enrollment must not make a revoked or expiring
+	// supplied credential read as healthy.
+	reportMatches := matches
+	if provenanceOf(rs).Supplied {
+		if supplied := suppliedCredentialTokens(rs, matches); len(supplied) > 0 {
+			reportMatches = supplied
+		}
+	}
+	rr := roleReportFrom(ctx, cfg, rec, reportMatches, now, lead)
 	freshExpiry := GitLabPATExpiresAt(now)
 	// The live inventory alone can never distinguish a legitimately
 	// distributed credential from an unrecorded orphan: one left behind
@@ -462,6 +515,36 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	needsRecovery := rs.IncomingID != 0 && (rs.Phase == rotationPhaseDistributing || rs.Phase == rotationPhaseFailed)
 	alreadyFresh := !cfg.Force && current.ID != 0 && current.Active && current.ExpiresAt == freshExpiry &&
 		distributionProven && !needsRecovery
+	// The operational inventory lists only project access tokens and project
+	// service-account PATs, so an administrator-supplied personal access token
+	// has no snapshot to verify. A healthy supplied enrollment with distribution
+	// proof is retained rather than read as unverified and replaced on every
+	// unforced run; its replacement is an explicit --gitlab-role-token
+	// enrollment or a forced rotation.
+	if !cfg.Force && distributionProven && provenanceOf(rs).Supplied && !suppliedCredentialListed(rs, matches) &&
+		strings.TrimSpace(cfg.ProvidedTokens[rec.Name]) == "" {
+		result.Skipped = append(result.Skipped, rec.Name)
+		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
+			"%s: administrator-supplied credential is outside the lifecycle inventory; retained without verifying that it still authenticates or has not expired (re-enroll with --gitlab-role-token to replace it)", rec.Name))
+		return
+	}
+	if !cfg.Force && !cfg.ConvergeServiceAccounts && strings.TrimSpace(cfg.ProvidedTokens[rec.Name]) == "" {
+		retained, reason, lookupErr := legacyCredentialWithoutProvenance(ctx, cfg, rec, rs, matches)
+		if lookupErr != nil {
+			// The installed secret's presence could not be established, so the
+			// credential is left untouched rather than treated as absent.
+			result.Failed = append(result.Failed, RoleProvisionFailure{
+				Role: rec.Name, Secret: secret,
+				Reason: "could not verify whether a legacy credential is installed; credential left untouched: " + lookupErr.Error(),
+			})
+			return
+		}
+		if retained {
+			result.Skipped = append(result.Skipped, rec.Name)
+			result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: %s", rec.Name, reason))
+			return
+		}
+	}
 	if alreadyFresh || (recentlyDistributed(rs, now) && !gitlabroles.RoleDueForRotation(rr) && !cfg.ConvergeServiceAccounts) {
 		result.Skipped = append(result.Skipped, rec.Name)
 		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: already rotated (idempotent)", rec.Name))
@@ -485,8 +568,8 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	}
 
 	if provided := strings.TrimSpace(cfg.ProvidedTokens[rec.Name]); provided != "" {
-		rotateProvided(ctx, cfg, rec, secret, provided, now, matches, &rs, result)
-		if !cfg.DryRun {
+		refused := rotateProvided(ctx, cfg, rec, secret, provided, now, matches, holder, &state, &rs, result)
+		if !cfg.DryRun && !refused {
 			if err := mergeRoleState(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, holder, now, rs, &state); err != nil {
 				result.Failed = append(result.Failed, RoleProvisionFailure{
 					Role: rec.Name, Secret: secret,
@@ -650,6 +733,11 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	rs.OutgoingIDs = outgoing
 	rs.ExpiresAt = expiresAt
 	rs.Error = ""
+	// The managed replacement is now the published credential, so the previous
+	// supplied credential's provenance no longer describes it. Its owner stays
+	// permanently excluded.
+	rs.excludeOwner(rs.SuppliedUserID)
+	rs.Supplied, rs.SuppliedUserID, rs.SuppliedTokenID, rs.SuppliedDistributed = false, 0, 0, false
 	if err := mergeRoleState(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, holder, now, rs, &state); err != nil {
 		result.Failed = append(result.Failed, RoleProvisionFailure{
 			Role: rec.Name, Secret: secret,
@@ -669,27 +757,113 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 	}
 }
 
-func rotateProvided(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Registration, secret, provided string, now time.Time, matches []ProjectAccessToken, rs *rotationRoleState, result *RoleRotateResult) {
+// legacyCredentialWithoutProvenance reports whether an installed role secret is
+// a legacy project-access-token credential that lacks positive creation
+// provenance. The service-account client deliberately leaves such a token out of
+// its operational inventory (names and distribution backfill never confer
+// ownership), so an empty inventory match is not evidence that the credential is
+// missing. Provisioning already leaves it untouched; unforced automatic rotation
+// must not mint a replacement and overwrite it either. It is replaced only by an
+// explicit forced rotation or --gitlab-role-token enrollment. A nil
+// ManagedLegacyTokenIDs callback supplies no ownership evidence, so it is an
+// empty allowlist rather than a bypass. A failed secret-existence lookup is
+// returned as an error so the caller leaves the credential untouched.
+func legacyCredentialWithoutProvenance(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Registration, rs rotationRoleState, matches []ProjectAccessToken) (bool, string, error) {
+	c, ok := normalizeServiceAccountClient(cfg.Tokens).(ServiceAccountTokenClient)
+	if !ok || len(matches) > 0 {
+		return false, "", nil
+	}
+	if rs.ManagedUserID > 0 || hasPositiveInt(rs.CreatedTokenIDs) || provenanceOf(rs).Supplied {
+		return false, "", nil
+	}
+	exists, err := cfg.Client.RepoSecretExists(ctx, cfg.Owner, cfg.Repo, rec.Credential.SecretName)
+	if err != nil {
+		return false, "", safeAPIError("checking the installed role secret", err)
+	}
+	if !exists {
+		return false, "", nil
+	}
+	if owned, err := c.managedLegacyIDs(ctx, cfg.Owner, cfg.Repo); err == nil && rs.IncomingID != 0 && containsInt(owned, rs.IncomingID) {
+		return false, "", nil
+	}
+	return true, "legacy token creation provenance is unverified; credential left untouched; manual recovery or explicit supplied-credential enrollment required", nil
+}
+
+// ownerlessSuppliedRecoveryHint is the administrator recovery for a supplied
+// credential recorded without its owner. Attribution authenticates with the
+// installed role credential, and the project-wide exclusions are resolved
+// before provisioning or rotation processes any --gitlab-role-token value, so
+// passing a replacement token again cannot recover a credential that no longer
+// authenticates or whose variable was removed.
+const ownerlessSuppliedRecoveryHint = "; if the supplied credential expires, is revoked or its variable is removed before the owner is recorded, install and rotation fail closed for the whole project and --gitlab-role-token alone does not recover: set a working credential in the role's CI/CD variable by hand, then rerun install so its owner is recorded"
+
+// rotateProvided enrolls an administrator-provided replacement. It returns
+// true when nothing was published because the supplied transition could not be
+// recorded first, so the caller must not persist rs.
+func rotateProvided(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Registration, secret, provided string, now time.Time, matches []ProjectAccessToken, holder string, state *rotationStateFile, rs *rotationRoleState, result *RoleRotateResult) (refused bool) {
 	if !canMaskGitLabValue(provided) {
 		result.Failed = append(result.Failed, RoleProvisionFailure{
 			Role: rec.Name, Secret: secret,
 			Reason: "administrator-provided credential cannot be masked (must be a single line of at least 8 characters using GitLab's allowed charset)",
 		})
-		return
+		return false
 	}
 	if cfg.DryRun {
 		result.Rotated = append(result.Rotated, rec.Name)
 		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("%s: would enroll replacement (%s)", rec.Name, secret))
-		return
+		return false
 	}
+	// Resolve the replacement's owner and persist its supplied transition,
+	// with both the previous and the replacement owner excluded, before
+	// publishing it, and refuse to publish when that write fails: a published
+	// administrator-supplied credential still described by the previous entry
+	// could be inventoried and revoked as fullsend-minted after a crash or a
+	// failed later write. Only the provenance is written here; the lifecycle
+	// fields keep describing the credential that is still installed, so a
+	// failed or interrupted publication stays retryable.
+	identity, identityErr := resolveSuppliedIdentity(ctx, cfg.Tokens, provided)
+	intent := *rs
+	intent.ExcludedUserIDs = append([]int(nil), rs.ExcludedUserIDs...)
+	applySuppliedTransition(&intent, identity)
+	// The previous credential's completed distribution proof must not describe
+	// the replacement while it is only pending: an interruption before
+	// CreateRepoSecret would otherwise leave state claiming the replacement is
+	// installed. A failed phase invalidates that proof until publication
+	// succeeds and the completed state is written below.
+	intent.Phase = rotationPhaseFailed
+	intent.Error = "administrator-provided replacement publication pending"
+	if err := mergeRoleState(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, holder, now, intent, state); err != nil {
+		result.Failed = append(result.Failed, RoleProvisionFailure{
+			Role: rec.Name, Secret: secret,
+			Reason: "recording administrator-provided replacement state failed; credential not stored; previous credential left in place",
+		})
+		return true
+	}
+	// Keep the exclusions even if publication fails and the previous
+	// provenance is restored below.
+	rs.ExcludedUserIDs = intent.ExcludedUserIDs
 	if err := cfg.Client.CreateRepoSecret(ctx, cfg.Owner, cfg.Repo, secret, provided); err != nil {
 		rs.Phase = rotationPhaseFailed
 		rs.Error = "storing administrator-provided replacement failed"
+		// A write error does not prove the variable update was not committed,
+		// and the installed value cannot be read back to tell. The replacement's
+		// owner is excluded when it resolved, so restoring the previous
+		// provenance is safe then. When it did not resolve, nothing protects the
+		// owner of a replacement that may be installed, so keep the ownerless
+		// supplied transition recorded before publication: later operations
+		// attribute the installed credential or fail closed. Passing
+		// --gitlab-role-token again does not recover this state, because the
+		// project-wide exclusions are resolved before any provided credential
+		// is processed; an administrator restores a working credential by hand
+		// (see ownerlessSuppliedRecoveryHint).
+		if identity.UserID <= 0 {
+			applySuppliedTransition(rs, identity)
+		}
 		result.Failed = append(result.Failed, RoleProvisionFailure{
 			Role: rec.Name, Secret: secret,
 			Reason: "storing administrator-provided replacement failed; previous credential left in place",
 		})
-		return
+		return false
 	}
 	// The administrator-provided replacement's own GitLab token ID is
 	// not known here (only its secret value was supplied). If that
@@ -708,13 +882,33 @@ func rotateProvided(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.R
 	rs.DistributedAt = now.Format(time.RFC3339)
 	rs.ExpiresAt = ""
 	rs.Error = ""
+	// The replaced supplied credential's owner stays permanently excluded. The
+	// replacement is attributed to its own owner, resolved before publication;
+	// when that could not be resolved the old owner is not carried over as the
+	// replacement's, and the entry stays supplied-without-owner so later
+	// operations attribute it or fail closed.
+	applySuppliedTransition(rs, identity)
+	if identityErr != nil {
+		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
+			"%s: recording the enrolled replacement's owner failed%s", rec.Name, ownerlessSuppliedRecoveryHint))
+	}
 	result.Rotated = append(result.Rotated, rec.Name)
 	// Do not imply that grace cleanup will retire any other active
-	// same-named PAT: OutgoingIDs is nil above (its own ID cannot be
-	// resolved to exclude it), so cleanupOutgoing has nothing to act on
-	// and will never revoke a leftover automatically. Surface that as an
-	// explicit manual action instead.
-	if leftover := activeIDsExcept(matches, 0); len(leftover) > 0 {
+	// same-named PAT: OutgoingIDs is nil above, so cleanupOutgoing has nothing
+	// to act on and will never revoke a leftover automatically. When the
+	// replacement's own token ID resolved it is excluded from the leftover
+	// count and the others are reported as deliberately retained; otherwise
+	// every match is counted because the replacement cannot be told apart.
+	if identityErr == nil && identity.TokenID > 0 {
+		if leftover := activeIDsExcept(matches, identity.TokenID); len(leftover) > 0 {
+			result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
+				"%s: enrolled administrator-provided replacement (%s); %d other active project access token(s) sharing this role's token name were deliberately retained and not scheduled for automatic revocation -- revoke them manually if they are no longer needed",
+				rec.Name, secret, len(leftover)))
+		} else {
+			result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
+				"%s: enrolled administrator-provided replacement (%s)", rec.Name, secret))
+		}
+	} else if leftover := activeIDsExcept(matches, 0); len(leftover) > 0 {
 		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
 			"%s: enrolled administrator-provided replacement (%s); %d other active project access token(s) sharing this role's token name were not scheduled for automatic revocation because the replacement's own GitLab token ID is unknown -- confirm they are not the just-enrolled replacement and revoke them manually if so",
 			rec.Name, secret, len(leftover)))
@@ -722,6 +916,7 @@ func rotateProvided(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.R
 		result.Diagnostics = append(result.Diagnostics, fmt.Sprintf(
 			"%s: enrolled administrator-provided replacement (%s)", rec.Name, secret))
 	}
+	return false
 }
 
 // GitLabOutgoingTokenVerifier is the optional authoritative inventory capability
@@ -920,7 +1115,7 @@ func loadRotationState(ctx context.Context, client forge.Client, owner, repo str
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return out, nil, errors.New("decode GitLab role rotation state: unexpected data after the JSON document")
 	}
-	if envelope.Version < 0 || envelope.Version > gitLabRoleRotationStateVersion {
+	if envelope.Version < 0 || envelope.Version > maxReadableRotationStateVersion {
 		return out, nil, fmt.Errorf("unsupported GitLab role rotation state version %d; use a compatible CLI", envelope.Version)
 	}
 	file := rotationStateFile{Roles: envelope.Roles}
@@ -945,11 +1140,14 @@ func loadRotationState(ctx context.Context, client forge.Client, owner, repo str
 	return file, nil, nil
 }
 
+// writeRotationState persists file as a gitLabRoleRotationStateVersion
+// document. Every write carries the version marker, including rewrites of
+// state that was read in the legacy unversioned form.
 func writeRotationState(ctx context.Context, client forge.Client, owner, repo string, file rotationStateFile) error {
 	if file.Roles == nil {
 		file.Roles = map[string]rotationRoleState{}
 	}
-	raw, err := json.Marshal(file)
+	raw, err := json.Marshal(rotationStateEnvelope{Version: gitLabRoleRotationStateVersion, Roles: file.Roles})
 	if err != nil {
 		return err
 	}
@@ -1293,6 +1491,43 @@ func tokensWithID(listed []ProjectAccessToken, id int) []ProjectAccessToken {
 	return out
 }
 
+// suppliedCredentialListed reports whether a same-named token in matches could
+// be the enrolled administrator-supplied credential.
+func suppliedCredentialListed(rs rotationRoleState, matches []ProjectAccessToken) bool {
+	return len(suppliedCredentialTokens(rs, matches)) > 0
+}
+
+// suppliedCredentialTokens returns the same-named tokens in matches that could
+// be the enrolled administrator-supplied credential. Tokens fullsend itself
+// recorded (created, incoming, or outgoing) are historical managed credentials
+// that stay listed after a managed-to-supplied enrollment and never stand in for
+// the supplied one. A known SuppliedTokenID must match exactly; otherwise a known
+// owner must match (or be unreported). With neither recorded, any unrecorded
+// same-named token is conservatively treated as the supplied credential.
+func suppliedCredentialTokens(rs rotationRoleState, matches []ProjectAccessToken) []ProjectAccessToken {
+	var out []ProjectAccessToken
+	for _, tok := range matches {
+		if containsInt(rs.CreatedTokenIDs, tok.ID) || containsInt(rs.OutgoingIDs, tok.ID) || (rs.IncomingID != 0 && rs.IncomingID == tok.ID) {
+			if tok.ID != rs.SuppliedTokenID {
+				continue
+			}
+		}
+		switch {
+		case rs.SuppliedTokenID > 0:
+			if tok.ID == rs.SuppliedTokenID {
+				out = append(out, tok)
+			}
+		case rs.SuppliedUserID > 0 && tok.UserID > 0:
+			if tok.UserID == rs.SuppliedUserID {
+				out = append(out, tok)
+			}
+		default:
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
 func tokensNamed(listed []ProjectAccessToken, name string) []ProjectAccessToken {
 	var out []ProjectAccessToken
 	for _, tok := range listed {
@@ -1398,6 +1633,18 @@ func wantedRoles(roles []gitlabroles.Role, reg gitlabroles.Registry) map[gitlabr
 		}
 	}
 	return out
+}
+
+// hasPositiveInt reports whether values holds at least one positive ID. The
+// CLI records only positive IDs from successful creates, so zero or negative
+// entries in hand-edited state are not creation provenance.
+func hasPositiveInt(values []int) bool {
+	for _, value := range values {
+		if value > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func containsInt(values []int, want int) bool {

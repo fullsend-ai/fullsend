@@ -104,6 +104,10 @@ and compatibility details belong in the
 > do not establish that guarantee. Existing compliant triggers can be reused,
 > and polling remains available when enabled. See the Poller-owned trigger
 > lifecycle in [`docs/cli/repos.md`](../cli/repos.md#poller-owned-trigger-token-deferred).
+>
+> **Update (#8242):** the CLI activation change has merged and the Poller
+> service-account lifecycle is active. New trigger creation and rotation as the
+> Poller remain deferred.
 
 ## References
 
