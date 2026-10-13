@@ -90,13 +90,26 @@ function copyRelativeAssets(opts: {
   }
 }
 
-/** Local `![](...)` and `<img src>` targets, excluding URLs and site-absolute paths. */
+/** Extensions of linked example files that are published next to the page. */
+const LINKED_FILE_EXTENSIONS = /\.(ya?ml|json)$/i;
+
+/**
+ * Local `![](...)` and `<img src>` targets, plus `[](...)` links to example
+ * files (LINKED_FILE_EXTENSIONS), excluding URLs and site-absolute paths.
+ * VitePress publishes neither, so without the copy those links 404 on the site.
+ */
 export function relativeAssetHrefs(src: string): string[] {
   const hrefs: string[] = [];
   const markdownImage =
     /!\[[^\]]*\]\(\s*(?:<([^>\n]+)>|(\S+?))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
   for (const match of src.matchAll(markdownImage)) {
     hrefs.push(match[1] ?? match[2] ?? "");
+  }
+  const markdownLink =
+    /(?<!!)\[[^\]]*\]\(\s*(?:<([^>\n]+)>|(\S+?))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g;
+  for (const match of src.matchAll(markdownLink)) {
+    const href = (match[1] ?? match[2] ?? "").trim().replace(/[?#].*$/, "");
+    if (LINKED_FILE_EXTENSIONS.test(href)) hrefs.push(href);
   }
   const htmlImage = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
   for (const match of src.matchAll(htmlImage)) {

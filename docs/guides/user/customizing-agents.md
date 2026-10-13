@@ -127,7 +127,7 @@ Base chains support up to 5 levels. Circular references are detected and rejecte
 
 > **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes or enabling runtime fetching in the child.
 
-> **Org-level fallback:** Separately from base-harness inheritance, the org-level `allowed_remote_resources` from `config.yaml` acts as a fallback for all URL resolution. URLs trusted at the org level are accepted even when the child harness omits the field. This is a distinct trust layer from base composition — the org-level list is set by organization administrators, not by base harness authors.
+> **Config-level fallback:** Separately from base-harness inheritance, the config-level `allowed_remote_resources` from the repository's `.fullsend/config.yaml` (layered over `config.base.yaml`) acts as a fallback for all URL resolution. URLs trusted at the config level are accepted even when the child harness omits the field. This is a distinct trust layer from base composition — the config-level list is set by the repository's administrators, not by base harness authors.
 
 ### Remote providers and profiles
 
@@ -366,8 +366,13 @@ also need the Go toolchain. Pin the parent tag to a digest before CI use.
 
 ### Adding executables
 
-The sandbox already has `/sandbox/workspace/bin` on its `PATH`. To make a
-script available as a command, drop it there:
+On Claude and pi runs the sandbox already has `/sandbox/workspace/bin` on its
+`PATH`, after the image's own directories. A file there adds a command; it
+does not replace a command the image already provides, such as `git`,
+`python3` or `node`. Codex runs restore the `PATH` from before the workspace
+`.env` is sourced, so `/sandbox/workspace/bin` is not on the codex agent's
+`PATH`; call the script by its absolute path there. To make a script
+available as a command on Claude and pi runs, drop it there:
 
 1. Create your script (e.g. `scripts/my-tool.sh`):
 
@@ -386,6 +391,21 @@ script available as a command, drop it there:
    ```
 
 4. The agent should be able to run `my-tool.sh` directly.
+
+`host_files` cannot write to paths the runner manages. Loading the harness
+fails with `dest "..." is reserved for the runner` when a `dest` is one of:
+
+- `/sandbox/workspace/.env`
+- `/sandbox/workspace/bin/` followed by `claude`, `codex`, `pi`, `opencode`,
+  `fullsend` or `fullsend-check-output`
+- anything under `/sandbox/claude-config`, `/sandbox/codex-config`,
+  `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`,
+  `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`
+
+`dest` must also be an absolute path under `/sandbox/` or `/tmp/` with no `..`
+path component. Other
+names in `/sandbox/workspace/bin` and files in `/sandbox/workspace/.env.d/`
+work as shown here.
 
 #### Modifying the PATH for external toolchains
 
@@ -408,6 +428,19 @@ When you need a directory outside `/sandbox/workspace/bin` on the `PATH`
 
 3. At startup the sandbox sources every `*.env` file under
    `/sandbox/workspace/.env.d/`, picking up your PATH addition.
+
+On Claude and pi runs, after the `.env.d` files are sourced, the runner puts
+its own `PATH` back in front, so your directory ends up after the runner's
+entries: a command found only in `/opt/my-toolchain/bin` is picked up from
+there, and a command the image also provides, such as `git` or `go`, is
+picked up from the image. To replace one of those, extend the sandbox image
+(see [Extending the sandbox image](#extending-the-sandbox-image)). Codex runs
+restore the `PATH` from before `.env`, so `.env.d` additions are not on the
+codex agent's `PATH`.
+
+`.env.d` files run as shell in the agent launch shell; treat them like
+`pre_script`. `host_files` can also place configuration that tools load, such
+as git config or shell rc files; that is trusted like `pre_script` too.
 
 **Note**: `env.sandbox` cannot modify `PATH`, the harness ignores special
 variables to protect sandbox operation.

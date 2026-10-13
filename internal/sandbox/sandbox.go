@@ -285,13 +285,6 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 	return nil
 }
 
-// gatewayProfileMetadataKeys lists top-level fields that the gateway's
-// profile export adds but a local profile never declares. They are the only
-// exported-only keys profileContentEqual ignores.
-var gatewayProfileMetadataKeys = map[string]bool{
-	"resource_version": true,
-}
-
 // gatewayProfileMatches reports whether the gateway's current content for
 // profile id matches the local file at profilePath. It is called after a
 // reimport reports "already exists" to distinguish an already-applied profile
@@ -315,13 +308,52 @@ func gatewayProfileMatches(ctx context.Context, id, profilePath string) (bool, e
 	return profileContentEqual(local, exported)
 }
 
-// profileContentEqual reports whether local (a profile YAML document) and
-// exported (the gateway's export of that same profile id) declare the same
-// fields with the same values, modulo gatewayProfileMetadataKeys.
+// gatewayNonZeroDefaults lists the top-level profile fields whose default
+// value in the gateway's export is not a zero value (OpenShell 0.1.2). The
+// export writes them even when the local file omits them (see #8211), and
+// profileContentEqual accepts them only when they hold exactly this value.
+var gatewayNonZeroDefaults = map[string]any{
+	"category": "other",
+	"source":   "user",
+	"scope":    "workspace",
+}
+
+// gatewayDefaultFalseKeys lists the boolean profile fields where `false`
+// means the same as unset (plain bools in OpenShell 0.1.2). The export always
+// writes some of them and omits others when false. Any other boolean is
+// optional, and `false` can differ from unset: MCP `strict_tool_names` is
+// enforced when unset but off when false. profileValueIsEmpty treats `false`
+// as empty only for these keys.
+var gatewayDefaultFalseKeys = map[string]bool{
+	"inference_capable":               true,
+	"required":                        true,
+	"secret":                          true,
+	"allow_encoded_slash":             true,
+	"websocket_credential_rewrite":    true,
+	"request_body_credential_rewrite": true,
+	"allow_uninspected_credentials":   true,
+}
+
+// profileContentEqual reports whether the gateway's export of a profile
+// (exported) still carries the content of the local profile YAML document
+// (local). It is driven by the local file, not by knowledge of what OpenShell
+// writes: every key in local must be present in exported with the same value,
+// and keys only the export has (gateway metadata and fields OpenShell filled
+// in with zero-value defaults, see #8211) are ignored. Maps are compared the same way
+// recursively, and lists must have the same length with matching entries.
 //
-// The comparison is bidirectional: a local file that removes a field (e.g.
-// `credentials` or `endpoints`) must not match a gateway profile that still
-// has it (see #7973).
+// Two guards keep #7973 working without a table of OpenShell defaults. A key
+// only the export has still counts as a mismatch when it holds any non-empty
+// value: a non-empty list or map (e.g. `credentials` or `endpoints` the
+// local file dropped, or unknown `annotations`) or a non-zero scalar (e.g. a
+// dropped `inference_capable: true`, or a credential `query_param: token`
+// or `auth_style`). The gateway keeps such a value when a blocked delete
+// leaves the old profile in place, so it must not look like an applied edit.
+// Zero values are the only export-only content tolerated, which needs no
+// knowledge of what OpenShell writes. The exception is
+// gatewayNonZeroDefaults, the few top-level fields the export fills in with
+// a non-zero default; a new non-zero default OpenShell adds fails closed
+// rather than hiding a stale value.
 //
 // Unparseable input is an error, not a mismatch.
 func profileContentEqual(local, exported []byte) (bool, error) {
@@ -334,23 +366,93 @@ func profileContentEqual(local, exported []byte) (bool, error) {
 		return false, fmt.Errorf("parsing exported profile: %w", err)
 	}
 
-	for k, v := range localDoc {
-		ev, ok := exportedDoc[k]
-		if !ok || !reflect.DeepEqual(v, ev) {
-			return false, nil
-		}
-	}
+	// resource_version is gateway bookkeeping; skip it even if the local
+	// file happens to carry a stale copy.
+	delete(localDoc, "resource_version")
+	delete(exportedDoc, "resource_version")
 
-	for k := range exportedDoc {
-		if gatewayProfileMetadataKeys[k] {
+	// Top-level fields the export fills in with a non-zero default when the
+	// local file omits them. Only the exact default value is tolerated.
+	for k, def := range gatewayNonZeroDefaults {
+		if _, declared := localDoc[k]; declared {
 			continue
 		}
-		if _, ok := localDoc[k]; !ok {
-			return false, nil
+		if ev, ok := exportedDoc[k]; ok && reflect.DeepEqual(ev, def) {
+			delete(exportedDoc, k)
 		}
 	}
 
-	return true, nil
+	return profileMapMatches(localDoc, exportedDoc), nil
+}
+
+// profileMapMatches reports whether exported holds every key of local with a
+// matching value. A local key the export omits matches only when its value is
+// empty (the export may leave defaults out). A key only exported has matches
+// only when its value is empty (see profileValueIsEmpty).
+func profileMapMatches(local, exported map[string]any) bool {
+	for k, lv := range local {
+		ev, ok := exported[k]
+		if !ok {
+			if !profileValueIsEmpty(k, lv) {
+				return false
+			}
+			continue
+		}
+		if !profileValueMatches(lv, ev) {
+			return false
+		}
+	}
+	for k, ev := range exported {
+		if _, ok := local[k]; ok {
+			continue
+		}
+		if !profileValueIsEmpty(k, ev) {
+			return false
+		}
+	}
+	return true
+}
+
+// profileValueMatches compares one local value against the exported value
+// for the same key. Maps and list entries are compared with
+// profileMapMatches; everything else must be equal.
+func profileValueMatches(local, exported any) bool {
+	switch l := local.(type) {
+	case map[string]any:
+		e, ok := exported.(map[string]any)
+		return ok && profileMapMatches(l, e)
+	case []any:
+		e, ok := exported.([]any)
+		if !ok || len(l) != len(e) {
+			return false
+		}
+		for i := range l {
+			if !profileValueMatches(l[i], e[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(local, exported)
+	}
+}
+
+// profileValueIsEmpty reports whether v, the value of key, is nil, a zero
+// scalar, or an empty list or map. A `false` counts as empty only for
+// gatewayDefaultFalseKeys.
+func profileValueIsEmpty(key string, v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case bool:
+		return !x && gatewayDefaultFalseKeys[key]
+	case []any:
+		return len(x) == 0
+	case map[string]any:
+		return len(x) == 0
+	default:
+		return reflect.ValueOf(v).IsZero()
+	}
 }
 
 // ProfileExists reports whether the gateway lists a provider profile with

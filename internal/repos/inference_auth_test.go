@@ -277,11 +277,11 @@ func TestUpdateInferenceAuth_ConcreteFilterCarvesOutGlob(t *testing.T) {
 		GitLab: &PlatformConfig{
 			URL: "https://gitlab.example.com",
 			Repos: []RepoEntry{{
-				Name:                   "group/*",
-				FullsendRef:            "v2.0.0",
-				AllowedRemoteResources: []string{"https://a.example.com/"},
-				Vendor:                 &vendor,
-				Inference:              InferenceSettings{Auth: InferenceAuthVertexWIF},
+				Name:        "group/*",
+				FullsendRef: "v2.0.0",
+				Config:      mustManagedConfig(t, "allowed_remote_resources:\n  - https://a.example.com/\n"),
+				Vendor:      &vendor,
+				Inference:   InferenceSettings{Auth: InferenceAuthVertexWIF},
 			}},
 		},
 	}
@@ -296,12 +296,15 @@ func TestUpdateInferenceAuth_ConcreteFilterCarvesOutGlob(t *testing.T) {
 	assert.Equal(t, "group/project", explicit.Name)
 	assert.Equal(t, InferenceAuthOpenAIAPIKey, explicit.Inference.Auth)
 	assert.Equal(t, "v2.0.0", explicit.FullsendRef, "carved-out entry keeps the glob's other overrides")
-	assert.Equal(t, glob.AllowedRemoteResources, explicit.AllowedRemoteResources)
+	assert.Equal(t, glob.Config.Writer().AllowedResources(), explicit.Config.Writer().AllowedResources())
+	// The carved entry owns its config: mutating it must not reach the glob.
+	explicit.Config.Writer().SetAllowedRemoteResources([]string{"https://changed.example.com/"})
+	globList, declared := glob.Config.ExplicitAllowedRemoteResources()
+	require.True(t, declared)
+	assert.Equal(t, []string{"https://a.example.com/"}, globList,
+		"mutating the carved allowlist must not change the glob's")
 	require.NotNil(t, explicit.Vendor)
 	assert.True(t, *explicit.Vendor)
-
-	explicit.AllowedRemoteResources[0] = "https://changed.example.com/"
-	assert.Equal(t, "https://a.example.com/", glob.AllowedRemoteResources[0], "carved-out entry must not alias the glob")
 	require.NoError(t, m.Validate())
 
 	sibling, ok := m.ResolveConfigWithGlobs("group", "other")

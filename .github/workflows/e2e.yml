@@ -199,6 +199,11 @@ jobs:
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          # Inference gateway BTs (#8280): the E2E test gateway URL (embeds
+          # the project number, so a secret) and its echo-only API key. The
+          # gateway scenarios skip when these are unset.
+          E2E_INFERENCE_GATEWAY_URL: ${{ secrets.E2E_INFERENCE_GATEWAY_URL }}
+          E2E_INFERENCE_GATEWAY_TEST_KEY: ${{ secrets.E2E_INFERENCE_GATEWAY_TEST_KEY }}
           # CF mint BT path: temp Worker deploy needs role PEMs + Cloudflare creds
           TEST_FULLSEND_PEM: ${{ secrets.TEST_FULLSEND_PEM }}
           TEST_TRIAGE_PEM: ${{ secrets.TEST_TRIAGE_PEM }}
@@ -245,6 +250,8 @@ jobs:
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+          E2E_INFERENCE_GATEWAY_URL: ${{ secrets.E2E_INFERENCE_GATEWAY_URL }}
+          E2E_INFERENCE_GATEWAY_TEST_KEY: ${{ secrets.E2E_INFERENCE_GATEWAY_TEST_KEY }}
         run: |
           exec /usr/bin/env -i \
             PATH=/usr/bin:/bin \
@@ -265,11 +272,13 @@ jobs:
             E2E_GCP_PROJECT_ID="${E2E_GCP_PROJECT_ID}" \
             E2E_GCP_WIF_PROVIDER="${E2E_GCP_WIF_PROVIDER}" \
             E2E_GCP_SERVICE_ACCOUNT="${E2E_GCP_SERVICE_ACCOUNT}" \
+            E2E_INFERENCE_GATEWAY_URL="${E2E_INFERENCE_GATEWAY_URL}" \
+            E2E_INFERENCE_GATEWAY_TEST_KEY="${E2E_INFERENCE_GATEWAY_TEST_KEY}" \
             /usr/bin/bash "${{ github.workspace }}/base-scripts/scripts/redact-behaviour-artifacts.sh"
 
       - name: Upload behaviour debug artifacts
         if: always() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
           path: ${{ runner.temp }}/behaviour-artifacts/
@@ -446,7 +455,7 @@ jobs:
 
       - name: Upload playback debug artifacts
         if: always() && steps.tests.outcome == 'failure' && steps.redact.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playback-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
           path: ${{ runner.temp }}/playback-artifacts/

@@ -1295,9 +1295,29 @@ func TestReposInstallCmd_VendorFlagValidation(t *testing.T) {
 
 func TestReposInstallCmd_PerRepoOverrideFlags(t *testing.T) {
 	cmd := newReposInstallCmd()
-	for _, name := range []string{"vertex-project", "vertex-region", "vertex-wif-provider", "fullsend-ref", "mint-url", "allowed-remote-resources"} {
+	for _, name := range []string{"vertex-project", "vertex-region", "vertex-wif-provider", "fullsend-ref", "mint-url"} {
 		f := cmd.Flags().Lookup(name)
 		require.NotNil(t, f, "expected --%s flag", name)
+	}
+}
+
+// TestReposInstallCmd_RemovedConfigFlagsRejected covers #8330: runtime and
+// allowed_remote_resources are declared in a repos.yaml config section, so
+// repos install no longer accepts --runtime or --allowed-remote-resources.
+func TestReposInstallCmd_RemovedConfigFlagsRejected(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	for _, name := range []string{"runtime", "allowed-remote-resources"} {
+		t.Run(name, func(t *testing.T) {
+			assert.Nil(t, newReposInstallCmd().Flags().Lookup(name), "--%s must not be a flag", name)
+
+			cmd := newRootCmd()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"repos", "install", "--manifest", manifestPath, "--" + name, "value"})
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unknown flag: --"+name)
+		})
 	}
 }
 
@@ -1951,59 +1971,6 @@ gitlab:
 		testClient:      fc,
 	})
 	require.Error(t, err)
-}
-
-func TestRunReposInstall_AllowedRemoteResources(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-	fc := newInstallFakeClient("acme/api", "acme/web")
-
-	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:               manifestPath,
-		concurrency:            4,
-		repoFilter:             []string{"acme/web"},
-		forge:                  repos.ForgeGitHub,
-		allowedRemoteResources: []string{"https://example.com/harness/"},
-		roles:                  []string{"triage"},
-		direct:                 true,
-		inferenceProject:       "inf-proj",
-		inferenceProjectNumber: "123456789",
-		inferenceRegion:        "us-central1",
-		testClient:             fc,
-	})
-	require.NoError(t, err)
-
-	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
-	require.NoError(t, loadErr)
-	require.NotNil(t, m.GitHub)
-	require.Equal(t, 2, len(m.GitHub.Repos))
-	assert.Equal(t, []string{"https://example.com/harness/"}, m.GitHub.Repos[1].AllowedRemoteResources)
-}
-
-func TestRunReposInstall_InvalidAllowedRemoteResources(t *testing.T) {
-	manifestPath := writeTestManifest(t, testManifestYAML)
-	fc := newInstallFakeClient("acme/api", "acme/web")
-
-	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:               manifestPath,
-		concurrency:            4,
-		repoFilter:             []string{"acme/web"},
-		forge:                  repos.ForgeGitHub,
-		allowedRemoteResources: []string{"https://example.com/harness"},
-		roles:                  []string{"triage"},
-		direct:                 true,
-		inferenceProject:       "inf-proj",
-		inferenceProjectNumber: "123456789",
-		inferenceRegion:        "us-central1",
-		testClient:             fc,
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--allowed-remote-resources")
-	assert.Contains(t, err.Error(), "must end with /")
-
-	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
-	require.NoError(t, loadErr)
-	require.NotNil(t, m.GitHub)
-	require.Equal(t, 1, len(m.GitHub.Repos), "malformed prefix must not be persisted")
 }
 
 func TestRunReposInstall_SyncFailureReportsError(t *testing.T) {

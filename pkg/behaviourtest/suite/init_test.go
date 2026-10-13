@@ -80,6 +80,9 @@ func (p *panickingSCM) GetBranchRef(context.Context, string, string, string) (st
 func (p *panickingSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
+func (p *panickingSCM) CreateUserFork(context.Context, string, string) (string, string, error) {
+	return "", "", nil
+}
 func (p *panickingSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
@@ -169,12 +172,15 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		ForkRepo:                   "repo-fork",
 		ForkPRNumber:               42,
 		ForkPRBranch:               "branch",
+		ForkSCM:                    &panickingSCM{},
 		URLHarnessRepoOwner:        "org",
 		URLHarnessRepoName:         "harness-host",
 		AllowedResourcesOverridden: true,
 		AllowedResourcesOriginal:   []string{"https://example.com/"},
 		AgentsOverridden:           true,
 		AgentsOriginal:             []config.AgentEntry{{Name: "test", Source: "harness/test.yaml"}},
+		GatewayConfigOverridden:    true,
+		GatewayConfigOriginal:      []byte("runtime: dummy\n"),
 		PlaybackEntries:            []runtime.PlaybackEntry{{Result: "triage/bug"}},
 		PlaybackCommitted:          true,
 		ConsumedHarnessRunIDs:      map[string]map[int]bool{"review": {10: true}},
@@ -189,12 +195,15 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Equal(t, "", w.ForkRepo)
 	assert.Equal(t, 0, w.ForkPRNumber)
 	assert.Equal(t, "", w.ForkPRBranch)
+	assert.Nil(t, w.ForkSCM)
 	assert.Equal(t, "", w.URLHarnessRepoOwner)
 	assert.Equal(t, "", w.URLHarnessRepoName)
 	assert.False(t, w.AllowedResourcesOverridden)
 	assert.Nil(t, w.AllowedResourcesOriginal)
 	assert.False(t, w.AgentsOverridden)
 	assert.Nil(t, w.AgentsOriginal)
+	assert.False(t, w.GatewayConfigOverridden)
+	assert.Nil(t, w.GatewayConfigOriginal)
 	assert.Nil(t, w.PlaybackEntries)
 	assert.False(t, w.PlaybackCommitted)
 	assert.Nil(t, w.ConsumedHarnessRunIDs)

@@ -263,6 +263,11 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 		if cfg.Forge == ForgeGitLab && IsGitLabRoleManagedVar(name) {
 			continue
 		}
+		// The transient installer lease is not an orphan while a concurrent
+		// install holds it.
+		if cfg.Forge == ForgeGitLab && name == GitLabProjectLeaseVar {
+			continue
+		}
 		orphans = append(orphans, OrphanVar{Name: name})
 	}
 	sort.Slice(orphans, func(i, j int) bool { return orphans[i].Name < orphans[j].Name })

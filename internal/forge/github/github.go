@@ -4656,6 +4656,11 @@ func (c *LiveClient) GrantProtectedBranchMergeUser(_ context.Context, _, _, _ st
 	return forge.ErrNotSupported
 }
 
+// RevokeProtectedBranchMergeUserEntry is not supported on GitHub.
+func (c *LiveClient) RevokeProtectedBranchMergeUserEntry(_ context.Context, _, _, _ string, _, _ int) error {
+	return forge.ErrNotSupported
+}
+
 // CreatePipeline is not supported on GitHub.
 func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[string]string) (*forge.Pipeline, error) {
 	return nil, forge.ErrNotSupported
@@ -4769,6 +4774,11 @@ func (c *LiveClient) SetPipelineVariablesMinimumOverrideRole(_ context.Context, 
 
 // ForceCommitFileToBranch is not supported on GitHub.
 func (c *LiveClient) ForceCommitFileToBranch(_ context.Context, _, _, _, _, _ string, _ []byte) error {
+	return forge.ErrNotSupported
+}
+
+// DeleteProjectServiceAccount is not supported on GitHub.
+func (c *LiveClient) DeleteProjectServiceAccount(_ context.Context, _, _ string, _ int) error {
 	return forge.ErrNotSupported
 }
 

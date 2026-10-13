@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -725,71 +724,6 @@ func TestMatchManifestRepos_BadPattern(t *testing.T) {
 	}
 }
 
-func TestSetDefault_AllowedRemoteResources_ValidatesURLs(t *testing.T) {
-	dir := t.TempDir()
-	manifestPath := filepath.Join(dir, "repos.yaml")
-
-	err := SetDefault(manifestPath, "defaults.allowed_remote_resources", "not-a-url")
-	if err == nil {
-		t.Fatal("expected error for non-URL value")
-	}
-	if !strings.Contains(err.Error(), "not a valid HTTPS URL") {
-		t.Errorf("expected URL validation error, got: %v", err)
-	}
-
-	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "http://insecure.example.com/")
-	if err == nil {
-		t.Fatal("expected error for non-HTTPS URL")
-	}
-
-	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com")
-	if err == nil {
-		t.Fatal("expected error for HTTPS URL missing a trailing slash")
-	}
-	if !strings.Contains(err.Error(), "must end with /") {
-		t.Errorf("expected trailing-slash validation error, got: %v", err)
-	}
-
-	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com/%252e%252e/")
-	if err == nil {
-		t.Fatal("expected error for double-encoded sequence")
-	}
-	if !strings.Contains(err.Error(), "double-encoded sequence") {
-		t.Errorf("expected double-encoding validation error, got: %v", err)
-	}
-
-	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com/,https://b.example.com/")
-	if err != nil {
-		t.Fatalf("expected no error for valid HTTPS URLs, got: %v", err)
-	}
-}
-
-func TestSetDefault_AllowedRemoteResources_DropsEmptyTokens(t *testing.T) {
-	dir := t.TempDir()
-	manifestPath := filepath.Join(dir, "repos.yaml")
-
-	err := SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com/, ,")
-	if err != nil {
-		t.Fatalf("expected no error for a trailing-comma value, got: %v", err)
-	}
-
-	data, err := os.ReadFile(manifestPath)
-	if err != nil {
-		t.Fatalf("reading manifest: %v", err)
-	}
-	var m Manifest
-	if err := parseManifestBytes(data, &m); err != nil {
-		t.Fatalf("parsing manifest: %v", err)
-	}
-	if err := m.Validate(); err != nil {
-		t.Errorf("expected persisted manifest to validate, got: %v", err)
-	}
-	want := []string{"https://a.example.com/"}
-	if !slices.Equal(m.Defaults.AllowedRemoteResources, want) {
-		t.Errorf("expected empty tokens dropped, got %#v, want %#v", m.Defaults.AllowedRemoteResources, want)
-	}
-}
-
 func TestSetDefault_Config(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "repos.yaml")
@@ -914,25 +848,6 @@ func TestSetDefault_RemoveKey(t *testing.T) {
 	data, _ := os.ReadFile(manifestPath)
 	if strings.Contains(string(data), "mint_url") {
 		t.Errorf("expected mint_url removed, got:\n%s", data)
-	}
-}
-
-func TestSetDefault_RemoveAllowedRemoteResources(t *testing.T) {
-	dir := t.TempDir()
-	manifestPath := filepath.Join(dir, "repos.yaml")
-
-	err := SetDefault(manifestPath, "defaults.allowed_remote_resources", "https://a.example.com/")
-	if err != nil {
-		t.Fatalf("SetDefault() set error: %v", err)
-	}
-
-	err = SetDefault(manifestPath, "defaults.allowed_remote_resources", "")
-	if err != nil {
-		t.Fatalf("SetDefault() remove error: %v", err)
-	}
-	data, _ := os.ReadFile(manifestPath)
-	if strings.Contains(string(data), "allowed_remote_resources") {
-		t.Errorf("expected allowed_remote_resources removed, got:\n%s", data)
 	}
 }
 
@@ -1177,24 +1092,38 @@ func TestSetDefault_InvalidKey(t *testing.T) {
 	}
 }
 
-func TestSetDefault_Runtime(t *testing.T) {
+// TestSetDefault_RejectsRemovedSiblingKeys covers #8330: the former
+// defaults.runtime / defaults.allowed_remote_resources keys are rejected
+// with guidance to edit defaults.config, and nothing is written.
+func TestSetDefault_RejectsRemovedSiblingKeys(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), "repos.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("version: 1\ngithub:\n  repos:\n    - name: acme/a\n"), 0o644))
+	for key, field := range map[string]string{
+		"defaults.runtime":                  "runtime",
+		"defaults.allowed_remote_resources": "allowed_remote_resources",
+	} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "repos.yaml")
+			before := []byte("version: 1\ngithub:\n  repos:\n    - name: acme/a\n")
+			require.NoError(t, os.WriteFile(path, before, 0o644))
 
-	require.NoError(t, SetDefault(path, "defaults.runtime", "pi"))
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), "runtime: pi")
+			for _, value := range []string{"pi", "https://a.example.com/", ""} {
+				err := SetDefault(path, key, value)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), key+" is no longer supported")
+				assert.Contains(t, err.Error(), "defaults.config."+field)
+			}
+			after, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, before, after, "a rejected key writes nothing")
 
-	err = SetDefault(path, "defaults.runtime", "opencode")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not a valid runtime")
-
-	require.NoError(t, SetDefault(path, "defaults.runtime", ""), "empty clears the default")
-	data, err = os.ReadFile(path)
-	require.NoError(t, err)
-	assert.NotContains(t, string(data), "runtime:")
+			missing := filepath.Join(t.TempDir(), "repos.yaml")
+			require.Error(t, SetDefault(missing, key, "pi"))
+			assert.NoFileExists(t, missing, "a rejected key does not create the manifest")
+		})
+	}
+	assert.NotContains(t, ValidDefaultKeys, "defaults.runtime")
+	assert.NotContains(t, ValidDefaultKeys, "defaults.allowed_remote_resources")
 }
 
 func TestSetDefault_Vendor(t *testing.T) {

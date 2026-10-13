@@ -232,6 +232,9 @@ func (f *fakeDispatchSCM) DeleteRepo(context.Context, string, string) error     
 func (f *fakeDispatchSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
+func (f *fakeDispatchSCM) CreateUserFork(context.Context, string, string) (string, string, error) {
+	return "", "", nil
+}
 func (f *fakeDispatchSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }

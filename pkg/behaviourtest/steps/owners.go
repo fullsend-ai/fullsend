@@ -35,11 +35,8 @@ func registerOwnersSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the triage workflow logs do not contain "([^"]+)"$`, func(ctx context.Context, needle string) (context.Context, error) {
 		return ctx, thenWorkflowLogsDoNotContain(world.FromContext(ctx), needle)
 	})
-	sc.Step(`^the (bot|outsider|write actor) opens an issue for OWNERS auth testing$`, func(ctx context.Context, actor string) (context.Context, error) {
+	sc.Step(`^the (bot|`+actorAlternation+`) opens an issue for OWNERS auth testing$`, func(ctx context.Context, actor string) (context.Context, error) {
 		return ctx, whenIssueOpenedForOwnersAuth(world.FromContext(ctx), actor)
-	})
-	sc.Step(`^the outsider posts "([^"]+)" on the issue$`, func(ctx context.Context, command string) (context.Context, error) {
-		return ctx, whenOutsiderPostsCommand(world.FromContext(ctx), command)
 	})
 	sc.Step(`^the triage agent did not run$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, thenTriageAgentDidNotRun(world.FromContext(ctx))
@@ -57,18 +54,9 @@ func resolveActorLogin(w *world.World, actor string) (string, error) {
 			return "", fmt.Errorf("OWNERS test requires GitHub SCM driver")
 		}
 		return ghDriver.Client.GetAuthenticatedUser(context.Background())
-	case "outsider":
-		if err := requireOutsider(w); err != nil {
-			return "", err
-		}
-		return w.OutsiderLogin, nil
-	case "write actor":
-		if err := requireWriteActor(w); err != nil {
-			return "", err
-		}
-		return w.WriteLogin, nil
 	default:
-		return "", fmt.Errorf("unknown actor %q", actor)
+		_, login, err := actorIdentity(w, actor)
+		return login, err
 	}
 }
 
@@ -155,17 +143,12 @@ func whenIssueOpenedForOwnersAuth(w *world.World, actor string) error {
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before creating issues")
 	}
 	scmDriver := w.SCM
-	switch actor {
-	case "outsider":
-		if err := requireOutsider(w); err != nil {
+	if actor != "bot" {
+		actorSCM, _, err := actorIdentity(w, actor)
+		if err != nil {
 			return err
 		}
-		scmDriver = w.OutsiderSCM
-	case "write actor":
-		if err := requireWriteActor(w); err != nil {
-			return err
-		}
-		scmDriver = w.WriteSCM
+		scmDriver = actorSCM
 	}
 	w.ScenarioStart = time.Now().Add(-issueOpenDrainSkewBuffer)
 	w.TriageTriggerEvent = issueOpenEvent
@@ -234,33 +217,6 @@ func thenTriageAgentDidNotRun(w *world.World) error {
 		return fmt.Errorf("checking triage run %d artifacts: %w", w.WorkflowRun.ID, err)
 	}
 	return nil
-}
-
-func requireWriteActor(w *world.World) error {
-	if w.WriteSCM == nil {
-		return fmt.Errorf("TEST_ACTOR_WRITE_PAT not set")
-	}
-	return nil
-}
-
-func requireOutsider(w *world.World) error {
-	if w.OutsiderSCM == nil {
-		return fmt.Errorf("TEST_ACTOR_OUTSIDER_PAT not set")
-	}
-	return nil
-}
-
-func whenOutsiderPostsCommand(w *world.World, command string) error {
-	if err := requireOutsider(w); err != nil {
-		return err
-	}
-	if w.IssueNumber == 0 {
-		return fmt.Errorf("no issue created")
-	}
-	w.ScenarioStart = time.Now()
-	_, err := w.OutsiderSCM.AddComment(context.Background(),
-		w.RepoOwner, w.RepoName, w.IssueNumber, command)
-	return err
 }
 
 func thenDispatchRunDoesNotAuthorizeViaOwners(w *world.World) error {

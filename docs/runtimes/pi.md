@@ -48,14 +48,29 @@ actually called.
 > `providers: [openai]` on the harness; the sandbox can then reach `api.openai.com` for the
 > Responses API and nothing else, and never sees the credential
 > ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). A custom harness must carry a
-> `policy:` (the fleet's `policies/base.yaml`); without one the image's default policy leaves an
-> uninspected route to `api.openai.com` and the run stops before the agent starts. **Exercised so
+> `policy:` (the fleet's `policies/base.yaml`); without one `fullsend run` fails at harness
+> validation before it starts the sandbox. The fleet base policy also avoids an uninspected route
+> to `api.openai.com`, which the gateway refuses to carry the credential over. **Exercised so
 > far:** the local static-key path end to end on 2026-08-27 (OpenShell 0.0.115, pi 0.84.3,
 > `gpt-5.6-luna`: placeholder in the sandbox, pi reading it from the runner-seeded `auth.json`, tool
 > calls through the hook adapter, run-scoped provider deleted at the end, expired in place under
 > `--keep-sandbox`), plus the placeholder-generation experiments recorded in the ADR. The WIF path
 > has no live run yet; `features/runtime/pi-openai.feature` stays gated on `runtime-pi-openai`
 > until an OpenAI organization is mapped to the pool repositories.
+
+> **Any model through an inference gateway (experimental).** A `gateway/<model>` spec sends the
+> model call through an OpenAI/Anthropic-compatible gateway (Praxis, LiteLLM, agentgateway, ...)
+> with the [pi-inference-gateway](https://github.com/fullsend-ai/pi-inference-gateway) extension.
+> On a run with a forge OIDC endpoint (a GitHub Actions job with `id-token: write`), the
+> `inference.gateway` block in `.fullsend/config.yaml` makes the runner own the route: it loads the
+> extension, puts the job's OIDC token behind a run-scoped provider and refreshes it
+> ([config reference](../reference/config-reference.md),
+> [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). With `auth: api-key` the runner
+> owns the route on local runs too: it reads the gateway key from
+> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and puts it behind the same run-scoped provider, with no
+> refresh ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)). Without the
+> block, a harness can still ship the extension as a plugin for local runs: see [Running agents locally › Using an
+> inference gateway](../guides/user/running-agents-locally.md#using-an-inference-gateway-experimental).
 
 Harness `model:` and `agents:` entry `model:` values accept the `provider/id` form directly
 (`xai-vertex/xai/grok-4.6`); a harness can also select a provider with a bare `model:` plus

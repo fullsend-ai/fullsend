@@ -6,6 +6,7 @@ package gitfetch
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -97,18 +99,15 @@ func FetchTree(ctx context.Context, cloneURL, subpath, ref, token string) (map[s
 		return nil, wrapTransient(redactToken(fmt.Errorf("gitfetch: git checkout: %w", err), token))
 	}
 
-	walkRoot := tmpDir
-	if subpath != "" {
-		walkRoot = filepath.Join(tmpDir, filepath.FromSlash(subpath))
+	walkRoot, err := resolveWalkRoot(tmpDir, subpath)
+	if errors.Is(err, errPathNotFound) {
+		return nil, fmt.Errorf("gitfetch: path %q not found in repository at ref %s", subpath, ref)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("gitfetch: %w", err)
 	}
 
-	absTmp, _ := filepath.Abs(tmpDir)
-	absWalk, _ := filepath.Abs(walkRoot)
-	if absWalk != absTmp && !strings.HasPrefix(absWalk, absTmp+string(os.PathSeparator)) {
-		return nil, fmt.Errorf("gitfetch: path %q escapes repository root", subpath)
-	}
-
-	info, err := os.Stat(walkRoot)
+	info, err := os.Lstat(walkRoot)
 	if err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("gitfetch: path %q not found in repository at ref %s", subpath, ref)
 	}
@@ -164,6 +163,59 @@ func FetchTree(ctx context.Context, cloneURL, subpath, ref, token string) (map[s
 	}
 
 	return files, nil
+}
+
+// errPathNotFound is returned by resolveWalkRoot when a subpath
+// component does not exist in the checkout, including a component below
+// a regular file. Other filesystem errors are returned with the
+// component that failed.
+var errPathNotFound = errors.New("path not found")
+
+// resolveWalkRoot returns the symlink-resolved directory for subpath
+// inside the checkout at root. Every subpath component is checked with
+// Lstat and refused if it is a symlink (including dangling links and
+// loops), so a committed link never redirects the walk. The resolved
+// result is then compared against the resolved checkout root as a
+// second guard; with every component verified above it can only fail if
+// the private checkout changes underneath us.
+func resolveWalkRoot(root, subpath string) (string, error) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolving checkout root: %w", err)
+	}
+	cleaned := path.Clean(subpath)
+	if cleaned == "." {
+		return realRoot, nil
+	}
+
+	cur := realRoot
+	segments := strings.Split(cleaned, "/")
+	for i, segment := range segments {
+		cur = filepath.Join(cur, segment)
+		fi, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			return "", errPathNotFound
+		}
+		component := strings.Join(segments[:i+1], "/")
+		if err != nil {
+			return "", fmt.Errorf("path %q: inspecting component %q: %w", subpath, component, err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("path %q: component %q is a symlink; symlinks are not supported", subpath, component)
+		}
+	}
+
+	realWalk, err := filepath.EvalSymlinks(cur)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", errPathNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("path %q: resolving: %w", subpath, err)
+	}
+	if realWalk != realRoot && !strings.HasPrefix(realWalk, realRoot+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path %q escapes repository root", subpath)
+	}
+	return realWalk, nil
 }
 
 func validatePath(p string) error {

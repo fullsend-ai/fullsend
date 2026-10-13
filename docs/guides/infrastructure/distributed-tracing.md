@@ -34,8 +34,12 @@ environment variable, exactly like Level 2's endpoint.
 
 | Variable | Purpose | Notes |
 |----------|---------|-------|
-| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | Signal-specific headers | Takes precedence; `key=value` pairs separated by commas; values are URL-decoded |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | Signal-specific headers | Takes precedence; `key=value` pairs separated by commas; values are URL-decoded. Must use `=` as the delimiter, not `:` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Base headers | Same format as above |
+
+::: warning Header syntax: `key=value`, not `key: value`
+OpenTelemetry headers use comma-separated `key=value` pairs (e.g. `Authorization=Bearer%20<token>`), **not** HTTP header-line syntax (`Authorization: Bearer <token>`). Fullsend validates configured headers before creating the exporter. If an entry uses `:` instead of `=`, validation warns on stderr and skips remote OTLP export to prevent header corruption and credential leakage.
+:::
 
 ### Private CA
 

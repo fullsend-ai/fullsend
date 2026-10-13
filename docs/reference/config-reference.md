@@ -3,8 +3,10 @@
 Complete reference for all fields available in `.fullsend/config.yaml`. For
 how these fields resolve through layered configuration, see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
-Fleet manifests can declare the same managed-configuration schema as
-`defaults.config` / per-repository `config` in `repos.yaml` (this is not
+Fleet manifests can declare the same managed-configuration schema (every
+field below, including `runtime` and `allowed_remote_resources`) as
+`defaults.config`, `github.config`, `gitlab.config`, or per-repository
+`config` in `repos.yaml` (this is not
 `config_base`, which is the configuration-preset path written to
 `.fullsend/config.base.yaml`); see
 [Repo Management — Managed configuration](../guides/getting-started/repo-management.md#managed-configuration).
@@ -88,6 +90,12 @@ inference:
     audience: ""                     # OpenAI WIF audience
     identity_provider_id: ""         # OpenAI WIF identity provider ID
     service_account_id: ""           # OpenAI WIF service account ID
+  gateway:                           # Inference gateway credential route (ADR 0137)
+    url: ""                          # Gateway URL, e.g. https://gateway.example.com or https://gateway.example.com/team-a (optional path prefix, no trailing /v1, port 443 only; plain http only for a loopback test host)
+    audience: ""                     # OIDC audience the runner requests for the gateway (oidc mode)
+    auth: ""                         # Credential mode: oidc (default) or api-key (ADR 0138)
+    models: {}                       # Inline model list: id -> {api, compat, contextWindow, maxTokens}
+    models_file: ""                  # Or: repository path to a pi-inference-gateway config file
 
 # ── Model aliases ────────────────────────────────────────────
 models:
@@ -212,7 +220,10 @@ restricts which orgs and repos agents may create issues in.
 - **`allow_targets.repos`** — Specific repos in `owner/name` format.
 
 When omitted, agents cannot create issues outside the repository they are
-running in.
+running in. That repository is always allowed, so it does not need an
+entry. The default per-repo configuration generated without a preset lists
+only `fullsend-ai/fullsend` in `allow_targets.repos`, which lets retro file
+upstream proposals and triage file upstream prerequisites.
 
 ### `authorization`
 
@@ -282,6 +293,127 @@ independently through the layered config system (an overlay can override
   `fullsend repos install` checks the same sources for repositories whose
   `inference.auth` is `openai-wif`. See
   [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+- **`gateway`** — a self-hosted, OpenAI/Anthropic-compatible inference
+  gateway that validates the job's forge OIDC token directly
+  ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). Models
+  with the `gateway/` prefix use this route. The block applies when it is
+  complete and, in the default `oidc` mode, the run has a forge OIDC endpoint
+  (a GitHub Actions job with `id-token: write`); the `api-key` mode (see
+  `auth` below) has no such condition. In the `oidc` mode the runner then
+  fetches the job's OIDC assertion for
+  `audience` and puts it behind a run-scoped OpenShell provider with a
+  per-host egress profile. It seeds the provider's placeholder into a
+  runner-owned token file, and re-seeds it before each token's own `exp`.
+  OpenShell's placeholders do not say which rotation they belong to. So if
+  the runner does not see a refreshed token's placeholder in the sandbox
+  (the 90-second settle wait runs out, or reading it fails), it does not
+  rotate again. It moves the
+  provider's expiry back to the token the agent holds and stops
+  refreshing, and the run fails closed when that token expires. The
+  re-seed runs only after the sandbox hands out the new placeholder, and
+  it checks the file afterwards.
+  This happens in addition to every other provider: `openai/` and Vertex
+  models in the same run keep their own routes. If the gateway cannot be
+  reached, or refuses the token, the run fails and does not fall back to
+  another credential. With no block, or in the `oidc` mode on a local run
+  without an OIDC endpoint, the runner adds nothing on pi, so a harness that
+  loads the inference-gateway extension as a plugin keeps working. codex and
+  Claude Code have no such setup, so there a `gateway/` model without a block
+  that applies is an error. codex sends `gateway/` models to the gateway's
+  `POST /v1/responses` through a runner-owned `fullsend-gateway` provider
+  ([Codex › Models through an inference gateway](../runtimes/codex.md#models-through-an-inference-gateway-experimental)).
+  On Claude Code the runner exports `url` as `ANTHROPIC_BASE_URL` and passes
+  the id after `gateway/` to `--model`; the model list is not used
+  ([details](../runtimes/claude.md#inference-gateway-route)). Fields:
+  - `url` — the gateway origin, for example `https://gateway.example.com`,
+    optionally followed by the path prefix the gateway serves its API
+    under, for example `https://gateway.example.com/team-a` for a gateway
+    behind a shared ingress. Must be `https` (plain `http` only for a
+    loopback test host), with no credentials, query or fragment, and no
+    port other than 443: the runner adds the `/v1/...` model API paths
+    itself, and the egress profile allows the gateway host on port 443
+    only. A path prefix must be a clean absolute path: no empty (`//`),
+    `.` or `..` segment, no percent-encoding, only letters, digits, `-`,
+    `.`, `_` and `~` in each segment, and no trailing `/v1` (write
+    `https://gateway.example.com/team-a`, not `.../team-a/v1`). A trailing
+    `/` is ignored. The prefix applies everywhere the runner builds a model
+    API path: each runtime calls `<url>/v1/...`, the egress profile binds
+    the credential to `<prefix>/v1/**` only (never the whole host) and
+    allows only the model API paths under it, and
+    [`fullsend inference gateway status`](../cli/inference.md#inference-gateway-status)
+    probes `<url>/v1/models`. A bare origin works as before.
+    The run route accepts a gateway on a private address, but
+    [`fullsend inference gateway status`](../cli/inference.md#inference-gateway-status)
+    refuses loopback, private and other internal addresses, so it cannot
+    check one. For such a gateway, a run is the check: its first gateway
+    model call fails if the gateway is unreachable or refuses the token.
+  - `audience` — the OIDC audience the runner requests. The token is valid
+    only at the gateway. Required in the `oidc` mode; not used in the
+    `api-key` mode.
+  - `auth` — the credential mode, `oidc` (the default) or `api-key`
+    ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
+    New in fullsend v0.47.0: an older CLI or reusable workflow rejects a
+    config that sets it. There is no precedence and no fallback between them. `oidc` is the
+    route described above. `api-key` is for gateways that cannot trust
+    forge OIDC. It is supported, but it is not the primary or safest
+    option, because it relies on a long-lived secret: use it with caution,
+    and prefer `oidc` when the gateway supports it. In the `api-key` mode
+    the runner reads the gateway key from the
+    `FULLSEND_INFERENCE_GATEWAY_API_KEY` forge secret or local environment
+    variable, and fails the run when it is not set. It puts the key behind
+    the same run-scoped provider placeholder, egress profile and guards as
+    the OIDC token. The key is not rotated, so nothing is re-seeded. The
+    block applies on local runs too, so the runner owns the route there
+    as well.
+  - `models` — optional inline model list, a map of model id to settings:
+    `api` (one of `openai-responses`, `anthropic-messages`,
+    `openai-completions`), and optional `compat`, `contextWindow` and
+    `maxTokens`. `compat` holds pi request-feature flags: each value is a
+    boolean, string or number, a flag that pi-inference-gateway v0.1.1
+    knows must have that flag's type for the model's `api`, list-valued
+    flags such as `allowedFallbackModels` are refused, and an unknown flag
+    whose name looks like a credential or header is refused.
+  - `models_file` — optional repository path, for example
+    `.fullsend/inference-gateway.json`, to a file in the
+    [pi-inference-gateway config format](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file).
+    It must hold exactly one entry, `providers.gateway`, carrying only
+    `models`, `include`, `exclude` and `defaultApi`, and every model must
+    set its own `api`: pi runs offline, and the extension offers a
+    configured model only when its entry names an `api`. Per-model values
+    follow the extension's types: `compat` as for inline models,
+    `contextWindow` and `maxTokens` positive whole numbers, `cost` only
+    `input`, `output`, `cacheRead` and `cacheWrite` as non-negative
+    numbers, and `thinkingLevelMap` thinking levels mapped to a string or
+    `null`. Duplicate JSON keys are refused. These checks validate the
+    file's shape; they are not secret detection. `fullsend github setup`
+    commits the file as written, so keep credentials out of free-text
+    values such as model names. `include`,
+    `exclude` and `defaultApi` only apply to models discovered from the
+    gateway, so they have no effect on a pi run. A file that sets
+    `baseUrl`, `baseUrlEnv`, a credential key (`apiKey*`, `tokenFile`,
+    `username*`, `password*`), `headers`, `authHeader`, `modelsPath`,
+    `discovery` or `fallbackModels` is refused: the runner owns those.
+    The runner reads the file from the repository checkout that
+    `config.yaml` came from, so it is read at the same ref (the base
+    branch on pull-request events), even when an org or managed layer set
+    the path.
+
+  `url` is always required, and in the `oidc` mode `url` and `audience`
+  are all or none: `fullsend github setup` refuses to leave a block
+  without them, and the runner fails a run whose resolved block is
+  partial. `models` and `models_file` are mutually exclusive. A pi run on
+  a `gateway/` model needs one of them, because pi runs offline and cannot
+  discover the gateway's models. On codex the list is not used: fullsend
+  renders no catalog for codex, so the id after `gateway/` is the model it
+  sends (a configured `models_file` must still be readable).
+  `url`, `audience` and `auth` layer
+  independently; the model list (either form) is one unit,
+  and a layer that sets it replaces the inherited list. There is no
+  runner-variable override for this block. `fullsend github setup
+  --inference-gateway-*` writes it and changes only the keys you pass, so
+  a repository can add its models under a `url` and `audience` inherited
+  from `config.base.yaml`. For a walkthrough, see
+  [Using an inference gateway](../guides/user/inference-gateway.md).
 
 For setup instructions, see
 [Getting Inference](../guides/getting-started/getting-inference.md).

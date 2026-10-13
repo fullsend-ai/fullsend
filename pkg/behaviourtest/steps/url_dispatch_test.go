@@ -1143,6 +1143,9 @@ func (f *fakeURLSCM) CloseIssue(context.Context, string, string, int) error { re
 func (f *fakeURLSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
+func (f *fakeURLSCM) CreateUserFork(context.Context, string, string) (string, string, error) {
+	return "", "", nil
+}
 func (f *fakeURLSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }

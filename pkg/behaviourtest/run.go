@@ -134,6 +134,20 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		template.WriteLogin = login
 	}
 
+	if triagePAT := os.Getenv("TEST_ACTOR_TRIAGE_PAT"); triagePAT != "" {
+		triageClient := e2etest.NewLiveClient(triagePAT)
+		triageSCM, err := newSCMDriver(cfg.SCM, triageClient)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template.TriageSCM = triageSCM
+		login, err := triageClient.GetAuthenticatedUser(ctx)
+		if err != nil {
+			t.Fatalf("resolving triage actor login: %v", err)
+		}
+		template.TriageLogin = login
+	}
+
 	suiteRunner := godog.TestSuite{
 		Name:                "behaviour",
 		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template) },

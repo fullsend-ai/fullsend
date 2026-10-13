@@ -108,6 +108,10 @@ type Drift struct {
 	Field    string `json:"field"`
 	Expected string `json:"expected"`
 	Actual   string `json:"actual"`
+	// Detail is optional multi-line guidance, such as the repos.yaml
+	// entry and effective-configuration difference needed to adopt an
+	// existing markerless .fullsend/config.yaml.
+	Detail string `json:"detail,omitempty"`
 }
 
 // RepoStatus holds the status of a single repo as compared against
@@ -132,9 +136,10 @@ type RepoStatus struct {
 	ConfigRejected bool `json:"-"`
 
 	// GitLab role-credential status. Names only; never token values.
-	GitLabRolesReady      bool     `json:"gitlab_roles_ready,omitempty"`
-	GitLabRolesPartial    bool     `json:"gitlab_roles_partial,omitempty"`
-	GitLabRoleDiagnostics []string `json:"gitlab_role_diagnostics,omitempty"`
+	GitLabRolesReady      bool                         `json:"gitlab_roles_ready,omitempty"`
+	GitLabRolesPartial    bool                         `json:"gitlab_roles_partial,omitempty"`
+	GitLabRoleDiagnostics []string                     `json:"gitlab_role_diagnostics,omitempty"`
+	GitLabServiceAccounts []GitLabServiceAccountStatus `json:"gitlab_service_accounts,omitempty"`
 }
 
 // StatusSummary provides aggregate counts across all repos.
@@ -287,6 +292,15 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		ExpectedMintURL: cfg.MintURL,
 	}
 
+	// Load a declared preset up front so the managed-config safety gate
+	// evaluates the proposed overlay over the proposed base, matching
+	// install (#8218). A load failure is reported by checkPresetDrift.
+	if cfg.Config != "" {
+		if data, loadErr := store.Load(ctx, cfg.Config, cfg.ConfigHash); loadErr == nil {
+			cfg.ProposedBase = data
+		}
+	}
+
 	// Build expected values for all static variables using the same
 	// function as the converge path, so variable classification
 	// (static vs dynamic) cannot diverge between the two paths.
@@ -318,6 +332,20 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		// Leftover credentials of an unselected method are drift even
 		// when none of the selected method's components exist.
 		checkObsoleteInferenceConfig(ctx, client, cfg, &status)
+		if status.Error != "" {
+			return status
+		}
+		// Both configuration layers are within repos management before
+		// first install too (#8218): an undeclared existing base blocks
+		// install and a markerless managed overlay requires adoption, so
+		// report them now rather than only after Fullsend components
+		// appear.
+		cfg.FreshInstall = true
+		checkPresetDrift(ctx, cfg, store, &status)
+		if status.Error != "" {
+			return status
+		}
+		checkManagedConfigDrift(ctx, cfg, &status)
 		return status
 	}
 	status.Installed = true
@@ -404,6 +432,9 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		return status
 	}
 
+	// Same predicate as convergence: a pending initialization (credentials
+	// written, shim workflow not yet merged) is not an established install.
+	cfg.FreshInstall = pristineInstallation(components)
 	checkPresetDrift(ctx, cfg, store, &status)
 	if status.Error != "" {
 		return status

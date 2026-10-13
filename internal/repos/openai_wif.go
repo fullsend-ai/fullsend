@@ -249,17 +249,17 @@ func effectiveConfigOverlay(ctx context.Context, d convergeDiscovery) ([]byte, e
 	if !d.resolved.ConfigManaged {
 		return nil, nil
 	}
-	existing, err := readOptionalFile(ctx, d.resolved.ForgeConfig.Client, d.repo.Owner, d.repo.Repo, preset.OverlayPath)
+	existing, found, err := readExistingFile(ctx, d.resolved.ForgeConfig.Client, d.repo.Owner, d.repo.Repo, preset.OverlayPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading %s: %w", preset.OverlayPath, err)
 	}
-	if len(existing) > 0 && !hasManagedConfigMarker(existing) {
+	if overlayNeedsAdoption(found, existing) {
 		return existing, nil
 	}
 	if bytes.Equal(existing, d.managedConfig) {
 		return d.managedConfig, nil
 	}
-	if rejected := managedSafetyRejectedAction(ctx, d.resolved, existing); rejected != nil {
+	if rejected := managedSafetyRejectedAction(ctx, d.resolved); rejected != nil {
 		if rejected.Action == "error" {
 			return nil, fmt.Errorf("%s/%s: %s", d.repo.Owner, d.repo.Repo, rejected.Detail)
 		}

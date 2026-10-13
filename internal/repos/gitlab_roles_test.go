@@ -478,7 +478,7 @@ func TestProvisionGitLabRoleCredentials_ProvidedTokenEnrolled(t *testing.T) {
 		Owner:    "group",
 		Repo:     "project",
 		Client:   fc,
-		Tokens:   tokens,
+		Tokens:   verifyingTokens(tokens, describedIdentity(gitlabroles.PollerTokenName, 777, 11)),
 		Registry: gitlabroles.BuiltinRegistry(),
 		ProvidedTokens: map[gitlabroles.Role]string{
 			gitlabroles.RolePoller: provided,
@@ -669,6 +669,7 @@ func TestIsGitLabRoleManagedVar(t *testing.T) {
 	t.Parallel()
 	assert.True(t, IsGitLabRoleManagedVar(forge.VarGitLabRoleRegistry))
 	assert.True(t, IsGitLabRoleManagedVar(forge.VarGitLabRoleRotation))
+	assert.True(t, IsGitLabRoleManagedVar(forge.VarGitLabPollerGenerations))
 	assert.True(t, IsGitLabRoleManagedVar(forge.SecretGitLabPollerToken))
 	assert.True(t, IsGitLabRoleManagedVar(forge.SecretGitLabAnalystToken))
 	assert.True(t, IsGitLabRoleManagedVar(forge.SecretGitLabCoderToken))
@@ -890,7 +891,8 @@ func TestProvisionGitLabRoleCredentials_ErrorPaths(t *testing.T) {
 		fc := provisionClient(t)
 		fc.Errors["CreateRepoSecret"] = fmt.Errorf("denied")
 		result, err := ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{
-			Owner: "group", Repo: "project", Client: fc, Tokens: &fakeTokens{},
+			Owner: "group", Repo: "project", Client: fc,
+			Tokens:         verifyingTokens(&fakeTokens{}, describedIdentity(gitlabroles.PollerTokenName, 777, 11)),
 			Registry:       gitlabroles.BuiltinRegistry(),
 			ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RolePoller: "provided"},
 		})

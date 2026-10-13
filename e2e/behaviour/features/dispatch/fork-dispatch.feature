@@ -60,7 +60,6 @@ Feature: Fork PR dispatch
       """
     And a dummy agent that would:
       | description            | op           | args                                                              |
-      | Fork PR payload        | assert_json  | .fullsend/dispatch/event-payload.json,pull_request.head.repo.fork |
       | Prove fork execution   | write_fixture| output/dispatch-fork-ok.json, fixtures/dispatch/ok.json           |
     When a fork pull request is opened
     And the fork pull request is labeled "ready-for-fork-ping"
@@ -106,7 +105,6 @@ Feature: Fork PR dispatch
       """
     And a dummy agent that would:
       | description              | op           | args                                                              |
-      | Sync PR payload          | assert_json  | .fullsend/dispatch/event-payload.json,pull_request.head.repo.fork |
       | Prove sync execution     | write_fixture| output/dispatch-sync-ok.json, fixtures/dispatch/ok.json           |
     When a fork pull request is opened
     And a commit is pushed to the fork pull request

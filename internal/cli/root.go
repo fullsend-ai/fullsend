@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/fullsend-ai/fullsend/internal/telemetry"
 )
 
 var version = "dev"
@@ -63,6 +65,9 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			telemetry.InstallOTELRedactingLogger()
+		},
 	}
 	cmd.AddCommand(newAgentCmd())
 	cmd.AddCommand(newAdminCmd())

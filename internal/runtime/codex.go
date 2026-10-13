@@ -24,12 +24,20 @@ type CodexRuntime struct{}
 
 func (CodexRuntime) Name() string { return "codex" }
 
-// System returns the OTEL GenAI provider identity. Unlike pi, which is
-// multi-provider and implements ProviderResolver, codex serves a single
-// model vendor — it speaks the OpenAI Responses API and has no Vertex,
-// Anthropic or Gemini path — so the system is the vendor ("openai"), not
-// the runtime name.
+// System returns the OTEL GenAI provider identity of codex's direct route:
+// it speaks the OpenAI Responses API, so the system is the vendor
+// ("openai"), not the runtime name.
 func (CodexRuntime) System() string { return "openai" }
+
+// ProviderFor returns "gateway" for a gateway/ model, which the inference
+// gateway serves (ADR 0137), and "" otherwise, so GenAISystemFor falls back
+// to System().
+func (CodexRuntime) ProviderFor(model, agentModel string, _ map[string]string) string {
+	if isCodexGatewayModel(EffectiveModel(model, agentModel)) {
+		return codexGatewayModelProvider
+	}
+	return ""
+}
 
 // ConfigDir returns the codex config directory inside the sandbox. It is
 // exported to the agent process as CODEX_HOME (see EnvExports) and lives
@@ -73,7 +81,9 @@ func (r CodexRuntime) OpenAIAuthFile() string { return r.ConfigDir() + "/" + cod
 // OpenAIAuthSeed implements runtime.OpenAICredentialSeeder: the POSIX sh
 // fragment that writes the placeholder the sandbox environment carries for
 // OPENAI_API_KEY into the token file, atomically via rename so the auth
-// command never reads a half-written file.
+// command never reads a half-written file. The write goes through
+// orderedSeedWrite, with a per-writer temp file, so an iteration-start seed
+// that stalls cannot replace a newer placeholder a re-seed already wrote.
 //
 // It runs at iteration start, before the agent-writable .env is sourced, and
 // the runner re-runs it through `sandbox exec` after every credential refresh
@@ -83,9 +93,7 @@ func (r CodexRuntime) OpenAIAuthFile() string { return r.ConfigDir() + "/" + cod
 // run — a real key in the sandbox environment would mean the provider path was
 // bypassed, and forwarding it would defeat the design (ADR 0092).
 func (r CodexRuntime) OpenAIAuthSeed() string {
-	dir := shellQuote(r.ConfigDir())
-	final := shellQuote(r.OpenAIAuthFile())
-	tmp := shellQuote(r.OpenAIAuthFile() + ".fullsend")
+	final := r.OpenAIAuthFile()
 	// piPlaceholderPrefix is the OpenShell gateway namespace, not a
 	// pi-specific value; it is assembled from two parts there on purpose and
 	// is referenced rather than copied so there is exactly one spelling of it
@@ -93,9 +101,9 @@ func (r CodexRuntime) OpenAIAuthSeed() string {
 	return `case "${OPENAI_API_KEY:-}" in ` + piPlaceholderPrefix +
 		`*OPENAI_API_KEY) ;; *) echo 'fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run codex' >&2; exit 1 ;; esac` +
 		` && case "$OPENAI_API_KEY" in *[!A-Za-z0-9_:]*) echo 'fullsend: OPENAI_API_KEY placeholder has unexpected characters; refusing to run codex' >&2; exit 1 ;; esac` +
-		` && command -p mkdir -p ` + dir +
-		` && printf '%s' "$OPENAI_API_KEY" > ` + tmp +
-		` && command -p mv -f ` + tmp + ` ` + final
+		` && ` + orderedSeedWrite("OPENAI_API_KEY", r.ConfigDir(), final,
+		`printf '%s' "$OPENAI_API_KEY"`,
+		`fullsend: writing the codex token file failed`, "exit 1")
 }
 
 // Compile-time interface assertions.
@@ -103,6 +111,7 @@ var (
 	_ Runtime           = CodexRuntime{}
 	_ TranscriptHandler = CodexRuntime{}
 	_ DebugLogNamer     = CodexRuntime{}
+	_ ProviderResolver  = CodexRuntime{}
 
 	_ OpenAICredentialSeeder = CodexRuntime{}
 )

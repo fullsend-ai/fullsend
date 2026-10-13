@@ -51,7 +51,11 @@ to a backend like MLflow, Jaeger, Grafana Tempo, etc.
    - Bearer token: `Authorization=Bearer%20<token>`
    - Basic auth: `Authorization=Basic%20<base64 of user:password>`
 
-    `%20` is the encoding for space, don't use spaces directly.
+   `%20` is the encoding for space, don't use spaces directly.
+
+   ::: warning Use `=` not `:`
+   OpenTelemetry headers must be written in `key=value` format, **not** standard HTTP header syntax (`key: value`). Entries with `:` instead of `=` (e.g. `Authorization: Bearer <token>`) will fail fullsend's header validation and prevent traces from exporting to the remote endpoint.
+   :::
 
 4. Set the authentication header as a GitHub Actions secret on the repository.
 

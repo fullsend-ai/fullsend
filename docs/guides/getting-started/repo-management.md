@@ -128,9 +128,9 @@ github:
 ```
 
 The `none` sentinel works for string fields (`fullsend_ref`,
-`mint_url`, `mint_mode`, `config_base.source`, `config_base.sha256`). List fields like
-`allowed_remote_resources` are managed at the `defaults` level and
-cannot be cleared per-repo. For `app_set`, `none` resets the effective
+`mint_url`, `mint_mode`, `config_base.source`, `config_base.sha256`). Fields
+inside `config`, such as `allowed_remote_resources`, follow their own merge
+rules instead; see [Managed configuration](#managed-configuration). For `app_set`, `none` resets the effective
 value to the built-in default `fullsend-ai` rather than disabling the
 field (an app set is always required to resolve App slugs).
 
@@ -234,7 +234,7 @@ github:
         sha256: none            # do not apply the fleet hash to this source
     - name: acme/legacy
       config_base:
-        source: none            # disable inheritance; existing base is preserved
+        source: none            # disable inheritance; desired state is no base file
 ```
 
 `config_base.sha256` is optional. When set, it must be a 64-character SHA-256
@@ -251,9 +251,31 @@ sources as HTTPS URLs; local preset paths are not allowed in that case.
 
 Changing the declared preset replaces the complete base file. Repeated
 installs are idempotent when the desired bytes already match. If no
-preset is declared, an existing `.fullsend/config.base.yaml` is left
-alone and is not compared. `repos status` reports base-file drift only
-when a preset is declared. The same path applies to GitHub and GitLab.
+preset resolves for a repository (none is declared, or `source: none`
+disables inheritance), the desired state is no
+`.fullsend/config.base.yaml`. An existing base file is then drift, not
+an unmanaged file to keep: `repos status` reports it for every manifest
+repository (including one with no Fullsend components yet), and fresh and
+repeat installs, including `--dry-run`, stop for that repository before
+any writes. A zero-byte base file counts as existing. To resolve it,
+declare a `config_base` source (and optional `sha256`) that matches the
+file you want, or remove the file from the repository. Install never
+deletes it automatically. Leaving `config_base` out needs no `none`
+marker. The same path applies to GitHub and GitLab.
+
+With a declared preset, install first validates that an existing base is a
+well-formed per-repo configuration (a malformed or non-per-repo file is an
+error, never silently replaced), compares its bytes with the preset, and
+shows the replacement in `--dry-run`. Before replacing the base, install
+compares the current effective configuration (installed overlay over
+installed base) with the proposed one (proposed overlay over the declared
+preset). If the replacement would implicitly relax a restriction the
+overlay does not declare — `kill_switch`, `roles`,
+`allowed_remote_resources`, agent suppressions,
+`create_issues.allow_targets`, `inference.gateway.url`, or
+`inference.gateway.audience` — that repository fails before any write and
+the output names the keys. Changing a preset source alone is not an
+explicit declaration of a less-restrictive setting.
 
 On a fresh install of a repo with a declared preset, `--roles` is left
 unset in the written overlay unless `--roles` was explicitly passed on
@@ -264,50 +286,79 @@ config.
 ### Managed configuration
 
 `repos.yaml` can also declare a sparse managed `.fullsend/config.yaml`
-([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)). The
-block uses the same schema as per-repo `config.yaml` except `runtime`
-and `allowed_remote_resources`, which stay on their existing manifest
-shorthands.
+([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)) in
+`defaults.config`, `github.config`, `gitlab.config`, and each repository
+entry's `config`. Every section uses the same schema as per-repo
+`config.yaml`, including `runtime` and `allowed_remote_resources`, and
+each is sparse: declare only the values you want to set.
 
 ```yaml
 version: 1
 defaults:
-  runtime: pi
   config:
+    runtime: pi
     kill_switch: false
     inference:
       region: us-east1
 github:
+  config:
+    allowed_remote_resources:     # GitHub repositories only
+      - https://example.com/agents/
   repos:
-    - name: acme/api              # opted in by defaults.config
+    - name: acme/api              # inherits defaults.config, then github.config
     - name: acme/special
       config:
         kill_switch: true         # repository values win
-    - name: acme/unmanaged        # would be unmanaged without defaults.config
+        allowed_remote_resources: []   # explicit empty list: deny all
+    - name: acme/plain            # no config key: still managed (sparse, marker only)
+gitlab:
+  url: https://gitlab.example.com
+  config:
+    runtime: claude               # GitLab repositories only
+  repos:
+    - name: group/project
 ```
 
-`defaults.config` opts every repository into managed configuration. A
-repository `config` block (including `config: {}`) opts in only that
-repository. A repository with neither declaration is not config-managed.
+Every repository selected from the manifest has a managed
+`.fullsend/config.yaml`; neither `defaults.config` nor a repository
+`config` is required. A repository with no `config` gets the sparse file
+with only the ownership marker. An existing overlay without the marker
+blocks install (adoption required) even when the repository has no
+`config` key. On a first install with no `config_base` preset and no
+explicit `create_issues` declaration, install records
+`config.create_issues.allow_targets.repos: [fullsend-ai/fullsend]` in the
+repository's manifest entry, and an explicit `--roles` value in
+`config.roles`, before rendering the overlay. If the manifest is an
+HTTPS URL or read-only, install fails with the exact edit to make.
 Resolution is code defaults, then `config_base`, then `defaults.config`,
-then the repository `config`; more specific values win and unspecified
-keys inherit. The managed configuration contains only explicitly supplied
-values (plus the `runtime` / `allowed_remote_resources` shorthands) —
+then the repository's forge section `config` (`github.config` or
+`gitlab.config`), then the repository entry's `config` (glob entries
+included). More specific values win using each field's normal layered
+merge rule: scalars are replaced, nested maps merge key by key, a
+non-empty `allowed_remote_resources` list is unioned with the inherited
+prefixes, and an explicit empty list replaces the inherited value. The
+managed file is sparse and cannot record that reset, so validation rejects a
+non-empty `allowed_remote_resources` list declared in a more specific layer
+than an explicit empty one; declare the full list in a single layer. A
+forge section's `config` never affects repositories of the other forge.
+The managed configuration contains only explicitly supplied values —
 code defaults and `config.base.yaml` are not baked into the file.
-Unknown fields and the forbidden shorthand keys fail manifest validation
-with field-specific errors. `config` is the managed overlay (written to
+Unknown fields and invalid values fail manifest validation with errors
+that name the section. `config` is the managed overlay (written to
 `.fullsend/config.yaml`); `config_base` is a separate preset copied to
 `.fullsend/config.base.yaml`.
 
-Do not put `runtime` or `allowed_remote_resources` inside `config` — those
-paths stay on the sibling manifest fields:
+`runtime` and `allowed_remote_resources` are no longer accepted as sibling
+keys under `defaults` or a repository entry. A manifest that still uses
+them fails to load with the replacement path, and there is no automatic
+migration:
 
 ```yaml
-# Invalid — rejected at manifest load
+# Invalid — rejected at manifest load:
+#   defaults.runtime is no longer supported; move it to defaults.config.runtime
 defaults:
-  config:
-    runtime: pi
-    allowed_remote_resources: []
+  runtime: pi
+  allowed_remote_resources: []
 ```
 
 Every managed `.fullsend/config.yaml` begins with a stable ownership
@@ -327,21 +378,57 @@ If a config-managed repository already has an existing
 `managed configuration (adoption required)` rather than ordinary drift,
 and `repos install`/convergence leave the file untouched until it is
 manually adopted (edited to carry the marker, or replaced with the
-rendered managed body). Once a file carries the marker, `repos install`
+rendered managed body). An existing zero-byte file counts as an existing
+file without the marker. The status output (table and JSON `detail`) also
+shows the proposed `repos.yaml` entry that carries every setting the
+existing file declares, including values equal to the code defaults, and
+the difference between the existing file and the managed file adoption
+would produce, followed by the effective layered-configuration change
+(existing overlay over the installed base against the managed overlay over
+the base layer the run would leave in place), so any setting adoption would
+drop, or that changes only through the base layer, is visible first. A
+markerless file that is malformed or not a per-repo configuration is
+reported by `repos status` as an error instead. Once
+a file carries the marker, `repos install`
 writes the canonical sparse `.fullsend/config.yaml`, `repos status`
 reports any whole-file difference (including a single-key change) as
 drift, and convergence rewrites the file deterministically — unless the
 candidate would become less restrictive than the current effective
 configuration without an explicit manifest declaration. That pre-write
 safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
-agent `enabled: false` suppressions, and `create_issues.allow_targets`
-through the full overlay → base → code-defaults accessor chain. Omitted
+agent `enabled: false` suppressions, `create_issues.allow_targets`,
+`inference.gateway.url`, and `inference.gateway.audience` through the full
+overlay → base → code-defaults accessor chain. Omitted
 keys fall through rather than being treated as unset; an explicit empty
-`allowed_remote_resources: []` remains deny-all. Status and install output
+`allowed_remote_resources: []` remains deny-all. A change to either
+`inference.gateway` field, including a preset introducing a gateway where
+an established installation has none configured, must be declared in the
+manifest. Status and install output
 identify the affected keys. A blanket adoption acknowledgement is not
-enough. Repositories with neither declaration keep their existing
-configuration and are excluded from managed-configuration drift checks.
-`.fullsend/config.base.yaml` handling stays independent.
+enough. Both files are checked together, before any manifest or forge
+write: when the overlay needs adoption and the base needs action, install
+reports both problems, and an adoption failure prints the same proposed
+`repos.yaml` entry and file and effective-configuration differences that
+`repos status` shows. The same checks run again inside convergence: a fresh
+install blocked by adoption or the safety gate stops before any variable,
+secret, scaffold file or PR/MR write, in a dry run and a live run alike.
+Adding a `config_base` preset to a repository with no base file is compared
+like replacing one (the absent base is an empty layer), even when its
+managed overlay is unchanged; only a pristine first install, with neither
+file present, is exempt because there is no current configuration to relax
+and it simply inherits what the preset declares. This applies to repositories already in the manifest,
+glob-covered repositories, and repositories being added. A malformed or
+non-per-repo file, or a read error, fails with a clear error and is never
+replaced. `.fullsend/config.base.yaml` is managed as described under
+[Configuration presets](#configuration-presets).
+
+When the manifest is read-only (an HTTPS URL, or a local file without write
+permission), install fails before attempting any manifest write and prints
+the exact entry to add to its source. That includes a glob-covered
+repository that needs an explicit entry because other per-entry flags
+(for example `--fullsend-ref`, `--mint-url`, `--app-set`) were passed; the
+printed entry carries those values and the install-time `config` defaults.
+`--dry-run`, live install and `repos status` agree.
 
 ```bash
 fullsend repos status -f repos.yaml --json   # whole-file managed drift
@@ -435,6 +522,21 @@ Install a subset of agent roles (defaults to
 fullsend repos install -f repos.yaml --roles triage,coder,review
 ```
 
+For repositories that enforce DCO, set `signoff: true` under `defaults`,
+a forge section, or a repo entry, or pass `--signoff`. Install then adds
+a `Signed-off-by` trailer for the authenticated installing user to every
+scaffold commit, on GitHub and GitLab, whether delivered directly or by
+PR/MR. A repo entry overrides its forge section, which overrides
+`defaults`, and an explicit `false` disables an inherited `true`.
+`--signoff` or `--signoff=false` overrides the manifest for that run only.
+Install fails before committing anything if the token's user identity
+cannot be resolved. See
+[DCO sign-off](../../cli/repos.md#dco-sign-off).
+
+```bash
+fullsend repos install -f repos.yaml --signoff
+```
+
 ## Day-2 operations
 
 ### Checking installation status
@@ -518,7 +620,8 @@ exception — see above); a changed preset replaces only
 drifted managed configuration file is rewritten wholesale, unless the
 existing file predates managed-configuration adoption (missing the
 ownership marker) — that case is reported as adoption required and left
-untouched instead of rewritten; unmanaged files are left intact. Ref
+untouched instead of rewritten, and it stops install or convergence before
+any writes until the file is adopted. Ref
 updates are committed as PRs (or direct pushes with `--direct`).
 
 Use `repos status` for a read-only drift report (no changes applied). For
@@ -566,14 +669,16 @@ fullsend repos install acme/new-api --forge github --roles triage,coder,review
 ```
 
 Per-repo overrides can be specified with `--fullsend-ref`, `--mint-url`,
-`--app-set`, `--allowed-remote-resources`, `--inference-auth`, and
-`--vendor`. The
+`--app-set`, `--inference-auth`, and `--vendor`. Per-repo config fields
+such as `runtime` and `allowed_remote_resources` have no install flag:
+declare them in the entry's `config` (see
+[Managed configuration](#managed-configuration)). The
 `--vertex-region` flag is install-time only and is not stored in the
 manifest.
 
 ### Removing repos
 
-Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches, deletes the Fullsend-owned webhook fast-path project webhook, revokes its managed pipeline trigger token, and deletes the `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables; if that cleanup fails, the scaffold is not removed and the manifest entry is kept for retry. Pass `--direct` to push file deletions to the default branch:
+Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches, deletes the Fullsend-owned webhook fast-path project webhook, revokes its managed pipeline trigger token, and deletes the `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables; if that cleanup fails, the scaffold is not removed and the manifest entry is kept for retry. Before deleting anything, GitLab uninstall reads the `FULLSEND_GITLAB_ROLE_ROTATION` ownership variable and stops if it is unreadable or malformed. It then revokes role project access tokens and deletes verified Fullsend-managed service accounts, leaving administrator-supplied accounts and their credentials in place. The rotation variable is removed last, or kept as an exclusions-only document when it records administrator-supplied service accounts. Pass `--direct` to push file deletions to the default branch:
 
 ```bash
 fullsend repos uninstall acme/old-api

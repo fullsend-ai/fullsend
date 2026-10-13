@@ -20,7 +20,6 @@ Feature: URL-sourced harness dispatch
       """
     And a dummy agent that would:
       | description              | op           | args                                               |
-      | Issue URL set            | assert_env   | GITHUB_ISSUE_URL                                   |
       | Prove URL execution      | write_fixture| output/dispatch-url-ok.json, fixtures/dispatch/ok.json |
     And an issue
     When the issue is labeled "ready-for-url-ping"

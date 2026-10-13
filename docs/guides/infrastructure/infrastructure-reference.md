@@ -168,9 +168,9 @@ Recommended operator order for adding **`packages:read`** to `coder` (code / fix
    Optionally include a short note to users explaining why.
 2. Update the App used by the pool installations as well, and have each
    `halfsend-01` … `halfsend-12` and `halfsend` installation owner Accept its pending update.
-   For the test-app setup, that is `fullsend-test-coder`; for pools using the
-   shared hosted App, update `fullsend-ai-coder`. Neither app set should be
-   left permanently on permission-drop warnings.
+   For the test-app setup, including the e2e pool organizations, that is
+   `fullsend-test-coder`. Neither app set should be left permanently on
+   permission-drop warnings.
 3. Deploy mint. Lagging installations keep authenticating; they simply omit
    `packages:read` until they Accept. The preflight avoids the two-POST retry
    volume that the old rollout path incurred.
@@ -210,7 +210,7 @@ Mode is inferred from `PER_REPO_WIF_REPOS` — there is no separate trust-mode f
 - **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
 - **mint enroll**: Succeeds without changing mint configuration (repository registration is unnecessary); **mint unenroll** for individual repositories is not supported in public mode
 
-**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `PER_REPO_WIF_REPOS=*` and permissive WIF together; in tight mode (default), `mint deploy` provisions an org-scoped WIF provider and `mint enroll` creates a dedicated repo-scoped WIF provider for each enrolled repository. Redeploys must match the mint mode (`--public` for public, omit for tight).
+**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `PER_REPO_WIF_REPOS=*` and permissive WIF together; in tight mode (default), `mint deploy` provisions the shared WIF provider with a placeholder-only condition (it does not scope the provider to any org) and `mint enroll` creates a dedicated repo-scoped WIF provider for each enrolled repository. Redeploys must match the mint mode (`--public` for public, omit for tight).
 
 **Standalone mint (JWKS verification):** `cmd/mint` uses `JWKSVerifier` — direct GitHub JWKS signature checks with no STS or WIF. Public mode is fully determined by `PER_REPO_WIF_REPOS` and workflow provenance in `mintcore`; WIF provisioning is not applicable.
 
@@ -306,7 +306,7 @@ During installation, the GCF provisioner creates:
 1. **Service Account** — For the Cloud Function identity
 2. **WIF Pool** — `fullsend-inference` for inference, `fullsend-pool` for mint
 3. **WIF Provider** — Maps GitHub OIDC claims to GCP attributes
-4. **IAM Bindings** — Grants `roles/aiplatform.user` to federated identities
+4. **IAM Bindings** — Grants `roles/aiplatform.user` to federated identities (created only by inference provisioning, `ProvisionWIF` / `fullsend inference provision`; mint deployment does not create these bindings)
 5. **Per-repo providers** (per-repo mode) — Scoped WIF provider per repository via `mintcore.BuildRepoProviderID()` (GitHub only; GitLab uses a shared `gitlab-oidc` provider scoped via attribute conditions on the WIF pool)
 
 ---
@@ -325,6 +325,7 @@ Secrets and variables are deployed on the target repository.
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
 - `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for repos whose `inference.auth` is `openai-api-key` (written by `repos install --openai-api-key`; not set by `github setup`)
+- `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for repos whose `inference.gateway.auth` is `api-key` ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md); set by the repository admin, not by `github setup`)
 
 Repos whose `inference.auth` is `openai-wif` need no Fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
@@ -347,6 +348,7 @@ Ordinary unflagged `repos install` provisions role credentials; it does not remo
 - `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` — masked, protected role PATs provisioned by `repos install` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)). Fresh installs provision these role tokens directly, with no shared token to retire. Existing installs that predate the role-only model and still have the shared token get the missing role tokens provisioned, but `FULLSEND_FORGE_TOKEN` is left in place — an administrator must revoke it manually. GitLab CI poll/agent jobs (`select-gitlab-role-token.sh`) and `fullsend poll` / `fullsend run` authenticate with the matching role token and fail closed if it is missing. Custom `own` roles use `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`; `reuse` roles share another registered credential.
 - `FULLSEND_GITLAB_ROLE_REGISTRY` — protected, unmasked administrator registry JSON (policy and credential references, never secret values). Written by `repos install`; not repository or merge-request content.
 - `FULLSEND_GITLAB_ROLE_ROTATION` — protected, unmasked per-role rotation state (lock, token IDs, expiry dates, phase; never secret values). Written when `repos install` rotates a role credential ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)).
+- `FULLSEND_GITLAB_POLLER_GENERATIONS` — protected, unmasked Poller identity-generation state (current, pending, and retiring Poller account IDs and the pending generation's handoff phase; never secret values). No command writes it yet; when a generation is quarantined, the deferral message names the manual cleanup to perform before removing only the `pending` generation from this variable, keeping `version`, `current_user_id` and `retiring_user_id` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#poller-identity-generations)).
 
 **Poll-state branches:** `repos install` (on both fresh installs and
 re-run/convergence of already-enrolled repos) creates
@@ -404,6 +406,7 @@ access instead of Maintainer. See ADR 0067.
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
 - `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for projects whose `inference.auth` is `openai-api-key` (masked CI/CD variable written by `repos install --openai-api-key`; the job maps it to `OPENAI_API_KEY`, and an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used)
+- `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for projects whose `inference.gateway.auth` is `api-key` (masked CI/CD variable set by the project admin; the job passes it to the runner under its own name)
 
 Per-repo installation (`internal/repos`) writes the inference secrets and variables directly rather than through layer orchestration.
 
@@ -438,12 +441,6 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  │ Provider          │ OIDC issuer:                             │
 │  │                   │   token.actions.githubusercontent.com    │
 │  │                   │ (skip if exists)                         │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
-│  │ Grant Agent       │ roles/aiplatform.user                    │
-│  │ Platform access   │ on the inference project                 │
-│  │ to federated IDs  │                                          │
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │

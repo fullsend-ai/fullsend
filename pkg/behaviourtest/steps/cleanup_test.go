@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -50,6 +51,60 @@ func TestCleanupScenario_ClosesForkPR(t *testing.T) {
 	assert.Equal(t, "org", scmDriver.closedIssues[0].owner)
 	assert.Equal(t, "repo", scmDriver.closedIssues[0].repo)
 	assert.Equal(t, 42, scmDriver.closedIssues[0].number)
+}
+
+func TestCleanupScenario_RestoresGatewayConfig(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	original := []byte("runtime: dummy\n")
+	w := &world.World{
+		Org:                     "org",
+		RepoOwner:               "org",
+		RepoName:                "repo",
+		SCM:                     scmDriver,
+		GatewayConfigOverridden: true,
+		GatewayConfigOriginal:   original,
+	}
+
+	CleanupScenario(w)
+	require.Len(t, scmDriver.commits, 1)
+	assert.Equal(t, "org", scmDriver.commits[0].owner)
+	assert.Equal(t, "repo", scmDriver.commits[0].repo)
+	assert.Equal(t, filepath.Join(".fullsend", "config.yaml"), scmDriver.commits[0].path)
+	assert.Equal(t, original, scmDriver.commits[0].content)
+	assert.False(t, w.GatewayConfigOverridden, "restored original should be forgotten")
+	assert.Nil(t, w.GatewayConfigOriginal)
+}
+
+func TestCleanupScenario_GatewayRestoreFailureKeepsOriginal(t *testing.T) {
+	t.Parallel()
+
+	var logs []string
+	scmDriver := &fakeCleanupSCM{commitFileErr: fmt.Errorf("commit failed")}
+	w := &world.World{
+		Org:      "org",
+		RepoName: "repo",
+		SCM:      scmDriver,
+		Logf:     func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+
+		GatewayConfigOverridden: true,
+		GatewayConfigOriginal:   []byte("runtime: dummy\n"),
+	}
+
+	CleanupScenario(w)
+	assert.True(t, w.GatewayConfigOverridden, "a failed restore keeps the original for a retry")
+	assert.Equal(t, []byte("runtime: dummy\n"), w.GatewayConfigOriginal)
+	require.NotEmpty(t, logs)
+	assert.Contains(t, logs[len(logs)-1], "restore config after inference gateway scenario: commit failed")
+}
+
+func TestCleanupScenario_NoGatewayRestoreWithoutBlock(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	CleanupScenario(&world.World{Org: "org", RepoName: "repo", SCM: scmDriver})
+	assert.False(t, scmDriver.commitFileCalled)
 }
 
 func TestCleanupScenario_ClosesForkPR_Error(t *testing.T) {
@@ -221,6 +276,38 @@ func TestCleanupScenario_SkipsForkRepoDelete_WhenForkRepoEqualsRepoName(t *testi
 	CleanupScenario(w)
 
 	assert.Empty(t, scmDriver.deletedRepos, "repo deletion should be skipped when ForkRepo == RepoName")
+}
+
+func TestCleanupScenario_ActorOwnedForkDeletedThroughForkSCM(t *testing.T) {
+	t.Parallel()
+
+	e2eSCM := &fakeCleanupSCM{}
+	outsiderSCM := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		ForkPRNumber: 10,
+		ForkOwner:    "outsider",
+		ForkRepo:     "repo", // user forks take the base repo's name
+		ForkPRBranch: "test-branch",
+		SCM:          e2eSCM,
+		ForkSCM:      outsiderSCM,
+	}
+	CleanupScenario(w)
+
+	// The fork PR lives on the base repo, so the e2e identity closes it.
+	require.Len(t, e2eSCM.closedIssues, 1)
+	assert.Equal(t, 10, e2eSCM.closedIssues[0].number)
+	assert.Empty(t, e2eSCM.deletedBranches)
+	assert.Empty(t, e2eSCM.deletedRepos)
+
+	require.Len(t, outsiderSCM.deletedBranches, 1)
+	assert.Equal(t, "outsider", outsiderSCM.deletedBranches[0].owner)
+	assert.Equal(t, "repo", outsiderSCM.deletedBranches[0].repo)
+	assert.Equal(t, "test-branch", outsiderSCM.deletedBranches[0].branch)
+	require.Len(t, outsiderSCM.deletedRepos, 1)
+	assert.Equal(t, "outsider", outsiderSCM.deletedRepos[0].owner)
+	assert.Equal(t, "repo", outsiderSCM.deletedRepos[0].repo)
 }
 
 func TestCleanupScenario_SkipsForkRepoDelete_WhenFieldsMissing(t *testing.T) {
@@ -431,9 +518,17 @@ type fakeCleanupSCM struct {
 	deleteRepoErr    error
 	commitFileCalled bool
 	commitFileErr    error
+	commits          []committedFileRecord
 	fileContent      []byte
 	getFileErr       error
 	openPRs          []forge.ChangeProposal
+}
+
+type committedFileRecord struct {
+	owner   string
+	repo    string
+	path    string
+	content []byte
 }
 
 type closedIssueRecord struct {
@@ -503,8 +598,11 @@ func (f *fakeCleanupSCM) GetFileContentAtRef(context.Context, string, string, st
 	return f.fileContent, f.getFileErr
 }
 
-func (f *fakeCleanupSCM) CommitFile(_ context.Context, _, _, _, _ string, _ []byte) error {
+func (f *fakeCleanupSCM) CommitFile(_ context.Context, owner, repo, path, _ string, content []byte) error {
 	f.commitFileCalled = true
+	if f.commitFileErr == nil {
+		f.commits = append(f.commits, committedFileRecord{owner: owner, repo: repo, path: path, content: content})
+	}
 	return f.commitFileErr
 }
 
@@ -550,6 +648,10 @@ func (f *fakeCleanupSCM) GetBranchRef(context.Context, string, string, string) (
 
 func (f *fakeCleanupSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
+}
+
+func (f *fakeCleanupSCM) CreateUserFork(context.Context, string, string) (string, string, error) {
+	return "", "", nil
 }
 
 func (f *fakeCleanupSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
@@ -1177,6 +1279,10 @@ func (f *fakeRetryCleanupSCM) GetBranchRef(context.Context, string, string, stri
 
 func (f *fakeRetryCleanupSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
+}
+
+func (f *fakeRetryCleanupSCM) CreateUserFork(context.Context, string, string) (string, string, error) {
+	return "", "", nil
 }
 
 func (f *fakeRetryCleanupSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {

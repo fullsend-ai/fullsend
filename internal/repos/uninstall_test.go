@@ -465,6 +465,8 @@ func newInstalledFakeGitLabClient(repos ...string) *forge.FakeClient {
 			client.VariableValues[r+"/"+v] = "test-value"
 			client.VariablesExist[r+"/"+v] = true
 		}
+		// Role cleanup reads managed-account ownership from rotation state.
+		client.VariableValues[r+"/"+forge.VarGitLabRoleRotation] = `{"roles":{}}`
 		for _, s := range gitlabUninstallSecrets {
 			client.Secrets[r+"/"+s] = true
 		}
@@ -1206,5 +1208,48 @@ func TestUninstall_GitLabDeletesPrefixedOpenAIKeyPreservesUnprefixed(t *testing.
 	}
 	if !client.Secrets["acme/api/OPENAI_API_KEY"] {
 		t.Error("unprefixed OPENAI_API_KEY was deleted by uninstall")
+	}
+}
+
+// An unreadable rotation document stops the whole GitLab uninstall right after
+// the lease is taken: no scaffold, variable, secret, or token is removed.
+func TestUninstall_GitLabUnreadableOwnershipStopsBeforeAnyTeardown(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	client.Secrets["acme/api/"+forge.SecretGitLabPollerToken] = true
+	client.VariableValues["acme/api/"+forge.VarGitLabRoleRotation] = "{not json"
+	client.VariablesExist["acme/api/"+forge.VarGitLabRoleRotation] = true
+	tokens := &fakeTokens{}
+	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.PollerTokenName, Active: true})
+	committed := false
+	commit := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct, remove bool) error {
+		committed = true
+		return uninstallCommitFn(client)(ctx, owner, repo, files, direct, remove)
+	}
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+		GitLabTokens:   tokens,
+	}, newTestClientFactory(client), commit, nil)
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	r := results[0]
+	if r.Success || r.Error == nil {
+		t.Fatalf("Success = %v, Error = %v; want failure", r.Success, r.Error)
+	}
+	if committed || r.WorkflowDeleted {
+		t.Error("scaffold files were removed before the ownership preflight")
+	}
+	if !client.Secrets["acme/api/"+forge.SecretGitLabPollerToken] {
+		t.Error("role secret was deleted despite unreadable ownership state")
+	}
+	if len(tokens.revoked) != 0 {
+		t.Errorf("tokens revoked = %v, want none", tokens.revoked)
+	}
+	if r.VarsDeleted != 0 || r.SecretsDeleted != 0 {
+		t.Errorf("deleted %d vars, %d secrets; want none", r.VarsDeleted, r.SecretsDeleted)
 	}
 }

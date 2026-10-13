@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -93,5 +94,32 @@ func TestCodexHookScriptsGuard_IsStable(t *testing.T) {
 	first := codexHookScriptsGuard("/hooks", scripts)
 	for range 5 {
 		assert.Equal(t, first, codexHookScriptsGuard("/hooks", scripts))
+	}
+}
+
+// TestCodexSpawnDigestsValue pins the grammar the spawn guard reads:
+// "hooks.json:<sha>" plus "agents/<role>.toml:<sha>" per role, sorted.
+func TestCodexSpawnDigestsValue(t *testing.T) {
+	t.Parallel()
+
+	hooks := strings.Repeat("b", 64)
+	role := strings.Repeat("c", 64)
+	tests := []struct {
+		name  string
+		roles map[string]string
+		want  string
+	}{
+		{"no role registered", nil, "hooks.json:" + hooks},
+		{"roles sort among themselves and before hooks.json",
+			map[string]string{"explore": role, "correctness": role, "default": role},
+			"agents/correctness.toml:" + role + " agents/default.toml:" + role +
+				" agents/explore.toml:" + role + " hooks.json:" + hooks},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			d := codexRunnerHeldDigestSet{HooksJSON: hooks, RoleFiles: tt.roles}
+			assert.Equal(t, tt.want, codexSpawnDigestsValue(d))
+		})
 	}
 }

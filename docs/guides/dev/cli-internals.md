@@ -35,6 +35,8 @@ fullsend
 │   ├── provision    <org|owner/repo>        # Create WIF pool/provider for Agent Platform
 │   ├── deprovision  <org|owner/repo>        # Remove WIF access for org or repo
 │   ├── status       <org|owner/repo>        # Check WIF health, print config
+│   ├── gateway                              # Inference gateway route (ADR 0137)
+│   │   └── status   <owner/repo>            # Resolved block and source, and the gateway inside Actions
 │   └── openai                               # OpenAI WIF enrolment (GPT on pi or codex)
 │       ├── request  <owner/repo>[,...]      # Generate the provider/mapping request for an admin
 │       │   ├── --audience <string>          #   Provider audience (default: fullsend://<owner>)
@@ -67,9 +69,9 @@ fullsend
 │   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
 │   │   ├── --mint-url <url>                 #   Per-repo mint URL override
 │   │   ├── --app-set <prefix>               #   GitHub App set prefix override ($FULLSEND_APP_SET); GitHub-only
-│   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
 │   │   ├── --inference-auth <method>        #   vertex-wif, openai-api-key or openai-wif (GitHub only); persisted as inference.auth on each selected manifest entry (a repo covered only by a glob gets its own copied entry); never changes defaults or forge sections
 │   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
+│   │   ├── --signoff                        #   Signed-off-by trailer on scaffold commits; overrides manifest signoff for this run
 │   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
 │   │   ├── --gitlab-role-token role=token   #   Administrator-provided GitLab role PAT (repeatable)
@@ -84,7 +86,7 @@ fullsend
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --manifest-only                  #   Remove from manifest without tearing down
 │   │   └── --uninstall-only                 #   Tear down without removing from manifest
-│   ├── status                               # Compare manifest against actual repo state (includes declared config-preset and managed configuration drift)
+│   ├── status                               # Compare manifest against actual repo state (includes declared config-preset, undeclared-base and managed configuration drift; both layers are checked before first install)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
@@ -95,7 +97,7 @@ fullsend
 │   │   ├── --on <preset>                    #   Trigger preset (command:/label:/issue-opened/pr-opened)
 │   │   ├── --trigger <cel>                  #   Raw CEL trigger (mutually exclusive with --on)
 │   │   ├── --runtime <claude|pi|codex>      #   Runtime in config.yaml; shapes Vertex vs OpenAI harness fields
-│   │   ├── --model <alias|id>               #   Model (opus default; OpenAI id required for codex)
+│   │   ├── --model <alias|id>               #   Model (opus default; OpenAI id or gateway/<model> for codex)
 │   │   ├── -f, --file <spec.yaml>           #   Read the agent definition from a spec file
 │   │   ├── --validation-loop                #   Add a schema validation_loop
 │   │   ├── --no-register                    #   Write files without touching config.yaml
@@ -139,18 +141,25 @@ fullsend
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
 ├── issues                                   # Read and write issue content across trackers
-│   ├── get                                  #   Read issue content (title, body, comments, labels)
+│   ├── get                                  #   Read issue content (title, type, body, comments, labels, Jira custom fields)
 │   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
 │   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
-│   │   └── --number <int>                   #     Issue number
-│   └── post-comment                         #   Post or update a sticky comment on an issue
-│       ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
-│       ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
-│       ├── --number <int>                   #     Issue number
-│       ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
-│       ├── --keep-history                   #     Append previous content as collapsed history (default true)
-│       ├── --only-if-exists                 #     Update an existing marked comment, never create one
-│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
+│   │   ├── --number <int>                   #     Issue number
+│   │   └── --fields <ids>                   #     Jira custom field IDs (customfield_<digits>) to include under custom_fields (Jira only)
+│   ├── post-comment                         #   Post or update a sticky comment on an issue
+│   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
+│   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
+│   │   ├── --number <int>                   #     Issue number
+│   │   ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
+│   │   ├── --keep-history                   #     Append previous content as collapsed history (default true)
+│   │   ├── --only-if-exists                 #     Update an existing marked comment, never create one
+│   │   └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
+│   └── link                                 #   Create a typed link between two issues (Jira only)
+│       ├── --tracker <tracker>              #     Tracker backend; github/gitlab return "not supported"
+│       ├── --from <key>                     #     Source issue key (e.g. PROJ-123)
+│       ├── --to <key>                       #     Target issue key (e.g. PROJ-456)
+│       ├── --type <name>                    #     Link type name (e.g. Blocks), passed through verbatim
+│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves default --tracker)
 ├── post-review                              # Post sticky PR/MR review comments (formal review is best-effort)
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
 │   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)
@@ -439,18 +448,22 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │  └── plugins/ directory                  │                   │
 │  │                                          │                   │
 │  │  Upload (single file):                   │                   │
-│  │  ├── agent definition file               │                   │
-│  │  ├── host_files (expanded ${VAR} paths)  │                   │
 │  │  ├── .env file (bootstrapEnv)            │                   │
+│  │  ├── host_files (expanded ${VAR} paths)  │                   │
+│  │  ├── agent definition file               │                   │
 │  │  └── security hooks                      │                   │
 │  │                                          │                   │
 │  │  bootstrapEnv() writes:                  │                   │
-│  │  ├── PATH=/sandbox/workspace/bin:$PATH   │                   │
+│  │  ├── PATH=/usr/local/go/bin:             │                   │
+│  │  │     $HOME/go/bin:$PATH:               │                   │
+│  │  │     /sandbox/workspace/bin (last)     │                   │
+│  │  ├── readonly FULLSEND_RUNNER_PATH       │                   │
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
 │  │  ├── FULLSEND_FETCH_URL=... (if allow_runtime_fetch)│        │
 │  │  ├── FULLSEND_FETCH_TOKEN=<run token> (if above)│            │
 │  │  ├── sources .env.d/*.env files          │                   │
+│  │  ├── PATH=$FULLSEND_RUNNER_PATH:$PATH    │                   │
 │  │  └── sources .fullsend/iteration.env     │                   │
 │  │      (FULLSEND_TIMEOUT_MINUTES +         │                   │
 │  │       FULLSEND_ITERATION_DEADLINE +      │                   │
@@ -472,8 +485,14 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                                          │                   │
 │  │ Command built by buildRunCommand():      │                   │
 │  │  cd {repoDir} &&                         │                   │
+│  │  { readonly FULLSEND_CLAUDE_BIN=         │                   │
+│  │    "$(command -v claude)" (absolute,     │                   │
+│  │    else exit 127); } &&                  │                   │
 │  │  . {envFile} &&                          │                   │
-│  │  claude --print --verbose                │                   │
+│  │  unset -f claude &&                      │                   │
+│  │  unset LD_* PYTHON* NODE_* BUN_OPTIONS &&│                   │
+│  │  "$FULLSEND_CLAUDE_BIN" --print          │                   │
+│  │    --verbose                             │                   │
 │  │    --output-format stream-json           │                   │
 │  │    [--settings {hooksSettingsPath}]      │                   │
 │  │    --model {model}                       │                   │
@@ -552,6 +571,24 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                   │ yet (tracked in fullsend-ai/agents#411)  │
 │  │                   │ — they still scan for the last iteration │
 │  │                   │ blindly.                                 │
+│  │                   │                                          │
+│  │                   │ FULLSEND_AGENT_EXIT_REASON is set when   │
+│  │                   │ the agent hit a behavioral limit rather  │
+│  │                   │ than crashing or succeeding. Known       │
+│  │                   │ subtypes: error_max_turns (turn limit),  │
+│  │                   │ error_max_budget_usd (cost limit).       │
+│  │                   │ Unlike other agent failures (which skip  │
+│  │                   │ it unless there is no validation_loop    │
+│  │                   │ and a result file parses, #8305),        │
+│  │                   │ behavioral exits still run the           │
+│  │                   │ post-script so it can report accurately  │
+│  │                   │ instead of emitting a misleading "no     │
+│  │                   │ changes needed" message. See #6877.      │
+│  │                   │                                          │
+│  │                   │ FULLSEND_AGENT_EXIT_CODE is set when a   │
+│  │                   │ run without a validation_loop runs the   │
+│  │                   │ post-script after a failed agent. See    │
+│  │                   │ #8305.                                   │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -731,7 +768,7 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/inference_openai.go` | ~900 | OpenAI WIF enrolment: request document, reply import, status/exchange |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/github_client.go` | ~130 | GitHub token resolution and authenticated client construction |
-| `internal/cli/issues.go` | ~430 | Issue read/write commands (`fullsend issues get`, `post-comment`) |
+| `internal/cli/issues.go` | ~765 | Issue read/write commands (`fullsend issues get`, `post-comment`, `link`) |
 | `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |
@@ -745,7 +782,8 @@ var executableFiles = map[string]struct{}{
 | `internal/scaffold/scaffold.go` | ~146 | Embedded template system |
 | `internal/inference/inference.go` | ~26 | Provider interface |
 | `internal/inference/vertex/vertex.go` | ~80 | Agent Platform (Vertex AI) implementation |
-| `internal/inference/openaiwif/openaiwif.go` | ~330 | OpenAI Workload Identity Federation token exchange (runner-side) |
+| `internal/inference/actionsoidc/actionsoidc.go` | ~250 | Provider-neutral GitHub Actions OIDC assertion fetch (inference gateway route, and the first step of the OpenAI exchange) |
+| `internal/inference/openaiwif/openaiwif.go` | ~260 | OpenAI Workload Identity Federation token exchange (runner-side) |
 | `internal/cli/run_openai.go` | ~550 | OpenAI credential resolution, run-scoped provider lifecycle and refresh |
 | `internal/config/config.go` | ~264 | Per-repo config structures |
 

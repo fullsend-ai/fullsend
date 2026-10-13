@@ -53,6 +53,19 @@ const (
 	CoderTokenName   = "fullsend-coder"
 )
 
+// PollerBootstrapTokenName names the installer-only personal access token the
+// install creates on the Poller service account for the duration of one
+// pipeline-trigger creation (#8083). It is never published to CI/CD
+// variables, logs, or agent environments, and it is revoked before the
+// replacement runtime Poller credential is published.
+const PollerBootstrapTokenName = "fullsend-poller-bootstrap"
+
+// IsManagedPollerTokenName reports whether Fullsend creates and may revoke
+// a credential with this name on the managed Poller account.
+func IsManagedPollerTokenName(name string) bool {
+	return name == PollerTokenName || name == PollerBootstrapTokenName
+}
+
 // RoleState is the configured/unconfigured status of one role secret.
 // Presence is boolean. Expiry, revocation, and overlapping tokens are
 // reported by DiagnoseLifecycle as LifecycleState on RoleReport.

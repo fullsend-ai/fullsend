@@ -355,6 +355,15 @@ func TestConverge_AuthSwitchKeepsObsoleteSecretsWhileConfigBlocked(t *testing.T)
 					t.Errorf("must not plan or report deleting %s while blocked", a.Component)
 				}
 			}
+			if tc.installed && tc.existing == markerless {
+				// The established gate rejects the markerless overlay before
+				// any write, so the repository fails instead of reporting an
+				// adoption action alongside converged writes.
+				require.Len(t, result.Failed(), 1)
+				assert.Contains(t, result.Failed()[0].Error.Error(), "adoption required")
+				assertNoForgeWrites(t, fc)
+				return
+			}
 			assert.Equal(t, markerless == tc.existing, hasAction(result.Results[0].Actions, ActionAdoptionRequired))
 		})
 	}

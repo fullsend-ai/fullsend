@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1160,4 +1161,306 @@ func TestHasOIDCEnv(t *testing.T) {
 			t.Error("hasOIDCEnv() = true, want false")
 		}
 	})
+}
+
+// useOIDCServer points the OIDC env vars at oidcURL for the duration of t.
+func useOIDCServer(t *testing.T, oidcURL string) {
+	t.Helper()
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcURL + "?d=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "tok"
+		default:
+			return ""
+		}
+	}
+	t.Cleanup(func() { envLookup = origEnv })
+}
+
+func newMintServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestMintToken_OIDCRetriesThroughLongOutage covers #8276: the OIDC
+// endpoint returning 503 for most of the retry budget must not fail the
+// mint as long as it recovers before the budget runs out.
+func TestMintToken_OIDCRetriesThroughLongOutage(t *testing.T) {
+	var oidcAttempts atomic.Int32
+	failures := int32(oidcRetry.maxAttempts - 1)
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if oidcAttempts.Add(1) <= failures {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "jwt"})
+	}))
+	defer oidcServer.Close()
+	useOIDCServer(t, oidcServer.URL)
+
+	result, err := MintToken(context.Background(), MintRequest{
+		MintURL: newMintServer(t).URL,
+		Role:    "triage",
+		Repos:   []string{"r"},
+	})
+	if err != nil {
+		t.Fatalf("MintToken() error = %v, want success after %d OIDC 503s", err, failures)
+	}
+	if result.Token != "tok" {
+		t.Errorf("token = %q, want %q", result.Token, "tok")
+	}
+	if got := oidcAttempts.Load(); got != failures+1 {
+		t.Errorf("oidcAttempts = %d, want %d", got, failures+1)
+	}
+}
+
+func TestMintToken_OIDCPersistent503ReportsAttempts(t *testing.T) {
+	var oidcAttempts atomic.Int32
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		oidcAttempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer oidcServer.Close()
+	useOIDCServer(t, oidcServer.URL)
+
+	_, err := MintToken(context.Background(), MintRequest{
+		MintURL: newMintServer(t).URL,
+		Role:    "triage",
+		Repos:   []string{"r"},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := int(oidcAttempts.Load()); got != oidcRetry.maxAttempts {
+		t.Errorf("oidcAttempts = %d, want %d", got, oidcRetry.maxAttempts)
+	}
+	wantAttempts := fmt.Sprintf("after %d attempts", oidcRetry.maxAttempts)
+	if !strings.Contains(err.Error(), wantAttempts) {
+		t.Errorf("error = %q, want to contain %q", err.Error(), wantAttempts)
+	}
+	if !strings.Contains(err.Error(), "HTTP 503") {
+		t.Errorf("error = %q, want to contain last status HTTP 503", err.Error())
+	}
+}
+
+func TestMintToken_OIDC4xxNotRetried(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var oidcAttempts atomic.Int32
+			oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				oidcAttempts.Add(1)
+				w.WriteHeader(status)
+			}))
+			defer oidcServer.Close()
+			useOIDCServer(t, oidcServer.URL)
+
+			_, err := MintToken(context.Background(), MintRequest{
+				MintURL: newMintServer(t).URL,
+				Role:    "triage",
+				Repos:   []string{"r"},
+			})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := oidcAttempts.Load(); got != 1 {
+				t.Errorf("oidcAttempts = %d, want 1 (no retry on HTTP %d)", got, status)
+			}
+			if want := fmt.Sprintf("HTTP %d", status); !strings.Contains(err.Error(), want) {
+				t.Errorf("error = %q, want to contain %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+// TestOIDCRetryFitsMaxMintDuration checks the production schedules: the
+// OIDC retry window covers about a minute, and that window plus one final
+// OIDC attempt hanging for the full client timeout plus callMint's
+// backoff stays under MaxMintDuration.
+func TestOIDCRetryFitsMaxMintDuration(t *testing.T) {
+	if oidcRetry.window < 55*time.Second {
+		t.Errorf("oidcRetry.window = %s, want about a minute (>= 55s)", oidcRetry.window)
+	}
+
+	// Walk oidcRetry's schedule with fast failures at the production base
+	// delay of 1s: the last attempt must start at the window boundary, and
+	// the window, not maxAttempts, must be what ends the retries.
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Second
+	defer func() { retryBaseDelay = origDelay }()
+	var lastStart time.Duration
+	attempts := 1
+	for ; attempts < oidcRetry.maxAttempts; attempts++ {
+		d, ok := oidcRetry.nextDelay(attempts, lastStart)
+		if !ok {
+			break
+		}
+		lastStart += d
+	}
+	if lastStart != oidcRetry.window {
+		t.Errorf("fast-failing OIDC retries start their last attempt at %s, want the window boundary %s", lastStart, oidcRetry.window)
+	}
+	if attempts >= oidcRetry.maxAttempts {
+		t.Errorf("fast-failing OIDC retries used all %d attempts; maxAttempts, not the window, ended them", oidcRetry.maxAttempts)
+	}
+
+	var mintBackoff time.Duration
+	for i := 0; i < callMintMaxAttempts-1; i++ {
+		mintBackoff += time.Duration(1<<uint(i)) * time.Second
+	}
+
+	clientTimeout := httpClient.(*http.Client).Timeout
+	total := oidcRetry.window + clientTimeout + mintBackoff
+	if total >= MaxMintDuration {
+		t.Errorf("OIDC window %s + client timeout %s + callMint backoff %s = %s, want < MaxMintDuration (%s)",
+			oidcRetry.window, clientTimeout, mintBackoff, total, MaxMintDuration)
+	}
+}
+
+func TestDoWithRetryPolicy_WindowStopsSlowRetries(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Millisecond
+	defer func() { retryBaseDelay = origDelay }()
+
+	attempts := 0
+	start := time.Now()
+	// 10ms attempts with backoff doubling from 1ms fit about 8 attempts in
+	// a 200ms window; maxAttempts is far higher so only the window stops
+	// the loop.
+	err := doWithRetryPolicy(context.Background(), retryPolicy{maxAttempts: 100, window: 200 * time.Millisecond}, func() error {
+		attempts++
+		time.Sleep(10 * time.Millisecond)
+		return &retryableError{errors.New("slow 503")}
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if attempts < 2 || attempts >= 20 {
+		t.Errorf("attempts = %d, want 2-19 within a 200ms window of 10ms attempts", attempts)
+	}
+	if want := fmt.Sprintf("giving up after %d attempts", attempts); !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %q, want to contain %q", err.Error(), want)
+	}
+	if !strings.Contains(err.Error(), "slow 503") {
+		t.Errorf("error = %q, want to wrap last error", err.Error())
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("doWithRetryPolicy took %s, want the window to bound it", elapsed)
+	}
+}
+
+func TestDoWithRetryPolicy_MaxDelayCapsBackoff(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Hour
+	defer func() { retryBaseDelay = origDelay }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	attempts := 0
+	err := doWithRetryPolicy(ctx, retryPolicy{maxAttempts: 3, maxDelay: time.Millisecond}, func() error {
+		attempts++
+		return &retryableError{errors.New("503")}
+	})
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("doWithRetryPolicy() error = %v; maxDelay did not cap the 1h base delay", err)
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
+	}
+	if err == nil || !strings.Contains(err.Error(), "giving up after 3 attempts") {
+		t.Errorf("error = %v, want 'giving up after 3 attempts'", err)
+	}
+}
+
+func TestDoWithRetryPolicy_ContextCancelDuringBackoff(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Hour
+	defer func() { retryBaseDelay = origDelay }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(10*time.Millisecond, cancel)
+
+	start := time.Now()
+	err := doWithRetryPolicy(ctx, oidcRetry, func() error {
+		return &retryableError{errors.New("503")}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("doWithRetryPolicy took %s after cancel, want prompt return", elapsed)
+	}
+}
+
+func TestRetryPolicyNextDelay(t *testing.T) {
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Second
+	defer func() { retryBaseDelay = origDelay }()
+
+	tests := []struct {
+		name     string
+		p        retryPolicy
+		attempts int
+		elapsed  time.Duration
+		want     time.Duration
+		wantOK   bool
+	}{
+		{"doubles from base", oidcRetry, 3, 3 * time.Second, 4 * time.Second, true},
+		{"capped at maxDelay", oidcRetry, 6, 23 * time.Second, 8 * time.Second, true},
+		// The #8276 review finding: after the attempt at ~55s the full 8s
+		// backoff would overshoot the window, so it is shortened to 5s.
+		{"shortened to reach window", oidcRetry, 10, 55 * time.Second, 5 * time.Second, true},
+		{"window reached", oidcRetry, 11, 60 * time.Second, 0, false},
+		{"window passed by slow attempt", oidcRetry, 5, 65 * time.Second, 0, false},
+		{"no window never shortens", retryPolicy{maxAttempts: 5}, 4, time.Hour, 8 * time.Second, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := tt.p.nextDelay(tt.attempts, tt.elapsed)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("nextDelay(%d, %s) = (%s, %v), want (%s, %v)", tt.attempts, tt.elapsed, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+// TestDoWithRetryPolicy_RecoversAtWindowEnd runs oidcRetry's schedule at
+// 1/100 scale (1s -> 10ms) against an endpoint that recovers between the
+// ~55s attempt and the 60s window end. Before the final backoff was
+// shortened to the window, this outage failed the mint.
+func TestDoWithRetryPolicy_RecoversAtWindowEnd(t *testing.T) {
+	const scale = 100
+	origDelay := retryBaseDelay
+	retryBaseDelay = time.Second / scale
+	defer func() { retryBaseDelay = origDelay }()
+
+	p := retryPolicy{
+		maxAttempts: oidcRetry.maxAttempts,
+		maxDelay:    oidcRetry.maxDelay / scale,
+		window:      oidcRetry.window / scale,
+	}
+	recoverAt := 58 * time.Second / scale
+
+	start := time.Now()
+	attempts := 0
+	err := doWithRetryPolicy(context.Background(), p, func() error {
+		attempts++
+		if time.Since(start) < recoverAt {
+			return &retryableError{errors.New("503")}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("doWithRetryPolicy() error = %v after %d attempts, want success once the endpoint recovers at %s (window %s)",
+			err, attempts, recoverAt, p.window)
+	}
 }

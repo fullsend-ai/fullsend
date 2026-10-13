@@ -81,6 +81,13 @@ func TestNeedsOpenAIProvider(t *testing.T) {
 		{name: "an override still wins over the frontmatter", backend: "pi",
 			model: "anthropic-vertex/claude-opus-4-6", agentModel: "openai/gpt-5.6-luna"},
 		{name: "codex ignores both", backend: "codex", model: "", agentModel: "anthropic-vertex/claude-opus-4-6", want: true},
+		// A gateway-only codex run needs the gateway provider, not
+		// fullsend-openai (ADR 0137).
+		{name: "codex on a gateway model", backend: "codex", model: "gateway/vendor/org/model"},
+		{name: "codex on a gateway model, mixed case", backend: "codex", model: "Gateway/m1"},
+		{name: "codex on a gateway model in the frontmatter", backend: "codex", model: "", agentModel: "gateway/m1"},
+		{name: "codex: an openai override beats a gateway frontmatter", backend: "codex",
+			model: "openai/gpt-5.6-luna", agentModel: "gateway/m1", want: true},
 		{name: "pi on an alias the repo remapped to openai", backend: "pi", model: "sonnet",
 			configAliases: map[string]string{"sonnet": "openai/gpt-5.6-luna"}, want: true},
 		{name: "dummy", backend: "dummy", model: "openai/gpt-5.6-luna"},

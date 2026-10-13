@@ -246,3 +246,5 @@ credential. What remains:
 - ADR 0099 — **amends this ADR's in-sandbox half**: the seeding step described here for pi's
   `auth.json` is one implementation of a runtime-neutral seeder interface, and the
   `fullsend-openai` egress profile admits `**/codex` as well as `**/node` (#6920)
+- [ADR 0137](0137-inference-gateway-credential-route.md) — inference gateway route, selected
+  per model by the `gateway/` prefix; `openai/` models keep the routes described here (#7480)

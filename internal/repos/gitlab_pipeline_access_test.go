@@ -78,6 +78,20 @@ func TestPollerCanCreatePipeline(t *testing.T) {
 		}
 		assert.True(t, PollerCanCreatePipeline(rule, poller))
 	})
+	t.Run("every poller identity needs a grant", func(t *testing.T) {
+		rule := &forge.ProtectedBranchRule{
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}, {UserID: 99}},
+		}
+		assert.False(t, PollerCanCreatePipeline(rule, []int{99, 100}))
+		assert.True(t, PollerCanCreatePipeline(rule, []int{99}))
+	})
+	t.Run("grants across merge and push cover both identities", func(t *testing.T) {
+		rule := &forge.ProtectedBranchRule{
+			MergeAccessLevels: []forge.ProtectedBranchAccess{{UserID: 99}},
+			PushAccessLevels:  []forge.ProtectedBranchAccess{{UserID: 100}},
+		}
+		assert.True(t, PollerCanCreatePipeline(rule, []int{99, 100}))
+	})
 	t.Run("other user does not count", func(t *testing.T) {
 		rule := &forge.ProtectedBranchRule{
 			MergeAccessLevels: []forge.ProtectedBranchAccess{{UserID: 7}},
@@ -145,6 +159,27 @@ func TestEnsureGitLabPollerPipelineAccess_GrantsPollerUser(t *testing.T) {
 	rule, err := fc.GetProtectedBranch(context.Background(), "group", "project", "release")
 	require.NoError(t, err)
 	assert.True(t, PollerCanCreatePipeline(rule, []int{99}))
+}
+
+// During a Poller migration the outgoing project-token bot keeps an active token
+// through the rotation grace, so both identities are in the inventory. A grant
+// held only by the old bot must not stand in for the new service account.
+func TestEnsureGitLabPollerPipelineAccess_MigrationGrantsNewIdentity(t *testing.T) {
+	fc := forge.NewFakeClient()
+	seedRepo(fc, "group", "project", "release")
+	rule := maintainerOnlyRule("release")
+	rule.MergeAccessLevels = append(rule.MergeAccessLevels, forge.ProtectedBranchAccess{UserID: 99})
+	fc.ProtectedBranchRules["group/project/release"] = rule
+
+	res, err := EnsureGitLabPollerPipelineAccess(context.Background(), fc, "group", "project", []int{99, 100}, false)
+	require.NoError(t, err)
+	assert.Equal(t, pipelineAccessGrant, res.Action)
+	require.Len(t, fc.GrantedProtectedBranchMergeUsers, 1)
+	assert.Equal(t, 100, fc.GrantedProtectedBranchMergeUsers[0].UserID)
+
+	got, err := fc.GetProtectedBranch(context.Background(), "group", "project", "release")
+	require.NoError(t, err)
+	assert.True(t, PollerCanCreatePipeline(got, []int{99, 100}))
 }
 
 func TestEnsureGitLabPollerPipelineAccess_DryRun(t *testing.T) {
@@ -323,4 +358,92 @@ func TestDescribePipelineAccess(t *testing.T) {
 	assert.Contains(t, got, "user:9")
 	assert.Contains(t, got, "group:3")
 	assert.Contains(t, got, "access_level:60")
+}
+
+func TestReplacementPipelineAccessVerifiesGrant(t *testing.T) {
+	for _, failure := range []bool{false, true} {
+		t.Run(fmt.Sprint(failure), func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			seedRepo(fc, "g", "p", "main")
+			fc.ProtectedBranchRules["g/p/main"] = maintainerOnlyRule("main")
+			if failure {
+				fc.Errors["GrantProtectedBranchMergeUser"] = fmt.Errorf("denied")
+			}
+			err := VerifyGitLabReplacementPipelineAccess(context.Background(), fc, "g", "p", 501)
+			if failure {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.True(t, PollerCanCreatePipeline(fc.ProtectedBranchRules["g/p/main"], []int{501}))
+			}
+		})
+	}
+	require.Error(t, VerifyGitLabReplacementPipelineAccess(context.Background(), forge.NewFakeClient(), "g", "p", 0))
+}
+
+// Verifying a supplied Poller never changes the protected-branch rule: the
+// grant is applied later, after enrollment is recorded, so a rejected
+// enrollment leaves nothing behind.
+func TestVerifySuppliedPollerPipelineAccessIsReadOnly(t *testing.T) {
+	ctx := context.Background()
+	newClient := func(rule *forge.ProtectedBranchRule) *forge.FakeClient {
+		fc := forge.NewFakeClient()
+		seedRepo(fc, "g", "p", "main")
+		if rule != nil {
+			fc.ProtectedBranchRules["g/p/main"] = rule
+		}
+		return fc
+	}
+
+	t.Run("elevated-only rule passes without a grant", func(t *testing.T) {
+		fc := newClient(maintainerOnlyRule("main"))
+		require.NoError(t, VerifyGitLabSuppliedPollerPipelineAccess(ctx, fc, "g", "p", 501))
+		assert.Empty(t, fc.GrantedProtectedBranchMergeUsers, "no merge grant is made")
+		assert.False(t, PollerCanCreatePipeline(fc.ProtectedBranchRules["g/p/main"], []int{501}))
+	})
+
+	t.Run("unprotected branch passes", func(t *testing.T) {
+		require.NoError(t, VerifyGitLabSuppliedPollerPipelineAccess(ctx, newClient(nil), "g", "p", 501))
+	})
+
+	t.Run("existing grant passes", func(t *testing.T) {
+		rule := maintainerOnlyRule("main")
+		rule.MergeAccessLevels = append(rule.MergeAccessLevels, forge.ProtectedBranchAccess{UserID: 501})
+		require.NoError(t, VerifyGitLabSuppliedPollerPipelineAccess(ctx, newClient(rule), "g", "p", 501))
+	})
+
+	t.Run("wildcard-only protection is rejected", func(t *testing.T) {
+		fc := newClient(maintainerOnlyRule("*"))
+		err := VerifyGitLabSuppliedPollerPipelineAccess(ctx, fc, "g", "p", 501)
+		require.ErrorContains(t, err, "wildcard")
+		assert.Empty(t, fc.GrantedProtectedBranchMergeUsers)
+	})
+
+	t.Run("an unknown owner is rejected", func(t *testing.T) {
+		require.Error(t, VerifyGitLabSuppliedPollerPipelineAccess(ctx, forge.NewFakeClient(), "g", "p", 0))
+	})
+}
+
+const suppliedPollerState = `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":888,"supplied_token_id":14,"excluded_user_ids":[888]}}}`
+
+// Install and status include the supplied Poller's owner, which no token
+// inventory lists, in their protected-branch pipeline-access checks.
+func TestWithSuppliedPollerUserID(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	set := func(t *testing.T, state string) forge.Client {
+		t.Helper()
+		fc := provisionClient(t)
+		if state != "" {
+			require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation, state, true))
+		}
+		return fc
+	}
+
+	assert.Equal(t, []int{5, 888}, WithSuppliedPollerUserID(ctx, set(t, suppliedPollerState), "group", "project", []int{5}))
+	assert.Equal(t, []int{888}, WithSuppliedPollerUserID(ctx, set(t, suppliedPollerState), "group", "project", nil))
+	assert.Equal(t, []int{888}, WithSuppliedPollerUserID(ctx, set(t, suppliedPollerState), "group", "project", []int{888}), "already listed")
+	assert.Equal(t, []int{5}, WithSuppliedPollerUserID(ctx, set(t, suppliedCoderEnrolledState), "group", "project", []int{5}), "a supplied non-Poller role adds nothing")
+	assert.Equal(t, []int{5}, WithSuppliedPollerUserID(ctx, set(t, ""), "group", "project", []int{5}), "no state adds nothing")
+	assert.Equal(t, []int{5}, WithSuppliedPollerUserID(ctx, nil, "group", "project", []int{5}), "no client adds nothing")
 }

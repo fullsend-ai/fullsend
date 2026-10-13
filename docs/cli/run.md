@@ -18,7 +18,7 @@ fullsend run <agent-name> [flags]
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`; when omitted and `.fullsend` does not exist in the current directory, the command stops and names the flag) |
 | `--runtime` | Override the agent runtime from `config.yaml` for this run (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`); also `FULLSEND_RUNTIME` |
-| `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi and codex — codex takes OpenAI ids only); also `FULLSEND_MODEL` |
+| `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi and codex — codex takes OpenAI ids and `gateway/<model>` only); also `FULLSEND_MODEL` |
 | `--effort` | Override the harness effort level for this run (`low`…`max`); also `FULLSEND_EFFORT` |
 | `--output-dir` | Base directory for run output (default: `/tmp/fullsend`) |
 | `--target-repo` | Path to the target repository |
@@ -65,7 +65,10 @@ Google credentials before the harness pre-script:
 
 The run prints which source it used. For local and GitLab Vertex runs, point
 `GOOGLE_APPLICATION_CREDENTIALS` at a non-empty credential file when the harness mounts it.
-An OpenAI run uses the [OpenAI credential path](#openai-credentials-on-pi-and-codex). When both GCP
+An OpenAI run uses the [OpenAI credential path](#openai-credentials-on-pi-and-codex), and a pi or
+codex or Claude Code run whose own model is `gateway/<id>` uses the
+[inference gateway credential path](#inference-gateway-credentials-on-pi-codex-and-claude-code); neither runs the Vertex
+setup above. When both GCP
 inputs are set, an OpenAI run on GitHub Actions also prepares Google WIF credentials for Vertex
 sub-agents; a failure there is a warning. The `dummy` and `dummy-playback` runtimes follow the
 same rule and need no GCP inputs. On GitHub Actions, a run whose parent does not use Vertex clears a
@@ -204,6 +207,7 @@ the mint issues the agent's token by `role`, which must be one it serves, and ne
 agent: agents/probe-timeout.md
 role: review            # unchanged
 slug: probe-timeout
+policy: policies/base.yaml
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
@@ -320,6 +324,29 @@ variables is deployed.
 | `clearing stale iteration deadline (iteration N): ...` | The write failed and the previous iteration's file could not be removed either. The run stops rather than let the agent read a stale deadline. | Same as above. |
 | `FULLSEND_ITERATION_DEADLINE` unset inside the agent | The agent's shell was started without sourcing `/sandbox/workspace/.env`. | Runtimes that fullsend ships always source it; a custom command must do the same. |
 
+## How a run ends
+
+After the last iteration, `fullsend run` returns an error, and so exits non-zero, in these cases.
+
+| Harness | Run fails when | Error |
+|---|---|---|
+| With `validation_loop` | No iteration validated and the last one was killed at the budget | `agent timed out after <elapsed> without completing (timeout: <budget>)` |
+| With `validation_loop` | No iteration validated | `validation failed after N iteration(s)` |
+| Without `validation_loop` | The iteration was killed at the budget | `agent timed out after <elapsed> without completing (timeout: <budget>)` |
+| Without `validation_loop` | The agent exited non-zero, or exited 0 with an error reported in its transcript | `agent failed with exit code <code>` |
+
+- With a `validation_loop`, validation is the success gate: an iteration that exits non-zero but
+  writes output that validates still succeeds. A failed run skips the post-script.
+- Without a loop, a failed agent that was not killed at the budget still gets its post-script when it left a result file of at most
+  4 MiB that parses as a JSON object: `FULLSEND_OUTPUT_FILE` from the harness's runner env, or `agent-result.json`.
+  The post-script runs with `FULLSEND_AGENT_EXIT_CODE` set, and the run still fails. With no such
+  file, the post-script is skipped.
+- Without a loop, a behavioral limit (`error_max_turns`, `error_max_budget_usd`) does not fail the
+  run, even though the agent exits non-zero. The post-script runs with
+  `FULLSEND_AGENT_EXIT_REASON` set so it can report the interruption.
+- `<code>` is the `Agent exit code` value in the Results block. It is `1` when the agent exited 0
+  but its transcript reported an error.
+
 ## OpenAI credentials on pi and codex
 
 A `fullsend-openai` provider (`providers: [openai]` on the harness, `openai/<id>` models on pi or codex)
@@ -339,6 +366,57 @@ is already rejected). Give repository-specific providers and profiles their own 
 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+
+<a id="inference-gateway-credentials-on-pi"></a>
+<a id="inference-gateway-credentials-on-pi-and-codex"></a>
+
+## Inference gateway credentials on pi, codex and Claude Code
+
+A pi run that resolves a `gateway/<id>` model, for the parent or a configured sub-agent, uses the
+`inference.gateway` block of `.fullsend/config.yaml`
+([config reference](../reference/config-reference.md),
+[ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). When the block is complete and the
+run has a forge OIDC endpoint (a GitHub Actions job with `id-token: write`), the runner:
+
+- fetches the job's OIDC assertion for the block's `audience` and puts it behind a provider named
+  after the run, with a per-host egress profile for the gateway, in addition to every other
+  provider;
+- checks after sandbox creation that the sandbox policy reaches the gateway host only through an
+  inspected route, and deletes the sandbox if it does not;
+- seeds the provider's placeholder into a runner-owned token file before the agent-writable `.env`
+  is sourced, and refreshes the assertion before each token's own `exp`, re-seeding the file;
+- removes the provider when the run ends (or expires it in place under `--keep-sandbox`).
+
+A failure at any step fails the run; the route never falls back to another credential. With no
+block, or without an OIDC endpoint, the runner adds nothing, so a harness that loads the extension
+as a plugin keeps working.
+
+With `auth: api-key` in the block
+([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)), the runner reads the
+gateway key from `FULLSEND_INFERENCE_GATEWAY_API_KEY` (a forge secret, or the local environment)
+instead of fetching an assertion. It puts the key behind the same provider, egress profile and
+guards, with no refresh and no re-seed. The block then applies on local runs too. A missing key
+fails the run. The mode relies on a long-lived secret, so the run log warns about it; prefer
+`oidc` when the gateway supports it. Check a block with
+[`fullsend inference gateway status`](inference.md#inference-gateway-status).
+
+A codex run whose model is `gateway/<model>` uses the same route, credential modes and guards. The
+token file is codex's `gateway-token`, which the runner-owned `fullsend-gateway` provider's
+`auth.command` re-reads. The run needs no `openai` provider. See
+[Codex › Models through an inference gateway](../runtimes/codex.md#models-through-an-inference-gateway-experimental).
+
+**Claude Code.** A claude runtime run whose own model is `gateway/<id>` uses the same block, provider
+and refresh. The runner exports the gateway URL (the origin plus its path prefix, if `url` has one) as
+`ANTHROPIC_BASE_URL`, passes `<id>` to
+`--model`, and skips the Vertex credential checks. The credential reaches Claude Code through an
+`apiKeyHelper` that re-reads the re-seeded token file in the `oidc` mode, or as an
+`ANTHROPIC_AUTH_TOKEN` placeholder in the `api-key` mode. Both are sent as `Authorization: Bearer`,
+as on pi. The per-host egress profile is a Claude Code rendering that admits only
+`POST <prefix>/v1/messages` and `POST <prefix>/v1/messages/count_tokens` (`<prefix>` is empty for a
+bare origin). Claude Code has no plugin-carried
+setup, so a `gateway/` model without a block that applies (no block, or an `oidc` block on a run
+without an OIDC endpoint) is an error. Details:
+[Claude Code § Inference gateway route](../runtimes/claude.md#inference-gateway-route).
 
 ## GitLab role identity
 

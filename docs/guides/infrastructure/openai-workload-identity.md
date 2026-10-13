@@ -1,5 +1,22 @@
 # OpenAI Workload Identity
 
+> Background: [How fullsend authenticates](../user/how-fullsend-authenticates.md).
+
+> **Before you start: who you need.** This page takes up to three roles
+> ([Who does what](../user/how-fullsend-authenticates.md#who-does-what)):
+>
+> - **OpenAI organization admin**, the provider admin: owns the Workload Identity Provider in
+>   Organization Settings, adds your repository's mapping, and hands over the **audience**, the
+>   **identity provider ID** and the **service account ID**. On route A, that is you.
+> - **Repo admin**: records the three identifiers
+>   ([step 4](#4-tell-fullsend-the-three-identifiers)). On route C, stores the API key as the
+>   `FULLSEND_OPENAI_API_KEY` repository secret.
+> - **Repo writer**: adds the temporary claim-check workflow in
+>   [step 1](#1-see-what-your-repository-actually-claims-both-routes).
+>
+> For route C, someone with OpenAI platform access creates the API key. If you have no platform
+> access at all, see [If you have no OpenAI platform access](#if-you-have-no-openai-platform-access).
+
 Run GPT models on the [pi](../../runtimes/pi.md) or [codex](../../runtimes/codex.md) runtime
 without storing an OpenAI API key
 anywhere. Your GitHub Actions job proves who it is with its OIDC token, OpenAI hands back a
@@ -74,6 +91,27 @@ into the console; route B: the ticket to send), and `import` records the identif
 > (`repository_owner`, a name prefix, a derived attribute): a GitHub organization often contains
 > repositories the company does not own, and a pattern would let every one of them obtain your
 > token. Adding a repository later means adding its assertion; that is the gate, by design.
+
+### If you have no OpenAI platform access
+
+Routes B and C both assume some access to the OpenAI platform: route B a project you own or
+request, route C someone who can create a key. If you are a repo admin who cannot open the
+platform at all, the OpenAI organization admin does the platform side for you:
+
+1. Generate the request. It needs no credentials and sends nothing:
+
+   ```bash
+   fullsend inference openai request <owner>/<repo> --format md --out openai-wif-request.md
+   ```
+
+   Leave out `--project`. It defaults to empty, and the request then asks the admin to pick the
+   project the runs are billed to.
+2. Send `openai-wif-request.md` to your OpenAI organization admin. It names the provider to reuse
+   or create, the mapping to add, and what to send back.
+3. The admin sends back the provider's audience, the identity provider ID and the service account
+   ID.
+4. Record them with `fullsend inference openai import` (see
+   [B3](#b3-record-what-you-get-back-route-b)), then commit `.fullsend/config.yaml`.
 
 ## 1. See what your repository actually claims (both routes)
 
@@ -374,8 +412,14 @@ fullsend repos install acme/api --forge github --inference-auth openai-wif
   `.fullsend/config.yaml` over `config.base.yaml`. `repos install` also counts the managed
   configuration and configuration preset it is delivering. A repository with no identifiers or a
   partial set fails before anything is written, and the error names only the missing identifiers.
-- Migrating from `fullsend github setup --openai-*` needs no new values: the existing
-  `inference.openai` block or repository variables are used as they are.
+- Migrating from `fullsend github setup --openai-*` needs no new OpenAI values: the existing
+  `inference.openai` block or repository variables are still read as they are. The existing
+  `.fullsend/config.yaml` has no ownership marker, though, so `repos install` stops before any
+  write until it is adopted: move the settings you want to keep, including `inference.openai`,
+  into the repository's `repos.yaml` entry, then remove or replace the file (see
+  [Repo Management — Managed configuration](../getting-started/repo-management.md#managed-configuration)).
+  An existing `.fullsend/config.base.yaml` likewise blocks install unless a `config_base` preset
+  is declared for the repository.
 - Switching from `openai-api-key` keeps `FULLSEND_OPENAI_API_KEY` until a complete identifier set is
   on the default branch. If the identifiers arrive in an unmerged initialization pull request, merge
   it and re-run `repos install` to remove the key.
@@ -395,8 +439,10 @@ runtime tests retain regression coverage.
 `TestOpenAIWIFLiveInstallAndRun` automates the live install → readiness → successful agent
 check. It is opt-in because it writes to a dedicated repository and incurs inference cost.
 Prepare that repository with mint enrollment, the three `FULLSEND_OPENAI_*` variables,
-and a working OpenAI-model triage agent triggered by new issues. Use an existing unmanaged
-configuration or preset; the test preserves it. The repository must have none of
+and a working OpenAI-model triage agent triggered by new issues. Unmanaged configuration is no
+longer preserved: a markerless `.fullsend/config.yaml`, or a `.fullsend/config.base.yaml` with no
+declared preset, makes `repos install` fail before any write. Start from a repository with neither
+file, or adopt them into `repos.yaml` first. The repository must have none of
 `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, or `FULLSEND_OPENAI_API_KEY`.
 The configured GitHub identity needs permission to install workflows, inspect secret
 names, create/close issues, and read Actions runs/logs. Allow no concurrent issue-triggered
@@ -489,10 +535,10 @@ endpoint to exchange with — so the same checkout works in CI and locally. See
 
 The fleet's agents already declare a sandbox policy. If you run a **custom harness**, give it one
 too — `policy: policies/base.yaml`, the fleet's base policy from the agents repository (it sets
-only filesystem and process rules; network access comes from the providers). Without it the
-sandbox image's default policy also allows `api.openai.com` as an uninspected tunnel, and the
-gateway then refuses to hand the credential over that route; fullsend stops the run before the
-agent starts and names the rule.
+only filesystem and process rules; network access comes from the providers). `policy:` is
+required; `fullsend run` fails at harness validation rather than creating an empty sandbox. The
+fleet base policy also avoids an uninspected tunnel to `api.openai.com`, which the gateway refuses
+to carry the credential over.
 
 ## How it stays safe
 
@@ -529,7 +575,8 @@ agent starts and names the rule.
 | `the service-account mapping does not narrow permissions` (warning) | The mapping has no permission restriction, so the token holds whatever the service account holds. Add `api.model.request` on the mapping. |
 | `OPENAI_API_KEY in the sandbox is not a gateway placeholder` | A real key reached the sandbox environment by some other route (an env file copied into the sandbox, for example). Remove it; the provider is the only supported way in. |
 | `pi config dir has models.json or an auth.json that is not the runner-seeded openai placeholder` | Something wrote into pi's config directory between iterations. Re-run with `--keep-sandbox` and inspect it. |
-| `sandbox policy rule codex allows api.openai.com:443 without L7 inspection` | The harness has no `policy:`, so the sandbox image's default policy applies. Add `policy: policies/base.yaml` to the harness (see [Run it locally](#run-it-locally)). |
+| `validating files: policy field is required` | The composed harness has no `policy:`. Add `policy: policies/base.yaml` to the harness (see [Run it locally](#run-it-locally)), or inherit it from a `base:` harness |
+| `sandbox policy rule codex allows api.openai.com:443 without L7 inspection` | The named policy (or a provider-composed rule) leaves an uninspected route to `api.openai.com`. Use the fleet `policies/base.yaml`: it has no network rules of its own, and the openai provider supplies the inspected route. |
 | `500 credential_unavailable` from `api.openai.com` | The placeholder pi sent no longer resolves: the credential expired, or the provider was replaced. With `--keep-sandbox` this is expected after the run ends. Otherwise check the refresh lines in the run log. |
 | `401` or `500` from `api.openai.com` partway through a run | The refresh could not get a new token in time (the run log shows the attempts) and the credential expired as designed. Check the exchange errors above and re-run. |
 

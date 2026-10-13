@@ -63,6 +63,11 @@ type World struct {
 	ForkRepo     string
 	ForkPRNumber int
 	ForkPRBranch string
+	// ForkSCM is the driver of the test actor that owns the fork, set
+	// when the fork was created "owned by the <actor>". Fork-side
+	// operations (branch, commits, cleanup) go through it. Nil means
+	// the fork belongs to the e2e identity behind SCM.
+	ForkSCM scm.Driver
 
 	// URL harness hosting repo — set by URL dispatch step definitions.
 	URLHarnessRepoOwner string
@@ -112,6 +117,13 @@ type World struct {
 	WriteSCM   scm.Driver
 	WriteLogin string
 
+	// TriageSCM is an SCM driver authenticated as a GitHub User with
+	// triage-level access to the pool-org repos. Used by scenarios that
+	// act as the triage actor. Nil when TEST_ACTOR_TRIAGE_PAT is not
+	// set. Shared across scenarios, never reset.
+	TriageSCM   scm.Driver
+	TriageLogin string
+
 	// KillSwitchActivated records whether this scenario activated the
 	// repo-level kill switch. CleanupScenario uses this to deactivate
 	// the switch so the next scenario on this slot is not affected.
@@ -139,6 +151,19 @@ type World struct {
 	// does not inherit custom agent entries from the previous lessee.
 	AgentsOverridden bool
 	AgentsOriginal   []config.AgentEntry
+
+	// GatewayConfigOverridden records that this scenario committed an
+	// inference.gateway block into .fullsend/config.yaml;
+	// GatewayConfigOriginal holds the pre-scenario file bytes.
+	// CleanupScenario commits them back, before the leased repo is
+	// deallocated, so the slot's next scenario does not inherit the block.
+	GatewayConfigOverridden bool
+	GatewayConfigOriginal   []byte
+
+	// GatewayAPIKeySecretSet records that this scenario set the enrolled
+	// repo's FULLSEND_INFERENCE_GATEWAY_API_KEY secret to the test key.
+	// CleanupScenario deletes it before the leased repo is deallocated.
+	GatewayAPIKeySecretSet bool
 
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.

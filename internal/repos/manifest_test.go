@@ -23,9 +23,10 @@ import (
 const validManifest = `
 version: 1
 defaults:
-  allowed_remote_resources:
-    - https://resource-a.example.com/
-    - https://resource-b.example.com/
+  config:
+    allowed_remote_resources:
+      - https://resource-a.example.com/
+      - https://resource-b.example.com/
 github:
   mint_url: https://mint.example.com
   fullsend_ref: main
@@ -43,7 +44,8 @@ func TestParseSimpleManifest(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, "https://mint.example.com", m.GitHub.MintURL)
 	assert.Equal(t, "main", m.GitHub.FullsendRef)
-	assert.Equal(t, []string{"https://resource-a.example.com/", "https://resource-b.example.com/"}, m.Defaults.AllowedRemoteResources)
+	require.True(t, m.Defaults.Config.IsSet())
+	assert.Subset(t, m.Defaults.Config.Writer().AllowedResources(), []string{"https://resource-a.example.com/", "https://resource-b.example.com/"})
 	require.Len(t, m.GitHub.Repos, 2)
 	assert.Equal(t, "acme/repo-one", m.GitHub.Repos[0].Name)
 	assert.Equal(t, "acme/repo-two", m.GitHub.Repos[1].Name)
@@ -704,7 +706,7 @@ func TestResolveConfig_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, "repo-one", cfg.Repo)
 	assert.Equal(t, "https://mint.example.com", cfg.MintURL)
 	assert.Equal(t, "main", cfg.FullsendRef)
-	assert.Equal(t, []string{"https://resource-a.example.com/", "https://resource-b.example.com/"}, cfg.AllowedRemoteResources)
+	assert.Subset(t, cfg.Managed.AllowedResources(), []string{"https://resource-a.example.com/", "https://resource-b.example.com/"})
 }
 
 func TestResolveConfig_PlatformFields(t *testing.T) {
@@ -1717,8 +1719,9 @@ func TestResolveConfig_PerRepoOverrides(t *testing.T) {
 	input := `
 version: 1
 defaults:
-  allowed_remote_resources:
-    - https://default.example.com/
+  config:
+    allowed_remote_resources:
+      - https://default.example.com/
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -1727,8 +1730,9 @@ github:
     - name: acme/overrides
       fullsend_ref: v2.0.0
       mint_url: https://eu-mint.example.com
-      allowed_remote_resources:
-        - https://special.example.com/
+      config:
+        allowed_remote_resources:
+          - https://special.example.com/
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
@@ -1738,7 +1742,8 @@ github:
 		require.True(t, found)
 		assert.Equal(t, "https://mint.example.com", cfg.MintURL)
 		assert.Equal(t, "v1.0.0", cfg.FullsendRef)
-		assert.Equal(t, []string{"https://default.example.com/"}, cfg.AllowedRemoteResources)
+		assert.Contains(t, cfg.Managed.AllowedResources(), "https://default.example.com/")
+		assert.NotContains(t, cfg.Managed.AllowedResources(), "https://special.example.com/")
 	})
 
 	t.Run("per_repo_override_takes_precedence", func(t *testing.T) {
@@ -1746,7 +1751,10 @@ github:
 		require.True(t, found)
 		assert.Equal(t, "https://eu-mint.example.com", cfg.MintURL)
 		assert.Equal(t, "v2.0.0", cfg.FullsendRef)
-		assert.Equal(t, []string{"https://special.example.com/"}, cfg.AllowedRemoteResources)
+		// allowed_remote_resources keeps its layered merge rule: a
+		// non-empty repository list is unioned with the inherited one.
+		assert.Equal(t, "https://special.example.com/", cfg.Managed.AllowedResources()[0])
+		assert.Contains(t, cfg.Managed.AllowedResources(), "https://default.example.com/")
 	})
 }
 
@@ -1755,8 +1763,9 @@ func TestRepoEntry_PerRepoOverrideFields(t *testing.T) {
 name: acme/my-repo
 fullsend_ref: v2.0.0
 mint_url: https://eu-mint.example.com
-allowed_remote_resources:
-  - https://special.example.com/
+config:
+  allowed_remote_resources:
+    - https://special.example.com/
 `
 	var entry RepoEntry
 	err := yaml.Unmarshal([]byte(input), &entry)
@@ -1764,14 +1773,15 @@ allowed_remote_resources:
 	assert.Equal(t, "acme/my-repo", entry.Name)
 	assert.Equal(t, "v2.0.0", entry.FullsendRef)
 	assert.Equal(t, "https://eu-mint.example.com", entry.MintURL)
-	assert.Equal(t, []string{"https://special.example.com/"}, entry.AllowedRemoteResources)
+	require.True(t, entry.Config.IsSet())
+	assert.Equal(t, "https://special.example.com/", entry.Config.Writer().AllowedResources()[0])
 }
 
 func TestMarshalRoundTrip_PerRepoOverrides(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Defaults: DefaultsConfig{
-			AllowedRemoteResources: []string{"https://default.example.com/"},
+			Config: mustManagedConfig(t, "allowed_remote_resources:\n  - https://default.example.com/\n"),
 		},
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
@@ -1779,10 +1789,10 @@ func TestMarshalRoundTrip_PerRepoOverrides(t *testing.T) {
 			Repos: []RepoEntry{
 				{Name: "acme/inherits"},
 				{
-					Name:                   "acme/overrides",
-					FullsendRef:            "v2.0.0",
-					MintURL:                "https://eu-mint.example.com",
-					AllowedRemoteResources: []string{"https://special.example.com/"},
+					Name:        "acme/overrides",
+					FullsendRef: "v2.0.0",
+					MintURL:     "https://eu-mint.example.com",
+					Config:      mustManagedConfig(t, "allowed_remote_resources:\n  - https://special.example.com/\n"),
 				},
 			},
 		},
@@ -1800,7 +1810,10 @@ func TestMarshalRoundTrip_PerRepoOverrides(t *testing.T) {
 	assert.Equal(t, "acme/overrides", roundTripped.GitHub.Repos[1].Name)
 	assert.Equal(t, "v2.0.0", roundTripped.GitHub.Repos[1].FullsendRef)
 	assert.Equal(t, "https://eu-mint.example.com", roundTripped.GitHub.Repos[1].MintURL)
-	assert.Equal(t, []string{"https://special.example.com/"}, roundTripped.GitHub.Repos[1].AllowedRemoteResources)
+	require.True(t, roundTripped.GitHub.Repos[1].Config.IsSet())
+	assert.Equal(t, "https://special.example.com/", roundTripped.GitHub.Repos[1].Config.Writer().AllowedResources()[0])
+	require.True(t, roundTripped.Defaults.Config.IsSet())
+	assert.Equal(t, "https://default.example.com/", roundTripped.Defaults.Config.Writer().AllowedResources()[0])
 }
 
 func TestValidate_PerRepoMintURLMustBeHTTPS(t *testing.T) {
@@ -2400,32 +2413,36 @@ func TestManifest_RuntimeResolvesAndValidates(t *testing.T) {
 	t.Parallel()
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Runtime: "pi"},
+		Defaults: DefaultsConfig{Config: mustManagedConfig(t, "runtime: pi\n")},
 		GitHub: &PlatformConfig{Repos: []RepoEntry{
 			{Name: "acme/a"},
-			{Name: "acme/b", Runtime: "claude"},
-			{Name: "acme/c", Runtime: NoneSentinel},
+			{Name: "acme/b", Config: mustManagedConfig(t, "runtime: claude\n")},
 		}},
 	}
 	require.NoError(t, m.Validate())
 
 	rc, ok := m.ResolveConfig("acme", "a")
 	require.True(t, ok)
-	assert.Equal(t, "pi", rc.Runtime, "entry inherits defaults.runtime")
+	assert.Equal(t, "pi", rc.Runtime, "entry inherits defaults.config.runtime")
+	assert.Equal(t, "pi", rc.Managed.ConfigRuntime())
 	rc, _ = m.ResolveConfig("acme", "b")
-	assert.Equal(t, "claude", rc.Runtime, "entry overrides the default")
-	rc, _ = m.ResolveConfig("acme", "c")
-	assert.Equal(t, "", rc.Runtime, "none stops the chain: code default")
+	assert.Equal(t, "claude", rc.Runtime, "entry config overrides the default")
 
-	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{Runtime: "opencode"}}
+	none := &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/c"}}}}
+	rc, _ = none.ResolveConfig("acme", "c")
+	assert.Equal(t, "", rc.Runtime, "no layer declares runtime: preset or code default")
+
+	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{Config: mustManagedConfig(t, "runtime: opencode\n")}}
 	err := bad.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `defaults.runtime "opencode" is not a valid runtime`)
+	assert.Contains(t, err.Error(), "defaults.config")
+	assert.Contains(t, err.Error(), `invalid runtime "opencode"`)
 
-	bad = &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Runtime: "nope"}}}}
+	bad = &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Config: mustManagedConfig(t, "runtime: nope\n")}}}}
 	err = bad.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `github.repos[acme/x].runtime "nope"`)
+	assert.Contains(t, err.Error(), "github.repos[acme/x].config")
+	assert.Contains(t, err.Error(), `invalid runtime "nope"`)
 }
 
 func TestResolveBoolField(t *testing.T) {

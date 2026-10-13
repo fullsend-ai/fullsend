@@ -78,7 +78,7 @@ func TestCarveOutGlobCovered_ConcreteTargetUsesDiscoveringForge(t *testing.T) {
 		func(forgeName string, platform *PlatformConfig, entry *RepoEntry) error {
 			gotForge = forgeName
 			assert.Same(t, m.GitLab, platform)
-			entry.Runtime = "pi"
+			entry.MintURL = "https://mint.example.com"
 			return nil
 		})
 	require.NoError(t, err)
@@ -87,7 +87,7 @@ func TestCarveOutGlobCovered_ConcreteTargetUsesDiscoveringForge(t *testing.T) {
 	require.Len(t, m.GitHub.Repos, 1)
 	require.Len(t, m.GitLab.Repos, 2)
 	assert.Equal(t, "gl-ref", m.GitLab.Repos[1].FullsendRef)
-	assert.Equal(t, "pi", m.GitLab.Repos[1].Runtime)
+	assert.Equal(t, "https://mint.example.com", m.GitLab.Repos[1].MintURL)
 }
 
 func TestCarveOutGlobCovered_ApplyErrorLeavesManifestFileUnchanged(t *testing.T) {

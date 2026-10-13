@@ -114,6 +114,11 @@ const (
 	// variable is no longer read by the job and is never deleted — see
 	// gitlabUninstallSecrets in internal/repos/uninstall.go.
 	SecretOpenAIAPIKey = "FULLSEND_OPENAI_API_KEY"
+	// SecretInferenceGatewayAPIKey is the inference gateway's API key for
+	// inference.gateway.auth api-key (ADR 0138): a forge secret (GitHub) or
+	// masked CI/CD variable (GitLab) the runner reads under this name.
+	// Setup does not write it; the repository admin sets it.
+	SecretInferenceGatewayAPIKey = "FULLSEND_INFERENCE_GATEWAY_API_KEY"
 
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"
@@ -138,6 +143,12 @@ const (
 	// document (per-role lock, token IDs, expiry dates, phase). It
 	// never stores token values. See internal/gitlabroles and #7500.
 	VarGitLabRoleRotation = "FULLSEND_GITLAB_ROLE_ROTATION"
+
+	// VarGitLabPollerGenerations is the protected, unmasked Poller
+	// identity-generation document (current, pending, and retiring Poller
+	// account IDs and the pending generation's handoff phase). It never
+	// stores token values. Not yet written by any command. See #8210.
+	VarGitLabPollerGenerations = "FULLSEND_GITLAB_POLLER_GENERATIONS"
 )
 
 // GitLab CI pipeline-variable minimum-override roles.
@@ -331,6 +342,25 @@ var ErrNotSupported = errors.New("operation not supported by this forge")
 // IsNotSupported reports whether err indicates an unsupported operation.
 func IsNotSupported(err error) bool {
 	return errors.Is(err, ErrNotSupported)
+}
+
+// ProjectLeaser is implemented by clients that can take a project-scoped
+// lease shared by every installer process, whatever host it runs on. A lease
+// is a named record the forge creates atomically only when it is absent, so
+// two holders can never both succeed. Callers use it to serialize
+// multi-request transactions that a process-local mutex cannot protect.
+type ProjectLeaser interface {
+	// AcquireProjectLease creates the lease named name with the given holder
+	// value. It reports false, without error, when the lease already exists.
+	AcquireProjectLease(ctx context.Context, owner, repo, name, holder string) (bool, error)
+	// ReleaseProjectLease removes the lease only while it still carries
+	// holder. A lease that is gone or held by someone else is left alone.
+	// The holder check and the removal are not guaranteed to be atomic: a
+	// backend without a conditional delete (GitLab CI variables) can remove a
+	// newer holder's lease if the lease is replaced and re-acquired between
+	// the check and the removal. Callers must therefore never take over a
+	// lease while a previous holder may still release it.
+	ReleaseProjectLease(ctx context.Context, owner, repo, name, holder string) error
 }
 
 // SecretProtection describes the exposure controls on an existing repo
@@ -750,6 +780,14 @@ type Client interface {
 	// with the target name and return ErrNotFork when found.
 	CreateForkInOrg(ctx context.Context, owner, repo, org, forkName string) (forkRepo string, err error)
 
+	// DeleteProjectServiceAccount deletes a project-owned service account,
+	// preserving its contributions. The caller must verify Fullsend ownership.
+	// This destructive uninstall operation stays on Client so all forge writes
+	// use the shared abstraction; the other GitLab service-account methods
+	// (creation, personal access tokens, project members) are concrete
+	// gitlab.LiveClient methods and are not part of Client.
+	DeleteProjectServiceAccount(ctx context.Context, owner, repo string, userID int) error
+
 	// File operations
 	CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 
@@ -1110,6 +1148,16 @@ type Client interface {
 	// returns ErrNotSupported.
 	GrantProtectedBranchMergeUser(ctx context.Context, owner, repo, branch string, userID int) error
 
+	// RevokeProtectedBranchMergeUserEntry removes the single user merge-access
+	// entry identified by entryID from the exact-name protected-branch rule for
+	// branch. It exists so a caller that added a grant (and learned its entry ID
+	// from a ProtectedBranchAccess it read back) can undo exactly that grant
+	// without touching any other entry for the same user. It refuses an entry
+	// that is not a grant for userID, never touches wildcard rules, and is a
+	// no-op when the entry or rule is already gone. Used on GitLab; GitHub
+	// returns ErrNotSupported.
+	RevokeProtectedBranchMergeUserEntry(ctx context.Context, owner, repo, branch string, entryID, userID int) error
+
 	// Pipeline schedules and branch-restricted CI variables live on
 	// the base Client because both GitHub Actions and GitLab CI support
 	// timed triggers. However, the branch-restricted/protected variable
@@ -1297,10 +1345,13 @@ func (v PipelineInputValue) MarshalJSON() ([]byte, error) {
 
 // ProtectedBranchAccess is one grant on a protected branch.
 // A role-based grant has AccessLevel set and UserID/GroupID zero.
-// A user or group grant has the corresponding ID set.
+// A user or group grant has the corresponding ID set. ID is the forge's
+// identifier of this individual entry (zero when the forge does not report
+// one); it lets a caller remove exactly this entry later.
 // GitLab access levels: 0 (No one), 30 (Developer), 40 (Maintainer),
 // 60 (Admin). A role-based grant of N allows identities at N or above.
 type ProtectedBranchAccess struct {
+	ID          int
 	AccessLevel int
 	UserID      int
 	GroupID     int

@@ -1,0 +1,50 @@
+# Checks an inference gateway from GitHub Actions with this job's OIDC token.
+# Copy it to .github/workflows/gateway-check.yml in a repository the gateway
+# allows, set the repository variable GATEWAY_URL, and run it. See step 8 of
+# docs/guides/infrastructure/inference-gateway-operator.md.
+name: gateway-check
+on: workflow_dispatch
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GATEWAY_URL: ${{ vars.GATEWAY_URL }}
+      AUDIENCE: fullsend-inference
+    steps:
+    - name: check the gateway with this job's OIDC token
+      shell: bash
+      run: |
+        set -u +e
+        tok() { curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$1" | jq -r .value; }
+        call() { # call <label> <path> [curl args...]: prints label, HTTP status, body (first 700 bytes)
+          label=$1; path=$2; shift 2
+          code=$(curl -s -o /tmp/body -w '%{http_code}' "$GATEWAY_URL$path" "$@")
+          cat /tmp/body >> /tmp/all; echo "== $label"; echo "HTTP $code $(head -c 700 /tmp/body)"; echo
+        }
+        TOKEN=$(tok "$AUDIENCE")
+        echo "== claims (non-secret)"
+        cut -d. -f2 <<<"$TOKEN" | tr '_-' '/+' | base64 -d 2>/dev/null | jq -c '{iss,aud,repository,ttl:(.exp-.iat)}'
+        echo
+        J=(-H "authorization: Bearer $TOKEN" -H 'content-type: application/json')
+        call "GET /v1/models" /v1/models -H "authorization: Bearer $TOKEN"
+        call "POST /v1/messages (claude-sonnet-4-6)" /v1/messages "${J[@]}" -H 'anthropic-version: 2023-06-01' \
+          -d '{"model":"claude-sonnet-4-6","max_tokens":16,"messages":[{"role":"user","content":"Reply with exactly: pong"}]}'
+        call "POST /v1/chat/completions (gemini-2.5-flash)" /v1/chat/completions "${J[@]}" \
+          -d '{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"Reply with exactly: pong"}]}'
+        call "POST /v1/responses (echo)" /v1/responses "${J[@]}" -d '{"model":"echo","input":"hi"}'
+        call "POST /v1/responses (claude-sonnet-4-6)" /v1/responses "${J[@]}" -d '{"model":"claude-sonnet-4-6","input":"hi"}'
+        call "custody: echo, requestHeaders.remove [x-api-key]" /v1/chat/completions "${J[@]}" \
+          -H 'x-api-key: canary' -H 'x-canary: 1' -d '{"model":"echo","messages":[{"role":"user","content":"hi"}]}'
+        call "custody: echo-noremove, no requestHeaders" /v1/chat/completions "${J[@]}" \
+          -H 'x-api-key: canary' -H 'x-canary: 1' -d '{"model":"echo-noremove","messages":[{"role":"user","content":"hi"}]}'
+        WRONG=$(tok some-other-audience)
+        call "negative: token minted for another audience" /v1/models -H "authorization: Bearer $WRONG"
+        call "negative: token only in x-api-key" /v1/messages -H "x-api-key: $TOKEN" -H 'content-type: application/json' \
+          -H 'anthropic-version: 2023-06-01' -d '{"model":"claude-sonnet-4-6","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}'
+        call "negative: no credential" /v1/models
+        echo "== does any body contain the token? $(grep -c -e "${TOKEN:0:40}" -e "${WRONG:0:40}" /tmp/all || true)"

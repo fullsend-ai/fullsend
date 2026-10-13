@@ -128,6 +128,7 @@ func resetScenarioWorld(w *world.World) {
 	w.ForkRepo = ""
 	w.ForkPRNumber = 0
 	w.ForkPRBranch = ""
+	w.ForkSCM = nil
 	w.URLHarnessRepoOwner = ""
 	w.URLHarnessRepoName = ""
 	w.URLBaseHarnesses = nil
@@ -142,6 +143,9 @@ func resetScenarioWorld(w *world.World) {
 	w.AllowedResourcesOriginal = nil
 	w.AgentsOverridden = false
 	w.AgentsOriginal = nil
+	w.GatewayConfigOverridden = false
+	w.GatewayConfigOriginal = nil
+	w.GatewayAPIKeySecretSet = false
 	w.OwnersAuthActivated = false
 	w.JiraMockServer = nil
 	w.JiraMockState = nil

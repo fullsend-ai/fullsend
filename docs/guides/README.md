@@ -30,12 +30,15 @@ Advanced guides for platform operators who deploy and manage the GCP-side infras
 - [Gate binaries](infrastructure/gate-binaries.md) — Building statically linked binaries for custom endpoint access constraints beyond L4/L7 rules
 - [Tracing reference](infrastructure/distributed-tracing.md) — Telemetry levels, environment variables, span hierarchy, and attributes
 - [Eval measurements](infrastructure/eval-measurements.md) — Online trace scoring with `eval-measurements.jsonl` and measurement manifests
+- [Inference gateway operator guide](infrastructure/inference-gateway-operator.md) — Run an agentgateway inference gateway on Cloud Run that trusts GitHub Actions OIDC, for `gateway/` models on pi, codex and Claude Code
 
 ## User guides
 
 Guides for developers working in repositories where fullsend is active.
 
 - [Adopting fullsend incrementally](user/adoption.md) — Crawl, walk, run, fly: incremental adoption path from first agents to auto-merge
+- [How fullsend authenticates](user/how-fullsend-authenticates.md) — Which credential path fullsend uses in each case: the mint, GCP and OpenAI Workload Identity, and the gateway's direct OIDC trust
+- [Using an inference gateway](user/inference-gateway.md) — Reach models through an OpenAI/Anthropic-compatible gateway with direct OIDC trust (no token exchange) or a gateway key
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
 - [Issue commands](user/issues-commands.md) — Slash commands and label triggers for interacting with agents
 - [OWNERS file authorization](user/owners-file-authorization.md) — Authorize agent dispatch via Prow-style OWNERS files

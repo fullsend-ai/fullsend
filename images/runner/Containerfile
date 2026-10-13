@@ -34,7 +34,7 @@
 
 # ---------------------------------------------------------------------------
 # Build stage — compile the fullsend binary. Runs natively for each target
-# arch (under QEMU in CI) rather than cross-compiling from the build
+# arch (on a native runner per arch in CI) rather than cross-compiling from the build
 # platform: the binary is built with cgo for the ONNX Runtime scanner (see
 # below), which the previous CGO_ENABLED=0 build did not need. That costs
 # build time, which is tolerable here — the runner image is built only on

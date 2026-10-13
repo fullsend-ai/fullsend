@@ -13,6 +13,7 @@ import (
 var _ Client = (*FakeClient)(nil)
 var _ GitHubExtensions = (*FakeClient)(nil)
 var _ GitLabExtensions = (*FakeClient)(nil)
+var _ ProjectLeaser = (*FakeClient)(nil)
 
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
@@ -38,6 +39,7 @@ func NewFakeClient() *FakeClient {
 		PipelineTriggerTokens:    make(map[string][]PipelineTriggerToken),
 		ProjectHooks:             make(map[string][]ProjectHook),
 		PipelineVarOverrideRoles: make(map[string]string),
+		ProjectLeases:            make(map[string]string),
 		// New trigger tokens are owned by a Developer-level user unless a
 		// test says otherwise.
 		TriggerTokenOwnerID: 1001,
@@ -83,6 +85,17 @@ type PipelineInputsCallRecord struct {
 type ProtectedBranchMergeGrantRecord struct {
 	Owner, Repo, Branch string
 	UserID              int
+}
+
+// ProtectedBranchMergeRevokeRecord records a RevokeProtectedBranchMergeUserEntry call.
+type ProtectedBranchMergeRevokeRecord struct {
+	Owner, Repo, Branch string
+	EntryID, UserID     int
+	// CtxErr is the context's error when the call arrived, so tests can
+	// assert that cleanup ran on a context detached from cancellation.
+	CtxErr error
+	// HasDeadline reports whether the call's context was bounded.
+	HasDeadline bool
 }
 
 // UpdatedCommentRecord records an issue comment update call.
@@ -254,6 +267,9 @@ type FakeClient struct {
 
 	// GrantedProtectedBranchMergeUsers records GrantProtectedBranchMergeUser calls.
 	GrantedProtectedBranchMergeUsers []ProtectedBranchMergeGrantRecord
+	// RevokedProtectedBranchMergeEntries records RevokeProtectedBranchMergeUserEntry calls.
+	RevokedProtectedBranchMergeEntries []ProtectedBranchMergeRevokeRecord
+	nextProtectedAccessID              int
 
 	// Pipeline schedules for List/Create/Delete/UpdatePipelineSchedule.
 	PipelineSchedules map[string][]PipelineSchedule // key: "owner/repo"
@@ -269,6 +285,10 @@ type FakeClient struct {
 
 	// ProjectHooks stores project webhooks keyed by "owner/repo".
 	ProjectHooks map[string][]ProjectHook
+
+	// ProjectLeases holds the leases taken through AcquireProjectLease; see
+	// the method for the key format.
+	ProjectLeases map[string]string
 
 	// PipelineVarOverrideRoles stores the GitLab
 	// ci_pipeline_variables_minimum_override_role setting per project.
@@ -366,6 +386,8 @@ type FakeClient struct {
 	Annotations []Annotation
 
 	// Call recorders
+	DeletedProjectServiceAccounts []int
+
 	CreatedRepos            []Repository
 	CreatedFiles            []FileRecord
 	CreatedBranches         []string // "owner/repo/branch"
@@ -2522,8 +2544,42 @@ func (f *FakeClient) GrantProtectedBranchMergeUser(_ context.Context, owner, rep
 			return nil
 		}
 	}
-	rule.MergeAccessLevels = append(rule.MergeAccessLevels, ProtectedBranchAccess{UserID: userID})
+	f.nextProtectedAccessID++
+	rule.MergeAccessLevels = append(rule.MergeAccessLevels, ProtectedBranchAccess{ID: 9000 + f.nextProtectedAccessID, UserID: userID})
 	f.ProtectedBranchRules[key] = rule
+	return nil
+}
+
+func (f *FakeClient) RevokeProtectedBranchMergeUserEntry(ctx context.Context, owner, repo, branch string, entryID, userID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	_, hasDeadline := ctx.Deadline()
+	f.RevokedProtectedBranchMergeEntries = append(f.RevokedProtectedBranchMergeEntries, ProtectedBranchMergeRevokeRecord{
+		Owner: owner, Repo: repo, Branch: branch, EntryID: entryID, UserID: userID,
+		CtxErr: ctx.Err(), HasDeadline: hasDeadline,
+	})
+
+	if e := f.err("RevokeProtectedBranchMergeUserEntry"); e != nil {
+		return e
+	}
+	if entryID <= 0 || userID <= 0 {
+		return fmt.Errorf("revoke protected branch merge: invalid entry ID %d or user ID %d", entryID, userID)
+	}
+	rule := f.ProtectedBranchRules[owner+"/"+repo+"/"+branch]
+	if rule == nil {
+		return nil
+	}
+	for i, l := range rule.MergeAccessLevels {
+		if l.ID != entryID {
+			continue
+		}
+		if l.UserID != userID {
+			return fmt.Errorf("revoke protected branch merge: entry %d is not a grant for user %d", entryID, userID)
+		}
+		rule.MergeAccessLevels = append(append([]ProtectedBranchAccess(nil), rule.MergeAccessLevels[:i]...), rule.MergeAccessLevels[i+1:]...)
+		return nil
+	}
 	return nil
 }
 
@@ -2884,6 +2940,17 @@ func (f *FakeClient) RevokePipelineTriggerToken(_ context.Context, owner, repo s
 	return nil
 }
 
+// DeleteProjectServiceAccount records a project service-account deletion.
+func (f *FakeClient) DeleteProjectServiceAccount(_ context.Context, owner, repo string, userID int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.err("DeleteProjectServiceAccount"); err != nil {
+		return err
+	}
+	f.DeletedProjectServiceAccounts = append(f.DeletedProjectServiceAccounts, userID)
+	return nil
+}
+
 func (f *FakeClient) CreateProjectHook(_ context.Context, owner, repo string, hook ProjectHook) (*ProjectHook, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -2972,5 +3039,41 @@ func (f *FakeClient) DeleteProjectHook(_ context.Context, owner, repo string, ho
 		return fmt.Errorf("%w: project hook %d", ErrNotFound, hookID)
 	}
 	f.ProjectHooks[key] = filtered
+	return nil
+}
+
+// AcquireProjectLease implements ProjectLeaser. Leases are keyed
+// "owner/repo/name" in ProjectLeases with the holder as value; a test seeds an
+// entry to model another installer process holding the lease.
+func (f *FakeClient) AcquireProjectLease(_ context.Context, owner, repo, name, holder string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("AcquireProjectLease"); e != nil {
+		return false, e
+	}
+	key := owner + "/" + repo + "/" + name
+	if _, held := f.ProjectLeases[key]; held {
+		return false, nil
+	}
+	if f.ProjectLeases == nil {
+		f.ProjectLeases = make(map[string]string)
+	}
+	f.ProjectLeases[key] = holder
+	return true, nil
+}
+
+// ReleaseProjectLease implements ProjectLeaser.
+func (f *FakeClient) ReleaseProjectLease(_ context.Context, owner, repo, name, holder string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ReleaseProjectLease"); e != nil {
+		return e
+	}
+	key := owner + "/" + repo + "/" + name
+	if f.ProjectLeases[key] == holder {
+		delete(f.ProjectLeases, key)
+	}
 	return nil
 }

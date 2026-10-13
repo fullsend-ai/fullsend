@@ -12,14 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Managed-configuration fields that already have authoritative repos.yaml
-// shorthands. They are valid on .fullsend/config.yaml but must not appear
-// inside a manifest config block (ADR 0122).
-const (
-	managedForbiddenRuntime = "runtime"
-	managedForbiddenARR     = "allowed_remote_resources"
-)
-
 var (
 	managedKeysOnce sync.Once
 	managedKeys     map[string]bool
@@ -85,8 +77,10 @@ func yamlKeysOf(v any) map[string]bool {
 }
 
 // ManagedConfig is a sparse per-repo managed configuration as declared in
-// repos.yaml defaults.config and per-repository config blocks (ADR 0122).
-// The zero value means the key was omitted.
+// repos.yaml defaults.config, github.config, gitlab.config, and
+// per-repository config blocks (ADR 0122). Every per-repo
+// .fullsend/config.yaml field is accepted. The zero value means the key
+// was omitted.
 type ManagedConfig struct {
 	cfg *perRepoConfig
 }
@@ -109,9 +103,80 @@ func (o ManagedConfig) Writer() PerRepoConfigWriter {
 	return o.cfg
 }
 
+// clone returns a deep copy of the managed configuration, or an empty
+// sparse configuration when the receiver is unset.
+func (o ManagedConfig) clone() *perRepoConfig {
+	if o.cfg == nil {
+		return &perRepoConfig{parent: &perRepoDefaults{}}
+	}
+	return clonePerRepo(o.cfg)
+}
+
+// Clone returns a deep copy of o that shares no mutable state with it: the
+// Writer of the copy can be mutated without affecting the receiver. An
+// unset configuration stays unset.
+func (o ManagedConfig) Clone() ManagedConfig {
+	if o.cfg == nil {
+		return ManagedConfig{}
+	}
+	return ManagedConfig{cfg: clonePerRepo(o.cfg)}
+}
+
+// WithCreateIssuesRepos returns a copy of o whose create_issues allowlist
+// permits exactly the given repositories. It is how repos install records
+// the upstream-only cross-repo permission on a manifest entry (#8218).
+// The receiver is not modified.
+func (o ManagedConfig) WithCreateIssuesRepos(repos []string) ManagedConfig {
+	cp := o.clone()
+	cp.CreateIssues = &CreateIssuesConfig{
+		AllowTargets: AllowTargets{Repos: cloneStringSlice(repos)},
+	}
+	return ManagedConfig{cfg: cp}
+}
+
+// WithRoles returns a copy of o with the given agent roles set. The
+// receiver is not modified.
+func (o ManagedConfig) WithRoles(roles []string) ManagedConfig {
+	cp := o.clone()
+	cp.Roles = cloneStringSlice(roles)
+	return ManagedConfig{cfg: cp}
+}
+
+// ExplicitRoles returns the roles declared by this layer and whether the
+// layer declares roles at all. Unlike the layered ConfigRoles accessor it
+// does not fall back to code defaults, so an explicit value that equals a
+// default is still reported as declared.
+func (o ManagedConfig) ExplicitRoles() ([]string, bool) {
+	if o.cfg == nil || o.cfg.Roles == nil {
+		return nil, false
+	}
+	return cloneStringSlice(o.cfg.Roles), true
+}
+
+// ExplicitAllowedRemoteResources returns the allowed_remote_resources list
+// declared by this layer and whether the layer declares the key at all. An
+// explicit empty list reports (empty, true). Unlike the layered
+// AllowedResources accessor it does not union with or fall back to code
+// defaults.
+func (o ManagedConfig) ExplicitAllowedRemoteResources() ([]string, bool) {
+	if o.cfg == nil || o.cfg.AllowedRemoteResources == nil {
+		return nil, false
+	}
+	return cloneStringSlice(o.cfg.AllowedRemoteResources), true
+}
+
+// ExplicitRuntime returns the runtime declared by this layer, or "" when
+// the layer is unset or omits runtime. Unlike the layered ConfigRuntime
+// accessor it does not fall back to code defaults.
+func (o ManagedConfig) ExplicitRuntime() string {
+	if o.cfg == nil {
+		return ""
+	}
+	return o.cfg.Runtime
+}
+
 // UnmarshalYAML strictly decodes a mapping into a sparse per-repo managed
-// configuration. Unknown fields and the runtime / allowed_remote_resources
-// shorthands are rejected with field-specific errors.
+// configuration. Unknown fields are rejected with field-specific errors.
 func (o *ManagedConfig) UnmarshalYAML(value *yaml.Node) error {
 	cfg, err := decodeManagedConfig(value)
 	if err != nil {
@@ -144,18 +209,9 @@ func decodeManagedConfig(n *yaml.Node) (*perRepoConfig, error) {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		keyNode := node.Content[i]
 		key := keyNode.Value
-		switch key {
-		case managedForbiddenRuntime:
+		if !known[key] {
 			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
-				"runtime is not allowed inside config; use the runtime field"))
-		case managedForbiddenARR:
-			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
-				"allowed_remote_resources is not allowed inside config; use the allowed_remote_resources field"))
-		default:
-			if !known[key] {
-				fieldErrs = append(fieldErrs, managedFieldError(keyNode,
-					fmt.Sprintf("unknown field %q", key)))
-			}
+				fmt.Sprintf("unknown field %q", key)))
 		}
 		// AgentEntry has a custom UnmarshalYAML (string-or-mapping), so
 		// decodeKnownFields' dec.KnownFields(true) below never sees these
@@ -226,24 +282,6 @@ func MergeManaged(parent, child PerRepoConfigWriter) PerRepoConfigWriter {
 	out := clonePerRepo(p)
 	applyManagedLayer(out, c)
 	return out
-}
-
-// ApplyManagedShorthands writes the authoritative repos.yaml runtime and
-// allowed_remote_resources values onto a managed configuration. Empty
-// runtime and a nil allowlist are left unset so code defaults /
-// config.base.yaml still apply at read time. An explicit empty allowlist
-// is deny-all.
-func ApplyManagedShorthands(managed PerRepoConfigWriter, runtime string, allowedRemoteResources []string) {
-	cfg := asPerRepo(managed)
-	if cfg == nil {
-		return
-	}
-	if runtime != "" {
-		cfg.Runtime = runtime
-	}
-	if allowedRemoteResources != nil {
-		cfg.AllowedRemoteResources = cloneStringSlice(allowedRemoteResources)
-	}
 }
 
 // LayerOnBase returns a writer whose local fields are overlay's and whose
@@ -329,6 +367,7 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 			oa := *src.Inference.OpenAI
 			inf.OpenAI = &oa
 		}
+		inf.Gateway = cloneGateway(src.Inference.Gateway)
 		out.Inference = &inf
 	}
 	if src.Models != nil {
@@ -427,6 +466,14 @@ func applyManagedLayer(out, child *perRepoConfig) {
 			if child.Inference.OpenAI.ServiceAccountID != "" {
 				out.Inference.OpenAI.ServiceAccountID = child.Inference.OpenAI.ServiceAccountID
 			}
+		}
+		if child.Inference.Gateway != nil {
+			var parent InferenceGatewayConfig
+			if out.Inference.Gateway != nil {
+				parent = *out.Inference.Gateway
+			}
+			merged := mergeGateway(parent, child.Inference.Gateway)
+			out.Inference.Gateway = &merged
 		}
 	}
 	if child.Models != nil && len(child.Models.Aliases) > 0 {

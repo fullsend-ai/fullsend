@@ -409,10 +409,14 @@ func carveOutGlobEntry(platforms []*PlatformConfig, name string, skipGlobs map[s
 			}
 			explicit := entry
 			explicit.Name = name
-			explicit.AllowedRemoteResources = slices.Clone(entry.AllowedRemoteResources)
+			explicit.Config = entry.Config.Clone()
 			if entry.Vendor != nil {
 				v := *entry.Vendor
 				explicit.Vendor = &v
+			}
+			if entry.Signoff != nil {
+				s := *entry.Signoff
+				explicit.Signoff = &s
 			}
 			platform.Repos = append(platform.Repos, explicit)
 			return &platform.Repos[len(platform.Repos)-1], nil
@@ -778,7 +782,17 @@ func validateRepoName(forgeName, name string) error {
 	return nil
 }
 
+// WriteManifest persists m to path in one write. `repos install` plans every
+// manifest edit in memory and calls it once the layered safety comparison has
+// passed, so a rejected install leaves the file untouched.
+func WriteManifest(path string, m *Manifest) error {
+	return writeManifest(path, m)
+}
+
 func writeManifest(path string, m *Manifest) error {
+	if ManifestReadOnly(m, path) {
+		return fmt.Errorf("manifest %s is read-only; apply the equivalent edit to its source, then re-run", path)
+	}
 	data, err := MarshalWithHeader(m)
 	if err != nil {
 		return fmt.Errorf("marshalling manifest: %w", err)
@@ -792,8 +806,6 @@ func writeManifest(path string, m *Manifest) error {
 // ValidDefaultKeys lists the manifest keys that can be set via
 // `repos set-default`. Order matches the help text.
 var ValidDefaultKeys = []string{
-	"defaults.allowed_remote_resources",
-	"defaults.runtime",
 	"defaults.inference.auth",
 	"defaults.vendor",
 	"defaults.config_base.source",
@@ -811,6 +823,14 @@ var ValidDefaultKeys = []string{
 	"gitlab.runner_tags", // deprecated alias for gitlab.agent_runner_tags
 }
 
+// removedDefaultKeys maps the former sibling `repos set-default` keys to
+// the defaults.config field that replaced each one (#8330). They are
+// rejected with guidance instead of being written to the manifest.
+var removedDefaultKeys = map[string]string{
+	"defaults.runtime":                  "runtime",
+	"defaults.allowed_remote_resources": "allowed_remote_resources",
+}
+
 // validDefaultKeySet is the lookup set for ValidDefaultKeys.
 var validDefaultKeySet = func() map[string]bool {
 	m := make(map[string]bool, len(ValidDefaultKeys))
@@ -824,6 +844,9 @@ var validDefaultKeySet = func() map[string]bool {
 // An empty value removes the key. The file is created with version: 1
 // if it does not exist.
 func SetDefault(manifestPath, key, value string) error {
+	if field, removed := removedDefaultKeys[key]; removed {
+		return fmt.Errorf("%s is no longer supported; edit defaults.config.%s in the manifest instead (repos set-default does not write config fields)", key, field)
+	}
 	if !validDefaultKeySet[key] {
 		return fmt.Errorf("invalid key %q; valid keys: %s\nSee --help for details",
 			key, strings.Join(ValidDefaultKeys, ", "))
@@ -854,8 +877,6 @@ func SetDefault(manifestPath, key, value string) error {
 
 	// Apply.
 	switch key {
-	case "defaults.runtime":
-		m.Defaults.Runtime = value
 	case "defaults.inference.auth":
 		m.Defaults.Inference.Auth = value
 	case "github.inference.auth":
@@ -880,12 +901,6 @@ func SetDefault(manifestPath, key, value string) error {
 		} else {
 			v := value == "true"
 			m.Defaults.Vendor = &v
-		}
-	case "defaults.allowed_remote_resources":
-		if value == "" {
-			m.Defaults.AllowedRemoteResources = nil
-		} else {
-			m.Defaults.AllowedRemoteResources = splitAllowedRemoteResources(value)
 		}
 	case "github.url":
 		if value != "" {
@@ -952,21 +967,6 @@ func parseGitLabTagList(value string) []string {
 	return parts
 }
 
-// splitAllowedRemoteResources splits a comma-separated
-// defaults.allowed_remote_resources value into trimmed, non-empty prefixes.
-// Used both to validate the value and to build the slice persisted to the
-// manifest, so a trailing comma or whitespace-only entry can't slip an empty
-// token past validation and into the written file.
-func splitAllowedRemoteResources(value string) []string {
-	var parts []string
-	for _, raw := range strings.Split(value, ",") {
-		if v := strings.TrimSpace(raw); v != "" {
-			parts = append(parts, v)
-		}
-	}
-	return parts
-}
-
 // validateDefaultValue checks that value is appropriate for the given key.
 func validateDefaultValue(key, value string) error {
 	switch key {
@@ -988,10 +988,6 @@ func validateDefaultValue(key, value string) error {
 		if !IsValidRef(value) {
 			return fmt.Errorf("%s %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", key, value)
 		}
-	case "defaults.runtime":
-		if err := validateRuntimeValue(key, value); err != nil {
-			return err
-		}
 	case "defaults.inference.auth", "github.inference.auth", "gitlab.inference.auth":
 		if err := validateManifestInferenceAuth(key, value); err != nil {
 			return err
@@ -1007,11 +1003,6 @@ func validateDefaultValue(key, value string) error {
 	case "defaults.vendor":
 		if value != "true" && value != "false" {
 			return fmt.Errorf("defaults.vendor must be \"true\" or \"false\", got %q", value)
-		}
-	case "defaults.allowed_remote_resources":
-		parts := splitAllowedRemoteResources(value)
-		if err := ValidateAllowedRemoteResourcesFormat("defaults.allowed_remote_resources", parts); err != nil {
-			return err
 		}
 	case "gitlab.agent_runner_tags", "gitlab.control_runner_tags", "gitlab.runner_tags":
 		for _, raw := range strings.Split(value, ",") {

@@ -933,9 +933,9 @@ func runInferenceOpenAIStatus(cmd *cobra.Command, printer *ui.Printer, repo, ful
 	}
 
 	// Print resolved identifiers.
-	printOpenAIStatusField(printer, "audience", sources.Audience, sources.AudienceSource)
-	printOpenAIStatusField(printer, "identity_provider_id", sources.IdentityProviderID, sources.IDPSource)
-	printOpenAIStatusField(printer, "service_account_id", sources.ServiceAccountID, sources.SASource)
+	printStatusField(printer, "audience", sources.Audience, sources.AudienceSource)
+	printStatusField(printer, "identity_provider_id", sources.IdentityProviderID, sources.IDPSource)
+	printStatusField(printer, "service_account_id", sources.ServiceAccountID, sources.SASource)
 	printer.Blank()
 
 	// Check completeness.
@@ -1044,7 +1044,9 @@ func runInferenceOpenAIStatus(cmd *cobra.Command, printer *ui.Printer, repo, ful
 	return nil
 }
 
-func printOpenAIStatusField(printer *ui.Printer, name, value, source string) {
+// printStatusField prints one config value of an `inference ... status`
+// command with where it came from, or "(not set)".
+func printStatusField(printer *ui.Printer, name, value, source string) {
 	if value == "" {
 		printer.StepInfo(fmt.Sprintf("%s: (not set)", name))
 	} else {

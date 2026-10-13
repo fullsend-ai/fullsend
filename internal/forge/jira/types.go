@@ -1,7 +1,10 @@
 // Package jira implements an HTTP client for the Jira Cloud REST API v3.
 package jira
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Issue represents a Jira issue.
 type Issue struct {
@@ -21,6 +24,49 @@ type IssueFields struct {
 	Created     string       `json:"created"`
 	Updated     string       `json:"updated"`
 	Comment     *CommentPage `json:"comment,omitempty"`
+	IssueType   *IssueType   `json:"issuetype,omitempty"`
+
+	// CustomFields holds the raw JSON value of every "customfield_*" key
+	// in the fields object, keyed by field ID (e.g. "customfield_10875").
+	// Custom field IDs and value shapes vary per Jira instance, so values
+	// are kept verbatim rather than decoded into a fixed type. Populated
+	// only by unmarshalling; it is not serialized back out.
+	CustomFields map[string]json.RawMessage `json:"-"`
+}
+
+// customFieldPrefix is the prefix Jira uses for custom field IDs.
+const customFieldPrefix = "customfield_"
+
+// UnmarshalJSON decodes the standard fields and additionally collects
+// every "customfield_*" key into CustomFields.
+func (f *IssueFields) UnmarshalJSON(data []byte) error {
+	type plain IssueFields // drops the method set to avoid recursion
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for k, v := range raw {
+		if !strings.HasPrefix(k, customFieldPrefix) {
+			continue
+		}
+		if p.CustomFields == nil {
+			p.CustomFields = make(map[string]json.RawMessage)
+		}
+		p.CustomFields[k] = v
+	}
+	*f = IssueFields(p)
+	return nil
+}
+
+// IssueType represents the type of a Jira issue (e.g. Bug, Story, Task).
+type IssueType struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Subtask bool   `json:"subtask"`
 }
 
 // Status represents the status of a Jira issue.

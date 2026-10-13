@@ -1,0 +1,25 @@
+# Custody-check upstream for step 9 of
+# docs/guides/infrastructure/inference-gateway-operator.md.
+# Append this block to config.tmpl.yaml at the top level, next to `llm:`.
+# It is a second listener inside the gateway container that answers every
+# request with what it received. ECHO_KEY is replaced with the throwaway
+# upstream key. Remove the block once the check passes.
+binds:
+- port: 9000
+  listeners:
+  - name: echo
+    hostname: "*"
+    routes:
+    - name: echo
+      policies:
+        directResponse:
+          status: 200
+          headers:
+            content-type: '"application/json"'
+          bodyExpression: >-
+            toJson({"id":"echo","object":"chat.completion","created":0,"model":"echo",
+            "choices":[{"index":0,"message":{"role":"assistant","content": toJson({
+            "authorization": !("authorization" in request.headers) ? "absent" : (request.headers["authorization"] == "Bearer ECHO_KEY" ? "GATEWAY_KEY" : "OTHER len=" + string(size(request.headers["authorization"]))),
+            "x_api_key_present": "x-api-key" in request.headers,
+            "canary_present": "x-canary" in request.headers})},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}})

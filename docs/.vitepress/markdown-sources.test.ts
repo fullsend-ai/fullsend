@@ -229,6 +229,20 @@ describe("relativeAssetHrefs", () => {
       "icons/prioritize.png",
     ]);
   });
+
+  it("collects links to example yaml and json files, but not pages or URLs", () => {
+    expect(
+      relativeAssetHrefs(`
+Copy [\`gateway-check.yml\`](examples/inference-gateway/gateway-check.yml) and
+[the schema](normalized-event.schema.json "Schema") and [config](<examples/a.yaml#top>).
+See [the guide](../other.md), [remote](https://example.com/x.yaml) and [site](/x.json).
+      `),
+    ).toEqual([
+      "examples/inference-gateway/gateway-check.yml",
+      "normalized-event.schema.json",
+      "examples/a.yaml",
+    ]);
+  });
 });
 
 function collectFiles(dir: string): string[] {

@@ -587,6 +587,7 @@ func TestPiBinaryPin(t *testing.T) {
 // lands in auth.json in exactly the shape the config guard accepts; anything
 // else is refused.
 func TestPiOpenAIAuthSeed(t *testing.T) {
+	requireSeedLock(t)
 	dir := filepath.Join(t.TempDir(), "pi-config")
 	seed := PiOpenAIAuthSeed(dir)
 	auth := filepath.Join(dir, "auth.json")

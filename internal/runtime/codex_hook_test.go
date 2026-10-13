@@ -1,13 +1,16 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1188,6 +1191,427 @@ func TestCodexAdapter_RefusesNonRegularHookFiles(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("the adapter blocked on a non-regular hook file")
 			}
+		})
+	}
+}
+
+// TestCodexAdapterSpawnGuardConstantsMatchGo keeps the adapter's spawn-guard
+// constants equal to what the Go side writes.
+func TestCodexAdapterSpawnGuardConstantsMatchGo(t *testing.T) {
+	t.Parallel()
+
+	src := string(codexHookAdapterPy)
+	assert.Contains(t, src, `MODE_SPAWN_GUARD = "`+codexSpawnGuardMode+`"`)
+	assert.Contains(t, src, `SPAWN_DIGESTS_ENV = "`+codexSpawnDigestsEnv+`"`)
+	assert.Contains(t, src, `SPAWN_TOOL_V1 = "spawn_agent"`,
+		"the guard admits the V1 spawn under policy; every other matched name is passed through or denied by the handler")
+	assert.Contains(t, src, `SPAWN_GUARD_DEADLINE_S = HANDLER_TIMEOUT_S - BUDGET_MARGIN_S`,
+		"the guard's own deadline is derived from the adapter's handler budget, so it stays below codex's timeout")
+	assert.Contains(t, src, `SPAWN_ADMIT_FINDING = "codex_spawn_guard_admit"`,
+		"the findings-log line an admitted spawn writes; the runner's cross-check reads it back by this name")
+	pattern := regexp.MustCompile(codexSpawnGuardMatcher)
+	for _, name := range []string{"spawn_agent", "multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input"} {
+		assert.True(t, pattern.MatchString(name), "%s is admitted or passed through by the handler, so the matcher must reach it", name)
+		assert.Contains(t, src, `"`+name+`"`, "the adapter must name %s", name)
+	}
+	for _, name := range []string{"multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input"} {
+		assert.Contains(t, src, `"`+name+`": "Agent",`,
+			"the sandbox hooks (the tool allowlist first) see %s as Agent, the name the spawn already has (ADR 0126)", name)
+	}
+	assert.NotContains(t, src, `"multi_agent_v1resume_agent": "Agent"`,
+		"resume stays unmapped so the tool allowlist still blocks it when the dispatch hook cannot run (ADR 0126)")
+}
+
+// codexSpawnInput is the PreToolUse payload codex sends for a V1 spawn of
+// role from the root thread: no top-level agent_id or agent_type.
+func codexSpawnInput(role string) map[string]any {
+	return map[string]any{
+		"session_id":      "01a0eea5-cf24-7250-ae7b-df1cd9b70160",
+		"turn_id":         "01a0eea5-cf6f-78d0-ae0f-e554d5aa293d",
+		"cwd":             "/sandbox/workspace/repo",
+		"hook_event_name": "PreToolUse",
+		"model":           "gpt-5.6-luna",
+		"permission_mode": "bypassPermissions",
+		"tool_name":       "spawn_agent",
+		"tool_input": map[string]any{
+			"agent_type":   role,
+			"fork_context": false,
+			"message":      "Review the diff for correctness.",
+		},
+		"tool_use_id": "call_1_0",
+	}
+}
+
+// codexChildSpawnInput is the same call from inside a child: the payload
+// gains agent_id (the child's thread) and agent_type (its role).
+func codexChildSpawnInput() map[string]any {
+	in := codexSpawnInput("correctness")
+	in["agent_id"] = "01a0ee89-1b2e-7c60-8812-87a59542808f"
+	in["agent_type"] = "correctness"
+	in["model"] = "gpt-5.6-terra"
+	return in
+}
+
+// codexSpawnArgs is the spawn's tool_input, for a test that edits it.
+func codexSpawnArgs(in map[string]any) map[string]any {
+	return in["tool_input"].(map[string]any)
+}
+
+// codexSpawnHooksJSON stands in for the rendered hooks.json: the guard
+// hashes the file, it does not read it.
+const codexSpawnHooksJSON = "{\"hooks\": {}}\n"
+
+// codexSpawnGuardDeadlineReason is the adapter's SPAWN_GUARD_DEADLINE_REASON,
+// written by both of its deadline paths.
+const codexSpawnGuardDeadlineReason = "fullsend: the spawn guard did not finish verifying the run's files inside its deadline; refusing the spawn (fail closed)"
+
+// write puts a file under the config directory and returns its digest.
+func (h *codexAdapterHarness) write(rel, content string) string {
+	h.t.Helper()
+	path := filepath.Join(h.dir, rel)
+	require.NoError(h.t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(h.t, os.WriteFile(path, []byte(content), 0o644))
+	return codexAssetSHA256([]byte(content))
+}
+
+// spawnDigests writes hooks.json and one role file per name under agents/ and
+// returns their spawn digest value. The keys are the guard's role registry.
+func (h *codexAdapterHarness) spawnDigests(roles ...string) string {
+	h.t.Helper()
+	set := map[string]string{codexHooksFile: h.write(codexHooksFile, codexSpawnHooksJSON)}
+	for _, role := range roles {
+		set["agents/"+role+".toml"] = h.write("agents/"+role+".toml", "name = "+codexTOMLString(role)+"\n")
+	}
+	return codexHookDigestsValue(set)
+}
+
+// spawnEnv is the environment codex gives a hook: both digest variables.
+func (h *codexAdapterHarness) spawnEnv(digests string) []string {
+	return append(os.Environ(),
+		codexHookDigestsEnv+"="+codexHookDigestsValue(h.digests),
+		codexSpawnDigestsEnv+"="+digests)
+}
+
+// spawnGuardRaw runs the adapter's SpawnGuard mode with a raw stdin and an
+// explicit environment. A stalled adapter is killed after 20 s.
+func (h *codexAdapterHarness) spawnGuardRaw(stdin string, env []string) codexAdapterResult {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, h.python, h.adapter, codexSpawnGuardMode)
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(stdin)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+
+	exitCode := 0
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		require.ErrorAs(h.t, runErr, &exitErr, "adapter failed to run: %s", stderr.String())
+		exitCode = exitErr.ExitCode()
+	}
+	return codexAdapterResult{exitCode: exitCode, stdout: stdout.String(), stderr: stderr.String()}
+}
+
+// spawnGuardWith runs the SpawnGuard mode with an explicit spawn digest value.
+func (h *codexAdapterHarness) spawnGuardWith(input map[string]any, digests string) codexAdapterResult {
+	h.t.Helper()
+	payload, err := json.Marshal(input)
+	require.NoError(h.t, err)
+	return h.spawnGuardRaw(string(payload), h.spawnEnv(digests))
+}
+
+// spawnGuard runs the SpawnGuard mode with the named roles registered.
+func (h *codexAdapterHarness) spawnGuard(input map[string]any, roles ...string) codexAdapterResult {
+	h.t.Helper()
+	return h.spawnGuardWith(input, h.spawnDigests(roles...))
+}
+
+// findingsLog points the harness's adapter copy at a findings log under the
+// harness directory, since the host cannot write to the sandbox path.
+func (h *codexAdapterHarness) findingsLog() string {
+	h.t.Helper()
+	path := filepath.Join(h.dir, "findings.jsonl")
+	src, err := os.ReadFile(h.adapter)
+	require.NoError(h.t, err)
+	marker := "FINDINGS_PATH = \"/sandbox/workspace/.security/findings.jsonl\"\n"
+	patched := strings.Replace(string(src), marker, "FINDINGS_PATH = \""+path+"\"\n", 1)
+	require.NotEqual(h.t, string(src), patched, "the adapter's findings path line must keep its text")
+	require.NoError(h.t, os.WriteFile(h.adapter, []byte(patched), 0o755))
+	return path
+}
+
+// TestCodexAdapter_SpawnGuardAdmits covers what the guard lets through: a
+// root-thread V1 spawn of a registered role, and the V1 tools that act on a
+// child already admitted. An allow writes nothing, since stdout codex cannot
+// parse fails the hook; an admitted spawn is recorded in the findings log.
+func TestCodexAdapter_SpawnGuardAdmits(t *testing.T) {
+	unnamed := codexSpawnInput("")
+	delete(codexSpawnArgs(unnamed), "agent_type")
+	passThrough := func(tool string) map[string]any {
+		in := codexSpawnInput("correctness")
+		in["tool_name"] = tool
+		in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
+		return in
+	}
+
+	cases := []struct {
+		name  string
+		input map[string]any
+		roles []string
+		admit string // the findings-log detail of an admitted spawn; "" for a pass-through
+	}{
+		{"registered role, fork_context false, no override", codexSpawnInput("correctness"), []string{"correctness", "default"}, "admitted spawn tool_use_id=call_1_0 agent_type=correctness"},
+		{"agent_type absent maps to default", unnamed, []string{"default"}, "admitted spawn tool_use_id=call_1_0 agent_type=default"},
+		{"V1 wait_agent passes through, no role registered", passThrough("multi_agent_v1wait_agent"), nil, ""},
+		{"V1 close_agent passes through", passThrough("multi_agent_v1close_agent"), []string{"correctness"}, ""},
+		{"V1 send_input passes through", passThrough("multi_agent_v1send_input"), []string{"correctness"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newCodexAdapterHarness(t)
+			findings := h.findingsLog()
+			got := h.spawnGuard(tc.input, tc.roles...)
+			assert.Equal(t, 0, got.exitCode, got.stderr)
+			assert.Empty(t, got.stdout, "an allow must write nothing")
+			assert.Empty(t, got.stderr)
+			if tc.admit == "" {
+				assert.NoFileExists(t, findings, "a pass-through records nothing")
+				return
+			}
+			data, err := os.ReadFile(findings)
+			require.NoError(t, err, "an admitted spawn is recorded in the findings log")
+			var finding struct {
+				Name   string `json:"name"`
+				Detail string `json:"detail"`
+				Action string `json:"action"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(string(data))), &finding), "one JSON line")
+			assert.Equal(t, "codex_spawn_guard_admit", finding.Name)
+			assert.Equal(t, tc.admit, finding.Detail, "the spawn's tool_use_id and role are the record")
+			assert.Equal(t, "allow", finding.Action)
+		})
+	}
+}
+
+// TestCodexAdapter_SpawnGuardDenies has one row per guard rule and error
+// branch. Each must end in exit 2 with a non-empty stderr and empty stdout:
+// codex blocks only on that shape; exit 1, empty stderr and a timeout all
+// let the spawn through.
+func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
+	withArgs := func(edit func(args map[string]any)) map[string]any {
+		in := codexSpawnInput("correctness")
+		edit(codexSpawnArgs(in))
+		return in
+	}
+	rules := []struct {
+		name string
+		run  func(t *testing.T, h *codexAdapterHarness) codexAdapterResult
+		want string // substring of the reason on stderr
+	}{
+		{"unreadable input", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuardRaw("not json", h.spawnEnv(h.spawnDigests("correctness")))
+		}, "not a JSON object"},
+		{"digest env absent", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			payload, err := json.Marshal(codexSpawnInput("correctness"))
+			require.NoError(t, err)
+			env := slices.DeleteFunc(h.spawnEnv(h.spawnDigests("correctness")), func(kv string) bool {
+				return strings.HasPrefix(kv, codexSpawnDigestsEnv+"=")
+			})
+			return h.spawnGuardRaw(string(payload), env)
+		}, codexSpawnDigestsEnv + " is missing or malformed"},
+		{"digest env malformed", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuardWith(codexSpawnInput("correctness"), "hooks.json:tooshort")
+		}, codexSpawnDigestsEnv + " is missing or malformed"},
+		{"tool multi_agent_v1resume_agent", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := codexSpawnInput("correctness")
+			in["tool_name"] = "multi_agent_v1resume_agent"
+			in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
+			return h.spawnGuard(in, "correctness")
+		}, "is not the V1 spawn tool"},
+		{"tool collaborationspawn_agent", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := codexSpawnInput("correctness")
+			in["tool_name"] = "collaborationspawn_agent"
+			in["model"] = "gpt-5.6-sol"
+			return h.spawnGuard(in, "correctness")
+		}, "is not the V1 spawn tool"},
+		{"spawn from a child (agent_id and agent_type present)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(codexChildSpawnInput(), "correctness")
+		}, "a child may not spawn"},
+		{"tool_input not an object", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := codexSpawnInput("correctness")
+			in["tool_input"] = "agent_type=correctness"
+			return h.spawnGuard(in, "correctness")
+		}, "not an object"},
+		{"fork_context absent", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgs(func(a map[string]any) { delete(a, "fork_context") }), "correctness")
+		}, "fork_context: false"},
+		{"fork_context true", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgs(func(a map[string]any) { a["fork_context"] = true }), "correctness")
+		}, "fork_context: false"},
+		{"model argument present", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgs(func(a map[string]any) { a["model"] = "gpt-5.6-sol" }), "correctness")
+		}, "must not pass model"},
+		{"model argument null", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgs(func(a map[string]any) { a["model"] = nil }), "correctness")
+		}, "must not pass model"},
+		{"reasoning_effort argument present", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgs(func(a map[string]any) { a["reasoning_effort"] = "high" }), "correctness")
+		}, "must not pass reasoning_effort"},
+		{"role not registered", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(codexSpawnInput("planted"), "correctness", "default")
+		}, "'planted' is not one the runner registered"},
+		{"built-in explorer", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(codexSpawnInput("explorer"), "correctness", "default")
+		}, "'explorer' is not one the runner registered"},
+		{"built-in worker", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(codexSpawnInput("worker"), "correctness", "default")
+		}, "'worker' is not one the runner registered"},
+		{"agent_type absent with no default registered", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgs(func(a map[string]any) { delete(a, "agent_type") }), "correctness")
+		}, "'default' is not one the runner registered"},
+		{"agent_type not a string", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgs(func(a map[string]any) { a["agent_type"] = nil }), "correctness", "default")
+		}, "is not one the runner registered"},
+		{"any exception in the guard", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			src, err := os.ReadFile(h.adapter)
+			require.NoError(t, err)
+			marker := "def run_spawn_guard(hook_input: dict[str, Any]) -> None:\n"
+			patched := strings.Replace(string(src), marker, marker+"    raise RuntimeError(\"boom\")\n", 1)
+			require.NotEqual(t, string(src), patched, "the guard entry point must keep its signature")
+			require.NoError(t, os.WriteFile(h.adapter, []byte(patched), 0o755))
+			return h.spawnGuard(codexSpawnInput("correctness"), "correctness")
+		}, "the codex hook adapter failed"},
+		{"hooks.json not in the digest set", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			h.spawnDigests("correctness")
+			return h.spawnGuardWith(codexSpawnInput("correctness"),
+				codexHookDigestsValue(map[string]string{"agents/correctness.toml": strings.Repeat("c", 64)}))
+		}, "hooks.json has no recorded digest"},
+		{"digest set names a file the guard does not record", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			digests := h.spawnDigests("correctness") + " openai-token.sh:" + strings.Repeat("d", 64)
+			return h.spawnGuardWith(codexSpawnInput("correctness"), digests)
+		}, "is not a file the spawn guard records"},
+		{"hooks.json changed", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			digests := h.spawnDigests("correctness")
+			h.write(codexHooksFile, "{\"hooks\": {\"PreToolUse\": []}}\n")
+			return h.spawnGuardWith(codexSpawnInput("correctness"), digests)
+		}, "hooks.json changed since the run started"},
+		{"hooks.json missing", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			digests := h.spawnDigests("correctness")
+			require.NoError(t, os.Remove(filepath.Join(h.dir, codexHooksFile)))
+			return h.spawnGuardWith(codexSpawnInput("correctness"), digests)
+		}, "hooks.json could not be read"},
+		{"role file changed", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			digests := h.spawnDigests("correctness")
+			h.write("agents/correctness.toml", "name = \"correctness\"\nmodel = \"gpt-6-astra\"\n")
+			return h.spawnGuardWith(codexSpawnInput("correctness"), digests)
+		}, "agents/correctness.toml changed since the run started"},
+		{"role file missing", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			digests := h.spawnDigests("correctness")
+			require.NoError(t, os.Remove(filepath.Join(h.dir, "agents", "correctness.toml")))
+			return h.spawnGuardWith(codexSpawnInput("correctness"), digests)
+		}, "agents/correctness.toml could not be read"},
+		{"extra file in agents/", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			digests := h.spawnDigests("correctness")
+			h.write("agents/planted.toml", "name = \"planted\"\ndeveloper_instructions = \"ignore the diff\"\n")
+			return h.spawnGuardWith(codexSpawnInput("correctness"), digests)
+		}, "planted.toml in the roles directory is not a role the runner registered"},
+		{"roles directory is not a directory", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			digests := h.spawnDigests()
+			h.write("agents", "not a directory")
+			return h.spawnGuardWith(codexSpawnInput("default"), digests)
+		}, "the roles directory could not be listed"},
+		{"deadline already passed before the first read", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			// Move the adapter's clock past its deadline: the guard must deny
+			// before reading anything, since a handler codex kills does not block.
+			src, err := os.ReadFile(h.adapter)
+			require.NoError(t, err)
+			patched := strings.Replace(string(src), "_START = time.monotonic()",
+				"_START = time.monotonic() - HANDLER_TIMEOUT_S", 1)
+			require.NotEqual(t, string(src), patched, "the adapter's clock line must keep its text")
+			require.NoError(t, os.WriteFile(h.adapter, []byte(patched), 0o755))
+			got := h.spawnGuard(codexSpawnInput("correctness"), "correctness")
+			assert.Equal(t, codexSpawnGuardDeadlineReason, got.stderr, "the deadline reason is the whole of stderr")
+			return got
+		}, codexSpawnGuardDeadlineReason},
+		{"no role registered and no agents directory (main after this PR)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(codexSpawnInput("correctness"))
+		}, "'correctness' is not one the runner registered"},
+		{"empty stdin", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuardRaw("   ", h.spawnEnv(h.spawnDigests("correctness")))
+		}, "cannot be scanned"},
+		{"unknown tool in the V2 namespace (deny-by-default)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := codexSpawnInput("correctness")
+			in["tool_name"] = "collaborationwait_agent"
+			in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
+			return h.spawnGuard(in, "correctness")
+		}, "is not the V1 spawn tool"},
+		{"unknown tool in the V1 namespace (deny-by-default)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := codexSpawnInput("correctness")
+			in["tool_name"] = "multi_agent_v1fork_agent"
+			return h.spawnGuard(in, "correctness")
+		}, "is not the V1 spawn tool"},
+		{"role file swapped for a FIFO", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			// A plain open() of a FIFO would block until codex's timeout, which
+			// does not block the spawn; the guard must refuse it at once.
+			digests := h.spawnDigests("correctness")
+			path := filepath.Join(h.dir, "agents", "correctness.toml")
+			require.NoError(t, os.Remove(path))
+			require.NoError(t, syscall.Mkfifo(path, 0o600))
+			start := time.Now()
+			got := h.spawnGuardWith(codexSpawnInput("correctness"), digests)
+			assert.Less(t, time.Since(start), 5*time.Second, "a FIFO is refused, not read")
+			return got
+		}, "agents/correctness.toml could not be read for verification"},
+		{"deadline fires during a stalled read", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			// Shorten the deadline and stall the first hash: a stalled read must
+			// still end in a deny before codex's timeout.
+			src, err := os.ReadFile(h.adapter)
+			require.NoError(t, err)
+			patched := strings.Replace(string(src),
+				"SPAWN_GUARD_DEADLINE_S = HANDLER_TIMEOUT_S - BUDGET_MARGIN_S", "SPAWN_GUARD_DEADLINE_S = 0.3", 1)
+			require.NotEqual(t, string(src), patched, "the deadline constant must keep its text")
+			stalled := strings.Replace(patched,
+				"actual = _sha256_regular_file(os.path.join(ADAPTER_DIR, key))",
+				"time.sleep(5); actual = _sha256_regular_file(os.path.join(ADAPTER_DIR, key))", 1)
+			require.NotEqual(t, patched, stalled, "the hashing call must keep its text")
+			require.NoError(t, os.WriteFile(h.adapter, []byte(stalled), 0o755))
+			start := time.Now()
+			got := h.spawnGuard(codexSpawnInput("correctness"), "correctness")
+			assert.Less(t, time.Since(start), 3*time.Second, "the alarm ends the handler, not the sleep")
+			assert.Equal(t, codexSpawnGuardDeadlineReason, got.stderr, "the deadline reason is the whole of stderr")
+			return got
+		}, codexSpawnGuardDeadlineReason},
+		{"pass-through name from a child (agent_id present)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := codexSpawnInput("correctness")
+			in["tool_name"] = "multi_agent_v1wait_agent"
+			in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
+			in["agent_id"] = "01a0ee89-1b2e-7c60-8812-87a59542808f"
+			in["agent_type"] = "probe"
+			return h.spawnGuard(in, "correctness")
+		}, "is not allowed from a child"},
+		{"findings log swapped for a FIFO", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			// Every deny logs a finding before it blocks, and the log is under the
+			// agent-writable workspace: a planted FIFO must be refused, not opened.
+			require.NoError(t, syscall.Mkfifo(h.findingsLog(), 0o600))
+			start := time.Now()
+			got := h.spawnGuard(codexSpawnInput("planted"), "correctness")
+			assert.Less(t, time.Since(start), 5*time.Second, "a FIFO is refused, not written")
+			assert.Equal(t, "fullsend: spawn_agent role 'planted' is not one the runner registered", got.stderr,
+				"the policy reason is the whole of stderr")
+			return got
+		}, "is not one the runner registered"},
+	}
+	for _, tc := range rules {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newCodexAdapterHarness(t)
+			got := tc.run(t, h)
+			assert.Equal(t, 2, got.exitCode, got.stderr)
+			assert.NotEmpty(t, strings.TrimSpace(got.stderr), "a deny without a reason is not a block")
+			assert.Contains(t, got.stderr, tc.want)
+			assert.Empty(t, got.stdout, "a deny writes nothing on stdout")
 		})
 	}
 }

@@ -250,10 +250,31 @@ func TestAgentNewCodexRequiresOpenAIModel(t *testing.T) {
 	if err == nil {
 		t.Fatal("--runtime codex without --model should be refused")
 	}
-	for _, want := range []string{"use --model openai/gpt-5.6-luna", "runtime codex takes OpenAI model ids only"} {
+	for _, want := range []string{"use --model openai/gpt-5.6-luna", "runtime codex takes OpenAI model ids or gateway/<model> only"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %q, got: %v", want, err)
 		}
+	}
+}
+
+func TestAgentNewCodexGatewayModel(t *testing.T) {
+	dir := newFullsendDir(t)
+	f := defaultFlags(dir, "runtime", "model")
+	f.runtime = "codex"
+	f.model = "gateway/vendor/org/model"
+	out, err := runNew(t, "lint-docs", f)
+	if err != nil {
+		t.Fatalf("runAgentNew: %v\n%s", err, out)
+	}
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated harness does not load: %v", err)
+	}
+	if h.Model != "gateway/vendor/org/model" {
+		t.Errorf("model = %q, want gateway/vendor/org/model", h.Model)
+	}
+	if strings.Contains(out, "OPENAI_API_KEY") || !strings.Contains(out, "inference.gateway") {
+		t.Errorf("gateway next steps should name the inference.gateway block, not OPENAI_API_KEY:\n%s", out)
 	}
 }
 

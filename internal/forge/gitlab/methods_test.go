@@ -2242,7 +2242,7 @@ func TestListRepoVariables_WildcardScopeWinsOverEnvironmentScope(t *testing.T) {
 }
 
 func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
-	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret} {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
 		t.Run(name, func(t *testing.T) {
 			client, mux := setupTest(t)
 			ctx := context.Background()
@@ -2265,7 +2265,7 @@ func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
 }
 
 func TestUpdateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
-	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret} {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
 		t.Run(name, func(t *testing.T) {
 			client, mux := setupTest(t)
 			ctx := context.Background()
@@ -2935,6 +2935,132 @@ func TestGrantProtectedBranchMergeUser(t *testing.T) {
 	assert.True(t, patched)
 }
 
+// revokeServer serves the exact-name protected-branch record and records any
+// PATCH body, so revoke tests can assert exactly what was destroyed.
+func revokeServer(t *testing.T, mux *http.ServeMux, exact map[string]any) (patches *[]map[string]any) {
+	t.Helper()
+	patches = &[]map[string]any{}
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if exact == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			writeJSON(t, w, http.StatusOK, exact)
+		case http.MethodPatch:
+			var body map[string]any
+			readJSONBody(t, r, &body)
+			*patches = append(*patches, body)
+			writeJSON(t, w, http.StatusOK, map[string]any{"name": "main"})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+	return patches
+}
+
+func TestRevokeProtectedBranchMergeUserEntry(t *testing.T) {
+	ctx := context.Background()
+	rule := map[string]any{
+		"name": "main",
+		"merge_access_levels": []map[string]any{
+			{"id": 1, "access_level": 40},
+			{"id": 11, "access_level": 30, "user_id": 98},
+			{"id": 12, "access_level": 30, "user_id": 99},
+		},
+		"push_access_levels": []map[string]any{{"id": 2, "access_level": 40}},
+	}
+
+	t.Run("destroys exactly the identified entry", func(t *testing.T) {
+		client, mux := setupTest(t)
+		patches := revokeServer(t, mux, rule)
+		require.NoError(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 12, 99))
+		require.Len(t, *patches, 1)
+		allowed, ok := (*patches)[0]["allowed_to_merge"].([]any)
+		require.True(t, ok)
+		require.Len(t, allowed, 1, "no other entry is part of the request")
+		assert.Equal(t, map[string]any{"id": float64(12), "_destroy": true}, allowed[0])
+		assert.NotContains(t, (*patches)[0], "allowed_to_push")
+	})
+
+	t.Run("refuses an entry that is not the user's", func(t *testing.T) {
+		client, mux := setupTest(t)
+		patches := revokeServer(t, mux, rule)
+		err := client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 11, 99)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not a grant for user")
+		assert.Empty(t, *patches)
+	})
+
+	t.Run("never removes a role entry", func(t *testing.T) {
+		client, mux := setupTest(t)
+		patches := revokeServer(t, mux, rule)
+		require.Error(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 1, 99))
+		assert.Empty(t, *patches)
+	})
+
+	t.Run("an entry that is already gone is a no-op", func(t *testing.T) {
+		client, mux := setupTest(t)
+		patches := revokeServer(t, mux, rule)
+		require.NoError(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 404, 99))
+		assert.Empty(t, *patches)
+	})
+
+	t.Run("a missing rule is a no-op", func(t *testing.T) {
+		client, mux := setupTest(t)
+		patches := revokeServer(t, mux, nil)
+		require.NoError(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 12, 99))
+		assert.Empty(t, *patches)
+	})
+
+	t.Run("rejects invalid identifiers", func(t *testing.T) {
+		client, _ := setupTest(t)
+		require.Error(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 0, 99))
+		require.Error(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 12, 0))
+	})
+
+	t.Run("reports a failed lookup and a failed patch", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				writeJSON(t, w, http.StatusOK, rule)
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		})
+		err := client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 12, 99)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "revoke protected branch merge")
+
+		client2, mux2 := setupTest(t)
+		mux2.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		require.Error(t, client2.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 12, 99))
+	})
+}
+
+func TestGetProtectedBranchReportsEntryIDs(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "main",
+			"merge_access_levels": []map[string]any{
+				{"id": 3, "access_level": 30, "user_id": 99},
+			},
+		})
+	})
+	rule, err := client.GetProtectedBranch(context.Background(), "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	require.Len(t, rule.MergeAccessLevels, 1)
+	assert.Equal(t, forge.ProtectedBranchAccess{ID: 3, AccessLevel: 30, UserID: 99}, rule.MergeAccessLevels[0])
+}
+
 func TestGrantProtectedBranchMergeUser_Idempotent(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -3210,6 +3336,33 @@ func TestUpdateCIVariable_MissingFallsBackToCreate(t *testing.T) {
 	err := client.UpdateCIVariable(ctx, "myorg", "myrepo", "NEW_VAR", "first-val", true)
 	require.NoError(t, err)
 	assert.True(t, created, "should have created the variable via POST")
+}
+
+// A variable defined only for a named environment must not be updated in
+// place: the update targets the wildcard scope, misses, and creates the
+// wildcard definition that GetRepoVariable reads.
+func TestUpdateCIVariable_TargetsWildcardScope(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var created bool
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/SCOPED_VAR", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"))
+		writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Variable Not Found"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, "*", body["environment_scope"])
+		created = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"key": "SCOPED_VAR"})
+	})
+
+	err := client.UpdateCIVariable(ctx, "myorg", "myrepo", "SCOPED_VAR", "val", true)
+	require.NoError(t, err)
+	assert.True(t, created, "should create the wildcard definition independently")
 }
 
 func TestUpdateCIVariable_NonNotFoundErrorPropagates(t *testing.T) {
@@ -5330,4 +5483,166 @@ func TestOpenAIWIFFileVariablePresence(t *testing.T) {
 			assert.True(t, *instance[0].NonBlank)
 		})
 	}
+}
+
+func TestProjectLease(t *testing.T) {
+	ctx := context.Background()
+	const collection = "/api/v4/projects/myorg%2Fmyrepo/variables"
+	const item = collection + "/LEASE"
+
+	t.Run("acquire creates the variable", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(collection, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			assert.Equal(t, http.MethodPost, r.Method)
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "LEASE", body["key"])
+			assert.Equal(t, "holder-a", body["value"])
+			writeJSON(t, w, http.StatusCreated, map[string]any{"key": "LEASE"})
+		})
+		ok, err := client.AcquireProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a")
+		require.NoError(t, err)
+		assert.True(t, called, "the registered handler must serve the request")
+		assert.True(t, ok)
+	})
+
+	for name, status := range map[string]int{"conflict": http.StatusConflict, "already taken": http.StatusBadRequest} {
+		t.Run("acquire reports a held lease ("+name+")", func(t *testing.T) {
+			client, mux := setupTest(t)
+			called := false
+			mux.HandleFunc(collection, func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				writeJSON(t, w, status, map[string]any{"message": map[string]any{"key": []string{"has already been taken"}}})
+			})
+			ok, err := client.AcquireProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-b")
+			require.NoError(t, err)
+			assert.True(t, called, "the registered handler must serve the request")
+			assert.False(t, ok)
+		})
+	}
+
+	t.Run("acquire reports other failures", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(collection, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusForbidden)
+		})
+		ok, err := client.AcquireProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a")
+		require.Error(t, err)
+		assert.True(t, called, "the registered handler must serve the request")
+		assert.False(t, ok)
+	})
+
+	t.Run("release deletes only the holder's own lease", func(t *testing.T) {
+		client, mux := setupTest(t)
+		var current = "holder-a"
+		deleted := false
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"))
+			switch r.Method {
+			case http.MethodGet:
+				writeJSON(t, w, http.StatusOK, map[string]any{"key": "LEASE", "value": current})
+			case http.MethodDelete:
+				deleted = true
+				w.WriteHeader(http.StatusNoContent)
+			}
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-b"))
+		assert.False(t, deleted, "another holder's lease is left alone")
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		assert.True(t, deleted)
+	})
+
+	t.Run("release of a missing lease is a no-op", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			assert.Equal(t, http.MethodGet, r.Method)
+			w.WriteHeader(http.StatusNotFound)
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		assert.True(t, called, "the registered handler must serve the request")
+	})
+
+	t.Run("release reports lookup and delete failures", func(t *testing.T) {
+		client, mux := setupTest(t)
+		fail := http.MethodGet
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && fail == http.MethodGet {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if r.Method == http.MethodGet {
+				writeJSON(t, w, http.StatusOK, map[string]any{"value": "holder-a"})
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		})
+		require.Error(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		fail = http.MethodDelete
+		require.Error(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+	})
+
+	t.Run("release never retries an ambiguously completed delete", func(t *testing.T) {
+		client, mux := setupTest(t)
+		// A's first DELETE removes its lease server-side but the response is
+		// an error. B then acquires the variable. A must not retry the DELETE
+		// and thereby remove B's lease.
+		current := "holder-a"
+		deletes := 0
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				writeJSON(t, w, http.StatusOK, map[string]any{"key": "LEASE", "value": current})
+			case http.MethodDelete:
+				deletes++
+				current = "holder-b"
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+		})
+		err := client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a")
+		require.Error(t, err)
+		assert.Equal(t, 1, deletes, "the lease DELETE is sent exactly once")
+		assert.Equal(t, "holder-b", current, "the new holder's lease is left alone")
+	})
+
+	// Documents the known limitation of a CI-variable backend: GitLab has no
+	// conditional delete, so a lease replaced between the holder check and the
+	// DELETE is removed. See the ReleaseProjectLease doc comment.
+	t.Run("release removes a lease replaced between the check and the delete", func(t *testing.T) {
+		client, mux := setupTest(t)
+		current := "holder-a"
+		deleted := false
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				writeJSON(t, w, http.StatusOK, map[string]any{"key": "LEASE", "value": current})
+				// Between the GET and the DELETE, holder-a's lease is replaced
+				// by holder-b's.
+				current = "holder-b"
+			case http.MethodDelete:
+				deleted = true
+				w.WriteHeader(http.StatusNoContent)
+			}
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		assert.True(t, deleted, "the unconditional DELETE removes whichever lease is present")
+		assert.Equal(t, "holder-b", current)
+	})
+
+	t.Run("release tolerates a lease deleted concurrently", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				writeJSON(t, w, http.StatusOK, map[string]any{"value": "holder-a"})
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+	})
 }

@@ -184,9 +184,11 @@ works in CI and on your machine.
 The agent's harness must declare the provider (`providers: [openai]`; both the definition and the
 `fullsend-openai` profile are built into fullsend, nothing needs to be on disk; the fleet's agents
 declare it) and a sandbox policy
-(`policy: policies/base.yaml` — the fleet's agents already have it; a custom harness needs it because
-the sandbox image's default policy leaves an uninspected route to `api.openai.com`, which the gateway
-refuses to carry the credential over). The sandbox only ever sees a placeholder; the provider holding
+(`policy: policies/base.yaml` — the fleet's agents already have it). A custom harness needs
+`policy:`: `fullsend run` fails at harness validation, before it creates the sandbox, if one is
+missing. The fleet base policy is also the one that does not leave an uninspected route to
+`api.openai.com`, which the gateway refuses to carry the credential over. The sandbox only ever
+sees a placeholder; the provider holding
 your key belongs to this run, expires an hour after the run at the latest and is deleted when the run
 ends.
 
@@ -333,9 +335,11 @@ fullsend run triage \
   --runtime pi
 ```
 
-Codex is selected the same way (`--runtime codex`); it runs OpenAI models
-only, so pair it with `--model openai/gpt-5.6-luna` and the OpenAI key
-above.
+Codex is selected the same way (`--runtime codex`); pair it with
+`--model openai/gpt-5.6-luna` and the OpenAI key above. With an
+`inference.gateway` block in `auth: api-key` mode, codex can instead run
+`--model gateway/<model>` with `FULLSEND_INFERENCE_GATEWAY_API_KEY` set
+([Codex › Models through an inference gateway](../../runtimes/codex.md#models-through-an-inference-gateway-experimental)).
 
 Everything else about runtimes lives in one place: [Agent
 runtimes](../../runtimes.md) for selecting and overriding the runtime,
@@ -415,6 +419,236 @@ For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent
 
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
+
+## Using an inference gateway (experimental)
+
+> **Experimental.** Behaviour may change. This section covers local runs, where the harness ships
+> the extension as a plugin. Hosted (CI) runs use the runner-managed `inference.gateway` block in
+> `.fullsend/config.yaml` instead (see the [config reference](../../reference/config-reference.md)).
+> For the CI setup, see [Using an inference gateway](inference-gateway.md).
+> A local run can use that block too with `auth: api-key`, which reads the gateway key from
+> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no OIDC endpoint
+> ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
+
+On the [pi](../../runtimes/pi.md) runtime, an agent can reach its model through an
+OpenAI/Anthropic-compatible inference gateway (Praxis, LiteLLM, agentgateway, ...). The
+[pi-inference-gateway](https://github.com/fullsend-ai/pi-inference-gateway) extension adds a
+`gateway` provider to pi, and your harness ships it as a [plugin](../../runtimes/pi.md#plugins-pi-extensions).
+No fullsend change is needed.
+
+You need the gateway's URL, a key for it, and the id of each model you want, with the API the
+gateway serves it on:
+
+| API | `api` value | Typical models |
+|---|---|---|
+| Responses | `openai-responses` | GPT |
+| Chat Completions | `openai-completions` | Open-weight models |
+| Messages | `anthropic-messages` | Claude |
+
+The steps edit the agents clone from [Clone repositories](#clone-repositories)
+(`/tmp/fullsend-agents/`) and use `https://gateway.example.com` as the gateway.
+
+1. **Add the extension to the harness repository.** Download the release, check it, and keep only
+   the code. The block stops before extracting anything if the checksum does not match:
+
+   ```bash
+   (
+     set -eu
+     ver=0.1.1
+     dest=/tmp/fullsend-agents/extensions/inference-gateway
+     cd "$(mktemp -d)"
+     curl -fsSL -o pi-inference-gateway.tgz \
+       "https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v$ver.tar.gz"
+     echo "9d4a9446842f27aa51de99be4f61b6cbc2a6de009ddf04f2dc712c1fb1417d29  pi-inference-gateway.tgz" \
+       | shasum -a 256 -c -
+     mkdir -p "$dest"
+     tar xzf pi-inference-gateway.tgz -C "$dest" --strip-components=1 \
+       "pi-inference-gateway-$ver/package.json" "pi-inference-gateway-$ver/LICENSE" \
+       "pi-inference-gateway-$ver/src"
+     rm "$dest"/src/*.test.ts "$dest"/src/test-fixtures.ts
+   )
+   ```
+
+   ```text
+   pi-inference-gateway.tgz: OK
+   ```
+
+2. **Add a provider for the key** as `/tmp/fullsend-agents/providers/gateway.yaml`:
+
+   ```yaml
+   ---
+   name: gateway
+   type: gateway-inference
+   credentials:
+     INFERENCE_GATEWAY_API_KEY: "${INFERENCE_GATEWAY_API_KEY}"
+   ```
+
+3. **Allow the gateway host** with `/tmp/fullsend-agents/profiles/gateway-inference.yaml`:
+
+   ```yaml
+   ---
+   id: gateway-inference
+   display_name: Inference gateway
+   description: OpenAI/Anthropic-compatible inference gateway for pi
+   category: inference
+   credentials:
+     - name: api_key
+       description: Inference gateway key
+       env_vars: [INFERENCE_GATEWAY_API_KEY]
+       required: true
+       auth_style: bearer
+       header_name: authorization
+   endpoints:
+     - host: gateway.example.com
+       port: 443
+       protocol: rest
+       enforcement: enforce
+       allow_uninspected_credentials: true
+       rules:
+         - allow:
+             method: POST
+             path: /v1/chat/completions
+         - allow:
+             method: POST
+             path: /v1/responses
+         - allow:
+             method: POST
+             path: /v1/messages
+   binaries:
+     - "**/node"
+   ```
+
+   The sandbox only ever holds a placeholder for the key. OpenShell puts the real key on requests
+   to this host and blocks the agent from reaching any other host with it.
+
+4. **Wire them into the harness.** In `/tmp/fullsend-agents/harness/triage.yaml`, add the provider,
+   the profile and the plugin:
+
+   ```yaml
+   providers:
+     - vertex-ai
+     - openai
+     - providers/gateway.yaml
+   openshell:
+     profiles:
+       - profiles/gateway-inference.yaml
+   plugins:
+     - path: extensions/inference-gateway
+       env:
+         INFERENCE_GATEWAY_BASE_URL: "https://gateway.example.com"
+         INFERENCE_GATEWAY_EXTRA_MODELS: "gpt-6-luna=openai-responses,example-org/open-model=openai-completions,claude-haiku-4-5=anthropic-messages"
+   ```
+
+   List every model you will use in `INFERENCE_GATEWAY_EXTRA_MODELS`, as `id=api`. pi never asks
+   the gateway for its model list inside the sandbox, so a model missing here is unknown to pi.
+
+5. **Add per-model settings (optional).** Only needed for a model that needs `compat`,
+   `contextWindow` / `maxTokens` or `exclude`. Write
+   `/tmp/fullsend-agents/extensions/inference-gateway/inference-gateway.json`:
+
+   ```json
+   {
+     "providers": {
+       "gateway": {
+         "baseUrlEnv": "INFERENCE_GATEWAY_BASE_URL",
+         "models": {
+           "claude-opus-5-5": {
+             "api": "anthropic-messages",
+             "compat": { "supportsMidConvoEffort": false, "supportsStrictTools": false }
+           },
+           "example-org/open-model": {
+             "api": "openai-completions",
+             "contextWindow": 262144,
+             "maxTokens": 65536
+           }
+         }
+       }
+     }
+   }
+   ```
+
+   - Keep `"baseUrlEnv": "INFERENCE_GATEWAY_BASE_URL"` in the `gateway` entry. Without it the
+     extension skips the entry with a warning.
+   - Put no credential keys in the file (`apiKey*`, `tokenFile`, `password*`). The key comes from
+     the provider.
+   - Keep every model in `INFERENCE_GATEWAY_EXTRA_MODELS` as well.
+   - `contextWindow` / `maxTokens` are your deployment's limits; the values above are examples.
+
+   See the extension's
+   [per-model keys](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file)
+   and [`compat` reference](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/compat.md).
+   The file ships inside the plugin directory, and the runner checks that directory is unchanged
+   before every iteration, so the agent cannot edit it.
+
+6. **Run with a `gateway/` model** from the directory that holds your env files from
+   [Run default agents](#run-default-agents):
+
+   ```bash
+   export INFERENCE_GATEWAY_API_KEY=...   # your gateway key
+   fullsend run triage \
+     --fullsend-dir /tmp/fullsend-agents/ \
+     --target-repo /tmp/target-repo/ \
+     --forge github \
+     --env-file fullsend-gcp.env \
+     --env-file fullsend-triage.env \
+     --runtime pi \
+     --model gateway/gpt-6-luna \
+     --no-post-script
+   ```
+
+   Always write the full `gateway/<id>`. A bare id gets the default `anthropic-vertex/` prefix.
+
+### What success looks like
+
+The run names the gateway model, sets up the provider and profile, uploads the extension, and the
+result passes schema validation (excerpt; local paths shortened):
+
+```text
+    Model: gateway/gpt-6-luna (from --model flag)
+    Plugins: /tmp/fullsend-agents/extensions/inference-gateway (pi)
+  ✓ Profile imported: gateway-inference (0.1s)
+  ✓ Provider ready: gateway (0.1s)
+Extension "inference-gateway": uploaded to sandbox
+    Turns: 5
+  ✓ Agent exited with code 0 (56.2s)
+PASS: output validated against schema (0.5s)
+    Validation: passed
+```
+
+The same setup passed with an open-weight model on Chat Completions and with `claude-haiku-4-5` and
+`claude-sonnet-5` on Messages.
+
+`claude-opus-5-5` passed with the per-model file from step 5:
+
+```text
+    Model: gateway/claude-opus-5-5 (from --model flag)
+    Plugins: /tmp/fullsend-agents/extensions/inference-gateway (pi)
+  ✓ Profile imported: gateway-inference (0.1s)
+  ✓ Provider ready: gateway (0.1s)
+Extension "inference-gateway": uploaded to sandbox
+    Turns: 6
+  ✓ Agent exited with code 0 (32.8s)
+PASS: output validated against schema (0.2s)
+    Validation: passed
+```
+
+### Limits
+
+- **Per-model settings go in the plugin's file.** The extension's `compat`,
+  `contextWindow` / `maxTokens` and `exclude` settings live in the `inference-gateway.json` from
+  step 5, not in the harness `env`.
+- **The base URL and model list come from the harness.** The runner exports the plugin's `env` on
+  every launch, after the agent-writable `.env`, so plain assignments in `.env` do not change them.
+  The key is only sent to the profile's host.
+
+### Troubleshooting the gateway
+
+| Error | Cause | Fix |
+|---|---|---|
+| `WARNING: plugin ".../extensions/inference-gateway" has 1 injection finding(s) in src/config.ts` (and `src/discovery.ts`) | The content scan flags patterns in the extension's code | Expected for v0.1.1; the run continues |
+| `Warning: Model "<id>" not found for provider "gateway". Using custom model id.`, then an error such as `` 404: {"message":"The model `<id>` does not exist ...","code":"model_not_found"} `` | The model is not in `INFERENCE_GATEWAY_EXTRA_MODELS`, so pi sends it on another listed model's API | Add `<id>=<api>` to `INFERENCE_GATEWAY_EXTRA_MODELS` |
+| Claude: `400 ... messages.1.output_config: Extra inputs are not permitted` | The gateway's Claude backend (for example Vertex) rejects pi's mid-conversation effort setting | Set `"compat": { "supportsMidConvoEffort": false }` on that model in `inference-gateway.json` (step 5) |
+| `` 400 ... disallowed feature structured_outputs for Partner model <id> `` | Your cloud project's policy disallows that feature for the partner model | Set `"compat": { "supportsStrictTools": false }` on that model in `inference-gateway.json` (step 5) |
 
 ## Run from a container
 

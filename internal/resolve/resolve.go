@@ -213,10 +213,11 @@ type ResolveOpts struct {
 	// When nil, defaults to gitfetch.FetchTree (git sparse checkout).
 	TreeFetcher gitfetch.TreeFetchFunc
 
-	// OrgAllowlist is the allowed_remote_resources from config.yaml (org-level
-	// allowlist). When set, URLs that are not in the harness-level
+	// OrgAllowlist is the config-level allowed_remote_resources from the
+	// repository's layered .fullsend config (config.yaml over
+	// config.base.yaml). When set, URLs that are not in the harness-level
 	// AllowedRemoteResources are checked against this list as a fallback.
-	// This makes org-level trust apply uniformly to all URL resolution
+	// This makes config-level trust apply uniformly to all URL resolution
 	// (policy, agent, skills, plugins, profiles, providers), not just
 	// base: composition.
 	OrgAllowlist []string

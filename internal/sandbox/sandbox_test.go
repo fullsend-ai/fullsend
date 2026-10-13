@@ -1699,6 +1699,294 @@ func TestImportProfile_AlreadyExists_GatewayMetadataIgnored(t *testing.T) {
 	assert.NoError(t, err, "a gateway-only metadata field must not be treated as a content mismatch")
 }
 
+// TestImportProfile_AlreadyExists_GatewayDefaultsIgnored covers #8211: the
+// gateway's export of an unchanged profile adds defaulted fields the local
+// file never declares, which must not be treated as a content mismatch.
+func TestImportProfile_AlreadyExists_GatewayDefaultsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	local := "id: my-profile\ncategory: source_control\ncredentials:\n  - name: api_token\n    env_vars: [GH_TOKEN]\n    required: true\n"
+	require.NoError(t, os.WriteFile(profilePath, []byte(local), 0o644))
+
+	exported := "id: my-profile\nresource_version: 3\ndescription: ''\ncategory: source_control\n" +
+		"credentials:\n- name: api_token\n  description: ''\n  env_vars:\n  - GH_TOKEN\n  required: true\n" +
+		"  auth_style: ''\n  header_name: ''\n  query_param: ''\n" +
+		"endpoints: []\nbinaries: []\ninference_capable: false\nsource: user\nscope: workspace\n"
+	alreadyExistsThenExportStub(t, dir, exported)
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	assert.NoError(t, err, "gateway-defaulted fields on an unchanged profile must not be a content mismatch")
+}
+
+func TestProfileContentEqual(t *testing.T) {
+	const local = `id: my-profile
+category: source_control
+credentials:
+  - name: api_token
+    env_vars: [GH_TOKEN]
+    required: true
+endpoints:
+  - host: api.github.com
+    port: 443
+binaries:
+  - "**/gh"
+`
+	const exported = `id: my-profile
+resource_version: 7
+description: ''
+category: source_control
+credentials:
+- name: api_token
+  description: ''
+  env_vars:
+  - GH_TOKEN
+  required: true
+  auth_style: ''
+  header_name: ''
+  query_param: ''
+endpoints:
+- host: api.github.com
+  port: 443
+binaries:
+- '**/gh'
+inference_capable: false
+source: user
+scope: workspace
+`
+	tests := []struct {
+		name     string
+		local    string
+		exported string
+		want     bool
+	}{
+		{
+			name:     "export adds only metadata and defaults",
+			local:    local,
+			exported: exported,
+			want:     true,
+		},
+		{
+			name:     "local declares defaults explicitly",
+			local:    local + "inference_capable: false\ndescription: ''\n",
+			exported: exported,
+			want:     true,
+		},
+		{
+			name:     "local declares a default the export omits",
+			local:    "id: p\nendpoints: []\n",
+			exported: "id: p\n",
+			want:     true,
+		},
+		{
+			name:     "local declares null and empty map the export omits",
+			local:    "id: p\ndescription:\nannotations: {}\n",
+			exported: "id: p\n",
+			want:     true,
+		},
+		{
+			name:     "no credentials locally, export has empty list",
+			local:    "id: p\ncategory: inference\n",
+			exported: "id: p\ncategory: inference\ncredentials: []\n",
+			want:     true,
+		},
+		{
+			name:     "category omitted locally defaults to other",
+			local:    "id: p\n",
+			exported: "id: p\ncategory: other\n",
+			want:     true,
+		},
+		{
+			name:     "credential env var differs",
+			local:    local,
+			exported: strings.Replace(exported, "  - GH_TOKEN", "  - OTHER_TOKEN", 1),
+			want:     false,
+		},
+		{
+			name:     "endpoint host differs",
+			local:    local,
+			exported: strings.Replace(exported, "host: api.github.com", "host: evil.example.com", 1),
+			want:     false,
+		},
+		{
+			name:     "credential count differs",
+			local:    local,
+			exported: strings.Replace(exported, "endpoints:\n", "- name: extra\nendpoints:\n", 1),
+			want:     false,
+		},
+		{
+			name:     "local drops credentials the export still has",
+			local:    "id: p\n",
+			exported: "id: p\ncredentials:\n- name: api_token\n  env_vars: [GH_TOKEN]\n",
+			want:     false,
+		},
+		{
+			name:     "local drops endpoints the export still has",
+			local:    "id: p\n",
+			exported: "id: p\nendpoints:\n- host: internal.example.com\n  port: 443\n",
+			want:     false,
+		},
+		{
+			name:     "export has non-default inference_capable",
+			local:    local,
+			exported: strings.Replace(exported, "inference_capable: false", "inference_capable: true", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default credential query_param",
+			local:    local,
+			exported: strings.Replace(exported, "query_param: ''", "query_param: token", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default credential auth_style",
+			local:    local,
+			exported: strings.Replace(exported, "auth_style: ''", "auth_style: bearer", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default credential header_name",
+			local:    local,
+			exported: strings.Replace(exported, "header_name: ''", "header_name: X-Key", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default endpoint scalar",
+			local:    local,
+			exported: strings.Replace(exported, "  port: 443\nbinaries", "  port: 443\n  allow_uninspected_credentials: true\nbinaries", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default source",
+			local:    local,
+			exported: strings.Replace(exported, "source: user", "source: builtin", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default scope",
+			local:    local,
+			exported: strings.Replace(exported, "scope: workspace", "scope: global", 1),
+			want:     false,
+		},
+		{
+			name:     "category dropped locally while export has non-default category",
+			local:    "id: p\n",
+			exported: "id: p\ncategory: inference\n",
+			want:     false,
+		},
+		{
+			name:     "unknown non-zero scalar only the export has",
+			local:    local,
+			exported: strings.Replace(exported, "category: source_control", "category: source_control\nfuture_field: x", 1),
+			want:     false,
+		},
+		{
+			name:     "new gateway default the local file never heard of",
+			local:    local,
+			exported: exported + "new_openshell_default: ''\nnew_list_default: []\nnew_map_default: {}\n",
+			want:     true,
+		},
+		{
+			name:     "new credential field only the export has",
+			local:    local,
+			exported: strings.Replace(exported, "query_param: ''", "query_param: ''\n  new_field: ''", 1),
+			want:     true,
+		},
+		{
+			name:     "export has non-empty list inside a credential the local entry lacks",
+			local:    local,
+			exported: strings.Replace(exported, "  query_param: ''", "  query_param: ''\n  scopes: [admin]", 1),
+			want:     false,
+		},
+		{
+			name:     "local sets inference_capable, export differs",
+			local:    local + "inference_capable: true\n",
+			exported: exported,
+			want:     false,
+		},
+		{
+			name:     "local credential field differs from export",
+			local:    strings.Replace(local, "required: true", "required: true\n    query_param: token", 1),
+			exported: exported,
+			want:     false,
+		},
+		{
+			name:     "local declares a non-empty value the export omits inside a credential",
+			local:    strings.Replace(local, "required: true", "required: true\n    header_name: X-Key", 1),
+			exported: strings.Replace(exported, "  header_name: ''\n", "", 1),
+			want:     false,
+		},
+		{
+			name:     "export has explicit MCP strict_tool_names false the local file omits",
+			local:    "id: p\nendpoints:\n- host: mcp.example.com\n  mcp:\n    allow_all_known_mcp_methods: true\n",
+			exported: "id: p\nendpoints:\n- host: mcp.example.com\n  mcp:\n    allow_all_known_mcp_methods: true\n    strict_tool_names: false\n",
+			want:     false,
+		},
+		{
+			name:     "local sets MCP strict_tool_names false the export omits",
+			local:    "id: p\nendpoints:\n- host: mcp.example.com\n  mcp:\n    strict_tool_names: false\n",
+			exported: "id: p\nendpoints:\n- host: mcp.example.com\n  mcp: {}\n",
+			want:     false,
+		},
+		{
+			name:     "local sets endpoint flag false the export omits",
+			local:    strings.Replace(local, "    port: 443\n", "    port: 443\n    allow_uninspected_credentials: false\n", 1),
+			exported: exported,
+			want:     true,
+		},
+		{
+			name:     "credential secret false only the export has",
+			local:    local,
+			exported: strings.Replace(exported, "  required: true\n", "  required: true\n  secret: false\n", 1),
+			want:     true,
+		},
+		{
+			name:     "export has unknown extra field",
+			local:    "id: p\n",
+			exported: "id: p\nannotations:\n  k: v\n",
+			want:     false,
+		},
+		{
+			name:     "local has field the export lacks",
+			local:    "id: p\ndisplay_name: P\n",
+			exported: "id: p\n",
+			want:     false,
+		},
+		{
+			name:     "map-shaped credentials compared exactly",
+			local:    "id: p\ncredentials:\n  api_token: GH_TOKEN\n",
+			exported: "id: p\ncredentials: {}\n",
+			want:     false,
+		},
+		{
+			name:     "list entries that are not maps compared exactly",
+			local:    "id: p\ncredentials: [a]\n",
+			exported: "id: p\ncredentials: [b]\n",
+			want:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := profileContentEqual([]byte(tt.local), []byte(tt.exported))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestProfileContentEqual_UnparseableYAML(t *testing.T) {
+	_, err := profileContentEqual([]byte("id: [unclosed"), []byte("id: p\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing local profile")
+
+	_, err = profileContentEqual([]byte("id: p\n"), []byte("id: [unclosed"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing exported profile")
+}
+
 // TestImportProfile_AlreadyExists_StaleContent covers #7973: a blocked delete
 // leaves old content on the gateway, so ImportProfile must fail rather than
 // cache a false success.
@@ -1720,6 +2008,53 @@ func TestImportProfile_AlreadyExists_StaleContent(t *testing.T) {
 
 	_, readErr := os.ReadFile(cachePath)
 	assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+}
+
+// TestImportProfile_AlreadyExists_RemovedNonDefaultScalar covers a local edit
+// that removes a non-default scalar the gateway still has after a blocked
+// delete: it must fail loudly and must not cache a false success.
+func TestImportProfile_AlreadyExists_RemovedNonDefaultScalar(t *testing.T) {
+	tests := []struct {
+		name     string
+		exported string
+	}{
+		{"inference_capable", "id: my-profile\ninference_capable: true\n"},
+		{"credential query_param", "id: my-profile\ncredentials:\n- name: api_token\n  query_param: token\n"},
+		{"credential auth_style", "id: my-profile\ncredentials:\n- name: api_token\n  auth_style: bearer\n"},
+		{"credential header_name", "id: my-profile\ncredentials:\n- name: api_token\n  header_name: X-Key\n"},
+		{"endpoint flag", "id: my-profile\nendpoints:\n- host: api.github.com\n  allow_uninspected_credentials: true\n"},
+		{"endpoint mcp strict_tool_names", "id: my-profile\nendpoints:\n- host: api.github.com\n  mcp:\n    strict_tool_names: false\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			profilePath := filepath.Join(dir, "my-profile.yaml")
+			local := "id: my-profile\n"
+			if strings.HasPrefix(tt.name, "credential") {
+				local += "credentials:\n  - name: api_token\n"
+			}
+			if strings.HasPrefix(tt.name, "endpoint") {
+				local += "endpoints:\n  - host: api.github.com\n"
+			}
+			if strings.HasSuffix(tt.name, "strict_tool_names") {
+				local += "    mcp: {}\n"
+			}
+			require.NoError(t, os.WriteFile(profilePath, []byte(local), 0o644))
+
+			alreadyExistsThenExportStub(t, dir, tt.exported)
+			t.Setenv("PATH", dir)
+
+			cachePath := profileFileCachePath("my-profile")
+			t.Cleanup(func() { os.Remove(cachePath) })
+
+			err := ImportProfile(context.Background(), "my-profile", profilePath)
+			require.Error(t, err, "a stale non-default scalar left on the gateway must fail loudly")
+			assert.Contains(t, err.Error(), "does not match")
+
+			_, readErr := os.ReadFile(cachePath)
+			assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+		})
+	}
 }
 
 // TestImportProfile_AlreadyExists_RemovedCredentials covers a local profile

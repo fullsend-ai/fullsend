@@ -159,6 +159,11 @@ See [Agents reference](agents/) and [Default, derived, and custom agents](guides
 An agent that uses `base` [base composition](#base-composition) from a [default agent](#default-agent) but replaces identity-defining components — system prompt (`agent:`), [pre-script](#pre-script) / [post-script](#post-script), mint `role:` (unless that agent's docs recommend a specific role override), or `validation_loop` — beyond documented [extension points](#extension-point). Changing install-time `slug:` alone does **not** make the agent derived. It reuses default lineage but is no longer recognizably that default. Example: changing the post-script so the agent can call a forge API the stock script does not support. Contrast with [configured default](#configured-default-agent) and [custom agent](#custom-agent).
 See [Default, derived, and custom agents](guides/user/default-vs-custom.md).
 
+### Direct OIDC Trust
+
+The inference gateway's `auth: oidc` mode: the gateway validates the job's forge OIDC token itself, with no token exchange. It is not [WIF](#wif-workload-identity-federation).
+See [How fullsend authenticates](guides/user/how-fullsend-authenticates.md).
+
 ## E
 
 ### Entry Point
@@ -218,6 +223,11 @@ See [architecture.md](architecture.md).
 A distinct GitHub App installation representing a specific agent role (e.g., triage, coder, reviewer). Each agent role gets its own identity so that actions are attributable and permissions can be scoped per-role. Identity is not the same as trust — an agent's identity lets it authenticate; trust derives from repository permissions and CODEOWNERS, not from which credentials the agent holds.
 See [architecture.md](architecture.md) and [agent-architecture.md](problems/agent-architecture.md).
 
+### Installation Token
+
+A short-lived GitHub App token that the token mint issues in exchange for the job's OIDC token. Agents use it for forge writes such as comments and pull requests.
+See [How fullsend authenticates](guides/user/how-fullsend-authenticates.md).
+
 ## L
 
 ### Label State Machine
@@ -266,6 +276,11 @@ What **actually happened** on an agent run, recorded as OpenTelemetry (OTEL) spa
 See [Distributed Tracing](guides/infrastructure/distributed-tracing.md) and [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md).
 
 ## P
+
+### Placeholder
+
+A stand-in value the sandbox holds instead of a real credential. The OpenShell proxy swaps in the real credential on the way out, so the credential never enters the sandbox.
+See [How fullsend authenticates](guides/user/how-fullsend-authenticates.md).
 
 ### Policy Store
 
@@ -364,6 +379,11 @@ The overloading of "trust" across these contexts has been a recurring source of 
 See [security-threat-model.md](problems/security-threat-model.md) and [agent-architecture.md](problems/agent-architecture.md).
 
 ## W
+
+### WIF (Workload Identity Federation)
+
+A token exchange in which a provider trusts the job's OIDC token and returns its own short-lived access token. Fullsend uses GCP WIF for Vertex AI and OpenAI Workload Identity for OpenAI models; the inference gateway's [direct OIDC trust](#direct-oidc-trust) is not WIF.
+See [How fullsend authenticates](guides/user/how-fullsend-authenticates.md).
 
 ### Work Coordinator
 

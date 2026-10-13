@@ -612,6 +612,118 @@ func TestListPipelineTriggerTokens_DecodeError(t *testing.T) {
 	assert.Contains(t, err.Error(), "decode pipeline trigger tokens")
 }
 
+func TestListPipelineTriggerTokens_EmptyInventoryIsValid(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{})
+	})
+
+	tokens, err := client.ListPipelineTriggerTokens(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	assert.Empty(t, tokens)
+}
+
+func TestListPipelineTriggerTokens_RejectsMalformedInventory(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{"null inventory", `null`, "inventory is null"},
+		{"zero trigger id", `[{"id":0,"description":"d"}]`, "invalid trigger id"},
+		{"negative trigger id", `[{"id":-1,"description":"d"}]`, "invalid trigger id"},
+		{"missing trigger id", `[{"description":"d"}]`, "invalid trigger id"},
+		{"zero owner id", `[{"id":1,"owner":{"id":0}}]`, "invalid owner id"},
+		{"negative owner id", `[{"id":1,"owner":{"id":-5}}]`, "invalid owner id"},
+		{"owner object without id", `[{"id":1,"owner":{}}]`, "invalid owner id"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			ctx := context.Background()
+
+			var calls int
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers", func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tc.body))
+			})
+
+			tokens, err := client.ListPipelineTriggerTokens(ctx, "myorg", "myrepo")
+			require.Error(t, err)
+			assert.Nil(t, tokens)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Equal(t, 1, calls, "the triggers handler must be invoked")
+		})
+	}
+}
+
+func TestListPipelineTriggerTokens_MalformedLaterPageReturnsNoPartialInventory(t *testing.T) {
+	tests := []struct {
+		name    string
+		page2   string
+		wantErr string
+	}{
+		{"null inventory", `null`, "page 2: inventory is null"},
+		{"nonpositive trigger id", `[{"id":0,"description":"bad"}]`, "page 2: invalid trigger id"},
+		{"nonpositive owner id", `[{"id":101,"owner":{"id":0}}]`, "page 2: trigger 101 has invalid owner id"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			ctx := context.Background()
+
+			var pages []int
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers", func(w http.ResponseWriter, r *http.Request) {
+				page, err := strconv.Atoi(r.URL.Query().Get("page"))
+				require.NoError(t, err)
+				pages = append(pages, page)
+				switch page {
+				case 1:
+					tokens := make([]map[string]any, 100)
+					for i := range tokens {
+						tokens[i] = map[string]any{"id": i + 1, "description": "token"}
+					}
+					writeJSON(t, w, http.StatusOK, tokens)
+				case 2:
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(tc.page2))
+				default:
+					t.Fatalf("unexpected page %d", page)
+				}
+			})
+
+			tokens, err := client.ListPipelineTriggerTokens(ctx, "myorg", "myrepo")
+			require.Error(t, err)
+			assert.Nil(t, tokens, "a malformed later page must not return a partial inventory")
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Equal(t, []int{1, 2}, pages)
+		})
+	}
+}
+
+func TestListPipelineTriggerTokens_NullOwnerIsUnknownOwner(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/triggers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"id":1,"owner":null},{"id":2},{"id":3,"owner":{"id":9}}]`))
+	})
+
+	tokens, err := client.ListPipelineTriggerTokens(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	require.Len(t, tokens, 3)
+	assert.Zero(t, tokens[0].OwnerID)
+	assert.Zero(t, tokens[1].OwnerID)
+	assert.Equal(t, int64(9), tokens[2].OwnerID)
+}
+
 func TestListPipelineTriggerTokens_PaginationOverflow(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

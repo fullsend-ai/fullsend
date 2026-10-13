@@ -100,6 +100,11 @@ else
 fi
 unset FULLSEND_OPENAI_API_KEY
 
+# Inference gateway API key (inference.gateway.auth api-key, ADR 0138): a
+# masked CI/CD variable the runner reads under its own name,
+# FULLSEND_INFERENCE_GATEWAY_API_KEY, so it needs no mapping here. The runner treats it as
+# runner-only (oidcDenyKeys), and it is unused in the oidc mode.
+
 # Bootstrap identity for the pre-verification calls below (resource
 # group PUT, pipeline-metadata GET, bot-identity /user call): select
 # the poller credential, not the STAGE-derived role. STAGE is an

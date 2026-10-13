@@ -17,6 +17,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/gitlablifecycle"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/repos"
@@ -662,7 +663,10 @@ func TestAnnotateGitLabRoleLifecycleDoesNotDoubleCountDrifted(t *testing.T) {
 			Summary: repos.StatusSummary{Drifted: 1},
 		}
 		annotateGitLabRoleLifecycle(ctx, clients, result)
-		require.Len(t, result.Repos[0].Drifts, 2, "the lifecycle drift must still be recorded")
+		// The mock cannot list the project's service accounts, so the token
+		// inventory is unverified: that and the service-account drift are both
+		// recorded alongside the existing one.
+		require.Len(t, result.Repos[0].Drifts, 3, "the lifecycle drift must still be recorded")
 		assert.Equal(t, 1, result.Summary.Drifted, "already-drifted repo must not be counted twice")
 	})
 
@@ -673,7 +677,7 @@ func TestAnnotateGitLabRoleLifecycleDoesNotDoubleCountDrifted(t *testing.T) {
 			Summary: repos.StatusSummary{Drifted: 0},
 		}
 		annotateGitLabRoleLifecycle(ctx, clients, result)
-		require.Len(t, result.Repos[0].Drifts, 1)
+		require.Len(t, result.Repos[0].Drifts, 2)
 		assert.Equal(t, 1, result.Summary.Drifted, "no-drift to drift transition must be counted exactly once")
 	})
 }
@@ -753,8 +757,14 @@ func TestGitLabUninstallTokens(t *testing.T) {
 		require.NoError(t, err)
 		got := gitLabUninstallTokens(&reposUninstallConfig{}, newSingleClientFactory(glClient), printer, manifest, []string{"group/project"})
 		require.NotNil(t, got)
-		_, ok := got.(gitlabTokenAdapter)
-		assert.True(t, ok)
+		wrapped, ok := got.(gitlablifecycle.UninstallTokenClient)
+		require.True(t, ok, "live uninstall inventory must reconcile Pollers and honor supplied exclusions, got %T", got)
+		assert.NotNil(t, wrapped.ManagedAccountIDs)
+		assert.NotNil(t, wrapped.ManagedAccountNames)
+		assert.NotNil(t, wrapped.SuppliedAccountIDs)
+		assert.NotNil(t, wrapped.VerifyAccountDeletion)
+		_, reconciles := got.(repos.GitLabPollerUninstallReconciler)
+		assert.True(t, reconciles)
 	})
 }
 
@@ -870,8 +880,11 @@ func TestGitLabTokenInventory(t *testing.T) {
 	glClient, err := gitlab.New("test-token", gitlab.WithBaseURL("http://127.0.0.1:1"))
 	require.NoError(t, err)
 	inv := gitLabTokenInventory(&reposInstallConfig{}, glClient)
-	_, ok := inv.(gitlabTokenAdapter)
-	assert.True(t, ok)
+	sa, ok := inv.(repos.ServiceAccountTokenClient)
+	require.True(t, ok, "live inventory must merge service-account and legacy tokens, got %T", inv)
+	assert.NotNil(t, sa.ManagedAccountIDs)
+	assert.NotNil(t, sa.ManagedAccountNames)
+	assert.NotNil(t, sa.SuppliedAccountIDs)
 }
 
 func TestAnnotateGitLabRoleLifecycleReportsPipelineRefDrift(t *testing.T) {
@@ -1048,6 +1061,14 @@ func TestAnnotateGitLabRoleLifecyclePipelineRefWithoutTokenList(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "pipeline-ref drift should still be reported without token inventory")
+	inventoryDrift := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "gitlab-token-inventory" {
+			inventoryDrift = true
+		}
+	}
+	assert.True(t, inventoryDrift, "an unlistable token inventory is drift, not a healthy status")
+	assert.False(t, result.Repos[0].GitLabRolesReady, "roles are not ready when credential health was never verified")
 }
 
 func TestAnnotateGitLabRoleLifecycleSkipsConfigRejectedRepos(t *testing.T) {
@@ -1078,4 +1099,62 @@ func TestAnnotateGitLabRoleLifecycleSkipsConfigRejectedRepos(t *testing.T) {
 	assert.Empty(t, calledPaths, "rejected repo must not be inspected, got requests: %v", calledPaths)
 	assert.Empty(t, result.Repos[0].Drifts)
 	assert.Equal(t, 0, result.Summary.Drifted)
+}
+
+// An unavailable project-token inventory defers unforced rotation, but must
+// not report success when a supplied replacement credential was requested and
+// would stay unprocessed.
+func TestMaybeRotateGitLabRoles_InventoryFailure(t *testing.T) {
+	newLiveClient := func(t *testing.T, handlerCalled *bool) *gitlab.LiveClient {
+		t.Helper()
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/v4/projects/group%2Fproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+			*handlerCalled = true
+			w.WriteHeader(http.StatusForbidden)
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+		require.NoError(t, err)
+		return glClient
+	}
+
+	t.Run("supplied replacement requested returns an error", func(t *testing.T) {
+		var buf bytes.Buffer
+		handlerCalled := false
+		opts := &reposInstallConfig{gitlabRoleProvided: map[gitlabroles.Role]string{gitlabroles.RoleCoder: "glpat-replacement"}}
+
+		err := maybeRotateGitLabRoles(context.Background(), opts, newLiveClient(t, &handlerCalled), ui.New(&buf), "group", "project")
+
+		assert.True(t, handlerCalled, "inventory handler was not called — URL path mismatch")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "supplied role credential replacement")
+		assert.NotContains(t, buf.String(), "rotation deferred")
+	})
+
+	t.Run("no supplied replacement defers", func(t *testing.T) {
+		var buf bytes.Buffer
+		handlerCalled := false
+
+		err := maybeRotateGitLabRoles(context.Background(), &reposInstallConfig{}, newLiveClient(t, &handlerCalled), ui.New(&buf), "group", "project")
+
+		assert.True(t, handlerCalled, "inventory handler was not called — URL path mismatch")
+		require.NoError(t, err)
+		assert.Contains(t, buf.String(), "rotation deferred")
+	})
+}
+
+// A per-role rotation failure reported without a top-level error still fails
+// the install stage, as the sibling provisioning path does.
+func TestMaybeRotateGitLabRoles_PerRoleFailureReturnsError(t *testing.T) {
+	ctx := context.Background()
+	fake := forge.NewFakeClient()
+	var buf bytes.Buffer
+	opts := &reposInstallConfig{gitlabRoleProvided: map[gitlabroles.Role]string{gitlabroles.RolePoller: "short"}}
+
+	err := maybeRotateGitLabRoles(ctx, opts, fake, ui.New(&buf), "group", "project")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GitLab role rotation incomplete")
+	assert.Contains(t, buf.String(), "role rotation pending")
 }

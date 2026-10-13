@@ -39,6 +39,19 @@ func TestParseDummyAgentTable_RequiresFixturesRoot(t *testing.T) {
 	assert.Contains(t, err.Error(), "FixturesRoot")
 }
 
+func TestParseDummyAgentTable_RejectsUnknownExpect(t *testing.T) {
+	w := &world.World{Org: "org", RepoName: "repo", FixturesRoot: "e2e/behaviour/fixtures"}
+	table := &godog.Table{
+		Rows: []*messages.PickleTableRow{
+			{Cells: []*messages.PickleTableCell{{Value: "description"}, {Value: "op"}, {Value: "args"}, {Value: "expect"}}},
+			{Cells: []*messages.PickleTableCell{{Value: "x"}, {Value: "url_get"}, {Value: "https://example.com/"}, {Value: "pass"}}},
+		},
+	}
+	err := parseDummyAgentTable(w, table)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `expect must be empty or "fail"`)
+}
+
 func TestFindModuleSubdir(t *testing.T) {
 	dir, err := findModuleSubdir("pkg/behaviourtest/steps")
 	require.NoError(t, err)

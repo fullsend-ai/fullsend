@@ -12,6 +12,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
+	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,13 +47,14 @@ func newConvergeManifest(repos ...string) *Manifest {
 func populateScaffoldContent(t testing.TB, fc *forge.FakeClient, owner, repo, ref, mintURL string) {
 	t.Helper()
 	files, err := BuildScaffoldFiles(InstallConfig{
-		Owner:       owner,
-		Repo:        repo,
-		Forge:       ForgeGitHub,
-		Roles:       []string{"triage"},
-		MintURL:     mintURL,
-		UpstreamRef: ref,
-		UpstreamTag: ref,
+		Owner:         owner,
+		Repo:          repo,
+		Forge:         ForgeGitHub,
+		Roles:         []string{"triage"},
+		MintURL:       mintURL,
+		UpstreamRef:   ref,
+		UpstreamTag:   ref,
+		ManagedConfig: emptyManagedOverlay(t),
 	})
 	if err != nil {
 		t.Fatalf("populateScaffoldContent: BuildScaffoldFiles: %v", err)
@@ -61,6 +63,18 @@ func populateScaffoldContent(t testing.TB, fc *forge.FakeClient, owner, repo, re
 	for _, f := range files {
 		fc.FileContents[fullName+"/"+f.Path] = f.Content
 	}
+}
+
+// emptyManagedOverlay returns the managed .fullsend/config.yaml of a
+// repository whose manifest entry declares no config: the ownership
+// marker over an empty sparse body (#8218).
+func emptyManagedOverlay(t testing.TB) []byte {
+	t.Helper()
+	body, _, err := desiredManagedConfig(ResolvedConfig{ConfigManaged: true})
+	if err != nil {
+		t.Fatalf("emptyManagedOverlay: %v", err)
+	}
+	return body
 }
 
 func convergeCfgWithDefaults(m *Manifest) ConvergeConfig {
@@ -2250,6 +2264,8 @@ func populateGitLabInstalled(fc *forge.FakeClient, owner, repo string) {
 		content, _ := scaffold.GitLabPerRepoFile(path)
 		fc.FileContents[full+"/"+path] = content
 	}
+	// Every repository's overlay is managed (#8218).
+	fc.FileContents[full+"/.fullsend/config.yaml"] = []byte(managedConfigMarker + "{}\n")
 	fc.Secrets[full+"/"+forge.SecretOpenAIAPIKey] = true
 	fc.Secrets[full+"/"+forge.SecretForgeToken] = true
 	fc.PipelineSchedules[full] = []forge.PipelineSchedule{
@@ -2263,12 +2279,13 @@ func populateGitLabInstalled(fc *forge.FakeClient, owner, repo string) {
 func populateGitLabScaffoldContent(t testing.TB, fc *forge.FakeClient, owner, repo, ref string) {
 	t.Helper()
 	files, err := BuildScaffoldFiles(InstallConfig{
-		Owner:       owner,
-		Repo:        repo,
-		Forge:       ForgeGitLab,
-		Roles:       []string{"triage"},
-		UpstreamRef: ref,
-		UpstreamTag: ref,
+		Owner:         owner,
+		Repo:          repo,
+		Forge:         ForgeGitLab,
+		Roles:         []string{"triage"},
+		UpstreamRef:   ref,
+		UpstreamTag:   ref,
+		ManagedConfig: emptyManagedOverlay(t),
 	})
 	if err != nil {
 		t.Fatalf("populateGitLabScaffoldContent: BuildScaffoldFiles: %v", err)
@@ -3371,6 +3388,9 @@ func TestConverge_GitLab_MissingScheduleDeferredUntilPollTemplateLands(t *testin
 	var wrapper []byte
 	var compatiblePollTemplate []byte
 	for _, f := range files {
+		if f.Path == preset.OverlayPath {
+			continue // keep the marked overlay the installed fixture carries
+		}
 		fc.FileContents["acme/api/"+f.Path] = f.Content
 		if f.Path == fullsendPipelineInclude {
 			wrapper = f.Content
@@ -3504,6 +3524,9 @@ func TestConverge_GitLab_MissingScheduleDeferredWhileInstalledWrapperIncompatibl
 	require.NoError(t, err)
 	var wrapper []byte
 	for _, f := range files {
+		if f.Path == preset.OverlayPath {
+			continue // keep the marked overlay the installed fixture carries
+		}
 		fc.FileContents["acme/api/"+f.Path] = f.Content
 		if f.Path == fullsendPipelineInclude {
 			wrapper = f.Content
@@ -3783,6 +3806,9 @@ func TestConverge_GitLab_ReleaseDefaultRefUpgradeIdempotentWithDistinctSHATag(t 
 		t.Fatalf("BuildScaffoldFiles: %v", err)
 	}
 	for _, f := range files {
+		if f.Path == preset.OverlayPath {
+			continue // keep the marked overlay the installed fixture carries
+		}
 		fc.FileContents["acme/api/"+f.Path] = f.Content
 	}
 	// The root .gitlab-ci.yml is user-owned and not part of
@@ -6380,17 +6406,19 @@ func TestConverge_PresetFreshInstallWritesBaseAndOverlay(t *testing.T) {
 // explicitly passes --roles, converge.go must not take the
 // installRoles = nil branch, so the caller-supplied roles are written
 // into the overlay and take effect over the preset's own roles.
-func TestConverge_PresetFreshInstallExplicitRolesWritesOverlay(t *testing.T) {
+// The CLI persists an explicit --roles value in config.roles before
+// converging (EnsureManagedConfigDefaults, #8218), so convergence renders
+// roles from the manifest rather than from ConvergeConfig.Roles.
+func TestConverge_PresetFreshInstallManifestRolesWritesOverlay(t *testing.T) {
 	presetPath := writePresetFile(t, presetYAMLWithRoles)
 	repoNames := []string{"acme/api"}
 	fc := newFakeClientForBatch(repoNames...)
 	m := newConvergeManifest(repoNames...)
 	m.Defaults.ConfigBase.Source = presetPath
+	m.Defaults.Config = mustManagedConfig(t, "roles: [fix]\n")
 
 	sc := &spyScaffoldCommit{}
 	cfg := convergeCfgWithDefaults(m)
-	cfg.Roles = []string{"fix"}
-	cfg.RolesExplicit = true
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -6421,7 +6449,7 @@ func TestConverge_PresetFreshInstallExplicitRolesWritesOverlay(t *testing.T) {
 		t.Fatalf("composing layered config: %v", err)
 	}
 	if got, want := effective.ConfigRoles(), []string{"fix"}; !slices.Equal(got, want) {
-		t.Errorf("effective roles = %v, want caller-supplied roles %v (RolesExplicit=true must not be shadowed by the preset)", got, want)
+		t.Errorf("effective roles = %v, want manifest roles %v (must not be shadowed by the preset)", got, want)
 	}
 }
 
@@ -6471,7 +6499,9 @@ func TestConverge_PresetChangeReplacesBasePreservesOverlay(t *testing.T) {
 	markFullyInstalled(fc, "acme", "api")
 	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
 	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte("version: \"1\"\nruntime: pi\n")
-	overlay := []byte("version: \"1\"\n# keep me\n")
+	// The installed overlay already carries the ownership marker and
+	// matches the managed body, so only the base layer changes.
+	overlay := emptyManagedOverlay(t)
 	fc.FileContents["acme/api/.fullsend/config.yaml"] = overlay
 
 	m := newConvergeManifest(repoNames...)
@@ -6576,33 +6606,60 @@ func TestConverge_PresetInvalidSourceFailsBeforeApply(t *testing.T) {
 	}
 }
 
-func TestConverge_NoPresetPreservesExistingBase(t *testing.T) {
-	repoNames := []string{"acme/api"}
-	fc := newFakeClientForBatch(repoNames...)
-	markFullyInstalled(fc, "acme", "api")
-	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
-	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+func TestConverge_NoPresetExistingBaseBlocks(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		installed bool
+		dryRun    bool
+	}{
+		{name: "repeat install", installed: true},
+		{name: "repeat install dry run", installed: true, dryRun: true},
+		{name: "fresh install", installed: false},
+		{name: "fresh install dry run", installed: false, dryRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoNames := []string{"acme/api"}
+			fc := newFakeClientForBatch(repoNames...)
+			if tc.installed {
+				markFullyInstalled(fc, "acme", "api")
+				populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+			}
+			fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
 
-	m := newConvergeManifest(repoNames...)
-	committed := false
-	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
-		committed = true
-		return nil
-	}
-	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
+			m := newConvergeManifest(repoNames...)
+			committed := false
+			commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+				committed = true
+				return nil
+			}
+			cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
+			cfg.DryRun = tc.dryRun
 
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-	if len(result.AlreadyCurrent()) != 1 {
-		t.Errorf("expected 1 already current, got %d", len(result.AlreadyCurrent()))
-	}
-	if committed {
-		t.Error("undeclared preset must not rewrite existing base")
-	}
-	if got := string(fc.FileContents["acme/api/.fullsend/config.base.yaml"]); got != testPresetYAML {
-		t.Errorf("existing base was modified: %q", got)
+			varsBefore := len(fc.VariableValues) + len(fc.Secrets)
+			result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+			if err != nil {
+				t.Fatalf("Converge() error: %v", err)
+			}
+			failures := result.Failed()
+			if len(failures) != 1 {
+				t.Fatalf("expected 1 failure, got %d", len(failures))
+			}
+			msg := failures[0].Error.Error()
+			for _, want := range []string{"no config_base preset is declared", "declare a config_base source", "acme/api"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error %q missing %q", msg, want)
+				}
+			}
+			if committed {
+				t.Error("undeclared base must block writes")
+			}
+			if got := len(fc.VariableValues) + len(fc.Secrets); got != varsBefore {
+				t.Errorf("variables/secrets written despite undeclared base: %d -> %d", varsBefore, got)
+			}
+			if got := string(fc.FileContents["acme/api/.fullsend/config.base.yaml"]); got != testPresetYAML {
+				t.Errorf("existing base was modified: %q", got)
+			}
+		})
 	}
 }
 
@@ -6611,7 +6668,7 @@ func TestConverge_GitLab_PresetChangeReplacesBase(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
 	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte("version: \"1\"\nruntime: pi\n")
-	overlay := []byte("version: \"1\"\n# gitlab overlay\n")
+	overlay := emptyManagedOverlay(t)
 	fc.FileContents["acme/api/.fullsend/config.yaml"] = overlay
 
 	cfg := gitlabConvergeCfg("acme/api")
@@ -6811,8 +6868,15 @@ func TestConverge_PerRepoPresetOverrideAndDisable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Converge() error: %v", err)
 	}
-	if len(result.Failed()) != 0 {
-		t.Fatalf("unexpected failures: %v", result.Failed()[0].Error)
+	// source: none disables inheritance, so the desired state for
+	// acme/disabled is no base file; its existing base blocks the repo
+	// instead of being preserved outside management (#8218).
+	failed := result.Failed()
+	if len(failed) != 1 || failed[0].Repo != "disabled" {
+		t.Fatalf("expected only acme/disabled to fail, got %+v", failed)
+	}
+	if !strings.Contains(failed[0].Error.Error(), "no config_base preset is declared") {
+		t.Errorf("disabled repo error = %v", failed[0].Error)
 	}
 
 	if _, ok := committed["acme/inherit"]; ok {
@@ -6831,6 +6895,6 @@ func TestConverge_PerRepoPresetOverrideAndDisable(t *testing.T) {
 		t.Error("override repo must replace base with per-repo preset")
 	}
 	if _, ok := committed["acme/disabled"]; ok {
-		t.Error("disabled repo must preserve existing base without comparison")
+		t.Error("disabled repo with an undeclared base must not be written")
 	}
 }

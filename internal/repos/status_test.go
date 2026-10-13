@@ -54,13 +54,14 @@ func populateInstalledRepo(t testing.TB, fc *forge.FakeClient, owner, repo, ref,
 	// Generate scaffold files from the same templates that status
 	// compares against, so content-drift detection is accurate.
 	files, err := BuildScaffoldFiles(InstallConfig{
-		Owner:       owner,
-		Repo:        repo,
-		Forge:       ForgeGitHub,
-		Roles:       config.PerRepoDefaultRoles(),
-		MintURL:     mintURL,
-		UpstreamRef: ref,
-		UpstreamTag: ref,
+		Owner:         owner,
+		Repo:          repo,
+		Forge:         ForgeGitHub,
+		Roles:         config.PerRepoDefaultRoles(),
+		MintURL:       mintURL,
+		UpstreamRef:   ref,
+		UpstreamTag:   ref,
+		ManagedConfig: emptyManagedOverlay(t),
 	})
 	if err != nil {
 		t.Fatalf("populateInstalledRepo: BuildScaffoldFiles: %v", err)
@@ -1908,7 +1909,7 @@ func TestStatus_ConfigPresetDrift(t *testing.T) {
 	}
 }
 
-func TestStatus_NoPresetDoesNotCompareBase(t *testing.T) {
+func TestStatus_NoPresetExistingBaseIsDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
@@ -1922,9 +1923,101 @@ func TestStatus_NoPresetDoesNotCompareBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Summary.Drifted != 0 {
-		t.Errorf("drifted = %d, want 0 when no preset is declared", result.Summary.Drifted)
+	if result.Summary.Drifted != 1 {
+		t.Fatalf("drifted = %d, want 1 for the undeclared base", result.Summary.Drifted)
 	}
+	for _, r := range result.Repos {
+		if r.Repo != "api-server" {
+			continue
+		}
+		found := false
+		for _, d := range r.Drifts {
+			if d.Field == ".fullsend/config.base.yaml" && d.Expected == undeclaredBaseExpected {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("api-server drifts = %+v, want undeclared base drift", r.Drifts)
+		}
+	}
+}
+
+// TestStatus_NotInstalledChecksConfigLayers covers #8218: a manifest repo
+// with no Fullsend components still has both configuration layers
+// checked, so findings that would block install surface beforehand,
+// while files install would simply add are not reported as missing.
+func TestStatus_NotInstalledChecksConfigLayers(t *testing.T) {
+	t.Run("undeclared base", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		m := newTestManifest()
+		fc.FileContents["acme-corp/api-server/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result.Repos) != 1 {
+			t.Fatalf("repos = %d, want 1", len(result.Repos))
+		}
+		r := result.Repos[0]
+		if r.Installed {
+			t.Fatal("repo should not be installed")
+		}
+		if len(r.Drifts) != 1 || r.Drifts[0].Field != ".fullsend/config.base.yaml" {
+			t.Errorf("drifts = %+v, want undeclared base drift", r.Drifts)
+		}
+	})
+
+	t.Run("markerless managed overlay", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		m := newTestManifest()
+		m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+		fc.FileContents["acme-corp/api-server/.fullsend/config.yaml"] = []byte("kill_switch: false\n")
+
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		r := result.Repos[0]
+		if r.Error != "" {
+			t.Fatalf("unexpected error: %s", r.Error)
+		}
+		if len(r.Drifts) != 1 || r.Drifts[0].Field != ".fullsend/config.yaml" ||
+			!strings.Contains(r.Drifts[0].Expected, "adoption required") {
+			t.Errorf("drifts = %+v, want adoption-required overlay drift", r.Drifts)
+		}
+	})
+
+	t.Run("absent files are not drift before install", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		m := newTestManifest()
+		m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+		m.Defaults.ConfigBase = ConfigBase{Source: writePresetFile(t, testPresetYAML)}
+
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		r := result.Repos[0]
+		if r.Error != "" || len(r.Drifts) != 0 {
+			t.Errorf("error=%q drifts=%+v, want none", r.Error, r.Drifts)
+		}
+	})
+
+	t.Run("base read error", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		m := newTestManifest()
+		fc.GetFileContentErrors = map[string]error{
+			"acme-corp/api-server/.fullsend/config.base.yaml": fmt.Errorf("boom"),
+		}
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result.Repos[0].Error, "reading .fullsend/config.base.yaml") {
+			t.Errorf("error = %q", result.Repos[0].Error)
+		}
+	})
 }
 
 func TestStatus_GitLab_ConfigPresetDrift(t *testing.T) {

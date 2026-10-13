@@ -71,6 +71,14 @@ type Driver interface {
 	// name already exists, it returns without error.
 	CreateFork(ctx context.Context, owner, repo, forkName string) (forkRepo string, err error)
 
+	// CreateUserFork creates a fork of owner/repo in the authenticated
+	// user's own account (GitHub user / GitLab personal namespace), as
+	// an outside contributor would. The forge picks the fork's name; it
+	// returns the fork's actual owner and repo name. The call is
+	// idempotent — if the user already has a fork of owner/repo, it
+	// returns that fork.
+	CreateUserFork(ctx context.Context, owner, repo string) (forkOwner, forkRepo string, err error)
+
 	// CommitFileToFork commits a file to a branch on a fork repository.
 	// Analogous to CommitFileToBranch but targets the fork.
 	CommitFileToFork(ctx context.Context, forkOwner, forkRepo, branch, path, message string, content []byte) error

@@ -14,6 +14,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/agentnew"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -29,6 +30,9 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^the harness "([^"]+)" agent did not run$`, func(ctx context.Context, agent string) (context.Context, error) {
 		return ctx, thenHarnessAgentDidNotRun(world.FromContext(ctx), agent)
+	})
+	sc.Step(`^the harness dispatch completes with an empty matrix$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, thenHarnessDispatchEmptyMatrix(world.FromContext(ctx))
 	})
 	sc.Step(`^a pull request is opened$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, whenPullRequestOpened(world.FromContext(ctx))
@@ -355,6 +359,25 @@ func thenHarnessAgentDidNotRun(w *world.World, agent string) error {
 		}
 	}
 	return w.CI.AssertNoHarnessAgentArtifact(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
+}
+
+// thenHarnessDispatchEmptyMatrix asserts that the harness run triggered
+// since ScenarioStart settled with a successful Harness dispatch job and
+// no scheduled agent. Unlike the did-not-run and dispatch-count steps,
+// it waits for the run and fails when the dispatch job errored, so a
+// denial is not inferred from a missing or failed run.
+func thenHarnessDispatchEmptyMatrix(w *world.World) error {
+	if w.ScenarioStart.IsZero() {
+		return fmt.Errorf("no workflow trigger time recorded")
+	}
+	waiter, ok := w.CI.(ci.EmptyMatrixWaiter)
+	if !ok {
+		return fmt.Errorf("the CI driver does not implement ci.EmptyMatrixWaiter; it cannot assert an empty harness matrix")
+	}
+	if _, err := waiter.WaitForHarnessEmptyMatrix(context.Background(), w.Org, w.RepoName, w.ScenarioStart); err != nil {
+		return err
+	}
+	return nil
 }
 
 func ensureHarnessArtifacts(w *world.World, agent string) error {

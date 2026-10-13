@@ -38,6 +38,27 @@ func TestCreateFork_Error(t *testing.T) {
 	}
 }
 
+func TestCreateUserFork(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "outsider"
+	d := New(fc)
+
+	owner, repo, err := d.CreateUserFork(context.Background(), "upstream", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, "outsider", owner)
+	assert.Equal(t, "repo", repo)
+	assert.Equal(t, []string{"upstream/repo"}, fc.CreatedForks)
+}
+
+func TestCreateUserFork_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["CreateFork"] = errors.New("create failed")
+	d := New(fc)
+
+	_, _, err := d.CreateUserFork(context.Background(), "upstream", "repo")
+	require.EqualError(t, err, "create failed")
+}
+
 func TestCommitFileToFork(t *testing.T) {
 	fc := forge.NewFakeClient()
 	d := New(fc)

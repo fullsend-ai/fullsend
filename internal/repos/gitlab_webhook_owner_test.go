@@ -175,13 +175,14 @@ func TestEnsureGitLabWebhookFastPath_TriggerOwnerLookupFailureFailsClosed(t *tes
 	t.Run("revoking the rejected token fails", func(t *testing.T) {
 		c := newWebhookFake()
 		ownedBy(c, webhookMaintainerUserID, forge.GitLabAccessLevelMaintainer)
-		c.Errors = map[string]error{"RevokePipelineTriggerToken": errors.New("revoke boom")}
+		c.Errors = map[string]error{"RevokePipelineTriggerToken": errors.New("revoke boom glpat-echoed-credential")}
 
 		_, err := ensureWebhookRaw(c)
 
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "revoke boom", "cleanup failures are reported")
-		assert.ErrorContains(t, err, "rejected pipeline trigger token")
+		assert.ErrorContains(t, err, "rejected pipeline trigger token", "cleanup failures are reported")
+		assert.NotContains(t, err.Error(), "revoke boom", "server error text is withheld")
+		assert.NotContains(t, err.Error(), "glpat-echoed-credential", "an echoed credential is withheld")
 	})
 }
 
@@ -531,7 +532,8 @@ func TestEnsureGitLabWebhookFastPath_ConcurrentRotationDetected(t *testing.T) {
 	t.Run("other run finishes before this run writes the webhook", func(t *testing.T) {
 		c := setup()
 		c.before = func() {
-			_, err := EnsureGitLabWebhookFastPath(context.Background(), c.webhookFake, webhookTestBase, webhookTestOwner, webhookTestRepo, true, false)
+			// Another installer process does not share this process's lock.
+			_, err := ensureGitLabWebhookFastPath(context.Background(), c.webhookFake, nil, webhookTestBase, webhookTestOwner, webhookTestRepo, true, false, &credentialRedactor{})
 			require.NoError(t, err)
 		}
 
@@ -554,7 +556,8 @@ func TestEnsureGitLabWebhookFastPath_ConcurrentRotationDetected(t *testing.T) {
 	t.Run("other run replaces the webhook after this run writes it", func(t *testing.T) {
 		c := setup()
 		c.after = func() {
-			_, err := EnsureGitLabWebhookFastPath(context.Background(), c.webhookFake, webhookTestBase, webhookTestOwner, webhookTestRepo, true, false)
+			// Another installer process does not share this process's lock.
+			_, err := ensureGitLabWebhookFastPath(context.Background(), c.webhookFake, nil, webhookTestBase, webhookTestOwner, webhookTestRepo, true, false, &credentialRedactor{})
 			require.NoError(t, err)
 		}
 

@@ -1,5 +1,7 @@
 # Mint service administration
 
+> Background: [How fullsend authenticates](../user/how-fullsend-authenticates.md).
+
 This guide covers deploying and managing the fullsend token mint. The mint is the OIDC token exchange service that lets GitHub Actions workflows authenticate as GitHub Apps — it is infrastructure that serves all enrolled organizations and repositories. The mint can be deployed on GCP (Cloud Function) or Cloudflare (Worker).
 
 | Command | Description |

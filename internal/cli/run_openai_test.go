@@ -408,7 +408,7 @@ func recordingProvidersStub(t *testing.T) string {
 		"  'sandbox create') : > " + shellQuoteForTest(logPath+".sandbox") + "; exit 0 ;;\n" +
 		"  'sandbox delete') rm -f " + shellQuoteForTest(logPath+".sandbox") + "; exit 0 ;;\n" +
 		"  'sandbox ready') exit 0 ;;\n" +
-		"  'sandbox get') echo 'Status: Ready'; exit 0 ;;\n" +
+		"  'sandbox get') printf 'Status: Ready\nPolicy source: sandbox\nPolicy:\n  version: 1\n'; exit 0 ;;\n" +
 		"  'policy get') printf 'Version: 1\\nStatus: Effective\\n---\\nversion: 1\\nnetwork_policies:\\n  _provider_openai:\\n    endpoints:\\n    - host: api.openai.com\\n      port: 443\\n      protocol: rest\\n'; exit 0 ;;\n" +
 		// The first in-sandbox command fails so the run stops right after
 		// sandbox creation and the deferred cleanup runs.
@@ -449,6 +449,7 @@ func writeOpenAIFullsendDirWithAgentModel(t *testing.T, pathForm bool, runtimeNa
 	for _, d := range []string{"harness", "agents", "providers", "profiles"} {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
 	}
+	writePolicyFixture(t, dir)
 	agentDef := "You are a coding agent."
 	if agentModel != "" {
 		agentDef = "---\nname: code\nmodel: " + agentModel + "\n---\n" + agentDef
@@ -458,9 +459,9 @@ func writeOpenAIFullsendDirWithAgentModel(t *testing.T, pathForm bool, runtimeNa
 	if model != "" {
 		modelLine = "model: " + model + "\n"
 	}
-	harnessYAML := "agent: agents/code.md\nrole: test\n" + modelLine + "providers:\n  - openai\n"
+	harnessYAML := "agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\n" + modelLine + "providers:\n  - openai\n"
 	if pathForm {
-		harnessYAML = "agent: agents/code.md\nrole: test\n" + modelLine + "profiles:\n  - profiles/fullsend-openai.yaml\nproviders:\n  - providers/openai.yaml\n"
+		harnessYAML = "agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\n" + modelLine + "profiles:\n  - profiles/fullsend-openai.yaml\nproviders:\n  - providers/openai.yaml\n"
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(harnessYAML), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "openai.yaml"),
@@ -585,7 +586,7 @@ func TestRunAgent_OpenAISubagentWithoutOpenAIProviderFailsBeforeSandbox(t *testi
 	dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
 	// The same harness with the openai provider removed.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\nrole: test\nmodel: anthropic-vertex/claude-opus-4-6\n"), 0o644))
+		[]byte("agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nmodel: anthropic-vertex/claude-opus-4-6\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(""+
 		"version: \"1\"\nruntime: pi\nagents:\n"+
 		"  - name: code\n    source: harness/code.yaml\n    subagents:\n      default: openai/gpt-5.6-luna\n"), 0o644))
@@ -629,7 +630,7 @@ func TestRunAgent_OpenAIFrontmatterChildWithoutCredential(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(skill, "sub-agents", "checker.md"),
 				[]byte("---\nname: checker\nmodel: openai/gpt-5.6-luna\n---\nCheck.\n"), 0o644))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(
-				"agent: agents/code.md\nrole: test\nmodel: anthropic-vertex/claude-opus-4-6\nskills:\n  - skills/probe\nproviders:\n  - openai\n"), 0o644))
+				"agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nmodel: anthropic-vertex/claude-opus-4-6\nskills:\n  - skills/probe\nproviders:\n  - openai\n"), 0o644))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
 				"version: \"1\"\nruntime: pi\nagents:\n  - name: code\n    source: harness/code.yaml\n"+tc.subagents), 0o644))
 
@@ -1459,6 +1460,51 @@ func TestReseedOpenAIAuth_UnverifiedSeedIsAnError(t *testing.T) {
 	assert.Equal(t, "seeded\nseeded\n", string(data), "both attempts ran before giving up")
 }
 
+// A generation the refresher saw but could not seed must not drop out of
+// the record (fullsend#8311). A is held, B shows up and its seed fails, and
+// the retry rotates on to C: the seed that hands C over retires both A and
+// B, and the settle wait does not mistake the lingering B for C.
+func TestReseedOpenAIAuth_FailedHandOffGenerationIsRetiredByTheNextOne(t *testing.T) {
+	binDir := t.TempDir()
+	log := filepath.Join(binDir, "log")
+	counter := filepath.Join(binDir, "count")
+	failFlag := filepath.Join(binDir, "fail")
+	phase2 := filepath.Join(binDir, "phase2")
+	require.NoError(t, os.WriteFile(failFlag, nil, 0o644))
+	// Phase 1 only ever hands out B. In phase 2 the sandbox answers B once
+	// more before C appears.
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"  *'printf %s'*) if [ -e " + shellQuoteForTest(phase2) + " ]; then n=$(cat " + shellQuoteForTest(counter) + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + shellQuoteForTest(counter) + "; if [ $n -le 1 ]; then printf '" + ph("v222_OPENAI_API_KEY") + "'; else printf '" + ph("v333_OPENAI_API_KEY") + "'; fi; else printf '" + ph("v222_OPENAI_API_KEY") + "'; fi; exit 0 ;;\n" +
+		"  *'seed auth.json'*) echo \"$*\" >> " + shellQuoteForTest(log) + "; if [ -e " + shellQuoteForTest(failFlag) + " ]; then echo boom >&2; exit 1; fi; exit 0 ;;\n" +
+		"esac\nexit 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := openAIPlaceholderPoll
+	openAIPlaceholderPoll = 5 * time.Millisecond
+	t.Cleanup(func() { openAIPlaceholderPoll = old })
+
+	h := openAIProviderHandle{sandbox: "fs-x", authSeed: "seed auth.json", unrecorded: &seedGenerations{}}
+	a, b, c := ph("v111_OPENAI_API_KEY"), ph("v222_OPENAI_API_KEY"), ph("v333_OPENAI_API_KEY")
+
+	got, err := reseedOpenAIAuth(context.Background(), h, a, ui.New(io.Discard))
+	require.Error(t, err)
+	assert.Empty(t, got)
+	assert.Equal(t, []string{b}, h.unrecorded.snapshot(), "the generation that was seen but not seeded is kept")
+
+	require.NoError(t, os.Remove(failFlag))
+	require.NoError(t, os.WriteFile(phase2, nil, 0o644))
+	got, err = reseedOpenAIAuth(context.Background(), h, a, ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.Equal(t, c, got, "the lingering B is not taken for the new generation")
+	assert.Empty(t, h.unrecorded.snapshot(), "a landed re-seed empties the set")
+
+	data, err := os.ReadFile(log)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[1], "FULLSEND_SEED_PREVIOUS='"+a+" "+b+"'", "the re-seed retires A and B")
+}
+
 // The same failure seen through refreshOpenAIProvider: the provider is
 // updated, but the returned placeholder stays the one the agent holds, so
 // the refresh loop retries against the right baseline.
@@ -1770,4 +1816,109 @@ func TestEnsureOpenAIProvider_CreateFailureStopsBeforeTheExpiry(t *testing.T) {
 		assert.NotContains(t, l, "provider update", "nothing is updated after a failed create")
 	}
 	assert.Contains(t, buf.String(), "Failed to create run-scoped provider openai-feedface")
+}
+
+// A new generation that never reaches the sandbox within the settle wait
+// fails the OpenAI route closed, as on the gateway route: no second
+// rotation, and each credential's expiry moves back to the generation the
+// agent holds.
+func TestRunOpenAIRefresh_SettleTimeoutFailsClosed(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	binDir := t.TempDir()
+	argsLog := filepath.Join(binDir, "args")
+	// The sandbox keeps handing out v111, whatever the provider holds.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(argsLog) + "\n" +
+		"case \"$*\" in *'printf %s'*) printf '" + ph("v111_OPENAI_API_KEY") + "'; exit 0 ;; esac; exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldPoll, oldSettle := openAIPlaceholderPoll, openAIPlaceholderSettle
+	openAIPlaceholderPoll, openAIPlaceholderSettle = time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { openAIPlaceholderPoll, openAIPlaceholderSettle = oldPoll, oldSettle })
+	var expiries []time.Time
+	origExpiry := setProviderCredentialExpiryFn
+	setProviderCredentialExpiryFn = func(_ context.Context, name, key string, at time.Time) error {
+		assert.Equal(t, "openai-abc", name)
+		assert.Equal(t, "OPENAI_API_KEY", key)
+		expiries = append(expiries, at)
+		return nil
+	}
+	t.Cleanup(func() { setProviderCredentialExpiryFn = origExpiry })
+
+	held := time.Now().Truncate(time.Second)
+	up := &atomic.Bool{}
+	up.Store(true)
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "static", expiresAt: held,
+		sandbox: "fs-x", authSeed: "seed auth.json", authFile: "/sandbox/pi-config/auth.json", sandboxUp: up}
+	var buf syncBuffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(context.Background(), h, ui.New(&buf))
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not stop after the settle wait ran out")
+	}
+	var rotations int
+	for _, l := range readArgLines(t, argsLog) {
+		if strings.HasPrefix(l, "provider update openai-abc") {
+			rotations++
+		}
+	}
+	assert.Equal(t, 1, rotations, "no second rotation after the settle timeout")
+	assert.Equal(t, []time.Time{held}, expiries, "the credential fails closed at the held generation's expiry")
+	assert.Contains(t, buf.String(), "stopped")
+	assert.NotContains(t, buf.String(), "attempt 2/")
+}
+
+// On the OpenAI route too, a placeholder read that fails after the
+// rotation fails the route closed instead of rotating again.
+func TestRunOpenAIRefresh_ReadFailureAfterRotationFailsClosed(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	binDir := t.TempDir()
+	argsLog := filepath.Join(binDir, "args")
+	stage := filepath.Join(binDir, "stage")
+	// The baseline read answers v111; after the provider update every read fails.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(argsLog) + "\n" +
+		"case \"$1 $2\" in 'provider update') touch " + shellQuoteForTest(stage) + "; exit 0 ;; esac\n" +
+		"case \"$*\" in *'printf %s'*) if [ -e " + shellQuoteForTest(stage) + " ]; then exit 1; fi; printf '" + ph("v111_OPENAI_API_KEY") + "'; exit 0 ;; esac; exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldPoll := openAIPlaceholderPoll
+	openAIPlaceholderPoll = time.Millisecond
+	t.Cleanup(func() { openAIPlaceholderPoll = oldPoll })
+	var expiries []time.Time
+	origExpiry := setProviderCredentialExpiryFn
+	setProviderCredentialExpiryFn = func(_ context.Context, _, _ string, at time.Time) error {
+		expiries = append(expiries, at)
+		return nil
+	}
+	t.Cleanup(func() { setProviderCredentialExpiryFn = origExpiry })
+
+	held := time.Now().Truncate(time.Second)
+	up := &atomic.Bool{}
+	up.Store(true)
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "static", expiresAt: held,
+		sandbox: "fs-x", authSeed: "seed auth.json", authFile: "/sandbox/pi-config/auth.json", sandboxUp: up}
+	var buf syncBuffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(context.Background(), h, ui.New(&buf))
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not stop after the failed read")
+	}
+	var rotations int
+	for _, l := range readArgLines(t, argsLog) {
+		if strings.HasPrefix(l, "provider update openai-abc") {
+			rotations++
+		}
+	}
+	assert.Equal(t, 1, rotations, "no second rotation after the failed read")
+	assert.Equal(t, []time.Time{held}, expiries)
+	assert.Contains(t, buf.String(), "not observed in the sandbox")
 }

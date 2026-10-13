@@ -28,7 +28,7 @@ func TestRunReposInstall_GlobCarveWithoutSelectionFailsBeforeWrite(t *testing.T)
 	opts := githubManagedInstallOpts(manifestPath, fc)
 	opts.repoFilter = []string{"acme/api"}
 	opts.forge = repos.ForgeGitHub
-	opts.runtime = "pi"
+	opts.fullsendRef = "v2.0.0"
 	err := runReposInstall(context.Background(), opts)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no inference authentication selected for acme/api")
@@ -68,7 +68,7 @@ func TestRunReposInstall_GlobCarveWithFlagSatisfiesSelectionCheck(t *testing.T) 
 	opts := useOpenAIInputs(githubManagedInstallOpts(manifestPath, fc))
 	opts.repoFilter = []string{"acme/api"}
 	opts.forge = repos.ForgeGitHub
-	opts.runtime = "pi"
+	opts.fullsendRef = "v2.0.0"
 	opts.inferenceAuth = repos.InferenceAuthOpenAIAPIKey
 	require.NoError(t, runReposInstall(context.Background(), opts))
 
