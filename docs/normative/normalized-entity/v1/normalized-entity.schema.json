@@ -468,7 +468,7 @@
           "minLength": 2,
           "maxLength": 64,
           "pattern": "^/[^\\s]+$",
-          "description": "First whitespace-delimited token of the first line of the current revision when it begins with '/', otherwise null. Required for body, comment, and review."
+          "description": "First whitespace-delimited token of the first line of the current revision when it is a command token (begins with '/', 2 to 64 characters, no whitespace), otherwise null. A bare '/' or a slash-prefixed token over 64 characters is not a command token and yields null. Required for body, comment, and review."
         },
         "label": {
           "type": "string",

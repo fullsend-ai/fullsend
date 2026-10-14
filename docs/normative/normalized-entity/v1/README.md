@@ -176,7 +176,7 @@ Each `action` element has these fields:
 | `actor.bot_role` | string or null | Provider-resolved Fullsend bot role |
 | `actor.role_verified` | bool | Always `true` for a retained element |
 | `actor.is_entity_author` | bool | Routing aid; never authorization evidence |
-| `command` | string or null | `body`, `comment`, `review` only. The first whitespace-delimited token of the first line of the current revision when that token begins with `/`, otherwise null |
+| `command` | string or null | `body`, `comment`, `review` only. The first whitespace-delimited token of the first line of the current revision when that token is a [command token](#command-tokens), otherwise null |
 | `label` | string | `label_application` only. Applied label name |
 | `review_state` | string: `approved`, `changes_requested`, `commented`, `dismissed` | `review` only |
 
@@ -184,6 +184,19 @@ Fields that do not apply to a category are absent, so a predicate MUST check
 `category` before accessing them. Free text (titles, bodies, comment and
 review text, instructions) is not CEL-visible in v1; see
 [CEL-visible data and model-facing context](#cel-visible-data-and-model-facing-context).
+
+### Command tokens
+
+A **command token** is a first-line token that begins with `/`, is at least 2
+and at most 64 characters long (counted in Unicode code points, as JSON Schema
+does), and contains no whitespace. A first token that begins with `/` but is
+only `/`, or is longer than 64 characters (for example, a filesystem path or a
+URL path pasted at the start of a comment), is not a command token. Its
+element's `command` is `null`. This is an authoritative derived value, not an
+unresolved field, and the element's coverage is unaffected. Such a token cannot
+match any platform command, so nulling it loses no routing information and
+keeps the entity document schema-valid. A producer MUST NOT truncate a token
+or substitute another value to fit the bounds.
 
 ## Presence and coverage semantics
 
@@ -221,15 +234,24 @@ values. Coverage is not part of `entity`, and no CEL expression can
 distinguish "not loaded" from "absent", because "not loaded" never reaches
 CEL.
 
+**Logical evaluation boundary.** Evaluation is allowed only if every
+applicable facet resolves to `complete`, whether or not the predicate reads
+it. An applicable facet that does not resolve denies the evaluation even if the
+predicate never accessed that facet, and even if the predicate would otherwise
+return a boolean. This matches the evaluable-document requirement above: an
+evaluation with any unresolved applicable facet has no evaluable document.
+
 **Deferred acquisition invariant.** An implementation may defer acquiring the
 `state` or `change_proposal` facet until a predicate first accesses it,
-provided the observable outcome is identical to eager resolution. If an
-accessed facet does not resolve to `complete`, the access is an evaluation
-error, and the error denies. This includes `has()` tests on that facet's
-fields: an unresolved facet MUST NOT make `has()` return false, a field
-evaluate to `null`, or a list evaluate to empty. The actions facet cannot be
-deferred, because ADR 0098 requires complete enumeration before CEL whether
-or not the predicate reads `entity.actions`.
+provided the observable outcome is identical to eager resolution under the
+boundary above. A deferred facet that was never accessed MUST still be resolved
+before the evaluation is allowed. If it does not resolve to `complete`, the
+evaluation is denied. If an accessed facet does not resolve to `complete`, the
+access is an evaluation error, and the error denies. This includes `has()`
+tests on that facet's fields: an unresolved facet MUST NOT make `has()` return
+false, a field evaluate to `null`, or a list evaluate to empty. The actions
+facet cannot be deferred, because ADR 0098 requires complete enumeration
+before CEL whether or not the predicate reads `entity.actions`.
 
 If a predicate evaluates to an error instead of a boolean, evaluation for
 that entity and harness is denied. Implementations MUST NOT substitute `true`
@@ -291,8 +313,8 @@ these steps before evaluating the harness predicate:
    actor under ADR 0054. Scheduled discovery requires trusted Fullsend
    invocation provenance (Authorization Contract v1, *Fullsend-originated
    entity discovery*).
-2. Resolve identity and every facet the evaluation requires, subject to the
-   deferred acquisition invariant above.
+2. Resolve identity and every applicable facet, subject to the deferred
+   acquisition invariant above.
 3. Enumerate every applicable action-indicating category completely.
 4. Resolve the current permission of every enumerated element's actor.
 5. Remove every element whose actor's verified current permission does not
@@ -312,7 +334,7 @@ without applying that harness's threshold.
 | An element's actor cannot be attributed | Category `failed` (`actor_unattributed`); evaluation denied |
 | An element actor's current permission is missing or unverifiable | Category `failed` (`permission_unverifiable`); evaluation denied |
 | An element actor's verified current permission is below the threshold | Element removed; evaluation proceeds |
-| A required or accessed `state` or `change_proposal` facet does not resolve | Evaluation denied |
+| Any applicable `state` or `change_proposal` facet does not resolve, whether or not the predicate accesses it | Evaluation denied |
 | The predicate errors | Evaluation denied |
 
 An unverifiable permission denies the whole evaluation rather than removing
@@ -426,15 +448,22 @@ Neither is derived by copying the other.
 | — | `entity.id` (immutable opaque ID) |
 | `entity.url` | `entity.url` |
 | `repo` | `entity.source.repository` (compared case-insensitively on GitHub) |
-| `source.system` (`github`, …) | `entity.source.system` |
+| `source.system` (`github`, `gitlab`, …) | `entity.source.system`; equal for forge-native events, the hosting forge for `manual` and `schedule` events |
 | `actor` (prompting actor, checked by ADR 0054) | not represented; element actors are in `entity.actions` |
 | `state.labels`, `state.change_proposal` (event-time snapshot) | `entity.labels`, `entity.change_proposal` (current at `resolved_at`) |
 
 When `event` is non-null, the resolved entity MUST correspond to the event's
 target:
 
-- `entity.source.system` equals `event.source.system`, and
-  `entity.source.repository` equals `event.repo`.
+- `entity.source.repository` equals `event.repo`.
+- For a forge-native event (`event.source.system` is `github` or `gitlab`),
+  `entity.source.system` equals `event.source.system`. For a `manual` or
+  `schedule` event, `event.source.system` names the trigger, not a forge, so
+  no equality applies. `entity.source.system` is the forge that hosts
+  `event.repo`, as established by the trusted driver's own repository
+  configuration. It is never derived from event payload fields. If that forge
+  is outside v1 scope, the entity is `unsupported`, as for any other
+  out-of-scope target.
 - For an event whose `entity.kind` is `change_proposal`, the resolved entity
   is that change proposal and `entity.number == event.entity.id`.
 - For a `work_item` event that carries `entity.linked_change_proposal` (for
@@ -444,7 +473,7 @@ target:
   `entity.number == event.entity.id`.
 
 A `manual` or `schedule` event resolves its entity in the event's repository
-on the forge that hosts it. A `jira` event, or any target outside v1 scope,
+on the forge that hosts it (see above). A `jira` event, or any target outside v1 scope,
 cannot produce a normalized entity: harnesses with entity sources are denied
 for that event, and event-only harnesses are unaffected. A mismatched
 resolution is an error and denies evaluation. JSON Schema cannot express this
@@ -551,6 +580,9 @@ Files prefixed `valid-` validate against their schema, and files prefixed
 | [`valid-event-backed-fs-fix.json`](examples/valid-event-backed-fs-fix.json) | Event-backed evaluation (`event != null`). A pull-request comment event resolves to the change proposal through `linked_change_proposal`. Mutation threshold. |
 | [`valid-scheduled-unhandled-request.json`](examples/valid-scheduled-unhandled-request.json) | Scheduled evaluation (`event == null`) with a retained `/fs-triage` request and no handled-state evidence |
 | [`valid-scheduled-empty-history.json`](examples/valid-scheduled-empty-history.json) | Genuinely empty retained history. Complete enumeration whose one element was removed below threshold. |
+| [`valid-manual-event.json`](examples/valid-manual-event.json) | Event-backed evaluation for a `manual` event. `event.source.system` is `manual` while `entity.source.system` is the hosting forge `github`. |
+| [`valid-command-token-bounds.json`](examples/valid-command-token-bounds.json) | Command-token boundaries. A bare `/` and an over-64-character slash-prefixed token yield `command: null`. Tokens of exactly 2 and 64 characters are retained. |
+| [`invalid-command-bare-slash.json`](examples/invalid-command-bare-slash.json) | A bare `/` encoded as `command` instead of `null` |
 | [`invalid-missing-actor-provenance.json`](examples/invalid-missing-actor-provenance.json) | A retained element with no actor ID |
 | [`invalid-unverifiable-authorization.json`](examples/invalid-unverifiable-authorization.json) | A retained element whose actor permission is unverified |
 | [`invalid-history-omitted.json`](examples/invalid-history-omitted.json) | An evaluable document that claims complete enumeration but omits `entity.actions` |
