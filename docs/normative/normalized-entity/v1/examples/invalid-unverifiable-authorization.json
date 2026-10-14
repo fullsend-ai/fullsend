@@ -27,6 +27,7 @@
           "id": "I_kwDOExample46",
           "category": "body",
           "created_at": "2026-10-12T09:00:00.000000000Z",
+          "revised_at": "2026-10-12T09:00:00.000000000Z",
           "actor": {
             "id": "U_kgDOBob",
             "login": "bob",
@@ -42,6 +43,7 @@
           "id": "IC_kwDOExampleUnverified",
           "category": "comment",
           "created_at": "2026-10-13T11:20:00.000000000Z",
+          "revised_at": "2026-10-13T11:20:00.000000000Z",
           "actor": {
             "id": "U_kgDOGrace",
             "login": "grace",

@@ -27,6 +27,7 @@
           "id": "I_kwDOExample42",
           "category": "body",
           "created_at": "2026-10-12T09:00:00.000000000Z",
+          "revised_at": "2026-10-12T09:00:00.000000000Z",
           "actor": {
             "id": "U_kgDOBob",
             "login": "bob",
@@ -42,6 +43,7 @@
           "id": "LE_lADOExampleLabel1",
           "category": "label_application",
           "created_at": "2026-10-12T09:01:00.000000000Z",
+          "revised_at": "2026-10-12T09:01:00.000000000Z",
           "actor": {
             "id": "U_kgDOBob",
             "login": "bob",
@@ -57,6 +59,7 @@
           "id": "IC_kwDOExampleTriage1",
           "category": "comment",
           "created_at": "2026-10-13T11:20:00.000000000Z",
+          "revised_at": "2026-10-13T11:20:00.000000000Z",
           "actor": {
             "id": "U_kgDOCarol",
             "login": "carol",

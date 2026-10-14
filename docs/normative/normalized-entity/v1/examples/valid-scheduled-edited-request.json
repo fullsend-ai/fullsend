@@ -1,0 +1,96 @@
+{
+  "entity_document": {
+    "schema_version": "normalized-entity/v1",
+    "phase": "evaluable",
+    "entity": {
+      "kind": "work_item",
+      "source": {
+        "system": "github",
+        "host": "github.com",
+        "repository": "fullsend-ai/demo",
+        "repository_id": "R_kgDOExample"
+      },
+      "id": "I_kwDOExample42",
+      "number": 42,
+      "url": "https://github.com/fullsend-ai/demo/issues/42",
+      "state": "open",
+      "author": {
+        "id": "U_kgDOBob",
+        "login": "bob",
+        "kind": "human"
+      },
+      "created_at": "2026-10-12T09:00:00.000000000Z",
+      "updated_at": "2026-10-13T12:00:00.000000000Z",
+      "labels": [],
+      "actions": [
+        {
+          "id": "I_kwDOExample42",
+          "category": "body",
+          "created_at": "2026-10-12T09:00:00.000000000Z",
+          "revised_at": "2026-10-12T09:00:00.000000000Z",
+          "actor": {
+            "id": "U_kgDOBob",
+            "login": "bob",
+            "kind": "human",
+            "role": "maintain",
+            "bot_role": null,
+            "role_verified": true,
+            "is_entity_author": true
+          },
+          "command": null
+        },
+        {
+          "id": "IC_kwDOExampleEdited1",
+          "category": "comment",
+          "created_at": "2026-10-13T10:00:00.000000000Z",
+          "revised_at": "2026-10-13T12:00:00.000000000Z",
+          "actor": {
+            "id": "U_kgDOCarol",
+            "login": "carol",
+            "kind": "human",
+            "role": "triage",
+            "bot_role": null,
+            "role_verified": true,
+            "is_entity_author": false
+          },
+          "command": "/fs-triage"
+        },
+        {
+          "id": "IC_kwDOExampleBotReply1",
+          "category": "comment",
+          "created_at": "2026-10-13T11:00:00.000000000Z",
+          "revised_at": "2026-10-13T11:00:00.000000000Z",
+          "actor": {
+            "id": "BOT_kgDOTriage",
+            "login": "fullsend-ai-triage[bot]",
+            "kind": "bot",
+            "role": "none",
+            "bot_role": "triage",
+            "role_verified": true,
+            "is_entity_author": false
+          },
+          "command": null
+        }
+      ]
+    },
+    "coverage": {
+      "state": { "status": "complete" },
+      "actions": {
+        "status": "complete",
+        "categories": {
+          "body": { "status": "complete" },
+          "comment": { "status": "complete" },
+          "label_application": { "status": "complete" }
+        }
+      }
+    },
+    "evaluation": {
+      "harness": "triage",
+      "human_min_role": "triage",
+      "origin": "discovery",
+      "resolved_at": "2026-10-14T06:00:02.000000000Z",
+      "removed_elements": 0
+    }
+  },
+  "event": null
+}

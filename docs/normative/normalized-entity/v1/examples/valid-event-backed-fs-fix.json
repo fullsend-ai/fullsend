@@ -36,6 +36,7 @@
           "id": "PR_kwDOExample99",
           "category": "body",
           "created_at": "2026-10-01T09:00:00.000000000Z",
+          "revised_at": "2026-10-01T09:00:00.000000000Z",
           "actor": {
             "id": "BOT_kgDOCoder",
             "login": "fullsend-ai-coder[bot]",
@@ -51,6 +52,7 @@
           "id": "PRR_kwDOExampleReview1",
           "category": "review",
           "created_at": "2026-10-01T10:00:00.000000000Z",
+          "revised_at": "2026-10-01T10:00:00.000000000Z",
           "actor": {
             "id": "BOT_kgDOReview",
             "login": "fullsend-ai-review[bot]",
@@ -67,6 +69,7 @@
           "id": "IC_kwDOExampleFix1",
           "category": "comment",
           "created_at": "2026-10-02T08:30:00.000000000Z",
+          "revised_at": "2026-10-02T08:30:00.000000000Z",
           "actor": {
             "id": "U_kgDOAlice",
             "login": "alice",

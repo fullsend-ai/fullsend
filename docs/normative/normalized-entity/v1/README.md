@@ -168,7 +168,8 @@ Each `action` element has these fields:
 |-------|-----------------|---------|
 | `id` | string | Immutable source record ID; the `body` element uses `entity.id` |
 | `category` | string: `body`, `comment`, `review`, `label_application` | Platform-defined category |
-| `created_at` | timestamp string | Body/comment creation, review submission, or label application time |
+| `created_at` | timestamp string | Body/comment creation, review submission, or label application time. Immutable; never changes when the record is edited. |
+| `revised_at` | timestamp string | Time of the current revision: the latest authenticated edit when the source records one, otherwise equal to `created_at`. Never earlier than `created_at`. Always equal to `created_at` for `label_application`. `actor`, `command`, and `review_state` describe the revision at this time. |
 | `actor.id` | string | Immutable ID of the source-authenticated actor of the current revision |
 | `actor.login` | string or null | Current login; untrusted display value |
 | `actor.kind` | string: `human`, `bot` | Provider classification |
@@ -196,7 +197,11 @@ element's `command` is `null`. This is an authoritative derived value, not an
 unresolved field, and the element's coverage is unaffected. Such a token cannot
 match any platform command, so nulling it loses no routing information and
 keeps the entity document schema-valid. A producer MUST NOT truncate a token
-or substitute another value to fit the bounds.
+or substitute another value to fit the bounds. Whitespace includes line
+breaks, so a `command` value never ends in a newline. The schema expresses the
+no-whitespace rule as a separate constraint rather than an end-anchored
+pattern, so validators using different regular-expression dialects reject the
+same values.
 
 ## Presence and coverage semantics
 
@@ -300,9 +305,17 @@ schema requires a non-null `actor.id`.
 ### Ordering and identity
 
 `entity.actions` is sorted by `created_at`, then by `id` in ASCII byte order.
-The `body` element uses the entity's own `id` and `created_at`. Producers MUST
-NOT synthesize elements from a prompting event, from a receipt, or from any
-source other than the entity's history.
+Editing a record never reorders it. The `body` element uses the entity's own
+`id` and `created_at`. Producers MUST NOT synthesize elements from a prompting
+event, from a receipt, or from any source other than the entity's history.
+
+`revised_at` carries the revision-aware time. The `actor` and `command` of an
+element describe the revision current at `revised_at`, so a predicate that
+orders a request against other activity MUST use the request's `revised_at`,
+not its `created_at`. Otherwise an edit that turns an older record into a
+request would look as if it predated activity that actually preceded the
+request. A producer MUST NOT report a `revised_at` earlier than `created_at`.
+When the source records no edit time, `revised_at` equals `created_at`.
 
 ## Evaluation boundary
 
@@ -413,12 +426,14 @@ the entity-source discovery work.
 Example predicates (illustrative only):
 
 ```cel
-// Triage: an open issue with a retained /fs-triage request and no later
-// retained element from the triage bot. Works with or without an event.
+// Triage: an open issue with a retained /fs-triage request and no retained
+// triage-bot element created after the request's current revision. The
+// request is ordered by revised_at, so a comment edited into a request after
+// a bot response is still unhandled. Works with or without an event.
 entity.kind == "work_item" && entity.state == "open"
   && entity.actions.exists(r, r.category == "comment" && r.command == "/fs-triage"
        && !entity.actions.exists(h, h.actor.bot_role == "triage"
-            && h.created_at > r.created_at))
+            && h.created_at > r.revised_at))
 
 // Fix: a retained /fs-fix on a non-fork change proposal, or the live event
 // for one. The event guard comes first.
@@ -554,10 +569,10 @@ evaluation time.
 | `change_proposal.base_ref`, `head_ref`, `head_sha` | `baseRefName`, `headRefName`, `headRefOid` |
 | `change_proposal.is_fork` | `isCrossRepository` |
 | `change_proposal.draft` | `isDraft` |
-| `body` element | The issue or pull request itself. The actor is the latest authenticated body editor, if the body was edited, otherwise the author. |
-| `comment` elements | Every issue comment, and for pull requests every review-thread comment, including minimized comments |
-| `review` elements | Every submitted pull request review. `PENDING` reviews are unsubmitted and are not elements. `created_at` is `submittedAt`. |
-| `label_application` elements | For each currently applied label, its most recent `LabeledEvent` |
+| `body` element | The issue or pull request itself. The actor is the latest authenticated body editor, if the body was edited, otherwise the author. `revised_at` is `lastEditedAt` when non-null, otherwise `created_at`. |
+| `comment` elements | Every issue comment, and for pull requests every review-thread comment, including minimized comments. `revised_at` is `lastEditedAt` when non-null, otherwise `created_at`. |
+| `review` elements | Every submitted pull request review. `PENDING` reviews are unsubmitted and are not elements. `created_at` is `submittedAt`. `revised_at` is `lastEditedAt` when non-null, otherwise `submittedAt`. |
+| `label_application` elements | For each currently applied label, its most recent `LabeledEvent`. `revised_at` equals `created_at`. |
 | Human `role` | Collaborator permission resolution in Authorization Contract v1, including `owners_file` when enabled |
 | Bot `bot_role` | ADR 0107 provider-backed bot-role resolution |
 
@@ -579,10 +594,12 @@ Files prefixed `valid-` validate against their schema, and files prefixed
 | [`valid-candidate-incomplete-history.json`](examples/valid-candidate-incomplete-history.json) | History explicitly `incomplete` or `unknown`. `entity.actions` omitted, never empty. Not evaluable. |
 | [`valid-event-backed-fs-fix.json`](examples/valid-event-backed-fs-fix.json) | Event-backed evaluation (`event != null`). A pull-request comment event resolves to the change proposal through `linked_change_proposal`. Mutation threshold. |
 | [`valid-scheduled-unhandled-request.json`](examples/valid-scheduled-unhandled-request.json) | Scheduled evaluation (`event == null`) with a retained `/fs-triage` request and no handled-state evidence |
+| [`valid-scheduled-edited-request.json`](examples/valid-scheduled-edited-request.json) | Scheduled evaluation (`event == null`) where a triage-bot comment is created after a comment's creation but before the comment is edited into a `/fs-triage` request. `revised_at` places the request after the bot comment, so the request is unhandled. |
 | [`valid-scheduled-empty-history.json`](examples/valid-scheduled-empty-history.json) | Genuinely empty retained history. Complete enumeration whose one element was removed below threshold. |
 | [`valid-manual-event.json`](examples/valid-manual-event.json) | Event-backed evaluation for a `manual` event. `event.source.system` is `manual` while `entity.source.system` is the hosting forge `github`. |
 | [`valid-command-token-bounds.json`](examples/valid-command-token-bounds.json) | Command-token boundaries. A bare `/` and an over-64-character slash-prefixed token yield `command: null`. Tokens of exactly 2 and 64 characters are retained. |
 | [`invalid-command-bare-slash.json`](examples/invalid-command-bare-slash.json) | A bare `/` encoded as `command` instead of `null` |
+| [`invalid-command-trailing-newline.json`](examples/invalid-command-trailing-newline.json) | A command token with a trailing newline. Must be rejected under every regex dialect. |
 | [`invalid-missing-actor-provenance.json`](examples/invalid-missing-actor-provenance.json) | A retained element with no actor ID |
 | [`invalid-unverifiable-authorization.json`](examples/invalid-unverifiable-authorization.json) | A retained element whose actor permission is unverified |
 | [`invalid-history-omitted.json`](examples/invalid-history-omitted.json) | An evaluable document that claims complete enumeration but omits `entity.actions` |

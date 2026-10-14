@@ -446,7 +446,7 @@
     "action": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "category", "created_at", "actor"],
+      "required": ["id", "category", "created_at", "revised_at", "actor"],
       "properties": {
         "id": {
           "$ref": "#/$defs/structural_id",
@@ -460,6 +460,10 @@
           "$ref": "#/$defs/timestamp",
           "description": "Immutable source time: creation for body and comment, submission for review, application for label_application."
         },
+        "revised_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Time of the current revision: the latest authenticated edit when the source records one, otherwise equal to created_at. Never earlier than created_at. Always equal to created_at for label_application."
+        },
         "actor": {
           "$ref": "#/$defs/actor"
         },
@@ -467,7 +471,8 @@
           "type": ["string", "null"],
           "minLength": 2,
           "maxLength": 64,
-          "pattern": "^/[^\\s]+$",
+          "pattern": "^/",
+          "not": { "type": "string", "pattern": "\\s" },
           "description": "First whitespace-delimited token of the first line of the current revision when it is a command token (begins with '/', 2 to 64 characters, no whitespace), otherwise null. A bare '/' or a slash-prefixed token over 64 characters is not a command token and yields null. Required for body, comment, and review."
         },
         "label": {
