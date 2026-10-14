@@ -122,8 +122,8 @@ func needsWebhook(t *testing.T, c forge.Client) bool {
 }
 
 // Repeated install and rotation converge to one old/new Poller pair and then
-// retire the superseded generation, which removes only the retired user's
-// merge grant on the protected default branch.
+// retire the superseded generation, which leaves every merge grant on the
+// protected default branch in place.
 func TestEnsureGitLabWebhookFastPath_RepeatedInstallAndRotateRetireSupersededGeneration(t *testing.T) {
 	c := newWebhookFake()
 	ownedBy(c, webhookMaintainerUserID, forge.GitLabAccessLevelMaintainer)
@@ -156,11 +156,9 @@ func TestEnsureGitLabWebhookFastPath_RepeatedInstallAndRotateRetireSupersededGen
 	assert.Equal(t, []int64{webhookPollerUserID}, ro.retired)
 	assert.Equal(t, PollerGenerationState{CurrentUserID: cutoverNewUID}, generationState(t, c))
 	after := defaultBranchRule(t, c)
-	assert.Equal(t, []int{otherMergeUserID}, mergeGrantUsers(after), "only the retired user's merge grant is removed")
-	assert.Equal(t, before.PushAccessLevels, after.PushAccessLevels, "push access is unchanged")
-	assert.Equal(t, before.MergeAccessLevels[:2], after.MergeAccessLevels, "branch-wide and other users' merge access is unchanged")
-	require.Len(t, c.RevokedProtectedBranchMergeEntries, 1)
-	assert.Equal(t, webhookPollerUserID, c.RevokedProtectedBranchMergeEntries[0].UserID)
+	assert.Equal(t, before, after, "the protected-branch rule, including per-user merge grants of unknown provenance, is unchanged")
+	assert.Contains(t, mergeGrantUsers(after), webhookPollerUserID)
+	assert.Empty(t, c.RevokedProtectedBranchMergeEntries)
 	assert.False(t, needsWebhook(t, c))
 	assert.Len(t, c.hooks(), 1, "the fast path stays in service")
 	assertNoCredentialLeak(t, c, res)
@@ -386,8 +384,9 @@ func TestRetireSupersededPollerGeneration_FailsClosedBeforeChanges(t *testing.T)
 }
 
 // Retirement revokes the retiring account's triggers (never the current
-// Poller's), removes its merge grant, deletes the account, and clears the
-// record. A rerun after completion has nothing to do.
+// Poller's), deletes the account, and clears the record, leaving a per-user
+// merge grant for the retiring account in place because its creator is unknown
+// (it may be an administrator's). A rerun after completion has nothing to do.
 func TestRetireSupersededPollerGeneration_RetiresAndIsIdempotent(t *testing.T) {
 	c, ro := retirementFixture(t)
 	c.PipelineTriggerTokens[webhookTestOwner+"/"+webhookTestRepo] = []forge.PipelineTriggerToken{
@@ -401,12 +400,13 @@ func TestRetireSupersededPollerGeneration_RetiresAndIsIdempotent(t *testing.T) {
 	assert.Empty(t, res.waiting)
 	joined := strings.Join(res.details, "\n")
 	assert.Contains(t, joined, "Revoked 1 pipeline trigger token(s) owned by the superseded GitLab Poller (user ID 4004)")
-	assert.Contains(t, joined, "Removed the protected default-branch merge grant")
+	assert.Contains(t, joined, "Left the protected default-branch merge grant")
 	assert.Equal(t, []int64{70}, c.RevokedTriggerTokenIDs)
 	assert.Equal(t, []int64{70}, res.revokedTriggerIDs)
 	require.Len(t, c.triggers(), 1)
 	assert.Equal(t, int64(71), c.triggers()[0].ID)
-	assert.Equal(t, []int{otherMergeUserID}, mergeGrantUsers(defaultBranchRule(t, c)))
+	assert.ElementsMatch(t, []int{otherMergeUserID, webhookPollerUserID}, mergeGrantUsers(defaultBranchRule(t, c)), "an administrator-created grant for the retiring user's own ID survives retirement")
+	assert.Empty(t, c.RevokedProtectedBranchMergeEntries)
 	assert.Equal(t, []int64{webhookPollerUserID}, ro.retired)
 	assert.Equal(t, PollerGenerationState{CurrentUserID: cutoverNewUID}, generationState(t, c))
 
@@ -510,55 +510,32 @@ func TestRetireSupersededPollerGeneration_TriggerRevocationFailures(t *testing.T
 	})
 }
 
-// mergeGrantClient lets merge-grant removal fail in each way it can.
-type mergeGrantClient struct {
-	webhookFake
-	listCalls   int
-	failRelist  bool
-	ignoreGrant bool
-}
-
-func (c *mergeGrantClient) ListProtectedBranches(ctx context.Context, owner, repo string) ([]forge.ProtectedBranchRule, error) {
-	c.listCalls++
-	if c.failRelist && c.listCalls > 1 {
-		return nil, errors.New("500 glpat-server-echo")
-	}
-	return c.webhookFake.ListProtectedBranches(ctx, owner, repo)
-}
-
-func (c *mergeGrantClient) RevokeProtectedBranchMergeUserEntry(ctx context.Context, owner, repo, branch string, entryID, userID int) error {
-	if c.ignoreGrant {
-		return nil
-	}
-	return c.webhookFake.RevokeProtectedBranchMergeUserEntry(ctx, owner, repo, branch, entryID, userID)
-}
-
-func TestRemoveRetiredPollerMergeGrants(t *testing.T) {
+func TestPreservedPollerMergeGrants(t *testing.T) {
 	ctx := context.Background()
 	rulesKey := webhookTestOwner + "/" + webhookTestRepo + "/"
 
-	t.Run("wildcard rules and other entries are untouched", func(t *testing.T) {
+	t.Run("counts only the exact-name rule's per-user entries and removes nothing", func(t *testing.T) {
 		c := newWebhookFake()
 		seedDefaultBranchGrants(t, c)
 		wildcard := &forge.ProtectedBranchRule{Name: "ma*", MergeAccessLevels: []forge.ProtectedBranchAccess{{ID: 50, UserID: webhookPollerUserID}}}
 		c.ProtectedBranchRules[rulesKey+"ma*"] = wildcard
-		n, err := removeRetiredPollerMergeGrants(ctx, c, webhookTestOwner, webhookTestRepo, webhookPollerUserID)
+		n, err := preservedPollerMergeGrants(ctx, c, webhookTestOwner, webhookTestRepo, webhookPollerUserID)
 		require.NoError(t, err)
 		assert.Equal(t, 1, n)
-		assert.Equal(t, []int{otherMergeUserID}, mergeGrantUsers(defaultBranchRule(t, c)))
-		assert.Len(t, c.ProtectedBranchRules[rulesKey+"ma*"].MergeAccessLevels, 1, "a wildcard rule is never changed")
+		assert.ElementsMatch(t, []int{otherMergeUserID, webhookPollerUserID}, mergeGrantUsers(defaultBranchRule(t, c)))
+		assert.Len(t, c.ProtectedBranchRules[rulesKey+"ma*"].MergeAccessLevels, 1)
+		assert.Empty(t, c.RevokedProtectedBranchMergeEntries)
 	})
 	t.Run("no grant", func(t *testing.T) {
 		c := newWebhookFake()
-		n, err := removeRetiredPollerMergeGrants(ctx, c, webhookTestOwner, webhookTestRepo, webhookPollerUserID)
+		n, err := preservedPollerMergeGrants(ctx, c, webhookTestOwner, webhookTestRepo, webhookPollerUserID)
 		require.NoError(t, err)
 		assert.Zero(t, n)
-		assert.Empty(t, c.RevokedProtectedBranchMergeEntries)
 	})
 	t.Run("unprotected forge", func(t *testing.T) {
 		c := newWebhookFake()
 		c.Errors["ListProtectedBranches"] = forge.ErrNotSupported
-		n, err := removeRetiredPollerMergeGrants(ctx, c, webhookTestOwner, webhookTestRepo, webhookPollerUserID)
+		n, err := preservedPollerMergeGrants(ctx, c, webhookTestOwner, webhookTestRepo, webhookPollerUserID)
 		require.NoError(t, err)
 		assert.Zero(t, n)
 	})
@@ -566,68 +543,42 @@ func TestRemoveRetiredPollerMergeGrants(t *testing.T) {
 		c := newWebhookFake()
 		c.Repos[0].DefaultBranch = ""
 		seedDefaultBranchGrants(t, c)
-		n, err := removeRetiredPollerMergeGrants(ctx, c, webhookTestOwner, webhookTestRepo, webhookPollerUserID)
+		n, err := preservedPollerMergeGrants(ctx, c, webhookTestOwner, webhookTestRepo, webhookPollerUserID)
 		require.NoError(t, err)
 		assert.Equal(t, 1, n)
 	})
 	for name, tc := range map[string]struct {
-		setup func(c webhookFake) forge.Client
-		want  string
+		key  string
+		want string
 	}{
-		"project lookup": {
-			setup: func(c webhookFake) forge.Client { c.Errors["GetRepo"] = errors.New("500 glpat-server-echo"); return c },
-			want:  "reading project before removing",
-		},
-		"listing": {
-			setup: func(c webhookFake) forge.Client {
-				c.Errors["ListProtectedBranches"] = errors.New("500 glpat-server-echo")
-				return c
-			},
-			want: "listing protected branches",
-		},
-		"entry without ID": {
-			setup: func(c webhookFake) forge.Client {
-				rule := c.ProtectedBranchRules[rulesKey+"main"]
-				rule.MergeAccessLevels = append(rule.MergeAccessLevels, forge.ProtectedBranchAccess{UserID: webhookPollerUserID})
-				return c
-			},
-			want: "without an entry ID, so it cannot be removed safely",
-		},
-		"removal": {
-			setup: func(c webhookFake) forge.Client {
-				c.Errors["RevokeProtectedBranchMergeUserEntry"] = errors.New("500 glpat-server-echo")
-				return c
-			},
-			want: "removing the merge grant (entry 9001)",
-		},
-		"reread": {
-			setup: func(c webhookFake) forge.Client { return &mergeGrantClient{webhookFake: c, failRelist: true} },
-			want:  "listing protected branches",
-		},
-		"still present": {
-			setup: func(c webhookFake) forge.Client { return &mergeGrantClient{webhookFake: c, ignoreGrant: true} },
-			want:  "still lists a merge grant for the superseded GitLab Poller (user ID 4004) after removal",
-		},
+		"project lookup": {key: "GetRepo", want: "reading project to check"},
+		"listing":        {key: "ListProtectedBranches", want: "listing protected branches"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := newWebhookFake()
 			seedDefaultBranchGrants(t, c)
-			_, err := removeRetiredPollerMergeGrants(ctx, tc.setup(c), webhookTestOwner, webhookTestRepo, webhookPollerUserID)
+			c.Errors[tc.key] = errors.New("500 glpat-server-echo")
+			_, err := preservedPollerMergeGrants(ctx, c, webhookTestOwner, webhookTestRepo, webhookPollerUserID)
 			require.ErrorContains(t, err, tc.want)
 			assert.NotContains(t, err.Error(), "glpat-server-echo")
 		})
 	}
 }
 
-// A merge-grant failure keeps the account and the retiring record.
-func TestRetireSupersededPollerGeneration_MergeGrantFailureKeepsAccount(t *testing.T) {
+// Retirement never removes merge grants, and a protected-branch read failure
+// after the account is gone only changes the note, not the outcome.
+func TestRetireSupersededPollerGeneration_MergeGrantReadFailureDoesNotBlock(t *testing.T) {
 	c, ro := retirementFixture(t)
 	seedDefaultBranchGrants(t, c)
-	c.Errors["RevokeProtectedBranchMergeUserEntry"] = errors.New("500 internal error")
-	_, err := runRetirement(t, c, ro, 0)
-	require.ErrorContains(t, err, "removing the merge grant")
-	assert.Empty(t, ro.retired)
-	assert.Equal(t, int64(webhookPollerUserID), generationState(t, c).RetiringUserID)
+	c.Errors["ListProtectedBranches"] = errors.New("500 glpat-server-echo")
+	res, err := runRetirement(t, c, ro, 0)
+	require.NoError(t, err)
+	assert.Equal(t, []int64{webhookPollerUserID}, ro.retired)
+	assert.Zero(t, generationState(t, c).RetiringUserID)
+	joined := strings.Join(res.details, "\n")
+	assert.Contains(t, joined, "Could not check whether the protected default branch still lists a merge grant")
+	assert.NotContains(t, joined, "glpat-server-echo")
+	assert.Empty(t, c.RevokedProtectedBranchMergeEntries)
 }
 
 // failGenerationClearClient fails the write that clears retiring_user_id, or

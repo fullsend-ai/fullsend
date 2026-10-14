@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,6 +30,10 @@ type retirementServer struct {
 	schedules      []map[string]any
 	triggers       []map[string]any
 	deleteStatus   int
+	// deleteAsync models GitLab accepting the deletion (202) while the account
+	// stays listed; accountsStatusAfterDelete makes the confirming re-list fail.
+	deleteAsync               bool
+	accountsStatusAfterDelete int
 
 	deleted     int
 	deletedVars int
@@ -73,9 +78,25 @@ func (s *retirementServer) start(t *testing.T) *TriggerOwner {
 		s.deleted++
 		if s.deleteStatus != 0 {
 			writeTestJSON(t, w, s.deleteStatus, map[string]any{"message": "glpat-server-echo"})
+			if s.deleteStatus >= http.StatusMultipleChoices {
+				return
+			}
+		} else {
+			w.WriteHeader(http.StatusNoContent)
+		}
+		if s.deleteAsync {
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		kept := []map[string]any{}
+		for _, a := range s.accounts {
+			if a["id"] != 77 {
+				kept = append(kept, a)
+			}
+		}
+		s.accounts = kept
+		if s.accountsStatusAfterDelete != 0 {
+			s.accountsStatus = s.accountsStatusAfterDelete
+		}
 	})
 	mux.HandleFunc("/api/v4/projects/g%2Fp/jobs", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(t, w, status(s.jobsStatus), list(s.jobs))
@@ -197,6 +218,17 @@ func TestRetirePollerAccount_FailsClosed(t *testing.T) {
 			setup: func(s *retirementServer) { s.deleteStatus = http.StatusInternalServerError },
 			want:  "deleting the superseded Poller service account 77",
 		},
+		"deletion accepted but account remains": {
+			setup: func(s *retirementServer) {
+				s.deleteStatus = http.StatusAccepted
+				s.deleteAsync = true
+			},
+			want: "still listed after the deletion request was accepted",
+		},
+		"deletion confirmation listing": {
+			setup: func(s *retirementServer) { s.accountsStatusAfterDelete = http.StatusInternalServerError },
+			want:  "confirming the superseded Poller service account was deleted",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newRetirementServer()
@@ -204,7 +236,7 @@ func TestRetirePollerAccount_FailsClosed(t *testing.T) {
 			err := s.start(t).RetirePollerAccount(context.Background(), "g", "p", 77)
 			require.ErrorContains(t, err, tc.want)
 			assert.NotContains(t, err.Error(), "glpat-server-echo")
-			if name != "deletion" {
+			if !strings.HasPrefix(name, "deletion") {
 				assert.Zero(t, s.deleted, "the account is not deleted")
 			}
 		})

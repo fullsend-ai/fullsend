@@ -19,10 +19,10 @@ import (
 // (gitlabroles.DefaultRotationGrace, the window rotation keeps a previous
 // credential usable for in-flight jobs) has elapsed since the replacement
 // credential was distributed, and no unfinished job runs as it. Retirement
-// then revokes the pipeline triggers it owns, removes its per-user merge grant
-// on the protected default branch, revokes its credentials, verifies and
-// deletes the account, and only then clears retiring_user_id. Every step is
-// idempotent. A step that cannot be completed or verified keeps
+// then revokes the pipeline triggers it owns, revokes its credentials,
+// verifies and deletes the account, and only then clears retiring_user_id. It
+// leaves any per-user merge grant on the protected default branch in place
+// (see preservedPollerMergeGrants). Every step is idempotent. A step that cannot be completed or verified keeps
 // retiring_user_id, so the next install retries, and no further Poller
 // generation starts in the meantime.
 //
@@ -126,13 +126,6 @@ func retireSupersededPollerGeneration(ctx context.Context, client forge.Client, 
 		res.revokedTriggerIDs = revoked
 		res.details = append(res.details, fmt.Sprintf("Revoked %d pipeline trigger token(s) owned by the superseded GitLab Poller (user ID %d)", len(revoked), retiring))
 	}
-	removed, err := removeRetiredPollerMergeGrants(ctx, client, owner, repo, retiring)
-	if err != nil {
-		return res, err
-	}
-	if removed > 0 {
-		res.details = append(res.details, fmt.Sprintf("Removed the protected default-branch merge grant of the superseded GitLab Poller (user ID %d); other merge grants and branch-wide access are unchanged", retiring))
-	}
 	if err := r.RetirePollerAccount(ctx, owner, repo, retiring); err != nil {
 		return res, fmt.Errorf("retiring the superseded GitLab Poller service account (user ID %d); it stays recorded as retiring for the next install: %w", retiring, err)
 	}
@@ -154,6 +147,15 @@ func retireSupersededPollerGeneration(ctx context.Context, client forge.Client, 
 		}
 	}
 	res.details = append(res.details, fmt.Sprintf("Retired the superseded GitLab Poller generation (user ID %d): its credentials were revoked and its service account was deleted", retiring))
+	// The account is already gone and recorded as retired, so a failure to read
+	// the protected branches only changes the note, never the outcome.
+	kept, grantErr := preservedPollerMergeGrants(ctx, client, owner, repo, retiring)
+	switch {
+	case grantErr != nil:
+		res.details = append(res.details, fmt.Sprintf("Could not check whether the protected default branch still lists a merge grant for the retired GitLab Poller (user ID %d); inspect Settings → Repository → Protected branches and remove any grant that is no longer needed", retiring))
+	case kept > 0:
+		res.details = append(res.details, fmt.Sprintf("Left the protected default-branch merge grant of the retired GitLab Poller (user ID %d) in place: fullsend does not record who created a per-user merge grant, so it may be an administrator's. Remove it in Settings → Repository → Protected branches if it is no longer needed", retiring))
+	}
 	return res, nil
 }
 
@@ -219,18 +221,18 @@ func revokeRetiringPollerTriggers(ctx context.Context, client forge.Client, owne
 	return owned, nil
 }
 
-// removeRetiredPollerMergeGrants removes every merge-access entry that grants
-// the retiring account individually on the exact-name protection rule of the
-// default branch, and rereads the rule to verify none remains. This is where
-// EnsureGitLabPollerPipelineAccess adds a Poller's grant
-// (GrantProtectedBranchMergeUser refuses wildcard rules). Entries are removed
-// one at a time by entry ID, so role-based and group entries, other users'
-// grants, and wildcard rules are never changed. A forge without
-// protected-branch support has nothing to remove.
-func removeRetiredPollerMergeGrants(ctx context.Context, client forge.Client, owner, repo string, retiring int64) (int, error) {
+// preservedPollerMergeGrants counts the merge-access entries that grant the
+// retiring account individually on the exact-name protection rule of the
+// default branch (where EnsureGitLabPollerPipelineAccess adds a Poller's grant;
+// GrantProtectedBranchMergeUser refuses wildcard rules). It never removes them:
+// EnsureGitLabPollerPipelineAccess reuses an existing grant, and fullsend
+// records no durable provenance for per-user merge grants, so an entry for the
+// retiring user ID cannot be proven to be fullsend's rather than an
+// administrator's. A forge without protected-branch support has none.
+func preservedPollerMergeGrants(ctx context.Context, client forge.Client, owner, repo string, retiring int64) (int, error) {
 	project, err := client.GetRepo(ctx, owner, repo)
 	if err != nil {
-		return 0, safeAPIError("reading project before removing the superseded GitLab Poller's merge grant", err)
+		return 0, safeAPIError("reading project to check the retired GitLab Poller's merge grant", err)
 	}
 	branch := project.DefaultBranch
 	if branch == "" {
@@ -242,26 +244,6 @@ func removeRetiredPollerMergeGrants(ctx context.Context, client forge.Client, ow
 			return 0, nil
 		}
 		return 0, err
-	}
-	if len(entries) == 0 {
-		return 0, nil
-	}
-	for _, l := range entries {
-		if l.ID <= 0 {
-			return 0, fmt.Errorf("protected branch %q lists a merge grant for the superseded GitLab Poller (user ID %d) without an entry ID, so it cannot be removed safely; remove it in Settings → Repository → Protected branches, then rerun install", branch, retiring)
-		}
-	}
-	for _, l := range entries {
-		if err := client.RevokeProtectedBranchMergeUserEntry(ctx, owner, repo, branch, l.ID, int(retiring)); err != nil {
-			return 0, safeAPIError(fmt.Sprintf("removing the merge grant (entry %d) of the superseded GitLab Poller on protected branch %q", l.ID, branch), err)
-		}
-	}
-	remaining, err := retiredPollerMergeEntries(ctx, client, owner, repo, branch, retiring)
-	if err != nil {
-		return 0, err
-	}
-	if len(remaining) > 0 {
-		return 0, fmt.Errorf("protected branch %q still lists a merge grant for the superseded GitLab Poller (user ID %d) after removal; remove it in Settings → Repository → Protected branches, then rerun install", branch, retiring)
 	}
 	return len(entries), nil
 }

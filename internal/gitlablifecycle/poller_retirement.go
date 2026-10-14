@@ -37,8 +37,8 @@ func (o *TriggerOwner) PollerRetirementBlocked(ctx context.Context, owner, repo 
 // RetirePollerAccount revokes the superseded Poller account's managed personal
 // access tokens, verifies that no active personal access token, usable SSH key,
 // unfinished job, pipeline schedule, or pipeline trigger remains, and deletes
-// the project service account. An account that is no longer listed was already
-// retired. An inventory that cannot be read fails closed.
+// the project service account, then re-lists the inventory to confirm it is
+// gone. An account that is no longer listed was already retired. An inventory that cannot be read fails closed.
 func (o *TriggerOwner) RetirePollerAccount(ctx context.Context, owner, repo string, userID int64) error {
 	accounts, err := o.Admin.ListProjectServiceAccounts(ctx, owner, repo)
 	if err != nil {
@@ -64,6 +64,16 @@ func (o *TriggerOwner) RetirePollerAccount(ctx context.Context, owner, repo stri
 	}
 	if err := o.Admin.DeleteProjectServiceAccount(ctx, owner, repo, int(userID)); err != nil {
 		return repos.SafeAPIError(fmt.Sprintf("deleting the superseded Poller service account %d", userID), err)
+	}
+	// GitLab may accept the deletion (202) and complete it later, so success is
+	// only reported once the account is no longer listed. Until then the caller
+	// keeps retiring_user_id and the next install retries.
+	remaining, err := o.Admin.ListProjectServiceAccounts(ctx, owner, repo)
+	if err != nil {
+		return repos.SafeAPIError("confirming the superseded Poller service account was deleted", err)
+	}
+	if slices.ContainsFunc(remaining, func(sa gitlab.ServiceAccount) bool { return int64(sa.ID) == userID }) {
+		return fmt.Errorf("service account %d is still listed after the deletion request was accepted; it stays recorded as retiring until it is gone", userID)
 	}
 	return nil
 }
