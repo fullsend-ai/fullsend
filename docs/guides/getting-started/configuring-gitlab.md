@@ -648,13 +648,15 @@ lease, once all of these hold:
 
 Until then install reports why retirement is waiting and changes nothing.
 Retirement revokes the pipeline triggers the retiring account owns (never the
-trigger the webhook uses). It removes that account's own merge grant on the
-protected default branch, by entry ID on the exact-name rule, and rereads the
-rule to confirm the grant is gone. Role-based access, group access, other
-users' grants, and wildcard rules are not changed. Retirement then revokes the
-account's credentials, verifies that it holds no active token, SSH key,
-unfinished job, schedule or trigger, deletes it, and only then clears
-`retiring_user_id`. Each step can be safely repeated. A step that fails or
+trigger the webhook uses). It does not change any merge grant on the protected
+default branch, because fullsend does not record who created a per-user grant
+and it may be an administrator's. Retirement revokes the account's credentials,
+verifies that it holds no active token, SSH key, unfinished job, schedule or
+trigger, deletes it, confirms by listing again that it is gone, and only then
+clears `retiring_user_id`. If the protected default branch still lists a merge
+grant for the retired account, install reports it so you can remove it in
+**Settings → Repository → Protected branches** if it is no longer needed. Each
+step can be safely repeated. A step that fails or
 cannot be verified leaves `retiring_user_id` in place for the next install to
 retry. An account that owns an administrator-supplied credential is never
 deleted. Polling continues with the current Poller throughout.

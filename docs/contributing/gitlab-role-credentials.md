@@ -624,18 +624,21 @@ It then:
 1. Revokes the pipeline triggers owned by the retiring account and confirms by
    listing again that none remains. It refuses, changing nothing, if that
    account owns the trigger the webhook uses.
-2. Removes each merge-access entry that grants the retiring account
-   individually on the default branch's exact-name protection rule, one entry
-   ID at a time with `RevokeProtectedBranchMergeUserEntry`, and rereads the
-   rule to confirm none remains. This is the grant
-   `EnsureGitLabPollerPipelineAccess` adds. Role-based and group entries, other
-   users' grants, push grants, and wildcard rules are never changed.
-3. Calls `RetirePollerAccount`, which contains the account's managed
+2. Calls `RetirePollerAccount`, which contains the account's managed
    credentials, verifies that no active personal access token, usable SSH key,
-   unfinished job, schedule, or trigger remains, and deletes the service
-   account. An account that is already gone counts as retired.
-4. Clears `retiring_user_id` (`finishPollerRetirement`) against a fresh read of
+   unfinished job, schedule, or trigger remains, requests deletion of the
+   service account, and re-lists the service accounts to confirm it is gone.
+   It fails while the account is still listed. An account that is already gone
+   counts as retired.
+3. Clears `retiring_user_id` (`finishPollerRetirement`) against a fresh read of
    the generation document.
+4. Counts, with `preservedPollerMergeGrants`, the merge-access entries that
+   grant the retired account individually on the default branch's exact-name
+   protection rule, and adds an operator note. It never removes them:
+   `EnsureGitLabPollerPipelineAccess` reuses an existing grant and fullsend
+   records no provenance for per-user merge grants, so an entry cannot be
+   proven to be fullsend's rather than an administrator's. A failed
+   protected-branch read changes only the note, not the outcome.
 
 Every step can be safely repeated. Any failure keeps `retiring_user_id`, so the
 next install retries.
