@@ -797,10 +797,15 @@ func TestGitLabPollerTriggerOwner_ManagedPollerUserIDsIncludeGenerationAccounts(
 	for _, tc := range []struct {
 		name       string
 		generation string
+		accounts   []map[string]any
 		want       []int64
 	}{
 		{name: "no generation document", want: []int64{77}},
-		{name: "retiring and abandoned accounts", generation: `{"version":1,"current_user_id":77,"retiring_user_id":90,"abandoned_user_ids":[91]}`, want: []int64{77, 90, 91}},
+		{name: "retiring and abandoned accounts", generation: `{"version":1,"current_user_id":77,"retiring_user_id":90,"abandoned_user_ids":[91]}`, accounts: []map[string]any{{"id": 90, "name": "retiring"}, {"id": 91, "name": "abandoned"}}, want: []int64{77, 90, 91}},
+		// Retirement deleted the account but could not clear its record: there
+		// is nothing left to reconcile, and listing it would fail closed on the
+		// deleted account's missing credentials.
+		{name: "recorded accounts the inventory confirms are deleted", generation: `{"version":1,"current_user_id":77,"retiring_user_id":90,"abandoned_user_ids":[91]}`, accounts: []map[string]any{{"id": 91, "name": "abandoned"}}, want: []int64{77, 91}},
 		{name: "pending replacement is left to the handoff reconciler", generation: `{"version":1,"current_user_id":77,"pending":{"user_id":95,"phase":"account_recorded"}}`, want: []int64{77}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -820,7 +825,7 @@ func TestGitLabPollerTriggerOwner_ManagedPollerUserIDsIncludeGenerationAccounts(
 				writeTestJSON(t, w, http.StatusOK, map[string]any{"id": 77})
 			})
 			mux.HandleFunc("/api/v4/projects/group%2Fproject/service_accounts", func(w http.ResponseWriter, r *http.Request) {
-				writeTestJSON(t, w, http.StatusOK, []map[string]any{{"id": 77, "name": gitlabroles.PollerTokenName}})
+				writeTestJSON(t, w, http.StatusOK, append([]map[string]any{{"id": 77, "name": gitlabroles.PollerTokenName}}, tc.accounts...))
 			})
 			mux.HandleFunc("/api/v4/personal_access_tokens/self", func(w http.ResponseWriter, r *http.Request) {
 				writeTestJSON(t, w, http.StatusOK, map[string]any{"id": 5, "name": gitlabroles.PollerTokenName, "active": true, "user_id": 77})

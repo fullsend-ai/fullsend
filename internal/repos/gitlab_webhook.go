@@ -1734,7 +1734,8 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, trigg
 	// start the next generation. Dry runs change nothing.
 	var retirementWait string
 	if triggerOwner != nil && !dryRun && lease != nil {
-		ret, retErr := retireSupersededPollerGeneration(ctx, client, triggerOwner, lease, owner, repo, st.activeTriggerID(baseURL), time.Now())
+		activeTrigger := st.activeTriggerID(baseURL)
+		ret, retErr := retireSupersededPollerGeneration(ctx, client, triggerOwner, lease, owner, repo, activeTrigger, activeTrigger == 0 && len(st.hooks) > 0, time.Now())
 		st.triggers = dropRevokedTriggers(st.triggers, ret.revokedTriggerIDs)
 		carried = append(carried[:len(carried):len(carried)], ret.details...)
 		pollerRes.Details = append(pollerRes.Details[:len(pollerRes.Details):len(pollerRes.Details)], ret.details...)

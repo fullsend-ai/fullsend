@@ -65,10 +65,13 @@ type pollerRetirementResult struct {
 
 // retireSupersededPollerGeneration retires the recorded retiring Poller
 // generation (see the overview at the top of this file). activeTriggerID is the trigger
-// the webhook uses, which is never revoked. It does nothing without the
+// the webhook uses, which is never revoked. activeTriggerUnresolved is set
+// when a managed webhook exists but its trigger cannot be identified
+// (activeTriggerID is then 0); retirement waits rather than risk revoking a
+// trigger the webhook still embeds. It does nothing without the
 // project lease, without a trigger owner that supports retirement, or when no
 // Poller is retiring.
-func retireSupersededPollerGeneration(ctx context.Context, client forge.Client, to GitLabTriggerOwner, lease *GitLabProjectLease, owner, repo string, activeTriggerID int64, now time.Time) (pollerRetirementResult, error) {
+func retireSupersededPollerGeneration(ctx context.Context, client forge.Client, to GitLabTriggerOwner, lease *GitLabProjectLease, owner, repo string, activeTriggerID int64, activeTriggerUnresolved bool, now time.Time) (pollerRetirementResult, error) {
 	if !lease.holds(owner, repo) {
 		return pollerRetirementResult{}, nil
 	}
@@ -109,6 +112,9 @@ func retireSupersededPollerGeneration(ctx context.Context, client forge.Client, 
 	}
 	if blocked != "" {
 		return wait(blocked)
+	}
+	if activeTriggerUnresolved {
+		return wait("the managed webhook's active pipeline trigger cannot be identified, so none of the superseded Poller's triggers can be revoked safely; install reconciles the webhook trigger first")
 	}
 
 	var res pollerRetirementResult

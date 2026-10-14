@@ -235,14 +235,14 @@ func runRetirement(t *testing.T, c forge.Client, to GitLabTriggerOwner, activeTr
 	lease, release, err := LockGitLabProjectLease(ctx, c, webhookTestOwner, webhookTestRepo)
 	require.NoError(t, err)
 	defer release(nil)
-	return retireSupersededPollerGeneration(ctx, c, to, lease, webhookTestOwner, webhookTestRepo, activeTriggerID, time.Now())
+	return retireSupersededPollerGeneration(ctx, c, to, lease, webhookTestOwner, webhookTestRepo, activeTriggerID, false, time.Now())
 }
 
 func TestRetireSupersededPollerGeneration_NothingToDo(t *testing.T) {
 	ctx := context.Background()
 	c, ro := retirementFixture(t)
 
-	res, err := retireSupersededPollerGeneration(ctx, c, ro, nil, webhookTestOwner, webhookTestRepo, 0, time.Now())
+	res, err := retireSupersededPollerGeneration(ctx, c, ro, nil, webhookTestOwner, webhookTestRepo, 0, false, time.Now())
 	require.NoError(t, err)
 	assert.Equal(t, pollerRetirementResult{}, res, "no lease, no retirement")
 
@@ -414,6 +414,28 @@ func TestRetireSupersededPollerGeneration_RetiresAndIsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, pollerRetirementResult{}, res)
 	assert.Equal(t, []int64{webhookPollerUserID}, ro.retired)
+}
+
+// A managed webhook whose active trigger cannot be identified may still embed
+// a trigger the retiring account owns, so retirement postpones everything
+// until the webhook trigger is reconciled.
+func TestRetireSupersededPollerGeneration_UnresolvedActiveTriggerWaits(t *testing.T) {
+	c, ro := retirementFixture(t)
+	c.PipelineTriggerTokens[webhookTestOwner+"/"+webhookTestRepo] = []forge.PipelineTriggerToken{{ID: 70, OwnerID: webhookPollerUserID}}
+	seedDefaultBranchGrants(t, c)
+	ctx := context.Background()
+	lease, release, err := LockGitLabProjectLease(ctx, c, webhookTestOwner, webhookTestRepo)
+	require.NoError(t, err)
+	defer release(nil)
+
+	res, err := retireSupersededPollerGeneration(ctx, c, ro, lease, webhookTestOwner, webhookTestRepo, 0, true, time.Now())
+	require.NoError(t, err)
+	assert.Contains(t, res.waiting, "active pipeline trigger cannot be identified")
+	assert.Empty(t, res.details)
+	assert.Empty(t, c.RevokedTriggerTokenIDs)
+	assert.Empty(t, c.RevokedProtectedBranchMergeEntries)
+	assert.Empty(t, ro.retired)
+	assert.Equal(t, int64(webhookPollerUserID), generationState(t, c).RetiringUserID)
 }
 
 // triggerRevokeClient models a trigger revocation that does not stick, or one
