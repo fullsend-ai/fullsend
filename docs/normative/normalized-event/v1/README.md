@@ -13,7 +13,8 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
   `event` bound to a `NormalizedEvent` object. This describes the currently
   shipped event-backed path. [ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md)
   adopts a future entity-first context with required `entity` and nullable
-  `event`; its field-level contract remains follow-up versioned work.
+  `event`; its field-level contract is
+  [Normalized entity v1](../../normalized-entity/v1/README.md).
 - **Authorization:** `fullsend dispatch` enforces the
   [Authorization Contract v1](../../authorization/v1/) as a platform-level gate
   after normalization and **before** CEL evaluation. Harness `trigger`

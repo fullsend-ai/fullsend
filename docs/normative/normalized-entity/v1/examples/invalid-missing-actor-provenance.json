@@ -1,0 +1,78 @@
+{
+  "entity_document": {
+    "schema_version": "normalized-entity/v1",
+    "phase": "evaluable",
+    "entity": {
+      "kind": "work_item",
+      "source": {
+        "system": "github",
+        "host": "github.com",
+        "repository": "fullsend-ai/demo",
+        "repository_id": "R_kgDOExample"
+      },
+      "id": "I_kwDOExample45",
+      "number": 45,
+      "url": "https://github.com/fullsend-ai/demo/issues/45",
+      "state": "open",
+      "author": {
+        "id": "U_kgDOBob",
+        "login": "bob",
+        "kind": "human"
+      },
+      "created_at": "2026-10-12T09:00:00.000000000Z",
+      "updated_at": "2026-10-13T11:20:00.000000000Z",
+      "labels": [],
+      "actions": [
+        {
+          "id": "I_kwDOExample45",
+          "category": "body",
+          "created_at": "2026-10-12T09:00:00.000000000Z",
+          "actor": {
+            "id": "U_kgDOBob",
+            "login": "bob",
+            "kind": "human",
+            "role": "maintain",
+            "bot_role": null,
+            "role_verified": true,
+            "is_entity_author": true
+          },
+          "command": null
+        },
+        {
+          "id": "IC_kwDOExampleUnattributed",
+          "category": "comment",
+          "created_at": "2026-10-13T11:20:00.000000000Z",
+          "actor": {
+            "id": null,
+            "login": null,
+            "kind": "human",
+            "role": "write",
+            "bot_role": null,
+            "role_verified": true,
+            "is_entity_author": false
+          },
+          "command": "/fs-triage"
+        }
+      ]
+    },
+    "coverage": {
+      "state": { "status": "complete" },
+      "actions": {
+        "status": "complete",
+        "categories": {
+          "body": { "status": "complete" },
+          "comment": { "status": "complete" },
+          "label_application": { "status": "complete" }
+        }
+      }
+    },
+    "evaluation": {
+      "harness": "triage",
+      "human_min_role": "triage",
+      "origin": "discovery",
+      "resolved_at": "2026-10-14T06:00:02.000000000Z",
+      "removed_elements": 0
+    }
+  },
+  "event": null
+}

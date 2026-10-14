@@ -180,7 +180,8 @@ repo baseline and overrides)
   resolved entities with no prompting event. Harnesses without entity sources
   remain event-triggered only and may rely on the event being present
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md), partially superseded by
-  [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
+  [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md); entity contract:
+  [`docs/normative/normalized-entity/v1`](normative/normalized-entity/v1/README.md)).
 - Portable provider and profile resolution: provider and profile definitions
   can be URL-referenced (sha256-pinned) or specified as local file paths in
   the harness, enabling portable base harnesses that carry their own
@@ -568,7 +569,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
   unresolved, without launching a sandbox. Later input selection and injection
   filtering govern prompt construction. Entity-first execution remains
   disabled until the versioned normalized-entity contract defines partial
-  data and coverage. Every run uses the harness's configured identity
+  data and coverage; [Normalized entity v1](normative/normalized-entity/v1/README.md)
+  defines that field-level contract. Every run uses the harness's configured
+  identity
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md),
   [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md),
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
@@ -587,16 +590,16 @@ The existing design principle is that [the repo is the coordinator](problems/age
 
 **Open questions:**
 
-- What field-level normalized-entity contract and provider query plans can
-  support entity-first evaluation, prove partial-history coverage, and
-  represent handled state? See
+- What provider query plans can support entity-first evaluation over the
+  [Normalized entity v1](normative/normalized-entity/v1/README.md) contract,
+  which defines the field-level entity, partial-history coverage, and
+  handled-state evidence? See
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
   for selective acquisition and its authorization rules, and
   [ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)
   for query combination and local routing. The normative discovery protocol,
   including query syntax, adapter mappings, and discovery coverage evidence,
-  remains open, as do the normalized entity-history and handled-state
-  contracts.
+  remains open.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
