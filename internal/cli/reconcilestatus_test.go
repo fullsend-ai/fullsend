@@ -334,11 +334,19 @@ func TestNewReconcileStatusCmd_ReviewRunDoesNotEnableGitHubGuidanceOnGitLab(t *t
 }
 
 func TestNewReconcileStatusCmd_ReviewRunEnablesGitHubGuidance(t *testing.T) {
+	const reviewedSHA = "abc1234567890abcdef1234567890abcdef123456"
+
 	origMint := reconcileMintToken
 	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
 		return &mintclient.MintResult{Token: "ghs_minted_token"}, nil
 	}
 	defer func() { reconcileMintToken = origMint }()
+
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = reviewedSHA
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(string) forge.Client { return fc }
+	defer func() { reconcileNewForgeClient = origForge }()
 
 	origReconcile := reconcileOrphaned
 	var capturedGuidance string
@@ -353,6 +361,8 @@ func TestNewReconcileStatusCmd_ReviewRunEnablesGitHubGuidance(t *testing.T) {
 		"--repo", "org/repo",
 		"--number", "7",
 		"--run-id", "run-1",
+		"--sha", reviewedSHA,
+		"--reason", "cancelled",
 		"--forge", "github",
 		"--mint-url", "https://mint.example.com",
 		"--role", "review",
@@ -361,6 +371,87 @@ func TestNewReconcileStatusCmd_ReviewRunEnablesGitHubGuidance(t *testing.T) {
 
 	require.NoError(t, cmd.Execute())
 	assert.Equal(t, builtInGitHubReviewRetryGuidance, capturedGuidance)
+}
+
+func TestNewReconcileStatusCmd_ReviewRunSupersededOmitsRetry(t *testing.T) {
+	const reviewedSHA = "abc1234567890abcdef1234567890abcdef123456"
+
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_minted_token"}, nil
+	}
+	defer func() { reconcileMintToken = origMint }()
+
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "def4567890abcdef1234567890abcdef12345678"
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(string) forge.Client { return fc }
+	defer func() { reconcileNewForgeClient = origForge }()
+
+	origReconcile := reconcileOrphaned
+	var capturedGuidance string
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, options statuscomment.ReconcileOptions) error {
+		capturedGuidance = options.CancellationGuidance
+		return nil
+	}
+	defer func() { reconcileOrphaned = origReconcile }()
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--sha", reviewedSHA,
+		"--reason", "cancelled",
+		"--forge", "github",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--review-run",
+	})
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, builtInGitHubReviewSupersededGuidance, capturedGuidance)
+	assert.NotContains(t, capturedGuidance, "/fs-review")
+}
+
+func TestNewReconcileStatusCmd_ReviewRunHeadLookupFailureOmitsGuidance(t *testing.T) {
+	const reviewedSHA = "abc1234567890abcdef1234567890abcdef123456"
+
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_minted_token"}, nil
+	}
+	defer func() { reconcileMintToken = origMint }()
+
+	fc := forge.NewFakeClient()
+	fc.Errors["GetPullRequestHeadSHA"] = fmt.Errorf("lookup failed")
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(string) forge.Client { return fc }
+	defer func() { reconcileNewForgeClient = origForge }()
+
+	origReconcile := reconcileOrphaned
+	var capturedGuidance string
+	reconcileOrphaned = func(_ context.Context, _ tracker.Client, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, _, _ string, _ bool, _ string, options statuscomment.ReconcileOptions) error {
+		capturedGuidance = options.CancellationGuidance
+		return nil
+	}
+	defer func() { reconcileOrphaned = origReconcile }()
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--sha", reviewedSHA,
+		"--reason", "cancelled",
+		"--forge", "github",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--review-run",
+	})
+
+	require.NoError(t, cmd.Execute())
+	assert.Empty(t, capturedGuidance)
 }
 
 func TestNewReconcileStatusCmd_GitLabNoToken(t *testing.T) {

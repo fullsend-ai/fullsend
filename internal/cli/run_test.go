@@ -7671,6 +7671,73 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 }
 
+func TestRunAgent_CancelledReviewUsesCurrentHeadGuidance(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "review.md"),
+		[]byte("You are a review agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "review.yaml"),
+		[]byte("agent: agents/review.md\nrole: review\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/review.yaml\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	origNewClient := statusNewForgeClient
+	defer func() {
+		statusMintToken = origMint
+		statusNewForgeClient = origNewClient
+	}()
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_test_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "new-head"
+	clientCreations := 0
+	statusNewForgeClient = func(token string) forge.Client {
+		assert.Equal(t, "ghs_test_token", token)
+		clientCreations++
+		if clientCreations == 1 {
+			time.AfterFunc(20*time.Millisecond, cancel)
+		}
+		return fc
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("PR_HEAD_SHA", "cancelled-head")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	err := runAgent(ctx, "review", dir, "", t.TempDir(), "", nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{
+		statusRepo:    "org/my-repo",
+		statusNum:     42,
+		mintURL:       "https://mint.example.com",
+		trackerSource: "github",
+	}, ui.New(&buf), false, runOverrideFlags{})
+	require.Error(t, err)
+	comments := fc.IssueComments["org/my-repo/42"]
+	require.NotEmpty(t, comments, "output: %s; all comments: %#v", buf.String(), fc.IssueComments)
+	body := comments[len(comments)-1].Body
+	assert.Contains(t, body, "superseded by a newer commit")
+	assert.NotContains(t, body, "/fs-review")
+}
+
 func TestBackendFromConfigFile_MissingUsesDefault(t *testing.T) {
 	t.Parallel()
 
@@ -8707,31 +8774,48 @@ func TestDoBridgeAgentsMDToHome_ReportsExitAndStderr(t *testing.T) {
 	assert.NotContains(t, buf.String(), "<nil>")
 }
 
-func TestBuiltInGitHubReview(t *testing.T) {
+func TestBuiltInGitHubReviewCancellationGuidance(t *testing.T) {
+	const reviewedSHA = "abc1234567890abcdef1234567890abcdef123456"
+
 	for _, tt := range []struct {
-		name, agent, forge, source string
-		wantRetry                  bool
+		name, agent, forgePlatform, source string
+		reviewedSHA, currentSHA            string
+		headErr                            error
+		wantRetry, wantSuperseded, wantErr bool
 	}{
-		{"GitHub review", "review", "github", "github", true},
-		{"GitHub review without source", "review", "github", "", true},
-		{"Jira source with GitHub forge", "review", "github", "jira", false},
-		{"custom review", "custom-review", "github", "github", false},
-		{"GitLab review", "review", "gitlab", "gitlab", false},
-		{"Forgejo review", "review", "forgejo", "forgejo", false},
+		{name: "current GitHub review", agent: "review", forgePlatform: "github", source: "github", reviewedSHA: reviewedSHA, currentSHA: reviewedSHA, wantRetry: true},
+		{name: "superseded GitHub review", agent: "review", forgePlatform: "github", source: "github", reviewedSHA: reviewedSHA, currentSHA: "def4567890abcdef1234567890abcdef12345678", wantSuperseded: true},
+		{name: "head lookup failure", agent: "review", forgePlatform: "github", source: "github", reviewedSHA: reviewedSHA, headErr: fmt.Errorf("lookup failed"), wantErr: true},
+		{name: "missing reviewed SHA", agent: "review", forgePlatform: "github", source: "github", currentSHA: reviewedSHA},
+		{name: "Jira source with GitHub forge", agent: "review", forgePlatform: "github", source: "jira", reviewedSHA: reviewedSHA, headErr: fmt.Errorf("must not fetch")},
+		{name: "custom review", agent: "custom-review", forgePlatform: "github", source: "github", reviewedSHA: reviewedSHA, headErr: fmt.Errorf("must not fetch")},
+		{name: "GitLab review", agent: "review", forgePlatform: "gitlab", source: "gitlab", reviewedSHA: reviewedSHA, headErr: fmt.Errorf("must not fetch")},
+		{name: "Forgejo review", agent: "review", forgePlatform: "forgejo", source: "forgejo", reviewedSHA: reviewedSHA, headErr: fmt.Errorf("must not fetch")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			// Exercise the cancellation comment consumer, so a routing mistake
 			// is caught as unusable retry guidance in the posted body.
 			fc := forge.NewFakeClient()
+			fc.PullRequestHeadSHA = tt.currentSHA
+			if tt.headErr != nil {
+				fc.Errors["GetPullRequestHeadSHA"] = tt.headErr
+			}
+			guidance, err := resolveBuiltInGitHubReviewCancellationGuidance(
+				context.Background(), fc, tt.agent, tt.forgePlatform, tt.source,
+				"org/repo", 7, tt.reviewedSHA,
+			)
+			assert.Equal(t, tt.wantErr, err != nil)
+
 			n := statuscomment.New(tracker.NewForgeClient(fc), config.StatusNotificationConfig{},
-				"org/repo", 7, "", "", "run-42")
-			n.SetCancellationGuidance(builtInGitHubReviewCancellationGuidance(tt.agent, tt.forge, tt.source))
+				"org/repo", 7, "", tt.reviewedSHA, "run-42")
+			n.SetCancellationGuidance(guidance)
 			require.NoError(t, n.PostStart(context.Background(), "Review"))
 			require.NoError(t, n.PostCompletion(context.Background(), "Review", "cancelled"))
 			require.Len(t, fc.UpdatedComments, 1)
 			body := fc.UpdatedComments[0].Body
 			assert.Contains(t, body, "Cancelled")
 			assert.Equal(t, tt.wantRetry, strings.Contains(body, "/fs-review"), body)
+			assert.Equal(t, tt.wantSuperseded, strings.Contains(body, "superseded by a newer commit"), body)
 		})
 	}
 }

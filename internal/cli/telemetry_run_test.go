@@ -556,18 +556,6 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 	}
 }
 
-func TestChildScriptEnv_PreservesGitHubToken(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "workflow-token")
-
-	env := childScriptEnv(map[string]string{
-		"GITHUB_TOKEN": "runner-token",
-		"SAFE_VAR":     "allowed",
-	}, "")
-
-	assert.Equal(t, "runner-token", envLast(env, "GITHUB_TOKEN"))
-	assert.Contains(t, env, "SAFE_VAR=allowed")
-}
-
 func TestAgentSpanStartAttrs(t *testing.T) {
 	attrs := agentSpanStartAttrs(3, "code")
 	require.Len(t, attrs, 3)

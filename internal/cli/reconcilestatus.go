@@ -64,6 +64,7 @@ to an "Interrupted" state and adds the terminal tag. If already
 finalized, this is a no-op.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var tc tracker.Client
+			var statusForgeClient forge.Client
 			var project string
 			var forgePlatform string
 
@@ -116,22 +117,21 @@ finalized, this is a no-op.`,
 					return err
 				}
 
-				var forgeClient forge.Client
 				if forgePlatform == "gitlab" {
 					var gitlabErr error
-					forgeClient, gitlabErr = newGitLabClientFromEnv("status reconciliation")
+					statusForgeClient, gitlabErr = newGitLabClientFromEnv("status reconciliation")
 					if gitlabErr != nil {
 						return gitlabErr
 					}
 				} else {
 					var githubErr error
-					forgeClient, githubErr = reconcileGitHubClient(cmd, mintURL, role, repoName)
+					statusForgeClient, githubErr = reconcileGitHubClient(cmd, mintURL, role, repoName)
 					if githubErr != nil {
 						return githubErr
 					}
 				}
 
-				tc = reconcileNewTrackerClient(forgeClient)
+				tc = reconcileNewTrackerClient(statusForgeClient)
 				project = owner + "/" + repoName
 			}
 
@@ -163,8 +163,15 @@ finalized, this is a no-op.`,
 
 			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
 			guidance := ""
-			if reviewRun {
-				guidance = builtInGitHubReviewCancellationGuidance("review", forgePlatform, trackerSource)
+			if reviewRun && termReason == statuscomment.ReasonCancelled {
+				var guidanceErr error
+				guidance, guidanceErr = resolveBuiltInGitHubReviewCancellationGuidance(
+					cmd.Context(), statusForgeClient, "review", forgePlatform, trackerSource,
+					project, number, sha,
+				)
+				if guidanceErr != nil {
+					fmt.Fprintf(os.Stderr, "WARNING: could not determine whether cancelled review was superseded; omitting retry guidance: %v\n", guidanceErr)
+				}
 			}
 			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription, statuscomment.ReconcileOptions{
 				CancellationGuidance: guidance,
