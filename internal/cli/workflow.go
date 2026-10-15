@@ -111,7 +111,7 @@ func lockedWorkflowSHA256(entry *lock.HarnessLock, agentName, fullsendDir string
 			problem = fmt.Sprintf("has sha256 %q, not 64 lowercase hex characters", d.SHA256)
 		}
 		if problem != "" {
-			return "", fmt.Errorf("lock.yaml entry for agent %q is malformed: dependencies[%d] (field workflow) %s; regenerate it with `fullsend lock --update %s%s`", agentName, i, problem, agentName, fullsendDirArg(fullsendDir))
+			return "", fmt.Errorf("lock.yaml entry for agent %q is malformed: dependencies[%d] (field runtime_workflow) %s; regenerate it with `fullsend lock --update %s%s`", agentName, i, problem, agentName, fullsendDirArg(fullsendDir))
 		}
 		hash = d.SHA256
 	}
