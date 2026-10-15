@@ -157,7 +157,7 @@ func TestGivenRuntimeWorkflowCommitted_DriverWithoutFileDeleter(t *testing.T) {
 	var logged []string
 	w.RuntimeWorkflowFiles = []string{"pipelines/x/a"}
 	w.Logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
-	RemoveRuntimeWorkflowFiles(w)
+	removeRuntimeWorkflowFiles(w)
 	assert.Empty(t, w.RuntimeWorkflowFiles)
 	require.Len(t, logged, 1)
 	assert.Contains(t, logged[0], "[pipelines/x/a] left in place")
@@ -290,7 +290,7 @@ func TestRemoveRuntimeWorkflowFiles_DeleteError(t *testing.T) {
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scm,
 		RuntimeWorkflowFiles: []string{"pipelines/x/a", "pipelines/x/b"},
 		Logf:                 func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
-	RemoveRuntimeWorkflowFiles(w)
+	removeRuntimeWorkflowFiles(w)
 	assert.Equal(t, []string{"pipelines/x/a", "pipelines/x/b"}, scm.deletedFiles)
 	assert.Empty(t, w.RuntimeWorkflowFiles)
 	require.Len(t, logged, 2)

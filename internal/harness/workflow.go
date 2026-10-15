@@ -262,33 +262,70 @@ func resolveFetchedWorkflowSource(w *RuntimeWorkflowSpec, harnessURL string, all
 	return nil
 }
 
-// credentialEnvSuffixes extend reservedPluginEnvSuffixes (_PROXY,
-// _API_KEY, _TOKEN) with the other credential-shaped endings. A bare
-// _KEY is not one: ISSUE_KEY names a Jira work item, which args exist to
-// carry.
-var credentialEnvSuffixes = []string{"_PASSWORD", "_CREDENTIALS", "_PRIVATE_KEY", "_ACCESS_KEY", "_SECRET_KEY"}
+// credentialSegments are name segments (the parts between underscores)
+// that mark a credential wherever they sit in the name: DB_PASS,
+// HTTP_AUTHORIZATION and GH_TOKEN_B64 all match. AUTH matches only as a
+// whole segment, so ISSUE_AUTHOR stays allowed, and PROXY carries over
+// from reservedPluginEnvSuffixes.
+var credentialSegments = map[string]bool{
+	"TOKEN": true, "TOKENS": true, "SECRET": true, "SECRETS": true,
+	"PASS": true, "PASSWD": true, "PASSWORD": true, "PASSWORDS": true, "PASSPHRASE": true,
+	"CRED": true, "CREDS": true, "CREDENTIAL": true, "CREDENTIALS": true,
+	"AUTH": true, "AUTHN": true, "AUTHZ": true, "AUTHORIZATION": true,
+	"COOKIE": true, "COOKIES": true, "PROXY": true, "BEARER": true, "JWT": true,
+	"APIKEY": true, "PRIVATEKEY": true, "ACCESSKEY": true, "SECRETKEY": true,
+	"SSHKEY": true, "SIGNINGKEY": true, "DEPLOYKEY": true,
+}
+
+// credentialStems mark a credential inside a run-together segment
+// (DBPASSWORD, MYSECRET). TOKEN is matched as a segment suffix instead
+// (GHTOKEN, AUTHTOKEN), so TOKENIZER stays allowed.
+var credentialStems = []string{"PASSWORD", "PASSWD", "PASSPHRASE", "SECRET", "CREDENTIAL", "AUTHORIZATION", "APIKEY", "PRIVATEKEY", "ACCESSKEY"}
+
+// credentialKeyQualifiers make a following KEY segment a credential
+// (MY_API_KEY, AWS_ACCESS_KEY, DEPLOY_KEY_B64). A KEY after anything
+// else is allowed on purpose: ISSUE_KEY names a Jira work item, which
+// args exist to carry.
+var credentialKeyQualifiers = map[string]bool{
+	"API": true, "ACCESS": true, "SECRET": true, "PRIVATE": true, "SIGNING": true,
+	"ENCRYPTION": true, "MASTER": true, "SSH": true, "DEPLOY": true, "CLIENT": true, "SESSION": true,
+}
 
 // CredentialShapedEnvName reports whether an environment variable name
-// looks like it holds a credential, and the rule it matched. It matches
-// the suffixes *_PROXY, *_API_KEY, *_TOKEN (reservedPluginEnvSuffixes),
-// *_PASSWORD, *_CREDENTIALS, *_PRIVATE_KEY, *_ACCESS_KEY and *_SECRET_KEY,
-// any name containing _SECRET, and the OTEL_* prefix, whose exporter
-// headers carry collector tokens. A name equal to a suffix without its
-// underscore (TOKEN, PASSWORD) matches too. A bare *_KEY such as ISSUE_KEY
-// is allowed on purpose: it names a Jira work item, which args exist to
-// carry. Names are compared case-insensitively.
+// looks like it holds a credential, and the rule it matched. Names are
+// compared case-insensitively and split on underscores. It matches the
+// OTEL_* prefix, whose exporter headers carry collector tokens; any
+// segment in credentialSegments; a PWD segment in a longer name (DB_PWD,
+// not PWD itself); a segment that ends in TOKEN or contains
+// a credentialStems stem; and a KEY segment after a credentialKeyQualifiers
+// segment. A bare *_KEY such as ISSUE_KEY is allowed. The list is defense
+// in depth: the rule for harness authors is that args name only
+// non-secret identifiers (ADR 0130 rule 4).
 func CredentialShapedEnvName(name string) (string, bool) {
 	upper := strings.ToUpper(name)
 	if strings.HasPrefix(upper, "OTEL_") {
 		return "the OTEL_* family, whose exporter headers carry collector tokens", true
 	}
-	for _, suffix := range append(append([]string(nil), reservedPluginEnvSuffixes...), credentialEnvSuffixes...) {
-		if strings.HasSuffix(upper, suffix) || upper == suffix[1:] {
-			return "the *" + suffix + " family (credential-shaped names)", true
+	segs := strings.Split(upper, "_")
+	for i, seg := range segs {
+		if credentialSegments[seg] {
+			return "a " + seg + " segment (credential-shaped names)", true
 		}
-	}
-	if strings.Contains(upper, "_SECRET") || upper == "SECRET" {
-		return "the *_SECRET* family (credential-shaped names)", true
+		if strings.HasSuffix(seg, "TOKEN") || strings.HasSuffix(seg, "TOKENS") {
+			return "a segment ending in TOKEN (credential-shaped names)", true
+		}
+		for _, stem := range credentialStems {
+			if strings.Contains(seg, stem) {
+				return "a segment containing " + stem + " (credential-shaped names)", true
+			}
+		}
+		// PWD alone is the shell's working directory; DB_PWD is a password.
+		if seg == "PWD" && len(segs) > 1 {
+			return "a PWD segment (credential-shaped names)", true
+		}
+		if seg == "KEY" && i > 0 && credentialKeyQualifiers[segs[i-1]] {
+			return "the " + segs[i-1] + "_KEY family (credential-shaped names)", true
+		}
 	}
 	return "", false
 }

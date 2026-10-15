@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"path/filepath"
@@ -90,7 +91,7 @@ func givenRuntimeWorkflowCommitted(w *world.World, name, dest string) error {
 
 // errNoFileDeleter refuses a runtime workflow commit on an SCM driver
 // that cannot delete the files again in CleanupScenario.
-var errNoFileDeleter = fmt.Errorf("this SCM driver cannot delete files, so the runtime workflow could not be cleaned up; implement scm.FileDeleter")
+var errNoFileDeleter = errors.New("this SCM driver cannot delete files, so the runtime workflow could not be cleaned up; implement scm.FileDeleter")
 
 func fixtureDests(files []fixtureFile) []string {
 	dests := make([]string, len(files))
@@ -116,12 +117,12 @@ func refuseExistingRepoPath(w *world.World, p string) error {
 	}
 }
 
-// RemoveRuntimeWorkflowFiles deletes every file
+// removeRuntimeWorkflowFiles deletes every file
 // givenRuntimeWorkflowCommitted recorded, so the next scenario on this
 // slot starts without the runtime workflow. A file that is not there (its
-// commit failed) is skipped. Exported so CleanupScenario can call it
-// during scenario teardown.
-func RemoveRuntimeWorkflowFiles(w *world.World) {
+// commit failed) is skipped. CleanupScenario calls it during scenario
+// teardown.
+func removeRuntimeWorkflowFiles(w *world.World) {
 	ctx := context.Background()
 	deleter, ok := w.SCM.(scm.FileDeleter)
 	if !ok {

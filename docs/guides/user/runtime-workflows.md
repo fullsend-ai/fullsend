@@ -283,10 +283,15 @@ unset variable, or one that holds a newline, carriage return or NUL, fails
 the run before the sandbox starts.
 
 Name work-item identifiers only. Args reach the model prompt, the run plan
-and `metrics.json`, so a variable whose name looks like a credential (ending
-in `_TOKEN`, `_API_KEY`, `_PRIVATE_KEY`, `_ACCESS_KEY`, `_SECRET_KEY`, `_PROXY`, `_PASSWORD` or `_CREDENTIALS`,
-containing `_SECRET`, or starting with `OTEL_`) is refused when the harness
-loads. A bare `_KEY`, such as `ISSUE_KEY` for a Jira work item, is allowed.
+and `metrics.json`, so a variable whose name looks like a credential is
+refused when the harness loads: a name starting with `OTEL_`, or with a
+segment between underscores such as `TOKEN`, `SECRET`, `PASS`, `PASSWD`,
+`PASSWORD`, `CRED`, `CREDENTIALS`, `AUTH`, `AUTHORIZATION`, `COOKIE` or
+`PROXY` (`DB_PASS`, `GH_TOKEN_B64`), a segment ending in `TOKEN`, or a `KEY`
+after `API`, `ACCESS`, `SECRET`, `PRIVATE`, `SIGNING`, `DEPLOY` and similar.
+A bare `_KEY`, such as `ISSUE_KEY` for a Jira work item, is allowed. The
+check is a safety net, not the rule: a secret in an ordinary-looking
+variable passes it, so name only non-secret identifiers.
 Args text that looks like a credential is refused when the harness loads, and
 an expanded value that looks like one fails the run.
 
