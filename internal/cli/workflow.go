@@ -269,14 +269,14 @@ func newWorkflowLaunch(rw *resolve.ResolvedRuntimeWorkflow) *workflowLaunch {
 	return l
 }
 
-// workflowSpanAttr is the agent span's fullsend.workflow attribute: for a
+// workflowSpanAttr is the agent span's fullsend.runtime_workflow attribute: for a
 // Claude plugin, the /<namespace>:<name> the runner starts, without args,
 // which stay out of traces; for a pi extension, the source.
 func workflowSpanAttr(rw *resolve.ResolvedRuntimeWorkflow) attribute.KeyValue {
 	if rw.Kind == pluginformat.KindClaude {
-		return boundedStringAttr("fullsend.workflow", "/"+rw.PluginName+":"+rw.Name)
+		return boundedStringAttr("fullsend.runtime_workflow", "/"+rw.PluginName+":"+rw.Name)
 	}
-	return boundedStringAttr("fullsend.workflow", rw.Source)
+	return boundedStringAttr("fullsend.runtime_workflow", rw.Source)
 }
 
 func shortHash(s string) string {

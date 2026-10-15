@@ -98,7 +98,7 @@ func parsePiAgent(data []byte) (*piAgentDef, error) {
 	if specs != nil {
 		def.Tools, def.BashAllowlist = parseClaudeToolSpecs(specs)
 	}
-	// A bad disallowedTools: must not fail the definition for the runtimes
+	// A bad disallowedTools: must not fail the runtime workflow for the runtimes
 	// that never read it; the error is kept for the one caller that does.
 	if disallowed, err := piToolSpecs(fm.DisallowedTools); err != nil {
 		def.DisallowedErr = fmt.Errorf("disallowedTools: %s", strings.TrimPrefix(err.Error(), "agent definition: tools "))

@@ -92,8 +92,8 @@ Examples:
 	cmd.Flags().IntVar(&f.timeoutMinutes, "timeout-minutes", agentnew.DefaultTimeoutMinutes, "agent timeout in minutes")
 	cmd.Flags().BoolVar(&f.validationLoop, "validation-loop", false,
 		"add a validation_loop that checks agent output against the schema (needs python3 with the jsonschema package on the runner)")
-	cmd.Flags().StringVar(&f.workflowSource, "workflow-source", "", "pin a workflow-definition repository in the harness workflow: field: a GitHub tree URL at a commit sha (#sha256= optional here) or a path in this repository")
-	cmd.Flags().StringVar(&f.workflow, "workflow", "", "the workflow to start from --workflow-source, workflows/<name>.js (claude runtime; omit for a pi extension)")
+	cmd.Flags().StringVar(&f.workflowSource, "runtime-workflow-source", "", "pin a runtime-workflow repository in the harness runtime_workflow: field: a GitHub tree URL at a commit sha (#sha256= optional here) or a path in this repository")
+	cmd.Flags().StringVar(&f.workflow, "runtime-workflow-name", "", "the workflow to start from --runtime-workflow-source, workflows/<name>.js (claude runtime; omit for a pi extension)")
 	cmd.Flags().BoolVar(&f.noRegister, "no-register", false, "write the files but do not add the agent to config.yaml")
 	cmd.Flags().BoolVar(&f.force, "force", false, "overwrite generated files that already exist (never overwrites shared scaffold assets)")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "validate and report what would be written without writing anything")
@@ -156,11 +156,11 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 		if !f.changed("image") {
 			image = spec.Image
 		}
-		if !f.changed("workflow-source") {
-			workflowSource = spec.WorkflowSource
+		if !f.changed("runtime-workflow-source") {
+			workflowSource = spec.RuntimeWorkflowSource
 		}
-		if !f.changed("workflow") {
-			workflow = spec.Workflow
+		if !f.changed("runtime-workflow-name") {
+			workflow = spec.RuntimeWorkflowName
 		}
 		if !f.changed("on") && !f.changed("trigger") {
 			on, trigger = spec.On, spec.Trigger
@@ -220,11 +220,11 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 	}
 	opts.Image = image
 
-	wfSpec, wfErr := agentnew.ParseWorkflow(workflowSource, workflow)
+	wfSpec, wfErr := agentnew.ParseRuntimeWorkflow(workflowSource, workflow)
 	if wfErr != nil {
 		return opts, "", "", wfErr
 	}
-	opts.Workflow = wfSpec
+	opts.RuntimeWorkflow = wfSpec
 
 	if runtimeName != "" && !slices.Contains(userFacingRuntimes(), runtimeName) {
 		return opts, "", "", fmt.Errorf("runtime %q is not valid (allowed: %s)",
@@ -349,7 +349,7 @@ func printWorkflowReminder(opts agentnew.Options, fullsendDir string, printer *u
 	if !opts.HasPlaceholderPin() {
 		return
 	}
-	printer.StepWarn(fmt.Sprintf("workflow.source has no tree hash yet, so harness/%s.yaml pins #sha256=%s (64 zeros) as a placeholder", opts.Name, agentnew.PlaceholderTreeHash))
+	printer.StepWarn(fmt.Sprintf("runtime_workflow.source has no tree hash yet, so harness/%s.yaml pins #sha256=%s (64 zeros) as a placeholder", opts.Name, agentnew.PlaceholderTreeHash))
 	printer.Raw(fmt.Sprintf("  Run 'fullsend lock %s%s': it fails with \"the fetched tree hashes to sha256=<hash>\"; put that hash after #sha256= and run it again.\n",
 		opts.Name, fullsendDirArg(fullsendDir)))
 }
@@ -359,7 +359,7 @@ func printWorkflowReminder(opts agentnew.Options, fullsendDir string, printer *u
 // went into the harness, so the instruction and the CEL cannot disagree.
 func printNextSteps(opts agentnew.Options, f agentNewFlags, printer *ui.Printer) {
 	printer.Raw("\nNext:\n")
-	if opts.Workflow != nil && opts.Workflow.Name != "" {
+	if opts.RuntimeWorkflow != nil && opts.RuntimeWorkflow.Name != "" {
 		printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — the runner starts the workflow; that file sets the main loop's instructions and tools.\n", opts.Name))
 	} else {
 		printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — that file is the agent's prompt.\n", opts.Name))

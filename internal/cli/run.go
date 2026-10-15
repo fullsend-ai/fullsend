@@ -1316,7 +1316,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
 		h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, expander)
 	}
-	// Expand ${VAR} references in workflow.args (ADR 0130), so a harness
+	// Expand ${VAR} references in runtime_workflow.args (ADR 0130), so a harness
 	// can hand the work item to the workflow; the result must stay one
 	// line, because it is the tail of the slash command the runner starts,
 	// and is scanned for credentials whether or not it names a variable.

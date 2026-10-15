@@ -461,7 +461,7 @@ A `validation_loop` retry starts the same command again. A Claude Code workflow 
 
 `runtime_workflow` is a top-level field only: it is not part of `ForgeConfig`, so a `runtime_workflow:` key under `forge:` or `overlays:` is silently ignored, as for `plugins`. An older fullsend binary ignores the field too and runs the harness with the default prompt, so a harness that uses it must state the fullsend release it needs.
 
-Walkthroughs: [Run a workflow definition repository](../guides/user/workflow-definitions.md) (pin, scaffold, run, troubleshoot) and [Make your pipeline repository loadable by fullsend](../guides/user/workflow-definition-authors.md) (the definition's layout and rules).
+Walkthroughs: [Run a runtime-workflow repository](../guides/user/runtime-workflows.md) (pin, scaffold, run, troubleshoot) and [Make your pipeline repository loadable by fullsend](../guides/user/runtime-workflow-authors.md) (the runtime workflow's layout and rules).
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 

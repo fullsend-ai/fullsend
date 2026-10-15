@@ -1,26 +1,26 @@
-# A harness that runs a workflow from a workflow definition (ADR 0130):
-# the harness workflow: field pins a definition and names one of its
-# workflows, and the runner delivers the definition as a plugin and starts
+# A harness that runs a workflow from a runtime workflow (ADR 0130):
+# the harness runtime_workflow: field pins a runtime workflow and names one of its
+# workflows, and the runner delivers the runtime workflow as a plugin and starts
 # /<namespace>:<workflow> <args>.
 #
-# The definition is committed into the leased repository under
+# The runtime workflow is committed into the leased repository under
 # pipelines/sample-pipeline/ and used as a path source, which resolves in
 # the repository that holds the harness. It goes in a
 # sub-directory, not at `source: .`: the leased repository's root is not a
 # plugin (it has no .claude-plugin/plugin.json and no workflows/), and `.`
-# would ship the whole repository to the sandbox as the definition.
+# would ship the whole repository to the sandbox as the runtime workflow.
 #
 # The repository stays on the install runtime (dummy), so no model runs and
 # the workflow script never executes: the run proves the plan-time path end
-# to end (the source resolves, the definition is read from the checkout, checked as a plugin with workflows/triage-fanout.js, hashed and
+# to end (the source resolves, the runtime workflow is read from the checkout, checked as a plugin with workflows/triage-fanout.js, hashed and
 # delivered, and the agent's tools: names Workflow) and the runner records
 # the command it started in metrics.json. The custom harness carries no
 # post-script, so the issue labels are not asserted here.
-Feature: Workflow definitions run from a harness
+Feature: Runtime workflows run from a harness
 
-  Scenario: a harness starts a workflow from a definition in the repository
+  Scenario: a harness starts a workflow from a runtime workflow in the repository
     Given the enrolled test repository
-    And the workflow definition "sample-pipeline" is committed at "pipelines/sample-pipeline"
+    And the runtime workflow "sample-pipeline" is committed at "pipelines/sample-pipeline"
     And a custom harness "workflow-triage" with:
       """
       agent: agents/workflow-triage.md
@@ -33,7 +33,7 @@ Feature: Workflow definitions run from a harness
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"
         && event.transition.label.name == "ready-for-workflow-triage"
-      workflow:
+      runtime_workflow:
         source: pipelines/sample-pipeline
         name: triage-fanout
         args: "issue 1"

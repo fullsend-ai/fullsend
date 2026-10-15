@@ -334,14 +334,14 @@ type runMetrics struct {
 		Input  int `json:"input"`
 		Output int `json:"output"`
 	} `json:"token_usage"`
-	// Workflow is the definition a harness with workflow: delivered and
+	// Workflow is the runtime workflow a harness with runtime_workflow: delivered and
 	// started (ADR 0130), recorded on every runtime; nil for any other
 	// harness.
-	Workflow *runWorkflow `json:"workflow"`
+	RuntimeWorkflow *runWorkflow `json:"runtime_workflow"`
 }
 
 // runWorkflow is metrics.json's workflow object: the harness
-// workflow.source without its #sha256= pin (or the path as written), the
+// runtime_workflow.source without its #sha256= pin (or the path as written), the
 // definition's tree hash, its kind (claude-plugin or pi-extension) and,
 // for a Claude plugin, the command the runner started.
 type runWorkflow struct {

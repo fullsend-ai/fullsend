@@ -233,11 +233,11 @@ type World struct {
 	// CleanupScenario deletes it before the leased repo is deallocated.
 	RunnerSecretsSecretSet bool
 
-	// WorkflowDefinitionFiles lists the repo paths of the workflow
+	// RuntimeWorkflowFiles lists the repo paths of the workflow
 	// definition files this scenario committed, each recorded before it
 	// is written. CleanupScenario deletes them so the next scenario on
 	// this slot does not find the previous lessee's definition.
-	WorkflowDefinitionFiles []string
+	RuntimeWorkflowFiles []string
 
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.

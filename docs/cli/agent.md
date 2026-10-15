@@ -142,8 +142,8 @@ for the four-step migration to the bare built-in names above.
 | `--image` | per-role pin | Container image the agent runs inside |
 | `--timeout-minutes` | `15` | Agent timeout in minutes |
 | `--validation-loop` | `false` | Add a `validation_loop` checking output against the schema |
-| `--workflow-source` | | A workflow-definition repository: a GitHub tree URL at a commit sha (`#sha256=` optional here) or a path in this repository. Writes a harness [`workflow:`](../reference/harness-reference.md#field-details). Claude or pi runtime. See [Starting a workflow](#starting-a-workflow) |
-| `--workflow` | | The workflow to start from `--workflow-source` (`workflows/<name>.js`); required on `claude`, refused on `pi`. Adds `Workflow` to the agent's `tools:` |
+| `--runtime-workflow-source` | | A runtime-workflow repository: a GitHub tree URL at a commit sha (`#sha256=` optional here) or a path in this repository. Writes a harness [`runtime_workflow:`](../reference/harness-reference.md#field-details). Claude or pi runtime. See [Starting a workflow](#starting-a-workflow) |
+| `--runtime-workflow-name` | | The workflow to start from `--runtime-workflow-source` (`workflows/<name>.js`); required on `claude`, refused on `pi`. Adds `Workflow` to the agent's `tools:` |
 | `--no-register` | `false` | Write the files but do not touch `config.yaml` |
 | `--force` | `false` | Overwrite generated files (never shared assets) |
 | `--dry-run` | `false` | Validate and print what would be written, writing nothing |
@@ -248,15 +248,15 @@ produce a different agent. Command-line flags override spec keys.
 
 ### Starting a workflow
 
-`--workflow-source <url-or-path>` and `--workflow <name>` (spec keys
-`workflow_source` and `workflow`) generate an agent whose run starts a Claude
-Code workflow from a workflow-definition repository
-([ADR 0130](../ADRs/0130-workflow-definition-repos-are-harness-resources.md)):
+`--runtime-workflow-source <url-or-path>` and `--runtime-workflow-name <name>` (spec keys
+`runtime_workflow_source` and `runtime_workflow_name`) generate an agent whose run starts a Claude
+Code workflow from a runtime-workflow repository
+([ADR 0130](../ADRs/0130-runtime-workflows-are-harness-resources.md)):
 
 ```bash
 fullsend agent new pipeline-runner \
-  --workflow-source https://github.com/example-org/sample-pipeline/tree/0123456789abcdef0123456789abcdef01234567 \
-  --workflow run-all
+  --runtime-workflow-source https://github.com/example-org/sample-pipeline/tree/0123456789abcdef0123456789abcdef01234567 \
+  --runtime-workflow-name run-all
 ```
 
 ```text
@@ -267,7 +267,7 @@ fullsend agent new pipeline-runner \
   scripts/post-pipeline-runner.sh
   policies/base.yaml
   ✓ Added agent "pipeline-runner"
-  ! workflow.source has no tree hash yet, so harness/pipeline-runner.yaml pins #sha256=0000000000000000000000000000000000000000000000000000000000000000 (64 zeros) as a placeholder
+  ! runtime_workflow.source has no tree hash yet, so harness/pipeline-runner.yaml pins #sha256=0000000000000000000000000000000000000000000000000000000000000000 (64 zeros) as a placeholder
   Run 'fullsend lock pipeline-runner': it fails with "the fetched tree hashes to sha256=<hash>"; put that hash after #sha256= and run it again.
 
 Next:
@@ -277,7 +277,7 @@ Next:
 The harness gets:
 
 ```yaml
-workflow:
+runtime_workflow:
   source: https://github.com/example-org/sample-pipeline/tree/0123456789abcdef0123456789abcdef01234567#sha256=0000000000000000000000000000000000000000000000000000000000000000
   name: run-all
 ```
@@ -289,9 +289,9 @@ commit, fails with `tree hash mismatch ... the fetched tree hashes to
 sha256=<hash>`, and you put that hash in the fragment. The URL must be covered
 by `allowed_remote_resources` in `config.yaml` for the fetch to run. A source
 that already has `#sha256=`, or a path in this repository, prints nothing
-about pinning. To pass `args`, add `args:` under `workflow:` in the harness.
+about pinning. To pass `args`, add `args:` under `runtime_workflow:` in the harness.
 
-With `--runtime pi`, pass `--workflow-source` alone: a pi extension
+With `--runtime pi`, pass `--runtime-workflow-source` alone: a pi extension
 definition takes no workflow name, starts itself from its own session hook,
 and the agent gets no `Workflow` tool. Any runtime but `claude` and `pi` is
 refused.

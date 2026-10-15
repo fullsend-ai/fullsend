@@ -81,7 +81,7 @@ func TestAgentDefinitionTools(t *testing.T) {
 		assert.False(t, read(p).Listed, p)
 	}
 
-	// A definition that cannot be read or parsed is an error, never a
+	// A runtime workflow that cannot be read or parsed is an error, never a
 	// definition without a tools: entry.
 	for _, p := range []string{
 		write("unterminated.md", "---\nname: a\ntools: Read\n"),
@@ -95,7 +95,7 @@ func TestAgentDefinitionTools(t *testing.T) {
 }
 
 // A malformed disallowedTools: fails only the tool-access read: the shared
-// parser still yields the definition, so runtimes that never read the key
+// parser still yields the runtime workflow, so runtimes that never read the key
 // (pi and codex bootstrap, the claude name check, model resolution) are
 // unaffected.
 func TestMalformedDisallowedToolsOnlyFailsToolAccess(t *testing.T) {

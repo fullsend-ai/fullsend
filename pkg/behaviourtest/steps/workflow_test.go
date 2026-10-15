@@ -60,7 +60,7 @@ func (s *treeSCM) DeleteFile(_ context.Context, _, _, path, _ string) error {
 	return nil
 }
 
-func TestWorkflowDefinitionRepoDir(t *testing.T) {
+func TestRuntimeWorkflowRepoDir(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		dest, want, err string
@@ -85,12 +85,12 @@ func TestWorkflowDefinitionRepoDir(t *testing.T) {
 	}
 }
 
-func TestGivenWorkflowDefinitionCommitted(t *testing.T) {
+func TestGivenRuntimeWorkflowCommitted(t *testing.T) {
 	t.Parallel()
 	scm := &treeSCM{}
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scm, FixturesRoot: "e2e/behaviour"}
 
-	require.NoError(t, givenWorkflowDefinitionCommitted(w, "sample-pipeline", "pipelines/sample-pipeline"))
+	require.NoError(t, givenRuntimeWorkflowCommitted(w, "sample-pipeline", "pipelines/sample-pipeline"))
 	paths := make([]string, 0, len(scm.files))
 	for p := range scm.files {
 		paths = append(paths, p)
@@ -103,10 +103,10 @@ func TestGivenWorkflowDefinitionCommitted(t *testing.T) {
 		"pipelines/sample-pipeline/workflows/triage-fanout.js",
 	}, paths)
 
-	require.ErrorContains(t, givenWorkflowDefinitionCommitted(w, "../workflow", "x"), "directory name")
-	require.ErrorContains(t, givenWorkflowDefinitionCommitted(w, "sample-pipeline", "."), "repository root")
-	require.ErrorContains(t, givenWorkflowDefinitionCommitted(&world.World{}, "sample-pipeline", "x"), "no repo configured")
-	require.Error(t, givenWorkflowDefinitionCommitted(w, "missing", "x"))
+	require.ErrorContains(t, givenRuntimeWorkflowCommitted(w, "../workflow", "x"), "directory name")
+	require.ErrorContains(t, givenRuntimeWorkflowCommitted(w, "sample-pipeline", "."), "repository root")
+	require.ErrorContains(t, givenRuntimeWorkflowCommitted(&world.World{}, "sample-pipeline", "x"), "no repo configured")
+	require.Error(t, givenRuntimeWorkflowCommitted(w, "missing", "x"))
 }
 
 var sampleDefinitionFiles = []string{
@@ -119,21 +119,21 @@ var sampleDefinitionFiles = []string{
 // A slot whose repository already has the destination, or any file the
 // definition would write, is refused before anything is committed, so
 // cleanup never deletes a file the scenario did not write.
-func TestGivenWorkflowDefinitionCommitted_ExistingDestinationRefused(t *testing.T) {
+func TestGivenRuntimeWorkflowCommitted_ExistingDestinationRefused(t *testing.T) {
 	t.Parallel()
 	for _, existing := range []string{"pipelines/sample-pipeline", "pipelines/sample-pipeline/workflows/triage-fanout.js"} {
 		scm := &treeSCM{files: map[string][]byte{existing: []byte("theirs")}}
 		w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scm, FixturesRoot: "e2e/behaviour"}
-		err := givenWorkflowDefinitionCommitted(w, "sample-pipeline", "pipelines/sample-pipeline")
+		err := givenRuntimeWorkflowCommitted(w, "sample-pipeline", "pipelines/sample-pipeline")
 		require.ErrorContains(t, err, existing+" already exists in the leased repository")
 		assert.Equal(t, 0, scm.commits, existing)
-		assert.Empty(t, w.WorkflowDefinitionFiles, existing)
+		assert.Empty(t, w.RuntimeWorkflowFiles, existing)
 	}
 
 	scm := &treeSCM{}
 	scm.getFileErr = errors.New("decode file content: json: cannot unmarshal array")
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: &unreadableSCM{scm}, FixturesRoot: "e2e/behaviour"}
-	err := givenWorkflowDefinitionCommitted(w, "sample-pipeline", "pipelines/sample-pipeline")
+	err := givenRuntimeWorkflowCommitted(w, "sample-pipeline", "pipelines/sample-pipeline")
 	require.ErrorContains(t, err, "cannot tell whether pipelines/sample-pipeline exists")
 	assert.Equal(t, 0, scm.commits)
 }
@@ -143,22 +143,22 @@ func TestGivenWorkflowDefinitionCommitted_ExistingDestinationRefused(t *testing.
 type noDeleteSCM struct{ scmdriver.Driver }
 
 // A driver that cannot delete files is refused before anything is
-// committed or recorded, since cleanup could not remove the definition.
-func TestGivenWorkflowDefinitionCommitted_DriverWithoutFileDeleter(t *testing.T) {
+// committed or recorded, since cleanup could not remove the runtime workflow.
+func TestGivenRuntimeWorkflowCommitted_DriverWithoutFileDeleter(t *testing.T) {
 	t.Parallel()
 	inner := &treeSCM{}
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: noDeleteSCM{inner}, FixturesRoot: "e2e/behaviour"}
-	err := givenWorkflowDefinitionCommitted(w, "sample-pipeline", "pipelines/sample-pipeline")
-	require.EqualError(t, err, "this SCM driver cannot delete files, so the definition could not be cleaned up; implement scm.FileDeleter")
+	err := givenRuntimeWorkflowCommitted(w, "sample-pipeline", "pipelines/sample-pipeline")
+	require.EqualError(t, err, "this SCM driver cannot delete files, so the runtime workflow could not be cleaned up; implement scm.FileDeleter")
 	assert.Equal(t, 0, inner.commits)
-	assert.Empty(t, w.WorkflowDefinitionFiles)
+	assert.Empty(t, w.RuntimeWorkflowFiles)
 
 	// Cleanup on such a driver logs the files it leaves and clears the list.
 	var logged []string
-	w.WorkflowDefinitionFiles = []string{"pipelines/x/a"}
+	w.RuntimeWorkflowFiles = []string{"pipelines/x/a"}
 	w.Logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
-	RemoveWorkflowDefinitionFiles(w)
-	assert.Empty(t, w.WorkflowDefinitionFiles)
+	RemoveRuntimeWorkflowFiles(w)
+	assert.Empty(t, w.RuntimeWorkflowFiles)
 	require.Len(t, logged, 1)
 	assert.Contains(t, logged[0], "[pipelines/x/a] left in place")
 	assert.Contains(t, logged[0], "implement scm.FileDeleter")
@@ -172,30 +172,30 @@ func (s *unreadableSCM) GetFileContent(context.Context, string, string, string) 
 }
 
 // CleanupScenario deletes every definition file the step committed.
-func TestCleanupScenario_RemovesWorkflowDefinition(t *testing.T) {
+func TestCleanupScenario_RemovesRuntimeWorkflow(t *testing.T) {
 	t.Parallel()
 	scm := &treeSCM{}
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scm, FixturesRoot: "e2e/behaviour"}
-	require.NoError(t, givenWorkflowDefinitionCommitted(w, "sample-pipeline", "pipelines/sample-pipeline"))
-	assert.ElementsMatch(t, sampleDefinitionFiles, w.WorkflowDefinitionFiles)
+	require.NoError(t, givenRuntimeWorkflowCommitted(w, "sample-pipeline", "pipelines/sample-pipeline"))
+	assert.ElementsMatch(t, sampleDefinitionFiles, w.RuntimeWorkflowFiles)
 
 	CleanupScenario(w)
-	assert.Empty(t, scm.files, "every committed definition file is deleted")
+	assert.Empty(t, scm.files, "every committed runtime workflow file is deleted")
 	assert.ElementsMatch(t, sampleDefinitionFiles, scm.deletedFiles)
-	assert.Empty(t, w.WorkflowDefinitionFiles)
+	assert.Empty(t, w.RuntimeWorkflowFiles)
 }
 
 // A commit that fails partway leaves the files written so far, and the
 // one that failed, recorded; cleanup deletes the written ones and skips
 // the missing one.
-func TestCleanupScenario_RemovesPartialWorkflowDefinition(t *testing.T) {
+func TestCleanupScenario_RemovesPartialRuntimeWorkflow(t *testing.T) {
 	t.Parallel()
 	scm := &treeSCM{failAfter: 2}
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scm, FixturesRoot: "e2e/behaviour"}
-	err := givenWorkflowDefinitionCommitted(w, "sample-pipeline", "pipelines/sample-pipeline")
+	err := givenRuntimeWorkflowCommitted(w, "sample-pipeline", "pipelines/sample-pipeline")
 	require.ErrorContains(t, err, "commit refused")
 	require.Len(t, scm.files, 2)
-	require.Len(t, w.WorkflowDefinitionFiles, 3, "the failed file is recorded before its write")
+	require.Len(t, w.RuntimeWorkflowFiles, 3, "the failed file is recorded before its write")
 
 	CleanupScenario(w)
 	assert.Empty(t, scm.files)
@@ -203,7 +203,7 @@ func TestCleanupScenario_RemovesPartialWorkflowDefinition(t *testing.T) {
 }
 
 // TestSampleWorkflowFixtureResolves runs the fixture through the runner's
-// own resolution, as a path workflow.source in a git checkout laid out
+// own resolution, as a path runtime_workflow.source in a git checkout laid out
 // like the leased repo, so a fixture the runner would refuse fails here
 // rather than only on a live run.
 func TestSampleWorkflowFixtureResolves(t *testing.T) {
@@ -245,10 +245,10 @@ func TestSampleWorkflowFixtureResolves(t *testing.T) {
 		require.NoError(t, err, "git %s: %s", strings.Join(args, " "), out)
 	}
 
-	h := &harness.Harness{Workflow: &harness.WorkflowSpec{Source: "pipelines/sample-pipeline", Name: "triage-fanout", Args: "issue 1"}}
-	require.NoError(t, harness.ValidateWorkflowSpec(h.Workflow), "the feature's workflow: block must pass harness validation")
+	h := &harness.Harness{RuntimeWorkflow: &harness.RuntimeWorkflowSpec{Source: "pipelines/sample-pipeline", Name: "triage-fanout", Args: "issue 1"}}
+	require.NoError(t, harness.ValidateRuntimeWorkflowSpec(h.RuntimeWorkflow), "the feature's runtime_workflow: block must pass harness validation")
 	loc := resolve.WorkflowLocation{HarnessDir: filepath.Join(fullsendDir, "harness"), FullsendDir: fullsendDir}
-	rw, dep, err := resolve.ResolveWorkflowDefinition(context.Background(), h, loc, resolve.ResolveOpts{WorkspaceRoot: fullsendDir})
+	rw, dep, err := resolve.ResolveRuntimeWorkflow(context.Background(), h, loc, resolve.ResolveOpts{WorkspaceRoot: fullsendDir})
 	require.NoError(t, err)
 	assert.Nil(t, dep)
 	assert.Equal(t, pluginformat.KindClaude, rw.Kind)
@@ -261,19 +261,19 @@ func TestAssertRunStartedWorkflow(t *testing.T) {
 	const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	root := t.TempDir()
 	writeArtifact(t, root, "agent-workflow-triage-1/metrics.json",
-		`{"runtime":"dummy","workflow":{"source":"pipelines/sample-pipeline","pin_sha256":"`+hash+`","kind":"claude-plugin","command":"/sample-pipeline:triage-fanout issue 1"}}`)
+		`{"runtime":"dummy","runtime_workflow":{"source":"pipelines/sample-pipeline","pin_sha256":"`+hash+`","kind":"claude-plugin","command":"/sample-pipeline:triage-fanout issue 1"}}`)
 	w := &world.World{ArtifactDir: root}
 
 	require.NoError(t, assertRunStartedWorkflow(w, "/sample-pipeline:triage-fanout issue 1", "pipelines/sample-pipeline"))
 	require.ErrorContains(t, assertRunStartedWorkflow(w, "/sample-pipeline:other", "pipelines/sample-pipeline"), "workflow.command")
-	require.ErrorContains(t, assertRunStartedWorkflow(w, "/sample-pipeline:triage-fanout issue 1", "."), "workflow.source")
+	require.ErrorContains(t, assertRunStartedWorkflow(w, "/sample-pipeline:triage-fanout issue 1", "."), "runtime_workflow.source")
 
 	short := t.TempDir()
-	writeArtifact(t, short, "metrics.json", `{"workflow":{"source":"s","pin_sha256":"abc","kind":"claude-plugin","command":"/d:n"}}`)
+	writeArtifact(t, short, "metrics.json", `{"runtime_workflow":{"source":"s","pin_sha256":"abc","kind":"claude-plugin","command":"/d:n"}}`)
 	require.ErrorContains(t, assertRunStartedWorkflow(&world.World{ArtifactDir: short}, "/d:n", "s"), "pin_sha256")
 
 	pi := t.TempDir()
-	writeArtifact(t, pi, "metrics.json", `{"workflow":{"source":"s","pin_sha256":"`+hash+`","kind":"pi-extension"}}`)
+	writeArtifact(t, pi, "metrics.json", `{"runtime_workflow":{"source":"s","pin_sha256":"`+hash+`","kind":"pi-extension"}}`)
 	require.ErrorContains(t, assertRunStartedWorkflow(&world.World{ArtifactDir: pi}, "/d:n", "s"), `workflow.kind = "pi-extension"`)
 
 	none := t.TempDir()
@@ -283,18 +283,18 @@ func TestAssertRunStartedWorkflow(t *testing.T) {
 
 // A delete that fails for another reason than not found is logged, and
 // the recorded list is cleared either way.
-func TestRemoveWorkflowDefinitionFiles_DeleteError(t *testing.T) {
+func TestRemoveRuntimeWorkflowFiles_DeleteError(t *testing.T) {
 	t.Parallel()
 	scm := &fakeCleanupSCM{deleteFileErr: errors.New("delete refused")}
 	var logged []string
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scm,
-		WorkflowDefinitionFiles: []string{"pipelines/x/a", "pipelines/x/b"},
-		Logf:                    func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
-	RemoveWorkflowDefinitionFiles(w)
+		RuntimeWorkflowFiles: []string{"pipelines/x/a", "pipelines/x/b"},
+		Logf:                 func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
+	RemoveRuntimeWorkflowFiles(w)
 	assert.Equal(t, []string{"pipelines/x/a", "pipelines/x/b"}, scm.deletedFiles)
-	assert.Empty(t, w.WorkflowDefinitionFiles)
+	assert.Empty(t, w.RuntimeWorkflowFiles)
 	require.Len(t, logged, 2)
-	assert.Contains(t, logged[0], "delete workflow definition file pipelines/x/a: delete refused")
+	assert.Contains(t, logged[0], "delete runtime workflow file pipelines/x/a: delete refused")
 }
 
 func TestAssertRunStartedWorkflow_NoMetrics(t *testing.T) {

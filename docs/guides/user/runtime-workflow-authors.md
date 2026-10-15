@@ -3,12 +3,12 @@
 This guide is for authors of a Claude Code pipeline: a plugin with skills,
 helper scripts and a workflow script that fixes the order of the steps. (A pi
 extension definition follows pi's own extension layout; see
-[pi extension definitions](workflow-definitions.md#pi-extension-definitions).) It
+[pi extensions](runtime-workflows.md#pi-extensions).) It
 shows the layout fullsend accepts, the rules fullsend checks, and how others
-run your pipeline. To run a definition someone else wrote, see
-[Run a workflow definition repository](workflow-definitions.md). The design is
+run your pipeline. To run a runtime workflow someone else wrote, see
+[Run a runtime-workflow repository](runtime-workflows.md). The design is
 recorded in
-[ADR 0130](../../ADRs/0130-workflow-definition-repos-are-harness-resources.md).
+[ADR 0130](../../ADRs/0130-runtime-workflows-are-harness-resources.md).
 
 The worked example is the sample definition that ships in fullsend at
 [`e2e/behaviour/fixtures/workflow/sample-pipeline/`](https://github.com/fullsend-ai/fullsend/tree/main/e2e/behaviour/fixtures/workflow/sample-pipeline).
@@ -18,10 +18,10 @@ checked out at `~/src/sample-repo`, which also holds `.fullsend/`.
 ## Prerequisites
 
 - The Claude Code CLI, for `claude plugin validate`.
-- A fullsend binary that knows workflow definitions. `fullsend agent new --help`
-  lists `--workflow-source` and `--workflow` flags when it does; an older
-  binary silently ignores the harness `workflow:` key.
-- The definition committed to git. fullsend reads a local definition from the
+- A fullsend binary that knows runtime workflows. `fullsend agent new --help`
+  lists `--runtime-workflow-source` and `--runtime-workflow-name` flags when it does; an older
+  binary silently ignores the harness `runtime_workflow:` key.
+- The runtime workflow committed to git. fullsend reads a local runtime workflow from the
   git index and a remote one from a pinned commit, so untracked files never
   reach the sandbox.
 
@@ -37,13 +37,13 @@ pipelines/sample-pipeline/workflows/triage-fanout.js
 
 | Path | What it is | Rule |
 |---|---|---|
-| `.claude-plugin/plugin.json` | The plugin manifest | At the definition root, with a usable `name` |
+| `.claude-plugin/plugin.json` | The plugin manifest | At the runtime workflow root, with a usable `name` |
 | `workflows/<name>.js` | One workflow script per workflow | File stem equals `meta.name` |
 | `skills/<skill>/SKILL.md` | Skills the workflow's agents use | Standard Claude Code layout |
 | `scripts/` | Helper scripts | Reached through `${CLAUDE_PLUGIN_ROOT}` |
 
-The definition root is the directory a consumer's `source:` points at: the
-repository root or a sub-directory. A definition may hold at most 1000 files
+The runtime workflow root is the directory a consumer's `source:` points at: the
+repository root or a sub-directory. A runtime workflow may hold at most 1000 files
 and 50 MiB in total.
 
 ## Step 1: Validate the plugin with Claude Code
@@ -82,12 +82,12 @@ reference: Claude Code's
   [harness](../../reference/harness-reference.md) uses.** Two plugins
   with one name would answer to the same `/<name>:` commands, so fullsend
   refuses the pair. Without a manifest `name` the namespace is
-  `workflow-definition`, the fixed sandbox directory the definition is
+  `runtime-workflow`, the fixed sandbox directory the runtime workflow is
   uploaded under, so set the name.
 
 Keep the manifest. A directory that is neither a Claude Code plugin nor a pi
 extension is refused with `is neither a Claude Code plugin nor a pi extension
-(...): add .claude-plugin/plugin.json at the definition root for a Claude
+(...): add .claude-plugin/plugin.json at the runtime workflow root for a Claude
 workflow, or a pi extension entry point`.
 
 ## Step 3: Write the workflow script
@@ -160,9 +160,9 @@ unchecked Markdown checklist item (`- [ ] ...`) in the order they appear.
 Return exactly that object.
 ````
 
-## Step 5: Keep symlinks inside the definition
+## Step 5: Keep symlinks inside the runtime workflow
 
-fullsend replaces a symlink whose target is inside the definition with a copy
+fullsend replaces a symlink whose target is inside the runtime workflow with a copy
 of the target, so the uploaded tree has no links. A link that leaves the
 definition, dangles or loops is refused, because its target would not be part
 of what was pinned and scanned.
@@ -180,16 +180,16 @@ $ fullsend lock sample-triage
   ✓ Harness has no remote dependencies — nothing to lock
 ```
 
-A link to a file outside the definition stops the run:
+A link to a file outside the runtime workflow stops the run:
 
 ```console
 $ fullsend lock sample-triage
 → Locking dependencies: sample-triage
-  ✗ Workflow definition resolution failed
-Error: resolving workflow definition: workflow.source "pipelines/sample-pipeline": scripts/readme.md is a symlink to ../../../README.md, which leaves the source directory; point the link inside the repository or commit the file
+  ✗ Runtime workflow resolution failed
+Error: resolving runtime workflow: runtime_workflow.source "pipelines/sample-pipeline": scripts/readme.md is a symlink to ../../../README.md, which leaves the source directory; point the link inside the repository or commit the file
 ```
 
-Both outputs come from a harness that pins the definition as a path source
+Both outputs come from a harness that pins the runtime workflow as a path source
 (see [Step 7](#step-7-check-with-fullsend-lock)); the banner lines are left
 out.
 
@@ -225,7 +225,7 @@ Each rule comes from how Claude Code workflows run inside a fullsend sandbox:
 
 Scaffold an agent in the repository's own `.fullsend/` whose harness pins the
 definition as a path source, and lock. Both are walked through in
-[Run a workflow definition repository](workflow-definitions.md#step-1-scaffold-the-agent-with-the-definition-pinned).
+[Run a runtime-workflow repository](runtime-workflows.md#step-1-scaffold-the-agent-with-the-runtime-workflow-pinned).
 `fullsend lock` runs the same definition checks as `fullsend run`, without an
 OpenShell gateway:
 
@@ -246,35 +246,35 @@ Typical author mistakes and what they print (banner lines left out):
 ```console
 $ fullsend lock sample-triage
 → Locking dependencies: sample-triage
-  ✗ Workflow definition resolution failed
-Error: resolving workflow definition: workflow.source pipelines/sample-pipeline: workflows/triage-fanout.js declares meta.name "triage-fan-out"; Claude Code runs it as /sample-pipeline:triage-fan-out, so rename the file or set meta.name to "triage-fanout"
+  ✗ Runtime workflow resolution failed
+Error: resolving runtime workflow: runtime_workflow.source pipelines/sample-pipeline: workflows/triage-fanout.js declares meta.name "triage-fan-out"; Claude Code runs it as /sample-pipeline:triage-fan-out, so rename the file or set meta.name to "triage-fanout"
 ```
 
 ```console
 $ fullsend lock sample-triage
 → Locking dependencies: sample-triage
-  ✗ Workflow definition resolution failed
-Error: resolving workflow definition: workflow.source pipelines/sample-pipeline: workflows/triage-fanout.js: end the meta statement with `;` directly after its closing brace; Claude Code lists a workflow only when `export const meta = { ... }` is the script's first statement and a plain object literal with a quoted name, and fullsend needs `;` right after its closing brace
+  ✗ Runtime workflow resolution failed
+Error: resolving runtime workflow: runtime_workflow.source pipelines/sample-pipeline: workflows/triage-fanout.js: end the meta statement with `;` directly after its closing brace; Claude Code lists a workflow only when `export const meta = { ... }` is the script's first statement and a plain object literal with a quoted name, and fullsend needs `;` right after its closing brace
 ```
 
 ```console
 $ fullsend lock sample-triage
 → Locking dependencies: sample-triage
-  ✗ Workflow definition resolution failed
-Error: resolving workflow definition: workflow.source pipelines/sample-pipeline: .claude-plugin/plugin.json sets "workflows", a custom workflow path, which fullsend does not support yet; keep the scripts in workflows/ at the definition root and remove the "workflows" key
+  ✗ Runtime workflow resolution failed
+Error: resolving runtime workflow: runtime_workflow.source pipelines/sample-pipeline: .claude-plugin/plugin.json sets "workflows", a custom workflow path, which fullsend does not support yet; keep the scripts in workflows/ at the runtime workflow root and remove the "workflows" key
 ```
 
-The consumer guide's [troubleshooting table](workflow-definitions.md#troubleshooting)
+The consumer guide's [troubleshooting table](runtime-workflows.md#troubleshooting)
 lists every message.
 
 ## Run your own pipeline from the same repository
 
-A definition repository can hold its own `.fullsend/` and run its pipeline
+A runtime-workflow repository can hold its own `.fullsend/` and run its pipeline
 with a path source, without pinning itself:
 
 ```yaml
 # .fullsend/harness/sample-triage.yaml
-workflow:
+runtime_workflow:
   source: pipelines/sample-pipeline
   name: triage-fanout
   args: issue ${ISSUE_NUMBER}
@@ -282,8 +282,8 @@ workflow:
 
 - **Point `source` at the plugin root.** Use `source: .` only when the
   repository root is the plugin, with `.claude-plugin/plugin.json` at the top.
-- **Keep the definition outside `.fullsend/`.** The configuration directory is
-  never part of a definition. When it lies under the source, as with
+- **Keep the runtime workflow outside `.fullsend/`.** The configuration directory is
+  never part of a runtime workflow. When it lies under the source, as with
   `source: .`, a local run leaves it out.
 - **Expect a different hash from a remote pin of the root.** A remote tree URL
   at the same path includes `.fullsend/`, so its tree hash differs from the
@@ -294,22 +294,22 @@ workflow:
 
 ## Let others install your harness
 
-Ship a harness whose `workflow.source` is relative, such as the one above. A
+Ship a harness whose `runtime_workflow.source` is relative, such as the one above. A
 consumer installs it with a thin harness whose `base:` is your harness at a
 commit: the relative source then resolves in **your** repository at that
 commit, the path taken from your repository root, so the consumer pins one
-commit for the harness and the definition together. The base must be pinned
+commit for the harness and the runtime workflow together. The base must be pinned
 at a full commit sha; a branch or tag is refused with
-`base workflow.source "pipelines/sample-pipeline" is a relative path, so it resolves in the base harness's repository at the base's commit, but the base URL ... pins ref "main", not a commit sha; pin base: at the full 40-character commit sha, or set workflow.source in the base to a tree URL with #sha256=`.
+`base runtime_workflow.source "pipelines/sample-pipeline" is a relative path, so it resolves in the base harness's repository at the base's commit, but the base URL ... pins ref "main", not a commit sha; pin base: at the full 40-character commit sha, or set runtime_workflow.source in the base to a tree URL with #sha256=`.
 
 A consumer cannot add such a harness with `fullsend agent add <url>`: a
 harness added by URL resolves relative paths in the consumer's repository,
-so its relative `workflow.source` is refused with advice to use a `base:`
-harness. A harness whose `workflow.source` is a tree URL with `#sha256=`
+so its relative `runtime_workflow.source` is refused with advice to use a `base:`
+harness. A harness whose `runtime_workflow.source` is a tree URL with `#sha256=`
 installs by `fullsend agent add <url>` like any other.
 
-Not run here: needs your definition repository's harness at a pushed
-commit; fullsend publishes no harness with `workflow:` that could stand in
+Not run here: needs your runtime-workflow repository's harness at a pushed
+commit; fullsend publishes no harness with `runtime_workflow:` that could stand in
 for yours as `base:`. The consumer's steps:
 
 1. **Allow your repository and register the agent.** Add to
@@ -324,7 +324,7 @@ for yours as `base:`. The consumer's steps:
      - https://raw.githubusercontent.com/example-org/sample-pipeline/
    ```
 
-   The raw-content prefix covers both your harness and the definition: an
+   The raw-content prefix covers both your harness and the runtime workflow: an
    inherited relative source is checked against
    `https://raw.githubusercontent.com/<owner>/<repo>/<commit-sha>/<path>/`,
    as a base plugin is.
@@ -349,14 +349,14 @@ parent of your harness's directory, at the pinned commit. For the `base:`
 above, `agent: agents/sample-triage.md` is fetched from
 `https://raw.githubusercontent.com/example-org/sample-pipeline/<commit-sha>/.fullsend/agents/sample-triage.md`,
 and `post_script`, `policy` and `validation_loop.schema` resolve the same way;
-only `workflow.source` is taken from the repository root. Merge rules for a
+only `runtime_workflow.source` is taken from the repository root. Merge rules for a
 child harness: [Harness field reference § Field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays);
 which fields are fetched from a URL base:
 [Harness fields § semantic types](../../contributing/harness-fields.md#semantic-types-adr-0127).
 
 ## See also
 
-- [Run a workflow definition repository](workflow-definitions.md) — the consumer's side, with troubleshooting
-- [Harness `workflow`](../../reference/harness-reference.md#field-details) — the harness field, with every source and pin rule
+- [Run a runtime-workflow repository](runtime-workflows.md) — the consumer's side, with troubleshooting
+- [Harness `runtime_workflow`](../../reference/harness-reference.md#field-details) — the harness field, with every source and pin rule
 - [Configuring agent behavior](customizing-agents.md) — `base:` composition
-- [ADR 0130](../../ADRs/0130-workflow-definition-repos-are-harness-resources.md) — the decision
+- [ADR 0130](../../ADRs/0130-runtime-workflows-are-harness-resources.md) — the decision

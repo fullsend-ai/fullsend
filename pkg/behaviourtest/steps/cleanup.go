@@ -394,11 +394,11 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
-	// --- Workflow definition cleanup ---
-	// Delete the definition files the scenario committed, so a later
+	// --- Runtime workflow cleanup ---
+	// Delete the runtime workflow files the scenario committed, so a later
 	// scenario on this slot does not find them.
-	if len(w.WorkflowDefinitionFiles) > 0 {
-		RemoveWorkflowDefinitionFiles(w)
+	if len(w.RuntimeWorkflowFiles) > 0 {
+		RemoveRuntimeWorkflowFiles(w)
 	}
 
 	// --- OWNERS auth cleanup ---

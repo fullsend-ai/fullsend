@@ -43,19 +43,19 @@ func TestOptionsValidateRejects(t *testing.T) {
 		{"empty image", func(o *Options) { o.Image = "" }, "image"},
 		{"workflow name under pi", func(o *Options) {
 			o.Runtime = "pi"
-			o.Workflow = &harness.WorkflowSpec{Source: "pipelines/sample-pipeline", Name: "run-all"}
-		}, "on the pi runtime the definition is a pi extension, which takes no workflow name"},
+			o.RuntimeWorkflow = &harness.RuntimeWorkflowSpec{Source: "pipelines/sample-pipeline", Name: "run-all"}
+		}, "on the pi runtime the runtime workflow is a pi extension, which takes no workflow name"},
 		{"workflow under codex", func(o *Options) {
 			o.Runtime = "codex"
 			o.Model = "openai/gpt-5.6-luna"
-			o.Workflow = &harness.WorkflowSpec{Source: "pipelines/sample-pipeline", Name: "run-all"}
-		}, "a workflow definition runs on claude or pi, and this agent resolves to codex"},
+			o.RuntimeWorkflow = &harness.RuntimeWorkflowSpec{Source: "pipelines/sample-pipeline", Name: "run-all"}
+		}, "a runtime workflow runs on claude or pi, and this agent resolves to codex"},
 		{"workflow source without a name on claude", func(o *Options) {
-			o.Workflow = &harness.WorkflowSpec{Source: "pipelines/sample-pipeline"}
-		}, "--workflow-source needs --workflow <name>"},
+			o.RuntimeWorkflow = &harness.RuntimeWorkflowSpec{Source: "pipelines/sample-pipeline"}
+		}, "--runtime-workflow-source needs --runtime-workflow-name <name>"},
 		{"workflow with a bad name", func(o *Options) {
-			o.Workflow = &harness.WorkflowSpec{Source: "pipelines/sample-pipeline", Name: "run all"}
-		}, "workflow.name"},
+			o.RuntimeWorkflow = &harness.RuntimeWorkflowSpec{Source: "pipelines/sample-pipeline", Name: "run all"}
+		}, "runtime_workflow.name"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,7 +153,7 @@ func TestTriggerlessAgentIsRefusedLoudly(t *testing.T) {
 
 func TestParseWorkflow(t *testing.T) {
 	remote := "https://github.com/example-org/sample-pipeline/tree/0123456789abcdef0123456789abcdef01234567"
-	spec, err := ParseWorkflow("pipelines/sample-pipeline", "run-all")
+	spec, err := ParseRuntimeWorkflow("pipelines/sample-pipeline", "run-all")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,30 +163,30 @@ func TestParseWorkflow(t *testing.T) {
 
 	// A remote source without a pin gets the placeholder; one with a pin
 	// is kept.
-	spec, err = ParseWorkflow(remote, "run-all")
+	spec, err = ParseRuntimeWorkflow(remote, "run-all")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Source != remote+"#sha256="+PlaceholderTreeHash || !(Options{Workflow: spec}).HasPlaceholderPin() {
+	if spec.Source != remote+"#sha256="+PlaceholderTreeHash || !(Options{RuntimeWorkflow: spec}).HasPlaceholderPin() {
 		t.Errorf("unpinned remote source: %+v", spec)
 	}
 	pinned := remote + "#sha256=" + strings.Repeat("a", 64)
-	if spec, err = ParseWorkflow(pinned, "run-all"); err != nil || spec.Source != pinned || (Options{Workflow: spec}).HasPlaceholderPin() {
+	if spec, err = ParseRuntimeWorkflow(pinned, "run-all"); err != nil || spec.Source != pinned || (Options{RuntimeWorkflow: spec}).HasPlaceholderPin() {
 		t.Errorf("pinned remote source: %+v, %v", spec, err)
 	}
 
-	if spec, err := ParseWorkflow("", ""); spec != nil || err != nil {
-		t.Errorf("no workflow: %+v, %v", spec, err)
+	if spec, err := ParseRuntimeWorkflow("", ""); spec != nil || err != nil {
+		t.Errorf("no runtime_workflow: %+v, %v", spec, err)
 	}
-	if _, err := ParseWorkflow("", "run-all"); err == nil || !strings.Contains(err.Error(), "--workflow run-all needs --workflow-source") {
+	if _, err := ParseRuntimeWorkflow("", "run-all"); err == nil || !strings.Contains(err.Error(), "--runtime-workflow-name run-all needs --runtime-workflow-source") {
 		t.Errorf("a name without a source must be refused: %v", err)
 	}
 	for bad, want := range map[string]string{
 		"../other": `contains ".."`,
 		"https://github.com/example-org/sample-pipeline/tree/main": "is not a commit sha",
 	} {
-		if _, err := ParseWorkflow(bad, "run-all"); err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("ParseWorkflow(%q) = %v, want %q", bad, err, want)
+		if _, err := ParseRuntimeWorkflow(bad, "run-all"); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("ParseRuntimeWorkflow(%q) = %v, want %q", bad, err, want)
 		}
 	}
 }
@@ -195,14 +195,14 @@ func TestOptionsValidateAcceptsWorkflow(t *testing.T) {
 	for _, runtimeName := range []string{"", "claude"} {
 		o := validOptions()
 		o.Runtime = runtimeName
-		o.Workflow = &harness.WorkflowSpec{Source: "pipelines/sample-pipeline", Name: "run-all"}
+		o.RuntimeWorkflow = &harness.RuntimeWorkflowSpec{Source: "pipelines/sample-pipeline", Name: "run-all"}
 		if err := o.Validate(); err != nil {
 			t.Errorf("runtime %q: %v", runtimeName, err)
 		}
 	}
 	o := validOptions()
 	o.Runtime = "pi"
-	o.Workflow = &harness.WorkflowSpec{Source: "pipelines/sample-pipeline"}
+	o.RuntimeWorkflow = &harness.RuntimeWorkflowSpec{Source: "pipelines/sample-pipeline"}
 	if err := o.Validate(); err != nil {
 		t.Errorf("a pi extension source without a name: %v", err)
 	}

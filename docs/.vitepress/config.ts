@@ -322,12 +322,12 @@ export default defineConfig({
                   link: "/guides/user/chaining-follow-up-workflows",
                 },
                 {
-                  text: "Workflow Definition Repositories",
-                  link: "/guides/user/workflow-definitions",
+                  text: "Runtime Workflows",
+                  link: "/guides/user/runtime-workflows",
                 },
                 {
-                  text: "Authoring Workflow Definitions",
-                  link: "/guides/user/workflow-definition-authors",
+                  text: "Authoring Runtime Workflows",
+                  link: "/guides/user/runtime-workflow-authors",
                 },
                 { text: "Config Reference", link: "/reference/config-reference" },
                 { text: "Harness Field Reference", link: "/reference/harness-reference" },

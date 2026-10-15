@@ -136,21 +136,21 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 	}
 
 	h := &harness.Harness{
-		Agent:          "agents/" + opts.Name + ".md",
-		Description:    opts.Description,
-		Role:           role.Name,
-		Slug:           opts.Slug,
-		Image:          opts.Image,
-		Policy:         "policies/base.yaml",
-		Providers:      providers,
-		HostFiles:      hostFiles,
-		Model:          opts.Model,
-		Effort:         opts.Effort,
-		PostScript:     "scripts/post-" + opts.Name + ".sh",
-		TimeoutMinutes: opts.TimeoutMinutes,
-		ReadonlyRepo:   role.ReadonlyRepo,
-		Trigger:        opts.Trigger,
-		Workflow:       opts.Workflow,
+		Agent:           "agents/" + opts.Name + ".md",
+		Description:     opts.Description,
+		Role:            role.Name,
+		Slug:            opts.Slug,
+		Image:           opts.Image,
+		Policy:          "policies/base.yaml",
+		Providers:       providers,
+		HostFiles:       hostFiles,
+		Model:           opts.Model,
+		Effort:          opts.Effort,
+		PostScript:      "scripts/post-" + opts.Name + ".sh",
+		TimeoutMinutes:  opts.TimeoutMinutes,
+		ReadonlyRepo:    role.ReadonlyRepo,
+		Trigger:         opts.Trigger,
+		RuntimeWorkflow: opts.RuntimeWorkflow,
 		Env: &harness.EnvConfig{
 			Runner: map[string]string{
 				"ISSUE_URL":      "${FULLSEND_WORK_ITEM_URL}",
@@ -375,10 +375,10 @@ func renderPostScript(name string) ([]byte, error) {
 // fullsend-check-output is only instructed when the validation loop is on,
 // so it only appears in the Bash allowlist then. An agent that starts a
 // Claude workflow also needs Workflow, or its main loop cannot start the
-// workflow command; a pi extension definition starts itself.
+// workflow command; a pi extension starts itself.
 func toolsFor(opts Options) string {
 	tools := baseToolsFor(opts)
-	if opts.Workflow != nil && opts.Workflow.Name != "" {
+	if opts.RuntimeWorkflow != nil && opts.RuntimeWorkflow.Name != "" {
 		tools += ", Workflow"
 	}
 	return tools

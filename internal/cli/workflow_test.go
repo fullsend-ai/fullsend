@@ -1350,7 +1350,7 @@ func TestRunAgent_WorkflowArgsExpanded(t *testing.T) {
 
 func TestWorkflowSpanAttr(t *testing.T) {
 	attr := workflowSpanAttr(&resolve.ResolvedRuntimeWorkflow{Kind: pluginformat.KindClaude, PluginName: "wfplug", Name: "probe", Args: "issue 7"})
-	assert.Equal(t, "fullsend.workflow", string(attr.Key))
+	assert.Equal(t, "fullsend.runtime_workflow", string(attr.Key))
 	assert.Equal(t, "/wfplug:probe", attr.Value.AsString(), "args stay out of traces")
 
 	attr = workflowSpanAttr(&resolve.ResolvedRuntimeWorkflow{Kind: pluginformat.KindPi, Source: "https://github.com/example-org/sample-pipeline/tree/" + cliWorkflowSHA})
