@@ -46,6 +46,45 @@ Image:     fullsend-sandbox:latest
 
 The **Runtime** line shows which runtime was selected and the config source it was read from. When no `config.yaml` exists, the source reads `default (config not found)`.
 
+### Workflow line
+
+When the harness sets [`runtime_workflow:`](../reference/harness-reference.md#field-details), the plan
+block also prints a **Workflow** line. It appears only for such a harness:
+
+```text
+Runtime workflow: example-org/sample-pipeline@0123456789ab/pipelines/sample (sha256:<hash>) delivered as claude plugin <namespace>; workflow <name>
+Runtime workflow: pipelines/sample (sha256:<hash>) delivered as pi extension
+```
+
+The source comes first: a remote source shortened to `<owner>/<repo>@<first 12 characters of the
+commit>[/<path>]`, a path source as written in the harness. `<hash>` is the first 12 characters of
+the tree hash. A Claude Code plugin then shows its plugin name (the `name` in
+`.claude-plugin/plugin.json`, or `runtime-workflow` without that file) and the workflow name;
+a pi extension shows only its kind.
+
+`fullsend run` resolves the runtime workflow after the harness and its other remote resources
+(`base:`, skills, plugins, providers) and before it checks files and creates the sandbox:
+
+1. A harness with `runtime_workflow:` fails unless the runtime is `claude`, `pi` or a `dummy` test runtime,
+   before the runtime workflow is fetched:
+   `runtime_workflow: is not supported by the <runtime> runtime; agent "<agent>" resolves to "<runtime>", ...`.
+2. A remote runtime workflow is fetched at its commit (taken from the cache when it is there) and
+   checked against its `#sha256=` pin. When `.fullsend/lock.yaml` has a current entry for the
+   agent, the tree hash it records is the one the runtime workflow must have, for a source inherited
+   through a URL `base:` too, even when the rest of the entry cannot be replayed and the run
+   falls back to normal resolution; a runtime workflow missing from the cache is refetched and must
+   match it, and a malformed workflow entry fails the run with a pointer to
+   `fullsend lock --update`. A path source is read from the files git tracks in the checkout that
+   holds the harness file that declares it (for a local `base:`, the base file).
+3. The runtime workflow's kind must match the runtime, Claude Code plugin on `claude` and pi extension on
+   `pi`; a mismatch fails naming both.
+4. It is delivered like a `plugins:` entry of its kind, under the sandbox directory name
+   `runtime-workflow`: uploaded, injection-scanned, and passed to `claude` with `--plugin-dir`
+   or to `pi` with `-e`.
+
+The runner delivers the runtime workflow but does not start a Claude workflow yet; the agent prompt has
+to. See [`runtime_workflow`](../reference/harness-reference.md#field-details) for sources and pins.
+
 ## Runtime selection
 
 The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases, each read only when that runtime is the one selected) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi uses it for aliased models on the top-level run when Vertex does not serve the model (two specific 404/403 messages, same provider only; sub-agent children get none); codex ignores it with a warning.

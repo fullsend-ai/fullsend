@@ -1,6 +1,7 @@
 package fetch
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -646,4 +647,290 @@ func TestCacheNamedSymlink(t *testing.T) {
 		_, statErr := os.Lstat(filepath.Join(dir, "sub"))
 		assert.True(t, os.IsNotExist(statErr))
 	})
+}
+
+func TestMaterializedDirCacheIsSeparate(t *testing.T) {
+	files := map[string][]byte{"plugin.json": []byte("{}"), "link-copy.txt": []byte("x")}
+	const materializedURL = "https://github.com/example-org/sample-pipeline/tree/abc"
+	const strictURL = "https://github.com/example-org/other-pipeline/tree/def"
+
+	t.Run("materialized entry is invisible to the shared namespace", func(t *testing.T) {
+		ws := t.TempDir()
+		hash, err := CachePutMaterializedDir(context.Background(), ws, materializedURL, files)
+		require.NoError(t, err)
+		assert.Equal(t, ComputeTreeHash(files), hash)
+
+		treePath, entry, err := CacheGetDir(ws, hash)
+		require.NoError(t, err)
+		assert.Empty(t, treePath, "a strict lookup never sees a materialized tree")
+		assert.Nil(t, entry)
+
+		treePath, entry, err = CacheGetMaterializedDir(ws, hash)
+		require.NoError(t, err)
+		require.NotNil(t, entry)
+		assert.Equal(t, materializedURL, entry.URL)
+		dir, err := MaterializedCachePath(ws, hash)
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(dir, "tree"), treePath)
+		assert.Equal(t, filepath.Join(ws, ".fullsend-cache", "resources", "materialized", "sha256", hash), dir)
+	})
+
+	// Two different URLs whose trees hash the same, one cached as a
+	// materialized tree and one strictly, in both orders: each namespace
+	// keeps its own entry and its own metadata.
+	for _, materializedFirst := range []bool{true, false} {
+		name := "strict first"
+		if materializedFirst {
+			name = "materialized first"
+		}
+		t.Run("same hash, two URLs, "+name, func(t *testing.T) {
+			ws := t.TempDir()
+			putMaterialized := func() {
+				_, err := CachePutMaterializedDir(context.Background(), ws, materializedURL, files)
+				require.NoError(t, err)
+			}
+			putStrict := func() {
+				_, err := CachePutDir(ws, strictURL, files)
+				require.NoError(t, err)
+			}
+			if materializedFirst {
+				putMaterialized()
+				putStrict()
+			} else {
+				putStrict()
+				putMaterialized()
+			}
+			hash := ComputeTreeHash(files)
+
+			strictPath, strictEntry, err := CacheGetDir(ws, hash)
+			require.NoError(t, err)
+			require.NotNil(t, strictEntry)
+			assert.Equal(t, strictURL, strictEntry.URL, "the strict fetch did not relabel the materialized entry")
+
+			matPath, matEntry, err := CacheGetMaterializedDir(ws, hash)
+			require.NoError(t, err)
+			require.NotNil(t, matEntry)
+			assert.Equal(t, materializedURL, matEntry.URL, "the materialized fetch did not relabel the strict entry")
+			assert.NotEqual(t, strictPath, matPath)
+		})
+	}
+
+	t.Run("invalid hash", func(t *testing.T) {
+		_, err := MaterializedCachePath(t.TempDir(), "abc")
+		assert.ErrorIs(t, err, errInvalidHash)
+		_, _, err = CacheGetMaterializedDir(t.TempDir(), "abc")
+		assert.ErrorIs(t, err, errInvalidHash)
+	})
+}
+
+// A materialized tree is uploaded whole, so a lookup must hit only when
+// the tree holds exactly the hashed files.
+func TestCacheGetMaterializedDir_StrayEntriesMiss(t *testing.T) {
+	files := map[string][]byte{
+		".claude-plugin/plugin.json": []byte(`{"name":"sample"}`),
+		"scripts/helper.sh":          []byte("echo hi\n"),
+	}
+	const url = "https://github.com/example-org/sample-pipeline/tree/abc"
+
+	plant := map[string]func(t *testing.T, treeDir string){
+		"temp-named file": func(t *testing.T, treeDir string) {
+			require.NoError(t, os.WriteFile(filepath.Join(treeDir, "scripts", "helper.tmp.123"), []byte("planted"), 0o600))
+		},
+		"symlink": func(t *testing.T, treeDir string) {
+			require.NoError(t, os.Symlink("helper.sh", filepath.Join(treeDir, "scripts", "alias")))
+		},
+		"empty directory": func(t *testing.T, treeDir string) {
+			require.NoError(t, os.Mkdir(filepath.Join(treeDir, "empty"), 0o700))
+		},
+	}
+	for name, plantFn := range plant {
+		t.Run(name, func(t *testing.T) {
+			ws := t.TempDir()
+			hash, err := CachePutMaterializedDir(context.Background(), ws, url, files)
+			require.NoError(t, err)
+			treeDir, entry, err := CacheGetMaterializedDir(ws, hash)
+			require.NoError(t, err)
+			require.NotNil(t, entry)
+
+			plantFn(t, treeDir)
+
+			got, entry, err := CacheGetMaterializedDir(ws, hash)
+			require.NoError(t, err)
+			assert.Empty(t, got, "a stray entry in a materialized tree is a miss")
+			assert.Nil(t, entry)
+
+			// Re-putting replaces the tree: the stray entry is gone and
+			// the lookup hits again.
+			_, err = CachePutMaterializedDir(context.Background(), ws, url, files)
+			require.NoError(t, err)
+			got, entry, err = CacheGetMaterializedDir(ws, hash)
+			require.NoError(t, err)
+			require.NotNil(t, entry)
+			assert.Equal(t, treeDir, got)
+			var paths []string
+			require.NoError(t, filepath.WalkDir(got, func(p string, d fs.DirEntry, err error) error {
+				require.NoError(t, err)
+				if !d.IsDir() {
+					rel, _ := filepath.Rel(got, p)
+					paths = append(paths, filepath.ToSlash(rel))
+				}
+				return nil
+			}))
+			assert.ElementsMatch(t, []string{".claude-plugin/plugin.json", "scripts/helper.sh"}, paths)
+
+			// No swap leftovers beside the tree; the entry lock file a
+			// replacing writer takes is the only other name.
+			dir, err := MaterializedCachePath(ws, hash)
+			require.NoError(t, err)
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			assert.ElementsMatch(t, []string{".tree.lock", "metadata.json", "tree"}, names)
+		})
+	}
+}
+
+// The shared namespace keeps skipping temp-named files: a crashed
+// writer's leftover must not turn every skill or plugin lookup into a
+// refetch.
+func TestCacheGetDir_TempFileStillSkippedInSharedNamespace(t *testing.T) {
+	ws := t.TempDir()
+	files := map[string][]byte{"SKILL.md": []byte("# skill")}
+	hash, err := CachePutDir(ws, "https://github.com/example-org/sample-skill/tree/abc", files)
+	require.NoError(t, err)
+	treeDir, _, err := CacheGetDir(ws, hash)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(treeDir, "SKILL.md.tmp.42"), []byte("partial"), 0o600))
+
+	got, entry, err := CacheGetDir(ws, hash)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	assert.Equal(t, treeDir, got)
+}
+
+// A good materialized tree is left in place on a re-put, so readers of
+// it are not disturbed.
+func TestCachePutMaterializedDir_KeepsExactTree(t *testing.T) {
+	ws := t.TempDir()
+	files := map[string][]byte{"a.txt": []byte("a"), "sub/b.txt": []byte("b")}
+	hash, err := CachePutMaterializedDir(context.Background(), ws, "https://example.com/x", files)
+	require.NoError(t, err)
+	treeDir, _, err := CacheGetMaterializedDir(ws, hash)
+	require.NoError(t, err)
+	before, err := os.Stat(treeDir)
+	require.NoError(t, err)
+
+	_, err = CachePutMaterializedDir(context.Background(), ws, "https://example.com/x", files)
+	require.NoError(t, err)
+	after, err := os.Stat(treeDir)
+	require.NoError(t, err)
+	assert.True(t, os.SameFile(before, after), "an exact tree is not replaced")
+}
+
+// A tree whose files hash differently is replaced too.
+func TestCachePutMaterializedDir_ReplacesTamperedTree(t *testing.T) {
+	ws := t.TempDir()
+	files := map[string][]byte{"a.txt": []byte("a")}
+	hash, err := CachePutMaterializedDir(context.Background(), ws, "https://example.com/x", files)
+	require.NoError(t, err)
+	treeDir, _, err := CacheGetMaterializedDir(ws, hash)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(treeDir, "a.txt"), []byte("tampered"), 0o600))
+	_, _, err = CacheGetMaterializedDir(ws, hash)
+	require.Error(t, err, "a changed file still fails the integrity check")
+
+	_, err = CachePutMaterializedDir(context.Background(), ws, "https://example.com/x", files)
+	require.NoError(t, err)
+	got, _, err := CacheGetMaterializedDir(ws, hash)
+	require.NoError(t, err)
+	content, err := os.ReadFile(filepath.Join(got, "a.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "a", string(content))
+}
+
+func TestCachePutMaterializedDir_RefusesTempNamedFile(t *testing.T) {
+	_, err := CachePutMaterializedDir(context.Background(), t.TempDir(), "https://example.com/x", map[string][]byte{
+		"scripts/run.tmp.7": []byte("x"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scripts/run.tmp.7 is named like a cache temporary file")
+	assert.Contains(t, err.Error(), "rename the file")
+}
+
+func TestCachePutMaterializedDir_ConcurrentReplace(t *testing.T) {
+	ws := t.TempDir()
+	files := map[string][]byte{"a.txt": []byte("a"), "sub/b.txt": []byte("b")}
+	hash, err := CachePutMaterializedDir(context.Background(), ws, "https://example.com/x", files)
+	require.NoError(t, err)
+	treeDir, _, err := CacheGetMaterializedDir(ws, hash)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(treeDir, "stray.tmp.1"), []byte("x"), 0o600))
+
+	var wg sync.WaitGroup
+	errs := make([]error, 8)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = CachePutMaterializedDir(context.Background(), ws, "https://example.com/x", files)
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		assert.NoError(t, err)
+	}
+	got, entry, err := CacheGetMaterializedDir(ws, hash)
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	assert.Equal(t, treeDir, got)
+}
+
+// TestCachePutMaterializedDir_ReadersKeepTheirTree checks the reader side
+// of concurrent replacement: once a writer's put returns, the tree it
+// installed or found stays in place while other writers are still
+// running, so a reader that checks the tree right away always sees it
+// whole.
+func TestCachePutMaterializedDir_ReadersKeepTheirTree(t *testing.T) {
+	ws := t.TempDir()
+	files := map[string][]byte{"a.txt": []byte("a"), "sub/b.txt": []byte("b"), "sub/deep/c.txt": []byte("c")}
+	hash, err := CachePutMaterializedDir(context.Background(), ws, "https://example.com/x", files)
+	require.NoError(t, err)
+	treeDir, _, err := CacheGetMaterializedDir(ws, hash)
+	require.NoError(t, err)
+	// Make the existing tree stale, so the first writers must replace it.
+	require.NoError(t, os.WriteFile(filepath.Join(treeDir, "stray.tmp.1"), []byte("x"), 0o600))
+
+	var wg sync.WaitGroup
+	errs := make([]error, 16)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := CachePutMaterializedDir(context.Background(), ws, "https://example.com/x", files); err != nil {
+				errs[i] = err
+				return
+			}
+			for round := 0; round < 20; round++ {
+				got, entry, err := CacheGetMaterializedDir(ws, hash)
+				if err != nil || entry == nil || got == "" {
+					errs[i] = fmt.Errorf("round %d: tree missing after put returned (err=%v)", round, err)
+					return
+				}
+				for rel, want := range files {
+					data, err := os.ReadFile(filepath.Join(got, filepath.FromSlash(rel)))
+					if err != nil || string(data) != string(want) {
+						errs[i] = fmt.Errorf("round %d: %s unreadable after put returned: %v", round, rel, err)
+						return
+					}
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		assert.NoError(t, err)
+	}
 }

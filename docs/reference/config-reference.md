@@ -50,7 +50,7 @@ agents:                              # Registered agent sources and per-agent tu
       code-reviewer: opus            # Model for a specific persona
 
 # ── Remote resources ─────────────────────────────────────────
-allowed_remote_resources:            # URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition)
+allowed_remote_resources:            # URL prefixes allowed for remote resources (agents, policies, skills, plugins, runtime workflows, profiles, providers, and base composition)
   - https://raw.githubusercontent.com/fullsend-ai/fullsend/
   - https://raw.githubusercontent.com/fullsend-ai/agents/
 
@@ -192,10 +192,11 @@ For agent registration and management, see
 ### `allowed_remote_resources`
 
 URL prefixes allowed for remote resources in harness files — agent sources
-(`agents:` entries with URLs), policies, skills, plugins, profiles, providers,
-and `base:` composition. The config-level list acts as a fallback for all URL
-resolution: a URL is accepted if it matches either the harness-level or the
-config-level list. Default prefixes cover the fullsend and agents repositories.
+(`agents:` entries with URLs), policies, skills, plugins, runtime workflows
+(`runtime_workflow.source`), profiles, providers, and `base:` composition. The
+config-level list acts as a fallback for all URL resolution: a URL is accepted
+if it matches either the harness-level or the config-level list. Default
+prefixes cover the fullsend and agents repositories.
 
 In the layered config system, this field uses union-with-deny-all semantics:
 omitted inherits from parent; explicit empty (`[]`) denies all remote

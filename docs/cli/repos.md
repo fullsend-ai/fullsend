@@ -414,7 +414,7 @@ fullsend repos set-default github.mint_url ""   # removes the key
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `defaults.allowed_remote_resources` | comma-separated HTTPS URL prefixes, each ending with `/` | URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition). Each entry must be a valid HTTPS URL ending with a trailing slash (no double-encoded `%25` sequences). |
+| `defaults.allowed_remote_resources` | comma-separated HTTPS URL prefixes, each ending with `/` | URL prefixes allowed for remote resources (agents, policies, skills, plugins, runtime workflows, profiles, providers, and base composition). Each entry must be a valid HTTPS URL ending with a trailing slash (no double-encoded `%25` sequences). |
 | `defaults.runtime` | `claude`, `pi` or `codex` | Agent runtime written as each repo's `runtime:` at install; a per-entry `runtime` overrides it (`none` stops the chain) |
 | `defaults.inference.auth` | `vertex-wif`, `openai-api-key`, or `openai-wif` | Global [inference authentication selection](#inference-authentication-selection); forge-section and per-entry `inference.auth` override it |
 | `defaults.vendor` | `true` or `false` | Vendor fullsend binary and content into each repo for offline CI; per-entry `vendor` overrides it. Currently GitHub-only; GitLab CI templates do not yet reference the vendored binary. |
