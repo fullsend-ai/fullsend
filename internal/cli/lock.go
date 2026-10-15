@@ -259,6 +259,10 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
 			return nil, fmt.Errorf("loading harness for forge %q: %w", platform, loadErr)
 		}
+		if err := checkWorkflowArgsLiteral(h); err != nil {
+			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
+			return nil, err
+		}
 
 		// Run lint diagnostics (non-fatal), deduplicating across forge variants
 		for _, diag := range h.Lint() {

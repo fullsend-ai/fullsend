@@ -276,8 +276,31 @@ func rejectSymlinkComponents(base, full string) error {
 // once, as a single non-dir entry), so this also covers a symlinked path
 // component partway down the tree.
 func commitDirTree(w *world.World, localDir, repoPrefix string) error {
-	ctx := context.Background()
-	return filepath.WalkDir(localDir, func(path string, d os.DirEntry, walkErr error) error {
+	files, err := fixtureTreeFiles(localDir, repoPrefix)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := commitFixtureFile(w, f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fixtureFile is one file of a fixture tree: its content and the repo
+// path it is committed to.
+type fixtureFile struct {
+	dest    string
+	content []byte
+}
+
+// fixtureTreeFiles reads every regular file under localDir, with the repo
+// path under repoPrefix it is committed to, applying commitDirTree's
+// symlink and non-regular-file refusals. Nothing is committed.
+func fixtureTreeFiles(localDir, repoPrefix string) ([]fixtureFile, error) {
+	var files []fixtureFile
+	err := filepath.WalkDir(localDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {
 			return walkErr
 		}
@@ -295,10 +318,16 @@ func commitDirTree(w *world.World, localDir, repoPrefix string) error {
 		if err != nil {
 			return err
 		}
-		dest := filepath.Join(repoPrefix, rel)
-		return w.SCM.CommitFile(ctx, w.RepoOwner, w.RepoName, dest,
-			fmt.Sprintf("behaviour: add fixture %s", dest), content)
+		files = append(files, fixtureFile{dest: filepath.Join(repoPrefix, rel), content: content})
+		return nil
 	})
+	return files, err
+}
+
+// commitFixtureFile commits one fixture file into the leased repo.
+func commitFixtureFile(w *world.World, f fixtureFile) error {
+	return w.SCM.CommitFile(context.Background(), w.RepoOwner, w.RepoName, f.dest,
+		fmt.Sprintf("behaviour: add fixture %s", f.dest), f.content)
 }
 
 // dispatchVisibilityAttempts bounds how many times thenAgentIsTriggered

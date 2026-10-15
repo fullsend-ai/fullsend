@@ -219,11 +219,12 @@ you would add or change it by hand.
 | `harness/<name>.yaml` | `timeout_minutes:` | always | `--timeout-minutes` / spec `timeout_minutes` | — |
 | `harness/<name>.yaml` | `trigger:` | always | `--on` / `--trigger` or spec `on`/`trigger` | — |
 | `harness/<name>.yaml` | `validation_loop:` | only when asked for | `--validation-loop` / spec `validation_loop` | — |
+| `harness/<name>.yaml` | `runtime_workflow:` | only when asked for | `--runtime-workflow-source` and `--runtime-workflow-name` / spec `runtime_workflow_source` and `runtime_workflow_name` | `args:`, and the real `#sha256=` for a remote source — see [Starting a workflow](../../cli/agent.md#starting-a-workflow) and [Run a runtime-workflow repository](runtime-workflows.md) |
 | `harness/<name>.yaml` | `overlays:` (commented) | only for pi on an `openai/` model | — | uncomment for Vertex sub-agents ([Pick a route](#pick-a-route)); write your own for other conditional fields |
 | `harness/<name>.yaml` | `skills:`, `base:` | never | — | see [Skills](#skills), [Harness composition with `base`](#harness-composition-with-base) |
 | `agents/<name>.md` | `name:`, `model:` | always | `<name>` / resolved model | — |
 | `agents/<name>.md` | `description:` | always | `--description` / spec `description` | — |
-| `agents/<name>.md` | `tools:` | always, a role/runtime default | — | tighten the Bash allowlist, or add `Agent` for any sub-agents |
+| `agents/<name>.md` | `tools:` | always, a role/runtime default, plus `Workflow` with `--runtime-workflow-name` (claude) | — | tighten the Bash allowlist, or add `Agent` for any sub-agents |
 | `agents/<name>.md` | `skills:`, `disallowedTools:` | never | — | see [Skills](#skills) |
 | `schemas/<name>-result.schema.json` | `status`, `summary`, `comment` | always | — | add a field for a richer result; update `post-<name>.sh` to read it |
 | `config.yaml` `agents:` entry | `name:`, `source:` | always, unless `--no-register` | `<name>` / `harness/<name>.yaml` | — |

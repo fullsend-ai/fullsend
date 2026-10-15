@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"os"
 	"path"
 	"regexp"
 	"strings"
@@ -19,8 +20,9 @@ const RuntimeWorkflowSandboxDir = "runtime-workflow"
 // runtime-workflow repository: a GitHub tree URL at a full commit sha
 // with a #sha256= tree hash, or a path in the repository that holds the
 // harness ("." is its root). For a Claude plugin definition, Name is the
-// workflow to start (workflows/<name>.js) and Args its optional literal
-// arguments; a pi extension takes neither.
+// workflow to start (workflows/<name>.js) and Args its optional
+// arguments, whose ${VAR} references the runner expands from its
+// environment; a pi extension takes neither.
 type RuntimeWorkflowSpec struct {
 	Source string `yaml:"source"`
 	Name   string `yaml:"name,omitempty"`
@@ -75,11 +77,15 @@ var validCommitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 // also whether it is a usable Claude Code plugin namespace for one.
 func ValidWorkflowName(name string) bool { return validWorkflowName.MatchString(name) }
 
-// validateWorkflow is the Validate() check for the runtime_workflow: field. It
-// checks shape only: which kind of definition the source holds, and so
-// whether name is required or refused, is known once it is fetched.
+// validateWorkflow is the Validate() check for the runtime_workflow: field.
 func (h *Harness) validateWorkflow() error {
-	w := h.RuntimeWorkflow
+	return ValidateRuntimeWorkflowSpec(h.RuntimeWorkflow)
+}
+
+// ValidateRuntimeWorkflowSpec checks the shape of a runtime_workflow: field; nil passes.
+// Which kind of definition the source holds, and so whether name is
+// required or refused, is known once it is fetched.
+func ValidateRuntimeWorkflowSpec(w *RuntimeWorkflowSpec) error {
 	if w == nil {
 		return nil
 	}
@@ -95,7 +101,7 @@ func (h *Harness) validateWorkflow() error {
 	if w.Args != "" && w.Name == "" {
 		return fmt.Errorf("runtime_workflow.args is set without runtime_workflow.name: args go to the Claude workflow that name starts; set name, or remove args")
 	}
-	return nil
+	return CheckWorkflowArgsVariables(w.Args, nil)
 }
 
 func validateWorkflowSource(w *RuntimeWorkflowSpec) error {
@@ -213,4 +219,99 @@ func ResolveBaseWorkflowSource(w *RuntimeWorkflowSpec, baseURL string, allowlist
 	w.Source = treeURL
 	w.baseDirURL = rawDir
 	return nil
+}
+
+// credentialSegments are name segments (the parts between underscores)
+// that mark a credential wherever they sit in the name: DB_PASS,
+// HTTP_AUTHORIZATION and GH_TOKEN_B64 all match. AUTH matches only as a
+// whole segment, so ISSUE_AUTHOR stays allowed, and PROXY carries over
+// from reservedPluginEnvSuffixes.
+var credentialSegments = map[string]bool{
+	"TOKEN": true, "TOKENS": true, "SECRET": true, "SECRETS": true,
+	"PASS": true, "PASSWD": true, "PASSWORD": true, "PASSWORDS": true, "PASSPHRASE": true,
+	"CRED": true, "CREDS": true, "CREDENTIAL": true, "CREDENTIALS": true,
+	"AUTH": true, "AUTHN": true, "AUTHZ": true, "AUTHORIZATION": true,
+	"COOKIE": true, "COOKIES": true, "PROXY": true, "BEARER": true, "JWT": true,
+	"APIKEY": true, "PRIVATEKEY": true, "ACCESSKEY": true, "SECRETKEY": true,
+	"SSHKEY": true, "SIGNINGKEY": true, "DEPLOYKEY": true,
+}
+
+// credentialStems mark a credential inside a run-together segment
+// (DBPASSWORD, MYSECRET). TOKEN is matched as a segment suffix instead
+// (GHTOKEN, AUTHTOKEN), so TOKENIZER stays allowed.
+var credentialStems = []string{"PASSWORD", "PASSWD", "PASSPHRASE", "SECRET", "CREDENTIAL", "AUTHORIZATION", "APIKEY", "PRIVATEKEY", "ACCESSKEY"}
+
+// credentialKeyQualifiers make a following KEY segment a credential
+// (MY_API_KEY, AWS_ACCESS_KEY, DEPLOY_KEY_B64). A KEY after anything
+// else is allowed on purpose: ISSUE_KEY names a Jira work item, which
+// args exist to carry.
+var credentialKeyQualifiers = map[string]bool{
+	"API": true, "ACCESS": true, "SECRET": true, "PRIVATE": true, "SIGNING": true,
+	"ENCRYPTION": true, "MASTER": true, "SSH": true, "DEPLOY": true, "CLIENT": true, "SESSION": true,
+}
+
+// CredentialShapedEnvName reports whether an environment variable name
+// looks like it holds a credential, and the rule it matched. Names are
+// compared case-insensitively and split on underscores. It matches the
+// OTEL_* prefix, whose exporter headers carry collector tokens; any
+// segment in credentialSegments; a PWD segment in a longer name (DB_PWD,
+// not PWD itself); a segment that ends in TOKEN or contains
+// a credentialStems stem; and a KEY segment after a credentialKeyQualifiers
+// segment. A bare *_KEY such as ISSUE_KEY is allowed. The list is defense
+// in depth: the rule for harness authors is that args name only
+// non-secret identifiers (ADR 0130 rule 4).
+func CredentialShapedEnvName(name string) (string, bool) {
+	upper := strings.ToUpper(name)
+	if strings.HasPrefix(upper, "OTEL_") {
+		return "the OTEL_* family, whose exporter headers carry collector tokens", true
+	}
+	segs := strings.Split(upper, "_")
+	for i, seg := range segs {
+		if credentialSegments[seg] {
+			return "a " + seg + " segment (credential-shaped names)", true
+		}
+		if strings.HasSuffix(seg, "TOKEN") || strings.HasSuffix(seg, "TOKENS") {
+			return "a segment ending in TOKEN (credential-shaped names)", true
+		}
+		for _, stem := range credentialStems {
+			if strings.Contains(seg, stem) {
+				return "a segment containing " + stem + " (credential-shaped names)", true
+			}
+		}
+		// PWD alone is the shell's working directory; DB_PWD is a password.
+		if seg == "PWD" && len(segs) > 1 {
+			return "a PWD segment (credential-shaped names)", true
+		}
+		if seg == "KEY" && i > 0 && credentialKeyQualifiers[segs[i-1]] {
+			return "the " + segs[i-1] + "_KEY family (credential-shaped names)", true
+		}
+	}
+	return "", false
+}
+
+// CheckWorkflowArgsVariables refuses runtime_workflow.args when a variable the
+// runner would expand in it names a credential: args reach the model
+// prompt, the run plan, metrics.json and traces, so no credential may get
+// in. The runner expands args only when they contain "${", so args
+// without it name no variable. extra, when set, adds the runner's own
+// denied names (runner-only credentials) with the rule to report.
+func CheckWorkflowArgsVariables(args string, extra func(name string) (string, bool)) error {
+	if !strings.Contains(args, "${") {
+		return nil
+	}
+	var refused error
+	os.Expand(args, func(name string) string {
+		if refused != nil {
+			return ""
+		}
+		rule, denied := CredentialShapedEnvName(name)
+		if !denied && extra != nil {
+			rule, denied = extra(name)
+		}
+		if denied {
+			refused = fmt.Errorf("runtime_workflow.args references ${%s}, which names a credential (%s); pass work-item identifiers such as ${ISSUE_NUMBER} instead", name, rule)
+		}
+		return ""
+	})
+	return refused
 }

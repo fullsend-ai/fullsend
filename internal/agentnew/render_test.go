@@ -210,6 +210,59 @@ func TestValidationLoopIsOptional(t *testing.T) {
 	}
 }
 
+// TestWorkflowReachesHarnessAndTools: --runtime-workflow-name writes the harness
+// runtime_workflow: block and adds Workflow to the agent's tools:, which the runner
+// requires of an agent with a tools: list (ADR 0130 rule 5).
+func TestWorkflowReachesHarnessAndTools(t *testing.T) {
+	off, err := Render(testOptions("lint-docs", "triage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(fileByPath(t, off, "harness/lint-docs.yaml").Data), "runtime_workflow:") {
+		t.Error("runtime_workflow: must be absent by default")
+	}
+	if strings.Contains(string(fileByPath(t, off, "agents/lint-docs.md").Data), "Workflow") {
+		t.Error("Workflow must not be in tools: by default")
+	}
+
+	opts := testOptions("lint-docs", "triage")
+	opts.RuntimeWorkflow = &harness.RuntimeWorkflowSpec{Source: "pipelines/sample-pipeline", Name: "run-all"}
+	on, err := Render(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeTree(t, dir, on)
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated harness does not load: %v", err)
+	}
+	if h.RuntimeWorkflow == nil || h.RuntimeWorkflow.Source != "pipelines/sample-pipeline" || h.RuntimeWorkflow.Name != "run-all" {
+		t.Errorf("runtime_workflow: = %+v", h.RuntimeWorkflow)
+	}
+	if md := string(fileByPath(t, on, "agents/lint-docs.md").Data); !strings.Contains(md, "tools: Bash(gh,jq), Read, Grep, Glob, Write, Workflow\n") {
+		t.Errorf("tools: should end with Workflow:\n%s", md)
+	}
+}
+
+// TestPiWorkflowAddsNoWorkflowTool: a pi extension starts
+// itself from its own hook, so its agent gets no Workflow tool.
+func TestPiWorkflowAddsNoWorkflowTool(t *testing.T) {
+	opts := testOptions("lint-docs", "triage")
+	opts.Runtime = "pi"
+	opts.RuntimeWorkflow = &harness.RuntimeWorkflowSpec{Source: "pipelines/sample-pipeline"}
+	files, err := Render(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md := string(fileByPath(t, files, "agents/lint-docs.md").Data); strings.Contains(md, "Workflow") {
+		t.Errorf("a pi extension agent must not list Workflow:\n%s", md)
+	}
+	if !strings.Contains(string(fileByPath(t, files, "harness/lint-docs.yaml").Data), "runtime_workflow:\n  source: pipelines/sample-pipeline\n") {
+		t.Error("runtime_workflow: source must reach the harness")
+	}
+}
+
 // TestDescriptionIsMarshalledNotInterpolated: a description containing YAML
 // metacharacters must not break either document.
 func TestDescriptionIsMarshalledNotInterpolated(t *testing.T) {

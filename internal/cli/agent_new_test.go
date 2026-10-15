@@ -370,6 +370,151 @@ func TestAgentNewNextStepsDryRun(t *testing.T) {
 	}
 }
 
+// TestAgentNewWorkflow: --runtime-workflow-source and --runtime-workflow-name write the
+// runtime_workflow: block and add Workflow to tools:; a path source needs no pin,
+// so nothing about pinning is printed.
+func TestAgentNewWorkflow(t *testing.T) {
+	dir := newFullsendDir(t)
+	f := defaultFlags(dir, "runtime-workflow-source", "runtime-workflow-name")
+	f.workflowSource = "pipelines/sample-pipeline"
+	f.workflow = "run-all"
+	out, err := runNew(t, "pipeline-runner", f)
+	if err != nil {
+		t.Fatalf("runAgentNew: %v\n%s", err, out)
+	}
+	h, err := harness.Load(filepath.Join(dir, "harness", "pipeline-runner.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.RuntimeWorkflow == nil || h.RuntimeWorkflow.Source != "pipelines/sample-pipeline" || h.RuntimeWorkflow.Name != "run-all" {
+		t.Errorf("runtime_workflow: = %+v", h.RuntimeWorkflow)
+	}
+	md, err := os.ReadFile(filepath.Join(dir, "agents", "pipeline-runner.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(md), ", Workflow\n") {
+		t.Errorf("tools: should list Workflow:\n%s", md)
+	}
+	if !strings.Contains(out, "the runner starts the workflow; that file sets the main loop's instructions and tools.") {
+		t.Errorf("next steps should say the runner starts the runtime_workflow:\n%s", out)
+	}
+	for _, unwanted := range []string{"placeholder", "workflows:"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("output should not mention %q:\n%s", unwanted, out)
+		}
+	}
+}
+
+// TestAgentNewWorkflowRemoteWithoutPin: a remote source without #sha256=
+// gets the 64-zero placeholder and the steps to pin the real hash.
+func TestAgentNewWorkflowRemoteWithoutPin(t *testing.T) {
+	dir := newFullsendDir(t)
+	f := defaultFlags(dir, "runtime-workflow-source", "runtime-workflow-name")
+	f.workflowSource = "https://github.com/example-org/sample-pipeline/tree/0123456789abcdef0123456789abcdef01234567"
+	f.workflow = "run-all"
+	out, err := runNew(t, "pipeline-runner", f)
+	if err != nil {
+		t.Fatalf("runAgentNew: %v\n%s", err, out)
+	}
+	h, err := harness.Load(filepath.Join(dir, "harness", "pipeline-runner.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://github.com/example-org/sample-pipeline/tree/0123456789abcdef0123456789abcdef01234567#sha256=" + strings.Repeat("0", 64); h.RuntimeWorkflow == nil || h.RuntimeWorkflow.Source != want {
+		t.Errorf("runtime_workflow: = %+v, want source %s", h.RuntimeWorkflow, want)
+	}
+	for _, want := range []string{
+		"runtime_workflow.source has no tree hash yet, so harness/pipeline-runner.yaml pins #sha256=" + strings.Repeat("0", 64) + " (64 zeros) as a placeholder",
+		`Run 'fullsend lock pipeline-runner --fullsend-dir ` + dir + `': it fails with "the fetched tree hashes to sha256=<hash>"; put that hash after #sha256= and run it again.`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output should contain %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestAgentNewWorkflowDryRunAndSpec(t *testing.T) {
+	dir := newFullsendDir(t)
+	spec := filepath.Join(t.TempDir(), "runner.agent.yaml")
+	if err := os.WriteFile(spec, []byte("version: \"1\"\nname: pipeline-runner\nruntime_workflow_source: https://github.com/example-org/sample-pipeline/tree/0123456789abcdef0123456789abcdef01234567\nruntime_workflow_name: run-all\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := defaultFlags(dir, "dry-run")
+	f.specFile = spec
+	f.dryRun = true
+	out, err := runNew(t, "", f)
+	if err != nil {
+		t.Fatalf("runAgentNew: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "runtime_workflow:\n  source: https://github.com/example-org/sample-pipeline/tree/0123456789abcdef0123456789abcdef01234567#sha256=") || !strings.Contains(out, "\n  name: run-all\n") {
+		t.Errorf("the spec's workflow should reach the rendered harness:\n%s", out)
+	}
+	if !strings.Contains(out, "as a placeholder") {
+		t.Errorf("a dry run should print the pin steps too:\n%s", out)
+	}
+}
+
+func TestAgentNewWorkflowRefused(t *testing.T) {
+	dir := newFullsendDir(t)
+	f := defaultFlags(dir, "runtime-workflow-name")
+	f.workflow = "run-all"
+	if _, err := runNew(t, "pipeline-runner", f); err == nil || !strings.Contains(err.Error(), "--runtime-workflow-name run-all needs --runtime-workflow-source") {
+		t.Errorf("err = %v, want the --runtime-workflow-source error", err)
+	}
+
+	f = defaultFlags(dir, "runtime-workflow-source")
+	f.workflowSource = "pipelines/sample-pipeline"
+	if _, err := runNew(t, "pipeline-runner", f); err == nil || !strings.Contains(err.Error(), "--runtime-workflow-source needs --runtime-workflow-name <name>") {
+		t.Errorf("err = %v, want the --runtime-workflow-name error", err)
+	}
+
+	f = defaultFlags(dir, "runtime-workflow-source", "runtime-workflow-name", "runtime")
+	f.workflowSource = "pipelines/sample-pipeline"
+	f.workflow = "run-all"
+	f.runtime = "pi"
+	if _, err := runNew(t, "pipeline-runner", f); err == nil || !strings.Contains(err.Error(), "takes no workflow name") {
+		t.Errorf("err = %v, want the pi name error", err)
+	}
+
+	f = defaultFlags(dir, "runtime-workflow-source", "runtime-workflow-name")
+	f.workflowSource = "https://github.com/example-org/sample-pipeline/tree/main"
+	f.workflow = "run-all"
+	if _, err := runNew(t, "pipeline-runner", f); err == nil || !strings.Contains(err.Error(), "pin the commit sha") {
+		t.Errorf("err = %v, want the commit sha error", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "harness", "pipeline-runner.yaml")); !os.IsNotExist(err) {
+		t.Errorf("a refused run must write nothing: %v", err)
+	}
+}
+
+// TestAgentNewWorkflowPi: on the pi runtime --runtime-workflow-source alone
+// writes a pi extension, without the Workflow tool.
+func TestAgentNewWorkflowPi(t *testing.T) {
+	dir := newFullsendDir(t)
+	f := defaultFlags(dir, "runtime-workflow-source", "runtime")
+	f.workflowSource = "pipelines/sample-pipeline"
+	f.runtime = "pi"
+	out, err := runNew(t, "pipeline-runner", f)
+	if err != nil {
+		t.Fatalf("runAgentNew: %v\n%s", err, out)
+	}
+	h, err := harness.Load(filepath.Join(dir, "harness", "pipeline-runner.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.RuntimeWorkflow == nil || h.RuntimeWorkflow.Source != "pipelines/sample-pipeline" || h.RuntimeWorkflow.Name != "" {
+		t.Errorf("runtime_workflow: = %+v", h.RuntimeWorkflow)
+	}
+	md, err := os.ReadFile(filepath.Join(dir, "agents", "pipeline-runner.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(md), "Workflow") {
+		t.Errorf("a pi extension agent must not list Workflow:\n%s", md)
+	}
+}
+
 func TestResolveAgentNewOptions(t *testing.T) {
 	dir := newFullsendDir(t)
 

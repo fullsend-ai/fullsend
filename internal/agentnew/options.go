@@ -41,6 +41,42 @@ type Options struct {
 	// credentials the harness asks for and whether the model must be an
 	// OpenAI id.
 	Runtime string
+	// Workflow is the harness runtime_workflow: field (--runtime-workflow-source and
+	// --runtime-workflow-name, ADR 0130), or nil.
+	RuntimeWorkflow *harness.RuntimeWorkflowSpec
+}
+
+// PlaceholderTreeHash is the #sha256= value ParseRuntimeWorkflow writes for a
+// remote source given without one: 64 zeros, which no tree hashes to, so
+// `fullsend lock` fails and prints the tree hash the commit has.
+var PlaceholderTreeHash = strings.Repeat("0", 64)
+
+// ParseRuntimeWorkflow reads --runtime-workflow-source and --runtime-workflow-name (the workflow
+// name) into the harness runtime_workflow: field. A remote source without a
+// #sha256= pin gets PlaceholderTreeHash, which the caller explains. The
+// result is checked like the field itself; which runtime it suits is
+// Options.Validate's job.
+func ParseRuntimeWorkflow(source, name string) (*harness.RuntimeWorkflowSpec, error) {
+	if source == "" {
+		if name != "" {
+			return nil, fmt.Errorf("--runtime-workflow-name %s needs --runtime-workflow-source (spec key runtime_workflow_source), the runtime-workflow repository: a GitHub tree URL at a commit sha or a path in this repository", name)
+		}
+		return nil, nil
+	}
+	if harness.IsURL(source) && !strings.Contains(source, "#") {
+		source += "#sha256=" + PlaceholderTreeHash
+	}
+	spec := &harness.RuntimeWorkflowSpec{Source: source, Name: name}
+	if err := harness.ValidateRuntimeWorkflowSpec(spec); err != nil {
+		return nil, err
+	}
+	return spec, nil
+}
+
+// HasPlaceholderPin reports whether the workflow source carries
+// PlaceholderTreeHash, so the user still has to pin the real tree hash.
+func (o Options) HasPlaceholderPin() bool {
+	return o.RuntimeWorkflow != nil && strings.HasSuffix(o.RuntimeWorkflow.Source, "#sha256="+PlaceholderTreeHash)
 }
 
 // Validate checks every field that reaches a generated file, and does so
@@ -89,6 +125,27 @@ func (o *Options) Validate() error {
 	}
 	if o.Image == "" {
 		return fmt.Errorf("image must not be empty")
+	}
+	if o.RuntimeWorkflow != nil {
+		if err := harness.ValidateRuntimeWorkflowSpec(o.RuntimeWorkflow); err != nil {
+			return err
+		}
+		// ADR 0130 rule 3: claude starts a Claude plugin's workflow by
+		// name, pi loads a pi extension that takes no name, and fullsend
+		// run refuses runtime_workflow: on any other runtime, so the generator
+		// does too.
+		switch o.Runtime {
+		case "", "claude":
+			if o.RuntimeWorkflow.Name == "" {
+				return fmt.Errorf("--runtime-workflow-source needs --runtime-workflow-name <name> (spec key runtime_workflow_name) on the claude runtime: the workflows/<name>.js the runner starts; for a pi extension pass --runtime pi")
+			}
+		case "pi":
+			if o.RuntimeWorkflow.Name != "" {
+				return fmt.Errorf("--runtime-workflow-name %s is set, but on the pi runtime the runtime workflow is a pi extension, which takes no workflow name; drop --runtime-workflow-name and keep --runtime-workflow-source, or pass --runtime claude", o.RuntimeWorkflow.Name)
+			}
+		default:
+			return fmt.Errorf("a runtime workflow runs on claude or pi, and this agent resolves to %s: pass --runtime claude or --runtime pi, or drop --runtime-workflow-source", o.Runtime)
+		}
 	}
 	return nil
 }
