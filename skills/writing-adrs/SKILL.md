@@ -122,6 +122,23 @@ Follow these steps in order:
 1. **Find the next number.** List `docs/ADRs/` on current `main`, then scan
    **open pull requests** for new `docs/ADRs/NNNN-*.md` files so you do not
    collide with in-flight ADRs. Pick the lowest unused four-digit `NNNN`.
+   After listing those in-flight ADR files, open each one's diff and read
+   its **Decision** section (not just its filename or title) to check
+   whether it addresses the same problem-doc open question or the same
+   architectural decision you are about to write. If an in-flight ADR
+   already decides the same thing, stop: co-author or comment on the
+   existing PR, or (if that PR looks stalled or wrong) say so explicitly
+   in your own PR body instead of duplicating the decision.
+
+   Also check recently-merged ADRs: run `git log --since="30 days ago"
+   --name-only -- docs/ADRs/` on `main` to find recently-added files, then
+   read the Decision section and `relates_to` of any whose title or
+   problem docs overlap with your topic -- a different title can still
+   record the same decision. If a merged ADR already records the same
+   decision, do not write a duplicate -- reference the existing ADR
+   instead. If it recorded a decision you believe is now wrong, do not
+   silently diverge -- write a new ADR that supersedes it (see
+   "Substantially rewriting an accepted ADR" below) and link it.
 2. **Read the template.** Use `docs/ADRs/0000-adr-template.md` exactly.
 3. **Fill in frontmatter.** `relates_to` must reference existing filenames
    (without `.md`) from `docs/problems/`. Use `"*"` only for ADRs that truly
@@ -196,6 +213,12 @@ If the ADR partially answers a question, add a parenthetical:
 - You're rewriting a section of architecture.md -- make a surgical edit instead
 - `relates_to` lists more than 3 problem docs -- the decision may be too broad
 - You didn't stage and run `make lint` -- stop and do it
+- You didn't check whether an open PR's in-flight ADR already decides the
+  same thing -- read its Decision section, not just the filename or title
+- You didn't check recently-merged ADRs for the same decision under a
+  different title -- run `git log --since="30 days ago" --name-only --
+  docs/ADRs/` on `main` and read the Decision section and `relates_to` of
+  any that overlap with your topic
 - You're substantially rewriting the Context, Decision, or Consequences of an
   accepted ADR -- write a new superseding ADR instead
 - You're turning an old ADR into a running changelog -- use
