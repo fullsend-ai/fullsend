@@ -397,7 +397,7 @@ The runner records the runtime workflow and what it started in the run directory
 `metrics.json`:
 
 ```console
-$ jq .workflow ~/src/out/fs-sam-a5f10d8db64b/metrics.json
+$ jq .runtime_workflow ~/src/out/fs-sam-a5f10d8db64b/metrics.json
 {
   "source": "pipelines/sample-pipeline",
   "pin_sha256": "9d2717dc50ed46a59bb200b86053b14fa4cc3fb648b45d2672faf5b5aeb56705",
