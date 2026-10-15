@@ -50,42 +50,42 @@ The **Runtime** line shows which runtime was selected and the config source it w
 
 ### Workflow line
 
-When the harness sets [`workflow:`](../reference/harness-reference.md#field-details), the plan
+When the harness sets [`runtime_workflow:`](../reference/harness-reference.md#field-details), the plan
 block also prints a **Workflow** line. It appears only for such a harness:
 
 ```text
-Workflow: example-org/sample-pipeline@0123456789ab/pipelines/sample (sha256:<hash>) delivered as claude plugin <namespace>; workflow <name>
-Workflow: pipelines/sample (sha256:<hash>) delivered as pi extension
+Runtime workflow: example-org/sample-pipeline@0123456789ab/pipelines/sample (sha256:<hash>) delivered as claude plugin <namespace>; workflow <name>
+Runtime workflow: pipelines/sample (sha256:<hash>) delivered as pi extension
 ```
 
 The source comes first: a remote source shortened to `<owner>/<repo>@<first 12 characters of the
 commit>[/<path>]`, a path source as written in the harness. `<hash>` is the first 12 characters of
-the tree hash. A Claude Code plugin definition then shows its plugin name (the `name` in
-`.claude-plugin/plugin.json`, or `workflow-definition` without that file) and the workflow name;
+the tree hash. A Claude Code plugin then shows its plugin name (the `name` in
+`.claude-plugin/plugin.json`, or `runtime-workflow` without that file) and the workflow name;
 a pi extension shows only its kind.
 
-`fullsend run` resolves the workflow definition after the harness and its other remote resources
+`fullsend run` resolves the runtime workflow after the harness and its other remote resources
 (`base:`, skills, plugins, providers) and before it checks files and creates the sandbox:
 
-1. A harness with `workflow:` fails unless the runtime is `claude`, `pi` or a `dummy` test runtime,
-   before the definition is fetched:
-   `workflow: is not supported by the <runtime> runtime; agent "<agent>" resolves to "<runtime>", ...`.
-2. A remote definition is fetched at its commit (taken from the cache when it is there) and
+1. A harness with `runtime_workflow:` fails unless the runtime is `claude`, `pi` or a `dummy` test runtime,
+   before the runtime workflow is fetched:
+   `runtime_workflow: is not supported by the <runtime> runtime; agent "<agent>" resolves to "<runtime>", ...`.
+2. A remote runtime workflow is fetched at its commit (taken from the cache when it is there) and
    checked against its `#sha256=` pin. When `.fullsend/lock.yaml` has a current entry for the
-   agent, the tree hash it records is the one the definition must have, for a source inherited
+   agent, the tree hash it records is the one the runtime workflow must have, for a source inherited
    through a URL `base:` too, even when the rest of the entry cannot be replayed and the run
-   falls back to normal resolution; a definition missing from the cache is refetched and must
+   falls back to normal resolution; a runtime workflow missing from the cache is refetched and must
    match it, and a malformed workflow entry fails the run with a pointer to
    `fullsend lock --update`. A path source is read from the files git tracks in the checkout that
    holds the harness file that declares it (for a local `base:`, the base file).
-3. The definition's kind must match the runtime, Claude Code plugin on `claude` and pi extension on
+3. The runtime workflow's kind must match the runtime, Claude Code plugin on `claude` and pi extension on
    `pi`; a mismatch fails naming both.
 4. It is delivered like a `plugins:` entry of its kind, under the sandbox directory name
-   `workflow-definition`: uploaded, injection-scanned, and passed to `claude` with `--plugin-dir`
+   `runtime-workflow`: uploaded, injection-scanned, and passed to `claude` with `--plugin-dir`
    or to `pi` with `-e`.
 
-The runner delivers the definition but does not start a Claude workflow yet; the agent prompt has
-to. See [`workflow`](../reference/harness-reference.md#field-details) for sources and pins.
+The runner delivers the runtime workflow but does not start a Claude workflow yet; the agent prompt has
+to. See [`runtime_workflow`](../reference/harness-reference.md#field-details) for sources and pins.
 
 ## Runtime selection
 

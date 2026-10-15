@@ -242,9 +242,9 @@ type ResolveOpts struct {
 	MaxResources int
 
 	// LockedWorkflowSHA256 is the tree hash .fullsend/lock.yaml records
-	// for the workflow: definition when fullsend run has a current lock
+	// for the runtime workflow when fullsend run has a current lock
 	// entry, whether or not the rest of the entry replays (see
-	// ResolveWorkflowDefinition). It is the hash the definition must have:
+	// ResolveRuntimeWorkflow). It is the hash the runtime workflow must have:
 	// the cache is read by it and a fetched tree must match it. Empty when
 	// there is no current lock entry or it records no definition.
 	LockedWorkflowSHA256 string

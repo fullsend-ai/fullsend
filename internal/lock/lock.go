@@ -47,13 +47,13 @@ type FileEntry struct {
 	SHA256 string `yaml:"sha256"`
 }
 
-// WorkflowField is the dependency field of a workflow definition
+// RuntimeWorkflowField is the dependency field of a runtime workflow
 // (ADR 0130).
-const WorkflowField = "workflow"
+const RuntimeWorkflowField = "runtime_workflow"
 
-// Lock file versions. A file that records a workflow definition is written
-// as version 2, so a release that predates workflow definitions refuses it
-// ("unsupported lock file version 2") instead of replaying the definition
+// Lock file versions. A file that records a runtime workflow is written
+// as version 2, so a release that predates runtime workflows refuses it
+// ("unsupported lock file version 2") instead of replaying the runtime workflow
 // as a skill; every other file stays version 1, readable by older releases.
 const (
 	baseVersion     = 1
@@ -119,7 +119,7 @@ func Load(path string) (*LockFile, error) {
 // to version control, unlike cache files which use 0o600.
 //
 // Save sets lf.Version from the content: 2 when any harness records a
-// dependency with field WorkflowField, otherwise 1.
+// dependency with field RuntimeWorkflowField, otherwise 1.
 func Save(path string, lf *LockFile) error {
 	lf.Version = requiredVersion(lf)
 
@@ -186,7 +186,7 @@ func hasWorkflowDep(deps []DependencyEntry, depth int) bool {
 		return false
 	}
 	for _, d := range deps {
-		if d.Field == WorkflowField || hasWorkflowDep(d.TransitiveDeps, depth+1) {
+		if d.Field == RuntimeWorkflowField || hasWorkflowDep(d.TransitiveDeps, depth+1) {
 			return true
 		}
 	}

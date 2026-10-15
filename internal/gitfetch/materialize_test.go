@@ -291,7 +291,7 @@ func TestReadLocalTree(t *testing.T) {
 	})
 	t.Run("only tracked files are read", func(t *testing.T) {
 		// A GITHUB_WORKSPACE-like checkout: the configuration repository
-		// at the top, with runner files beside the tracked definition.
+		// at the top, with runner files beside the tracked runtime workflow.
 		root := t.TempDir()
 		writeTree(t, root, treeSpec{files: map[string]string{
 			"def/plugin.json":         "{}",

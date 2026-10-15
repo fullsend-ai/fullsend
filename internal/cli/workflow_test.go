@@ -40,7 +40,7 @@ func cliPiTree() map[string][]byte {
 }
 
 func TestCheckWorkflowRuntime(t *testing.T) {
-	wf := &harness.Harness{Workflow: &harness.WorkflowSpec{Source: ".", Name: "n"}}
+	wf := &harness.Harness{RuntimeWorkflow: &harness.RuntimeWorkflowSpec{Source: ".", Name: "n"}}
 	tests := []struct {
 		name    string
 		h       *harness.Harness
@@ -52,7 +52,7 @@ func TestCheckWorkflowRuntime(t *testing.T) {
 		{name: "pi", h: wf, runtime: "pi"},
 		{name: "dummy", h: wf, runtime: "dummy"},
 		{name: "dummy-playback", h: wf, runtime: "dummy-playback"},
-		{name: "codex", h: wf, runtime: "codex", wantErr: `workflow: is not supported by the codex runtime; agent "code" resolves to "codex", but a workflow definition runs on claude (a Claude Code plugin) or pi (a pi extension); set runtime: claude or runtime: pi for this agent, or remove workflow: from its harness`},
+		{name: "codex", h: wf, runtime: "codex", wantErr: `runtime_workflow: is not supported by the codex runtime; agent "code" resolves to "codex", but a runtime workflow runs on claude (a Claude Code plugin) or pi (a pi extension); set runtime: claude or runtime: pi for this agent, or remove runtime_workflow: from its harness`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -68,11 +68,11 @@ func TestCheckWorkflowRuntime(t *testing.T) {
 }
 
 func TestCheckWorkflowKind(t *testing.T) {
-	claude := &resolve.ResolvedWorkflow{Kind: pluginformat.KindClaude, Local: true, Source: "wfdef"}
-	pi := &resolve.ResolvedWorkflow{Kind: pluginformat.KindPi, Owner: "example-org", Repo: "sample-pipeline", Commit: cliWorkflowSHA}
+	claude := &resolve.ResolvedRuntimeWorkflow{Kind: pluginformat.KindClaude, Local: true, Source: "wfdef"}
+	pi := &resolve.ResolvedRuntimeWorkflow{Kind: pluginformat.KindPi, Owner: "example-org", Repo: "sample-pipeline", Commit: cliWorkflowSHA}
 	tests := []struct {
 		name    string
-		rw      *resolve.ResolvedWorkflow
+		rw      *resolve.ResolvedRuntimeWorkflow
 		runtime string
 		wantErr string
 	}{
@@ -80,8 +80,8 @@ func TestCheckWorkflowKind(t *testing.T) {
 		{name: "claude plugin on claude", rw: claude, runtime: "claude"},
 		{name: "pi extension on pi", rw: pi, runtime: "pi"},
 		{name: "either on dummy", rw: pi, runtime: "dummy"},
-		{name: "claude plugin on pi", rw: claude, runtime: "pi", wantErr: `workflow.source wfdef is a Claude Code plugin, but agent "code" resolves to the pi runtime, which runs a pi extension; set runtime: claude for this agent, or point workflow.source at a pi extension`},
-		{name: "pi extension on claude", rw: pi, runtime: "claude", wantErr: `workflow.source example-org/sample-pipeline@0123456789ab is a pi extension, but agent "code" resolves to the claude runtime, which runs a Claude Code plugin; set runtime: pi for this agent, or point workflow.source at a Claude Code plugin`},
+		{name: "claude plugin on pi", rw: claude, runtime: "pi", wantErr: `runtime_workflow.source wfdef is a Claude Code plugin, but agent "code" resolves to the pi runtime, which runs a pi extension; set runtime: claude for this agent, or point runtime_workflow.source at a pi extension`},
+		{name: "pi extension on claude", rw: pi, runtime: "claude", wantErr: `runtime_workflow.source example-org/sample-pipeline@0123456789ab is a pi extension, but agent "code" resolves to the claude runtime, which runs a Claude Code plugin; set runtime: pi for this agent, or point runtime_workflow.source at a Claude Code plugin`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -100,22 +100,22 @@ func TestDescribeWorkflow(t *testing.T) {
 	hash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	tests := []struct {
 		name string
-		rw   resolve.ResolvedWorkflow
+		rw   resolve.ResolvedRuntimeWorkflow
 		want string
 	}{
 		{
 			name: "remote sub-directory, claude",
-			rw:   resolve.ResolvedWorkflow{Kind: pluginformat.KindClaude, Name: "probe", Args: "--issue 7", Owner: "example-org", Repo: "sample-pipeline", Commit: cliWorkflowSHA, Path: "pipelines/sample", TreeHash: hash, PluginName: "wfplug"},
+			rw:   resolve.ResolvedRuntimeWorkflow{Kind: pluginformat.KindClaude, Name: "probe", Args: "--issue 7", Owner: "example-org", Repo: "sample-pipeline", Commit: cliWorkflowSHA, Path: "pipelines/sample", TreeHash: hash, PluginName: "wfplug"},
 			want: "example-org/sample-pipeline@0123456789ab/pipelines/sample (sha256:abcdef012345) delivered as claude plugin wfplug; workflow probe",
 		},
 		{
 			name: "local root, pi",
-			rw:   resolve.ResolvedWorkflow{Kind: pluginformat.KindPi, Local: true, Source: ".", TreeHash: hash},
+			rw:   resolve.ResolvedRuntimeWorkflow{Kind: pluginformat.KindPi, Local: true, Source: ".", TreeHash: hash},
 			want: ". (sha256:abcdef012345) delivered as pi extension",
 		},
 		{
 			name: "short values are kept",
-			rw:   resolve.ResolvedWorkflow{Kind: pluginformat.KindClaude, Name: "n", Owner: "o", Repo: "r", Commit: "abc", TreeHash: "def", PluginName: "p"},
+			rw:   resolve.ResolvedRuntimeWorkflow{Kind: pluginformat.KindClaude, Name: "n", Owner: "o", Repo: "r", Commit: "abc", TreeHash: "def", PluginName: "p"},
 			want: "o/r@abc (sha256:def) delivered as claude plugin p; workflow n",
 		},
 	}
@@ -144,16 +144,16 @@ func TestResolveHarnessWorkflow(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(fullsendDir, "harness"), 0o755))
 		writeBytesTree(t, filepath.Join(repo, "def"), cliWorkflowTree())
 		gitInit(t, repo)
-		h := &harness.Harness{Workflow: &harness.WorkflowSpec{Source: "def", Name: "probe"}}
+		h := &harness.Harness{RuntimeWorkflow: &harness.RuntimeWorkflowSpec{Source: "def", Name: "probe"}}
 		loc := workflowLocation(filepath.Join(fullsendDir, "harness", "code.yaml"), fullsendDir, false)
 		rw, dep, err := resolveHarnessWorkflow(context.Background(), h, loc, resolve.ResolveOpts{WorkspaceRoot: fullsendDir})
 		require.NoError(t, err)
 		assert.Nil(t, dep)
 		assert.Equal(t, "def (sha256:"+rw.TreeHash[:12]+") delivered as claude plugin wfplug; workflow probe", describeWorkflow(rw))
 	})
-	// A pi extension definition joins h.Plugins under the fixed sandbox
+	// A pi extension joins h.Plugins under the fixed sandbox
 	// directory, and the bootstrap input hands it to the pi runtime as a
-	// pi plugin (TestPiRuntimeBootstrap_WorkflowDefinition covers the
+	// pi plugin (TestPiRuntimeBootstrap_RuntimeWorkflow covers the
 	// upload and the -e argument from there).
 	t.Run("pi extension reaches the bootstrap plugin list", func(t *testing.T) {
 		repo := t.TempDir()
@@ -161,7 +161,7 @@ func TestResolveHarnessWorkflow(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(fullsendDir, "harness"), 0o755))
 		writeBytesTree(t, filepath.Join(repo, "def"), cliPiTree())
 		gitInit(t, repo)
-		h := &harness.Harness{Workflow: &harness.WorkflowSpec{Source: "def"}}
+		h := &harness.Harness{RuntimeWorkflow: &harness.RuntimeWorkflowSpec{Source: "def"}}
 		loc := workflowLocation(filepath.Join(fullsendDir, "harness", "code.yaml"), fullsendDir, false)
 		rw, _, err := resolveHarnessWorkflow(context.Background(), h, loc, resolve.ResolveOpts{WorkspaceRoot: fullsendDir})
 		require.NoError(t, err)
@@ -170,7 +170,7 @@ func TestResolveHarnessWorkflow(t *testing.T) {
 		inputs, err := pluginInputs(h.Plugins)
 		require.NoError(t, err)
 		require.Len(t, inputs, 1)
-		assert.Equal(t, harness.WorkflowSandboxDir, inputs[0].Name)
+		assert.Equal(t, harness.RuntimeWorkflowSandboxDir, inputs[0].Name)
 		assert.Equal(t, pluginformat.KindPi, inputs[0].Kind)
 		assert.Equal(t, rw.LocalPath, inputs[0].Path)
 	})
@@ -185,9 +185,9 @@ func writeBytesTree(t *testing.T, root string, files map[string][]byte) {
 	}
 }
 
-// workflowHarness is a code harness whose workflow: pins source.
+// workflowHarness is a code harness whose runtime_workflow: pins source.
 func workflowHarness(source string) string {
-	return "agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nworkflow:\n  source: " + source + "\n  name: probe\n"
+	return "agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nruntime_workflow:\n  source: " + source + "\n  name: probe\n"
 }
 
 func pinnedWorkflowSource(repo, sha string, files map[string][]byte) string {
@@ -207,7 +207,7 @@ func workflowLockDir(t *testing.T, harnessYAML string) string {
 
 const workflowAllowlist = "allowed_remote_resources:\n  - https://github.com/example-org/\n  - https://raw.githubusercontent.com/example-org/\n"
 
-func TestRunLock_WorkflowDefinition(t *testing.T) {
+func TestRunLock_RuntimeWorkflow(t *testing.T) {
 	files := cliWorkflowTree()
 	treeHash := fetch.ComputeTreeHash(files)
 	url := "https://github.com/example-org/sample-pipeline/tree/" + cliWorkflowSHA
@@ -221,45 +221,45 @@ func TestRunLock_WorkflowDefinition(t *testing.T) {
 
 	lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
 	require.NoError(t, err)
-	assert.Equal(t, 2, lf.Version, "a lock file that records a workflow definition is version 2, which older releases refuse")
+	assert.Equal(t, 2, lf.Version, "a lock file that records a runtime workflow is version 2, which older releases refuse")
 	entry := lf.Lookup("code")
 	require.NotNil(t, entry)
 	require.Len(t, entry.Dependencies, 1)
 	dep := entry.Dependencies[0]
-	assert.Equal(t, "workflow", dep.Field)
+	assert.Equal(t, "runtime_workflow", dep.Field)
 	assert.Equal(t, url, dep.URL)
 	assert.Equal(t, "directory", dep.Type)
 	assert.Equal(t, treeHash, dep.SHA256)
 	assert.Len(t, dep.Files, 2)
 
 	// Replaying the lock verifies the cache and leaves skills and
-	// plugins alone: the definition is delivered by its own resolver.
+	// plugins alone: the runtime workflow is delivered by its own resolver.
 	h, err := harness.Load(filepath.Join(dir, "harness", "code.yaml"))
 	require.NoError(t, err)
 	require.NoError(t, h.ResolveRelativeTo(dir))
 	result, err := resolveFromLock(h, entry, dir, []string{"https://github.com/example-org/"}, printer)
 	require.NoError(t, err)
-	assert.Empty(t, result.Deps, "the definition is resolved by its own step, from the entry's hash")
+	assert.Empty(t, result.Deps, "the runtime workflow is resolved by its own step, from the entry's hash")
 	assert.Empty(t, h.Skills)
 	assert.Empty(t, h.Plugins)
 }
 
-func TestRunLock_WorkflowDefinitionError(t *testing.T) {
+func TestRunLock_RuntimeWorkflowError(t *testing.T) {
 	files := cliWorkflowTree()
 	dir := workflowLockDir(t, workflowHarness(pinnedWorkflowSource("sample-pipeline", cliWorkflowSHA, files)))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("allowed_remote_resources:\n  - https://github.com/other-org/\n"), 0o644))
 	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{}, ui.New(io.Discard))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `workflow.source URL "https://github.com/example-org/sample-pipeline/tree/`+cliWorkflowSHA+`" is not covered by allowed_remote_resources`)
+	assert.Contains(t, err.Error(), `runtime_workflow.source URL "https://github.com/example-org/sample-pipeline/tree/`+cliWorkflowSHA+`" is not covered by allowed_remote_resources`)
 }
 
 // A harness registered by URL resolves relative paths in the consumer's
-// repository, so its relative workflow.source is refused (ADR 0130 rule
+// repository, so its relative runtime_workflow.source is refused (ADR 0130 rule
 // 1), here for a config.yaml agents: entry whose source is a URL.
 func TestRunLock_WorkflowRelativeSourceInHarnessAddedByURL(t *testing.T) {
 	dir := t.TempDir()
 	harnessURL := "https://raw.githubusercontent.com/example-org/agents/" + cliWorkflowSHA + "/harness/code.yaml"
-	content := []byte("agent: agents/code.md\nrole: test\nworkflow:\n  source: pipelines/sample\n  name: probe\n")
+	content := []byte("agent: agents/code.md\nrole: test\nruntime_workflow:\n  source: pipelines/sample\n  name: probe\n")
 	require.NoError(t, fetch.CachePut(dir, harnessURL, content))
 	// Lock resolves a URL agent's own relative files against its source
 	// URL (#8979), so its agent file must be in the offline cache too.
@@ -274,11 +274,11 @@ func TestRunLock_WorkflowRelativeSourceInHarnessAddedByURL(t *testing.T) {
 
 	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{offline: true}, ui.New(io.Discard))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `workflow.source "pipelines/sample" is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness`)
+	assert.Contains(t, err.Error(), `runtime_workflow.source "pipelines/sample" is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness`)
 }
 
-// newWorkflowRunDir is newSkipHarnessDir with a workflow: harness whose
-// source is wfdef, a definition with the given files. The fullsend dir is
+// newWorkflowRunDir is newSkipHarnessDir with a runtime_workflow: harness whose
+// source is wfdef, a runtime workflow with the given files. The fullsend dir is
 // the git checkout itself, as for an org configuration repository, so
 // the source is wfdef.
 func newWorkflowRunDir(t *testing.T, runtimeLine string, files map[string][]byte, spec string) string {
@@ -286,7 +286,7 @@ func newWorkflowRunDir(t *testing.T, runtimeLine string, files map[string][]byte
 	dir := newSkipHarnessDir(t, "")
 	writeBytesTree(t, filepath.Join(dir, "wfdef"), files)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nworkflow:\n  source: wfdef\n"+spec), 0o644))
+		[]byte("agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nruntime_workflow:\n  source: wfdef\n"+spec), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(runtimeLine+"agents:\n  - harness/code.yaml\n"), 0o644))
 	gitInit(t, dir)
 	return dir
@@ -315,7 +315,7 @@ func TestRunAgent_WorkflowPlanLine(t *testing.T) {
 	assert.Contains(t, out, "wfdef (sha256:")
 	assert.Contains(t, out, ") delivered as claude plugin wfplug; workflow probe")
 	assert.NotContains(t, out, "/wfplug:probe", "the plan does not promise a command the runner does not start")
-	assert.Contains(t, out, "workflow-definition (claude)", "the definition is delivered as a Claude plugin under the fixed sandbox name")
+	assert.Contains(t, out, "runtime-workflow (claude)", "the runtime workflow is delivered as a Claude plugin under the fixed sandbox name")
 }
 
 func TestRunAgent_WorkflowPiExtension(t *testing.T) {
@@ -326,7 +326,7 @@ func TestRunAgent_WorkflowPiExtension(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating sandbox", "the workflow resolved and the run reached sandbox creation")
 	assert.Contains(t, out, ") delivered as pi extension")
-	assert.Contains(t, out, "workflow-definition (pi)", "the definition is delivered as a pi extension")
+	assert.Contains(t, out, "runtime-workflow (pi)", "the runtime workflow is delivered as a pi extension")
 }
 
 func TestRunAgent_WorkflowKindMismatch(t *testing.T) {
@@ -335,7 +335,7 @@ func TestRunAgent_WorkflowKindMismatch(t *testing.T) {
 
 	_, err := runWorkflowAgent(t, dir, resolveFlags{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `workflow.source wfdef is a Claude Code plugin, but agent "code" resolves to the pi runtime, which runs a pi extension`)
+	assert.Contains(t, err.Error(), `runtime_workflow.source wfdef is a Claude Code plugin, but agent "code" resolves to the pi runtime, which runs a pi extension`)
 	assert.NotContains(t, err.Error(), "creating sandbox")
 }
 
@@ -347,7 +347,7 @@ func TestRunAgent_WorkflowRefusedUnderCodexBeforeFetch(t *testing.T) {
 
 	_, err := runWorkflowAgent(t, dir, resolveFlags{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `workflow: is not supported by the codex runtime; agent "code" resolves to "codex"`)
+	assert.Contains(t, err.Error(), `runtime_workflow: is not supported by the codex runtime; agent "code" resolves to "codex"`)
 }
 
 func TestRunAgent_WorkflowResolutionError(t *testing.T) {
@@ -359,7 +359,7 @@ func TestRunAgent_WorkflowResolutionError(t *testing.T) {
 
 	_, err := runWorkflowAgent(t, dir, resolveFlags{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `workflow.source wfdef has no workflows/probe.js; the definition ships: other`)
+	assert.Contains(t, err.Error(), `runtime_workflow.source wfdef has no workflows/probe.js; the runtime workflow ships: other`)
 }
 
 // A relative source that a local base harness declares resolves in the
@@ -370,7 +370,7 @@ func TestRunAgent_WorkflowFromLocalBaseInNestedCheckout(t *testing.T) {
 	dir := newSkipHarnessDir(t, "")
 	nested := filepath.Join(dir, "vendor", "sample-pipeline")
 	writeBytesTree(t, filepath.Join(nested, "pipelines", "x"), cliWorkflowTree())
-	require.NoError(t, os.WriteFile(filepath.Join(nested, "base.yaml"), []byte("workflow:\n  source: pipelines/x\n  name: probe\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "base.yaml"), []byte("runtime_workflow:\n  source: pipelines/x\n  name: probe\n"), 0o644))
 	gitInit(t, nested)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
 		[]byte("base: ../vendor/sample-pipeline/base.yaml\nagent: agents/code.md\nrole: test\npolicy: policies/base.yaml\n"), 0o644))
@@ -383,7 +383,7 @@ func TestRunAgent_WorkflowFromLocalBaseInNestedCheckout(t *testing.T) {
 	assert.Contains(t, out, "pipelines/x (sha256:"+fetch.ComputeTreeHash(cliWorkflowTree())[:12]+") delivered as claude plugin wfplug; workflow probe")
 }
 
-// A remote workflow.source counts as a URL reference, so a harness whose
+// A remote runtime_workflow.source counts as a URL reference, so a harness whose
 // only remote dependency is its definition gets the allowlist entry
 // checks every URL harness gets, and an invalid entry is refused before
 // anything is fetched.
@@ -404,7 +404,7 @@ func TestRunAgent_WorkflowOnlyHarnessValidatesAllowlist(t *testing.T) {
 }
 
 // gitInit makes dir a git checkout with everything in it staged: a path
-// workflow.source reads the index.
+// runtime_workflow.source reads the index.
 func gitInit(t *testing.T, dir string) {
 	t.Helper()
 	gitIn(t, dir, "init", "-q", "-b", "main")
@@ -440,11 +440,11 @@ func lockedWorkflow(t *testing.T, dir string) lock.DependencyEntry {
 	entry := lf.Lookup("code")
 	require.NotNil(t, entry)
 	for _, d := range entry.Dependencies {
-		if d.Field == resolve.WorkflowDependencyField {
+		if d.Field == resolve.RuntimeWorkflowDependencyField {
 			return d
 		}
 	}
-	t.Fatal("lock.yaml records no workflow definition")
+	t.Fatal("lock.yaml records no runtime workflow")
 	return lock.DependencyEntry{}
 }
 
@@ -483,7 +483,7 @@ func TestRunLock_WorkflowThroughURLBase(t *testing.T) {
 		fetched = append(fetched, cloneURL+" "+path+" "+ref)
 		return treeFetcher(ctx, cloneURL, path, ref, token)
 	}}
-	baseContent := []byte("workflow:\n  source: pipelines/sample\n  name: probe\n")
+	baseContent := []byte("runtime_workflow:\n  source: pipelines/sample\n  name: probe\n")
 	baseAt := func(t *testing.T, dir, sha string) string {
 		u := "https://raw.githubusercontent.com/example-org/sample-pipeline/" + sha + "/.fullsend/harness/base.yaml"
 		require.NoError(t, fetch.CachePut(dir, u, baseContent))
@@ -520,7 +520,7 @@ func TestRunLock_WorkflowThroughURLBase(t *testing.T) {
 	assert.Equal(t, fetch.ComputeTreeHash(trees[cliWorkflowSHA2]), dep.SHA256)
 }
 
-// fullsend run with a current lock entry delivers the locked definition
+// fullsend run with a current lock entry delivers the locked runtime workflow
 // tree for a base-pinned source (no #sha256=): the lock entry's hash is
 // the authority, not the URL index, so an offline replay works without
 // an index entry and an index repointed at another cached tree is
@@ -536,7 +536,7 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 	skill := map[string][]byte{"SKILL.md": []byte("---\nname: helper\ndescription: helper skill\n---\n# helper\n")}
 	skillHash := fetch.ComputeTreeHash(skill)
 	skillURL := "https://github.com/example-org/sample-skills/tree/" + cliWorkflowSHA + "/skills/helper#sha256=" + skillHash
-	// fetcherServing serves the unrelated skill and, for the definition,
+	// fetcherServing serves the unrelated skill and, for the runtime workflow,
 	// the tree at commit workflowRef, whatever commit is asked for.
 	fetcherServing := func(workflowRef string, fetched *[]string) gitfetch.TreeFetchFunc {
 		return func(ctx context.Context, cloneURL, subpath, ref, token string) (map[string][]byte, error) {
@@ -551,7 +551,7 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 		t.Helper()
 		usePreScriptStub(t)
 		dir := newSkipHarnessDir(t, "")
-		baseContent := []byte("workflow:\n  source: pipelines/sample\n  name: probe\n")
+		baseContent := []byte("runtime_workflow:\n  source: pipelines/sample\n  name: probe\n")
 		baseURL := "https://raw.githubusercontent.com/example-org/sample-pipeline/" + cliWorkflowSHA + "/.fullsend/harness/base.yaml"
 		require.NoError(t, fetch.CachePut(dir, baseURL, baseContent))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
@@ -567,7 +567,7 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 		t.Helper()
 		_, err := fetch.CachePutMaterializedDir(context.Background(), dir, cleanURL, trees[cliWorkflowSHA2])
 		require.NoError(t, err)
-		require.NoError(t, harness.RecordURLIndex(dir, resolve.WorkflowDependencyField+":"+cleanURL, otherHash))
+		require.NoError(t, harness.RecordURLIndex(dir, resolve.RuntimeWorkflowDependencyField+":"+cleanURL, otherHash))
 	}
 	lockedTreePath := func(t *testing.T, dir string) string {
 		t.Helper()
@@ -603,7 +603,7 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 		skillCache, err := fetch.CachePath(dir, skillHash)
 		require.NoError(t, err)
 		require.NoError(t, os.RemoveAll(skillCache))
-		// A fetch of the definition would serve the other tree too: the
+		// A fetch of the runtime workflow would serve the other tree too: the
 		// locked tree is still in the cache and is found by the lock hash.
 		var fetched []string
 		out := assertLockedTreeDelivered(t, resolveFlags{treeFetcher: fetcherServing(cliWorkflowSHA2, &fetched)}, dir)
@@ -650,7 +650,7 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 		require.NoError(t, err)
 		entry := lf.Lookup("code")
 		for i := range entry.Dependencies {
-			if entry.Dependencies[i].Field == resolve.WorkflowDependencyField {
+			if entry.Dependencies[i].Field == resolve.RuntimeWorkflowDependencyField {
 				entry.Dependencies[i].SHA256 = "not-a-hash"
 			}
 		}
@@ -666,7 +666,7 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 func TestLockedWorkflowSHA256(t *testing.T) {
 	good := strings.Repeat("ab", 32)
 	wf := func(url, typ, sha string) lock.DependencyEntry {
-		return lock.DependencyEntry{Field: resolve.WorkflowDependencyField, URL: url, Type: typ, SHA256: sha}
+		return lock.DependencyEntry{Field: resolve.RuntimeWorkflowDependencyField, URL: url, Type: typ, SHA256: sha}
 	}
 	other := lock.DependencyEntry{Field: "plugins[0]", URL: "https://example.com/p", Type: "directory", SHA256: "a"}
 	for _, tc := range []struct {
@@ -741,7 +741,7 @@ func TestRunLock_WorkflowSharesURLWithPluginOrSkill(t *testing.T) {
 			for _, d := range entry.Dependencies {
 				fields[d.Field] = d.URL
 			}
-			assert.Equal(t, map[string]string{resolve.WorkflowDependencyField: treeURL, tc.field: treeURL}, fields)
+			assert.Equal(t, map[string]string{resolve.RuntimeWorkflowDependencyField: treeURL, tc.field: treeURL}, fields)
 
 			h, err := harness.Load(filepath.Join(dir, "harness", "code.yaml"))
 			require.NoError(t, err)
@@ -749,7 +749,7 @@ func TestRunLock_WorkflowSharesURLWithPluginOrSkill(t *testing.T) {
 			result, err := resolveFromLock(h, entry, dir, []string{"https://github.com/example-org/"}, ui.New(io.Discard))
 			require.NoError(t, err)
 			require.Len(t, result.Deps, 1)
-			assert.Equal(t, tc.field, result.Deps[0].Field, "the definition is resolved by its own step, from the entry's hash")
+			assert.Equal(t, tc.field, result.Deps[0].Field, "the runtime workflow is resolved by its own step, from the entry's hash")
 			tc.check(t, h)
 		})
 	}
@@ -814,7 +814,7 @@ func TestRunLock_SharedSkillAcrossForgeVariants(t *testing.T) {
 }
 
 // TestRunLock_WorkflowNamespaceCollisionWithURLPlugin checks that lock
-// refuses a URL plugin whose fetched manifest name is the definition's
+// refuses a URL plugin whose fetched manifest name is the runtime workflow's
 // plugin name, with the error fullsend run gives for the same harness.
 func TestRunLock_WorkflowNamespaceCollisionWithURLPlugin(t *testing.T) {
 	usePreScriptStub(t)
@@ -827,8 +827,8 @@ func TestRunLock_WorkflowNamespaceCollisionWithURLPlugin(t *testing.T) {
 	dir := newSkipHarnessDir(t, "")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(workflowHarness(pinnedWorkflowSource("sample-pipeline", cliWorkflowSHA, files))+"plugins:\n  - "+pinned+"\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(workflowAllowlist+"agents:\n  - harness/code.yaml\n"), 0o644))
-	want := `resolving workflow definition: plugins[0] "`
-	wantNS := `has the Claude Code plugin name "wfplug", the same as the workflow: definition's plugin name "wfplug"`
+	want := `resolving runtime workflow: plugins[0] "`
+	wantNS := `has the Claude Code plugin name "wfplug", the same as the runtime workflow's plugin name "wfplug"`
 
 	lockErr := runLock(context.Background(), "code", dir, "", false, flags, ui.New(io.Discard))
 	require.Error(t, lockErr)

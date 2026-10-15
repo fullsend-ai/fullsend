@@ -464,7 +464,7 @@ harnesses: {}
 
 func TestSave_VersionFollowsWorkflowDependency(t *testing.T) {
 	skillDep := DependencyEntry{Field: "skills[0]", URL: "https://example.com/skills/a", SHA256: "aaa", Type: "directory"}
-	workflowDep := DependencyEntry{Field: WorkflowField, URL: "https://example.com/defs/sample", SHA256: "bbb", Type: "directory"}
+	workflowDep := DependencyEntry{Field: RuntimeWorkflowField, URL: "https://example.com/defs/sample", SHA256: "bbb", Type: "directory"}
 	tests := []struct {
 		name string
 		deps []DependencyEntry

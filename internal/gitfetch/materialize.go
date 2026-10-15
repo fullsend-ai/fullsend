@@ -25,7 +25,7 @@ const (
 	// walk run long before the file limits trip.
 	maxDirVisits = 10 * MaxFiles
 	// localCacheDirName is fullsend's resource cache directory, which sits
-	// inside .fullsend/ and is never part of a definition tree.
+	// inside .fullsend/ and is never part of a runtime workflow tree.
 	localCacheDirName = ".fullsend-cache"
 	// capFix is the fix the file-count and size limit errors name.
 	capFix = "point source at a sub-directory that holds only the plugin, or move large files out of it"
@@ -98,7 +98,7 @@ func ReadLocalTree(ctx context.Context, repoRoot, source string, exclude []strin
 		return nil, err
 	}
 	if len(tracked) == 0 {
-		return nil, fmt.Errorf("%q holds no files git tracks; commit or `git add` the definition's files", source)
+		return nil, fmt.Errorf("%q holds no files git tracks; commit or `git add` the runtime workflow's files", source)
 	}
 
 	// Copy the tracked entries into a scratch tree and materialize that:
@@ -117,7 +117,7 @@ func ReadLocalTree(ctx context.Context, repoRoot, source string, exclude []strin
 		return nil, err
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("%q holds no files git tracks; commit or `git add` the definition's files", source)
+		return nil, fmt.Errorf("%q holds no files git tracks; commit or `git add` the runtime workflow's files", source)
 	}
 	return files, nil
 }
@@ -281,7 +281,7 @@ func sourceRoot(checkoutRoot, subpath string) (string, error) {
 		return "", fmt.Errorf("%q resolves outside the repository; point source at a directory inside it", subpath)
 	}
 	if rel, relErr := filepath.Rel(realRoot, real); relErr == nil && hasSegment(filepath.ToSlash(rel), ".git") {
-		return "", fmt.Errorf("%q is inside .git/, which is never part of a definition; point source at a directory in the working tree", subpath)
+		return "", fmt.Errorf("%q is inside .git/, which is never part of a runtime workflow; point source at a directory in the working tree", subpath)
 	}
 	return real, nil
 }

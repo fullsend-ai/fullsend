@@ -300,10 +300,10 @@ func (h *Harness) validatePlugins() error {
 			return fmt.Errorf("%s: %q is already listed as plugins[%d]", field, p, prev)
 		}
 		seenPaths[p] = i
-		// The definition takes this sandbox directory only in a harness
+		// The runtime workflow takes this sandbox directory only in a harness
 		// that has one; elsewhere the name is an ordinary plugin name.
-		if name := PluginEntryDirName(e); h.Workflow != nil && strings.EqualFold(name, WorkflowSandboxDir) {
-			return fmt.Errorf("%s: %q loads as plugin %q, a sandbox directory name reserved for the workflow: definition this harness declares (compared without case); rename the plugin directory", field, p, name)
+		if name := PluginEntryDirName(e); h.RuntimeWorkflow != nil && strings.EqualFold(name, RuntimeWorkflowSandboxDir) {
+			return fmt.Errorf("%s: %q loads as plugin %q, a sandbox directory name reserved for the runtime workflow this harness declares (compared without case); rename the plugin directory", field, p, name)
 		}
 		if !IsURL(p) {
 			// URL entries are shape-checked by ValidateResourceTypes, which

@@ -464,10 +464,10 @@ func TestPiRuntimeBootstrap_Extensions(t *testing.T) {
 	assert.Contains(t, err.Error(), "reserved")
 }
 
-// A workflow: definition that is a pi extension reaches the runtime as a
-// pi plugin whose directory is harness.WorkflowSandboxDir: it is uploaded
+// A runtime workflow that is a pi extension reaches the runtime as a
+// pi plugin whose directory is harness.RuntimeWorkflowSandboxDir: it is uploaded
 // under that name and loaded with -e like any declared extension.
-func TestPiRuntimeBootstrap_WorkflowDefinition(t *testing.T) {
+func TestPiRuntimeBootstrap_RuntimeWorkflow(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "")
 	work := t.TempDir()
@@ -475,10 +475,10 @@ func TestPiRuntimeBootstrap_WorkflowDefinition(t *testing.T) {
 	store := filepath.Join(work, "store")
 	fakeOpenshellPi(t, logPath, store, "/dev/null")
 
-	def := filepath.Join(t.TempDir(), harness.WorkflowSandboxDir)
+	def := filepath.Join(t.TempDir(), harness.RuntimeWorkflowSandboxDir)
 	require.NoError(t, os.MkdirAll(def, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(def, "index.js"), []byte("export default function (pi) {}\n"), 0o644))
-	plugins := []PluginInput{{Name: harness.WorkflowSandboxDir, Path: def, Kind: pluginformat.KindPi}}
+	plugins := []PluginInput{{Name: harness.RuntimeWorkflowSandboxDir, Path: def, Kind: pluginformat.KindPi}}
 
 	stderr := captureStderr(t, func() {
 		require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
@@ -488,14 +488,14 @@ func TestPiRuntimeBootstrap_WorkflowDefinition(t *testing.T) {
 			plugins:     plugins,
 		}))
 	})
-	assert.Contains(t, stderr, `Extension "workflow-definition": uploaded to sandbox`)
+	assert.Contains(t, stderr, `Extension "runtime-workflow": uploaded to sandbox`)
 
 	cfg := PiRuntime{}.ConfigDir()
-	extPath := cfg + "/extensions/" + harness.WorkflowSandboxDir
+	extPath := cfg + "/extensions/" + harness.RuntimeWorkflowSandboxDir
 	var m piManifest
 	require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
 	require.Len(t, m.Extensions, 1)
-	assert.Equal(t, harness.WorkflowSandboxDir, m.Extensions[0].Name)
+	assert.Equal(t, harness.RuntimeWorkflowSandboxDir, m.Extensions[0].Name)
 	assert.Equal(t, extPath, m.Extensions[0].Path)
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)

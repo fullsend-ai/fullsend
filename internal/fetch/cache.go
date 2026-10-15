@@ -51,7 +51,7 @@ func CachePath(workspaceRoot, hash string) (string, error) {
 }
 
 // MaterializedCachePath returns the cache directory for a directory tree
-// read with its symlinks replaced by their targets (a workflow definition,
+// read with its symlinks replaced by their targets (a runtime workflow,
 // ADR 0130), keyed by its tree hash:
 //
 //	<workspaceRoot>/.fullsend-cache/resources/materialized/sha256/<hash>/

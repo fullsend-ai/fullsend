@@ -24,16 +24,16 @@ const maxMetaDepth = 8
 // Code names a plugin workflow by meta.name, not by the file name, and
 // fullsend finds the script by the file name. The meta is parsed as a
 // literal, never run.
-func checkWorkflowMeta(rw *ResolvedWorkflow) error {
+func checkWorkflowMeta(rw *ResolvedRuntimeWorkflow) error {
 	file := "workflows/" + rw.Name + ".js"
 	f, err := os.Open(filepath.Join(rw.LocalPath, "workflows", rw.Name+".js"))
 	if err != nil {
-		return fmt.Errorf("workflow.source %s: reading %s: %w", rw.Source, file, err)
+		return fmt.Errorf("runtime_workflow.source %s: reading %s: %w", rw.Source, file, err)
 	}
 	defer f.Close()
 	head, err := io.ReadAll(io.LimitReader(f, maxWorkflowMetaBytes+1))
 	if err != nil {
-		return fmt.Errorf("workflow.source %s: reading %s: %w", rw.Source, file, err)
+		return fmt.Errorf("runtime_workflow.source %s: reading %s: %w", rw.Source, file, err)
 	}
 	atEOF := len(head) <= maxWorkflowMetaBytes
 	if !atEOF {
@@ -41,10 +41,10 @@ func checkWorkflowMeta(rw *ResolvedWorkflow) error {
 	}
 	name, err := parseWorkflowMeta(head, atEOF)
 	if err != nil {
-		return fmt.Errorf("workflow.source %s: %s: %w; Claude Code lists a workflow only when `export const meta = { ... }` is the script's first statement and a plain object literal with a quoted name, and fullsend needs `;` right after its closing brace", rw.Source, file, err)
+		return fmt.Errorf("runtime_workflow.source %s: %s: %w; Claude Code lists a workflow only when `export const meta = { ... }` is the script's first statement and a plain object literal with a quoted name, and fullsend needs `;` right after its closing brace", rw.Source, file, err)
 	}
 	if name != rw.Name {
-		return fmt.Errorf("workflow.source %s: %s declares meta.name %q; Claude Code runs it as /%s:%s, so rename the file or set meta.name to %q", rw.Source, file, name, rw.PluginName, name, rw.Name)
+		return fmt.Errorf("runtime_workflow.source %s: %s declares meta.name %q; Claude Code runs it as /%s:%s, so rename the file or set meta.name to %q", rw.Source, file, name, rw.PluginName, name, rw.Name)
 	}
 	return nil
 }

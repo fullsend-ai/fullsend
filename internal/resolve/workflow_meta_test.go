@@ -118,7 +118,7 @@ func TestParseWorkflowMetaName(t *testing.T) {
 func TestCheckWorkflowMeta_ReadsOnlyTheHead(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "workflows"), 0o755))
-	rw := &ResolvedWorkflow{Name: "probe", PluginName: "wfplug", LocalPath: dir}
+	rw := &ResolvedRuntimeWorkflow{Name: "probe", PluginName: "wfplug", LocalPath: dir}
 	script := filepath.Join(dir, "workflows", "probe.js")
 
 	// A meta object longer than the read bound is not read to its end.

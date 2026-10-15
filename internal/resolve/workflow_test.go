@@ -48,13 +48,13 @@ func staticFetcher(files map[string][]byte, calls *int) gitfetch.TreeFetchFunc {
 }
 
 func wfHarness() *harness.Harness {
-	return &harness.Harness{Agent: "a.md", Role: "test", Workflow: &harness.WorkflowSpec{Name: "probe", Args: "--issue 7"}}
+	return &harness.Harness{Agent: "a.md", Role: "test", RuntimeWorkflow: &harness.RuntimeWorkflowSpec{Name: "probe", Args: "--issue 7"}}
 }
 
-// resolveWF resolves h with workflow.source set to source.
-func resolveWF(h *harness.Harness, source string, loc WorkflowLocation, opts ResolveOpts) (*ResolvedWorkflow, *Dependency, error) {
-	h.Workflow.Source = source
-	return ResolveWorkflowDefinition(context.Background(), h, loc, opts)
+// resolveWF resolves h with runtime_workflow.source set to source.
+func resolveWF(h *harness.Harness, source string, loc WorkflowLocation, opts ResolveOpts) (*ResolvedRuntimeWorkflow, *Dependency, error) {
+	h.RuntimeWorkflow.Source = source
+	return ResolveRuntimeWorkflow(context.Background(), h, loc, opts)
 }
 
 // localLoc is the location of a harness in the configuration directory
@@ -71,14 +71,14 @@ func wfOpts(t *testing.T, fetcher gitfetch.TreeFetchFunc) ResolveOpts {
 	}
 }
 
-func TestResolveWorkflowDefinition_NoWorkflow(t *testing.T) {
-	rw, dep, err := ResolveWorkflowDefinition(context.Background(), &harness.Harness{}, WorkflowLocation{}, ResolveOpts{})
+func TestResolveRuntimeWorkflow_NoWorkflow(t *testing.T) {
+	rw, dep, err := ResolveRuntimeWorkflow(context.Background(), &harness.Harness{}, WorkflowLocation{}, ResolveOpts{})
 	require.NoError(t, err)
 	assert.Nil(t, rw)
 	assert.Nil(t, dep)
 }
 
-func TestResolveWorkflowDefinition_Remote(t *testing.T) {
+func TestResolveRuntimeWorkflow_Remote(t *testing.T) {
 	files := wfTree()
 	calls := 0
 	opts := wfOpts(t, staticFetcher(files, &calls))
@@ -89,18 +89,18 @@ func TestResolveWorkflowDefinition_Remote(t *testing.T) {
 	rw, dep, err := resolveWF(h, src, WorkflowLocation{}, opts)
 	require.NoError(t, err)
 	require.NotNil(t, dep)
-	assert.Equal(t, WorkflowDependencyField, dep.Field)
+	assert.Equal(t, RuntimeWorkflowDependencyField, dep.Field)
 	assert.Equal(t, "directory", dep.Type)
 	assert.False(t, dep.CacheHit)
 	assert.Equal(t, fetch.ComputeTreeHash(files), dep.SHA256)
-	assert.Equal(t, "workflow-definition", filepath.Base(dep.LocalPath))
+	assert.Equal(t, "runtime-workflow", filepath.Base(dep.LocalPath))
 	assert.Equal(t, "/wfplug:probe --issue 7", rw.Command())
 	assert.Equal(t, wfSHA, rw.Commit)
 	assert.False(t, rw.Local)
 	assert.Equal(t, "wfplug", rw.PluginName)
 	require.Len(t, h.Plugins, 1)
 	assert.Equal(t, dep.LocalPath, h.Plugins[0].Path)
-	assert.Equal(t, "workflow-definition", h.Plugins[0].Name())
+	assert.Equal(t, "runtime-workflow", h.Plugins[0].Name())
 	info, err := os.Stat(filepath.Join(rw.LocalPath, "workflows", "probe.js"))
 	require.NoError(t, err)
 	assert.NotZero(t, info.Mode()&0o100, "definition files are made executable")
@@ -126,7 +126,7 @@ func TestResolveWorkflowDefinition_Remote(t *testing.T) {
 // The whole cached tree is uploaded, so a file planted in it under a
 // temporary-file name must not ride along unpinned: the lookup misses, the
 // definition is fetched again and the delivered tree is the pinned one.
-func TestResolveWorkflowDefinition_StrayCacheFileIsNotDelivered(t *testing.T) {
+func TestResolveRuntimeWorkflow_StrayCacheFileIsNotDelivered(t *testing.T) {
 	files := wfTree()
 	files["scripts/helper.sh"] = []byte("echo hi\n")
 	calls := 0
@@ -141,7 +141,7 @@ func TestResolveWorkflowDefinition_StrayCacheFileIsNotDelivered(t *testing.T) {
 	rw2, dep2, err := resolveWF(wfHarness(), src, WorkflowLocation{}, opts)
 	require.NoError(t, err)
 	assert.False(t, dep2.CacheHit, "a cached tree with a stray file is a miss")
-	assert.Equal(t, 2, calls, "the definition is fetched again")
+	assert.Equal(t, 2, calls, "the runtime workflow is fetched again")
 	_, err = os.Lstat(filepath.Join(rw2.LocalPath, "scripts", "helper.tmp.123"))
 	assert.True(t, os.IsNotExist(err), "the stray file is not delivered")
 	var delivered []string
@@ -166,17 +166,17 @@ func TestResolveWorkflowDefinition_StrayCacheFileIsNotDelivered(t *testing.T) {
 	assert.Equal(t, 2, calls)
 }
 
-func TestResolveWorkflowDefinition_TempNamedDefinitionFileIsRefused(t *testing.T) {
+func TestResolveRuntimeWorkflow_TempNamedDefinitionFileIsRefused(t *testing.T) {
 	files := wfTree()
 	files["scripts/run.tmp.1"] = []byte("x")
 	opts := wfOpts(t, staticFetcher(files, nil))
 	src := wfURL(files)
 	_, _, err := resolveWF(wfHarness(), src, WorkflowLocation{}, opts)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `workflow.source: caching: scripts/run.tmp.1 is named like a cache temporary file`)
+	assert.Contains(t, err.Error(), `runtime_workflow.source: caching: scripts/run.tmp.1 is named like a cache temporary file`)
 }
 
-func TestResolveWorkflowDefinition_RemoteSubpathAndCommandWithoutArgs(t *testing.T) {
+func TestResolveRuntimeWorkflow_RemoteSubpathAndCommandWithoutArgs(t *testing.T) {
 	files := wfTree()
 	fetcher := func(_ context.Context, _, path, _, _ string) (map[string][]byte, error) {
 		if path != "pipelines/sample" {
@@ -186,13 +186,13 @@ func TestResolveWorkflowDefinition_RemoteSubpathAndCommandWithoutArgs(t *testing
 	}
 	url := "https://github.com/example-org/sample-pipeline/tree/" + wfSHA + "/pipelines/sample#sha256=" + fetch.ComputeTreeHash(files)
 	h := wfHarness()
-	h.Workflow.Args = ""
+	h.RuntimeWorkflow.Args = ""
 	rw, _, err := resolveWF(h, url, WorkflowLocation{}, wfOpts(t, fetcher))
 	require.NoError(t, err)
 	assert.Equal(t, "/wfplug:probe", rw.Command())
 }
 
-func TestResolveWorkflowDefinition_Errors(t *testing.T) {
+func TestResolveRuntimeWorkflow_Errors(t *testing.T) {
 	good := wfTree()
 	withFiles := func(mut func(map[string][]byte)) map[string][]byte {
 		f := wfTree()
@@ -213,7 +213,7 @@ func TestResolveWorkflowDefinition_Errors(t *testing.T) {
 				return wfURL(good)
 			},
 			fetcher: staticFetcher(withFiles(func(f map[string][]byte) { f["extra"] = []byte("x") }), nil),
-			wantErr: `workflow.source: tree hash mismatch`,
+			wantErr: `runtime_workflow.source: tree hash mismatch`,
 		},
 		{
 			name: "symlink refused by the fetcher",
@@ -223,7 +223,7 @@ func TestResolveWorkflowDefinition_Errors(t *testing.T) {
 			fetcher: func(context.Context, string, string, string, string) (map[string][]byte, error) {
 				return nil, errors.Join(errors.New("gitfetch"), &gitfetch.LinkError{Path: "skills/x/run.sh", Target: "../../../etc/passwd", Problem: "leaves the fetched tree; point the link inside the repository or commit the file"})
 			},
-			wantErr: `workflow.source: skills/x/run.sh is a symlink to ../../../etc/passwd, which leaves the fetched tree; point the link inside the repository or commit the file`,
+			wantErr: `runtime_workflow.source: skills/x/run.sh is a symlink to ../../../etc/passwd, which leaves the fetched tree; point the link inside the repository or commit the file`,
 		},
 		{
 			name: "fetch failure hints at a token",
@@ -253,7 +253,7 @@ func TestResolveWorkflowDefinition_Errors(t *testing.T) {
 				return wfURL(f)
 			},
 			fetcher: staticFetcher(withFiles(func(f map[string][]byte) { delete(f, ".claude-plugin/plugin.json") }), nil),
-			wantErr: `workflow.source https://github.com/example-org/sample-pipeline/tree/` + wfSHA + ` is neither a Claude Code plugin nor a pi extension`,
+			wantErr: `runtime_workflow.source https://github.com/example-org/sample-pipeline/tree/` + wfSHA + ` is neither a Claude Code plugin nor a pi extension`,
 		},
 		{
 			name: "missing workflow lists the others",
@@ -261,8 +261,8 @@ func TestResolveWorkflowDefinition_Errors(t *testing.T) {
 				return wfURL(good)
 			},
 			fetcher: staticFetcher(good, nil),
-			harness: func(h *harness.Harness) { h.Workflow.Name = "absent" },
-			wantErr: ` has no workflows/absent.js; the definition ships: other, probe`,
+			harness: func(h *harness.Harness) { h.RuntimeWorkflow.Name = "absent" },
+			wantErr: ` has no workflows/absent.js; the runtime workflow ships: other, probe`,
 		},
 		{
 			name: "no workflows at all",
@@ -298,9 +298,9 @@ func TestResolveWorkflowDefinition_Errors(t *testing.T) {
 			},
 			fetcher: staticFetcher(good, nil),
 			harness: func(h *harness.Harness) {
-				h.Plugins = []harness.PluginSpec{{Path: "/x/plugins/Workflow-Definition"}}
+				h.Plugins = []harness.PluginSpec{{Path: "/x/plugins/Runtime-Workflow"}}
 			},
-			wantErr: `plugins[0] "/x/plugins/Workflow-Definition" loads as the sandbox directory "workflow-definition", which is reserved for the workflow: definition`,
+			wantErr: `plugins[0] "/x/plugins/Runtime-Workflow" loads as the sandbox directory "runtime-workflow", which is reserved for the runtime workflow`,
 		},
 	}
 	for _, tt := range tests {
@@ -318,7 +318,7 @@ func TestResolveWorkflowDefinition_Errors(t *testing.T) {
 	}
 }
 
-func TestResolveWorkflowDefinition_FetchErrorIsRedacted(t *testing.T) {
+func TestResolveRuntimeWorkflow_FetchErrorIsRedacted(t *testing.T) {
 	secret := "ghp_" + strings.Repeat("A1b2", 9)
 	fetcher := func(context.Context, string, string, string, string) (map[string][]byte, error) {
 		return nil, errors.New("git fetch: exit status 128: fatal: unable to access 'https://x-access-token:" + secret + "@github.com/example-org/sample-pipeline/'")
@@ -339,8 +339,8 @@ func TestResolveWorkflowDefinition_FetchErrorIsRedacted(t *testing.T) {
 	})
 }
 
-func TestResolveWorkflowDefinition_Namespace(t *testing.T) {
-	resolveWith := func(t *testing.T, mut func(map[string][]byte)) (*ResolvedWorkflow, error) {
+func TestResolveRuntimeWorkflow_Namespace(t *testing.T) {
+	resolveWith := func(t *testing.T, mut func(map[string][]byte)) (*ResolvedRuntimeWorkflow, error) {
 		files := wfTree()
 		mut(files)
 		rw, _, err := resolveWF(wfHarness(), wfURL(files), WorkflowLocation{}, wfOpts(t, staticFetcher(files, nil)))
@@ -352,7 +352,7 @@ func TestResolveWorkflowDefinition_Namespace(t *testing.T) {
 			f["plugin.json"] = []byte(`{"name":"rootplug"}`)
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "workflow-definition", rw.PluginName, "without .claude-plugin/plugin.json Claude Code names the plugin after its directory")
+		assert.Equal(t, "runtime-workflow", rw.PluginName, "without .claude-plugin/plugin.json Claude Code names the plugin after its directory")
 	})
 	t.Run("manifest name wins over the directory", func(t *testing.T) {
 		rw, err := resolveWith(t, func(f map[string][]byte) { f["plugin.json"] = []byte(`{"name":"rootplug"}`) })
@@ -364,7 +364,7 @@ func TestResolveWorkflowDefinition_Namespace(t *testing.T) {
 			f[".claude-plugin/plugin.json"] = []byte(`{"name":"wfplug","workflows":"./flows/"}`)
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `.claude-plugin/plugin.json sets "workflows", a custom workflow path, which fullsend does not support yet; keep the scripts in workflows/ at the definition root and remove the "workflows" key`)
+		assert.Contains(t, err.Error(), `.claude-plugin/plugin.json sets "workflows", a custom workflow path, which fullsend does not support yet; keep the scripts in workflows/ at the runtime workflow root and remove the "workflows" key`)
 	})
 	t.Run("name that is not a string", func(t *testing.T) {
 		_, err := resolveWith(t, func(f map[string][]byte) { f[".claude-plugin/plugin.json"] = []byte(`{"name":7}`) })
@@ -395,29 +395,29 @@ func TestListWorkflowScripts(t *testing.T) {
 	assert.Error(t, err, "a file where the directory should be")
 }
 
-func TestResolveWorkflowDefinition_ScriptDirectoryIsNotAWorkflow(t *testing.T) {
+func TestResolveRuntimeWorkflow_ScriptDirectoryIsNotAWorkflow(t *testing.T) {
 	files := wfTree()
 	delete(files, "workflows/probe.js")
 	files["workflows/probe.js/inner.js"] = []byte("x")
 	_, _, err := resolveWF(wfHarness(), wfURL(files), WorkflowLocation{}, wfOpts(t, staticFetcher(files, nil)))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `has no workflows/probe.js; the definition ships: other`)
+	assert.Contains(t, err.Error(), `has no workflows/probe.js; the runtime workflow ships: other`)
 }
 
-func TestResolveWorkflowDefinition_CollisionWithUnresolvedURLPlugin(t *testing.T) {
+func TestResolveRuntimeWorkflow_CollisionWithUnresolvedURLPlugin(t *testing.T) {
 	// At lock time the workflow resolves before URL plugins, so the
 	// plugin's sandbox name comes from its URL path.
 	files := wfTree()
 	h := wfHarness()
-	h.Plugins = []harness.PluginSpec{{Path: "https://github.com/example-org/plugins/tree/" + wfSHA + "/plugins/Workflow-Definition#sha256=" + fetch.ComputeTreeHash(files)}}
+	h.Plugins = []harness.PluginSpec{{Path: "https://github.com/example-org/plugins/tree/" + wfSHA + "/plugins/Runtime-Workflow#sha256=" + fetch.ComputeTreeHash(files)}}
 	_, _, err := resolveWF(h, wfURL(files), WorkflowLocation{}, wfOpts(t, staticFetcher(files, nil)))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `plugins[0] "https://github.com/example-org/plugins/tree/`+wfSHA+`/plugins/Workflow-Definition#sha256=`)
-	assert.Contains(t, err.Error(), `loads as the sandbox directory "workflow-definition"`)
+	assert.Contains(t, err.Error(), `plugins[0] "https://github.com/example-org/plugins/tree/`+wfSHA+`/plugins/Runtime-Workflow#sha256=`)
+	assert.Contains(t, err.Error(), `loads as the sandbox directory "runtime-workflow"`)
 }
 
-func TestResolveWorkflowDefinition_NamespaceCollision(t *testing.T) {
-	// The definition's namespace is "wfplug", from its manifest.
+func TestResolveRuntimeWorkflow_NamespaceCollision(t *testing.T) {
+	// The runtime workflow's namespace is "wfplug", from its manifest.
 	plugin := func(t *testing.T, dirName, manifest string) string {
 		dir := filepath.Join(t.TempDir(), dirName)
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755))
@@ -461,7 +461,7 @@ func TestResolveWorkflowDefinition_NamespaceCollision(t *testing.T) {
 			p := tt.path(t)
 			err := resolveWith(t, p)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), `plugins[0] "`+p+`" has the Claude Code plugin name "`+tt.pluginNS+`", the same as the workflow: definition's plugin name "wfplug"; rename one of them`)
+			assert.Contains(t, err.Error(), `plugins[0] "`+p+`" has the Claude Code plugin name "`+tt.pluginNS+`", the same as the runtime workflow's plugin name "wfplug"; rename one of them`)
 		})
 	}
 	t.Run("different names", func(t *testing.T) {
@@ -483,7 +483,7 @@ func TestResolveWorkflowDefinition_NamespaceCollision(t *testing.T) {
 }
 
 // TestWorkflowCacheDoesNotServeSkillsAndPlugins checks the cache policy
-// (ADR 0130): a definition is cached with its symlinks materialized in a
+// (ADR 0130): a runtime workflow is cached with its symlinks materialized in a
 // namespace of its own, so a plugins: entry pinning the same tree hash
 // never succeeds from that entry where a fetch with the strict fetcher
 // would refuse the links, and the two never share an entry.
@@ -554,7 +554,7 @@ func TestWorkflowCacheDoesNotServeSkillsAndPlugins(t *testing.T) {
 		pluginCalls, workflowCalls := 0, 0
 		require.NoError(t, resolvePlugin(t, ws, counting(&pluginCalls)))
 		dep := resolveWorkflow(t, ws, counting(&workflowCalls))
-		assert.False(t, dep.CacheHit, "the plugin's entry is not in the definition namespace")
+		assert.False(t, dep.CacheHit, "the plugin's entry is not in the runtime workflow namespace")
 		assert.Equal(t, 1, workflowCalls)
 		assert.True(t, resolveWorkflow(t, ws, refusing).CacheHit)
 		require.NoError(t, resolvePlugin(t, ws, refusing), "the plugin keeps its own entry")
@@ -597,7 +597,7 @@ func gitIn(t *testing.T, dir string, args ...string) {
 	}
 }
 
-func TestResolveWorkflowDefinition_Local(t *testing.T) {
+func TestResolveRuntimeWorkflow_Local(t *testing.T) {
 	for _, sub := range []string{".", "pipelines/sample"} {
 		t.Run(sub, func(t *testing.T) {
 			repo, fullsendDir := localRepo(t, sub)
@@ -609,7 +609,7 @@ func TestResolveWorkflowDefinition_Local(t *testing.T) {
 			assert.Nil(t, dep, "local definitions are not locked")
 			assert.True(t, rw.Local)
 			assert.Equal(t, sub, rw.Source)
-			assert.Equal(t, "workflow-definition", filepath.Base(rw.LocalPath))
+			assert.Equal(t, "runtime-workflow", filepath.Base(rw.LocalPath))
 			info, err := os.Lstat(filepath.Join(rw.LocalPath, "skills", "x", "run.sh"))
 			require.NoError(t, err)
 			assert.True(t, info.Mode().IsRegular(), "the uploaded tree holds the link's target, not the link")
@@ -634,7 +634,7 @@ func TestResolveWorkflowDefinition_Local(t *testing.T) {
 	}
 }
 
-func TestResolveWorkflowDefinition_LocalErrors(t *testing.T) {
+func TestResolveRuntimeWorkflow_LocalErrors(t *testing.T) {
 	resolveLocal := func(source, fullsendDir string) error {
 		_, _, err := resolveWF(wfHarness(), source, localLoc(fullsendDir), ResolveOpts{WorkspaceRoot: fullsendDir})
 		return err
@@ -643,7 +643,7 @@ func TestResolveWorkflowDefinition_LocalErrors(t *testing.T) {
 		_, fullsendDir := localRepo(t, "def")
 		err := resolveLocal("nope", fullsendDir)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `workflow.source "nope": "nope" does not exist in`)
+		assert.Contains(t, err.Error(), `runtime_workflow.source "nope": "nope" does not exist in`)
 	})
 	t.Run("source is a symlink leaving the repository", func(t *testing.T) {
 		repo, fullsendDir := localRepo(t, "def")
@@ -652,16 +652,16 @@ func TestResolveWorkflowDefinition_LocalErrors(t *testing.T) {
 		require.NoError(t, os.Symlink(outside, filepath.Join(repo, "escape")))
 		err := resolveLocal("escape", fullsendDir)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `workflow.source "escape": "escape" is a symlink in the repository; point source at the real directory`)
+		assert.Contains(t, err.Error(), `runtime_workflow.source "escape": "escape" is a symlink in the repository; point source at the real directory`)
 	})
-	t.Run("link inside the definition leaves it", func(t *testing.T) {
+	t.Run("link inside the runtime workflow leaves it", func(t *testing.T) {
 		repo, fullsendDir := localRepo(t, "def")
 		require.NoError(t, os.WriteFile(filepath.Join(repo, "shared.sh"), []byte("x"), 0o644))
 		require.NoError(t, os.Symlink("../shared.sh", filepath.Join(repo, "def", "shared.sh")))
 		gitIn(t, repo, "add", "-A")
 		err := resolveLocal("def", fullsendDir)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `workflow.source "def": shared.sh is a symlink to ../shared.sh, which leaves the source directory`)
+		assert.Contains(t, err.Error(), `runtime_workflow.source "def": shared.sh is a symlink to ../shared.sh, which leaves the source directory`)
 	})
 	t.Run("not a git checkout", func(t *testing.T) {
 		repo := t.TempDir()
@@ -670,7 +670,7 @@ func TestResolveWorkflowDefinition_LocalErrors(t *testing.T) {
 		t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(repo))
 		err := resolveLocal(".", fullsendDir)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `workflow.source: a path source needs the harness to be in a git checkout`)
+		assert.Contains(t, err.Error(), `runtime_workflow.source: a path source needs the harness to be in a git checkout`)
 		assert.Contains(t, err.Error(), fmt.Sprintf("%q is not inside one", fullsendDir))
 		assert.NotNil(t, errors.Unwrap(err), "the git error is wrapped")
 	})
@@ -681,14 +681,14 @@ func TestResolveWorkflowDefinition_LocalErrors(t *testing.T) {
 		repo, _ := localRepo(t, "def")
 		err := resolveLocal(".", repo)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `workflow.source "." is the top of a checkout that is fullsend's configuration directory, which is never part of a definition; put the definition in a sub-directory`)
+		assert.Contains(t, err.Error(), `runtime_workflow.source "." is the top of a checkout that is fullsend's configuration directory, which is never part of a runtime workflow; put the runtime workflow in a sub-directory`)
 		require.NoError(t, resolveLocal("def", repo))
 	})
 	t.Run("source is the fullsend directory", func(t *testing.T) {
 		_, fullsendDir := localRepo(t, "def")
 		err := resolveLocal(".fullsend", fullsendDir)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `workflow.source ".fullsend" is fullsend's configuration directory, which is never part of a definition`)
+		assert.Contains(t, err.Error(), `runtime_workflow.source ".fullsend" is fullsend's configuration directory, which is never part of a runtime workflow`)
 	})
 	t.Run("source inside the fullsend directory", func(t *testing.T) {
 		repo, fullsendDir := localRepo(t, "def")
@@ -698,7 +698,7 @@ func TestResolveWorkflowDefinition_LocalErrors(t *testing.T) {
 		gitIn(t, repo, "add", "-A")
 		err := resolveLocal(".fullsend/workflows/pipeline", fullsendDir)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), `workflow.source ".fullsend/workflows/pipeline" is inside fullsend's configuration directory .fullsend/, which is never part of a definition; put the definition in another directory and set source to its path`)
+		assert.Contains(t, err.Error(), `runtime_workflow.source ".fullsend/workflows/pipeline" is inside fullsend's configuration directory .fullsend/, which is never part of a runtime workflow; put the runtime workflow in another directory and set source to its path`)
 	})
 	t.Run("configuration repository sub-directory", func(t *testing.T) {
 		// With the configuration directory at the checkout top, a
@@ -722,10 +722,10 @@ func TestResolveWorkflowDefinition_LocalErrors(t *testing.T) {
 	})
 }
 
-// TestResolveWorkflowDefinition_LocalLeavesOutFullsendDir checks that
-// fullsend's configuration directory is left out of a local definition
+// TestResolveRuntimeWorkflow_LocalLeavesOutFullsendDir checks that
+// fullsend's configuration directory is left out of a local runtime workflow
 // whenever it lies under the source, not only for the checkout root.
-func TestResolveWorkflowDefinition_LocalLeavesOutFullsendDir(t *testing.T) {
+func TestResolveRuntimeWorkflow_LocalLeavesOutFullsendDir(t *testing.T) {
 	repo := t.TempDir()
 	def := filepath.Join(repo, "ci")
 	fullsendDir := filepath.Join(def, ".fullsend")
@@ -750,7 +750,7 @@ func TestResolveWorkflowDefinition_LocalLeavesOutFullsendDir(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestResolveWorkflowDefinition_Meta(t *testing.T) {
+func TestResolveRuntimeWorkflow_Meta(t *testing.T) {
 	tests := []struct {
 		name    string
 		script  string
@@ -806,54 +806,54 @@ func piTree() map[string][]byte {
 	}
 }
 
-func TestResolveWorkflowDefinition_PiExtension(t *testing.T) {
+func TestResolveRuntimeWorkflow_PiExtension(t *testing.T) {
 	files := piTree()
-	h := &harness.Harness{Agent: "a.md", Role: "test", Workflow: &harness.WorkflowSpec{}}
+	h := &harness.Harness{Agent: "a.md", Role: "test", RuntimeWorkflow: &harness.RuntimeWorkflowSpec{}}
 	rw, dep, err := resolveWF(h, wfURL(files), WorkflowLocation{}, wfOpts(t, staticFetcher(files, nil)))
 	require.NoError(t, err)
 	require.NotNil(t, dep)
 	assert.Equal(t, pluginformat.KindPi, rw.Kind)
 	assert.Empty(t, rw.PluginName, "a pi extension has no Claude namespace")
 	require.Len(t, h.Plugins, 1, "the extension is delivered like a plugins: entry")
-	assert.Equal(t, harness.WorkflowSandboxDir, h.Plugins[0].Name())
+	assert.Equal(t, harness.RuntimeWorkflowSandboxDir, h.Plugins[0].Name())
 	kind, _, err := pluginformat.Detect(h.Plugins[0].Path)
 	require.NoError(t, err)
 	assert.Equal(t, pluginformat.KindPi, kind, "the pi runtime picks it up by kind, with -e")
 
-	for name, spec := range map[string]*harness.WorkflowSpec{
+	for name, spec := range map[string]*harness.RuntimeWorkflowSpec{
 		"name": {Name: "probe"},
 		"args": {Name: "probe", Args: "x"},
 	} {
 		t.Run("refuses "+name, func(t *testing.T) {
-			h := &harness.Harness{Agent: "a.md", Role: "test", Workflow: spec}
+			h := &harness.Harness{Agent: "a.md", Role: "test", RuntimeWorkflow: spec}
 			_, _, err := resolveWF(h, wfURL(files), WorkflowLocation{}, wfOpts(t, staticFetcher(files, nil)))
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "is a pi extension, which starts its own sequence from its session hook, so workflow.name and workflow.args do not apply; remove them")
+			assert.Contains(t, err.Error(), "is a pi extension, which starts its own sequence from its session hook, so runtime_workflow.name and runtime_workflow.args do not apply; remove them")
 		})
 	}
 	t.Run("a Claude plugin of the same name is no collision", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "helpers")
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(`{"name":"workflow-definition"}`), 0o644))
-		h := &harness.Harness{Agent: "a.md", Role: "test", Workflow: &harness.WorkflowSpec{}, Plugins: []harness.PluginSpec{{Path: dir}}}
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(`{"name":"runtime-workflow"}`), 0o644))
+		h := &harness.Harness{Agent: "a.md", Role: "test", RuntimeWorkflow: &harness.RuntimeWorkflowSpec{}, Plugins: []harness.PluginSpec{{Path: dir}}}
 		_, _, err := resolveWF(h, wfURL(files), WorkflowLocation{}, wfOpts(t, staticFetcher(files, nil)))
 		require.NoError(t, err)
 	})
 }
 
-func TestResolveWorkflowDefinition_ClaudeNeedsName(t *testing.T) {
+func TestResolveRuntimeWorkflow_ClaudeNeedsName(t *testing.T) {
 	files := wfTree()
-	h := &harness.Harness{Agent: "a.md", Role: "test", Workflow: &harness.WorkflowSpec{}}
+	h := &harness.Harness{Agent: "a.md", Role: "test", RuntimeWorkflow: &harness.RuntimeWorkflowSpec{}}
 	_, _, err := resolveWF(h, wfURL(files), WorkflowLocation{}, wfOpts(t, staticFetcher(files, nil)))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "is a Claude Code plugin, so workflow.name is required: set it to the <name> of the workflows/<name>.js script to start")
+	assert.Contains(t, err.Error(), "is a Claude Code plugin, so runtime_workflow.name is required: set it to the <name> of the workflows/<name>.js script to start")
 }
 
-func TestResolveWorkflowDefinition_AddedByURL(t *testing.T) {
+func TestResolveRuntimeWorkflow_AddedByURL(t *testing.T) {
 	t.Run("relative source is refused", func(t *testing.T) {
 		_, _, err := resolveWF(wfHarness(), "pipelines/sample", WorkflowLocation{HarnessDir: t.TempDir(), AddedByURL: true}, ResolveOpts{WorkspaceRoot: t.TempDir()})
 		require.Error(t, err)
-		assert.Equal(t, `workflow.source "pipelines/sample" is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness`, err.Error())
+		assert.Equal(t, `runtime_workflow.source "pipelines/sample" is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness`, err.Error())
 	})
 	t.Run("pinned tree URL is accepted", func(t *testing.T) {
 		files := wfTree()
@@ -862,13 +862,13 @@ func TestResolveWorkflowDefinition_AddedByURL(t *testing.T) {
 	})
 }
 
-func TestResolveWorkflowDefinition_NotAllowlisted(t *testing.T) {
+func TestResolveRuntimeWorkflow_NotAllowlisted(t *testing.T) {
 	files := wfTree()
 	opts := wfOpts(t, staticFetcher(files, nil))
 	opts.OrgAllowlist = []string{"https://github.com/other-org/"}
 	_, _, err := resolveWF(wfHarness(), wfURL(files), WorkflowLocation{}, opts)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `workflow.source URL "https://github.com/example-org/sample-pipeline/tree/`+wfSHA+`" is not covered by allowed_remote_resources; add a prefix that covers it, such as https://github.com/example-org/sample-pipeline/, to allowed_remote_resources in config.yaml`)
+	assert.Contains(t, err.Error(), `runtime_workflow.source URL "https://github.com/example-org/sample-pipeline/tree/`+wfSHA+`" is not covered by allowed_remote_resources; add a prefix that covers it, such as https://github.com/example-org/sample-pipeline/, to allowed_remote_resources in config.yaml`)
 }
 
 // A relative source in a URL base is pinned to the base's repository and
@@ -876,15 +876,15 @@ func TestResolveWorkflowDefinition_NotAllowlisted(t *testing.T) {
 // #sha256= fragment, so resolution fetches it at that commit, records its
 // tree hash and serves it from the URL index afterwards, as a base plugin
 // is.
-func TestResolveWorkflowDefinition_BasePinnedSource(t *testing.T) {
+func TestResolveRuntimeWorkflow_BasePinnedSource(t *testing.T) {
 	files := wfTree()
 	baseURL := "https://raw.githubusercontent.com/example-org/sample-pipeline/" + wfSHA + "/.fullsend/harness/base.yaml"
 	rawAllow := []string{"https://raw.githubusercontent.com/example-org/"}
 	inherited := func(t *testing.T) *harness.Harness {
 		t.Helper()
-		spec := &harness.WorkflowSpec{Source: "pipelines/sample", Name: "probe"}
+		spec := &harness.RuntimeWorkflowSpec{Source: "pipelines/sample", Name: "probe"}
 		require.NoError(t, harness.ResolveBaseWorkflowSource(spec, baseURL, rawAllow))
-		return &harness.Harness{Agent: "a.md", Role: "test", Workflow: spec}
+		return &harness.Harness{Agent: "a.md", Role: "test", RuntimeWorkflow: spec}
 	}
 	calls := 0
 	fetcher := func(_ context.Context, cloneURL, path, ref, _ string) (map[string][]byte, error) {
@@ -898,19 +898,19 @@ func TestResolveWorkflowDefinition_BasePinnedSource(t *testing.T) {
 	opts := ResolveOpts{WorkspaceRoot: ws, OrgAllowlist: rawAllow, TreeFetcher: fetcher}
 
 	h := inherited(t)
-	rw, dep, err := ResolveWorkflowDefinition(context.Background(), h, WorkflowLocation{}, opts)
+	rw, dep, err := ResolveRuntimeWorkflow(context.Background(), h, WorkflowLocation{}, opts)
 	require.NoError(t, err)
 	assert.Equal(t, "https://raw.githubusercontent.com/example-org/sample-pipeline/"+wfSHA+"/pipelines/sample/", dep.URL, "recorded under its allowlist key, as a base plugin is")
 	assert.Equal(t, "https://github.com/example-org/sample-pipeline/tree/"+wfSHA+"/pipelines/sample", rw.Source)
 	assert.Equal(t, fetch.ComputeTreeHash(files), dep.SHA256, "the fetched tree hash is what lock records")
-	assert.Equal(t, WorkflowDependencyField, dep.Field)
+	assert.Equal(t, RuntimeWorkflowDependencyField, dep.Field)
 	assert.False(t, dep.CacheHit)
 	assert.Equal(t, "example-org/sample-pipeline@0123456789ab/pipelines/sample", rw.DisplaySource())
 	assert.Equal(t, 1, calls)
 
 	offline := opts
 	offline.FetchPolicy.Offline = true
-	_, dep2, err := ResolveWorkflowDefinition(context.Background(), inherited(t), WorkflowLocation{}, offline)
+	_, dep2, err := ResolveRuntimeWorkflow(context.Background(), inherited(t), WorkflowLocation{}, offline)
 	require.NoError(t, err)
 	assert.True(t, dep2.CacheHit, "the URL index serves the base-pinned source")
 	assert.Equal(t, dep.SHA256, dep2.SHA256)
@@ -920,14 +920,14 @@ func TestResolveWorkflowDefinition_BasePinnedSource(t *testing.T) {
 		o := opts
 		o.WorkspaceRoot = t.TempDir()
 		o.OrgAllowlist = []string{"https://github.com/example-org/"}
-		_, _, err := ResolveWorkflowDefinition(context.Background(), inherited(t), WorkflowLocation{}, o)
+		_, _, err := ResolveRuntimeWorkflow(context.Background(), inherited(t), WorkflowLocation{}, o)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `"https://raw.githubusercontent.com/example-org/sample-pipeline/`+wfSHA+`/pipelines/sample/" is not covered by allowed_remote_resources; add a prefix that covers it, such as https://raw.githubusercontent.com/example-org/sample-pipeline/`)
 	})
 	t.Run("offline with a cold cache fails", func(t *testing.T) {
 		o := offline
 		o.WorkspaceRoot = t.TempDir()
-		_, _, err := ResolveWorkflowDefinition(context.Background(), inherited(t), WorkflowLocation{}, o)
+		_, _, err := ResolveRuntimeWorkflow(context.Background(), inherited(t), WorkflowLocation{}, o)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "offline mode forbids fetching it")
 	})
@@ -937,7 +937,7 @@ func TestResolveWorkflowDefinition_BasePinnedSource(t *testing.T) {
 // source: the URL index only serves runs without a lock, so a missing
 // index entry does not break an offline replay and an index entry
 // repointed at another cached tree never delivers that tree.
-func TestResolveWorkflowDefinition_LockedHashWinsOverURLIndex(t *testing.T) {
+func TestResolveRuntimeWorkflow_LockedHashWinsOverURLIndex(t *testing.T) {
 	files := wfTree()
 	other := wfTree()
 	other["workflows/probe.js"] = []byte("export const meta = {name: \"probe\", description: \"other\"};\n")
@@ -947,9 +947,9 @@ func TestResolveWorkflowDefinition_LockedHashWinsOverURLIndex(t *testing.T) {
 	cleanURL := "https://github.com/example-org/sample-pipeline/tree/" + wfSHA + "/pipelines/sample"
 	inherited := func(t *testing.T) *harness.Harness {
 		t.Helper()
-		spec := &harness.WorkflowSpec{Source: "pipelines/sample", Name: "probe"}
+		spec := &harness.RuntimeWorkflowSpec{Source: "pipelines/sample", Name: "probe"}
 		require.NoError(t, harness.ResolveBaseWorkflowSource(spec, baseURL, rawAllow))
-		return &harness.Harness{Agent: "a.md", Role: "test", Workflow: spec}
+		return &harness.Harness{Agent: "a.md", Role: "test", RuntimeWorkflow: spec}
 	}
 	fetchOf := func(tree map[string][]byte, calls *int) gitfetch.TreeFetchFunc {
 		return func(context.Context, string, string, string, string) (map[string][]byte, error) {
@@ -967,7 +967,7 @@ func TestResolveWorkflowDefinition_LockedHashWinsOverURLIndex(t *testing.T) {
 			require.NoError(t, err)
 		}
 		if indexHash != "" {
-			require.NoError(t, harness.RecordURLIndex(ws, WorkflowDependencyField+":"+cleanURL, indexHash))
+			require.NoError(t, harness.RecordURLIndex(ws, RuntimeWorkflowDependencyField+":"+cleanURL, indexHash))
 		}
 		return ResolveOpts{
 			WorkspaceRoot: ws, OrgAllowlist: rawAllow, TreeFetcher: fetcher,
@@ -978,7 +978,7 @@ func TestResolveWorkflowDefinition_LockedHashWinsOverURLIndex(t *testing.T) {
 	t.Run("missing index entry, offline replay succeeds", func(t *testing.T) {
 		calls := 0
 		h := inherited(t)
-		rw, dep, err := ResolveWorkflowDefinition(context.Background(), h, WorkflowLocation{}, replayOpts(t, "", fetchOf(files, &calls)))
+		rw, dep, err := ResolveRuntimeWorkflow(context.Background(), h, WorkflowLocation{}, replayOpts(t, "", fetchOf(files, &calls)))
 		require.NoError(t, err)
 		assert.Equal(t, lockedHash, rw.TreeHash)
 		assert.Equal(t, lockedHash, dep.SHA256)
@@ -988,7 +988,7 @@ func TestResolveWorkflowDefinition_LockedHashWinsOverURLIndex(t *testing.T) {
 	t.Run("index repointed at another cached tree delivers the locked tree", func(t *testing.T) {
 		calls := 0
 		h := inherited(t)
-		rw, _, err := ResolveWorkflowDefinition(context.Background(), h, WorkflowLocation{}, replayOpts(t, otherHash, fetchOf(other, &calls)))
+		rw, _, err := ResolveRuntimeWorkflow(context.Background(), h, WorkflowLocation{}, replayOpts(t, otherHash, fetchOf(other, &calls)))
 		require.NoError(t, err)
 		assert.Equal(t, lockedHash, rw.TreeHash, "never the tree the index points at")
 		got, err := os.ReadFile(filepath.Join(rw.LocalPath, "workflows", "probe.js"))
@@ -1001,9 +1001,9 @@ func TestResolveWorkflowDefinition_LockedHashWinsOverURLIndex(t *testing.T) {
 		o := replayOpts(t, otherHash, fetchOf(other, &calls))
 		o.WorkspaceRoot = t.TempDir()
 		o.FetchPolicy.Offline = false
-		_, _, err := ResolveWorkflowDefinition(context.Background(), inherited(t), WorkflowLocation{}, o)
+		_, _, err := ResolveRuntimeWorkflow(context.Background(), inherited(t), WorkflowLocation{}, o)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "workflow.source: tree hash mismatch for "+cleanURL+": .fullsend/lock.yaml records sha256="+lockedHash+" but the fetched tree hashes to sha256="+otherHash+"; run `fullsend lock` to re-lock the definition")
+		assert.Contains(t, err.Error(), "runtime_workflow.source: tree hash mismatch for "+cleanURL+": .fullsend/lock.yaml records sha256="+lockedHash+" but the fetched tree hashes to sha256="+otherHash+"; run `fullsend lock` to re-lock the runtime workflow")
 		assert.Equal(t, 1, calls)
 	})
 	t.Run("a cold cache fetches the locked tree", func(t *testing.T) {
@@ -1011,12 +1011,12 @@ func TestResolveWorkflowDefinition_LockedHashWinsOverURLIndex(t *testing.T) {
 		o := replayOpts(t, "", fetchOf(files, &calls))
 		o.WorkspaceRoot = t.TempDir()
 		o.FetchPolicy.Offline = false
-		rw, dep, err := ResolveWorkflowDefinition(context.Background(), inherited(t), WorkflowLocation{}, o)
+		rw, dep, err := ResolveRuntimeWorkflow(context.Background(), inherited(t), WorkflowLocation{}, o)
 		require.NoError(t, err)
 		assert.Equal(t, lockedHash, rw.TreeHash)
 		assert.False(t, dep.CacheHit)
 		assert.Equal(t, 1, calls)
-		indexed, ok := harness.LookupURLIndex(o.WorkspaceRoot, WorkflowDependencyField+":"+cleanURL)
+		indexed, ok := harness.LookupURLIndex(o.WorkspaceRoot, RuntimeWorkflowDependencyField+":"+cleanURL)
 		assert.True(t, ok)
 		assert.Equal(t, lockedHash, indexed, "the index is written with the locked hash")
 	})
@@ -1028,13 +1028,13 @@ func TestResolveWorkflowDefinition_LockedHashWinsOverURLIndex(t *testing.T) {
 			TreeFetcher: fetchOf(other, &calls), LockedWorkflowSHA256: lockedHash,
 		})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "workflow.source: the harness pins sha256="+otherHash+" for https://github.com/example-org/sample-pipeline/tree/"+wfSHA+", but .fullsend/lock.yaml records sha256="+lockedHash+"; run `fullsend lock` to update the lock file")
+		assert.Contains(t, err.Error(), "runtime_workflow.source: the harness pins sha256="+otherHash+" for https://github.com/example-org/sample-pipeline/tree/"+wfSHA+", but .fullsend/lock.yaml records sha256="+lockedHash+"; run `fullsend lock` to update the lock file")
 		assert.Equal(t, 0, calls)
 	})
 }
 
 func TestResolvedWorkflow_DisplaySource(t *testing.T) {
-	assert.Equal(t, "pipelines/sample", (&ResolvedWorkflow{Local: true, Source: "pipelines/sample"}).DisplaySource())
-	assert.Equal(t, "example-org/sample-pipeline@0123456789ab", (&ResolvedWorkflow{Owner: "example-org", Repo: "sample-pipeline", Commit: wfSHA}).DisplaySource())
-	assert.Equal(t, "o/r@abc", (&ResolvedWorkflow{Owner: "o", Repo: "r", Commit: "abc", Path: ""}).DisplaySource())
+	assert.Equal(t, "pipelines/sample", (&ResolvedRuntimeWorkflow{Local: true, Source: "pipelines/sample"}).DisplaySource())
+	assert.Equal(t, "example-org/sample-pipeline@0123456789ab", (&ResolvedRuntimeWorkflow{Owner: "example-org", Repo: "sample-pipeline", Commit: wfSHA}).DisplaySource())
+	assert.Equal(t, "o/r@abc", (&ResolvedRuntimeWorkflow{Owner: "o", Repo: "r", Commit: "abc", Path: ""}).DisplaySource())
 }

@@ -381,7 +381,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			}
 		}
 
-		// The workflow: definition is resolved on its own step (ADR 0130),
+		// The runtime workflow is resolved on its own step (ADR 0130),
 		// as fullsend run does; a path source has no dependency to lock.
 		resolvedWorkflow, workflowDep, wfErr := resolveHarnessWorkflow(ctx, h, workflowLocation(harnessPath, absFullsendDir, len(agentSourceDeps) > 0), resolve.ResolveOpts{
 			WorkspaceRoot: absFullsendDir,
@@ -392,8 +392,8 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			GitToken:      composeGitToken,
 		})
 		if wfErr != nil {
-			printer.StepFail("Workflow definition resolution failed")
-			return nil, fmt.Errorf("resolving workflow definition: %w", wfErr)
+			printer.StepFail("Runtime workflow resolution failed")
+			return nil, fmt.Errorf("resolving runtime workflow: %w", wfErr)
 		}
 		if workflowDep != nil && !seen[lockDepKey(workflowDep.Field, workflowDep.URL)] {
 			seen[lockDepKey(workflowDep.Field, workflowDep.URL)] = true
@@ -481,12 +481,12 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			return nil, err
 		}
 		// URL plugins had no Claude Code plugin name to compare when the
-		// workflow definition resolved above; compare it now that they
+		// runtime workflow resolved above; compare it now that they
 		// are fetched, as fullsend run does.
 		if resolvedWorkflow != nil {
 			if err := resolve.CheckWorkflowNamespace(h, resolvedWorkflow); err != nil {
-				printer.StepFail("Workflow definition resolution failed")
-				return nil, fmt.Errorf("resolving workflow definition: %w", err)
+				printer.StepFail("Runtime workflow resolution failed")
+				return nil, fmt.Errorf("resolving runtime workflow: %w", err)
 			}
 		}
 	}
@@ -938,7 +938,7 @@ func readRunLock(absFullsendDir, agentName, harnessPath string) (runLockState, e
 		// The workflow definition is bound by its own step (ADR 0130),
 		// and its materialized tree hash may differ from a plugins: entry
 		// at the same URL, so it never pins a composed file.
-		if dep.Field == resolve.WorkflowDependencyField {
+		if dep.Field == resolve.RuntimeWorkflowDependencyField {
 			continue
 		}
 		if dep.URL != "" && dep.SHA256 != "" {
@@ -1001,13 +1001,13 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 				"locked dependency %s (%s) is no longer in allowed_remote_resources — run 'fullsend lock' to update",
 				lockDep.Field, lockDep.URL)
 		}
-		// The workflow definition is not replayed here: runAgent reads its
+		// The runtime workflow is not replayed here: runAgent reads its
 		// hash from the entry (lockedWorkflowSHA256) and
-		// resolve.ResolveWorkflowDefinition reads the cache by it, or
-		// refetches and verifies against it, so a definition missing from
+		// resolve.ResolveRuntimeWorkflow reads the cache by it, or
+		// refetches and verifies against it, so a runtime workflow missing from
 		// the cache does not send every other dependency to normal
 		// resolution.
-		if lockDep.Field == resolve.WorkflowDependencyField {
+		if lockDep.Field == resolve.RuntimeWorkflowDependencyField {
 			continue
 		}
 
