@@ -14,12 +14,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -206,8 +209,11 @@ func inGitDir(path, root string) bool {
 // the import if the winner already wrote the cache.
 //
 // When content has changed (hash mismatch or no cache), the existing profile
-// is deleted and reimported. If the reimport fails because a parallel process
-// already imported it, the error is treated as success.
+// is deleted and reimported. The delete is best-effort: it fails while a
+// provider still references the profile, and the reimport then fails with
+// "already exists" even though the gateway may still hold the old content.
+// So "already exists" is only treated as success if the gateway's exported
+// content matches profilePath; otherwise an error is returned. See #7973.
 func ImportProfile(ctx context.Context, id, profilePath string) error {
 	currentHash, err := hashProfileFile(profilePath)
 	if err != nil {
@@ -262,7 +268,14 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 	if err != nil {
 		outStr := strings.ToLower(string(out))
 		if strings.Contains(outStr, "already exists") {
-			// A parallel process imported the profile — safe to continue.
+			matches, matchErr := gatewayProfileMatches(ctx, id, profilePath)
+			if matchErr != nil {
+				return fmt.Errorf("profile import %q reported \"already exists\", and the gateway's current content could not be verified: %w", filepath.Base(profilePath), matchErr)
+			}
+			if !matches {
+				return fmt.Errorf("profile import %q failed: openshell reported the profile %q already exists, but its content on the gateway does not match %q; the preceding delete was likely blocked because a provider still references the profile — remove that provider (or delete the profile manually) and retry", filepath.Base(profilePath), id, filepath.Base(profilePath))
+			}
+			// A parallel process already applied this exact content — safe to continue.
 			os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
 			return nil
 		}
@@ -270,6 +283,176 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 	}
 	os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
 	return nil
+}
+
+// gatewayProfileMatches reports whether the gateway's current content for
+// profile id matches the local file at profilePath. It is called after a
+// reimport reports "already exists" to distinguish an already-applied profile
+// from a stale one left by a blocked delete (see #7973).
+func gatewayProfileMatches(ctx context.Context, id, profilePath string) (bool, error) {
+	local, err := os.ReadFile(profilePath)
+	if err != nil {
+		return false, fmt.Errorf("reading local profile %q: %w", filepath.Base(profilePath), err)
+	}
+
+	exportCtx, cancel := context.WithTimeout(ctx, providerTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(exportCtx, "openshell", "provider", "profile", "export", id)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	exported, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("exporting provider profile %q: %w (stderr: %s)", id, err, strings.TrimSpace(stderr.String()))
+	}
+
+	return profileContentEqual(local, exported)
+}
+
+// gatewayNonZeroDefaults lists the top-level profile fields whose default
+// value in the gateway's export is not a zero value (OpenShell 0.1.2). The
+// export writes them even when the local file omits them (see #8211), and
+// profileContentEqual accepts them only when they hold exactly this value.
+var gatewayNonZeroDefaults = map[string]any{
+	"category": "other",
+	"source":   "user",
+	"scope":    "workspace",
+}
+
+// gatewayDefaultFalseKeys lists the boolean profile fields where `false`
+// means the same as unset (plain bools in OpenShell 0.1.2). The export always
+// writes some of them and omits others when false. Any other boolean is
+// optional, and `false` can differ from unset: MCP `strict_tool_names` is
+// enforced when unset but off when false. profileValueIsEmpty treats `false`
+// as empty only for these keys.
+var gatewayDefaultFalseKeys = map[string]bool{
+	"inference_capable":               true,
+	"required":                        true,
+	"secret":                          true,
+	"allow_encoded_slash":             true,
+	"websocket_credential_rewrite":    true,
+	"request_body_credential_rewrite": true,
+	"allow_uninspected_credentials":   true,
+}
+
+// profileContentEqual reports whether the gateway's export of a profile
+// (exported) still carries the content of the local profile YAML document
+// (local). It is driven by the local file, not by knowledge of what OpenShell
+// writes: every key in local must be present in exported with the same value,
+// and keys only the export has (gateway metadata and fields OpenShell filled
+// in with zero-value defaults, see #8211) are ignored. Maps are compared the same way
+// recursively, and lists must have the same length with matching entries.
+//
+// Two guards keep #7973 working without a table of OpenShell defaults. A key
+// only the export has still counts as a mismatch when it holds any non-empty
+// value: a non-empty list or map (e.g. `credentials` or `endpoints` the
+// local file dropped, or unknown `annotations`) or a non-zero scalar (e.g. a
+// dropped `inference_capable: true`, or a credential `query_param: token`
+// or `auth_style`). The gateway keeps such a value when a blocked delete
+// leaves the old profile in place, so it must not look like an applied edit.
+// Zero values are the only export-only content tolerated, which needs no
+// knowledge of what OpenShell writes. The exception is
+// gatewayNonZeroDefaults, the few top-level fields the export fills in with
+// a non-zero default; a new non-zero default OpenShell adds fails closed
+// rather than hiding a stale value.
+//
+// Unparseable input is an error, not a mismatch.
+func profileContentEqual(local, exported []byte) (bool, error) {
+	var localDoc map[string]any
+	if err := yaml.Unmarshal(local, &localDoc); err != nil {
+		return false, fmt.Errorf("parsing local profile: %w", err)
+	}
+	var exportedDoc map[string]any
+	if err := yaml.Unmarshal(exported, &exportedDoc); err != nil {
+		return false, fmt.Errorf("parsing exported profile: %w", err)
+	}
+
+	// resource_version is gateway bookkeeping; skip it even if the local
+	// file happens to carry a stale copy.
+	delete(localDoc, "resource_version")
+	delete(exportedDoc, "resource_version")
+
+	// Top-level fields the export fills in with a non-zero default when the
+	// local file omits them. Only the exact default value is tolerated.
+	for k, def := range gatewayNonZeroDefaults {
+		if _, declared := localDoc[k]; declared {
+			continue
+		}
+		if ev, ok := exportedDoc[k]; ok && reflect.DeepEqual(ev, def) {
+			delete(exportedDoc, k)
+		}
+	}
+
+	return profileMapMatches(localDoc, exportedDoc), nil
+}
+
+// profileMapMatches reports whether exported holds every key of local with a
+// matching value. A local key the export omits matches only when its value is
+// empty (the export may leave defaults out). A key only exported has matches
+// only when its value is empty (see profileValueIsEmpty).
+func profileMapMatches(local, exported map[string]any) bool {
+	for k, lv := range local {
+		ev, ok := exported[k]
+		if !ok {
+			if !profileValueIsEmpty(k, lv) {
+				return false
+			}
+			continue
+		}
+		if !profileValueMatches(lv, ev) {
+			return false
+		}
+	}
+	for k, ev := range exported {
+		if _, ok := local[k]; ok {
+			continue
+		}
+		if !profileValueIsEmpty(k, ev) {
+			return false
+		}
+	}
+	return true
+}
+
+// profileValueMatches compares one local value against the exported value
+// for the same key. Maps and list entries are compared with
+// profileMapMatches; everything else must be equal.
+func profileValueMatches(local, exported any) bool {
+	switch l := local.(type) {
+	case map[string]any:
+		e, ok := exported.(map[string]any)
+		return ok && profileMapMatches(l, e)
+	case []any:
+		e, ok := exported.([]any)
+		if !ok || len(l) != len(e) {
+			return false
+		}
+		for i := range l {
+			if !profileValueMatches(l[i], e[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(local, exported)
+	}
+}
+
+// profileValueIsEmpty reports whether v, the value of key, is nil, a zero
+// scalar, or an empty list or map. A `false` counts as empty only for
+// gatewayDefaultFalseKeys.
+func profileValueIsEmpty(key string, v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case bool:
+		return !x && gatewayDefaultFalseKeys[key]
+	case []any:
+		return len(x) == 0
+	case map[string]any:
+		return len(x) == 0
+	default:
+		return reflect.ValueOf(v).IsZero()
+	}
 }
 
 // ProfileExists reports whether the gateway lists a provider profile with

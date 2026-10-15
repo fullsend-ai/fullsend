@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +29,27 @@ func TestFakeClient_ListPullRequestCommits(t *testing.T) {
 
 	f.Errors["ListPullRequestCommits"] = errors.New("boom")
 	_, err = f.ListPullRequestCommits(context.Background(), "o", "r", 7)
+	require.Error(t, err)
+}
+
+func TestFakeClient_ListPullRequestReviewThreads(t *testing.T) {
+	page := ReviewThreadPage{
+		Threads:   []ReviewThread{{ID: "thread-1", IsResolved: true, Path: "main.go"}},
+		Truncated: true,
+	}
+	f := NewFakeClient()
+	f.PRReviewThreads = map[string]ReviewThreadPage{"o/r/7": page}
+
+	got, err := f.ListPullRequestReviewThreads(context.Background(), "o", "r", 7)
+	require.NoError(t, err)
+	assert.Equal(t, page, got)
+
+	got, err = f.ListPullRequestReviewThreads(context.Background(), "o", "r", 8)
+	require.NoError(t, err)
+	assert.Empty(t, got.Threads)
+
+	f.Errors["ListPullRequestReviewThreads"] = errors.New("boom")
+	_, err = f.ListPullRequestReviewThreads(context.Background(), "o", "r", 7)
 	require.Error(t, err)
 }
 
@@ -119,6 +141,15 @@ func TestFakeClient_CreateFile(t *testing.T) {
 	assert.Equal(t, "initial commit", rec.Message)
 	assert.Equal(t, content, rec.Content)
 	assert.Empty(t, rec.Branch)
+}
+
+func TestFakeClient_DeleteProjectServiceAccount(t *testing.T) {
+	fc := NewFakeClient()
+	require.NoError(t, fc.DeleteProjectServiceAccount(context.Background(), "g", "p", 77))
+	assert.Equal(t, []int{77}, fc.DeletedProjectServiceAccounts)
+	fc.Errors["DeleteProjectServiceAccount"] = errors.New("refused")
+	require.Error(t, fc.DeleteProjectServiceAccount(context.Background(), "g", "p", 88))
+	assert.Equal(t, []int{77}, fc.DeletedProjectServiceAccounts)
 }
 
 func TestFakeClient_CreateFileOnBranch(t *testing.T) {
@@ -767,6 +798,7 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		name string
 		call func(fc *FakeClient) error
 	}{
+		{"GetRepoVariableInfo", func(fc *FakeClient) error { _, _, err := fc.GetRepoVariableInfo(ctx, "o", "r", "n"); return err }},
 		{"ListOrgRepos", func(fc *FakeClient) error { _, err := fc.ListOrgRepos(ctx, "org", false); return err }},
 		{"CreateRepo", func(fc *FakeClient) error { _, err := fc.CreateRepo(ctx, "o", "r", "d", false); return err }},
 		{"DeleteRepo", func(fc *FakeClient) error { return fc.DeleteRepo(ctx, "o", "r") }},
@@ -835,6 +867,10 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		}},
 		{"GetOrgVariable", func(fc *FakeClient) error { _, _, err := fc.GetOrgVariable(ctx, "o", "n"); return err }},
 		{"ListOrgVariables", func(fc *FakeClient) error { _, err := fc.ListOrgVariables(ctx, "o"); return err }},
+		{"ListInheritedRepoVariables", func(fc *FakeClient) error {
+			_, err := fc.ListInheritedRepoVariables(ctx, "o", "r")
+			return err
+		}},
 		{"ListInstanceVariables", func(fc *FakeClient) error { _, err := fc.ListInstanceVariables(ctx); return err }},
 		{"IsInstallationToken", func(fc *FakeClient) error { _, err := fc.IsInstallationToken(ctx); return err }},
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
@@ -912,83 +948,337 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 	}
 }
 
+// newThreadSafetyFake seeds one shared "o/r" fixture so the readers and the
+// in-place writers in threadSafetyCalls touch the same stored entries.
+func newThreadSafetyFake() *FakeClient {
+	fc := NewFakeClient()
+	fc.Repos = []Repository{{Name: "r", FullName: "o/r"}}
+	fc.FileContents["o/r/p"] = []byte("content")
+	fc.AuthenticatedUser = "bot"
+	fc.WorkflowRuns["o/r/ci.yml"] = &WorkflowRun{ID: 1, Status: "completed", Conclusion: "success"}
+	fc.Installations = []Installation{{ID: 1, AppSlug: "app"}}
+	fc.ProtectedBranchRules["o/r/main"] = &ProtectedBranchRule{Name: "main", MergeAccessLevels: []ProtectedBranchAccess{{ID: 1, UserID: 1}}}
+	fc.Secrets["o/r/n"] = true
+	fc.VariablesExist["o/r/n"] = true
+	fc.VariableValues["o/r/n"] = "v"
+	fc.OrgSecrets = map[string]bool{"o/n": true}
+	fc.OrgVariables = map[string]bool{"o/n": true}
+	fc.OrgVariableValues = map[string]string{"o/n": "v"}
+	fc.OpenIssues = map[string][]Issue{"o/r": {{Number: 1, Labels: []string{"bug"}}}}
+	fc.IssueComments = map[string][]IssueComment{"o/r/1": {{ID: 1, Body: "b"}}}
+	fc.PRReviews = map[string][]PullRequestReview{"o/r/1": {{ID: 1, State: "APPROVED"}}}
+	fc.PipelineSchedules["o/r"] = []PipelineSchedule{{ID: 1, Variables: map[string]string{"K": "v"}}}
+	return fc
+}
+
+// threadSafetyCalls holds one call per exported FakeClient method;
+// TestFakeClient_ThreadSafetyCoversAllMethods keeps it complete. Each call
+// returns its results so the caller can read them: -race only flags a fake
+// that hands out its internal storage when the returned data is read.
+func threadSafetyCalls(ctx context.Context) map[string]func(fc *FakeClient) []any {
+	pack := func(v ...any) []any { return v }
+	return map[string]func(fc *FakeClient) []any{
+		// Client
+		"ListOrgRepos":         func(fc *FakeClient) []any { return pack(fc.ListOrgRepos(ctx, "o", true)) },
+		"GetRepo":              func(fc *FakeClient) []any { return pack(fc.GetRepo(ctx, "o", "r")) },
+		"CreateRepo":           func(fc *FakeClient) []any { return pack(fc.CreateRepo(ctx, "o", "new", "d", false)) },
+		"UpdateRepoVisibility": func(fc *FakeClient) []any { return pack(fc.UpdateRepoVisibility(ctx, "o", "r", true)) },
+		"DeleteRepo":           func(fc *FakeClient) []any { return pack(fc.DeleteRepo(ctx, "o", "gone")) },
+		"FindExistingFork": func(fc *FakeClient) []any {
+			return pack(fc.FindExistingFork(ctx, "o", "r"))
+		},
+		"CreateFork":      func(fc *FakeClient) []any { return pack(fc.CreateFork(ctx, "o", "r")) },
+		"CreateForkInOrg": func(fc *FakeClient) []any { return pack(fc.CreateForkInOrg(ctx, "o", "r", "org", "fork")) },
+		"DeleteProjectServiceAccount": func(fc *FakeClient) []any {
+			return pack(fc.DeleteProjectServiceAccount(ctx, "o", "r", 1))
+		},
+		"CreateFile": func(fc *FakeClient) []any { return pack(fc.CreateFile(ctx, "o", "r", "p", "m", []byte("data"))) },
+		"CreateOrUpdateFile": func(fc *FakeClient) []any {
+			return pack(fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", []byte("data")))
+		},
+		"GetFileContent": func(fc *FakeClient) []any { return pack(fc.GetFileContent(ctx, "o", "r", "p")) },
+		"DeleteFile":     func(fc *FakeClient) []any { return pack(fc.DeleteFile(ctx, "o", "r", "gone", "m")) },
+		"DeleteFiles":    func(fc *FakeClient) []any { return pack(fc.DeleteFiles(ctx, "o", "r", "m", []string{"gone"})) },
+		"ListDirectoryContents": func(fc *FakeClient) []any {
+			return pack(fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false))
+		},
+		"ListRepositoryFiles": func(fc *FakeClient) []any { return pack(fc.ListRepositoryFiles(ctx, "o", "r")) },
+		"GetFileContentAtRef": func(fc *FakeClient) []any { return pack(fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")) },
+		"CommitFiles": func(fc *FakeClient) []any {
+			return pack(fc.CommitFiles(ctx, "o", "r", "m", []TreeFile{{Path: "p", Content: []byte("c"), Mode: "100644"}}))
+		},
+		"CommitFilesToBranch": func(fc *FakeClient) []any {
+			return pack(fc.CommitFilesToBranch(ctx, "o", "r", "b", "m", []TreeFile{{Path: "p", Content: []byte("c"), Mode: "100644"}}))
+		},
+		"ForceCommitFileToBranch": func(fc *FakeClient) []any {
+			return pack(fc.ForceCommitFileToBranch(ctx, "o", "r", "state-branch", "state.json", "m", []byte("data")))
+		},
+		"GetRef":              func(fc *FakeClient) []any { return pack(fc.GetRef(ctx, "o", "r", "heads/main")) },
+		"GetBranchRef":        func(fc *FakeClient) []any { return pack(fc.GetBranchRef(ctx, "o", "r", "main")) },
+		"CreateBranch":        func(fc *FakeClient) []any { return pack(fc.CreateBranch(ctx, "o", "r", "b")) },
+		"CreateBranchFromSHA": func(fc *FakeClient) []any { return pack(fc.CreateBranchFromSHA(ctx, "o", "r", "sha-branch", "abc123")) },
+		"DeleteBranch":        func(fc *FakeClient) []any { return pack(fc.DeleteBranch(ctx, "o", "r", "b")) },
+		"DeleteRef":           func(fc *FakeClient) []any { return pack(fc.DeleteRef(ctx, "o", "r", "heads/b")) },
+		"CreateFileOnBranch": func(fc *FakeClient) []any {
+			return pack(fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", []byte("data")))
+		},
+		"CreateOrUpdateFileOnBranch": func(fc *FakeClient) []any {
+			return pack(fc.CreateOrUpdateFileOnBranch(ctx, "o", "r", "b", "p", "m", []byte("data")))
+		},
+		"CreateChangeProposal": func(fc *FakeClient) []any {
+			return pack(fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base"))
+		},
+		"CreateCrossRepoChangeProposal": func(fc *FakeClient) []any {
+			return pack(fc.CreateCrossRepoChangeProposal(ctx, "o", "r", "ho", "hr", "t", "b", "h", "base"))
+		},
+		"ListRepoPullRequests":         func(fc *FakeClient) []any { return pack(fc.ListRepoPullRequests(ctx, "o", "r")) },
+		"CloseChangeProposal":          func(fc *FakeClient) []any { return pack(fc.CloseChangeProposal(ctx, "o", "r", 1)) },
+		"GetOrgPlan":                   func(fc *FakeClient) []any { return pack(fc.GetOrgPlan(ctx, "o")) },
+		"GetAuthenticatedUser":         func(fc *FakeClient) []any { return pack(fc.GetAuthenticatedUser(ctx)) },
+		"GetAuthenticatedUserIdentity": func(fc *FakeClient) []any { return pack(fc.GetAuthenticatedUserIdentity(ctx)) },
+		"GetTokenScopes":               func(fc *FakeClient) []any { return pack(fc.GetTokenScopes(ctx)) },
+		"IsInstallationToken":          func(fc *FakeClient) []any { return pack(fc.IsInstallationToken(ctx)) },
+		"CreateRepoSecret":             func(fc *FakeClient) []any { return pack(fc.CreateRepoSecret(ctx, "o", "r", "n", "v")) },
+		"RepoSecretExists":             func(fc *FakeClient) []any { return pack(fc.RepoSecretExists(ctx, "o", "r", "n")) },
+		"GetRepoSecretProtection": func(fc *FakeClient) []any {
+			return pack(fc.GetRepoSecretProtection(ctx, "o", "r", "n"))
+		},
+		"DeleteRepoSecret": func(fc *FakeClient) []any { return pack(fc.DeleteRepoSecret(ctx, "o", "r", "n")) },
+		"CreateOrUpdateRepoVariable": func(fc *FakeClient) []any {
+			return pack(fc.CreateOrUpdateRepoVariable(ctx, "o", "r", "n", "v"))
+		},
+		"RepoVariableExists":  func(fc *FakeClient) []any { return pack(fc.RepoVariableExists(ctx, "o", "r", "n")) },
+		"GetRepoVariable":     func(fc *FakeClient) []any { return pack(fc.GetRepoVariable(ctx, "o", "r", "n")) },
+		"GetRepoVariableInfo": func(fc *FakeClient) []any { return pack(fc.GetRepoVariableInfo(ctx, "o", "r", "n")) },
+		"ListRepoVariables":   func(fc *FakeClient) []any { return pack(fc.ListRepoVariables(ctx, "o", "r")) },
+		"DeleteRepoVariable":  func(fc *FakeClient) []any { return pack(fc.DeleteRepoVariable(ctx, "o", "r", "n")) },
+		"OrgSecretExists":     func(fc *FakeClient) []any { return pack(fc.OrgSecretExists(ctx, "o", "n")) },
+		"DeleteOrgSecret":     func(fc *FakeClient) []any { return pack(fc.DeleteOrgSecret(ctx, "o", "n")) },
+		"CreateOrUpdateOrgVariableAll": func(fc *FakeClient) []any {
+			return pack(fc.CreateOrUpdateOrgVariableAll(ctx, "o", "n", "v"))
+		},
+		"GetOrgVariable":             func(fc *FakeClient) []any { return pack(fc.GetOrgVariable(ctx, "o", "n")) },
+		"ListOrgVariables":           func(fc *FakeClient) []any { return pack(fc.ListOrgVariables(ctx, "o")) },
+		"ListInheritedRepoVariables": func(fc *FakeClient) []any { return pack(fc.ListInheritedRepoVariables(ctx, "o", "r")) },
+		"ListInstanceVariables":      func(fc *FakeClient) []any { return pack(fc.ListInstanceVariables(ctx)) },
+		"DeleteOrgVariable":          func(fc *FakeClient) []any { return pack(fc.DeleteOrgVariable(ctx, "o", "n")) },
+		"GetWorkflow":                func(fc *FakeClient) []any { return pack(fc.GetWorkflow(ctx, "o", "r", "ci.yml")) },
+		"GetLatestWorkflowRun":       func(fc *FakeClient) []any { return pack(fc.GetLatestWorkflowRun(ctx, "o", "r", "ci.yml")) },
+		"GetWorkflowRun":             func(fc *FakeClient) []any { return pack(fc.GetWorkflowRun(ctx, "o", "r", 1)) },
+		"DispatchWorkflow": func(fc *FakeClient) []any {
+			return pack(fc.DispatchWorkflow(ctx, "o", "r", "ci.yml", "main", map[string]string{"k": "v"}))
+		},
+		"CreateIssue":       func(fc *FakeClient) []any { return pack(fc.CreateIssue(ctx, "o", "r", "t", "b", "bug")) },
+		"AddIssueLabels":    func(fc *FakeClient) []any { return pack(fc.AddIssueLabels(ctx, "o", "r", 1, "triaged")) },
+		"GetIssue":          func(fc *FakeClient) []any { return pack(fc.GetIssue(ctx, "o", "r", 1)) },
+		"CloseIssue":        func(fc *FakeClient) []any { return pack(fc.CloseIssue(ctx, "o", "r", 1)) },
+		"ListOpenIssues":    func(fc *FakeClient) []any { return pack(fc.ListOpenIssues(ctx, "o", "r")) },
+		"ListIssueComments": func(fc *FakeClient) []any { return pack(fc.ListIssueComments(ctx, "o", "r", 1)) },
+		"CreateIssueComment": func(fc *FakeClient) []any {
+			return pack(fc.CreateIssueComment(ctx, "o", "r", 1, "b"))
+		},
+		"GetIssueComment":    func(fc *FakeClient) []any { return pack(fc.GetIssueComment(ctx, "o", "r", 1)) },
+		"UpdateIssueComment": func(fc *FakeClient) []any { return pack(fc.UpdateIssueComment(ctx, "o", "r", 1, "edited")) },
+		"DeleteIssueComment": func(fc *FakeClient) []any { return pack(fc.DeleteIssueComment(ctx, "o", "r", 2)) },
+		"MinimizeComment":    func(fc *FakeClient) []any { return pack(fc.MinimizeComment(ctx, "node", "OUTDATED")) },
+		"AddIssueReaction":   func(fc *FakeClient) []any { return pack(fc.AddIssueReaction(ctx, "o", "r", 1, "eyes")) },
+		"DeleteIssueReaction": func(fc *FakeClient) []any {
+			return pack(fc.DeleteIssueReaction(ctx, "o", "r", 1, 1))
+		},
+		"AddIssueCommentReaction": func(fc *FakeClient) []any {
+			return pack(fc.AddIssueCommentReaction(ctx, "o", "r", 1, "eyes"))
+		},
+		"DeleteIssueCommentReaction": func(fc *FakeClient) []any {
+			return pack(fc.DeleteIssueCommentReaction(ctx, "o", "r", 1, 1))
+		},
+		"ListIssueReactions":    func(fc *FakeClient) []any { return pack(fc.ListIssueReactions(ctx, "o", "r", 1)) },
+		"GetPullRequestInfo":    func(fc *FakeClient) []any { return pack(fc.GetPullRequestInfo(ctx, "o", "r", 1)) },
+		"GetPullRequestHeadSHA": func(fc *FakeClient) []any { return pack(fc.GetPullRequestHeadSHA(ctx, "o", "r", 1)) },
+		"ListPullRequestFiles":  func(fc *FakeClient) []any { return pack(fc.ListPullRequestFiles(ctx, "o", "r", 1)) },
+		"ListPullRequestCommits": func(fc *FakeClient) []any {
+			return pack(fc.ListPullRequestCommits(ctx, "o", "r", 1))
+		},
+		"ListPullRequestFileDiffs": func(fc *FakeClient) []any {
+			return pack(fc.ListPullRequestFileDiffs(ctx, "o", "r", 1))
+		},
+		"CreatePullRequestReview": func(fc *FakeClient) []any {
+			return pack(fc.CreatePullRequestReview(ctx, "o", "r", 1, "COMMENT", "b", "sha", []ReviewComment{{Path: "p", Line: 1, Body: "b"}}))
+		},
+		"ListPullRequestReviews": func(fc *FakeClient) []any {
+			return pack(fc.ListPullRequestReviews(ctx, "o", "r", 1))
+		},
+		"ListPullRequestReviewThreads": func(fc *FakeClient) []any {
+			return pack(fc.ListPullRequestReviewThreads(ctx, "o", "r", 1))
+		},
+		"DismissPullRequestReview": func(fc *FakeClient) []any {
+			return pack(fc.DismissPullRequestReview(ctx, "o", "r", 1, 1, "m"))
+		},
+		"MergeChangeProposal":     func(fc *FakeClient) []any { return pack(fc.MergeChangeProposal(ctx, "o", "r", 1)) },
+		"UpdatePullRequestBranch": func(fc *FakeClient) []any { return pack(fc.UpdatePullRequestBranch(ctx, "o", "r", 1)) },
+		"ListWorkflowRuns":        func(fc *FakeClient) []any { return pack(fc.ListWorkflowRuns(ctx, "o", "r", "ci.yml")) },
+		"ListWorkflowRunsSince": func(fc *FakeClient) []any {
+			return pack(fc.ListWorkflowRunsSince(ctx, "o", "r", "ci.yml", time.Time{}))
+		},
+		"ListRecentWorkflowRuns": func(fc *FakeClient) []any { return pack(fc.ListRecentWorkflowRuns(ctx, "o", "r", 10)) },
+		"ListWorkflowRunJobs":    func(fc *FakeClient) []any { return pack(fc.ListWorkflowRunJobs(ctx, "o", "r", 1)) },
+		"ListWorkflowRunArtifacts": func(fc *FakeClient) []any {
+			return pack(fc.ListWorkflowRunArtifacts(ctx, "o", "r", 1))
+		},
+		"DownloadWorkflowRunArtifact": func(fc *FakeClient) []any {
+			return pack(fc.DownloadWorkflowRunArtifact(ctx, "o", "r", 1))
+		},
+		"ListRepositoryArtifacts": func(fc *FakeClient) []any {
+			return pack(fc.ListRepositoryArtifacts(ctx, "o", "r", 10))
+		},
+		"GetWorkflowRunLogs": func(fc *FakeClient) []any { return pack(fc.GetWorkflowRunLogs(ctx, "o", "r", 1)) },
+		"GetWorkflowRunAnnotations": func(fc *FakeClient) []any {
+			return pack(fc.GetWorkflowRunAnnotations(ctx, "o", "r", 1))
+		},
+		"IsProtectedBranch":     func(fc *FakeClient) []any { return pack(fc.IsProtectedBranch(ctx, "o", "r", "main")) },
+		"GetProtectedBranch":    func(fc *FakeClient) []any { return pack(fc.GetProtectedBranch(ctx, "o", "r", "main")) },
+		"ListProtectedBranches": func(fc *FakeClient) []any { return pack(fc.ListProtectedBranches(ctx, "o", "r")) },
+		"ListProtectedTags":     func(fc *FakeClient) []any { return pack(fc.ListProtectedTags(ctx, "o", "r")) },
+		"GrantProtectedBranchMergeUser": func(fc *FakeClient) []any {
+			return pack(fc.GrantProtectedBranchMergeUser(ctx, "o", "r", "main", 2))
+		},
+		"RevokeProtectedBranchMergeUserEntry": func(fc *FakeClient) []any {
+			return pack(fc.RevokeProtectedBranchMergeUserEntry(ctx, "o", "r", "main", 1, 1))
+		},
+		"CreatePipeline": func(fc *FakeClient) []any {
+			return pack(fc.CreatePipeline(ctx, "o", "r", "main", map[string]string{"k": "v"}))
+		},
+		"CreatePipelineWithInputs": func(fc *FakeClient) []any {
+			return pack(fc.CreatePipelineWithInputs(ctx, "o", "r", "main", map[string]PipelineInputValue{"k": StringInput("v")}))
+		},
+		"CreatePipelineSchedule": func(fc *FakeClient) []any {
+			return pack(fc.CreatePipelineSchedule(ctx, "o", "r", "main", "d", "0 * * * *", map[string]string{"K": "v"}))
+		},
+		"DeletePipelineSchedule": func(fc *FakeClient) []any { return pack(fc.DeletePipelineSchedule(ctx, "o", "r", 2)) },
+		"GetPipelineSchedule":    func(fc *FakeClient) []any { return pack(fc.GetPipelineSchedule(ctx, "o", "r", 1)) },
+		"DeletePipelineScheduleVariable": func(fc *FakeClient) []any {
+			return pack(fc.DeletePipelineScheduleVariable(ctx, "o", "r", 1, "K"))
+		},
+		"ListPipelineSchedules":  func(fc *FakeClient) []any { return pack(fc.ListPipelineSchedules(ctx, "o", "r")) },
+		"UpdatePipelineSchedule": func(fc *FakeClient) []any { return pack(fc.UpdatePipelineSchedule(ctx, "o", "r", 1, true)) },
+		"UpdateCIVariable":       func(fc *FakeClient) []any { return pack(fc.UpdateCIVariable(ctx, "o", "r", "n", "v", true)) },
+		"CreateProtectedCIVariable": func(fc *FakeClient) []any {
+			return pack(fc.CreateProtectedCIVariable(ctx, "o", "r", "n", "v"))
+		},
+		"CreatePipelineTriggerToken": func(fc *FakeClient) []any {
+			return pack(fc.CreatePipelineTriggerToken(ctx, "o", "r", "d"))
+		},
+		"ListPipelineTriggerTokens": func(fc *FakeClient) []any { return pack(fc.ListPipelineTriggerTokens(ctx, "o", "r")) },
+		"RevokePipelineTriggerToken": func(fc *FakeClient) []any {
+			return pack(fc.RevokePipelineTriggerToken(ctx, "o", "r", 1))
+		},
+		"GetProjectMemberAccessLevel": func(fc *FakeClient) []any {
+			return pack(fc.GetProjectMemberAccessLevel(ctx, "o", "r", 1))
+		},
+		"CreateProjectHook": func(fc *FakeClient) []any {
+			return pack(fc.CreateProjectHook(ctx, "o", "r", ProjectHook{URL: "https://example.test"}))
+		},
+		"ListProjectHooks":  func(fc *FakeClient) []any { return pack(fc.ListProjectHooks(ctx, "o", "r")) },
+		"UpdateProjectHook": func(fc *FakeClient) []any { return pack(fc.UpdateProjectHook(ctx, "o", "r", 1, ProjectHook{})) },
+		"DeleteProjectHook": func(fc *FakeClient) []any { return pack(fc.DeleteProjectHook(ctx, "o", "r", 2)) },
+		"GetPipelineVariablesMinimumOverrideRole": func(fc *FakeClient) []any {
+			return pack(fc.GetPipelineVariablesMinimumOverrideRole(ctx, "o", "r"))
+		},
+		"SetPipelineVariablesMinimumOverrideRole": func(fc *FakeClient) []any {
+			return pack(fc.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", PipelineVarOverrideOwner))
+		},
+		"CompareCommits": func(fc *FakeClient) []any { return pack(fc.CompareCommits(ctx, "o", "r", "a", "b")) },
+
+		// GitHubExtensions
+		"ListOrgInstallations": func(fc *FakeClient) []any { return pack(fc.ListOrgInstallations(ctx, "o")) },
+		"GetAppClientID":       func(fc *FakeClient) []any { return pack(fc.GetAppClientID(ctx, "app")) },
+		"GetCollaboratorPermission": func(fc *FakeClient) []any {
+			return pack(fc.GetCollaboratorPermission(ctx, "o", "r", "u"))
+		},
+		"AddCollaborator":  func(fc *FakeClient) []any { return pack(fc.AddCollaborator(ctx, "o", "r", "u", "push")) },
+		"GetOrgMembership": func(fc *FakeClient) []any { return pack(fc.GetOrgMembership(ctx, "o", "u")) },
+
+		// GitLabExtensions
+		"GetNoteOnParent": func(fc *FakeClient) []any { return pack(fc.GetNoteOnParent(ctx, "o", "r", "issue", 1, 1)) },
+		"UpdateNoteOnParent": func(fc *FakeClient) []any {
+			return pack(fc.UpdateNoteOnParent(ctx, "o", "r", "issue", 1, 1, "edited"))
+		},
+
+		// ProjectLeaser
+		"AcquireProjectLease": func(fc *FakeClient) []any { return pack(fc.AcquireProjectLease(ctx, "o", "r", "n", "h")) },
+		"ReleaseProjectLease": func(fc *FakeClient) []any { return pack(fc.ReleaseProjectLease(ctx, "o", "r", "n", "h")) },
+	}
+}
+
+// readDeep loads every value reachable from v, so -race sees the caller
+// reading any storage a fake method returned.
+func readDeep(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if !v.IsNil() {
+			readDeep(v.Elem())
+		}
+	case reflect.Struct:
+		for i := range v.NumField() {
+			readDeep(v.Field(i))
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			readDeep(v.Index(i))
+		}
+	case reflect.Map:
+		for it := v.MapRange(); it.Next(); {
+			readDeep(it.Key())
+			readDeep(it.Value())
+		}
+	case reflect.String:
+		_ = v.String()
+	case reflect.Bool:
+		_ = v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		_ = v.Int()
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		_ = v.Uint()
+	case reflect.Float32, reflect.Float64:
+		_ = v.Float()
+	}
+}
+
 func TestFakeClient_ThreadSafety(t *testing.T) {
 	ctx := context.Background()
-	fc := &FakeClient{
-		Repos: []Repository{
-			{Name: "repo1", FullName: "org/repo1"},
-		},
-		FileContents: map[string][]byte{
-			"o/r/file.txt": []byte("content"),
-		},
-		AuthenticatedUser: "bot",
-		WorkflowRuns: map[string]*WorkflowRun{
-			"o/r/ci.yml": {ID: 1, Status: "completed", Conclusion: "success"},
-		},
-		Installations: []Installation{{ID: 1, AppSlug: "app"}},
-		Secrets:       map[string]bool{"o/r/secret": true},
-		OrgSecrets:    map[string]bool{"o/secret": true},
-		OrgVariables:  map[string]bool{"o/var": true},
-	}
+	fc := newThreadSafetyFake()
+	calls := threadSafetyCalls(ctx)
 
 	var wg sync.WaitGroup
 	const goroutines = 20
 
-	// Run many concurrent operations to trigger the race detector.
-	for i := range goroutines {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
-			_, _ = fc.ListOrgRepos(ctx, "org", false)
-			_, _ = fc.CreateRepo(ctx, "org", "r", "d", false)
-			_ = fc.UpdateRepoVisibility(ctx, "org", "repo1", false)
-			_ = fc.DeleteRepo(ctx, "o", "r")
-			_ = fc.CreateFile(ctx, "o", "r", "p", "m", []byte("data"))
-			_ = fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", []byte("data"))
-			_, _ = fc.GetFileContent(ctx, "o", "r", "file.txt")
-			_ = fc.CreateBranch(ctx, "o", "r", "b")
-			_ = fc.CreateBranchFromSHA(ctx, "o", "r", "sha-branch", "abc123")
-			_ = fc.DeleteBranch(ctx, "o", "r", "b")
-			_ = fc.DeleteRef(ctx, "o", "r", "heads/b")
-			_ = fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", []byte("data"))
-			_, _ = fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
-			_, _ = fc.CreateCrossRepoChangeProposal(ctx, "o", "r", "ho", "hr", "t", "b", "h", "base")
-			_, _ = fc.ListRepoPullRequests(ctx, "o", "r")
-			_, _ = fc.GetAuthenticatedUser(ctx)
-			_, _ = fc.GetAuthenticatedUserIdentity(ctx)
-			_ = fc.CreateRepoSecret(ctx, "o", "r", "n", "v")
-			_, _ = fc.RepoSecretExists(ctx, "o", "r", "secret")
-			_ = fc.CreateOrUpdateRepoVariable(ctx, "o", "r", "n", "v")
-			_, _ = fc.GetLatestWorkflowRun(ctx, "o", "r", "ci.yml")
-			_, _ = fc.GetWorkflowRun(ctx, "o", "r", 1)
-			_, _ = fc.ListOrgInstallations(ctx, "org")
-			_, _ = fc.OrgSecretExists(ctx, "o", "secret")
-			_ = fc.DeleteOrgSecret(ctx, "o", "n")
-			_, _ = fc.CommitFiles(ctx, "o", "r", "m", []TreeFile{{Path: "p", Content: []byte("c"), Mode: "100644"}})
-			_ = fc.ForceCommitFileToBranch(ctx, "o", "r", "state-branch", "state.json", "m", []byte("data"))
-			_ = fc.CreateOrUpdateOrgVariableAll(ctx, "o", "n", "v")
-			_, _, _ = fc.GetOrgVariable(ctx, "o", "var")
-			_ = fc.DeleteOrgVariable(ctx, "o", "n")
-			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
-			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
-			_, _ = fc.ListRepositoryFiles(ctx, "o", "r")
-			_, _ = fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
-			_ = fc.DeleteRepoSecret(ctx, "o", "r", "n")
-			_, _ = fc.ListRepoVariables(ctx, "o", "r")
-			_, _ = fc.ListWorkflowRunJobs(ctx, "o", "r", 1)
-			_, _ = fc.CreatePipelineTriggerToken(ctx, "o", "r", "d")
-			_, _ = fc.ListPipelineTriggerTokens(ctx, "o", "r")
-			_ = fc.RevokePipelineTriggerToken(ctx, "o", "r", 1)
-			_, _ = fc.CreateProjectHook(ctx, "o", "r", ProjectHook{URL: "https://example.test"})
-			_, _ = fc.ListProjectHooks(ctx, "o", "r")
-			_, _ = fc.UpdateProjectHook(ctx, "o", "r", 1, ProjectHook{})
-			_ = fc.DeleteProjectHook(ctx, "o", "r", 1)
-			_ = fc.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", PipelineVarOverrideOwner)
-			_, _ = fc.GetPipelineVariablesMinimumOverrideRole(ctx, "o", "r")
-		}(i)
+	// Map iteration order differs per goroutine, which varies the interleavings.
+	for range goroutines {
+		wg.Go(func() {
+			for _, call := range calls {
+				readDeep(reflect.ValueOf(call(fc)))
+			}
+		})
 	}
 
 	wg.Wait()
+}
+
+// TestFakeClient_ThreadSafetyCoversAllMethods fails when an exported
+// FakeClient method (every forge.Client, GitHubExtensions, GitLabExtensions
+// and ProjectLeaser method) has no entry in threadSafetyCalls, or when an
+// entry names a method that no longer exists.
+func TestFakeClient_ThreadSafetyCoversAllMethods(t *testing.T) {
+	calls := threadSafetyCalls(context.Background())
+	methods := reflect.TypeFor[*FakeClient]()
+	want := make(map[string]bool, methods.NumMethod())
+	for i := range methods.NumMethod() {
+		name := methods.Method(i).Name
+		want[name] = true
+		assert.Contains(t, calls, name, "add %s to threadSafetyCalls so TestFakeClient_ThreadSafety runs it concurrently", name)
+	}
+	for name := range calls {
+		assert.True(t, want[name], "threadSafetyCalls has an entry for %s, which is not a FakeClient method", name)
+	}
 }
 
 func TestFakeClient_FindExistingFork(t *testing.T) {
@@ -1976,6 +2266,45 @@ func TestFakeClient_GetProtectedBranch(t *testing.T) {
 	assert.Equal(t, 40, rule2.MergeAccessLevels[0].AccessLevel, "returned rule must be a copy")
 }
 
+func TestFakeClient_RevokeProtectedBranchMergeUserEntry(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	fc.ProtectedBranchRules["org/repo/main"] = &ProtectedBranchRule{
+		Name:              "main",
+		MergeAccessLevels: []ProtectedBranchAccess{{AccessLevel: 40}, {ID: 5, UserID: 99}},
+	}
+	require.NoError(t, fc.GrantProtectedBranchMergeUser(ctx, "org", "repo", "main", 7))
+	rule, err := fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	require.NoError(t, err)
+	require.Len(t, rule.MergeAccessLevels, 3)
+	added := rule.MergeAccessLevels[2]
+	assert.Equal(t, 7, added.UserID)
+	assert.Positive(t, added.ID, "a granted entry carries its entry ID")
+
+	// An entry for a different user is refused and left in place.
+	err = fc.RevokeProtectedBranchMergeUserEntry(ctx, "org", "repo", "main", added.ID, 99)
+	require.Error(t, err)
+	rule, _ = fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	assert.Len(t, rule.MergeAccessLevels, 3)
+
+	// Invalid identifiers are rejected.
+	require.Error(t, fc.RevokeProtectedBranchMergeUserEntry(ctx, "org", "repo", "main", 0, 7))
+	require.Error(t, fc.RevokeProtectedBranchMergeUserEntry(ctx, "org", "repo", "main", added.ID, 0))
+
+	// Only the exact entry is removed; the other user's entry survives.
+	require.NoError(t, fc.RevokeProtectedBranchMergeUserEntry(ctx, "org", "repo", "main", added.ID, 7))
+	rule, _ = fc.GetProtectedBranch(ctx, "org", "repo", "main")
+	assert.Equal(t, []ProtectedBranchAccess{{AccessLevel: 40}, {ID: 5, UserID: 99}}, rule.MergeAccessLevels)
+
+	// Removing an entry that is already gone, or on an unknown rule, succeeds.
+	require.NoError(t, fc.RevokeProtectedBranchMergeUserEntry(ctx, "org", "repo", "main", added.ID, 7))
+	require.NoError(t, fc.RevokeProtectedBranchMergeUserEntry(ctx, "org", "repo", "other", 1, 7))
+
+	fc.Errors["RevokeProtectedBranchMergeUserEntry"] = fmt.Errorf("denied")
+	require.Error(t, fc.RevokeProtectedBranchMergeUserEntry(ctx, "org", "repo", "main", 5, 99))
+	assert.Len(t, fc.RevokedProtectedBranchMergeEntries, 7, "every call is recorded")
+}
+
 func TestFakeClient_GrantProtectedBranchMergeUser(t *testing.T) {
 	ctx := context.Background()
 	fc := NewFakeClient()
@@ -2184,6 +2513,157 @@ func TestFakeClient_GetRepo(t *testing.T) {
 
 	_, err = fc.GetRepo(ctx, "org", "missing")
 	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// Reads must return copies; callers mutating results must not change fake state.
+func TestFakeClient_ReadsReturnCopies(t *testing.T) {
+	ctx := context.Background()
+	fc := newThreadSafetyFake()
+	_, err := fc.CreateRepo(ctx, "o", "created", "d", false)
+	require.NoError(t, err)
+
+	for _, name := range []string{"r", "created"} {
+		repo, err := fc.GetRepo(ctx, "o", name)
+		require.NoError(t, err)
+		repo.Private = true
+		again, err := fc.GetRepo(ctx, "o", name)
+		require.NoError(t, err)
+		assert.False(t, again.Private, name)
+	}
+
+	comments, err := fc.ListIssueComments(ctx, "o", "r", 1)
+	require.NoError(t, err)
+	comments[0].Body = "changed"
+	assert.Equal(t, "b", fc.IssueComments["o/r/1"][0].Body)
+
+	reviews, err := fc.ListPullRequestReviews(ctx, "o", "r", 1)
+	require.NoError(t, err)
+	reviews[0].State = "DISMISSED"
+	assert.Equal(t, "APPROVED", fc.PRReviews["o/r/1"][0].State)
+
+	schedules, err := fc.ListPipelineSchedules(ctx, "o", "r")
+	require.NoError(t, err)
+	schedules[0].Active = true
+	schedules[0].Variables["K"] = "changed"
+	assert.False(t, fc.PipelineSchedules["o/r"][0].Active)
+	assert.Equal(t, "v", fc.PipelineSchedules["o/r"][0].Variables["K"])
+
+	none, err := fc.ListPipelineSchedules(ctx, "o", "missing")
+	require.NoError(t, err)
+	assert.Nil(t, none)
+
+	fc.AuthenticatedUserIdentity = &UserIdentity{Name: "n", Email: "e"}
+	fc.TokenScopes = []string{"repo"}
+	fc.PRFiles = map[string][]string{"o/r/1": {"a.go"}}
+	fc.PRCommits = map[string][]string{"o/r/1": {"sha"}}
+	fc.PRFileDiffs = map[string][]PullRequestFileDiff{"o/r/1": {{Path: "a.go"}}}
+	line, originalLine := 3, 4
+	fc.PRReviewThreads = map[string]ReviewThreadPage{"o/r/1": {Threads: []ReviewThread{{ID: "t", Line: &line, OriginalLine: &originalLine, Comments: []ReviewThreadComment{{Author: "u"}}}}}}
+	fc.Installations[0].Permissions = map[string]string{"contents": "read"}
+	fc.FileContents["o/r/f"] = []byte("x")
+	fc.FileContentsRef["o/r/f@main"] = []byte("x")
+	fc.DirContents["o/r/d@main"] = []DirectoryEntry{{Path: "f"}}
+	fc.PullRequests = map[string][]ChangeProposal{"o/r": {{Title: "pr"}}}
+	fc.Workflows = map[string]*Workflow{"o/r/ci.yml": {Name: "ci"}}
+	fc.Annotations = []Annotation{{Message: "m"}}
+
+	identity, err := fc.GetAuthenticatedUserIdentity(ctx)
+	require.NoError(t, err)
+	identity.Name = "changed"
+	assert.Equal(t, "n", fc.AuthenticatedUserIdentity.Name)
+
+	scopes, err := fc.GetTokenScopes(ctx)
+	require.NoError(t, err)
+	scopes[0] = "changed"
+	assert.Equal(t, "repo", fc.TokenScopes[0])
+
+	latest, err := fc.GetLatestWorkflowRun(ctx, "o", "r", "ci.yml")
+	require.NoError(t, err)
+	latest.Status = "changed"
+	run, err := fc.GetWorkflowRun(ctx, "o", "r", 1)
+	require.NoError(t, err)
+	run.Conclusion = "changed"
+	assert.Equal(t, "completed", fc.WorkflowRuns["o/r/ci.yml"].Status)
+	assert.Equal(t, "success", fc.WorkflowRuns["o/r/ci.yml"].Conclusion)
+
+	issue, err := fc.GetIssue(ctx, "o", "r", 1)
+	require.NoError(t, err)
+	issues, err := fc.ListOpenIssues(ctx, "o", "r")
+	require.NoError(t, err)
+	filtered, err := fc.ListOpenIssues(ctx, "o", "r", "bug")
+	require.NoError(t, err)
+	issue.Labels[0] = "changed"
+	issues[0].Labels[0] = "changed"
+	filtered[0].Labels[0] = "changed"
+	assert.Equal(t, "bug", fc.OpenIssues["o/r"][0].Labels[0])
+
+	created, err := fc.CreateIssue(ctx, "o", "new", "t", "b", "bug")
+	require.NoError(t, err)
+	created.Labels[0] = "changed"
+	assert.Equal(t, "bug", fc.OpenIssues["o/new"][0].Labels[0])
+
+	files, err := fc.ListPullRequestFiles(ctx, "o", "r", 1)
+	require.NoError(t, err)
+	files[0] = "changed"
+	assert.Equal(t, "a.go", fc.PRFiles["o/r/1"][0])
+
+	commits, err := fc.ListPullRequestCommits(ctx, "o", "r", 1)
+	require.NoError(t, err)
+	commits[0] = "changed"
+	assert.Equal(t, "sha", fc.PRCommits["o/r/1"][0])
+
+	diffs, err := fc.ListPullRequestFileDiffs(ctx, "o", "r", 1)
+	require.NoError(t, err)
+	diffs[0].Path = "changed"
+	assert.Equal(t, "a.go", fc.PRFileDiffs["o/r/1"][0].Path)
+
+	threads, err := fc.ListPullRequestReviewThreads(ctx, "o", "r", 1)
+	require.NoError(t, err)
+	threads.Threads[0].ID = "changed"
+	threads.Threads[0].Comments[0].Author = "changed"
+	assert.Equal(t, "t", fc.PRReviewThreads["o/r/1"].Threads[0].ID)
+	assert.Equal(t, "u", fc.PRReviewThreads["o/r/1"].Threads[0].Comments[0].Author)
+	*threads.Threads[0].Line = 0
+	*threads.Threads[0].OriginalLine = 0
+	assert.Equal(t, 3, line)
+	assert.Equal(t, 4, originalLine)
+
+	annotations, err := fc.GetWorkflowRunAnnotations(ctx, "o", "r", 1)
+	require.NoError(t, err)
+	annotations[0].Message = "changed"
+	assert.Equal(t, "m", fc.Annotations[0].Message)
+
+	installations, err := fc.ListOrgInstallations(ctx, "o")
+	require.NoError(t, err)
+	installations[0].AppSlug = "changed"
+	installations[0].Permissions["contents"] = "write"
+	assert.Equal(t, "app", fc.Installations[0].AppSlug)
+	assert.Equal(t, "read", fc.Installations[0].Permissions["contents"])
+
+	content, err := fc.GetFileContent(ctx, "o", "r", "f")
+	require.NoError(t, err)
+	content[0] = 'y'
+	assert.Equal(t, "x", string(fc.FileContents["o/r/f"]))
+
+	contentAtRef, err := fc.GetFileContentAtRef(ctx, "o", "r", "f", "main")
+	require.NoError(t, err)
+	contentAtRef[0] = 'y'
+	assert.Equal(t, "x", string(fc.FileContentsRef["o/r/f@main"]))
+
+	entries, err := fc.ListDirectoryContents(ctx, "o", "r", "d", "main", false)
+	require.NoError(t, err)
+	entries[0].Path = "changed"
+	assert.Equal(t, "f", fc.DirContents["o/r/d@main"][0].Path)
+
+	prs, err := fc.ListRepoPullRequests(ctx, "o", "r")
+	require.NoError(t, err)
+	prs[0].Title = "changed"
+	assert.Equal(t, "pr", fc.PullRequests["o/r"][0].Title)
+
+	workflow, err := fc.GetWorkflow(ctx, "o", "r", "ci.yml")
+	require.NoError(t, err)
+	workflow.Name = "changed"
+	assert.Equal(t, "ci", fc.Workflows["o/r/ci.yml"].Name)
 }
 
 func TestFakeClient_UpdateRepoVisibility(t *testing.T) {
@@ -2541,4 +3021,75 @@ func TestFakeClient_ForceCommitFileToBranch_ConcurrentLastWriteWins(t *testing.T
 	sha, err := fc.GetBranchRef(ctx, "o", "r", "state")
 	require.NoError(t, err)
 	assert.NotEmpty(t, sha)
+}
+
+func TestFakeClient_GetRepoVariableInfo(t *testing.T) {
+	f := NewFakeClient()
+	ctx := context.Background()
+	f.VariableFileTypes["acme/api/IDENTIFIER"] = true
+	v, exists, err := f.GetRepoVariableInfo(ctx, "acme", "api", "IDENTIFIER")
+	require.NoError(t, err)
+	assert.False(t, exists)
+	assert.Equal(t, RepoVariable{}, v)
+	f.VariableValues["acme/api/IDENTIFIER"] = "contents"
+	f.VariableFileTypes["acme/api/IDENTIFIER"] = true
+	v, exists, err = f.GetRepoVariableInfo(ctx, "acme", "api", "IDENTIFIER")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, RepoVariable{Value: "contents", FileType: true}, v)
+	f.Errors["GetRepoVariableInfo"] = errors.New("read failed")
+	v, exists, err = f.GetRepoVariableInfo(ctx, "acme", "api", "IDENTIFIER")
+	require.ErrorContains(t, err, "read failed")
+	assert.False(t, exists)
+	assert.Equal(t, RepoVariable{}, v)
+}
+
+func TestFakeClient_VariableFileTypeLifecycle(t *testing.T) {
+	for _, remove := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deleteBeforeRewrite=%t", remove), func(t *testing.T) {
+			f := NewFakeClient()
+			ctx := context.Background()
+			variablePath := "acme/api/IDENTIFIER"
+			f.VariableValues[variablePath] = "old contents"
+			f.VariableFileTypes[variablePath] = true
+			if remove {
+				require.NoError(t, f.DeleteRepoVariable(ctx, "acme", "api", "IDENTIFIER"))
+				assert.NotContains(t, f.VariableFileTypes, variablePath)
+				_, exists, err := f.GetRepoVariableInfo(ctx, "acme", "api", "IDENTIFIER")
+				require.NoError(t, err)
+				assert.False(t, exists)
+			}
+			require.NoError(t, f.CreateOrUpdateRepoVariable(ctx, "acme", "api", "IDENTIFIER", "new value"))
+			value, exists, err := f.GetRepoVariableInfo(ctx, "acme", "api", "IDENTIFIER")
+			require.NoError(t, err)
+			assert.True(t, exists)
+			assert.Equal(t, RepoVariable{Value: "new value"}, value)
+		})
+	}
+}
+
+func TestFakeClient_ProjectLease(t *testing.T) {
+	ctx := context.Background()
+	f := NewFakeClient()
+
+	ok, err := f.AcquireProjectLease(ctx, "o", "r", "L", "a")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	ok, err = f.AcquireProjectLease(ctx, "o", "r", "L", "b")
+	require.NoError(t, err)
+	assert.False(t, ok, "a held lease cannot be taken again")
+
+	require.NoError(t, f.ReleaseProjectLease(ctx, "o", "r", "L", "b"))
+	ok, _ = f.AcquireProjectLease(ctx, "o", "r", "L", "b")
+	assert.False(t, ok, "another holder's release leaves the lease in place")
+
+	require.NoError(t, f.ReleaseProjectLease(ctx, "o", "r", "L", "a"))
+	ok, _ = f.AcquireProjectLease(ctx, "o", "r", "L", "b")
+	assert.True(t, ok)
+
+	f.Errors["AcquireProjectLease"] = errors.New("boom")
+	_, err = f.AcquireProjectLease(ctx, "o", "r", "M", "a")
+	require.Error(t, err)
+	f.Errors["ReleaseProjectLease"] = errors.New("boom")
+	require.Error(t, f.ReleaseProjectLease(ctx, "o", "r", "L", "b"))
 }

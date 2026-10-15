@@ -73,6 +73,16 @@ type Driver interface {
 	Capacity() int
 }
 
+// MintURLReporter is an optional Driver interface reporting the URL of
+// the mint the driver deployed or was configured with. It is separate
+// from Driver so external Driver implementations keep compiling; steps
+// that need the mint address (the CLI mint status scenarios) fail with
+// an explanatory error on a driver without it.
+type MintURLReporter interface {
+	// MintURL returns the suite's mint URL, or "" when none is known.
+	MintURL() string
+}
+
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
 // The default implementation is e2etest.TryRunCLI. Inject a custom
 // function in tests to avoid shelling out.
@@ -91,4 +101,26 @@ const (
 	// DefaultPoolSize is the number of test-repo-NN repos in a pool org.
 	// Drivers use this as the default capacity when no override is set.
 	DefaultPoolSize = 12
+
+	// MintProbeHostRepoSuffix names the per-slot repository that hosts
+	// the reusable mint-probe workflow of the GitHub mint scope
+	// scenarios: test-repo-NN + suffix. The CF mint drivers list these
+	// names in the mint's WORKFLOW_HOST_REPOS next to the pool repos, so
+	// a workflow hosted there is an approved workflow host while staying
+	// a different repository from the leased test-repo-NN that calls it.
+	// The repositories themselves are created and deleted per scenario.
+	MintProbeHostRepoSuffix = "-mint-host"
+
+	// MintStatusTeamSlug is the slug of the team in each pool org (and
+	// the STAGE org) whose members may call the mint's /v1/status with
+	// a GitHub user token. The CF mint drivers deploy their mint with
+	// --status-auth=oidc,github --status-github-group=ORG/<slug>; the
+	// team itself is created by hack/setup-new-e2e-org.sh.
+	MintStatusTeamSlug = "mint-status"
 )
+
+// mintStatusGitHubGroup returns the --status-github-group value for a
+// pool org's mint: ORG/MintStatusTeamSlug.
+func mintStatusGitHubGroup(org string) string {
+	return org + "/" + MintStatusTeamSlug
+}

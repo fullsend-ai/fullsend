@@ -27,12 +27,16 @@ project access — no GitHub token or mint project is needed. Hand the WIF
 provider resource name to the GitHub admin who runs 'fullsend github setup'.
 
 'openai' enrols repositories with OpenAI Workload Identity Federation for
-GPT models on the pi runtime; it needs neither GCP nor an OpenAI key.`,
+GPT models on the pi runtime; it needs neither GCP nor an OpenAI key.
+
+'gateway status' checks the self-hosted inference gateway block
+(inference.gateway) and, inside a GitHub Actions job, authenticates to it.`,
 	}
 	cmd.AddCommand(newInferenceProvisionCmd())
 	cmd.AddCommand(newInferenceStatusCmd())
 	cmd.AddCommand(newInferenceDeprovisionCmd())
 	cmd.AddCommand(newInferenceOpenAICmd())
+	cmd.AddCommand(newInferenceGatewayCmd())
 	return cmd
 }
 

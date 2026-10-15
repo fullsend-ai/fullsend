@@ -117,7 +117,6 @@ func TestNewCFMintDriver_OK(t *testing.T) {
 	d, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, cfmintConfig{
 		pemDir:            dir,
 		suiteName:         "bt",
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "my-org/test-repo-01,my-org/test-repo-02",
 		workflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		appSet:            "fullsend-test",
@@ -130,7 +129,6 @@ func TestCFMintDeployArgs_WithAppSet(t *testing.T) {
 	cfg := cfmintConfig{
 		pemDir:            "/tmp/pems",
 		suiteName:         "bt",
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "my-org/test-repo-01",
 		workflowHostRepos: "my-org/test-repo-01,my-org/test-repo-02",
 		appSet:            "fullsend-test",
@@ -147,17 +145,9 @@ func TestCFMintDeployArgs_WithAppSet(t *testing.T) {
 		}
 	}
 	assert.Contains(t, args, "--pem-dir")
-	assert.Contains(t, args, "--allowed-orgs")
 	assert.Contains(t, args, "--per-repo-wif-repos")
 	assert.Contains(t, args, "--workflow-host-repos")
-
-	for i, a := range args {
-		if a == "--allowed-orgs" {
-			require.Less(t, i+1, len(args), "--allowed-orgs must have a value")
-			assert.Equal(t, "", args[i+1], "--allowed-orgs should be explicit empty for per-repo mode")
-			break
-		}
-	}
+	assert.NotContains(t, args, "--allowed-orgs", "per-org mint enrollment was removed")
 
 	for i, a := range args {
 		if a == "--workflow-host-repos" {
@@ -172,7 +162,6 @@ func TestCFMintDeployArgs_WithoutAppSet(t *testing.T) {
 	cfg := cfmintConfig{
 		pemDir:            "/tmp/pems",
 		suiteName:         "bt",
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "my-org/test-repo-01",
 		workflowHostRepos: "my-org/test-repo-01",
 	}
@@ -181,8 +170,25 @@ func TestCFMintDeployArgs_WithoutAppSet(t *testing.T) {
 
 	assert.NotContains(t, args, "--app-set")
 	assert.Contains(t, args, "--pem-dir")
-	assert.Contains(t, args, "--allowed-orgs")
+	assert.NotContains(t, args, "--allowed-orgs")
 	assert.Contains(t, args, "--workflow-host-repos")
+	assert.NotContains(t, args, "--status-auth", "no status group, no GitHub status auth")
+	assert.NotContains(t, args, "--status-github-group")
+}
+
+func TestCFMintDeployArgs_StatusGitHubGroup(t *testing.T) {
+	cfg := cfmintConfig{
+		pemDir:            "/tmp/pems",
+		suiteName:         "bt",
+		perRepoWIFRepos:   "halfsend-03/test-repo-01",
+		workflowHostRepos: "halfsend-03/test-repo-01",
+		statusGitHubGroup: mintStatusGitHubGroup("halfsend-03"),
+	}
+
+	args := CFMintDeployArgs("bt-abc12345", "bt-mint", cfg)
+
+	assert.Equal(t, []string{"--status-auth", "oidc,github", "--status-github-group", "halfsend-03/mint-status"},
+		args[len(args)-4:])
 }
 
 func TestCFMintTeardownArgs(t *testing.T) {
@@ -217,7 +223,6 @@ func TestCFMintDriver_Implements_MintDriver(t *testing.T) {
 	d, err := newCFMintDriver(nil, "tok", "/bin/fullsend", "", t.Logf, cfmintConfig{
 		pemDir:            dir,
 		suiteName:         "bt",
-		allowedOrgs:       "",
 		perRepoWIFRepos:   "org/repo",
 		workflowHostRepos: "org/repo",
 	})
@@ -328,6 +333,9 @@ func TestBuildCFMintDriver_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, 3, d.Capacity())
+	reporter, ok := d.(MintURLReporter)
+	require.True(t, ok, "driver reports its mint URL")
+	assert.Equal(t, "https://mint.test", reporter.MintURL())
 }
 
 func TestBuildCFMintDriver_InstallFails(t *testing.T) {
@@ -378,6 +386,20 @@ func TestCFMintTeardown_CLIFailure_ReturnsError(t *testing.T) {
 func TestBuildRepoList(t *testing.T) {
 	list := buildRepoList("my-org", 3)
 	assert.Equal(t, "my-org/test-repo-01,my-org/test-repo-02,my-org/test-repo-03", list)
+}
+
+func TestBuildWorkflowHostRepoList(t *testing.T) {
+	list := buildWorkflowHostRepoList("my-org", 2)
+	assert.Equal(t,
+		"my-org/test-repo-01,my-org/test-repo-01-mint-host,my-org/test-repo-02,my-org/test-repo-02-mint-host",
+		list)
+
+	// The pool repos stay workflow hosts, and only they are enrolled
+	// callers: the probe hosts must not leak into PER_REPO_WIF_REPOS.
+	for _, repo := range strings.Split(buildRepoList("my-org", 2), ",") {
+		assert.Contains(t, strings.Split(list, ","), repo)
+	}
+	assert.NotContains(t, buildRepoList("my-org", 2), MintProbeHostRepoSuffix)
 }
 
 func TestSetupCFMintPEMDir_NoPEMVars(t *testing.T) {

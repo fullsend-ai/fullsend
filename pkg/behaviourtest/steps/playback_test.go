@@ -179,6 +179,119 @@ func TestThenAgentIsTriggered_PropagatesDriverError(t *testing.T) {
 	assert.Contains(t, err.Error(), "API failure")
 }
 
+func TestThenAgentIsTriggered_RetriesTransientNotFound(t *testing.T) {
+	// Regression (#8123): an intermittent jobs-endpoint 404 right after
+	// dispatch is retried, not failed.
+	speedUpDispatchVisibilityRetries(t)
+	calls := 0
+	w := &world.World{
+		ScenarioStart: time.Now(),
+		CI: &mockCIDriver{countFn: func(context.Context, string, string, string, time.Time) (int, error) {
+			calls++
+			if calls == 1 {
+				return 0, fmt.Errorf("list workflow run jobs page 1: %w", forge.ErrNotFound)
+			}
+			return 1, nil
+		}},
+	}
+	require.NoError(t, thenAgentIsTriggered(w, "triage"))
+	assert.Equal(t, 2, calls)
+}
+
+func TestThenAgentIsTriggered_RetriesNotFoundThenZero(t *testing.T) {
+	speedUpDispatchVisibilityRetries(t)
+	calls := 0
+	w := &world.World{
+		ScenarioStart: time.Now(),
+		CI: &mockCIDriver{countFn: func(context.Context, string, string, string, time.Time) (int, error) {
+			calls++
+			switch calls {
+			case 1:
+				return 0, fmt.Errorf("list workflow run jobs page 1: %w", forge.ErrNotFound)
+			case 2:
+				return 0, nil
+			default:
+				return 1, nil
+			}
+		}},
+	}
+	require.NoError(t, thenAgentIsTriggered(w, "triage"))
+	assert.Equal(t, 3, calls)
+}
+
+func TestThenAgentIsTriggered_PersistentNotFoundExhaustsRetries(t *testing.T) {
+	speedUpDispatchVisibilityRetries(t)
+	calls := 0
+	w := &world.World{
+		ScenarioStart: time.Now(),
+		CI: &mockCIDriver{countFn: func(context.Context, string, string, string, time.Time) (int, error) {
+			calls++
+			return 0, fmt.Errorf("list workflow run jobs page 1: %w", forge.ErrNotFound)
+		}},
+	}
+	err := thenAgentIsTriggered(w, "triage")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFound)
+	assert.Contains(t, err.Error(), fmt.Sprintf(`checking "triage" agent dispatch (attempt %d/%d)`, dispatchVisibilityAttempts, dispatchVisibilityAttempts))
+	assert.Equal(t, dispatchVisibilityAttempts, calls, "should exhaust the full retry budget before giving up")
+}
+
+func TestThenAgentIsTriggered_PersistentListingNotFoundExhaustsRetries(t *testing.T) {
+	// A not-found from the run listing (missing workflow or repo) is
+	// retried like a jobs-endpoint 404 and surfaces after the full budget.
+	speedUpDispatchVisibilityRetries(t)
+	calls := 0
+	w := &world.World{
+		ScenarioStart: time.Now(),
+		CI: &mockCIDriver{countFn: func(context.Context, string, string, string, time.Time) (int, error) {
+			calls++
+			return 0, fmt.Errorf("list workflow runs: %w", forge.ErrNotFound)
+		}},
+	}
+	err := thenAgentIsTriggered(w, "triage")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFound)
+	assert.Contains(t, err.Error(), "list workflow runs")
+	assert.Equal(t, dispatchVisibilityAttempts, calls)
+}
+
+func TestThenAgentIsTriggered_NotFoundThenZeroKeepsNotFound(t *testing.T) {
+	speedUpDispatchVisibilityRetries(t)
+	calls := 0
+	w := &world.World{
+		ScenarioStart: time.Now(),
+		CI: &mockCIDriver{countFn: func(context.Context, string, string, string, time.Time) (int, error) {
+			calls++
+			if calls == 1 {
+				return 0, fmt.Errorf("list workflow run jobs page 1: %w", forge.ErrNotFound)
+			}
+			return 0, nil
+		}},
+	}
+	err := thenAgentIsTriggered(w, "triage")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFound, "an earlier 404 must stay in the error chain")
+	assert.Contains(t, err.Error(), "was not dispatched since")
+	assert.Contains(t, err.Error(), fmt.Sprintf("(attempt 1/%d)", dispatchVisibilityAttempts))
+	assert.Equal(t, dispatchVisibilityAttempts, calls)
+}
+
+func TestThenAgentIsTriggered_NonRetryableErrorFailsImmediately(t *testing.T) {
+	speedUpDispatchVisibilityRetries(t)
+	calls := 0
+	w := &world.World{
+		ScenarioStart: time.Now(),
+		CI: &mockCIDriver{countFn: func(context.Context, string, string, string, time.Time) (int, error) {
+			calls++
+			return 0, fmt.Errorf("list workflow run jobs page 1: %w", forge.ErrForbidden)
+		}},
+	}
+	err := thenAgentIsTriggered(w, "triage")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrForbidden)
+	assert.Equal(t, 1, calls, "non-not-found errors must not be retried")
+}
+
 // --- thenAgentCompletes ---
 
 func TestThenAgentCompletes_RecordsConsumedRunAndAdvancesScenarioStart(t *testing.T) {

@@ -193,6 +193,25 @@ func TestRendererErrorEvent(t *testing.T) {
 	}
 }
 
+func TestRendererModelFallbackEvent(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(ModelFallbackEvent{From: "claude-opus-4-5", To: "claude-haiku-5-5", Trigger: "last_resort"})
+
+	output := buf.String()
+	if !strings.Contains(output, "model claude-opus-4-5 is not available (Claude Code: last_resort); falling back to claude-haiku-5-5") {
+		t.Errorf("expected the fallback warning, got: %s", output)
+	}
+
+	buf.Reset()
+	r.Handle(ModelFallbackEvent{From: "a::b", To: "c\x1b[31m", Trigger: ""})
+	output = buf.String()
+	if !strings.Contains(output, "model a: :b is not available (Claude Code); falling back to c") || strings.Contains(output, "\x1b") {
+		t.Errorf("expected a sanitized fallback warning with no trigger, got: %q", output)
+	}
+}
+
 func TestRendererRetryEvent(t *testing.T) {
 	var buf bytes.Buffer
 	r := newTestRenderer(&buf)

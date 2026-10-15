@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -462,6 +463,21 @@ func GitLabWebhookNeedsProvisioning(ctx context.Context, client forge.Client, ba
 	if err != nil {
 		return true, err
 	}
+	// Unfinished generation work is work even when the webhook and credentials
+	// look fully provisioned: a verified generation still awaiting its cutover
+	// (the final generation-state write failed, or the cutover was contained),
+	// or one left elevated by an interrupted handoff, is finished only by
+	// running the install step.
+	gen, genErr := loadPollerGenerations(ctx, client, owner, repo)
+	if genErr != nil {
+		return true, genErr
+	}
+	if p := gen.Pending; p != nil {
+		switch p.Phase {
+		case PollerPhaseVerified, PollerPhaseElevated, PollerPhaseTriggerRequested:
+			return true, nil
+		}
+	}
 	if len(st.hooks) > 0 || len(st.triggers) > 0 {
 		// Live managed credentials with an unmet or unverifiable safety
 		// invariant need the revoking reconciliation even when they look
@@ -749,49 +765,11 @@ func gitlabTriggerSafetyProblem(ctx context.Context, client forge.Client, owner,
 			return "webhook fast-path deferred: predefined project variable override: " + key, nil
 		}
 	}
-	// Instance-level variables (self-managed GitLab) are inherited by every
-	// project and can redefine the predefined variables the evaluator treats
-	// as fixed. Without administrator access they cannot be inspected, so
-	// the overrides cannot be ruled out.
-	instanceVars, instanceErr := client.ListInstanceVariables(ctx)
-	if forge.IsForbidden(instanceErr) {
-		return "webhook fast-path deferred: instance-level CI/CD variables cannot be inspected without administrator access, so predefined variable overrides cannot be ruled out and the managed credentials are revoked", nil
-	}
-	if instanceErr != nil {
-		return "", safeAPIError("checking instance variable overrides", instanceErr)
-	}
-	for _, variable := range instanceVars {
-		if _, reserved := env[variable.Name]; reserved {
-			return "webhook fast-path deferred: predefined instance variable override: " + variable.Name, nil
-		}
-	}
-	// owner may contain only the first path component for nested projects.
-	namespace := owner
-	if slash := strings.LastIndex(repo, "/"); slash >= 0 {
-		namespace += "/" + repo[:slash]
-	}
-	parts := strings.Split(namespace, "/")
-	for i := range parts {
-		group := strings.Join(parts[:i+1], "/")
-		inherited, groupErr := client.ListOrgVariables(ctx, group)
-		if forge.IsNotFound(groupErr) && i == 0 && len(parts) == 1 {
-			continue
-		} // personal namespace
-		if forge.IsForbidden(groupErr) {
-			// Listing group variables needs group Owner access, which a
-			// project Maintainer lacks. That is a deferral, not an install
-			// failure: the overrides cannot be ruled out, so the fast path
-			// stays off and any managed credential is revoked.
-			return fmt.Sprintf("webhook fast-path deferred: group variables of %q cannot be inspected without group Owner access, so predefined variable overrides cannot be ruled out and the managed credentials are revoked", group), nil
-		}
-		if groupErr != nil {
-			return "", safeAPIError("checking inherited group variable overrides", groupErr)
-		}
-		for _, variable := range inherited {
-			if _, reserved := env[variable.Name]; reserved {
-				return "webhook fast-path deferred: predefined group variable override: " + variable.Name, nil
-			}
-		}
+	// Instance-level and group variables can redefine the same predefined
+	// variables; scopes this credential cannot read are unverified and
+	// skipped (see gitlabInheritedVariableOverrideProblem).
+	if problem, err := gitlabInheritedVariableOverrideProblem(ctx, client, owner, repo, env); problem != "" || err != nil {
+		return problem, err
 	}
 	// A trigger pipeline must run only the dispatcher. Other root jobs, or
 	// jobs from other includes, would run with the protected credentials
@@ -884,14 +862,14 @@ func gitlabTriggerOwnerProblem(ctx context.Context, client forge.Client, owner, 
 // to the user with the given ID and project access level, through a role
 // grant at or below that level or an explicit per-user grant. Group grants
 // are not resolved, so a rule that reaches the user only through a group is
-// treated as not admitting them.
+// treated as not admitting them. A deploy-key grant is not a role grant.
 func protectedRuleAdmitsUser(rule forge.ProtectedBranchRule, userID int64, level int) bool {
 	grants := append(append([]forge.ProtectedBranchAccess(nil), rule.PushAccessLevels...), rule.MergeAccessLevels...)
 	for _, g := range grants {
 		if g.UserID != 0 && int64(g.UserID) == userID {
 			return true
 		}
-		if g.UserID == 0 && g.GroupID == 0 && g.AccessLevel > 0 && g.AccessLevel <= level {
+		if g.UserID == 0 && g.GroupID == 0 && g.DeployKeyID == 0 && g.AccessLevel > 0 && g.AccessLevel <= level {
 			return true
 		}
 	}
@@ -1066,19 +1044,56 @@ func reconcileGitLabTriggerSafety(ctx context.Context, client forge.Client, owne
 // nothing — it never provisions. Callers use it for repositories whose
 // installation or convergence failed, where an existing credential must not
 // outlive a weakened restriction but provisioning must not proceed.
+//
+// It runs under the project lease (see LockGitLabProject) and fails closed,
+// changing nothing, when the lease cannot be taken.
 func ReconcileGitLabWebhookSafety(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) (GitLabWebhookResult, error) {
+	return ReconcileGitLabWebhookSafetyWithTriggerOwner(ctx, client, nil, owner, repo, dryRun)
+}
+
+// ReconcileGitLabWebhookSafetyWithTriggerOwner is ReconcileGitLabWebhookSafety
+// that also returns a positively identified managed Poller left above
+// Developer (for example by an interrupted install) to Developer access
+// before the safety checks run, and contains its credential when that
+// cannot be verified. Without a triggerOwner the Poller is not touched.
+func ReconcileGitLabWebhookSafetyWithTriggerOwner(ctx context.Context, client forge.Client, triggerOwner GitLabTriggerOwner, owner, repo string, dryRun bool) (res GitLabWebhookResult, err error) {
+	// One installer at a time per project, across processes: reconciliation,
+	// trigger and credential inventory, elevation, minting, and publication
+	// must not interleave with another operation.
+	release, lockErr := LockGitLabProject(ctx, client, owner, repo, dryRun)
+	if lockErr != nil {
+		return GitLabWebhookResult{Action: "deferred"}, lockErr
+	}
+	defer release(&err)
+	var pollerRes GitLabWebhookResult
+	if !dryRun {
+		var pollerErr error
+		pollerRes, pollerErr = reconcilePollerElevation(ctx, client, triggerOwner, owner, repo)
+		if pollerErr != nil {
+			return reconcileSafetyAfterPollerFailure(ctx, client, owner, repo, pollerRes, pollerErr)
+		}
+	}
+	prefix := func(res GitLabWebhookResult) GitLabWebhookResult {
+		res.Details = append(pollerRes.Details[:len(pollerRes.Details):len(pollerRes.Details)], res.Details...)
+		if len(pollerRes.Details) > 0 && res.Action == "" {
+			res.Action = "update"
+		}
+		return res
+	}
 	project, err := client.GetRepo(ctx, owner, repo)
 	if err != nil {
-		return failClosedOnProjectLookup(ctx, client, owner, repo, dryRun, err)
+		res, lookupErr := failClosedOnProjectLookup(ctx, client, owner, repo, dryRun, err)
+		return prefix(res), lookupErr
 	}
 	res, handled, err := reconcileGitLabTriggerSafety(ctx, client, owner, repo, project.DefaultBranch, dryRun)
 	if !handled {
+		res = prefix(res)
 		if len(res.Details) > 0 {
 			return res, nil
 		}
 		return GitLabWebhookResult{Action: "none"}, nil
 	}
-	return res, err
+	return prefix(res), err
 }
 
 // failClosedOnProjectLookup handles a failed project lookup. The safety
@@ -1122,7 +1137,8 @@ func revokeGitLabWebhookFastPath(ctx context.Context, client forge.Client, owner
 	if dryRun {
 		return []string{"Would revoke any Fullsend-managed pipeline trigger token and delete any Fullsend-owned project webhook"}, nil
 	}
-	td, err := TeardownGitLabWebhookFastPath(ctx, client, owner, repo)
+	// Every caller already holds the project lease, which is not reentrant.
+	td, err := TeardownGitLabWebhookFastPathLocked(ctx, client, owner, repo)
 	var details []string
 	if td.TriggersRevoked > 0 {
 		details = append(details, fmt.Sprintf("Revoked %d Fullsend-managed pipeline trigger token(s)", td.TriggersRevoked))
@@ -1574,16 +1590,96 @@ func generateGitLabWebhookSecret() (string, error) {
 // Nothing is changed while a readiness gate is unmet (Action
 // "deferred"); see gitlabWebhookReadiness. dryRun performs the same
 // probes and gates and reports the planned changes without making them.
-func EnsureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseURL, owner, repo string, rotate, dryRun bool) (GitLabWebhookResult, error) {
+//
+// The whole transaction runs under the project lease (see
+// LockGitLabProject), so installers in other processes cannot interleave
+// inventory, minting, publication, or revocation on the same project. When
+// the lease cannot be taken nothing is changed (Action "deferred") and the
+// error is returned.
+func EnsureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseURL, owner, repo string, rotate, dryRun bool) (res GitLabWebhookResult, err error) {
+	release, lockErr := LockGitLabProject(ctx, client, owner, repo, dryRun)
+	if lockErr != nil {
+		return GitLabWebhookResult{Action: "deferred"}, lockErr
+	}
 	red := &credentialRedactor{}
-	res, err := ensureGitLabWebhookFastPath(ctx, client, baseURL, owner, repo, rotate, dryRun, red)
-	return res, red.redact(err)
+	defer func() {
+		err = red.redact(err)
+		release(&err)
+	}()
+	return ensureGitLabWebhookFastPath(ctx, client, nil, nil, baseURL, owner, repo, rotate, dryRun, red)
 }
 
-func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseURL, owner, repo string, rotate, dryRun bool, red *credentialRedactor) (GitLabWebhookResult, error) {
+// deferGitLabTriggerReplacement cleans up after a trigger replacement
+// was refused: it revokes the rejected minted token (nil when none was
+// minted), and either preserves a compliant active fast path while
+// revoking superseded triggers, or tears the managed fast path down when
+// nothing compliant would back it. Details are appended to res.
+func deferGitLabTriggerReplacement(ctx context.Context, client forge.Client, res *GitLabWebhookResult, st gitlabWebhookState, baseURL, owner, repo string, activeID int64, minted *forge.PipelineTriggerToken) error {
+	// Compensating cleanup runs on a bounded context detached from
+	// cancellation so a canceled operation cannot leave the rejected
+	// trigger token live.
+	ctx, cancelCleanup := gitlabCleanupContext(ctx)
+	defer cancelCleanup()
+	var cleanupErrs []error
+	if minted != nil {
+		if revokeErr := client.RevokePipelineTriggerToken(ctx, owner, repo, minted.ID); revokeErr != nil && !forge.IsNotFound(revokeErr) {
+			cleanupErrs = append(cleanupErrs, safeAPIError(fmt.Sprintf("revoking rejected pipeline trigger token ID %d", minted.ID), revokeErr))
+		} else {
+			res.Details = append(res.Details, fmt.Sprintf("Revoked rejected pipeline trigger token (ID %d)", minted.ID))
+		}
+	}
+	// Existing managed triggers already passed the safety reconciliation,
+	// so a compliant working fast path is preserved and only the rejected
+	// replacement is revoked, whether or not superseded triggers also await
+	// cleanup. With no compliant active configuration to preserve, tear down
+	// any managed webhook as well, since nothing valid would back it.
+	if !st.activeCompliant(baseURL) {
+		details, teardownErr := revokeGitLabWebhookFastPath(ctx, client, owner, repo, false)
+		res.Details = append(res.Details, details...)
+		cleanupErrs = append(cleanupErrs, safeAPIError("tearing down the managed webhook fast path", teardownErr))
+		return errors.Join(cleanupErrs...)
+	}
+	res.Details = append(res.Details, "Preserved the existing compliant pipeline trigger token and webhook")
+	// Superseded triggers are not part of the working configuration; clean
+	// them up separately.
+	for _, old := range st.triggers {
+		if old.ID == activeID {
+			continue
+		}
+		if revokeErr := client.RevokePipelineTriggerToken(ctx, owner, repo, old.ID); revokeErr != nil && !forge.IsNotFound(revokeErr) {
+			cleanupErrs = append(cleanupErrs, safeAPIError(fmt.Sprintf("revoking superseded pipeline trigger token ID %d", old.ID), revokeErr))
+			continue
+		}
+		res.Details = append(res.Details, fmt.Sprintf("Revoked superseded pipeline trigger token (ID %d)", old.ID))
+	}
+	return errors.Join(cleanupErrs...)
+}
+
+// ensureGitLabWebhookFastPath converges the fast path. lease is the project
+// lease capability the caller holds for non-dry runs, or nil; a trigger owner
+// that implements GitLabPollerHandoff mints through a fresh Poller generation
+// only when the lease is held.
+func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, triggerOwner GitLabTriggerOwner, lease *GitLabProjectLease, baseURL, owner, repo string, rotate, dryRun bool, red *credentialRedactor) (GitLabWebhookResult, error) {
+	// A managed Poller left above Developer (for example by an interrupted
+	// rotation) is corrected before the safety and readiness early returns
+	// below, so none of them can leave the installed Poller identity
+	// elevated. Dry runs change nothing.
+	var pollerRes GitLabWebhookResult
+	if !dryRun {
+		var pollerErr error
+		pollerRes, pollerErr = reconcilePollerElevation(ctx, client, triggerOwner, owner, repo)
+		if pollerErr != nil {
+			// The Poller could not be reconciled, but the managed triggers and
+			// webhook are checked and, when unsafe, revoked independently;
+			// nothing is provisioned.
+			return reconcileSafetyAfterPollerFailure(ctx, client, owner, repo, pollerRes, pollerErr)
+		}
+	}
 	project, err := client.GetRepo(ctx, owner, repo)
 	if err != nil {
-		return failClosedOnProjectLookup(ctx, client, owner, repo, dryRun, err)
+		res, lookupErr := failClosedOnProjectLookup(ctx, client, owner, repo, dryRun, err)
+		res.Details = append(pollerRes.Details[:len(pollerRes.Details):len(pollerRes.Details)], res.Details...)
+		return res, lookupErr
 	}
 	// Safety comes before readiness and does not depend on it: when the
 	// trigger-token invariants fail or cannot be verified, existing managed
@@ -1593,9 +1689,10 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseU
 	// the readiness deferrals below; carried lists what that revoked.
 	safety, handled, err := reconcileGitLabTriggerSafety(ctx, client, owner, repo, project.DefaultBranch, dryRun)
 	if handled {
+		safety.Details = append(pollerRes.Details[:len(pollerRes.Details):len(pollerRes.Details)], safety.Details...)
 		return safety, err
 	}
-	carried := safety.Details
+	carried := append(pollerRes.Details[:len(pollerRes.Details):len(pollerRes.Details)], safety.Details...)
 	reason, err := gitlabWebhookReadiness(ctx, client, owner, repo, project.DefaultBranch)
 	if err != nil {
 		return GitLabWebhookResult{Details: carried}, err
@@ -1614,7 +1711,47 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseU
 	if err != nil {
 		return GitLabWebhookResult{}, err
 	}
+	// An interrupted final cutover is finished before anything else decides
+	// whether the fast path is provisioned: the webhook and the replacement's
+	// credential can already be live while the generation document still names
+	// the old Poller. Dry runs change nothing.
+	if triggerOwner != nil && !dryRun && lease != nil {
+		finDetails, finErr := finalizePendingPollerCutover(ctx, client, triggerOwner, lease, owner, repo, st.activeTriggerID(baseURL), st.triggers, red)
+		carried = append(carried[:len(carried):len(carried)], finDetails...)
+		pollerRes.Details = append(pollerRes.Details[:len(pollerRes.Details):len(pollerRes.Details)], finDetails...)
+		if finErr != nil {
+			return GitLabWebhookResult{Action: "update", Details: carried}, finErr
+		}
+	}
+	// Reconcile trigger ownership after an unflagged legacy-role replacement.
+	// A compliant trigger of the previous Developer identity is safe to retain
+	// while replacement is deferred, but it must not suppress Poller cutover.
+	if triggerOwner != nil && st.activeTriggerID(baseURL) != 0 {
+		uid, lookupErr := triggerOwner.PollerUserID(ctx, owner, repo)
+		if lookupErr != nil && !forge.IsNotFound(lookupErr) {
+			return GitLabWebhookResult{}, safeAPIError("resolving the Poller for trigger ownership reconciliation", lookupErr)
+		}
+		if lookupErr == nil {
+			for _, trigger := range st.triggers {
+				if trigger.ID == st.activeTriggerID(baseURL) && trigger.OwnerID != uid {
+					rotate = true
+				}
+			}
+		}
+	}
 	if !rotate && st.provisioned(baseURL) {
+		if triggerOwner != nil && !dryRun {
+			pending, pendErr := unfinishedPollerCutoverDetail(ctx, client, triggerOwner, owner, repo)
+			if pendErr != nil {
+				return GitLabWebhookResult{Action: "deferred", Details: carried}, pendErr
+			}
+			if pending != "" {
+				return GitLabWebhookResult{Action: "deferred", Details: append(carried[:len(carried):len(carried)], pending)}, nil
+			}
+		}
+		if len(pollerRes.Details) > 0 {
+			return GitLabWebhookResult{Action: "update", Details: carried}, nil
+		}
 		return GitLabWebhookResult{Action: "none"}, nil
 	}
 
@@ -1633,6 +1770,14 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseU
 	token := st.triggerToken
 	var stale []forge.PipelineTriggerToken
 	tokenChanged := false
+	// cutover makes the Poller generation that owns the new trigger the
+	// runtime Poller. It runs only once the trigger secret and the webhook are
+	// published, so a failed publication never leaves a recorded cutover that
+	// a rerun cannot finish wiring.
+	var cutover func(ctx context.Context) ([]string, error)
+	// beginPublish records, before the trigger secret is stored, that the
+	// minted trigger's credential may be distributed.
+	var beginPublish func(ctx context.Context) error
 	activeID := st.activeTriggerID(baseURL)
 	if rotate || activeID == 0 {
 		stale = st.triggers
@@ -1661,59 +1806,98 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseU
 				}
 				stale = nil
 			}
-			minted, mintErr := client.CreatePipelineTriggerToken(ctx, owner, repo, GitLabWebhookTriggerDescription)
-			if mintErr != nil {
-				// The response may carry the new token, which is not known
-				// to the redactor until a successful decode.
-				return res, safeAPIError("creating pipeline trigger token", mintErr)
+			var minted *forge.PipelineTriggerToken
+			if triggerOwner != nil {
+				// Prefer a token owned by the Poller service account. A trigger
+				// owner that can hand off to a fresh Poller generation mints as
+				// that never-exposed identity and never raises the current
+				// Poller (#8243); otherwise the current Poller is raised to
+				// temporary Maintainer access only when request quiescence can
+				// be verified (#8083).
+				var pm pollerMint
+				var pmErr error
+				if h, ok := triggerOwner.(GitLabPollerHandoff); ok && lease != nil {
+					pm, pmErr = prepareHandoffPollerOwnedTrigger(ctx, client, triggerOwner, h, lease, owner, repo, activeID, red)
+				} else {
+					pm, pmErr = mintPollerOwnedTrigger(ctx, client, triggerOwner, owner, repo, red)
+				}
+				res.Details = append(res.Details, pm.details...)
+				if pmErr != nil {
+					var restoreErr *gitlabPollerRestoreError
+					if errors.As(pmErr, &restoreErr) {
+						// The Poller may still hold Maintainer access, so no
+						// trigger it owns may stay live: disable the managed
+						// fast path entirely and contain the Poller credential
+						// itself; polling and dispatch stay unavailable until
+						// install provisions a replacement credential.
+						res.Action = "deferred"
+						return res, errors.Join(pmErr, failClosedPoller(ctx, client, triggerOwner, owner, repo, &res, restoreErr))
+					}
+					if pm.minted != nil {
+						// The trigger was created but the replacement runtime
+						// credential could not be published, so nothing wires
+						// the trigger in: revoke it on a detached bounded
+						// context rather than leave a live unwired credential.
+						revokeCtx, cancelRevoke := gitlabCleanupContext(ctx)
+						revokeErr := client.RevokePipelineTriggerToken(revokeCtx, owner, repo, pm.minted.ID)
+						cancelRevoke()
+						if revokeErr != nil && !forge.IsNotFound(revokeErr) {
+							pmErr = errors.Join(pmErr, safeAPIError(fmt.Sprintf("revoking the unwired Poller-owned pipeline trigger token (ID %d)", pm.minted.ID), revokeErr))
+						}
+					}
+					return res, pmErr
+				}
+				// Keep the cached state in step with what was revoked, so a
+				// later cleanup does not treat a revoked trigger as live.
+				st.triggers = dropRevokedTriggers(st.triggers, pm.revokedIDs)
+				stale = dropRevokedTriggers(stale, pm.revokedIDs)
+				if pm.deferReason != "" {
+					res.Action = "deferred"
+					res.Details = append(res.Details, pm.deferReason)
+					if activeID != 0 && slices.Contains(pm.revokedIDs, activeID) {
+						// The webhook's active trigger was revoked before the
+						// Poller was raised, so nothing compliant remains to
+						// preserve: remove the managed fast path. A revoked
+						// superseded trigger leaves a compliant active one
+						// intact.
+						teardownCtx, cancelTeardown := gitlabCleanupContext(ctx)
+						defer cancelTeardown()
+						details, teardownErr := revokeGitLabWebhookFastPath(teardownCtx, client, owner, repo, false)
+						res.Details = append(res.Details, details...)
+						return res, teardownErr
+					}
+					deferErr := deferGitLabTriggerReplacement(ctx, client, &res, st, baseURL, owner, repo, activeID, nil)
+					return res, deferErr
+				}
+				minted = pm.minted
+				cutover = pm.cutover
+				beginPublish = pm.beginPublish
 			}
-			if minted == nil || minted.Token == "" {
-				return res, errors.New("creating pipeline trigger token: GitLab returned no token value")
+			if minted == nil {
+				var mintErr error
+				minted, mintErr = client.CreatePipelineTriggerToken(ctx, owner, repo, GitLabWebhookTriggerDescription)
+				if mintErr != nil {
+					// The response may carry the new token, which is not known
+					// to the redactor until a successful decode.
+					return res, safeAPIError("creating pipeline trigger token", mintErr)
+				}
+				if minted == nil || minted.Token == "" {
+					return res, errors.New("creating pipeline trigger token: GitLab returned no token value")
+				}
+				red.add(minted.Token)
 			}
-			red.add(minted.Token)
-			// The token acts as its creator, which here is the install-time
-			// Maintainer-capable identity. Verify its owner's effective
-			// role before the token is stored or wired into a webhook, and
-			// fail closed: revoke it rather than leave a credential above
-			// Developer.
+			// The token acts as its creator: the Poller identity, or else the
+			// install-time Maintainer-capable identity. Verify its owner's
+			// effective role before the token is stored or wired into a
+			// webhook, and fail closed: revoke it rather than leave a
+			// credential above Developer.
 			problem, ownerErr := gitlabTriggerOwnerProblem(ctx, client, owner, repo, project.DefaultBranch, []forge.PipelineTriggerToken{*minted})
 			if problem != "" || ownerErr != nil {
 				res.Action = "deferred"
 				if problem != "" {
 					res.Details = append(res.Details, problem)
 				}
-				var cleanupErrs []error
-				if revokeErr := client.RevokePipelineTriggerToken(ctx, owner, repo, minted.ID); revokeErr != nil && !forge.IsNotFound(revokeErr) {
-					cleanupErrs = append(cleanupErrs, fmt.Errorf("revoking rejected pipeline trigger token ID %d: %w", minted.ID, revokeErr))
-				} else {
-					res.Details = append(res.Details, fmt.Sprintf("Revoked rejected pipeline trigger token (ID %d)", minted.ID))
-				}
-				// Existing managed triggers already passed the safety
-				// reconciliation above, so a compliant working fast path is
-				// preserved and only the rejected replacement is revoked,
-				// whether or not superseded triggers also await cleanup. With
-				// no compliant active configuration to preserve, tear down any
-				// managed webhook as well, since nothing valid would back it.
-				if !st.activeCompliant(baseURL) {
-					details, teardownErr := revokeGitLabWebhookFastPath(ctx, client, owner, repo, false)
-					res.Details = append(res.Details, details...)
-					cleanupErrs = append(cleanupErrs, teardownErr)
-				} else {
-					res.Details = append(res.Details, "Preserved the existing compliant pipeline trigger token and webhook")
-					// Superseded triggers are not part of the working
-					// configuration; clean them up separately.
-					for _, old := range st.triggers {
-						if old.ID == activeID {
-							continue
-						}
-						if revokeErr := client.RevokePipelineTriggerToken(ctx, owner, repo, old.ID); revokeErr != nil && !forge.IsNotFound(revokeErr) {
-							cleanupErrs = append(cleanupErrs, fmt.Errorf("revoking superseded pipeline trigger token ID %d: %w", old.ID, revokeErr))
-							continue
-						}
-						res.Details = append(res.Details, fmt.Sprintf("Revoked superseded pipeline trigger token (ID %d)", old.ID))
-					}
-				}
-				cleanupErr := errors.Join(cleanupErrs...)
+				cleanupErr := deferGitLabTriggerReplacement(ctx, client, &res, st, baseURL, owner, repo, activeID, minted)
 				// No compliant creator is available: the Developer runtime
 				// ceiling stays in force and the fast-path is deferred. That
 				// is the normal outcome of a Maintainer-backed installation,
@@ -1721,9 +1905,25 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseU
 				// cleanup failures are still reported.
 				return res, errors.Join(ownerErr, cleanupErr)
 			}
+			if beginPublish != nil {
+				// Record the possible distribution before the secret write:
+				// when the record cannot be made the secret is not written,
+				// so the trigger was never distributed and is revoked.
+				if markErr := beginPublish(ctx); markErr != nil {
+					markCtx, cancelMark := gitlabCleanupContext(ctx)
+					defer cancelMark()
+					if revokeErr := client.RevokePipelineTriggerToken(markCtx, owner, repo, minted.ID); revokeErr != nil && !forge.IsNotFound(revokeErr) {
+						return res, errors.Join(markErr, safeAPIError(fmt.Sprintf("revoking the unpublished trigger token ID %d", minted.ID), revokeErr))
+					}
+					return res, markErr
+				}
+			}
 			if storeErr := client.CreateRepoSecret(ctx, owner, repo, forge.SecretTriggerToken, minted.Token); storeErr != nil {
-				// Do not leave an orphaned trigger token behind.
-				if revokeErr := client.RevokePipelineTriggerToken(ctx, owner, repo, minted.ID); revokeErr != nil {
+				// Do not leave an orphaned trigger token behind, even when
+				// the operation context was canceled.
+				cleanupCtx, cancelStoreCleanup := gitlabCleanupContext(ctx)
+				defer cancelStoreCleanup()
+				if revokeErr := client.RevokePipelineTriggerToken(cleanupCtx, owner, repo, minted.ID); revokeErr != nil {
 					return res, fmt.Errorf("storing %s: %w (also failed to revoke the new trigger token ID %d: %v)", forge.SecretTriggerToken, storeErr, minted.ID, revokeErr)
 				}
 				return res, fmt.Errorf("storing %s: %w", forge.SecretTriggerToken, storeErr)
@@ -1851,7 +2051,40 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseU
 	// run converges from whatever state the other writer left.
 	if tokenChanged && !dryRun {
 		if raceErr := verifyGitLabWebhookActiveToken(ctx, client, baseURL, owner, repo, st.target.projectID, token, activeID); raceErr != nil {
+			if errors.Is(raceErr, errGitLabTriggerOwnerElevated) || errors.Is(raceErr, errGitLabTriggerOwnerBelowDeveloper) || errors.Is(raceErr, errGitLabTriggerOwnerUnverified) {
+				// The published trigger's owner is above or below Developer
+				// or could not be verified: fail closed rather than leave a
+				// possibly privileged or unusable bearer live.
+				res.Action = "deferred"
+				// The published trigger's ID is already known, so revoke it
+				// directly on its own bounded context. Inventory-based
+				// teardown rediscovers triggers by listing and would skip
+				// the revocation entirely while listing keeps failing.
+				var activeRevokeErr error
+				if activeID != 0 {
+					revokeCtx, cancelRevoke := gitlabCleanupContext(ctx)
+					defer cancelRevoke()
+					if revokeErr := client.RevokePipelineTriggerToken(revokeCtx, owner, repo, activeID); revokeErr != nil && !forge.IsNotFound(revokeErr) {
+						activeRevokeErr = safeAPIError(fmt.Sprintf("revoking published pipeline trigger token ID %d", activeID), revokeErr)
+					} else {
+						res.Details = append(res.Details, fmt.Sprintf("Revoked published pipeline trigger token (ID %d) whose owner could not be verified at Developer access", activeID))
+					}
+				}
+				teardownCtx, cancelTeardown := gitlabCleanupContext(ctx)
+				defer cancelTeardown()
+				details, teardownErr := revokeGitLabWebhookFastPath(teardownCtx, client, owner, repo, false)
+				res.Details = append(res.Details, details...)
+				return res, errors.Join(raceErr, activeRevokeErr, safeAPIError("tearing down the managed fast path", teardownErr))
+			}
 			return res, raceErr
+		}
+	}
+
+	if cutover != nil && !dryRun {
+		cutDetails, cutErr := cutover(ctx)
+		res.Details = append(res.Details, cutDetails...)
+		if cutErr != nil {
+			return res, cutErr
 		}
 	}
 
@@ -1873,6 +2106,60 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseU
 	return res, errors.Join(revokeErrs...)
 }
 
+// errGitLabTriggerOwnerElevated marks a published trigger whose owner holds
+// more than Developer access when re-verified after webhook publication.
+var errGitLabTriggerOwnerElevated = errors.New("its owner has more than Developer access after the webhook was published, so the managed fast path was disabled; rerun repos install to converge")
+
+// errGitLabTriggerOwnerBelowDeveloper marks a published trigger whose owner
+// lost the Developer access trigger pipelines need after webhook publication.
+var errGitLabTriggerOwnerBelowDeveloper = errors.New("its owner has less than Developer access after the webhook was published, so the managed fast path was disabled; rerun repos install to converge")
+
+// errGitLabTriggerOwnerUnverified marks a published trigger whose owner's
+// current access could not be established after webhook publication (GitLab
+// omitted the owner, or the effective-access lookup failed).
+var errGitLabTriggerOwnerUnverified = errors.New("its owner's current access could not be verified after the webhook was published, so the managed fast path was disabled; rerun repos install to converge")
+
+// dropRevokedTriggers returns triggers without the revoked IDs.
+func dropRevokedTriggers(triggers []forge.PipelineTriggerToken, revoked []int64) []forge.PipelineTriggerToken {
+	if len(revoked) == 0 {
+		return triggers
+	}
+	kept := make([]forge.PipelineTriggerToken, 0, len(triggers))
+	for _, t := range triggers {
+		if !slices.Contains(revoked, t.ID) {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
+
+// reconcileSafetyAfterPollerFailure runs the trigger-safety reconciliation
+// when the Poller itself could not be reconciled (for example its credential
+// returned 401), so an unsafe managed trigger or webhook is still revoked by
+// the administrative client rather than left live. It never provisions.
+// The Poller error is preserved and joined with any safety error. The
+// safety work runs on a bounded context detached from cancellation.
+func reconcileSafetyAfterPollerFailure(ctx context.Context, client forge.Client, owner, repo string, pollerRes GitLabWebhookResult, pollerErr error) (GitLabWebhookResult, error) {
+	cleanupCtx, cancel := gitlabCleanupContext(ctx)
+	defer cancel()
+	var res GitLabWebhookResult
+	var safetyErr error
+	project, getErr := client.GetRepo(cleanupCtx, owner, repo)
+	if getErr != nil {
+		res, safetyErr = failClosedOnProjectLookup(cleanupCtx, client, owner, repo, false, getErr)
+	} else {
+		res, _, safetyErr = reconcileGitLabTriggerSafety(cleanupCtx, client, owner, repo, project.DefaultBranch, false)
+	}
+	if res.Action == "" || res.Action == "none" {
+		res.Action = pollerRes.Action
+	}
+	if res.Action == "" {
+		res.Action = "deferred"
+	}
+	res.Details = append(pollerRes.Details[:len(pollerRes.Details):len(pollerRes.Details)], res.Details...)
+	return res, errors.Join(pollerErr, safetyErr)
+}
+
 // verifyGitLabWebhookActiveToken re-reads the live state after this run
 // wrote the webhook and reports an error when a concurrent run replaced
 // the webhook's active trigger token or revoked this run's token. Without
@@ -1883,9 +2170,12 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, baseU
 // next convergence, which rejects a webhook whose active token is not a
 // live managed trigger.
 func verifyGitLabWebhookActiveToken(ctx context.Context, client forge.Client, baseURL, owner, repo string, projectID int64, token string, activeID int64) error {
+	// A failed listing leaves the published bearer and its owner's current
+	// access unverified, so it is reported like an unverifiable owner and the
+	// caller tears the fast path down rather than leaving it live.
 	hooks, err := client.ListProjectHooks(ctx, owner, repo)
 	if err != nil {
-		return safeAPIError("re-reading project webhooks", err)
+		return errors.Join(safeAPIError("re-reading project webhooks", err), errGitLabTriggerOwnerUnverified)
 	}
 	found := false
 	for _, h := range hooks {
@@ -1903,12 +2193,33 @@ func verifyGitLabWebhookActiveToken(ctx context.Context, client forge.Client, ba
 	}
 	triggers, err := client.ListPipelineTriggerTokens(ctx, owner, repo)
 	if err != nil {
-		return safeAPIError("re-reading pipeline trigger tokens", err)
+		return errors.Join(safeAPIError("re-reading pipeline trigger tokens", err), errGitLabTriggerOwnerUnverified)
 	}
 	for _, t := range triggers {
-		if t.ID == activeID {
-			return nil
+		if t.ID != activeID {
+			continue
 		}
+		// The trigger acts with its owner's current permissions, so verify
+		// the owner is still not above Developer now that the webhook is
+		// published: another process may have raised the Poller meanwhile.
+		// An omitted owner or a failed role lookup leaves the owner's
+		// access unverified, which is unsafe for a live bearer credential.
+		if t.OwnerID == 0 {
+			return fmt.Errorf("pipeline trigger token ID %d: GitLab did not report its owner: %w", t.ID, errGitLabTriggerOwnerUnverified)
+		}
+		level, levelErr := client.GetProjectMemberAccessLevel(ctx, owner, repo, t.OwnerID)
+		if levelErr != nil {
+			return errors.Join(safeAPIError(fmt.Sprintf("re-verifying the owner of pipeline trigger token ID %d", t.ID), levelErr), errGitLabTriggerOwnerUnverified)
+		}
+		if level > forge.GitLabAccessLevelDeveloper {
+			return fmt.Errorf("pipeline trigger token ID %d: %w", t.ID, errGitLabTriggerOwnerElevated)
+		}
+		// Below Developer the owner cannot start the pipelines the trigger
+		// exists for, so the published fast path would be dead weight.
+		if level < forge.GitLabAccessLevelDeveloper {
+			return fmt.Errorf("pipeline trigger token ID %d: %w", t.ID, errGitLabTriggerOwnerBelowDeveloper)
+		}
+		return nil
 	}
 	return fmt.Errorf("pipeline trigger token ID %d was revoked by a concurrent run while this run was updating the webhook; rerun repos install to converge", activeID)
 }
@@ -1949,7 +2260,26 @@ func triggerURLToken(hookURL string) string {
 // stored token. Deleting an already-absent hook or token is not an error,
 // so a retry after a partial failure converges. Errors never include
 // credential values.
-func TeardownGitLabWebhookFastPath(ctx context.Context, client forge.Client, owner, repo string) (GitLabWebhookTeardownResult, error) {
+//
+// The teardown runs under the project lease that serializes installers, so
+// an installer cannot publish a replacement hook and trigger between the
+// resource discovery and deletion below. Callers that already hold the lease
+// (for example an uninstall that also cleans up role credentials) use
+// TeardownGitLabWebhookFastPathLocked instead.
+func TeardownGitLabWebhookFastPath(ctx context.Context, client forge.Client, owner, repo string) (_ GitLabWebhookTeardownResult, err error) {
+	release, lockErr := LockGitLabProject(ctx, client, owner, repo, false)
+	if lockErr != nil {
+		return GitLabWebhookTeardownResult{}, lockErr
+	}
+	defer release(&err)
+	return TeardownGitLabWebhookFastPathLocked(ctx, client, owner, repo)
+}
+
+// TeardownGitLabWebhookFastPathLocked is TeardownGitLabWebhookFastPath for a
+// caller that already holds the project lease from LockGitLabProject. The
+// lease is not reentrant, so calling the unlocked variant while holding it
+// would wait on itself.
+func TeardownGitLabWebhookFastPathLocked(ctx context.Context, client forge.Client, owner, repo string) (GitLabWebhookTeardownResult, error) {
 	var res GitLabWebhookTeardownResult
 	red := &credentialRedactor{}
 	var errs []error

@@ -9,6 +9,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/gitlablifecycle"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/repos"
@@ -191,7 +192,7 @@ func annotateGitLabRoleLifecycle(ctx context.Context, clients repos.ForgeClientF
 	if !ok {
 		return
 	}
-	adapter := gitlabTokenAdapter{c: glClient}
+	adapter := newGitLabRoleTokenClient(glClient)
 	now := time.Now()
 	for i := range result.Repos {
 		st := &result.Repos[i]
@@ -220,11 +221,25 @@ func annotateGitLabRoleLifecycle(ctx context.Context, clients repos.ForgeClientF
 		// gains a GitLab-role lifecycle drift gets double-counted.
 		wasDrifted := len(st.Drifts) > 0
 		newlyDrifted := false
-		if listErr == nil {
+		if listErr != nil {
+			// Credential health cannot be established without the inventory, and
+			// the service-account check below does not read it: never leave
+			// roles ready and drift-free on an unverified inventory.
+			newlyDrifted = repos.AppendGitLabTokenInventoryUnverified(st)
+		} else {
 			newlyDrifted = repos.EnrichGitLabRoleStatus(ctx, fc.Client, st.Owner, st.Repo, toks, now, st)
+			// A supplied credential outside the inventories has no snapshot, so
+			// the enrichment above trusts its enrollment proof. Authenticate it
+			// the way rotation does so status and rotation agree on its health.
+			if adapter.AppendGitLabSuppliedCredentialStatus(ctx, fc.Client, st.Owner, st.Repo, toks, now, st) {
+				newlyDrifted = true
+			}
 		}
-		userIDs := repos.PollerPipelineUserIDs(toks)
+		userIDs := repos.WithSuppliedPollerUserID(ctx, fc.Client, st.Owner, st.Repo, repos.PollerPipelineUserIDs(toks))
 		if repos.AppendGitLabPipelineRefStatus(ctx, fc.Client, st.Owner, st.Repo, userIDs, st) {
+			newlyDrifted = true
+		}
+		if adapter.AppendGitLabServiceAccountStatus(ctx, fc.Client, st.Owner, st.Repo, st) {
 			newlyDrifted = true
 		}
 		if newlyDrifted && !wasDrifted {
@@ -241,7 +256,7 @@ func gitLabTokenInventory(opts *reposInstallConfig, client forge.Client) repos.P
 	if !ok {
 		return nil
 	}
-	return gitlabTokenAdapter{c: glClient}
+	return newGitLabRoleTokenClient(glClient)
 }
 
 func ensureGitLabPollerPipelineAccess(ctx context.Context, client forge.Client, tokens repos.ProjectAccessTokenClient, printer *ui.Printer, owner, repo string, dryRun bool) error {
@@ -260,7 +275,8 @@ func ensureGitLabPollerPipelineAccess(ctx context.Context, client forge.Client, 
 	// no-ops when the branch is unprotected or Developer-class merge/push is
 	// already allowed, neither of which needs the token list. Only surface
 	// listErr if a grant actually turns out to be required.
-	res, err := repos.EnsureGitLabPollerPipelineAccess(ctx, client, owner, repo, repos.PollerPipelineUserIDs(toks), dryRun)
+	userIDs := repos.WithSuppliedPollerUserID(ctx, client, owner, repo, repos.PollerPipelineUserIDs(toks))
+	res, err := repos.EnsureGitLabPollerPipelineAccess(ctx, client, owner, repo, userIDs, dryRun)
 	if err != nil {
 		if listErr != nil {
 			err = fmt.Errorf("%w (also failed to list project access tokens: %v)", err, listErr)
@@ -305,10 +321,13 @@ func ensureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.
 // like setupGitLabPipelineSchedules' callers: an already-provisioned repo
 // is a no-op. rotate force-rotates the trigger token. Output names
 // variables and numeric IDs only — never the trigger token, webhook
-// secret, or webhook URL.
+// secret, or webhook URL. The trigger token is owned by a fresh Poller
+// service account generation that is verified at Developer before it is
+// published; ineligible repos defer and keep polling (see
+// gitlabTriggerOwnerFor).
 func setupGitLabWebhookFastPath(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, rotate, dryRun bool) error {
 	repoFullName := owner + "/" + repo
-	res, err := repos.EnsureGitLabWebhookFastPath(ctx, client, repos.GitLabBaseURL(client), owner, repo, rotate, dryRun)
+	res, err := repos.EnsureGitLabWebhookFastPathWithTriggerOwner(ctx, client, gitlabTriggerOwnerFor(client), repos.GitLabBaseURL(client), owner, repo, rotate, dryRun)
 	for _, d := range res.Details {
 		if res.Action == "deferred" {
 			printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
@@ -330,7 +349,9 @@ func setupGitLabWebhookFastPath(ctx context.Context, client forge.Client, printe
 // an existing credential must still not outlive a weakened restriction.
 func reconcileGitLabWebhookSafety(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool) error {
 	repoFullName := owner + "/" + repo
-	res, err := repos.ReconcileGitLabWebhookSafety(ctx, client, owner, repo, dryRun)
+	// A Poller left elevated by an interrupted install is restored, or its
+	// credential contained, even when the install failed before webhook setup.
+	res, err := repos.ReconcileGitLabWebhookSafetyWithTriggerOwner(ctx, client, gitlabTriggerOwnerFor(client), owner, repo, dryRun)
 	for _, d := range res.Details {
 		printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
 	}
@@ -339,6 +360,25 @@ func reconcileGitLabWebhookSafety(ctx context.Context, client forge.Client, prin
 		return err
 	}
 	return nil
+}
+
+// reconcileGitLabPollerElevation returns a managed Poller left above
+// Developer by an interrupted install or rotation to Developer access (or
+// contains its credential) for every GitLab repository, before any role
+// lifecycle operation and independently of webhook work detection. It never
+// provisions.
+func reconcileGitLabPollerElevation(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string) error {
+	repoFullName := owner + "/" + repo
+	to := gitlabTriggerOwnerFor(client)
+	if opts != nil && opts.testGitLabTriggerOwner != nil {
+		to = opts.testGitLabTriggerOwner
+	}
+	dryRun := opts != nil && opts.dryRun
+	res, err := repos.ReconcileGitLabPollerElevation(ctx, client, to, owner, repo, dryRun)
+	for _, d := range res.Details {
+		printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
+	}
+	return err
 }
 
 type gitlabTokenAdapter struct {
@@ -435,7 +475,7 @@ func setupGitLabRoleCredentials(ctx context.Context, opts *reposInstallConfig, c
 	}
 	var tokens repos.ProjectAccessTokenClient
 	if glClient, ok := client.(*gitlab.LiveClient); ok {
-		tokens = gitlabTokenAdapter{c: glClient}
+		tokens = newGitLabRoleTokenClient(glClient)
 	}
 	printer.StepStart(fmt.Sprintf("[%s] Provisioning GitLab role credentials", repoFullName))
 	result, err := repos.ProvisionGitLabRoleCredentials(ctx, repos.RoleProvisionConfig{
@@ -446,6 +486,8 @@ func setupGitLabRoleCredentials(ctx context.Context, opts *reposInstallConfig, c
 		Registry:         reg,
 		RegistryProvided: opts.gitlabRoleRegistryJSON != "",
 		ProvidedTokens:   opts.gitlabRoleProvided,
+		ForceRotation:    opts.rotateGitLabRoles,
+		ForceRoles:       opts.rotateGitLabRoleFilter,
 		DryRun:           opts.dryRun,
 	})
 	if err != nil {
@@ -476,13 +518,19 @@ func maybeRotateGitLabRoles(ctx context.Context, opts *reposInstallConfig, clien
 	}
 	var tokens repos.ProjectAccessTokenClient
 	if glClient, ok := client.(*gitlab.LiveClient); ok {
-		tokens = gitlabTokenAdapter{c: glClient}
+		tokens = newGitLabRoleTokenClient(glClient)
 	}
 	repoFullName := owner + "/" + repo
 	if tokens != nil {
 		if _, inventoryErr := tokens.ListProjectAccessTokens(ctx, owner, repo); inventoryErr != nil {
 			if opts.rotateGitLabRoles || len(opts.rotateGitLabRoleFilter) > 0 {
 				return fmt.Errorf("listing GitLab project access tokens for forced role rotation: %w", inventoryErr)
+			}
+			// Provisioning leaves existing secrets alone and delegates supplied
+			// replacements to this pass, so deferring would report success while
+			// the old credential stays installed.
+			if len(opts.gitlabRoleProvided) > 0 {
+				return fmt.Errorf("listing GitLab project access tokens for supplied role credential replacement: %w", inventoryErr)
 			}
 			printer.StepInfo(fmt.Sprintf("[%s] GitLab role rotation deferred: project-token inventory unavailable", repoFullName))
 			return nil
@@ -505,6 +553,9 @@ func maybeRotateGitLabRoles(ctx context.Context, opts *reposInstallConfig, clien
 		return err
 	}
 	printGitLabRoleRotate(printer, repoFullName, result)
+	if len(result.Failed) > 0 {
+		return fmt.Errorf("GitLab role rotation incomplete: %d role credential(s) pending", len(result.Failed))
+	}
 	return nil
 }
 
@@ -601,7 +652,7 @@ func gitLabUninstallTokens(opts *reposUninstallConfig, clients repos.ForgeClient
 			printer.StepWarn("GitLab client is not a live API client — project access token revocation will be skipped for GitLab repos in this run")
 			return nil
 		}
-		return gitlabTokenAdapter{c: glClient}
+		return gitlablifecycle.NewUninstallTokenClient(glClient, newGitLabRoleTokenClient(glClient))
 	}
 	return nil
 }

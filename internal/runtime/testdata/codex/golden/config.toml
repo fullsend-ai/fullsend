@@ -1,0 +1,53 @@
+# Written by fullsend (CodexRuntime.Bootstrap); do not edit.
+# Integrity-checked before every iteration — see buildCodexRunCommand.
+model_provider = "fullsend-openai"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+web_search = "disabled"
+check_for_update_on_startup = false
+hide_agent_reasoning = false
+developer_instructions = """
+# Agent: triage
+
+Inspect an issue.
+
+You are the triage agent. Use gh.
+
+## Runtime note
+
+This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). No fullsend sub-agent roster is available. When a skill says to dispatch sub-agents, execute each sub-agent definition yourself, in the listed order, with the same context package, and treat each output as that sub-agent's result.
+
+When reading a SKILL.md or other instruction file, do not cat it in one call: Codex truncates exec output (head and tail, dropping the middle). For each file, count its lines with `awk 'END { print NR }' <file>` (`wc -l` misses a last line with no newline), then `sed -n '<start>,<end>p'` in contiguous ranges of at most 200 lines, one range per tool call, including a short final chunk so the last line is covered — do not round the line count down to a multiple of 200 (a 425-line file is three ranges: `1,200p`, `201,400p`, `401,425p`). Never combine files or ranges in one exec. Inspect the returned output for a truncation warning before advancing; if a range is truncated, split it into smaller contiguous windows that together still cover its start through end — never skip the back half — and read those windows before moving on to the next range.
+"""
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[history]
+persistence = "none"
+
+[skills.bundled]
+enabled = false
+
+[features]
+plugins = false
+multi_agent_v2 = false
+
+[agents]
+enabled = false
+
+[projects."/sandbox/workspace/repo"]
+trust_level = "untrusted"
+
+[model_providers.fullsend-openai]
+name = "OpenAI via the fullsend run-scoped provider"
+base_url = "https://api.openai.com/v1"
+wire_api = "responses"
+
+[model_providers.fullsend-openai.auth]
+command = "/sandbox/codex-config/openai-token.sh"
+refresh_interval_ms = 30000
+timeout_ms = 5000

@@ -2,11 +2,13 @@ package repos
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 	"gopkg.in/yaml.v3"
 )
@@ -32,35 +34,53 @@ func hasManagedConfigMarker(content []byte) bool {
 	return bytes.HasPrefix(content, []byte(managedConfigMarker))
 }
 
-// configManaged reports whether defaults.config or the repository config
-// block opts this repository into a managed .fullsend/config.yaml.
-func configManaged(defaults, entry config.ManagedConfig) bool {
-	return defaults.IsSet() || entry.IsSet()
+// readExistingFile reads path on the default branch and reports whether
+// the file exists. A zero-byte file exists: it returns found with empty,
+// non-nil content so callers do not mistake it for an absent file. Read
+// errors other than not-found are returned unwrapped.
+func readExistingFile(ctx context.Context, client forge.Client, owner, repo, path string) (data []byte, found bool, err error) {
+	data, err = client.GetFileContent(ctx, owner, repo, path)
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if data == nil {
+		data = []byte{}
+	}
+	return data, true, nil
 }
 
-// mergeManagedConfig flattens defaults.config, the repository config, and
-// authoritative runtime / allowed_remote_resources shorthands into a sparse
-// managed configuration. It does not bake in code defaults or config.base.yaml.
-func (m *Manifest) mergeManagedConfig(entry RepoEntry) config.PerRepoConfigWriter {
-	merged := config.MergeManaged(m.Defaults.Config.Writer(), entry.Config.Writer())
+// overlayNeedsAdoption reports whether an existing .fullsend/config.yaml
+// requires adoption: any existing file, including a zero-byte one, that
+// lacks the ownership marker.
+func overlayNeedsAdoption(found bool, content []byte) bool {
+	return found && !hasManagedConfigMarker(content)
+}
+
+// mergeManagedConfig flattens defaults.config, the forge section's config
+// (platform, which may be nil), and the repository config, in that order,
+// into a sparse managed configuration using the per-field merge rules of
+// per-repo config. It does not bake in code defaults or config.base.yaml.
+func (m *Manifest) mergeManagedConfig(platform *PlatformConfig, entry RepoEntry) config.PerRepoConfigWriter {
+	var platformLayer config.PerRepoConfigWriter
+	if platform != nil {
+		platformLayer = platform.Config.Writer()
+	}
+	merged := config.MergeManaged(config.MergeManaged(m.Defaults.Config.Writer(), platformLayer), entry.Config.Writer())
 	if merged == nil {
 		merged = config.NewEmptyPerRepoOverlay()
 	}
-	config.ApplyManagedShorthands(merged, resolveField(entry.Runtime, m.Defaults.Runtime, ""), managedAllowlist(entry, m.Defaults))
 	return merged
 }
 
-func managedAllowlist(entry RepoEntry, defaults DefaultsConfig) []string {
-	if entry.AllowedRemoteResources != nil {
-		return entry.AllowedRemoteResources
-	}
-	return defaults.AllowedRemoteResources
-}
-
 // RenderManagedConfig returns the canonical sparse configuration YAML body
-// for a config-managed repository — the explicitly supplied manifest
-// values, with no code defaults or config.base.yaml baked in. ok is false
-// when the repository is not config-managed; data is then nil.
+// for a repository — the explicitly supplied manifest values, with no code
+// defaults or config.base.yaml baked in. Every manifest repository is
+// managed (#8218), so ok is always true; an omitted config renders only
+// the values the manifest declares, so omitted values still inherit from
+// presets and code defaults.
 //
 // The returned bytes deliberately carry no file header. perRepoConfig's
 // Marshal() prepends perRepoConfigHeader, the unmanaged per-repo-install
@@ -75,11 +95,11 @@ func managedAllowlist(entry RepoEntry, defaults DefaultsConfig) []string {
 // convergeManagedConfigFiles / checkManagedConfigDrift in
 // managed_config_lifecycle.go, which also implement the adoption gate for
 // an existing markerless file.
-func (m *Manifest) RenderManagedConfig(entry RepoEntry) (data []byte, ok bool, err error) {
-	if !configManaged(m.Defaults.Config, entry.Config) {
-		return nil, false, nil
-	}
-	body, err := marshalManagedConfig(m.mergeManagedConfig(entry))
+//
+// forgeName selects the forge section (github or gitlab) whose config
+// layer applies to entry.
+func (m *Manifest) RenderManagedConfig(forgeName string, entry RepoEntry) (data []byte, ok bool, err error) {
+	body, err := marshalManagedConfig(m.mergeManagedConfig(m.PlatformFor(forgeName), entry))
 	if err != nil {
 		return nil, true, err
 	}
@@ -128,15 +148,12 @@ func marshalManagedConfig(cfg config.PerRepoConfigWriter) ([]byte, error) {
 	return body, nil
 }
 
-// LayeredConfig returns the effective per-repo configuration for entry:
-// managed configuration → config.base.yaml (baseYAML) → code defaults.
-// Unmanaged repositories skip the managed layer. baseYAML may be empty.
-func (m *Manifest) LayeredConfig(entry RepoEntry, baseYAML []byte) (config.PerRepoConfigReader, error) {
-	var managed config.PerRepoConfigWriter
-	if configManaged(m.Defaults.Config, entry.Config) {
-		managed = m.mergeManagedConfig(entry)
-	}
-	return config.LayerOnBase(managed, baseYAML)
+// LayeredConfig returns the effective per-repo configuration for entry in
+// the forgeName section: managed configuration (repository config →
+// forge section config → defaults.config) → config.base.yaml (baseYAML) →
+// code defaults. baseYAML may be empty.
+func (m *Manifest) LayeredConfig(forgeName string, entry RepoEntry, baseYAML []byte) (config.PerRepoConfigReader, error) {
+	return config.LayerOnBase(m.mergeManagedConfig(m.PlatformFor(forgeName), entry), baseYAML)
 }
 
 func validateManifestManaged(m *Manifest) error {
@@ -150,6 +167,9 @@ func validateManifestManaged(m *Manifest) error {
 		if p.cfg == nil {
 			continue
 		}
+		if err := validateManagedBlock(p.name+".config", p.cfg.Config); err != nil {
+			return err
+		}
 		for i, entry := range p.cfg.Repos {
 			field := fmt.Sprintf("%s.repos[%d].config", p.name, i)
 			if entry.Name != "" {
@@ -158,10 +178,14 @@ func validateManifestManaged(m *Manifest) error {
 			if err := validateManagedBlock(field, entry.Config); err != nil {
 				return err
 			}
-			if !configManaged(m.Defaults.Config, entry.Config) {
-				continue
+			if err := rejectAllowlistBelowReset([]allowlistLayer{
+				{"defaults.config", m.Defaults.Config},
+				{p.name + ".config", p.cfg.Config},
+				{field, entry.Config},
+			}); err != nil {
+				return err
 			}
-			merged := m.mergeManagedConfig(entry)
+			merged := m.mergeManagedConfig(p.cfg, entry)
 			if err := config.ValidateMergedManaged(merged); err != nil {
 				return fmt.Errorf("%s: merged managed configuration: %w", field, err)
 			}
@@ -173,12 +197,57 @@ func validateManifestManaged(m *Manifest) error {
 	return nil
 }
 
+// allowlistLayer names one managed-configuration layer for
+// rejectAllowlistBelowReset.
+type allowlistLayer struct {
+	field string
+	cfg   config.ManagedConfig
+}
+
+// rejectAllowlistBelowReset refuses a non-empty allowed_remote_resources list
+// declared in a more specific layer than an explicit empty list. An empty
+// list resets the inherited allowlist (code defaults and any config_base
+// preset prefixes included), but the sparse managed file flattens the
+// layers and cannot record that reset: [] followed by [X] would flatten to
+// [X], and the runtime would union the preset and code-default prefixes
+// back in, admitting prefixes the declared layer chain excluded. layers are
+// ordered least to most specific.
+//
+// The chain is evaluated as a whole: when the most specific declared list is
+// itself empty, it supersedes every earlier layer (an empty → non-empty →
+// empty chain resolves to deny-all and renders as []), so nothing is lost
+// and the chain is accepted.
+func rejectAllowlistBelowReset(layers []allowlistLayer) error {
+	for i := len(layers) - 1; i >= 0; i-- {
+		if list, declared := layers[i].cfg.ExplicitAllowedRemoteResources(); declared {
+			if len(list) == 0 {
+				return nil
+			}
+			break
+		}
+	}
+	reset := ""
+	for _, l := range layers {
+		list, declared := l.cfg.ExplicitAllowedRemoteResources()
+		if !declared {
+			continue
+		}
+		if len(list) == 0 {
+			reset = l.field
+			continue
+		}
+		if reset != "" {
+			return fmt.Errorf("%s.allowed_remote_resources: a non-empty list cannot be declared below the explicit empty list in %s.allowed_remote_resources: the empty list resets inherited prefixes and the managed file cannot record that reset; declare the full list in one layer instead", l.field, reset)
+		}
+	}
+	return nil
+}
+
 // validateManagedBlock validates a single managed-configuration layer
-// (defaults.config or one repository's raw config block) in isolation,
-// before defaults.config and the repository config are merged and before
-// repos.yaml shorthands are applied. It intentionally does not run the
-// checks that need that merge (agent allowlist, override-only custom
-// agents) — see config.ValidateManagedLayer — those run again, correctly,
+// (defaults.config, a forge section's config, or one repository's raw
+// config block) in isolation, before the layers are merged. It
+// intentionally does not run the checks that need that merge (agent
+// allowlist, override-only custom agents) — see config.ValidateManagedLayer — those run again, correctly,
 // against the merged managed configuration below.
 func validateManagedBlock(field string, o config.ManagedConfig) error {
 	if !o.IsSet() {
@@ -190,14 +259,16 @@ func validateManagedBlock(field string, o config.ManagedConfig) error {
 	if err := validateManagedMintAndWIF(o.Writer()); err != nil {
 		return fmt.Errorf("%s: %w", field, err)
 	}
+	if err := ValidateAllowedRemoteResourcesFormat(field+".allowed_remote_resources", o.Writer().AllowedResources()); err != nil {
+		return err
+	}
 	return nil
 }
 
 // validateManagedMintAndWIF runs the same mint_url HTTPS/userinfo gate
 // used for RepoEntry.MintURL and the CLI's validateMintURLHTTPS, plus the
 // WIF provider resource-name pattern check, on a managed-configuration
-// layer or the shorthand-merged result. Neither field is touched by
-// ApplyManagedShorthands, so the same check is correct whether r is an
+// layer or the merged result. The same check is correct whether r is an
 // isolated layer or the merged configuration; an unset value resolves
 // through the parent chain to the code default (always a valid HTTPS mint
 // URL), so this only ever flags a value the managed configuration itself
@@ -207,14 +278,8 @@ func validateManagedBlock(field string, o config.ManagedConfig) error {
 // mint_url is allowed to carry a path — e.g. a Cloud Functions mint
 // endpoint — matching every other mint_url gate in this codebase.
 func validateManagedMintAndWIF(r config.PerRepoConfigReader) error {
-	if mintURL := r.ConfigMintURL(); mintURL != "" {
-		mu, err := url.Parse(mintURL)
-		if err != nil || mu.Scheme != "https" || mu.Host == "" {
-			return fmt.Errorf("mint_url must be a valid HTTPS URL, got %q", mintURL)
-		}
-		if mu.User != nil {
-			return fmt.Errorf("mint_url must not contain userinfo, got %q", mintURL)
-		}
+	if err := validateDeclaredMintURL(r.ConfigMintURL()); err != nil {
+		return err
 	}
 	if wif := r.ConfigInferenceWIFProvider(); wif != "" && !WIFProviderPattern.MatchString(wif) {
 		return fmt.Errorf("inference.wif_provider %q does not match the required resource name pattern", wif)
@@ -222,21 +287,37 @@ func validateManagedMintAndWIF(r config.PerRepoConfigReader) error {
 	return nil
 }
 
+// validateDeclaredMintURL applies the mint_url HTTPS/userinfo gate to a
+// declared value; an empty value is accepted (nothing is declared). It is
+// shared by managed-configuration validation and by the effective
+// infrastructure resolution, which also receives mint_url from a
+// config_base preset.
+func validateDeclaredMintURL(mintURL string) error {
+	if mintURL == "" {
+		return nil
+	}
+	mu, err := url.Parse(mintURL)
+	if err != nil || mu.Scheme != "https" || mu.Host == "" {
+		return fmt.Errorf("mint_url must be a valid HTTPS URL, got %q", mintURL)
+	}
+	if mu.User != nil {
+		return fmt.Errorf("mint_url must not contain userinfo, got %q", mintURL)
+	}
+	return nil
+}
+
 // ValidateAllowedRemoteResourcesFormat checks that every entry in an
-// allowed_remote_resources allowlist (repos.yaml defaults, a per-repo
-// shorthand, or the shorthand once baked into a managed configuration
-// file) is a well-formed prefix: a valid HTTPS URL, ending with "/", with no
-// double-encoded sequences. These are the same format rules
+// allowed_remote_resources allowlist (a repos.yaml config layer, or the
+// merged managed configuration file) is a well-formed prefix: a valid
+// HTTPS URL, ending with "/", with no double-encoded sequences. These are the same format rules
 // harness.ValidateAllowedRemoteResources applies at `fullsend run`/`lock`
 // time; that check runs too late to guard this write path, since
 // MatchingAllowedPrefixInList does a plain strings.HasPrefix match and a
 // prefix missing its trailing slash can therefore match sibling
 // hosts/paths it should not. It does not check coverage against an
-// org-level allowlist — that requires the harness, which is not loaded
-// here. Exported so repos.yaml write paths outside this package (the CLI's
-// --allowed-remote-resources flag, `repos set-default`) can reject a
-// malformed prefix before it is ever persisted, matching the check
-// Manifest.Validate applies on load/converge.
+// config-level allowlist — that requires the harness, which is not loaded
+// here. Manifest.Validate applies it to every config layer on
+// load/converge, before anything is written.
 func ValidateAllowedRemoteResourcesFormat(field string, list []string) error {
 	for i, entry := range list {
 		if !urlutil.IsURL(entry) {

@@ -57,6 +57,26 @@ func TestWriteAuthorizationOutputSupportsCustomSlashCommand(t *testing.T) {
 	assert.Contains(t, string(data), "authorization_actor_id=1234")
 }
 
+func TestWriteDispatchOutputKillSwitch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	event := &normevent.Event{
+		Entity: normevent.Entity{ID: 42},
+		Actor:  normevent.Actor{ID: "alice", NumericID: 1234, Kind: normevent.ActorHuman},
+		Transition: normevent.Transition{
+			Kind:    normevent.TransitionCommentAdded,
+			Comment: &normevent.Comment{Command: "/fs-code"},
+		},
+		Source: normevent.Source{RawType: "issue_comment"},
+	}
+
+	require.NoError(t, writeDispatchOutput(event, false, "kill_switch"))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "dispatch_blocked_reason=kill_switch\nauthorization_actor=alice\nauthorization_actor_id=1234\nauthorization_number=42\n", string(data))
+}
+
 func TestWriteAuthorizationOutputSkipsNonDeniedOrNonHuman(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_OUTPUT", path)

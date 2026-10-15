@@ -12,12 +12,15 @@ on:
   workflow_dispatch:
     inputs:
       event_type:
+        description: Event type that triggered prioritization
         required: true
         type: string
       source_repo:
+        description: Repository the event came from (owner/repo)
         required: true
         type: string
       event_payload:
+        description: JSON-encoded payload of the triggering event
         required: true
         type: string
       project_number:
@@ -44,5 +47,6 @@ jobs:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
       FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+      FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
       OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}

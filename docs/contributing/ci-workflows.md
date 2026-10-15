@@ -24,7 +24,7 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
   concurrency:
     group: fullsend-code-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
   ```
-  Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request_target` or `push` (e.g., `e2e.yml`, `functional-tests.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
+  Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request_target` or `push` (e.g., `e2e.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
 - Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main`.
 
 **Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
@@ -180,6 +180,19 @@ keeps the check-and-create operation serialized and prevents legacy and CEL
 dispatch paths from racing to create duplicate notices. The dispatch binary
 should emit only the metadata needed by that job; it should not introduce a
 second comment-posting implementation.
+
+### Kill-switch pause notices
+
+An engaged `kill_switch` is an intentional repository-wide pause, not a
+permission failure by the person who requested an agent. The reusable workflow
+therefore keeps routing successful with an empty stage output, so an operator
+does not create a red CI run for every event during the pause. Explicit human
+launch commands still emit metadata to the serialized notification job. That
+job uses the same `fullsend issues post-comment` path and work-item
+concurrency, but a distinct `kill_switch` reason and marker, so the comment
+explains that dispatch is temporarily disabled rather than claiming the actor
+is unauthorized. Non-launch events do not produce comments, and callers must
+use the stage output—not route-job success alone—to decide whether an agent ran.
 
 ## Secrets in pull_request_target jobs
 

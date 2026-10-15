@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,29 +67,29 @@ github:
 			wantErr: `unknown field "bogus"`,
 		},
 		{
-			name: "runtime inside defaults.config",
+			name: "unknown field inside github.config",
 			yaml: `
 version: 1
-defaults:
-  config:
-    runtime: pi
 github:
+  config:
+    bogus: true
   repos:
     - name: acme/app
 `,
-			wantErr: "runtime is not allowed inside config",
+			wantErr: `unknown field "bogus"`,
 		},
 		{
-			name: "allowed_remote_resources inside repo config",
+			name: "unknown field inside gitlab.config",
 			yaml: `
 version: 1
-github:
+gitlab:
+  url: https://gitlab.example.com
+  config:
+    bogus: true
   repos:
-    - name: acme/app
-      config:
-        allowed_remote_resources: []
+    - name: group/app
 `,
-			wantErr: "allowed_remote_resources is not allowed inside config",
+			wantErr: `unknown field "bogus"`,
 		},
 		{
 			name: "scalar config rejected",
@@ -161,16 +162,57 @@ github:
 }
 
 // A URL-sourced agent in defaults.config whose prefix is only covered by
-// the sibling defaults.allowed_remote_resources shorthand must validate:
-// the shorthand is merged onto the overlay (mergeManagedConfig) before the
-// allowlist is checked, even though defaults.config's own allowed_
-// remote_resources field is forbidden and never set directly.
-func TestValidate_ConfigOverlayAgentAllowedViaARRShorthand(t *testing.T) {
-	input := `
+// an allowed_remote_resources entry in a more specific layer (github.config
+// or the repository config) must validate: the layers are merged
+// (mergeManagedConfig) before the allowlist is checked.
+func TestValidate_ConfigOverlayAgentAllowedViaLayeredAllowlist(t *testing.T) {
+	for name, layers := range map[string]string{
+		"same layer": `
+defaults:
+  config:
+    allowed_remote_resources:
+      - https://example.com/
+    agents:
+      - source: "https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+github:
+  repos:
+    - name: acme/app
+`,
+		"platform layer": `
+defaults:
+  config:
+    agents:
+      - source: "https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+github:
+  config:
+    allowed_remote_resources:
+      - https://example.com/
+  repos:
+    - name: acme/app
+`,
+		"repository layer": `
+defaults:
+  config:
+    agents:
+      - source: "https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+github:
+  repos:
+    - name: acme/app
+      config:
+        allowed_remote_resources:
+          - https://example.com/
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var m Manifest
+			require.NoError(t, yaml.Unmarshal([]byte("version: 1\n"+layers), &m))
+			assert.NoError(t, m.Validate())
+		})
+	}
+
+	uncovered := `
 version: 1
 defaults:
-  allowed_remote_resources:
-    - https://example.com/
   config:
     agents:
       - source: "https://example.com/harness/custom.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
@@ -179,8 +221,10 @@ github:
     - name: acme/app
 `
 	var m Manifest
-	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-	assert.NoError(t, m.Validate())
+	require.NoError(t, yaml.Unmarshal([]byte(uncovered), &m))
+	err := m.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not covered by allowed_remote_resources")
 }
 
 // An override-only agents entry (no source) may tune a custom agent
@@ -216,7 +260,7 @@ github:
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
+	body, ok, err := m.RenderManagedConfig(ForgeGitHub, m.GitHub.Repos[0])
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Contains(t, string(body), "mycustom")
@@ -286,6 +330,49 @@ github:
 }
 
 func TestValidate_AllowedRemoteResourcesFormat(t *testing.T) {
+	layers := map[string]struct {
+		manifest string
+		field    string
+	}{
+		"defaults.config": {`
+version: 1
+defaults:
+  config:
+    allowed_remote_resources:
+      - "%s"
+github:
+  repos:
+    - name: acme/app
+`, "defaults.config.allowed_remote_resources[0]"},
+		"github.config": {`
+version: 1
+github:
+  config:
+    allowed_remote_resources:
+      - "%s"
+  repos:
+    - name: acme/app
+`, "github.config.allowed_remote_resources[0]"},
+		"gitlab.config": {`
+version: 1
+gitlab:
+  url: https://gitlab.example.com
+  config:
+    allowed_remote_resources:
+      - "%s"
+  repos:
+    - name: group/app
+`, "gitlab.config.allowed_remote_resources[0]"},
+		"repository config": {`
+version: 1
+github:
+  repos:
+    - name: acme/app
+      config:
+        allowed_remote_resources:
+          - "%s"
+`, "github.repos[acme/app].config.allowed_remote_resources[0]"},
+	}
 	tests := []struct {
 		name    string
 		value   string
@@ -308,22 +395,16 @@ func TestValidate_AllowedRemoteResourcesFormat(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			input := `
-version: 1
-defaults:
-  allowed_remote_resources:
-    - "` + tt.value + `"
-github:
-  repos:
-    - name: acme/app
-`
-			var m Manifest
-			require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-			err := m.Validate()
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.wantErr)
-		})
+		for layerName, layer := range layers {
+			t.Run(tt.name+"/"+layerName, func(t *testing.T) {
+				var m Manifest
+				require.NoError(t, yaml.Unmarshal([]byte(fmt.Sprintf(layer.manifest, tt.value)), &m))
+				err := m.Validate()
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Contains(t, err.Error(), layer.field, "the error names the source layer")
+			})
+		}
 	}
 }
 
@@ -331,10 +412,10 @@ func TestResolveConfig_OverlayOptInAndPrecedence(t *testing.T) {
 	input := `
 version: 1
 defaults:
-  runtime: pi
-  allowed_remote_resources:
-    - https://default.example.com/
   config:
+    runtime: pi
+    allowed_remote_resources:
+      - https://default.example.com/
     kill_switch: true
     roles:
       - triage
@@ -345,9 +426,9 @@ github:
   repos:
     - name: acme/inherits
     - name: acme/override
-      runtime: claude
-      allowed_remote_resources: []
       config:
+        runtime: claude
+        allowed_remote_resources: []
         kill_switch: false
         inference:
           project: repo-proj
@@ -379,7 +460,7 @@ github:
 	assert.Equal(t, []string{"triage"}, override.Managed.ConfigRoles(), "unset repo field inherits defaults.config")
 	assert.Equal(t, "us-east1", override.Managed.ConfigInferenceRegion())
 	assert.Equal(t, "repo-proj", override.Managed.ConfigInferenceProject())
-	assert.Equal(t, "claude", override.Managed.ConfigRuntime(), "repo runtime shorthand wins")
+	assert.Equal(t, "claude", override.Managed.ConfigRuntime(), "repo config runtime wins")
 	assert.Empty(t, override.Managed.AllowedResources(), "explicit empty allowlist is deny-all")
 
 	empty, ok := m.ResolveConfig("acme", "empty")
@@ -406,13 +487,15 @@ github:
 	assert.True(t, managed.ConfigManaged)
 	assert.False(t, managed.Managed.ConfigKeepHistory())
 
-	unmanaged, ok := m.ResolveConfig("acme", "unmanaged")
+	// Without a config key the repository is still managed, with an
+	// empty sparse configuration (#8218).
+	plain, ok := m.ResolveConfig("acme", "unmanaged")
 	require.True(t, ok)
-	assert.False(t, unmanaged.ConfigManaged)
-	assert.Nil(t, unmanaged.Managed)
+	assert.True(t, plain.ConfigManaged)
+	require.NotNil(t, plain.Managed)
 }
 
-func TestResolveConfig_NoConfigLeavesOverlayUnmanaged(t *testing.T) {
+func TestResolveConfig_NoConfigIsManagedAndSparse(t *testing.T) {
 	input := `
 version: 1
 github:
@@ -425,16 +508,16 @@ github:
 
 	cfg, ok := m.ResolveConfig("acme", "plain")
 	require.True(t, ok)
-	assert.False(t, cfg.ConfigManaged)
-	assert.Nil(t, cfg.Managed)
+	assert.True(t, cfg.ConfigManaged)
+	require.NotNil(t, cfg.Managed)
 }
 
 func TestRenderManagedConfig_SparseAndExplicitValues(t *testing.T) {
 	input := `
 version: 1
 defaults:
-  runtime: pi
   config:
+    runtime: pi
     kill_switch: false
     roles: []
     keep_history: false
@@ -448,7 +531,7 @@ github:
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
 	require.NoError(t, m.Validate())
 
-	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
+	body, ok, err := m.RenderManagedConfig(ForgeGitHub, m.GitHub.Repos[0])
 	require.NoError(t, err)
 	require.True(t, ok)
 	text := string(body)
@@ -473,7 +556,7 @@ github:
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
+	body, ok, err := m.RenderManagedConfig(ForgeGitHub, m.GitHub.Repos[0])
 	require.NoError(t, err)
 	require.True(t, ok)
 	text := string(body)
@@ -494,7 +577,7 @@ github:
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-	_, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
+	_, ok, err := m.RenderManagedConfig(ForgeGitHub, m.GitHub.Repos[0])
 	require.Error(t, err)
 	assert.True(t, ok)
 	assert.Contains(t, err.Error(), "invalid role")
@@ -512,7 +595,7 @@ github:
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
-	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
+	body, ok, err := m.RenderManagedConfig(ForgeGitHub, m.GitHub.Repos[0])
 	require.NoError(t, err)
 	require.True(t, ok)
 	text := string(body)
@@ -523,15 +606,15 @@ github:
 	assert.NotContains(t, text, "mint_url:")
 }
 
-func TestRenderManagedConfig_Unmanaged(t *testing.T) {
+func TestRenderManagedConfig_NoConfigKeyRendersEmptySparseBody(t *testing.T) {
 	m := &Manifest{
 		Version: 1,
 		GitHub:  &PlatformConfig{Repos: []RepoEntry{{Name: "acme/plain"}}},
 	}
-	body, ok, err := m.RenderManagedConfig(m.GitHub.Repos[0])
+	body, ok, err := m.RenderManagedConfig(ForgeGitHub, m.GitHub.Repos[0])
 	require.NoError(t, err)
-	assert.False(t, ok)
-	assert.Nil(t, body)
+	assert.True(t, ok)
+	assert.Equal(t, "{}\n", string(body))
 }
 
 func TestLayeredConfig_OverlayBaseThenCodeDefaults(t *testing.T) {
@@ -547,7 +630,7 @@ github:
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
 	base := []byte("kill_switch: true\nmint_url: https://base.example.com\n")
-	effective, err := m.LayeredConfig(m.GitHub.Repos[0], base)
+	effective, err := m.LayeredConfig(ForgeGitHub, m.GitHub.Repos[0], base)
 	require.NoError(t, err)
 	assert.False(t, effective.IsKillSwitchActive(), "defaults.config wins over config.base.yaml")
 	assert.Equal(t, "https://base.example.com", effective.ConfigMintURL(), "unset overlay inherits base")

@@ -1387,6 +1387,109 @@ func TestRunAgentJobScript_IgnoresUnsignedMergeRequestIIDWhenStatusIIDMissing(t 
 	assert.NotContains(t, got, "--status-number 999")
 }
 
+// TestRunAgentJobScript_ExtractsWrappedPriorReviewSHA pins the format
+// coupling from #1031 on the GitLab side: the review agent writes the head
+// SHA wrapped in an HTML comment (`<!-- **Head SHA:** <sha> -->`, per
+// fullsend-ai/agents agents/review.md and skills/pr-review/SKILL.md) below
+// the sticky marker, and the STAGE=review prior-review lookup must still
+// extract it into PRIOR_REVIEW_SHA. Drift on either side would silently
+// empty the SHA and degrade every re-review to a full review.
+func TestRunAgentJobScript_ExtractsWrappedPriorReviewSHA(t *testing.T) {
+	root := t.TempDir()
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
+	writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/select-gitlab-role-token.sh")
+	script := writeGitLabScript(t, root, gitlabRunAgentJobScriptPath)
+
+	const priorSHA = "5fcdfb95cc5d61819a8e1f5bf60db024cf88b5f0"
+	notesJSON, err := json.Marshal([]map[string]any{{
+		"id":     1,
+		"author": map[string]any{"id": 7},
+		"body":   "<!-- fullsend:review-agent -->\n<!-- **Head SHA:** " + priorSHA + " -->\n\n## Review\n\nNo further concerns.",
+	}})
+	require.NoError(t, err)
+
+	var sawNotesLookup atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/job", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(pinJobJSON("42", "100", "main")))
+	})
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":7,"username":"fullsend-bot"}`))
+	})
+	mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.Contains(path, "/repository/branches/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"name":"main","protected":true}`))
+		case strings.Contains(path, "/pipelines/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":100,"source":"api","user":{"id":7}}`))
+		case strings.Contains(path, "/members/all/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"access_level":40}`))
+		case strings.Contains(path, "/merge_requests/5/notes"):
+			sawNotesLookup.Store(true)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(notesJSON)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":42,"default_branch":"main","path_with_namespace":"pinned/project"}`))
+		}
+	})
+	srv := httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+
+	// run-agent-job.sh exits before control returns to the sourcing shell,
+	// so the stub fullsend binary dumps the exported prior-review variables.
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(
+		"#!/bin/sh\n"+
+			"echo STUB_ENV PRIOR_REVIEW_SHA=\"${PRIOR_REVIEW_SHA:-EMPTY}\"\n"+
+			"echo STUB_ENV PRIOR_REVIEW_PROVENANCE=\"${PRIOR_REVIEW_PROVENANCE:-EMPTY}\"\n"+
+			"exit 0\n"), 0o755))
+
+	const secret = "test-hmac-secret"
+	hmacHex := computeDispatchHMAC(secret, "5", "", "mr_note", "", "false", "", "", "", "test-key", "review", "5")
+
+	setupPinnedConfigOrigin(t, root)
+
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"`)
+	cmd.Dir = root
+	cmd.Env = append([]string{
+		"SCRIPT=" + script,
+		"PATH=" + bin + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"CI_PROJECT_DIR=" + root,
+		"RUNNER_TEMP=" + t.TempDir(),
+		"CI_JOB_TOKEN=job-token",
+		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
+		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
+		"STAGE=review",
+		"EVENT_TYPE=mr_note",
+		"RESOURCE_KEY=test-key",
+		"ACTOR_ID=5",
+		"IS_FORK=false",
+		"FULLSEND_DISPATCH_SECRET=" + secret,
+		"FULLSEND_DISPATCH_HMAC=" + hmacHex,
+		"CI_PIPELINE_URL=https://gitlab.example/pinned/project/-/pipelines/999",
+		"STATUS_IID=5",
+		"CI_PROJECT_ID=1",
+		"CI_PROJECT_PATH=unpinned/project",
+		"CI_SERVER_URL=https://unpinned.example",
+	}, pinTLSEnv(t, srv)...)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	got := string(out)
+
+	assert.True(t, sawNotesLookup.Load(), "must query the Notes API for the signed STATUS_IID")
+	assert.Contains(t, got, "STUB_ENV PRIOR_REVIEW_SHA="+priorSHA)
+	assert.Contains(t, got, "STUB_ENV PRIOR_REVIEW_PROVENANCE=bot-verified")
+}
+
 // TestRunAgentJobScript_UnsetsMergeRequestIIDForIssueEvent is a regression
 // test for the auth-bypass finding: in the issue_* EVENT_TYPE arm, this
 // job's admit source is api-only, so GitLab never natively populates

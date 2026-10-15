@@ -563,6 +563,42 @@ func (c *LiveClient) DeleteComment(ctx context.Context, issueIDOrKey, commentID 
 	return nil
 }
 
+// issueLinkRequest is the POST body for /rest/api/3/issueLink.
+type issueLinkRequest struct {
+	Type         issueLinkTypeRef `json:"type"`
+	InwardIssue  issueRef         `json:"inwardIssue"`
+	OutwardIssue issueRef         `json:"outwardIssue"`
+}
+
+type issueLinkTypeRef struct {
+	Name string `json:"name"`
+}
+
+type issueRef struct {
+	Key string `json:"key"`
+}
+
+// LinkIssues creates a typed link between two issues via
+// POST /rest/api/3/issueLink. linkTypeName is the instance-specific link
+// type name (e.g. "Blocks", "Relates", "Cloners") and is passed through
+// verbatim. Jira records the link in the link type's outward direction
+// from inwardIssueKey to outwardIssueKey: for "Blocks", inwardIssueKey
+// blocks outwardIssueKey.
+func (c *LiveClient) LinkIssues(ctx context.Context, inwardIssueKey, outwardIssueKey, linkTypeName string) error {
+	reqBody, err := json.Marshal(issueLinkRequest{
+		Type:         issueLinkTypeRef{Name: linkTypeName},
+		InwardIssue:  issueRef{Key: inwardIssueKey},
+		OutwardIssue: issueRef{Key: outwardIssueKey},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal issue link request: %w", err)
+	}
+	if err := c.do(ctx, http.MethodPost, "/issueLink", bytes.NewReader(reqBody), nil); err != nil {
+		return fmt.Errorf("link %s to %s (%s): %w", inwardIssueKey, outwardIssueKey, linkTypeName, err)
+	}
+	return nil
+}
+
 // ListChangelog fetches all changelog entries for an issue, exhausting
 // pagination up to maxListPages pages.
 func (c *LiveClient) ListChangelog(ctx context.Context, issueIDOrKey string) ([]ChangelogEntry, error) {

@@ -448,3 +448,42 @@ func TestCheckOrphanVars_GitLabDetectsGenuineOrphan(t *testing.T) {
 		t.Errorf("orphan name = %q, want %q", orphans[0].Name, "FULLSEND_BOGUS")
 	}
 }
+
+// The removed unverified-variable-scope acceptance setting is no longer
+// special: a value left on a project is an ordinary orphan.
+func TestCheckOrphanVars_GitLabObsoleteScopeAcceptanceIsOrphan(t *testing.T) {
+	const obsolete = "FULLSEND_GITLAB_ACCEPT_UNVERIFIED_VARIABLE_SCOPES"
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+obsolete] = "instance"
+
+	orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo", InstallConfig{Forge: ForgeGitLab}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Name != obsolete {
+		t.Errorf("orphans = %v, want only %s", orphans, obsolete)
+	}
+}
+
+// Repos installed before #7902 have one space before the version comment;
+// that alone must not count as content drift.
+func TestCheckFileContentDrift_IgnoresCommentSpacing(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["owner/repo/.github/workflows/fullsend.yaml"] = []byte(
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v2.1.0\n")
+	expected := []forge.TreeFile{{
+		Path:    ".github/workflows/fullsend.yaml",
+		Content: []byte("    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123  # v2.1.0\n"),
+	}}
+
+	ghFC := GitHubForgeConfig()
+	ghFC.Client = fc
+
+	drifted, err := CheckFileContentDrift(context.Background(), fc, "owner", "repo", ghFC, ForgeGitHub, expected)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(drifted) != 0 {
+		t.Errorf("expected 0 drifted files, got %d", len(drifted))
+	}
+}

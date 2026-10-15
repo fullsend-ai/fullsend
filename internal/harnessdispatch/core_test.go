@@ -23,9 +23,11 @@ func TestDispatch_KillSwitch(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
 
 	ev := mustEvent(t, "ready-to-code-labeled.json")
-	refs, err := Dispatch(context.Background(), Options{ConfigDir: dir, Event: ev})
+	result, err := DispatchResult(context.Background(), Options{ConfigDir: dir, Event: ev})
 	require.NoError(t, err)
-	assert.Empty(t, refs)
+	assert.Empty(t, result.Refs)
+	assert.Equal(t, "kill_switch", result.DispatchBlockedReason)
+	assert.False(t, result.AuthorizationDenied)
 }
 
 func TestDispatch_AuthDeny(t *testing.T) {

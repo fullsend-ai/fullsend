@@ -38,8 +38,9 @@ Next:
    [`fullsend github setup`](../getting-started/configuring-github.md) — see
    [Before you begin](#before-you-begin) for the full prerequisite list.
    The generated agent works on GitHub: its harness, prompt and post-script
-   all use GitHub. On GitLab, scaffold with
-   `fullsend repos install --forge gitlab` and adapt those three files; for the
+   all use GitHub. On GitLab, scaffold with `fullsend repos install` (see
+   [Configuring GitLab](../getting-started/configuring-gitlab.md#installing-fullsend))
+   and adapt those three files; for the
    harness `role:` and its credentials, see
    [Custom roles](../getting-started/configuring-gitlab.md#custom-roles) and
    the [role-credential contract](../../contributing/gitlab-role-credentials.md).
@@ -244,10 +245,12 @@ in the code block below the table, not in a cell.
 | `"role field is required"` | `role:` is missing from the harness | Add `role:` |
 | `403` / "role not allowed" from the mint | `role:` is not one the hosted mint serves | Use one of the roles in the [role table](../../cli/agent.md#roles); for a custom role see [Custom Agent Identity](custom-agent-identity.md) |
 | `unknown role "..."` from `agent new` | Same as above, caught at generation time | See the role table in [`agent new`](../../cli/agent.md#roles) |
+| `validating files: policy field is required` | The composed harness has no `policy:`, and fullsend ships no default | Commit a copy of the fleet policy from [fullsend-ai/agents](https://github.com/fullsend-ai/agents), or set `policy:` to its URL with a `#sha256=` hash under `allowed_remote_resources`. A child that inherits `policy:` from its `base:` already has one |
+| `validating files: policy: ... declares no fields` | The policy file is empty or comment-only | Replace it with a copy of the fleet policy from [fullsend-ai/agents](https://github.com/fullsend-ai/agents) |
 | `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that isn't committed next to it | Commit `policies/base.yaml` with the agent, or point `policy:` at a committed or pinned URL |
 | `host_files[0]: GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file` | pi on `openai/`, Vertex sub-agent block uncommented, no credentials file set | Set `GOOGLE_APPLICATION_CREDENTIALS` — see [Pick a route](#pick-a-route). Don't mark the mount optional |
 | `validating env:` followed by unresolved host variables at `fullsend run` | A `${VAR}` in the harness is unset | Supply it via `--env-file` locally. In CI, the variables a generated harness uses come from the setup commands in [Pick a route](#pick-a-route) |
-| `provider credentials are not declared by profile 'fullsend-github-ro'` (or `'fullsend-github'`) | A stale `profiles/fullsend-github*.yaml` from fullsend v0.44.0 or earlier is still listed alongside the bare `github-ro`/`github` provider | Finish [Upgrading agents generated before built-in providers](#upgrading-agents-generated-before-built-in-providers) |
+| `provider credentials are not declared by profile '<profile-id>'` | The provider supplies credential keys the profile does not declare; stale copies under built-in names or IDs may still use `_NOOP_*` placeholder credentials | For stale built-in overrides, finish [Upgrading agents generated before built-in providers](#upgrading-agents-generated-before-built-in-providers). For custom profiles, align the provider's credential keys with the profile's declarations |
 | The same error on your machine, with bare names and no `fullsend-github*` profile left | The OpenShell gateway still holds an older profile with that id; `fullsend run` cannot replace a profile while a provider uses it | Delete and re-create the providers — see the command below |
 | `provider profile 'fullsend-github-ro' requires static credentials: GH_TOKEN` at `fullsend run` | `GH_TOKEN` is unset or empty on the machine running `fullsend run` | Put a real token in your env file, e.g. `echo "GH_TOKEN=$(gh auth token)" >> .env.local` |
 | `Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file` (or `a regular/non-empty file`) | The variable is unset or points at a missing path, directory, or empty file | Point it at a real file — [Get GCP credentials](running-agents-locally.md#get-google-cloud-platform-credentials) |
@@ -333,7 +336,7 @@ scratch.
 ### Before you begin
 
 - **fullsend CLI** installed and available on your PATH.
-- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates `.fullsend/config.yaml` and the dispatch workflow. It does **not** create `policies/`; [`fullsend agent new`](#quick-start) writes that one, and you commit it with the agent. Writing the harness by hand instead? [Minimum viable agent](#minimum-viable-agent) lists what to supply. GitLab repositories are scaffolded instead with `fullsend repos install --forge gitlab` and use role-specific project access tokens rather than GitHub Apps — see [Configuring GitLab](../getting-started/configuring-gitlab.md).
+- **Repository scaffolded.** Run [`fullsend github setup`](../getting-started/configuring-github.md) first — it creates `.fullsend/config.yaml` and the dispatch workflow. It does **not** create `policies/`; [`fullsend agent new`](#quick-start) writes that one, and you commit it with the agent. Writing the harness by hand instead? [Minimum viable agent](#minimum-viable-agent) lists what to supply. GitLab repositories are scaffolded instead by declaring the project in `repos.yaml` and running `fullsend repos install`, and use role-specific credentials (project service accounts, or fallback project access tokens) rather than GitHub Apps — see [Configuring GitLab](../getting-started/configuring-gitlab.md).
 - **Inference set up for CI (CI only).** For agents running in GitHub Actions, on the Vertex route run [`fullsend inference provision`](../../cli/inference.md) to set up Workload Identity Federation, then give the provider it prints to [`fullsend github setup`](../getting-started/configuring-github.md), which stores it with the project and region. On the OpenAI route run [`fullsend inference openai request` and `import`](../../cli/inference.md), or set a `FULLSEND_OPENAI_API_KEY` secret.
 - **GitHub Apps installed (CI only).** Your org needs the fullsend GitHub Apps — see [Configuring GitHub](../getting-started/configuring-github.md).
 
@@ -675,6 +678,6 @@ allowed_remote_resources:
 - [`author-fullsend-augmentations` skill](../../../skills/author-fullsend-augmentations/SKILL.md) — discovery-driven guide for writing skills and sub-agents that complement shipped defaults
 - [Configuring with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
 - [Configuring Agent Behavior](customizing-agents.md) — harness configuration and `base:` composition
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when configuration crosses into custom agent territory
-- [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
+- [Default, derived, and custom agents](default-vs-custom.md) — when configuration crosses into custom agent territory
+- [Escalation ladder](escalation-ladder.md) — prove-it path before deriving or replacing a core agent
 - [Standalone mint](../infrastructure/standalone-mint.md) — custom agent roles and identity

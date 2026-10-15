@@ -10,6 +10,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
 // toNormalizedEvent converts a RoutableEvent into a dispatch.NormalizedEvent
@@ -232,20 +233,7 @@ func (p *Poller) resolveActorRole(ctx context.Context, userID int) (string, erro
 		return "", fmt.Errorf("resolve role for user %d: %w", userID, err)
 	}
 
-	switch level {
-	case 10: // Guest
-		return "read", nil
-	case 20: // Reporter
-		return "triage", nil
-	case 30: // Developer
-		return "write", nil
-	case 40: // Maintainer
-		return "maintain", nil
-	case 50: // Owner
-		return "admin", nil
-	default:
-		return "none", nil
-	}
+	return string(normevent.MapGitLabAccessLevel(level)), nil
 }
 
 // extractCommand parses a note body for a /fs- slash command. It returns

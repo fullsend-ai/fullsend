@@ -66,6 +66,17 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 			Op:          strings.TrimSpace(row.Cells[col["op"]].Value),
 			Args:        strings.TrimSpace(row.Cells[col["args"]].Value),
 		}
+		// Optional "expect" column: "fail" marks a step the scenario
+		// expects to fail, so its failure does not fail the run.
+		if i, ok := col["expect"]; ok {
+			switch v := strings.TrimSpace(row.Cells[i].Value); v {
+			case "":
+			case "fail":
+				op.ExpectFail = true
+			default:
+				return fmt.Errorf("dummy agent row %q: expect must be empty or \"fail\", got %q", op.Description, v)
+			}
+		}
 		// <issue> expansion is scoped to checkout_branch: it is the only
 		// op whose args embed the scenario issue number, and keeping the
 		// substitution off the generic ops avoids surprising rewrites of
@@ -73,6 +84,19 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 		if op.Op == "checkout_branch" {
 			args, err := expandIssuePlaceholder(w, op.Args)
 			if err != nil {
+				return err
+			}
+			op.Args = args
+		}
+		// <gateway> expansion is scoped to http_probe for the same reason.
+		// The op is validated here so a malformed row fails at Given time
+		// instead of inside the workflow run.
+		if op.Op == "http_probe" {
+			args, err := expandGatewayPlaceholder(op.Args)
+			if err != nil {
+				return err
+			}
+			if _, err := runtime.ParseHTTPProbeArgs(args); err != nil {
 				return err
 			}
 			op.Args = args

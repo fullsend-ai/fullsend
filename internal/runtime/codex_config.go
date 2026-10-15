@@ -123,13 +123,20 @@ const codexAuthTimeoutMS = 5000
 // it is on the V2 collaboration tools come back for every model (verified on
 // 0.159.3). On its own the key removes nothing.
 //
+// `[model_providers.fullsend-gateway]` is rendered only when an
+// inference.gateway block applies (codex_gateway.go): a second runner-owned
+// provider beside fullsend-openai, never instead of it, with its own
+// auth.command. The top-level `model_provider` names it then, since the
+// runner registers the gateway only for a gateway/ parent; Run's `-c`
+// override decides either way.
+//
 // `web_search` must be stated: codex's default is "cached", not off.
 // `history.persistence` governs `history.jsonl` (the prompt history) only —
 // session rollouts under sessions/, which are the transcripts, are unaffected.
 var codexConfigTemplate = template.Must(template.New("codex-config").Parse(
 	`# Written by fullsend (CodexRuntime.Bootstrap); do not edit.
 # Integrity-checked before every iteration — see buildCodexRunCommand.
-model_provider = "{{ .ProviderID }}"
+model_provider = "{{ .DefaultProviderID }}"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 web_search = "disabled"
@@ -168,16 +175,27 @@ wire_api = "responses"
 command = {{ .AuthCommand }}
 refresh_interval_ms = {{ .RefreshIntervalMS }}
 timeout_ms = {{ .TimeoutMS }}
-`))
+{{ if .GatewayBaseURL }}
+[model_providers.{{ .GatewayProviderID }}]
+name = "Inference gateway via the fullsend run-scoped provider"
+base_url = {{ .GatewayBaseURL }}
+wire_api = "responses"
 
-// codexBaseURL is the OpenAI Responses API base. It is also the only
-// `base_url` the run guard tolerates in the rendered file.
+[model_providers.{{ .GatewayProviderID }}.auth]
+command = {{ .GatewayAuthCommand }}
+refresh_interval_ms = {{ .RefreshIntervalMS }}
+timeout_ms = {{ .TimeoutMS }}
+{{ end }}`))
+
+// codexBaseURL is the OpenAI Responses API base of the fullsend-openai
+// provider.
 const codexBaseURL = "https://api.openai.com/v1"
 
 // codexConfigData is codexConfigTemplate's input. DeveloperInstructions and
 // AuthCommand arrive already quoted (codexTOMLString), so the template never
 // has to reason about escaping.
 type codexConfigData struct {
+	DefaultProviderID     string
 	ProviderID            string
 	BaseURL               string
 	DeveloperInstructions string
@@ -185,46 +203,70 @@ type codexConfigData struct {
 	ProjectKey            string
 	RefreshIntervalMS     int
 	TimeoutMS             int
+	// GatewayProviderID, GatewayBaseURL and GatewayAuthCommand render the
+	// fullsend-gateway provider; GatewayBaseURL (quoted) is empty when no
+	// inference.gateway block applies, and then nothing of it is rendered.
+	GatewayProviderID  string
+	GatewayBaseURL     string
+	GatewayAuthCommand string
 }
 
 // renderCodexConfig produces $CODEX_HOME/config.toml for one agent run.
 // repoDir is the target repository's path inside the sandbox, the directory
 // codex runs in. developerInstructions is the agent definition's body, which
-// is arbitrary markdown from the harness.
-func renderCodexConfig(configDir, repoDir, developerInstructions string) ([]byte, error) {
+// is arbitrary markdown from the harness. gatewayBaseURL is the
+// fullsend-gateway provider's base_url (codexGatewayBaseURL), or "" when no
+// inference.gateway block applies.
+func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL string) ([]byte, error) {
 	if repoDir == "" {
 		return nil, fmt.Errorf("rendering codex %s: the target repository path is required", codexConfigFile)
 	}
-	var buf strings.Builder
-	err := codexConfigTemplate.Execute(&buf, codexConfigData{
+	data := codexConfigData{
+		DefaultProviderID:     codexProviderID,
 		ProviderID:            codexProviderID,
 		BaseURL:               codexBaseURL,
 		DeveloperInstructions: codexTOMLString(developerInstructions),
 		AuthCommand:           codexTOMLString(configDir + "/" + codexAuthScriptFile),
-		ProjectKey:            codexTOMLString(repoDir),
+		ProjectKey:            codexTOMLKey(repoDir),
 		RefreshIntervalMS:     codexAuthRefreshIntervalMS,
 		TimeoutMS:             codexAuthTimeoutMS,
-	})
+	}
+	if gatewayBaseURL != "" {
+		data.DefaultProviderID = codexGatewayProviderID
+		data.GatewayProviderID = codexGatewayProviderID
+		data.GatewayBaseURL = codexTOMLString(gatewayBaseURL)
+		data.GatewayAuthCommand = codexTOMLString(configDir + "/" + codexGatewayAuthScriptFile)
+	}
+	var buf strings.Builder
+	err := codexConfigTemplate.Execute(&buf, data)
 	if err != nil {
 		return nil, fmt.Errorf("rendering codex %s: %w", codexConfigFile, err)
 	}
 	return []byte(buf.String()), nil
 }
 
-// codexTOMLString renders s as a TOML basic string, quotes included.
-//
-// The agent body is arbitrary markdown, so a multi-line `"""` literal is not
-// safe: a body containing `"""`, or ending in a backslash, would terminate the
-// literal early and the rest of the file would be parsed as TOML. A
-// single-line basic string with every hazardous rune escaped cannot be broken
-// out of. Per the TOML 1.0 spec a basic string must escape backslash and
-// double quote and may not contain a raw control character; the compact forms
-// are used where they exist and \uXXXX otherwise. Invalid UTF-8 is escaped
-// byte by byte rather than silently replaced.
+// codexTOMLString renders s as a TOML basic string, quotes included. A value
+// with a newline becomes a multi-line basic string, so it reads as written.
+// Backslashes, quotes and control characters are escaped in both forms, so a
+// body containing `"""` or ending in a backslash cannot end the literal early.
 func codexTOMLString(s string) string {
+	return codexTOMLBasicString(s, strings.Contains(s, "\n"))
+}
+
+// codexTOMLKey renders s as a quoted key. A table header cannot hold a
+// multi-line string, so a newline stays escaped.
+func codexTOMLKey(s string) string {
+	return codexTOMLBasicString(s, false)
+}
+
+func codexTOMLBasicString(s string, multi bool) string {
 	var b strings.Builder
-	b.Grow(len(s) + 2)
-	b.WriteByte('"')
+	b.Grow(len(s) + 8)
+	if multi {
+		b.WriteString("\"\"\"\n")
+	} else {
+		b.WriteByte('"')
+	}
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		if r == utf8.RuneError && size == 1 {
@@ -242,7 +284,11 @@ func codexTOMLString(s string) string {
 		case '\f':
 			b.WriteString(`\f`)
 		case '\n':
-			b.WriteString(`\n`)
+			if multi {
+				b.WriteByte('\n')
+			} else {
+				b.WriteString(`\n`)
+			}
 		case '\r':
 			b.WriteString(`\r`)
 		case '\t':
@@ -259,7 +305,11 @@ func codexTOMLString(s string) string {
 		}
 		i += size
 	}
-	b.WriteByte('"')
+	if multi {
+		b.WriteString(`"""`)
+	} else {
+		b.WriteByte('"')
+	}
 	return b.String()
 }
 
@@ -364,13 +414,24 @@ func codexMatcherFor(tools []string) (matcher string, dropped []string, ok bool)
 	return strings.Join(tokens, "|"), dropped, true
 }
 
+// codexSpawnGuardMatcher matches every codex multi-agent tool, so the guard
+// is deny-by-default among them (ADR 0126). codex joins namespace and tool
+// with no separator (`collaborationspawn_agent`) except the bare V1
+// `spawn_agent`, and compiles a matcher holding a character outside
+// [A-Za-z0-9_|] as an unanchored regex.
+const codexSpawnGuardMatcher = "^(multi_agent_v1|collaboration)|(spawn|resume)_agent$"
+
+// codexSpawnGuardMode is the adapter argument that selects the spawn policy
+// in place of a hook-script phase.
+const codexSpawnGuardMode = "SpawnGuard"
+
 // codexHooksJSON renders $CODEX_HOME/hooks.json from the runtime-neutral
 // security.HookPlan, and returns the notes Bootstrap prints for tools that
 // have no codex counterpart.
 //
-// One handler per plan group, invoking the adapter with the phase and the
-// group's scripts, so the scripts still run in plan order inside one process
-// — the ordering the PostToolUse chain depends on.
+// The spawn guard first, then one handler per plan group, so the group's
+// scripts still run in plan order inside one process — the ordering the
+// PostToolUse chain depends on.
 //
 // python is the absolute interpreter path Bootstrap resolved, rendered with
 // `-I`: codex spawns a hook through the shell it inherits, *after* the
@@ -393,6 +454,18 @@ func codexHooksJSON(configDir, python string, hooks security.SandboxHookConfig) 
 	}
 	var notes []string
 	adapter := configDir + "/" + codexAdapterFile
+
+	// The spawn guard is always element 0 of PreToolUse, even with every
+	// sandbox hook off: codex may start a child only under the runner's
+	// policy. It takes no script; the policy is the adapter's own.
+	cfg.Hooks[string(security.HookPhasePreToolUse)] = []codexHookMatcherSet{{
+		Matcher: codexSpawnGuardMatcher,
+		Hooks: []codexHookEntry{{
+			Type:    "command",
+			Command: strings.Join([]string{python, "-I", adapter, codexSpawnGuardMode}, " "),
+			Timeout: security.HookTimeoutSeconds,
+		}},
+	}}
 
 	for _, g := range security.HookPlan(hooks) {
 		if g.Phase == security.HookPhasePostToolUseFailure {

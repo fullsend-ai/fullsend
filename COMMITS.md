@@ -25,6 +25,7 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 | `ci` | CI/CD pipeline changes | No |
 | `perf` | Performance improvement | Yes — under **Others** |
 | `build` | Build system or dependency changes | No |
+| `style` | Formatting only, no logic change | No |
 
 ## `feat` is for end users
 
@@ -42,7 +43,7 @@ The `feat` prefix populates the **Features** section of our release notes. End u
 - Tightening internal heuristics, adjusting prompts, or tuning agent behavior that users don't directly control → `refactor` or `fix` depending on whether it corrects a defect
 - Addressing review feedback on an existing PR → `fix` or `refactor`, not `feat`
 
-Apply the same discipline to `fix` — bumping a dependency version is `chore`, not `fix`, unless it corrects a user-visible bug. Removing a trailing blank line is `chore`, not `fix`.
+Apply the same discipline to `fix` — bumping a dependency version is `chore`, not `fix`, unless it corrects a user-visible bug. Removing a trailing blank line is `style`, not `fix`.
 
 **When in doubt, prefer `refactor` or `chore` over `feat` or `fix`.** A change miscategorized as `refactor` is harmless — it shows up in a lower section of the release notes. A change miscategorized as `feat` erodes the signal of the Features list.
 

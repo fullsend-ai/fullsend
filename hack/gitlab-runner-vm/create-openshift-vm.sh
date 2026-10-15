@@ -5,13 +5,30 @@
 # This script:
 #   1. Auto-numbers the VM (fullsend-gitlab-runner-01, -02, ...)
 #   2. Creates the VM on OpenShift Virtualization from vm.yaml
-#   3. Waits for it to boot and accept SSH (~2 minutes)
+#   3. Waits for it to boot and accept SSH (~2 minutes), then for cloud-init
+#      to install the base packages. If cloud-init did not install them
+#      (e.g. a repo failure), pushes vm.yaml's bootcmd repo repair to the guest
+#      and re-runs the cloud-init package module once before giving up
 #   4. Registers a new runner via the GitLab API, or joins an existing
 #      runner pool when RUNNER_TOKEN is set (runner-hub)
 #   5. Copies setup files and runs setup.sh to configure the custom
-#      executor, OpenShell gateway, and pre-pull images
+#      executor, OpenShell gateway, and pre-pull images, then verifies the
+#      service and the registration against GITLAB_URL
 #
 # When done, the runner is online and accepting jobs tagged with RUNNER_TAG.
+# GITLAB_URL is the only GitLab instance the runner is registered with.
+#
+# Recovering from a failed run: re-run with --resume NUMBER. Resume reuses
+# the existing VM and repeats steps 3-5; everything it runs is idempotent,
+# so it is safe to repeat until it succeeds. It never adds a second
+# registration for the VM:
+#   - RUNNER_TOKEN mode never creates registrations.
+#   - GL_TOKEN mode looks up the runner registered for this VM
+#     ("NAMESPACE/vm-name") first. If that runner exists and the VM holds its
+#     config, it is reused. If no runner exists (a failed run deregisters the
+#     runner it created), a new one is registered and any stale VM-side
+#     config is replaced. If a runner exists but the VM never received its
+#     token, resume refuses — delete and recreate instead.
 #
 # setup.sh (step 5) is idempotent — safe to re-run in place as a
 # developer/debug convenience. Recreation is the two-command compliance
@@ -53,7 +70,10 @@
 #                           tags, so merge-request pipelines never match.
 #
 # Arguments:
-#   [NUMBER]  — optional runner number (e.g. 01, 03). Auto-increments if omitted.
+#   [NUMBER]          — optional runner number (e.g. 01, 03). Auto-increments if omitted.
+#   --resume NUMBER   — finish provisioning the existing VM NUMBER after a
+#                       failed run (see "Recovering from a failed run" above).
+#                       Takes the same environment variables as the create run.
 #
 # Examples:
 #   # Group-scoped runner (recommended):
@@ -75,6 +95,11 @@
 #   RUNNER_TOKEN=glrt-xxx \
 #     GITLAB_URL=https://gitlab.example.com NAMESPACE=my-namespace \
 #     RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 ./create-openshift-vm.sh 05
+#
+#   # Finish provisioning VM 05 after a failed run (same environment):
+#   RUNNER_TOKEN=glrt-xxx \
+#     GITLAB_URL=https://gitlab.example.com NAMESPACE=my-namespace \
+#     RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 ./create-openshift-vm.sh --resume 05
 #
 set -euo pipefail
 
@@ -115,7 +140,7 @@ source "${SCRIPT_DIR}/lib.sh"
 # Validate inputs
 # ----------------------------------------------------------------------
 usage() {
-  echo "Usage: {RUNNER_TOKEN=glrt-xxx | GL_TOKEN=glpat-xxx {GROUP_ID=<id>|PROJECT_ID=<id>}} $0 [NUMBER]"
+  echo "Usage: {RUNNER_TOKEN=glrt-xxx | GL_TOKEN=glpat-xxx {GROUP_ID=<id>|PROJECT_ID=<id>}} $0 [NUMBER | --resume NUMBER]"
   echo ""
   echo "Run '$0' with --help for details."
 }
@@ -126,6 +151,17 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   # (no hardcoded line numbers).
   awk 'NR==1{next} /^[^#]/{exit} {sub(/^# ?/, ""); print}' "$0"
   exit 0
+fi
+
+resume=false
+if [ "${1:-}" = "--resume" ]; then
+  resume=true
+  shift
+  if [ -z "${1:-}" ]; then
+    echo "ERROR: --resume requires the NUMBER of the VM to finish provisioning" >&2
+    usage >&2
+    exit 1
+  fi
 fi
 
 if uses_runner_token; then
@@ -235,51 +271,66 @@ else
   vm_name="${PREFIX}-${next}"
 fi
 
-echo "==> Creating VM: ${vm_name} in ${NAMESPACE}"
-
-# ----------------------------------------------------------------------
-# 2. Apply the VM manifest
-# ----------------------------------------------------------------------
-if oc -n "${NAMESPACE}" get vm "${vm_name}" >/dev/null 2>&1; then
-  echo "ERROR: VM ${vm_name} already exists in ${NAMESPACE}. To recreate it, drain and delete with ./delete-openshift-vm.sh ${vm_name} (which drains in-flight jobs), then re-run create. Or choose a different number." >&2
-  exit 1
-fi
-
 if ! [[ "${vm_name}" =~ ^[a-z0-9-]+$ ]]; then
   echo "ERROR: vm_name contains invalid characters: ${vm_name}" >&2
   exit 1
 fi
 
-SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-}"
-if [ -z "${SSH_PUBLIC_KEY}" ]; then
-  if [ -f "${HOME}/.ssh/id_rsa.pub" ]; then
-    SSH_PUBLIC_KEY=$(cat "${HOME}/.ssh/id_rsa.pub")
-  elif [ -f "${HOME}/.ssh/id_ed25519.pub" ]; then
-    SSH_PUBLIC_KEY=$(cat "${HOME}/.ssh/id_ed25519.pub")
-  else
-    echo "ERROR: SSH_PUBLIC_KEY not set and no key found in ~/.ssh/" >&2
+# ----------------------------------------------------------------------
+# 2. Apply the VM manifest (skipped by --resume, which reuses the VM)
+# ----------------------------------------------------------------------
+if [ "${resume}" = "true" ]; then
+  echo "==> Resuming provisioning of VM: ${vm_name} in ${NAMESPACE}"
+  if ! oc -n "${NAMESPACE}" get vm "${vm_name}" >/dev/null 2>&1; then
+    echo "ERROR: VM ${vm_name} not found in ${NAMESPACE} — nothing to resume. Run without --resume to create it." >&2
     exit 1
   fi
-fi
+else
+  echo "==> Creating VM: ${vm_name} in ${NAMESPACE}"
 
-if [[ "${SSH_PUBLIC_KEY}" == *$'\n'* ]]; then
-  echo "ERROR: SSH_PUBLIC_KEY must not contain newlines" >&2
-  exit 1
-fi
-if ! [[ "${SSH_PUBLIC_KEY}" =~ ^(ssh-|ecdsa-) ]]; then
-  echo "ERROR: SSH_PUBLIC_KEY must contain key contents (e.g. ssh-rsa AAAA...), not a file path" >&2
-  exit 1
-fi
+  if oc -n "${NAMESPACE}" get vm "${vm_name}" >/dev/null 2>&1; then
+    echo "ERROR: VM ${vm_name} already exists in ${NAMESPACE}. If its provisioning failed, finish it with: $0 --resume ${next} (same environment). To recreate it, drain and delete with ./delete-openshift-vm.sh ${vm_name} (which drains in-flight jobs), then re-run create. Or choose a different number." >&2
+    exit 1
+  fi
 
-python3 -c "
+  SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY:-}"
+  if [ -z "${SSH_PUBLIC_KEY}" ]; then
+    if [ -f "${HOME}/.ssh/id_rsa.pub" ]; then
+      SSH_PUBLIC_KEY=$(cat "${HOME}/.ssh/id_rsa.pub")
+    elif [ -f "${HOME}/.ssh/id_ed25519.pub" ]; then
+      SSH_PUBLIC_KEY=$(cat "${HOME}/.ssh/id_ed25519.pub")
+    else
+      echo "ERROR: SSH_PUBLIC_KEY not set and no key found in ~/.ssh/" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ "${SSH_PUBLIC_KEY}" == *$'\n'* ]]; then
+    echo "ERROR: SSH_PUBLIC_KEY must not contain newlines" >&2
+    exit 1
+  fi
+  if ! [[ "${SSH_PUBLIC_KEY}" =~ ^(ssh-|ecdsa-) ]]; then
+    echo "ERROR: SSH_PUBLIC_KEY must contain key contents (e.g. ssh-rsa AAAA...), not a file path" >&2
+    exit 1
+  fi
+
+  python3 -c "
 import sys
 template = sys.stdin.read()
 print(template.replace('__VM_NAME__', sys.argv[1]).replace('__SSH_PUBLIC_KEY__', sys.argv[2]).replace('__VM_USER__', sys.argv[3]), end='')
 " "${vm_name}" "${SSH_PUBLIC_KEY}" "${VM_USER}" < "${TEMPLATE}" \
-  | oc create -n "${NAMESPACE}" -f -
+    | oc create -n "${NAMESPACE}" -f -
+fi
 
+# Recovery hint for every failure from here on: resume is idempotent and
+# never duplicates a registration, so it is the first thing to try.
+resume_hint() {
+  echo "  NOTE: VM ${vm_name} is not fully provisioned. Fix the cause above, then finish it with the same environment:" >&2
+  echo "    $0 --resume ${next}" >&2
+}
 cleanup_vm() {
-  echo "  NOTE: VM ${vm_name} was created — to clean up run:" >&2
+  resume_hint
+  echo "  Or delete it:" >&2
   echo "    NAMESPACE=${NAMESPACE} GL_TOKEN=\$GL_TOKEN GITLAB_URL=${GITLAB_URL} ./delete-openshift-vm.sh ${vm_name}" >&2
 }
 trap cleanup_vm ERR
@@ -310,18 +361,101 @@ done
 # Wait for cloud-init to finish installing packages (podman, curl, git, python3).
 # Bounded at 10 minutes to match the SSH readiness loop.
 echo "==> Waiting for cloud-init to complete..."
-if ! timeout 600 virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
+cloud_init_rc=0
+timeout 600 virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
   -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
-  -c "cloud-init status --wait" 2>&1; then
-  echo "ERROR: cloud-init failed or timed out — check cloud-init logs on the VM" >&2
+  -c "cloud-init status --wait" 2>&1 || cloud_init_rc=$?
+if [ "${cloud_init_rc}" -eq 124 ]; then
+  echo "ERROR: cloud-init did not finish within 10 minutes — check cloud-init logs on the VM" >&2
   cleanup_vm
   exit 1
+fi
+
+# What later steps need from cloud-init is the base packages, so check for
+# them rather than trusting the status alone. If they are missing (a repo
+# failure in package_update_upgrade_install, or a VM created from an older
+# vm.yaml), push vm.yaml's current bootcmd repo repair to the guest and re-run
+# the package module once. `cloud-init single --name bootcmd` would re-run the
+# VM's own (possibly older) user data, and --resume does not re-apply the
+# manifest, so the repair commands are sent explicitly. Keep BASE_PACKAGES in
+# step with vm.yaml's packages: list.
+BASE_PACKAGES="podman curl git python3 openssl"
+base_packages_installed() {
+  virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
+    -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
+    -c "rpm -q ${BASE_PACKAGES} >/dev/null"
+}
+# Print each bootcmd entry of vm.yaml's cloud-config, one per line (plain
+# double-quoted YAML strings; keep in step with vm_test.sh's extractor).
+extract_repo_repair() {
+  python3 - "${TEMPLATE}" <<'PY'
+import re, sys
+lines = open(sys.argv[1]).read().splitlines()
+start = next(i for i, l in enumerate(lines) if l.strip() == "bootcmd:")
+indent = len(lines[start]) - len(lines[start].lstrip())
+for line in lines[start + 1:]:
+    m = re.match(r'^(\s*)- "(.*)"\s*$', line)
+    if not m or len(m.group(1)) <= indent:
+        break
+    if "\\" in m.group(2):
+        sys.exit("bootcmd entry contains a backslash; extend extract_repo_repair to unescape it")
+    print(m.group(2))
+PY
+}
+if ! base_packages_installed; then
+  echo "  WARN: cloud-init did not install the base packages (status exit ${cloud_init_rc}) — re-running repo repair and package install" >&2
+  if ! repo_repair=$(extract_repo_repair) || [ -z "${repo_repair}" ]; then
+    echo "ERROR: could not read the bootcmd repo repair from ${TEMPLATE}" >&2
+    cleanup_vm
+    exit 1
+  fi
+  if ! printf '%s\n' "${repo_repair}" | timeout 900 virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
+    -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
+    -c "sudo sh -es" 2>&1 \
+    || ! timeout 900 virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
+    -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
+    -c "sudo cloud-init single --name package_update_upgrade_install --frequency always" 2>&1 \
+    || ! base_packages_installed; then
+    echo "ERROR: base packages (${BASE_PACKAGES}) are still missing — check /var/log/cloud-init.log and /etc/yum.repos.d on the VM" >&2
+    cleanup_vm
+    exit 1
+  fi
+elif [ "${cloud_init_rc}" -ne 0 ]; then
+  echo "  WARN: cloud-init reported errors (status exit ${cloud_init_rc}), but the base packages are installed — continuing" >&2
 fi
 echo "  OK: cloud-init complete"
 
 # ----------------------------------------------------------------------
 # 4. Register a runner via the GitLab API, or join an existing pool
 # ----------------------------------------------------------------------
+# On --resume in GL_TOKEN mode, decide whether this VM already has a runner
+# before registering one, so repeating resume never duplicates a
+# registration (see resume_registration_check in lib.sh). RUNNER_TOKEN mode
+# never creates registrations, and setup.sh's register_runner already skips a
+# VM that has a config.
+ocp_ssh() {
+  virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
+    -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
+    -c "$1"
+}
+reuse_runner=false
+stale_vm_config=false
+if [ "${resume}" = "true" ] && ! uses_runner_token; then
+  echo "==> Checking for a runner already registered for ${vm_name}"
+  check_rc=0
+  resume_registration_check ocp_ssh "${vm_name}" "${NAMESPACE}/${vm_name}" \
+    "./delete-openshift-vm.sh ${vm_name}" || check_rc=$?
+  if [ "${check_rc}" -eq 2 ]; then
+    exit 1
+  elif [ "${check_rc}" -ne 0 ]; then
+    cleanup_vm
+    exit 1
+  fi
+  reuse_runner="${RESUME_REUSE_RUNNER}"
+  stale_vm_config="${RESUME_STALE_CONFIG}"
+  runner_id="${RESUME_RUNNER_ID}"
+fi
+
 if uses_runner_token; then
   echo "==> Joining existing runner pool (RUNNER_TOKEN)"
   REGISTRATION_TOKEN="${RUNNER_TOKEN}"
@@ -330,6 +464,12 @@ if uses_runner_token; then
   # Later trap sites call cleanup_runner; alias it to cleanup_vm in this mode.
   cleanup_runner() { cleanup_vm; }
   echo "  OK: using provided runner token"
+elif [ "${reuse_runner}" = "true" ]; then
+  echo "  OK: reusing runner ID ${runner_id} (already configured on ${vm_name})"
+  # setup.sh skips registration when config.toml already has a runner.
+  REGISTRATION_TOKEN=""
+  # This run did not create the runner, so a failure must not deregister it.
+  cleanup_runner() { cleanup_vm; }
 else
   echo "==> Registering runner with ${GITLAB_URL} (${RUNNER_SCOPE} ${SCOPE_ID})"
 
@@ -369,7 +509,7 @@ else
         echo "  WARN: failed to deregister runner ${runner_id} — remove it manually at ${GITLAB_URL}" >&2
       fi
     fi
-    echo "  NOTE: VM ${vm_name} was not cleaned up — run: NAMESPACE=${NAMESPACE} GL_TOKEN=\$GL_TOKEN GITLAB_URL=${GITLAB_URL} ./delete-openshift-vm.sh ${vm_name}" >&2
+    cleanup_vm
   }
   trap cleanup_runner ERR
   # ERR does not fire on Ctrl-C, and the window below spans a ~20-minute setup
@@ -390,6 +530,16 @@ else
   }
 
   echo "  OK: runner ID ${runner_id} created"
+fi
+
+if [ "${stale_vm_config}" = "true" ]; then
+  # Without this, setup.sh would see the old [[runners]] entry, skip
+  # registration, and leave the VM on a token GitLab no longer accepts.
+  echo "==> Removing stale runner config from ${vm_name}"
+  virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
+    -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
+    -c "sudo rm -f /etc/gitlab-runner/config.toml"
+  echo "  OK: stale config removed"
 fi
 
 # ----------------------------------------------------------------------

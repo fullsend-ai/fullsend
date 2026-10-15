@@ -23,9 +23,10 @@ import (
 const validManifest = `
 version: 1
 defaults:
-  allowed_remote_resources:
-    - https://resource-a.example.com/
-    - https://resource-b.example.com/
+  config:
+    allowed_remote_resources:
+      - https://resource-a.example.com/
+      - https://resource-b.example.com/
 github:
   mint_url: https://mint.example.com
   fullsend_ref: main
@@ -43,7 +44,8 @@ func TestParseSimpleManifest(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, "https://mint.example.com", m.GitHub.MintURL)
 	assert.Equal(t, "main", m.GitHub.FullsendRef)
-	assert.Equal(t, []string{"https://resource-a.example.com/", "https://resource-b.example.com/"}, m.Defaults.AllowedRemoteResources)
+	require.True(t, m.Defaults.Config.IsSet())
+	assert.Subset(t, m.Defaults.Config.Writer().AllowedResources(), []string{"https://resource-a.example.com/", "https://resource-b.example.com/"})
 	require.Len(t, m.GitHub.Repos, 2)
 	assert.Equal(t, "acme/repo-one", m.GitHub.Repos[0].Name)
 	assert.Equal(t, "acme/repo-two", m.GitHub.Repos[1].Name)
@@ -704,7 +706,7 @@ func TestResolveConfig_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, "repo-one", cfg.Repo)
 	assert.Equal(t, "https://mint.example.com", cfg.MintURL)
 	assert.Equal(t, "main", cfg.FullsendRef)
-	assert.Equal(t, []string{"https://resource-a.example.com/", "https://resource-b.example.com/"}, cfg.AllowedRemoteResources)
+	assert.Subset(t, cfg.Managed.AllowedResources(), []string{"https://resource-a.example.com/", "https://resource-b.example.com/"})
 }
 
 func TestResolveConfig_PlatformFields(t *testing.T) {
@@ -1117,7 +1119,7 @@ unknown_section: true
 func TestParseManifestBytes_EmptyAndCommentOnlyInput(t *testing.T) {
 	// yaml.Decoder.Decode returns io.EOF for empty or comment-only input.
 	// parseManifestBytes must treat this as a no-op (matching the old
-	// yaml.Unmarshal behavior) so callers like SetDefault can handle
+	// yaml.Unmarshal behavior) so callers can handle
 	// empty manifest files as zero-value manifests.
 	tests := []struct {
 		name  string
@@ -1373,6 +1375,142 @@ func TestDistinctForges_SingleForge(t *testing.T) {
 
 	forges := m.DistinctForges()
 	assert.Equal(t, []string{"github"}, forges)
+}
+
+func TestUndeclaredSelectors(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "acme/api"}, {Name: "widgets/*"}},
+		},
+		GitLab: &PlatformConfig{
+			URL:   "https://gitlab.example.com",
+			Repos: []RepoEntry{{Name: "group/sub/project"}},
+		},
+	}
+
+	undeclared, err := m.UndeclaredSelectors(nil)
+	require.NoError(t, err)
+	assert.Empty(t, undeclared)
+
+	undeclared, err = m.UndeclaredSelectors([]string{
+		"acme/api",          // explicit entry
+		"ACME/API",          // case-insensitive
+		"widgets/gadget",    // covered by a glob entry
+		"group/sub/project", // GitLab nested path
+		"acme/*",            // glob: judged against resolved repositories
+		"other/*",           // glob: not judged from the manifest alone
+		"acme/web",          // not declared
+		"nonsense",          // not an owner/repo name
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/web", "nonsense"}, undeclared)
+
+	// Glob selectors are only syntax-checked here.
+	_, err = m.UndeclaredSelectors([]string{"acme/["})
+	require.Error(t, err, "an invalid glob selector is an error")
+}
+
+func TestVendorSelected(t *testing.T) {
+	yes, no := true, false
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "acme/api"}, {Name: "acme/vendored", Vendor: &yes}},
+		},
+	}
+
+	got, err := m.VendorSelected([]string{"acme/api"})
+	require.NoError(t, err)
+	assert.False(t, got)
+
+	got, err = m.VendorSelected([]string{"acme/vendored"})
+	require.NoError(t, err)
+	assert.True(t, got)
+
+	got, err = m.VendorSelected(nil)
+	require.NoError(t, err)
+	assert.True(t, got, "an empty filter selects every entry")
+
+	m.Defaults.Vendor = &yes
+	m.GitHub.Repos[1].Vendor = &no
+	got, err = m.VendorSelected([]string{"acme/api"})
+	require.NoError(t, err)
+	assert.True(t, got, "defaults.vendor applies to entries without their own value")
+
+	got, err = m.VendorSelected([]string{"acme/vendored"})
+	require.NoError(t, err)
+	assert.False(t, got, "an entry's vendor: false overrides defaults")
+
+	_, err = m.VendorSelected([]string{"acme/["})
+	require.Error(t, err)
+}
+
+// A concrete filter name resolves vendoring with explicit-entry and
+// first-glob precedence, not through any entry that merely may match.
+func TestVendorSelected_Precedence(t *testing.T) {
+	yes, no := true, false
+
+	t.Run("explicit entry overrides vendored glob", func(t *testing.T) {
+		m := &Manifest{
+			Version: 1,
+			GitHub: &PlatformConfig{
+				Repos: []RepoEntry{
+					{Name: "acme/*", Vendor: &yes},
+					{Name: "acme/api", Vendor: &no},
+				},
+			},
+		}
+		got, err := m.VendorSelected([]string{"acme/api"})
+		require.NoError(t, err)
+		assert.False(t, got, "explicit vendor: false wins over the vendored glob")
+
+		got, err = m.VendorSelected([]string{"acme/web"})
+		require.NoError(t, err)
+		assert.True(t, got, "a repo covered only by the vendored glob is vendored")
+
+		got, err = m.VendorSelected([]string{"acme/*"})
+		require.NoError(t, err)
+		assert.True(t, got, "glob filters stay conservative")
+	})
+
+	t.Run("earlier glob shadows later vendored glob", func(t *testing.T) {
+		m := &Manifest{
+			Version: 1,
+			GitHub: &PlatformConfig{
+				Repos: []RepoEntry{
+					{Name: "acme/*", Vendor: &no},
+					{Name: "acme/team-*", Vendor: &yes},
+				},
+			},
+		}
+		got, err := m.VendorSelected([]string{"acme/team-a"})
+		require.NoError(t, err)
+		assert.False(t, got, "the first matching glob decides")
+
+		got, err = m.VendorSelected(nil)
+		require.NoError(t, err)
+		assert.False(t, got, "a shadowed vendored glob never wins resolution")
+	})
+}
+
+func TestResolveConfig_MintURLExplicit(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			Repos: []RepoEntry{{Name: "acme/default"}, {Name: "acme/entry", MintURL: "https://entry.example.com"}, {Name: "acme/none", MintURL: NoneSentinel}},
+		},
+	}
+	rc, _ := m.ResolveConfig("acme", "default")
+	assert.False(t, rc.MintURLExplicit, "the public-mode default is not an explicit mint_url")
+	rc, _ = m.ResolveConfig("acme", "entry")
+	assert.True(t, rc.MintURLExplicit)
+	rc, _ = m.ResolveConfig("acme", "none")
+	assert.False(t, rc.MintURLExplicit, "none clears the value")
+
+	m.GitHub.MintURL = "https://platform.example.com"
+	rc, _ = m.ResolveConfig("acme", "default")
+	assert.True(t, rc.MintURLExplicit)
 }
 
 func TestDistinctForgesFor(t *testing.T) {
@@ -1717,8 +1855,9 @@ func TestResolveConfig_PerRepoOverrides(t *testing.T) {
 	input := `
 version: 1
 defaults:
-  allowed_remote_resources:
-    - https://default.example.com/
+  config:
+    allowed_remote_resources:
+      - https://default.example.com/
 github:
   mint_url: https://mint.example.com
   fullsend_ref: v1.0.0
@@ -1727,8 +1866,9 @@ github:
     - name: acme/overrides
       fullsend_ref: v2.0.0
       mint_url: https://eu-mint.example.com
-      allowed_remote_resources:
-        - https://special.example.com/
+      config:
+        allowed_remote_resources:
+          - https://special.example.com/
 `
 	var m Manifest
 	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
@@ -1738,7 +1878,8 @@ github:
 		require.True(t, found)
 		assert.Equal(t, "https://mint.example.com", cfg.MintURL)
 		assert.Equal(t, "v1.0.0", cfg.FullsendRef)
-		assert.Equal(t, []string{"https://default.example.com/"}, cfg.AllowedRemoteResources)
+		assert.Contains(t, cfg.Managed.AllowedResources(), "https://default.example.com/")
+		assert.NotContains(t, cfg.Managed.AllowedResources(), "https://special.example.com/")
 	})
 
 	t.Run("per_repo_override_takes_precedence", func(t *testing.T) {
@@ -1746,7 +1887,10 @@ github:
 		require.True(t, found)
 		assert.Equal(t, "https://eu-mint.example.com", cfg.MintURL)
 		assert.Equal(t, "v2.0.0", cfg.FullsendRef)
-		assert.Equal(t, []string{"https://special.example.com/"}, cfg.AllowedRemoteResources)
+		// allowed_remote_resources keeps its layered merge rule: a
+		// non-empty repository list is unioned with the inherited one.
+		assert.Equal(t, "https://special.example.com/", cfg.Managed.AllowedResources()[0])
+		assert.Contains(t, cfg.Managed.AllowedResources(), "https://default.example.com/")
 	})
 }
 
@@ -1755,8 +1899,9 @@ func TestRepoEntry_PerRepoOverrideFields(t *testing.T) {
 name: acme/my-repo
 fullsend_ref: v2.0.0
 mint_url: https://eu-mint.example.com
-allowed_remote_resources:
-  - https://special.example.com/
+config:
+  allowed_remote_resources:
+    - https://special.example.com/
 `
 	var entry RepoEntry
 	err := yaml.Unmarshal([]byte(input), &entry)
@@ -1764,14 +1909,15 @@ allowed_remote_resources:
 	assert.Equal(t, "acme/my-repo", entry.Name)
 	assert.Equal(t, "v2.0.0", entry.FullsendRef)
 	assert.Equal(t, "https://eu-mint.example.com", entry.MintURL)
-	assert.Equal(t, []string{"https://special.example.com/"}, entry.AllowedRemoteResources)
+	require.True(t, entry.Config.IsSet())
+	assert.Equal(t, "https://special.example.com/", entry.Config.Writer().AllowedResources()[0])
 }
 
 func TestMarshalRoundTrip_PerRepoOverrides(t *testing.T) {
 	m := Manifest{
 		Version: 1,
 		Defaults: DefaultsConfig{
-			AllowedRemoteResources: []string{"https://default.example.com/"},
+			Config: mustManagedConfig(t, "allowed_remote_resources:\n  - https://default.example.com/\n"),
 		},
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
@@ -1779,10 +1925,10 @@ func TestMarshalRoundTrip_PerRepoOverrides(t *testing.T) {
 			Repos: []RepoEntry{
 				{Name: "acme/inherits"},
 				{
-					Name:                   "acme/overrides",
-					FullsendRef:            "v2.0.0",
-					MintURL:                "https://eu-mint.example.com",
-					AllowedRemoteResources: []string{"https://special.example.com/"},
+					Name:        "acme/overrides",
+					FullsendRef: "v2.0.0",
+					MintURL:     "https://eu-mint.example.com",
+					Config:      mustManagedConfig(t, "allowed_remote_resources:\n  - https://special.example.com/\n"),
 				},
 			},
 		},
@@ -1800,7 +1946,10 @@ func TestMarshalRoundTrip_PerRepoOverrides(t *testing.T) {
 	assert.Equal(t, "acme/overrides", roundTripped.GitHub.Repos[1].Name)
 	assert.Equal(t, "v2.0.0", roundTripped.GitHub.Repos[1].FullsendRef)
 	assert.Equal(t, "https://eu-mint.example.com", roundTripped.GitHub.Repos[1].MintURL)
-	assert.Equal(t, []string{"https://special.example.com/"}, roundTripped.GitHub.Repos[1].AllowedRemoteResources)
+	require.True(t, roundTripped.GitHub.Repos[1].Config.IsSet())
+	assert.Equal(t, "https://special.example.com/", roundTripped.GitHub.Repos[1].Config.Writer().AllowedResources()[0])
+	require.True(t, roundTripped.Defaults.Config.IsSet())
+	assert.Equal(t, "https://default.example.com/", roundTripped.Defaults.Config.Writer().AllowedResources()[0])
 }
 
 func TestValidate_PerRepoMintURLMustBeHTTPS(t *testing.T) {
@@ -2365,8 +2514,8 @@ func TestValidate_LocalConfigSourceIsContainedAndResolvedRelativeToManifest(t *t
 	}
 	require.NoError(t, m.Validate())
 	// The user-facing Source field must stay the relative path the
-	// operator wrote so a subsequent marshal (e.g. AddToManifest,
-	// RemoveFromManifest) round-trips it unchanged; only the internal
+	// operator wrote so a subsequent marshal (e.g. RemoveFromManifest,
+	// WriteManifest) round-trips it unchanged; only the internal
 	// fetch-time source is resolved to an absolute, manifest-relative path.
 	assert.Equal(t, "presets/base.yaml", m.Defaults.ConfigBase.Source)
 	assert.Equal(t, filepath.Join(base, "presets/base.yaml"), m.Defaults.ConfigBase.configSource())
@@ -2400,32 +2549,36 @@ func TestManifest_RuntimeResolvesAndValidates(t *testing.T) {
 	t.Parallel()
 	m := &Manifest{
 		Version:  1,
-		Defaults: DefaultsConfig{Runtime: "pi"},
+		Defaults: DefaultsConfig{Config: mustManagedConfig(t, "runtime: pi\n")},
 		GitHub: &PlatformConfig{Repos: []RepoEntry{
 			{Name: "acme/a"},
-			{Name: "acme/b", Runtime: "claude"},
-			{Name: "acme/c", Runtime: NoneSentinel},
+			{Name: "acme/b", Config: mustManagedConfig(t, "runtime: claude\n")},
 		}},
 	}
 	require.NoError(t, m.Validate())
 
 	rc, ok := m.ResolveConfig("acme", "a")
 	require.True(t, ok)
-	assert.Equal(t, "pi", rc.Runtime, "entry inherits defaults.runtime")
+	assert.Equal(t, "pi", rc.Runtime, "entry inherits defaults.config.runtime")
+	assert.Equal(t, "pi", rc.Managed.ConfigRuntime())
 	rc, _ = m.ResolveConfig("acme", "b")
-	assert.Equal(t, "claude", rc.Runtime, "entry overrides the default")
-	rc, _ = m.ResolveConfig("acme", "c")
-	assert.Equal(t, "", rc.Runtime, "none stops the chain: code default")
+	assert.Equal(t, "claude", rc.Runtime, "entry config overrides the default")
 
-	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{Runtime: "opencode"}}
+	none := &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/c"}}}}
+	rc, _ = none.ResolveConfig("acme", "c")
+	assert.Equal(t, "", rc.Runtime, "no layer declares runtime: preset or code default")
+
+	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{Config: mustManagedConfig(t, "runtime: opencode\n")}}
 	err := bad.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `defaults.runtime "opencode" is not a valid runtime`)
+	assert.Contains(t, err.Error(), "defaults.config")
+	assert.Contains(t, err.Error(), `invalid runtime "opencode"`)
 
-	bad = &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Runtime: "nope"}}}}
+	bad = &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Config: mustManagedConfig(t, "runtime: nope\n")}}}}
 	err = bad.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `github.repos[acme/x].runtime "nope"`)
+	assert.Contains(t, err.Error(), "github.repos[acme/x].config")
+	assert.Contains(t, err.Error(), `invalid runtime "nope"`)
 }
 
 func TestResolveBoolField(t *testing.T) {

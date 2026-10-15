@@ -84,6 +84,8 @@ on:
         required: false
       FULLSEND_OPENAI_API_KEY:
         required: false
+      FULLSEND_INFERENCE_GATEWAY_API_KEY:
+        required: false
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
         description: >-
           OTLP headers for ADR 0050 Level 2 trace export, forwarded to all
@@ -117,6 +119,7 @@ jobs:
       authorization_actor: ${{ steps.authorization.outputs.authorization_actor || '' }}
       authorization_actor_id: ${{ steps.authorization.outputs.authorization_actor_id || '' }}
       authorization_number: ${{ steps.authorization.outputs.authorization_number || '' }}
+      dispatch_blocked_reason: ${{ steps.authorization.outputs.dispatch_blocked_reason || '' }}
       legacy_command_applicable: ${{ steps.route.outputs.command_applicable || 'false' }}
       authorization_check_failed: ${{ steps.route.outputs.authorization_check_failed || 'false' }}
     steps:
@@ -139,6 +142,7 @@ jobs:
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
             .fullsend/config.yaml
+            .fullsend/config.base.yaml
             /OWNERS
             /OWNERS_ALIASES
           sparse-checkout-cone-mode: false
@@ -166,7 +170,7 @@ jobs:
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
           ORG_NAME: ${{ github.repository_owner }}
-          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -540,15 +544,47 @@ jobs:
           REQUESTED_STAGE: ${{ steps.route.outputs.requested_stage }}
         run: |
           set -euo pipefail
+          # Mirrors internal/config's IsKillSwitchActive(): if
+          # config.yaml sets kill_switch at all, that value is final
+          # and config.base.yaml is ignored; config.base.yaml is only
+          # consulted when config.yaml is silent on the key.
+          # -o=json normalizes every YAML null spelling (bare key, ~,
+          # Null, NULL) to the literal "null", and the true/false
+          # case variants (True, FALSE, ...) to lowercase. It does not
+          # normalize the YAML 1.1 word booleans yq treats as plain
+          # strings (yes/no/on/off print as quoted JSON strings, e.g.
+          # "yes"), so yes is matched explicitly below, where
+          # go-yaml's lenient *bool decoding also treats it as active.
+          # on/off and the single-letter y/n forms are deliberately
+          # not matched. -o=json also keeps surrounding quotes on any
+          # scalar that was itself quoted in the source YAML (e.g.
+          # kill_switch: "true" prints as the JSON string "true", not
+          # the JSON boolean true), so those quotes are stripped below
+          # before comparing, matching go-yaml's lenient *bool
+          # decoding of a quoted "true"/"yes" scalar.
+          KILL_SWITCH="false"
+          OVERLAY_KS="null"
           if [[ -f .fullsend/config.yaml ]]; then
-            KILL_SWITCH=$(yq '.kill_switch // false' .fullsend/config.yaml)
-            if [[ "$KILL_SWITCH" == "true" ]]; then
-              # Keep routing successful while marking the stage unavailable;
-              # authorization metadata must not be emitted for a disabled
-              # stage.
-              echo "::notice::Stage '${REQUESTED_STAGE}' skipped — kill switch is active"
-              echo "skipped=true" >> "${GITHUB_OUTPUT}"
+            OVERLAY_KS=$(yq -o=json '.kill_switch' .fullsend/config.yaml)
+          fi
+          if [[ "$OVERLAY_KS" != "null" ]]; then
+            KILL_SWITCH="$OVERLAY_KS"
+          elif [[ -f .fullsend/config.base.yaml ]]; then
+            BASE_KS=$(yq -o=json '.kill_switch' .fullsend/config.base.yaml)
+            if [[ "$BASE_KS" != "null" ]]; then
+              KILL_SWITCH="$BASE_KS"
             fi
+          fi
+          KILL_SWITCH="${KILL_SWITCH,,}"
+          KILL_SWITCH="${KILL_SWITCH#\"}"
+          KILL_SWITCH="${KILL_SWITCH%\"}"
+          if [[ "$KILL_SWITCH" == "true" || "$KILL_SWITCH" == "yes" ]]; then
+            # An engaged kill switch is an intentional quiet pause, not a
+            # failed workflow. Leave the stage empty and let the shared
+            # notification job tell explicit launchers that dispatch is
+            # paused, without mislabeling them as unauthorized.
+            echo "::notice::Stage '${REQUESTED_STAGE}' skipped — kill switch is active"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Validate agents config
@@ -707,6 +743,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "authorization_denied=false" >> "${GITHUB_OUTPUT}"
+          echo "dispatch_blocked_reason=" >> "${GITHUB_OUTPUT}"
           if [[ "${EVENT_NAME}" != "issue_comment" \
             || "${COMMENT_USER_TYPE}" == "Bot" \
             || "${COMMAND_APPLICABLE}" != "true" \
@@ -719,6 +756,16 @@ jobs:
             || ! "${COMMENT_USER_ID}" =~ ^[1-9][0-9]*$ \
             || ! "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ \
             || ! "${COMMENT_USER_LOGIN}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            exit 0
+          fi
+          if [[ "${KILL_SWITCH_SKIPPED}" == "true" ]]; then
+            echo "::notice::User ${COMMENT_USER_LOGIN} requested an agent while dispatch is paused by the kill switch"
+            {
+              echo "dispatch_blocked_reason=kill_switch"
+              echo "authorization_actor=${COMMENT_USER_LOGIN}"
+              echo "authorization_actor_id=${COMMENT_USER_ID}"
+              echo "authorization_number=${ISSUE_NUMBER}"
+            } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
           [[ "${KILL_SWITCH_OUTCOME}" == "success" ]] || exit 0
@@ -776,7 +823,9 @@ jobs:
     needs: [route, harness-dispatch]
     if: >-
       ${{ always() && !cancelled() &&
-          (needs.route.outputs.authorization_denied == 'true' ||
+          (needs.route.outputs.dispatch_blocked_reason == 'kill_switch' ||
+           needs.route.outputs.authorization_denied == 'true' ||
+           needs.harness-dispatch.outputs.dispatch_blocked_reason == 'kill_switch' ||
            (needs.harness-dispatch.outputs.authorization_denied == 'true' &&
             (needs.route.outputs.stage == '' ||
              needs.route.outputs.legacy_command_applicable != 'true' ||
@@ -794,6 +843,7 @@ jobs:
       ISSUE_NUMBER: ${{ needs.route.outputs.authorization_number || needs.harness-dispatch.outputs.authorization_number }}
       ACTOR_LOGIN: ${{ needs.route.outputs.authorization_actor || needs.harness-dispatch.outputs.authorization_actor }}
       ACTOR_ID: ${{ needs.route.outputs.authorization_actor_id || needs.harness-dispatch.outputs.authorization_actor_id }}
+      BLOCKED_REASON: ${{ needs.route.outputs.dispatch_blocked_reason || needs.harness-dispatch.outputs.dispatch_blocked_reason || 'authorization_denied' }}
     steps:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -908,11 +958,18 @@ jobs:
             exit 0
           fi
 
-          MARKER="<!-- fullsend:authorization-denied:${ACTOR_ID} -->"
-          BODY_FILE="${RUNNER_TEMP}/authorization-denied.md"
+          if [[ "${BLOCKED_REASON}" == "kill_switch" ]]; then
+            MARKER="<!-- fullsend:dispatch-paused:${ACTOR_ID} -->"
+            BODY_FILE="${RUNNER_TEMP}/dispatch-paused.md"
+            MESSAGE="@${ACTOR_LOGIN}, this agent request was not run because Fullsend agent dispatch is temporarily disabled for this repository. This is a repository-wide pause, not a permissions denial."
+          else
+            MARKER="<!-- fullsend:authorization-denied:${ACTOR_ID} -->"
+            BODY_FILE="${RUNNER_TEMP}/authorization-denied.md"
+            MESSAGE="@${ACTOR_LOGIN}, this agent launch was blocked because you are not authorized to launch Fullsend agents on this work item. Ask a repository maintainer for access."
+          fi
           {
             printf '%s\n\n' "${MARKER}"
-            printf '@%s, this agent launch was blocked because you are not authorized to launch Fullsend agents on this work item. Ask a repository maintainer for access.\n' "${ACTOR_LOGIN}"
+            printf '%s\n' "${MESSAGE}"
           } > "${BODY_FILE}"
           fullsend issues post-comment \
             --tracker github \
@@ -1014,6 +1071,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: triage
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1149,6 +1209,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: code
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1231,7 +1294,7 @@ jobs:
             ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number
              || fromJSON(needs.route.outputs.event_payload).issue.number }}
           ORG_NAME: ${{ github.repository_owner }}
-          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
           FULLSEND_DIR: .fullsend
         run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fetch-prior-review.sh"
@@ -1258,6 +1321,7 @@ jobs:
           PRIOR_REVIEW_SHA: ${{ steps.prior-review.outputs.prior_sha }}
           PRIOR_REVIEW_FILE: ${{ steps.prior-review.outputs.prior_review_file }}
           PRIOR_REVIEW_PROVENANCE: ${{ steps.prior-review.outputs.prior_review_provenance }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
@@ -1274,6 +1338,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: review
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1457,7 +1524,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
-          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           PR_NUM: ${{ steps.context.outputs.pr_number }}
           SOURCE_REPO: ${{ github.repository }}
         run: bash .defaults/.github/scripts/check-fix-eligibility.sh
@@ -1488,36 +1555,8 @@ jobs:
           PR_NUM: ${{ steps.context.outputs.pr_number }}
           TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
           ORG_NAME: ${{ github.repository_owner }}
-          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET }}
-        run: |
-          REVIEW_FILE="${GITHUB_WORKSPACE}/review-body.txt"
-          REVIEW_BOT="${ORG_NAME}-review[bot]"
-          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
-          CUSTOM_REVIEW_BOT=""
-          if [[ -n "${FULLSEND_APP_SET:-}" ]]; then
-            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
-          fi
-          gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
-            | jq -r --arg review_bot "${REVIEW_BOT}" \
-              --arg shared_bot "${SHARED_REVIEW_BOT}" \
-              --arg custom_bot "${CUSTOM_REVIEW_BOT}" \
-              '[.[] | select(.state == "CHANGES_REQUESTED" and
-                (.user.login == $review_bot or .user.login == $shared_bot or
-                 ($custom_bot != "" and .user.login == $custom_bot)))]
-                | last | .body // ""' \
-            > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
-          BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
-          echo "Pre-fetched review body: ${BYTE_COUNT} bytes"
-          MAX_REVIEW_BYTES=1048576
-          if [[ "${BYTE_COUNT}" -gt "${MAX_REVIEW_BYTES}" ]]; then
-            echo "::error::Review body is ${BYTE_COUNT} bytes (max: ${MAX_REVIEW_BYTES})"
-            exit 1
-          fi
-          if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ && "${BYTE_COUNT}" -le 1 ]]; then
-            echo "::error::Bot-triggered run but review body is empty — nothing to fix"
-            exit 1
-          fi
-          echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT}"
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+        run: bash .defaults/.github/scripts/pre-fetch-review-body.sh
 
       - name: Setup agent environment
         env:
@@ -1562,6 +1601,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: fix
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1668,6 +1710,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: retro
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1760,6 +1805,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: prioritize
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
@@ -1782,6 +1830,7 @@ jobs:
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
       authorization_denied: ${{ steps.dispatch.outputs.authorization_denied || 'false' }}
+      dispatch_blocked_reason: ${{ steps.dispatch.outputs.dispatch_blocked_reason || '' }}
       authorization_actor: ${{ steps.dispatch.outputs.authorization_actor || '' }}
       authorization_actor_id: ${{ steps.dispatch.outputs.authorization_actor_id || '' }}
       authorization_number: ${{ steps.dispatch.outputs.authorization_number || '' }}
@@ -2101,6 +2150,7 @@ jobs:
           FULLSEND_WORK_ITEM_KEY: ${{ steps.dispatch-env.outputs.work_item_key }}
           ISSUE_NUMBER: ${{ steps.dispatch-env.outputs.issue_number }}
           REPO_FULL_NAME: ${{ matrix.source_repo }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
@@ -2117,6 +2167,9 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}

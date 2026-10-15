@@ -5,15 +5,6 @@
 # See ADR 0033 for details.
 version: "1"
 runtime: claude
-# What the `opus` and `sonnet` aliases mean in this repo, for the parent run of
-# every agent on both runtimes and for pi sub-agents. fullsend's pinned defaults
-# are older; Vertex enables models per project, so this only works where
-# claude-opus-5-5 and claude-sonnet-5-5 are served (a pinned alias has no
-# fallback).
-models:
-    aliases:
-        opus: claude-opus-5-5
-        sonnet: claude-sonnet-5-5
 roles:
     - fullsend
     - triage

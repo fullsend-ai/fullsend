@@ -6,21 +6,19 @@ This guide provides implementation details for fullsend CLI internals: command s
 
 ```
 fullsend
-├── admin                                    # All-in-one setup (GCP + GitHub)
+├── admin                                    # Manage fullsend installation for a repository
 │   ├── install      <org|owner/repo>        # Full infrastructure setup
-│   ├── uninstall    <org>                   # Tear down (reverse layer order)
-│   ├── analyze      <org>                   # Health check installed state
-│   ├── enable
-│   │   └── repos    <org> [repo...]         # Enable agent on repos
-│   └── disable
-│       └── repos    <org> [repo...]         # Disable agent on repos
+│   └── foreign                              # Cross-org mint authorization (FULLSEND_FOREIGN_<ROLE>_REPOS)
+│       ├── allow                            # Authorize a foreign org/repo to mint for a role
+│       ├── list                             # List foreign caller allowlists
+│       └── revoke                           # Remove a foreign caller from a role allowlist
 ├── mint                                     # Token mint management
 │   ├── deploy                               # Deploy/update mint Cloud Function
 │   ├── delete                               # Tear down mint infrastructure
 │   ├── add-role       <role>                # Register role PEM + ROLE_APP_IDS entry
 │   ├── remove-role    <role>                # Remove role from mint
 │   ├── enroll       <owner/repo>            # Register repo in mint
-│   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
+│   ├── unenroll     <owner/repo>            # Remove repo from mint
 │   ├── status       [org]                   # Inspect mint state and PEM health
 │   │   ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
 │   │   ├── --project <id>                   #   GCP project ID (direct infra queries)
@@ -35,6 +33,8 @@ fullsend
 │   ├── provision    <org|owner/repo>        # Create WIF pool/provider for Agent Platform
 │   ├── deprovision  <org|owner/repo>        # Remove WIF access for org or repo
 │   ├── status       <org|owner/repo>        # Check WIF health, print config
+│   ├── gateway                              # Inference gateway route (ADR 0137)
+│   │   └── status   <owner/repo>            # Resolved block and source, and the gateway inside Actions
 │   └── openai                               # OpenAI WIF enrolment (GPT on pi or codex)
 │       ├── request  <owner/repo>[,...]      # Generate the provider/mapping request for an admin
 │       │   ├── --audience <string>          #   Provider audience (default: fullsend://<owner>)
@@ -53,24 +53,18 @@ fullsend
 │   └── set          <owner/repo> <key> <value> # Update a config value
 ├── repos                                    # Manage per-repo installations via manifest
 │   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
-│   ├── install      [repos...]              # Converge repos to desired state (provision, repair drift, upgrade)
-│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
+│   ├── install      [repos...]              # Converge declared repos to repos.yaml (provision, repair drift, upgrade); positional args only filter declared entries
+│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml; must exist)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
-│   │   ├── --vertex-project <id>            #   GCP project ID for Vertex inference (install-time only)
-│   │   ├── --vertex-wif-provider <path>     #   Full WIF provider resource name (uses verbatim; skips per-repo derivation)
+│   │   ├── --force                          #   Allow scaffold ref downgrades
+│   │   ├── --reactivate-schedules           #   Re-enable disabled GitLab pipeline schedules
+│   │   ├── --vertex-project <id>            #   GCP project ID for Vertex inference (else declared inference.project; never in repos.yaml)
+│   │   ├── --vertex-wif-provider <path>     #   Full WIF provider resource name (else declared inference.wif_provider; skips per-repo derivation)
 │   │   ├── --openai-api-key <key>           #   FULLSEND_OPENAI_API_KEY for openai-api-key repos (CLI-only; never in repos.yaml)
-│   │   ├── --forge <type>                   #   Forge type for new repos (github or gitlab)
-│   │   ├── --vertex-region <region>         #   Per-repo GCP inference region override
-│   │   ├── --fullsend-ref <ref>             #   Per-repo fullsend workflow ref override
-│   │   ├── --mint-url <url>                 #   Per-repo mint URL override
-│   │   ├── --app-set <prefix>               #   GitHub App set prefix override ($FULLSEND_APP_SET); GitHub-only
-│   │   ├── --allowed-remote-resources <list> #  Per-repo allowed remote resources override
-│   │   ├── --inference-auth <method>        #   vertex-wif or openai-api-key; persisted as inference.auth on each selected manifest entry (a repo covered only by a glob gets its own copied entry); never changes defaults or forge sections
-│   │   ├── --vendor                         #   Vendor binary and content into each repo for offline CI
-│   │   ├── --gitlab-url <url>               #   GitLab instance URL; sets gitlab.url in the manifest
+│   │   ├── --fullsend-binary <path>         #   Pre-built binary to vendor (requires a selected repo with vendor: true)
+│   │   ├── --fullsend-source <path>         #   Source checkout to vendor from (requires a selected repo with vendor: true)
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
 │   │   ├── --gitlab-role-token role=token   #   Administrator-provided GitLab role PAT (repeatable)
 │   │   ├── --rotate-gitlab-roles            #   Force-rotate GitLab role credentials
@@ -84,18 +78,21 @@ fullsend
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --manifest-only                  #   Remove from manifest without tearing down
 │   │   └── --uninstall-only                 #   Tear down without removing from manifest
-│   ├── status                               # Compare manifest against actual repo state (includes declared config-preset and managed configuration drift)
+│   ├── status                               # Compare manifest against actual repo state (includes declared config-preset, undeclared-base and managed configuration drift; both layers are checked before first install)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --json                           #   Emit JSON output instead of table
 │   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
+│   ├── set          <path> <value>          # Set any writable repos.yaml field, validated against the manifest schema (comments and ordering preserved)
+│   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml; created if missing)
+│   │   └── --unset                          #   Remove the key at <path> instead of setting it (omit <value>)
 ├── agent                                    # Generate and manage agents in config (--fullsend-dir default: .fullsend)
 │   ├── new          <name>                   # Generate a complete custom agent and register it
 │   │   ├── --role <name>                    #   Mint role: triage|review|coder|retro|prioritize
 │   │   ├── --on <preset>                    #   Trigger preset (command:/label:/issue-opened/pr-opened)
 │   │   ├── --trigger <cel>                  #   Raw CEL trigger (mutually exclusive with --on)
 │   │   ├── --runtime <claude|pi|codex>      #   Runtime in config.yaml; shapes Vertex vs OpenAI harness fields
-│   │   ├── --model <alias|id>               #   Model (opus default; OpenAI id required for codex)
+│   │   ├── --model <alias|id>               #   Model (opus default; OpenAI id or gateway/<model> for codex)
 │   │   ├── -f, --file <spec.yaml>           #   Read the agent definition from a spec file
 │   │   ├── --validation-loop                #   Add a schema validation_loop
 │   │   ├── --no-register                    #   Write files without touching config.yaml
@@ -139,18 +136,25 @@ fullsend
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
 ├── issues                                   # Read and write issue content across trackers
-│   ├── get                                  #   Read issue content (title, body, comments, labels)
+│   ├── get                                  #   Read issue content (title, type, body, comments, labels, Jira custom fields)
 │   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
 │   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
-│   │   └── --number <int>                   #     Issue number
-│   └── post-comment                         #   Post or update a sticky comment on an issue
-│       ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
-│       ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
-│       ├── --number <int>                   #     Issue number
-│       ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
-│       ├── --keep-history                   #     Append previous content as collapsed history (default true)
-│       ├── --only-if-exists                 #     Update an existing marked comment, never create one
-│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
+│   │   ├── --number <int>                   #     Issue number
+│   │   └── --fields <ids>                   #     Jira custom field IDs (customfield_<digits>) to include under custom_fields (Jira only)
+│   ├── post-comment                         #   Post or update a sticky comment on an issue
+│   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
+│   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
+│   │   ├── --number <int>                   #     Issue number
+│   │   ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
+│   │   ├── --keep-history                   #     Append previous content as collapsed history (default true)
+│   │   ├── --only-if-exists                 #     Update an existing marked comment, never create one
+│   │   └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
+│   └── link                                 #   Create a typed link between two issues (Jira only)
+│       ├── --tracker <tracker>              #     Tracker backend; github/gitlab return "not supported"
+│       ├── --from <key>                     #     Source issue key (e.g. PROJ-123)
+│       ├── --to <key>                       #     Target issue key (e.g. PROJ-456)
+│       ├── --type <name>                    #     Link type name (e.g. Blocks), passed through verbatim
+│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves default --tracker)
 ├── post-review                              # Post sticky PR/MR review comments (formal review is best-effort)
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
 │   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)
@@ -162,6 +166,12 @@ fullsend
 │   ├── --dry-run                            #   Print what would be posted without API calls
 │   ├── --keep-history                       #   Append previous content as collapsed history (default true)
 │   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR; resolves keep_history default)
+├── fetch-review-threads                      # Fetch PR/MR review threads as JSON
+│   ├── --repo <owner/repo>                   #   Repository in owner/repo format (required)
+│   ├── --pr <int>                            #   Pull request / merge request number (required)
+│   ├── --forge <forge>                       #   Forge backend: github (default) or gitlab
+│   ├── --token <string>                      #   Forge token (default: forge environment token)
+│   └── --base-url <url>                      #   Forge API base URL
 ├── post-comment                             # Post issue/PR comments to GitHub (deprecated)
 │   └── --token <string>                     #   GitHub token (default: $GH_TOKEN / $GITHUB_TOKEN / gh auth token)
 ├── eval-measure                             # Score wild-run traces (eval measurements)
@@ -198,6 +208,16 @@ fullsend
 ```
 
 ### Command Decomposition
+
+`fetch-review-threads` emits a JSON object containing `threads` and a
+`truncated` flag. GitHub review threads are capped at 20 pages; consumers
+must treat `truncated: true` as an incomplete result. GitLab merge-request
+discussions are mapped to the same thread model, including resolution state,
+comments, positions, and resolver identity when GitLab provides it. Each comment
+also includes `author_role` and `author_role_verified`; resolved threads include
+`resolved_by_role` and `resolved_by_role_verified`. A role is `none` with
+`verified: true` for an authoritative non-member result, and `verified: false`
+when the actor is a bot/unknown or the permission lookup fails.
 
 The `mint`, `inference`, and `github` subcommands decompose setup into role-specific operations for organizations that separate GCP and GitHub responsibilities:
 
@@ -280,7 +300,7 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 │  │ Phase 3: Mint provisioning                                 │ │
 │  │                                                            │ │
 │  │  If mint not found → deploy GCF (Provision)                │ │
-│  │  If mint exists    → register org (EnsureOrgInMint)        │ │
+│  │  If mint exists    → verify mint URL (verifyMintURL)       │ │
 │  │                    → store PEMs in Secret Manager          │ │
 │  │                                                            │ │
 │  │  Uses gcf.NewProvisioner with a shared Config{}            │ │
@@ -341,14 +361,14 @@ fullsend admin install <org>              → error: requires an owner/repo targ
 |-------|------|-------------------|
 | **1. Discover** | `DiscoverMint()`, resolve app IDs | Single repo validation |
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | Excludes "fullsend" role |
-| **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | Deploys the mint if absent, otherwise registers the owner in it (use `mint enroll <owner/repo>` separately to add repositories later) |
+| **3. Mint** | `gcf.Provision()` | Deploys the mint if absent, otherwise verifies the existing mint's URL; no org is registered (use `mint enroll <owner/repo>` separately to add repositories) |
 | **4. WIF** | `ProvisionWIF()` | `mintcore.BuildRepoProviderID()` (repo-scoped, GitHub only; GitLab uses shared `gitlab-oidc` provider) |
 | **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Writes `.fullsend/` dir + shim workflow + thin caller workflows + optional binary in target repo (committed after secrets, see #6122) |
 | **6. Secrets** | Repository secret and variable writes | Target repo + `FULLSEND_PER_REPO_INSTALL` (written before scaffold commit, see #6122) |
 
 ### Install orchestration
 
-`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation; the `Layer` types under `internal/layers` that remain (for example `VendorBinaryLayer`) are not used by CLI orchestration. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
+`runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (multi-component installation check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. The CLI no longer composes a layer stack for installation, and `internal/layers` no longer ships concrete `Layer` implementations; it keeps the `Layer` interface, `AgentCredentials`, and the vendoring helpers. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -360,7 +380,7 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
-Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `bin/fullsend` or `.fullsend/bin/fullsend` when `--vendor` is not set.
+Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `.fullsend/bin/fullsend` when `--vendor` is not set.
 
 ---
 
@@ -422,18 +442,22 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │  └── plugins/ directory                  │                   │
 │  │                                          │                   │
 │  │  Upload (single file):                   │                   │
-│  │  ├── agent definition file               │                   │
-│  │  ├── host_files (expanded ${VAR} paths)  │                   │
 │  │  ├── .env file (bootstrapEnv)            │                   │
+│  │  ├── host_files (expanded ${VAR} paths)  │                   │
+│  │  ├── agent definition file               │                   │
 │  │  └── security hooks                      │                   │
 │  │                                          │                   │
 │  │  bootstrapEnv() writes:                  │                   │
-│  │  ├── PATH=/sandbox/workspace/bin:$PATH   │                   │
+│  │  ├── PATH=/usr/local/go/bin:             │                   │
+│  │  │     $HOME/go/bin:$PATH:               │                   │
+│  │  │     /sandbox/workspace/bin (last)     │                   │
+│  │  ├── readonly FULLSEND_RUNNER_PATH       │                   │
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
 │  │  ├── FULLSEND_FETCH_URL=... (if allow_runtime_fetch)│        │
 │  │  ├── FULLSEND_FETCH_TOKEN=<run token> (if above)│            │
 │  │  ├── sources .env.d/*.env files          │                   │
+│  │  ├── PATH=$FULLSEND_RUNNER_PATH:$PATH    │                   │
 │  │  └── sources .fullsend/iteration.env     │                   │
 │  │      (FULLSEND_TIMEOUT_MINUTES +         │                   │
 │  │       FULLSEND_ITERATION_DEADLINE +      │                   │
@@ -455,8 +479,14 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                                          │                   │
 │  │ Command built by buildRunCommand():      │                   │
 │  │  cd {repoDir} &&                         │                   │
+│  │  { readonly FULLSEND_CLAUDE_BIN=         │                   │
+│  │    "$(command -v claude)" (absolute,     │                   │
+│  │    else exit 127); } &&                  │                   │
 │  │  . {envFile} &&                          │                   │
-│  │  claude --print --verbose                │                   │
+│  │  unset -f claude &&                      │                   │
+│  │  unset LD_* PYTHON* NODE_* BUN_OPTIONS &&│                   │
+│  │  "$FULLSEND_CLAUDE_BIN" --print          │                   │
+│  │    --verbose                             │                   │
 │  │    --output-format stream-json           │                   │
 │  │    [--settings {hooksSettingsPath}]      │                   │
 │  │    --model {model}                       │                   │
@@ -535,6 +565,24 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                   │ yet (tracked in fullsend-ai/agents#411)  │
 │  │                   │ — they still scan for the last iteration │
 │  │                   │ blindly.                                 │
+│  │                   │                                          │
+│  │                   │ FULLSEND_AGENT_EXIT_REASON is set when   │
+│  │                   │ the agent hit a behavioral limit rather  │
+│  │                   │ than crashing or succeeding. Known       │
+│  │                   │ subtypes: error_max_turns (turn limit),  │
+│  │                   │ error_max_budget_usd (cost limit).       │
+│  │                   │ Unlike other agent failures (which skip  │
+│  │                   │ it unless there is no validation_loop    │
+│  │                   │ and a result file parses, #8305),        │
+│  │                   │ behavioral exits still run the           │
+│  │                   │ post-script so it can report accurately  │
+│  │                   │ instead of emitting a misleading "no     │
+│  │                   │ changes needed" message. See #6877.      │
+│  │                   │                                          │
+│  │                   │ FULLSEND_AGENT_EXIT_CODE is set when a   │
+│  │                   │ run without a validation_loop runs the   │
+│  │                   │ post-script after a failed agent. See    │
+│  │                   │ #8305.                                   │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -708,13 +756,13 @@ var executableFiles = map[string]struct{}{
 | File | Lines | Purpose |
 |------|-------|---------|
 | `internal/cli/root.go` | ~34 | CLI entry point, command registration |
-| `internal/cli/admin.go` | ~2415 | Install/uninstall/analyze/enable/disable |
+| `internal/cli/admin.go` | ~1400 | `admin` command group and `admin install` |
 | `internal/cli/mint.go` | ~1022 | Mint deploy/enroll/unenroll/status |
 | `internal/cli/inference.go` | ~408 | Inference WIF provision/status (GCP) |
 | `internal/cli/inference_openai.go` | ~900 | OpenAI WIF enrolment: request document, reply import, status/exchange |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/github_client.go` | ~130 | GitHub token resolution and authenticated client construction |
-| `internal/cli/issues.go` | ~430 | Issue read/write commands (`fullsend issues get`, `post-comment`) |
+| `internal/cli/issues.go` | ~765 | Issue read/write commands (`fullsend issues get`, `post-comment`, `link`) |
 | `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |
@@ -725,12 +773,11 @@ var executableFiles = map[string]struct{}{
 | `internal/sandbox/sandbox.go` | ~459 | OpenShell sandbox operations |
 | `internal/harness/harness.go` | ~486 | Harness YAML parsing |
 | `internal/layers/layers.go` | ~159 | Layer interface and stack |
-| `internal/layers/secrets.go` | ~200 | PEM key deployment layer |
-| `internal/layers/inference.go` | ~150 | Inference credential layer |
 | `internal/scaffold/scaffold.go` | ~146 | Embedded template system |
 | `internal/inference/inference.go` | ~26 | Provider interface |
 | `internal/inference/vertex/vertex.go` | ~80 | Agent Platform (Vertex AI) implementation |
-| `internal/inference/openaiwif/openaiwif.go` | ~330 | OpenAI Workload Identity Federation token exchange (runner-side) |
+| `internal/inference/actionsoidc/actionsoidc.go` | ~250 | Provider-neutral GitHub Actions OIDC assertion fetch (inference gateway route, and the first step of the OpenAI exchange) |
+| `internal/inference/openaiwif/openaiwif.go` | ~260 | OpenAI Workload Identity Federation token exchange (runner-side) |
 | `internal/cli/run_openai.go` | ~550 | OpenAI credential resolution, run-scoped provider lifecycle and refresh |
 | `internal/config/config.go` | ~264 | Per-repo config structures |
 

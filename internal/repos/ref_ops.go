@@ -29,6 +29,10 @@ var safeRefPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 // tags follow the vX.Y.Z convention.
 var shaRefPattern = regexp.MustCompile(`(?i)^[0-9a-f]{7,40}$`)
 
+// commentSpacingPattern matches the run of spaces or tabs before an inline
+// "#" comment. replaceShimRef uses it to ignore spacing-only differences.
+var commentSpacingPattern = regexp.MustCompile(`[ \t]+#`)
+
 // isSHARef reports whether ref looks like a git commit SHA
 // (7–40 hex characters, case-insensitive).
 func isSHARef(ref string) bool {
@@ -50,12 +54,15 @@ func replaceShimRef(content []byte, newRef, newTag string, fc ForgeConfig, forge
 
 	safe := strings.ReplaceAll(suffix, "$", "$$")
 	replaced := fc.ShimRefPattern.ReplaceAllString(string(content), "${1}"+safe)
-	changed := replaced != string(content)
+	// Spacing before "#" alone is not a change: pre-#7902 one-space installs
+	// pick up two spaces on their next real ref bump.
+	changed := commentSpacingPattern.ReplaceAllString(replaced, " #") !=
+		commentSpacingPattern.ReplaceAllString(string(content), " #")
 	return []byte(replaced), changed
 }
 
 // formatRefAnnotation formats a ref with its human-readable annotation.
-// GitHub uses YAML comment syntax ("sha # tag") since annotations appear
+// GitHub uses YAML comment syntax ("sha  # tag") since annotations appear
 // inline in uses: lines. GitLab uses parenthesized syntax ("sha (tag)")
 // since annotations appear inside YAML comment markers.
 func formatRefAnnotation(ref, tag, forgeName string) string {
@@ -65,7 +72,7 @@ func formatRefAnnotation(ref, tag, forgeName string) string {
 	if forgeName == ForgeGitLab {
 		return ref + " (" + tag + ")"
 	}
-	return ref + " # " + tag
+	return ref + "  # " + tag
 }
 
 // collectGitLabUpgradeTemplates collects the GitLab CI template files

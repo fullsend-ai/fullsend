@@ -135,7 +135,7 @@ for the four-step migration to the bare built-in names above.
 | `--description` | `Custom <name> agent.` | One-line description; written to both the harness and the agent definition |
 | `--on` | `command:/fs-<name>` | Trigger preset; mutually exclusive with `--trigger` |
 | `--trigger` | | A trigger written by hand, in CEL (the expression language dispatch evaluates); mutually exclusive with `--on` |
-| `--model` | `opus` | Model for the agent. With `--runtime codex` there is no default: pass an OpenAI id such as `openai/<id>`, or the command refuses |
+| `--model` | `opus` | Model for the agent. With `--runtime codex` there is no default: pass an OpenAI id such as `openai/<id>`, or `gateway/<model>` for an [inference gateway](../runtimes/codex.md#models-through-an-inference-gateway-experimental), or the command refuses |
 | `--effort` | `high` | Effort level (`low`, `medium`, `high`, `xhigh`, `max`) |
 | `--runtime` | | Agent runtime recorded in `config.yaml` (`claude`, `pi` or `codex`); when omitted, the repo's `runtime:` default applies. The runtime and model decide which credentials the harness asks for: see [Picking a route](#picking-a-route) |
 | `--slug` | `<owner>-<name>` | Names the GitHub App to look for when the agent is installed; `<owner>` comes from the `origin` remote |
@@ -338,7 +338,7 @@ and model resolve independently (flag, then config, then default); see
 | `a trigger is required: pass --on with a preset, or --trigger` | `--trigger ""` was passed explicitly | Give a real trigger. A trigger-less agent is silently never dispatched |
 | `no .fullsend directory in the current directory; run from the repository root or pass --fullsend-dir <path>` | `--fullsend-dir` was omitted and the current directory has no `.fullsend` | Run from the repository root or pass `--fullsend-dir`. If the repo has no `.fullsend` yet, scaffold it first |
 | `fullsend dir ... does not exist; run ` + "`fullsend github setup`" + ` first` | `--fullsend-dir` points at nothing | Scaffold the repo first |
-| `runtime codex takes OpenAI model ids only, and ...: use --model openai/gpt-5.6-luna ...` | `--runtime codex`, or a repo whose `config.yaml` sets `runtime: codex`, with no `--model` or with a model that is not an OpenAI id, such as `opus` | Use `--model openai/<id>` on the same command. Nothing is written when this fires |
+| `runtime codex takes OpenAI model ids or gateway/<model> only, and ...: use --model openai/gpt-5.6-luna (or another openai/<id>, or gateway/<model> ...) ...` | `--runtime codex`, or a repo whose `config.yaml` sets `runtime: codex`, with no `--model` or with a model that is neither an OpenAI id nor `gateway/<model>`, such as `opus` | Use `--model openai/<id>` (or `gateway/<model>`) on the same command. Nothing is written when this fires |
 
 These are generation-time errors — `agent new` refuses before writing
 anything. For errors from `fullsend run` or in CI (missing credentials,
@@ -361,7 +361,7 @@ fullsend agent add harness/custom-review.yaml --name my-review
 | `--fullsend-dir` | `.fullsend` | Path to the `.fullsend` configuration directory |
 | `--name` | derived from filename | Explicit agent name |
 
-GitHub blob URLs are resolved to pinned `raw.githubusercontent.com` URLs. Non-GitHub URLs must already contain a commit SHA in the path. Local paths must be relative, must not contain path traversal (`..`), and the file must exist. If an agent with the same name already exists, the command fails.
+GitHub blob URLs are resolved to pinned `raw.githubusercontent.com` URLs. Branch names containing `/` (for example `.../blob/user/feature/harness/lint.yaml`) are resolved by probing successively longer branch candidates. If no candidate matches, the default branch is used. Non-GitHub URLs must already contain a commit SHA in the path. Local paths must be relative, must not contain path traversal (`..`), and the file must exist. If an agent with the same name already exists, the command fails.
 
 ## `agent list`
 
@@ -425,7 +425,7 @@ fullsend agent set review --subagent correctness=opus --subagent default=haiku
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`) |
 | `--runtime` | Agent runtime for this agent (`claude`, `pi` or `codex`) |
-| `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi and codex (codex takes OpenAI ids only) |
+| `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi and codex (codex takes OpenAI ids and `gateway/<model>` only) |
 | `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
 | `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference. Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (its frontmatter model, then `subagents.default`). On pi, a value that resolves to `openai/` prints a warning when the agent's local harness declares no `openai` provider; see [pi § Route a persona to OpenAI](../runtimes/pi.md#route-a-persona-to-openai) |
 
@@ -450,5 +450,5 @@ fullsend agent remove triage
 ## See also
 
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) — building custom agents and configuring existing ones
-- [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — terminology and classification
+- [Default, derived, and custom agents](../guides/user/default-vs-custom.md) — terminology and classification
 - [Configuring with skills](../guides/user/customizing-with-skills.md) — extending agents with skills

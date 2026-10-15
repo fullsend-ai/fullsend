@@ -158,9 +158,10 @@ func isVendoredReusableWorkflow(path string) bool {
 // vendoredDefaultsScripts is the explicit allowlist of .github/scripts/
 // files that ship to consumer repos. Everything here is executed in user
 // repos: check-fix-eligibility.sh directly by the vendored reusable
-// workflows, the other three by the root composite action (action.yml,
-// invoked as ./.defaults/ with GITHUB_ACTION_PATH resolving into the
-// vendored tree).
+// workflows, pre-fetch-review-body.sh by the fix job's "Pre-fetch review
+// body" step (#8353), the other three by the root composite action
+// (action.yml, invoked as ./.defaults/ with GITHUB_ACTION_PATH resolving
+// into the vendored tree).
 //
 // .github/scripts/ also hosts repo-local CI tooling and *-test.sh files
 // that must NOT ship to consumers. The directory prefix alone is
@@ -175,6 +176,7 @@ var vendoredDefaultsScripts = map[string]bool{
 	".github/scripts/install-openshell.sh":     true,
 	".github/scripts/install-podman.sh":        true,
 	".github/scripts/openshell-version.sh":     true,
+	".github/scripts/pre-fetch-review-body.sh": true,
 }
 
 // vendoredDefaultsActions is the explicit allowlist of .github/actions/

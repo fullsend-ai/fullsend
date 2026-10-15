@@ -43,7 +43,6 @@ type adminWIFProvisioner interface {
 	DiscoverMint(ctx context.Context) (*adminMintDiscovery, error)
 	ProvisionWIF(ctx context.Context) (string, error)
 	RegisterPerRepoWIF(ctx context.Context, repo string) error
-	EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error
 	DeletePerRepoWIF(ctx context.Context, repo string) error
 	DeleteWIFProvider(ctx context.Context, repo string) error
 }
@@ -543,7 +542,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			printer.StepInfo(fmt.Sprintf("  Mint URL: %s", mintDisplay))
 			printer.StepInfo(fmt.Sprintf("  Mint project: %s, region: %s", mintProject, mintRegion))
 			if mintFound {
-				printer.StepInfo(fmt.Sprintf("  Would register %s in ALLOWED_ORGS", owner))
+				printer.StepInfo(fmt.Sprintf("  Would register %s/%s in PER_REPO_WIF_REPOS", owner, repo))
 				printer.StepInfo(fmt.Sprintf("  Would use shared ROLE_APP_IDS for roles: %s", strings.Join(roles, ",")))
 			}
 		}
@@ -932,13 +931,6 @@ func (a *gcfProvisionerAdapter) RegisterPerRepoWIF(ctx context.Context, repo str
 	return a.provisioner.RegisterPerRepoWIF(ctx, repo)
 }
 
-func (a *gcfProvisionerAdapter) EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error {
-	if a.provisioner == nil {
-		return fmt.Errorf("WIF provisioner not configured")
-	}
-	return a.provisioner.EnsureOrgInMint(ctx, expectedURL, org)
-}
-
 func (a *gcfProvisionerAdapter) DeletePerRepoWIF(ctx context.Context, repo string) error {
 	if a.provisioner == nil {
 		return fmt.Errorf("WIF provisioner not configured")
@@ -965,6 +957,35 @@ type scaffoldOptions struct {
 	signOffTrailer string // e.g. "Signed-off-by: Name <email>"; appended to the commit message when non-empty
 	runtime        string // runtime written to .fullsend/config.yaml ("" = default claude); described in the PR body
 	installed      bool   // true when the repo already has fullsend installed (upgrade path)
+}
+
+// resolveSignOffTrailer resolves the authenticated user's identity through
+// the forge client and formats it as a Signed-off-by trailer. It fails
+// rather than returning a partial or misleading trailer when the identity
+// is unavailable or incomplete. setting names the option that requested the
+// trailer (e.g. "--signoff") and forgeLabel the forge (e.g. "GitHub"); both
+// appear in error messages.
+func resolveSignOffTrailer(ctx context.Context, client forge.Client, setting, forgeLabel string) (string, error) {
+	id, err := client.GetAuthenticatedUserIdentity(ctx)
+	if err != nil {
+		hint := ""
+		if forgeLabel == "GitHub" {
+			hint = " — this is not available for GitHub App tokens"
+		}
+		return "", fmt.Errorf("%s requires a %s user identity (name and email)%s: %w", setting, forgeLabel, hint, err)
+	}
+	if id == nil || id.Name == "" || id.Email == "" {
+		var name, email string
+		if id != nil {
+			name, email = id.Name, id.Email
+		}
+		return "", fmt.Errorf("%s requires a %s user identity with both name and email set (got name=%q, email=%q)", setting, forgeLabel, name, email)
+	}
+	trailer, err := id.SignOffTrailer()
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", setting, err)
+	}
+	return trailer, nil
 }
 
 // applyPerRepoScaffold commits scaffold files to the repo's default branch
@@ -1204,10 +1225,9 @@ func roleAppPrivateKeySecret(role string) string {
 }
 
 // installRequiredScopes is the set of OAuth scopes the install command
-// needs when it must also create GitHub Apps. It is the union of
-// perRepoRequiredScopes and RequiredScopes(OpInstall) across all layers
+// needs when it must also create GitHub Apps. It is perRepoRequiredScopes
 // plus admin:org, which app creation needs;
-// TestCheckInstallScopes_SyncWithLayers asserts parity.
+// TestCheckInstallScopes_SyncWithPerRepoScopes asserts parity.
 var installRequiredScopes = []string{"repo", "workflow", "admin:org"}
 
 // perRepoRequiredScopes is the set of OAuth scopes needed for per-repo install.

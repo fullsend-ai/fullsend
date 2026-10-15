@@ -15,7 +15,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -426,26 +425,12 @@ func TestCheckInstallScopes_GetTokenScopesError(t *testing.T) {
 	assert.Contains(t, err.Error(), "network error")
 }
 
-func TestCheckInstallScopes_SyncWithLayers(t *testing.T) {
-	stack := layers.NewStack(
-		layers.NewSecretsLayer("test-org", nil, nil, ui.New(&discardWriter{})),
-		layers.NewInferenceLayer("test-org", nil, nil, ui.New(&discardWriter{})),
-		layers.NewVendorBinaryLayer("test-org", ".fullsend", nil, ui.New(&discardWriter{}), false, nil),
-	)
-	// App creation needs admin:org on top of the per-repo scopes and the
-	// layer scopes.
-	seen := make(map[string]bool)
-	var want []string
-	for _, s := range append(append(append([]string(nil), perRepoRequiredScopes...),
-		stack.CollectRequiredScopes(layers.OpInstall)...), "admin:org") {
-		if !seen[s] {
-			seen[s] = true
-			want = append(want, s)
-		}
-	}
+func TestCheckInstallScopes_SyncWithPerRepoScopes(t *testing.T) {
+	// App creation needs admin:org on top of the per-repo scopes.
+	want := append(append([]string(nil), perRepoRequiredScopes...), "admin:org")
 
 	assert.ElementsMatch(t, installRequiredScopes, want,
-		"installRequiredScopes must match perRepoRequiredScopes plus the union of RequiredScopes(OpInstall) from all layers plus admin:org; update the variable if a layer's scopes change")
+		"installRequiredScopes must match perRepoRequiredScopes plus admin:org; update the variable if the per-repo scopes change")
 }
 
 func TestCheckPerRepoScopes_AllPresent(t *testing.T) {
@@ -1071,7 +1056,6 @@ func (p *testWIFProvisioner) ProvisionWIF(_ context.Context) (string, error) {
 }
 
 func (p *testWIFProvisioner) RegisterPerRepoWIF(_ context.Context, _ string) error { return nil }
-func (p *testWIFProvisioner) EnsureOrgInMint(_ context.Context, _, _ string) error { return nil }
 func (p *testWIFProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error   { return nil }
 func (p *testWIFProvisioner) DeleteWIFProvider(_ context.Context, _ string) error  { return nil }
 
@@ -1941,13 +1925,6 @@ func TestGCFWIFAdapter_RegisterPerRepoWIF_NilProvisioner(t *testing.T) {
 	assert.Contains(t, err.Error(), "not configured")
 }
 
-func TestGCFWIFAdapter_EnsureOrgInMint_NilProvisioner(t *testing.T) {
-	adapter := &gcfProvisionerAdapter{provisioner: nil}
-	err := adapter.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not configured")
-}
-
 func TestGCFWIFAdapter_DeletePerRepoWIF_NilProvisioner(t *testing.T) {
 	adapter := &gcfProvisionerAdapter{provisioner: nil}
 	err := adapter.DeletePerRepoWIF(context.Background(), "acme/widget")
@@ -1989,26 +1966,6 @@ func TestGCFWIFAdapter_ProvisionWIF_Success(t *testing.T) {
 	provider, err := adapter.ProvisionWIF(context.Background())
 	require.NoError(t, err)
 	assert.Contains(t, provider, "fullsend-pool")
-}
-
-func TestGCFWIFAdapter_EnsureOrgInMint_Success(t *testing.T) {
-	fakeClient := gcf.NewFakeGCFClient(
-		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
-			URI: "https://mint.example.run.app",
-			EnvVars: map[string]string{
-				"ALLOWED_ORGS": "acme",
-				"ROLE_APP_IDS": `{"triage":"100"}`,
-			},
-		}),
-	)
-	prov := gcf.NewProvisioner(gcf.Config{
-		ProjectID:  "test-project",
-		GitHubOrgs: []string{"acme"},
-	}, fakeClient)
-	adapter := &gcfProvisionerAdapter{provisioner: prov}
-
-	err := adapter.EnsureOrgInMint(context.Background(), "https://mint.example.run.app", "acme")
-	require.NoError(t, err)
 }
 
 func TestGCFWIFAdapter_RegisterPerRepoWIF_Success(t *testing.T) {

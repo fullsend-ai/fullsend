@@ -29,7 +29,7 @@ a specific agent performs a specific task. See
 [Configuring with Skills](../guides/user/customizing-with-skills.md).
 
 At some point, enough configuration turns a configured default agent into a
-derived agent. See [Default, derived, and custom agents](topics/default-vs-custom.md)
+derived agent. See [Default, derived, and custom agents](../guides/user/default-vs-custom.md)
 for where that line is and why it matters.
 
 ## Custom Agents

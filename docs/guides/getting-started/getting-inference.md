@@ -4,7 +4,30 @@ sidebar_position: 2
 
 # Getting Inference For Fullsend
 
-This document explains how to acquire a GCP WIF provider URL for Vertex inference.
+> Background: [How fullsend authenticates](../user/how-fullsend-authenticates.md).
+
+> **Before you start: who you need.** The Vertex setup on this page takes two roles
+> ([Who does what](../user/how-fullsend-authenticates.md#who-does-what)):
+>
+> - **GCP project admin**, with IAM admin on the GCP project: enables the APIs and runs
+>   `fullsend inference provision`, which needs `roles/iam.workloadIdentityPoolAdmin` and
+>   `roles/resourcemanager.projectIamAdmin`. They hand over the **GCP project ID** and the
+>   **WIF provider**.
+> - **Repo admin**: passes those two values to `fullsend github setup`
+>   ([Configuring GitHub](configuring-github.md)).
+>
+> If you are not the GCP project admin, send them this page and ask for those two values.
+
+Fullsend agents can get model inference in three ways:
+
+- **Vertex AI with Workload Identity Federation (WIF):** GCP grants short-lived tokens to your
+  GitHub or GitLab jobs, with no stored key; this page covers it.
+- **OpenAI Workload Identity Federation:** GPT models on the pi or codex runtime get short-lived
+  OpenAI credentials; see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
+- **An inference gateway:** an OpenAI/Anthropic-compatible gateway that your organisation runs
+  holds the provider credential; see [Using an inference gateway](../user/inference-gateway.md).
+
+The rest of this document explains how to acquire a GCP WIF provider URL for Vertex inference.
 Skip it if your agents use only OpenAI; both [GitHub setup](configuring-github.md)
 and [GitLab install](configuring-gitlab.md) accept no GCP inference inputs.
 
@@ -20,8 +43,13 @@ OpenAI agent run needs no GCP credentials and stores no key on the recommended p
 setup can omit the GCP project and WIF provider pair. If you cannot enrol an OpenAI WIF
 provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret.
 
-For **GitLab repos**, inference credentials are configured via `repos install --vertex-project`
-rather than the steps below. See [Configuring GitLab](configuring-gitlab.md#inference-setup).
+For **GitLab repos**, create the GCP project as described below, but skip
+`fullsend inference provision`, which is GitHub-only. A platform operator creates a shared
+`gitlab-oidc` provider and its IAM bindings. Declare `inference.project` in
+`repos.yaml` or pass `repos install --vertex-project` to write the CI/CD variables
+that reference it. See [Configuring GitLab](configuring-gitlab.md#inference-setup).
+If GCP cannot reach your GitLab instance over the public internet, see
+[Private OIDC issuers (uploaded JWKS)](configuring-gitlab.md#private-oidc-issuers-uploaded-jwks).
 
 You may need to create a new GCP project or reuse one. The output of this process is a WIF provider
 URL resembling:
@@ -30,9 +58,9 @@ URL resembling:
 projects/<number>/locations/global/workloadIdentityPools/<pool-name>/providers/<provider-name>
 ```
 
-Where `<number>` is the number of the GCP project. This URL may be provided to you if there is
-someone handling GCP projects in your organization. Otherwise you may need to create a GCP
-project and configure it yourself.
+Where `<number>` is the number of the GCP project. If someone else is the GCP project admin, they
+hand this URL over with the project ID. Otherwise you create and configure the GCP project
+yourself.
 
 ## Prerequisites
 
@@ -88,10 +116,23 @@ for, and `<gcp-project>` is your GCP project name. The output resembles:
 
 The important piece of information is the `WIF Provider` which you need to pass to the next step.
 
+## Inference gateway
+
+An inference gateway is an OpenAI/Anthropic-compatible endpoint that holds the upstream provider
+credential, so agents on the pi, Claude Code and Codex runtimes reach their models through it.
+Choose this route when your organisation runs or buys a gateway and you want no provider key
+stored in the forge. `auth: oidc` is the recommended mode: direct OIDC trust (no token exchange),
+where the gateway validates the job's GitHub OIDC token itself. `auth: api-key` is supported, but
+use it with caution because it relies on a long-lived secret. See [Using an inference gateway](../user/inference-gateway.md) for the walkthrough and
+the [operator guide](../infrastructure/inference-gateway-operator.md) for running the gateway.
+
 ## Next steps
 
 Head over to [Configuring GitHub](configuring-github.md) to use your WIF provider URL.
 
 For GitLab repositories, skip this provision output and follow
-[Configuring GitLab](configuring-gitlab.md) instead — GitLab inference credentials
-are written by `repos install --vertex-project`, not by this command.
+[Configuring GitLab](configuring-gitlab.md#inference-setup) instead — a platform operator
+creates the GitLab provider, and `repos install --vertex-project` writes the CI/CD variables
+that reference it. This command does not apply.
+
+To use an inference gateway instead, see [Using an inference gateway](../user/inference-gateway.md).

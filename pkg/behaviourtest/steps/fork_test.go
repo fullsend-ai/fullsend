@@ -47,6 +47,145 @@ func TestGivenFork_CreateForkError(t *testing.T) {
 	assert.Contains(t, err.Error(), "fork conflict")
 }
 
+func TestGivenActorFork_ForksIntoActorAccount(t *testing.T) {
+	e2e := &fakeForkSCM{}
+	outsider := &fakeForkSCM{userForkOwner: "fstest-outsider"}
+	w := &world.World{
+		RepoOwner:   "org",
+		RepoName:    "test-repo-07",
+		SCM:         e2e,
+		OutsiderSCM: outsider,
+	}
+	err := givenActorFork(w, actorOutsider)
+	require.NoError(t, err)
+	assert.Equal(t, "fstest-outsider", w.ForkOwner)
+	assert.Equal(t, "test-repo-07", w.ForkRepo)
+	assert.Same(t, outsider, w.ForkSCM)
+	assert.True(t, outsider.createUserForkCalled)
+	// Readiness is polled through the fork owner's driver; the e2e
+	// identity is not used at all.
+	assert.Positive(t, outsider.getBranchRefCalls)
+	assert.False(t, e2e.createForkCalled)
+	assert.False(t, e2e.createUserForkCalled)
+	assert.Zero(t, e2e.getDefaultBranchCalls)
+	assert.Zero(t, e2e.getBranchRefCalls)
+}
+
+func TestGivenActorFork_Errors(t *testing.T) {
+	tests := []struct {
+		name    string
+		w       *world.World
+		wantErr string
+	}{
+		{
+			name:    "no repo configured",
+			w:       &world.World{OutsiderSCM: &fakeForkSCM{}},
+			wantErr: "no repo configured",
+		},
+		{
+			name:    "actor PAT not set",
+			w:       &world.World{RepoOwner: "org", RepoName: "repo", SCM: &fakeForkSCM{}},
+			wantErr: "TEST_ACTOR_OUTSIDER_PAT not set",
+		},
+		{
+			name: "fork creation fails",
+			w: &world.World{
+				RepoOwner:   "org",
+				RepoName:    "repo",
+				OutsiderSCM: &fakeForkSCM{createUserForkErr: fmt.Errorf("forking disabled")},
+			},
+			wantErr: "creating fork of org/repo as the outsider: forking disabled",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := givenActorFork(tt.w, actorOutsider)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Nil(t, tt.w.ForkSCM)
+		})
+	}
+}
+
+func TestWhenForkPullRequestOpenedBy_ActorOwnedFork(t *testing.T) {
+	e2e := &fakeForkSCM{}
+	outsider := &fakeForkSCM{prNumber: 7}
+	w := &world.World{
+		RepoOwner:   "org",
+		RepoName:    "repo",
+		ForkOwner:   "fstest-outsider",
+		ForkRepo:    "repo",
+		ForkSCM:     outsider,
+		SCM:         e2e,
+		OutsiderSCM: outsider,
+	}
+	err := whenForkPullRequestOpenedBy(w, actorOutsider)
+	require.NoError(t, err)
+	assert.Equal(t, 7, w.ForkPRNumber)
+	assert.NotEmpty(t, w.ForkPRBranch)
+	assert.False(t, w.ScenarioStart.IsZero())
+	assert.True(t, outsider.createBranchCalled)
+	assert.True(t, outsider.commitToForkCalled)
+	assert.True(t, outsider.createForkPRCalled)
+	assert.False(t, e2e.createBranchCalled)
+	assert.False(t, e2e.commitToForkCalled)
+	assert.False(t, e2e.createForkPRCalled)
+}
+
+func TestWhenForkPullRequestOpenedBy_E2EOwnedFork(t *testing.T) {
+	// A fork owned by the e2e identity: the head branch is prepared by
+	// the e2e identity, the pull request is opened by the actor.
+	e2e := &fakeForkSCM{}
+	writer := &fakeForkSCM{prNumber: 8}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		ForkOwner: "org",
+		ForkRepo:  "repo-fork",
+		SCM:       e2e,
+		WriteSCM:  writer,
+	}
+	err := whenForkPullRequestOpenedBy(w, actorWrite)
+	require.NoError(t, err)
+	assert.Equal(t, 8, w.ForkPRNumber)
+	assert.True(t, e2e.createBranchCalled)
+	assert.True(t, e2e.commitToForkCalled)
+	assert.False(t, e2e.createForkPRCalled)
+	assert.True(t, writer.createForkPRCalled)
+	assert.False(t, writer.createBranchCalled)
+}
+
+func TestWhenForkPullRequestOpenedBy_ActorPATNotSet(t *testing.T) {
+	e2e := &fakeForkSCM{}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		ForkOwner: "org",
+		ForkRepo:  "repo-fork",
+		SCM:       e2e,
+	}
+	err := whenForkPullRequestOpenedBy(w, actorOutsider)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TEST_ACTOR_OUTSIDER_PAT not set")
+	assert.False(t, e2e.createBranchCalled)
+}
+
+func TestWhenCommitPushedToForkPR_UsesForkOwnerDriver(t *testing.T) {
+	e2e := &fakeForkSCM{}
+	outsider := &fakeForkSCM{}
+	w := &world.World{
+		ForkPRNumber: 10,
+		ForkOwner:    "fstest-outsider",
+		ForkRepo:     "repo",
+		ForkPRBranch: "test-branch",
+		ForkSCM:      outsider,
+		SCM:          e2e,
+	}
+	require.NoError(t, whenCommitPushedToForkPR(w))
+	assert.True(t, outsider.commitToForkCalled)
+	assert.False(t, e2e.commitToForkCalled)
+}
+
 func TestWhenForkPullRequestOpened_RequiresFork(t *testing.T) {
 	w := &world.World{}
 	err := whenForkPullRequestOpened(w)
@@ -638,6 +777,20 @@ type fakeForkSCM struct {
 	// value of -1 means CreateFork always fails with the collision.
 	createForkFailures     int
 	createForkCollisionErr error // error to return on name-collision failures
+
+	// CreateUserFork behaviour: the fork owner returned (the
+	// authenticated user's login) and an optional error.
+	userForkOwner        string
+	createUserForkCalled bool
+	createUserForkErr    error
+}
+
+func (f *fakeForkSCM) CreateUserFork(_ context.Context, _, repo string) (string, string, error) {
+	f.createUserForkCalled = true
+	if f.createUserForkErr != nil {
+		return "", "", f.createUserForkErr
+	}
+	return f.userForkOwner, repo, nil
 }
 
 type addedLabelRecord struct {

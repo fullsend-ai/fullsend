@@ -68,6 +68,8 @@ This means the person who commented `/fs-triage` on a Jira issue will see the ru
 | `JIRA_USER_EMAIL` | Email associated with the token |
 | `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
 
+`fullsend run` reads `JIRA_TOKEN` and `JIRA_USER_EMAIL` for its own Jira calls but does not pass them on to host-side pre/post/validation scripts by default. A harness whose scripts call Jira must declare them under `env.runner` (for example `JIRA_TOKEN: "${JIRA_TOKEN}"`). See [Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
+
 ### Sandbox credentials and network access
 
 The fullsend binary ships an OpenShell credential provider (`atlassian-cloud`) and network profile (`fullsend-atlassian-cloud`) that grant sandboxed agents access to Jira Cloud. List the bare name `atlassian-cloud` under a harness's `providers:` and `fullsend run` uses the built-in definition and imports its profile; nothing is written to the `.fullsend` directory:

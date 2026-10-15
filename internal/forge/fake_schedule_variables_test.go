@@ -28,3 +28,17 @@ func TestFakeScheduleVariableDetails(t *testing.T) {
 	fc.Errors["DeletePipelineScheduleVariable"] = errors.New("denied")
 	require.ErrorContains(t, fc.DeletePipelineScheduleVariable(ctx, "o", "r", 1, "MODE"), "denied")
 }
+
+func TestFakeCreatePipelineScheduleCopiesVariables(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	in := map[string]string{"MODE": "slash"}
+	id, err := fc.CreatePipelineSchedule(ctx, "o", "r", "main", "d", "* * * * *", in)
+	require.NoError(t, err)
+	require.NoError(t, fc.DeletePipelineScheduleVariable(ctx, "o", "r", id, "MODE"))
+	assert.Empty(t, fc.PipelineSchedules["o/r"][0].Variables)
+	assert.Equal(t, "slash", in["MODE"], "fake must not write into the caller's map")
+	assert.Equal(t, "slash", fc.CreatedSchedules[0].Variables["MODE"], "CreatedSchedules must keep what was sent")
+	in["MODE"] = "changed"
+	assert.Equal(t, "slash", fc.CreatedSchedules[0].Variables["MODE"], "caller edits must not reach the fake")
+}

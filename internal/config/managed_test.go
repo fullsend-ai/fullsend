@@ -82,22 +82,12 @@ func TestManagedConfig_OmittedIsUnset(t *testing.T) {
 	assert.True(t, w.Config.IsZero())
 }
 
-func TestManagedConfig_RejectsForbiddenAndUnknownFields(t *testing.T) {
+func TestManagedConfig_RejectsUnknownFields(t *testing.T) {
 	tests := []struct {
 		name    string
 		yaml    string
 		wantErr string
 	}{
-		{
-			name:    "runtime",
-			yaml:    "runtime: pi\nkill_switch: true\n",
-			wantErr: "runtime is not allowed inside config",
-		},
-		{
-			name:    "allowed_remote_resources",
-			yaml:    "allowed_remote_resources: []\n",
-			wantErr: "allowed_remote_resources is not allowed inside config",
-		},
 		{
 			name:    "unknown field",
 			yaml:    "bogus: true\n",
@@ -108,23 +98,47 @@ func TestManagedConfig_RejectsForbiddenAndUnknownFields(t *testing.T) {
 			yaml:    "https://example.com/preset.yaml\n",
 			wantErr: "must be a YAML mapping",
 		},
+		{
+			name:    "invalid runtime",
+			yaml:    "runtime: bogus\n",
+			wantErr: `invalid runtime "bogus"`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var o ManagedConfig
 			err := yaml.Unmarshal([]byte(tt.yaml), &o)
+			if err == nil {
+				err = ValidateManagedLayer(o.Writer())
+			}
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
 }
 
-func TestManagedConfig_RejectsBothForbiddenFields(t *testing.T) {
+// TestManagedConfig_AcceptsRuntimeAndAllowedRemoteResources covers #8330:
+// every per-repo config field, including runtime and
+// allowed_remote_resources, is valid inside a repos.yaml config block, and
+// an explicit empty allowlist survives a marshal round trip.
+func TestManagedConfig_AcceptsRuntimeAndAllowedRemoteResources(t *testing.T) {
 	var o ManagedConfig
-	err := yaml.Unmarshal([]byte("runtime: pi\nallowed_remote_resources:\n  - https://example.com/\n"), &o)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "runtime is not allowed")
-	assert.Contains(t, err.Error(), "allowed_remote_resources is not allowed")
+	require.NoError(t, yaml.Unmarshal([]byte("runtime: pi\nallowed_remote_resources: []\n"), &o))
+	require.NoError(t, ValidateManagedLayer(o.Writer()))
+	assert.Equal(t, "pi", o.ExplicitRuntime())
+	assert.Equal(t, "pi", o.Writer().ConfigRuntime())
+	assert.NotNil(t, o.Writer().AllowedResources())
+	assert.Empty(t, o.Writer().AllowedResources())
+
+	body, err := yaml.Marshal(o)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "runtime: pi")
+	assert.Contains(t, string(body), "allowed_remote_resources: []")
+
+	assert.Empty(t, ManagedConfig{}.ExplicitRuntime())
+	var noRuntime ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte("kill_switch: true\n"), &noRuntime))
+	assert.Empty(t, noRuntime.ExplicitRuntime(), "ExplicitRuntime does not fall back to code defaults")
 }
 
 func TestManagedConfig_ExplicitFalseAndEmptySurviveMarshal(t *testing.T) {
@@ -261,24 +275,6 @@ func TestMergeManaged_NilLayers(t *testing.T) {
 	assert.Equal(t, "https://mint.example.com", fromChild.ConfigMintURL())
 }
 
-func TestApplyManagedShorthands_OnlySetsPresentValues(t *testing.T) {
-	overlay := NewEmptyPerRepoOverlay()
-	ApplyManagedShorthands(overlay, "", nil)
-	body, err := overlay.Marshal()
-	require.NoError(t, err)
-	assert.NotContains(t, string(body), "runtime:")
-	assert.NotContains(t, string(body), "allowed_remote_resources:")
-
-	ApplyManagedShorthands(overlay, "pi", []string{})
-	assert.Equal(t, "pi", overlay.ConfigRuntime())
-	assert.NotNil(t, overlay.AllowedResources())
-	assert.Empty(t, overlay.AllowedResources())
-	body, err = overlay.Marshal()
-	require.NoError(t, err)
-	assert.Contains(t, string(body), "runtime: pi")
-	assert.Contains(t, string(body), "allowed_remote_resources: []")
-}
-
 func TestLayerOnBase_OverlayWinsOverBaseAndCodeDefaults(t *testing.T) {
 	var overlay ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte(`
@@ -315,6 +311,47 @@ func TestLayerOnBase_EmptyBaseUsesCodeDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "claude", effective.ConfigRuntime())
 	assert.Equal(t, PerRepoDefaultRoles(), effective.ConfigRoles())
+}
+
+func TestDeclaredInfrastructureValues_OverlayWinsOverBaseWithoutCodeDefaults(t *testing.T) {
+	var overlay ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+inference:
+  region: us-east5
+`), &overlay))
+	base := []byte(`
+mint_url: https://base.example.com
+inference:
+  project: base-project
+  region: europe-west1
+  wif_provider: projects/1/locations/global/workloadIdentityPools/p/providers/x
+`)
+	got, err := DeclaredInfrastructureValues(overlay.Writer(), base)
+	require.NoError(t, err)
+	assert.Equal(t, DeclaredInfrastructure{
+		MintURL:              "https://base.example.com",
+		InferenceProject:     "base-project",
+		InferenceRegion:      "us-east5",
+		InferenceWIFProvider: "projects/1/locations/global/workloadIdentityPools/p/providers/x",
+	}, got)
+	// The overlay is not mutated by the computation.
+	assert.Equal(t, DefaultPerRepoMintURL, overlay.Writer().ConfigMintURL())
+}
+
+func TestDeclaredInfrastructureValues_NothingDeclaredIsEmpty(t *testing.T) {
+	got, err := DeclaredInfrastructureValues(nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, DeclaredInfrastructure{}, got, "code defaults (public mint, global region) are not declared values")
+
+	got, err = DeclaredInfrastructureValues(NewEmptyPerRepoOverlay(), []byte("roles: [triage]\n"))
+	require.NoError(t, err)
+	assert.Equal(t, DeclaredInfrastructure{}, got)
+}
+
+func TestDeclaredInfrastructureValues_InvalidBase(t *testing.T) {
+	_, err := DeclaredInfrastructureValues(nil, []byte("mint_url: [unterminated"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing base config")
 }
 
 func TestManagedConfig_RejectsNestedUnknownField(t *testing.T) {
@@ -381,13 +418,13 @@ agents:
 `), &o))
 	w := o.Writer()
 
-	// Before the allowed_remote_resources shorthand is merged in, the URL
-	// agent still fails.
+	// Before a layer supplying allowed_remote_resources is merged in, the
+	// URL agent still fails.
 	err := ValidateMergedManaged(w)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not covered by allowed_remote_resources")
 
-	// Once the shorthand is applied (as mergeManagedConfig does), the URL
+	// Once that layer is merged (as mergeManagedConfig does), the URL
 	// agent passes; the override-only entry naming "mycustom" still isn't
 	// required to be a built-in agent — config.base.yaml, which may
 	// register it, isn't layered on until install/converge time.
@@ -505,7 +542,7 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 	assert.Equal(t, "child-proj", merged.ConfigInferenceProject())
 }
 
-func TestMergeManaged_ModelsOntoEmptyParentAndShorthandNil(t *testing.T) {
+func TestMergeManaged_ModelsOntoEmptyParentAndNilWriter(t *testing.T) {
 	child := &perRepoConfig{
 		Models: &ModelsConfig{Aliases: map[string]string{"haiku": "child-haiku"}},
 		parent: &perRepoDefaults{},
@@ -514,7 +551,6 @@ func TestMergeManaged_ModelsOntoEmptyParentAndShorthandNil(t *testing.T) {
 	require.NotNil(t, merged)
 	assert.Equal(t, "child-haiku", merged.ConfigModelAliases()["haiku"])
 
-	ApplyManagedShorthands(nil, "pi", []string{"https://example.com/"})
 	assert.Nil(t, ManagedConfig{}.Writer())
 
 	_, err := LayerOnBase(NewEmptyPerRepoOverlay(), []byte(": not yaml"))
@@ -531,4 +567,59 @@ func TestManagedConfig_MarshalOmitsUnset(t *testing.T) {
 	encoded, err := yaml.Marshal(wrap{})
 	require.NoError(t, err)
 	assert.False(t, strings.Contains(string(encoded), "config:"), "unset overlay must be omitted")
+}
+
+func TestManagedConfig_WithCreateIssuesRepos(t *testing.T) {
+	var base ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte("keep_history: false\n"), &base))
+
+	withIssues := base.WithCreateIssuesRepos([]string{"fullsend-ai/fullsend"})
+	require.True(t, withIssues.IsSet())
+	ci := withIssues.Writer().IssueCreationConfig()
+	require.NotNil(t, ci)
+	assert.Equal(t, []string{"fullsend-ai/fullsend"}, ci.AllowTargets.Repos)
+	assert.False(t, withIssues.Writer().ConfigKeepHistory(), "existing values are kept")
+	assert.Nil(t, base.Writer().IssueCreationConfig(), "the receiver is not modified")
+
+	// An unset receiver yields a set, otherwise-empty configuration.
+	fromZero := ManagedConfig{}.WithCreateIssuesRepos([]string{"fullsend-ai/fullsend"})
+	require.True(t, fromZero.IsSet())
+	assert.NotNil(t, fromZero.Writer().IssueCreationConfig())
+	assert.Equal(t, PerRepoDefaultRoles(), fromZero.Writer().ConfigRoles(), "roles are not declared")
+}
+
+func TestManagedConfig_ExplicitAllowedRemoteResources(t *testing.T) {
+	var unset ManagedConfig
+	_, declared := unset.ExplicitAllowedRemoteResources()
+	assert.False(t, declared, "an unset config declares nothing")
+
+	var omitted ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte("runtime: pi\n"), &omitted))
+	_, declared = omitted.ExplicitAllowedRemoteResources()
+	assert.False(t, declared, "an omitted key is not declared and does not surface code defaults")
+
+	var empty ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte("allowed_remote_resources: []\n"), &empty))
+	list, declared := empty.ExplicitAllowedRemoteResources()
+	assert.True(t, declared)
+	assert.Empty(t, list)
+
+	var set ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte("allowed_remote_resources: [\"https://a.example.com/\"]\n"), &set))
+	list, declared = set.ExplicitAllowedRemoteResources()
+	assert.True(t, declared)
+	assert.Equal(t, []string{"https://a.example.com/"}, list, "local list only, no union with code defaults")
+}
+
+func TestManagedConfig_CloneIsDeep(t *testing.T) {
+	assert.False(t, ManagedConfig{}.Clone().IsSet(), "an unset config stays unset")
+
+	var orig ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte("allowed_remote_resources: [\"https://a.example.com/\"]\n"), &orig))
+	cp := orig.Clone()
+	require.True(t, cp.IsSet())
+	cp.Writer().SetAllowedRemoteResources([]string{"https://b.example.com/"})
+
+	list, _ := orig.ExplicitAllowedRemoteResources()
+	assert.Equal(t, []string{"https://a.example.com/"}, list)
 }

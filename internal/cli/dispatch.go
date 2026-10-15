@@ -114,7 +114,7 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	// Only gha-event has live GitHub authorization context. JSON evaluation
 	// remains read-only and never writes workflow notification metadata.
 	if inDriver == "gha-event" {
-		if err := writeAuthorizationOutput(event, result.AuthorizationDenied); err != nil {
+		if err := writeDispatchOutput(event, result.AuthorizationDenied, result.DispatchBlockedReason); err != nil {
 			return err
 		}
 	}
@@ -142,7 +142,11 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 }
 
 func writeAuthorizationOutput(event *normevent.Event, denied bool) error {
-	if !isExplicitHumanSlashCommand(event) || !denied {
+	return writeDispatchOutput(event, denied, "")
+}
+
+func writeDispatchOutput(event *normevent.Event, denied bool, blockedReason string) error {
+	if !isExplicitHumanSlashCommand(event) || (!denied && blockedReason != "kill_switch") {
 		return nil
 	}
 	path := os.Getenv("GITHUB_OUTPUT")
@@ -151,10 +155,14 @@ func writeAuthorizationOutput(event *normevent.Event, denied bool) error {
 	}
 
 	outputs := [][2]string{
-		{"authorization_denied", "true"},
 		{"authorization_actor", event.Actor.ID},
 		{"authorization_actor_id", strconv.FormatInt(event.Actor.NumericID, 10)},
 		{"authorization_number", strconv.Itoa(event.Entity.ID)},
+	}
+	if blockedReason == "kill_switch" {
+		outputs = append([][2]string{{"dispatch_blocked_reason", blockedReason}}, outputs...)
+	} else {
+		outputs = append([][2]string{{"authorization_denied", "true"}}, outputs...)
 	}
 	for _, output := range outputs {
 		if err := writeGitHubOutput(path, output[0], output[1]); err != nil {

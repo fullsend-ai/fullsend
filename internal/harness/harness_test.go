@@ -131,7 +131,7 @@ host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /sandbox/workspace/.gcp-credentials.json
   - src: /etc/ssl/certs/ca-certificates.crt
-    dest: /etc/ssl/certs/ca-certificates.crt
+    dest: /sandbox/workspace/ca-certificates.crt
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
@@ -148,7 +148,7 @@ host_files:
 	assert.Equal(t, "/sandbox/workspace/.gcp-credentials.json", h.HostFiles[0].Dest)
 	assert.False(t, h.HostFiles[0].Expand)
 	assert.Equal(t, "/etc/ssl/certs/ca-certificates.crt", h.HostFiles[1].Src)
-	assert.Equal(t, "/etc/ssl/certs/ca-certificates.crt", h.HostFiles[1].Dest)
+	assert.Equal(t, "/sandbox/workspace/ca-certificates.crt", h.HostFiles[1].Dest)
 	assert.False(t, h.HostFiles[1].Expand)
 	assert.Equal(t, "env/gcp-vertex.env", h.HostFiles[2].Src)
 	assert.Equal(t, "/sandbox/workspace/.env.d/gcp-vertex.env", h.HostFiles[2].Dest)
@@ -907,6 +907,7 @@ func TestValidateFilesExist_MissingSkill(t *testing.T) {
 
 	h := &Harness{
 		Agent:  agentFile,
+		Policy: writeTestPolicy(t, dir),
 		Skills: []SkillEntry{{Source: "/nonexistent/skill"}},
 	}
 	err := h.ValidateFilesExist()
@@ -920,7 +921,8 @@ func TestValidateFilesExist_SkipsVarPaths(t *testing.T) {
 	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
 
 	h := &Harness{
-		Agent: agentFile,
+		Agent:  agentFile,
+		Policy: writeTestPolicy(t, dir),
 		HostFiles: []HostFile{
 			{Src: "${SOME_VAR}", Dest: "/tmp/dest"},
 		},
@@ -937,7 +939,8 @@ func TestValidateFilesExist_SkipsSchemaVarPaths(t *testing.T) {
 	require.NoError(t, os.WriteFile(scriptFile, []byte("#!/bin/bash"), 0o755))
 
 	h := &Harness{
-		Agent: agentFile,
+		Agent:  agentFile,
+		Policy: writeTestPolicy(t, dir),
 		ValidationLoop: &ValidationLoop{
 			Script: scriptFile,
 			Schema: "${FULLSEND_DIR}/schemas/result.schema.json",
@@ -954,7 +957,8 @@ func TestValidateFilesExist_MissingSchema(t *testing.T) {
 	require.NoError(t, os.WriteFile(scriptFile, []byte("#!/bin/bash"), 0o755))
 
 	h := &Harness{
-		Agent: agentFile,
+		Agent:  agentFile,
+		Policy: writeTestPolicy(t, dir),
 		ValidationLoop: &ValidationLoop{
 			Script: scriptFile,
 			Schema: "/nonexistent/schema.json",
@@ -1104,6 +1108,7 @@ func TestValidateFilesExist_MissingPlugin(t *testing.T) {
 
 	h := &Harness{
 		Agent:   agentFile,
+		Policy:  writeTestPolicy(t, dir),
 		Plugins: []PluginSpec{{Path: "/nonexistent/plugin"}},
 	}
 	err := h.ValidateFilesExist()
@@ -1117,7 +1122,8 @@ func TestValidateFilesExist_SkipsOptionalPaths(t *testing.T) {
 	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
 
 	h := &Harness{
-		Agent: agentFile,
+		Agent:  agentFile,
+		Policy: writeTestPolicy(t, dir),
 		HostFiles: []HostFile{
 			{Src: "/tmp/does-not-exist-yet.env", Dest: "/tmp/dest", Optional: true},
 		},
@@ -1174,6 +1180,7 @@ func TestValidateFilesExist_BareProviderNameSkipped(t *testing.T) {
 
 	h := &Harness{
 		Agent:     agentFile,
+		Policy:    writeTestPolicy(t, dir),
 		Providers: []string{"fullsend-github"},
 	}
 	require.NoError(t, h.ValidateFilesExist())

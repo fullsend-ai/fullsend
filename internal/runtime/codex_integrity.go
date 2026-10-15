@@ -60,11 +60,22 @@ type codexRunnerHeldDigestSet struct {
 	// retry runs on.
 	AgentModel string
 
+	// GatewayBaseURL is the fullsend-gateway provider's base_url Bootstrap
+	// rendered into config.toml, or "" when no inference.gateway block
+	// applied. Run selects that provider for a gateway/ model only when it
+	// is set, and pins the same value with a `-c` override.
+	GatewayBaseURL string
+
 	// HookScripts maps each installed hook script's filename to its digest.
 	// Bootstrap knows exactly which the harness enabled; Run does not, which
 	// is why the expected names travel with the digests rather than being
 	// re-derived from the binary's full set.
 	HookScripts map[string]string
+
+	// RoleFiles maps each registered sub-agent role name to the digest of
+	// its role file, agents/<name>.toml under CODEX_HOME. Empty until a
+	// Bootstrap registers roles; the spawn guard admits only these.
+	RoleFiles map[string]string
 }
 
 // codexEnvPair is one runner-owned environment assignment.

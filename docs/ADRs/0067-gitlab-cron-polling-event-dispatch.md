@@ -459,6 +459,18 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > closed if that grant is not possible. `repos status` reports
 > `protected-ref-pipeline` drift if the access is later removed.
 >
+> **Update (#8083):** under #7772 the Poller becomes a project service
+> account by default once its CLI activation change merges; a project access
+> token remains the fallback.
+>
+> **Update (#8242):** that CLI activation change has merged, so the Poller is a
+> project service account by default. Trigger creation and rotation as the
+> Poller remain deferred, and cron polling remains the dispatch path.
+>
+> **Update (#8243):** trigger creation and rotation are now enabled for
+> eligible projects through a fresh Poller service-account generation; cron
+> polling remains available as the fallback dispatch path.
+>
 > **Update (#7667):** a failed `CreatePipeline` (including that 403) now
 > fails the poll cycle after persisting retry state. The permission gap
 > is unchanged; the poll job no longer reports success when no agent
@@ -487,6 +499,14 @@ Key properties:
   `Error code invalid_grant: Error connecting to the given credential's issuer`.
   Inference is not available for GitLab instances that are not
   resolvable in public DNS.
+
+  > **Update (2026-10, #8468):**
+  > The last sentence above is incorrect. Uploading the instance's public
+  > JWKS to the WIF provider (`--jwk-json-path`) lets STS verify tokens
+  > without contacting the issuer. This was tested on an internal instance
+  > in [#5897](https://github.com/fullsend-ai/fullsend/issues/5897). The
+  > operator must re-upload the keys whenever the instance rotates them. See
+  > [Configuring GitLab → Private OIDC issuers](../guides/getting-started/configuring-gitlab.md#private-oidc-issuers-uploaded-jwks).
 
 ### Cron poller (`gitlab-poll` input driver)
 

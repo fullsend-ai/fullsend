@@ -1,0 +1,170 @@
+---
+title: "133. Apply a data security boundary to authorized actor-attributed content"
+status: Accepted
+relates_to:
+  - agent-architecture
+  - security-threat-model
+topics:
+  - authorization
+  - data-security
+  - prompt-injection
+  - events
+---
+
+# 133. Apply a data security boundary to authorized actor-attributed content
+
+Date: 2026-10-07
+
+## Status
+
+Accepted
+
+## Context
+
+[ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md) decides
+which actors are eligible to cause agent processing. [ADR
+0107](0107-bot-identity-resolution-for-dispatch-authorization.md) extends that
+decision to provider-resolved bot identities. [ADR
+0098](0098-entity-first-harness-evaluation.md) gives trusted Fullsend
+invocation provenance authority to discover entities, while requiring each
+action-indicating entity record to meet its actor's current permission
+threshold. These decisions establish authorization and provenance for deciding
+whether processing may begin; they do not make the text produced by an
+authorized actor truthful, safe, or authoritative.
+
+Agents nevertheless need to use actor-attributed data such as issue bodies,
+comments, reviews, and linked records. The boundary applies only to records
+whose source system can reliably establish the record and actor attribution,
+and for which Fullsend can obtain current authorization from the applicable
+trusted authorization provider. That provider may be the source system's
+permission subsystem or a configured provider recognized by [ADR
+0054](0054-require-authorization-on-all-agent-dispatch-paths.md) and [ADR
+0107](0107-bot-identity-resolution-for-dispatch-authorization.md), including
+OWNERS-derived permissions and registered-bot roles. GitHub pull request or
+issue comments and Jira issue comments are representative records. Self-
+asserted author or committer metadata is not sufficient; records whose actor
+cannot be reliably established are redacted. That data may arrive in the
+triggering event, a poll or snapshot, or a proactive read through another
+authorized API. Comments from an authorized actor can contain genuine task
+instructions that the agent must be able to heed. The boundary must still
+prevent content from changing platform authority or capabilities, and must
+protect against hidden Unicode, prompt injection, and indirect disclosure.
+
+## Decision
+
+Fullsend separates three decisions: whether a source actor is authorized for
+the relevant processing path, whether source content may be admitted as data or
+task guidance, and which fixed platform instructions and capabilities the model
+receives.
+
+Authorization under [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
+and [ADR 0107](0107-bot-identity-resolution-for-dispatch-authorization.md), or
+the trusted discovery provenance in [ADR
+0098](0098-entity-first-harness-evaluation.md), permits actor-attributed
+content to be considered for data admission, regardless of whether the
+content was delivered by an event, polling, a snapshot, a proactive API read,
+or a model-facing retrieval capability. Discovery provenance authorizes finding
+the entity; it does not authorize the entity's content.
+
+Authorization is per source-system record and uses that record's actor. The
+actor who updates a change proposal may differ from the actor who wrote a
+comment on it, so the latter's authorization is evaluated independently. The
+checked actor is the principal authenticated by the source system as having
+produced the exact current content revision: the creator for a never-edited
+record, or the latest authenticated editor when the source system records an
+edit. An event sender, poller, or retrieval credential never substitutes for
+that revision actor. If the source system cannot establish attribution for the
+current revision, the record is redacted. The actor's applicable permission or
+recognized role MUST be co-fetched in the
+same authoritative API response, delivered in the same verified event payload,
+or lazily resolved from the authoritative source when first needed. A lazy
+result MAY be cached only for the logical lifetime of the containing event or
+entity structure and agent invocation. The cache lifetime and the required
+fresh checks between admission and model exposure are defined by the
+[Authorization Contract v1](../normative/authorization/v1/README.md).
+The actor MUST meet the applicable observation or mutation threshold for the
+selected harness. For a human actor, this means the applicable current forge
+permission threshold. For a bot actor, whose `actor.role` remains `none`, a
+fresh provider-backed exact `actor.bot_role` recognition under ADR 0107
+satisfies this gate; the ordinary `actor.role` threshold does not apply. CEL or
+harness routing may further restrict a recognized bot role, but cannot
+authorize an unrecognized bot. An unrecognized or unresolved bot role fails
+closed and the record is redacted. A label grant authorizes only its verified
+label transition; it does not authorize unrelated content from that actor or
+other actors.
+
+Event-carried permission or role evidence may support initial event admission
+and routing, but it MUST NOT satisfy later model-bound authorization checks.
+Fullsend MUST apply the fresh authorization checks defined by the Authorization
+Contract before model admission and at later model-exposure checkpoints.
+Failure, unavailability, or loss of authorization at a check redacts the
+record and, if no authorized records remain, denies the run.
+
+This is bounded trust: content with authorized provenance may inform analysis
+and, where the harness permits, provide task instructions. It cannot grant
+platform authority or become a source of credentials, identity, permissions,
+routing, harness configuration, or capabilities. Unrecognized, unauthorized,
+unattributed, ambiguous, or unverifiable source-system records are redacted
+before model admission; there is no data-only fallback for them.
+
+Before any selected actor-attributed content reaches a model, the host-side
+input boundary MUST verify its source-system record, actor attribution, actor
+authorization, and bounds and apply the versioned content-filtering pipeline.
+The pipeline MUST perform Unicode and control-character safety handling
+(including hidden and bidirectional characters), sensitive-data and secret
+redaction, prompt-injection scanning, and size limits. The model may receive
+only the resulting filtered representation, with explicit data delimitation and
+any bounded omission or finding metadata. Raw source content and rejected or
+unauthorized content MUST NOT be exposed to the model or retained in ordinary
+run artifacts.
+
+Filtering is fail-closed for missing or unverifiable provenance, missing or
+failed actor authorization, detector failure or timeout, and content that the
+active policy cannot safely represent.
+A blocking finding produces an omission or quarantine record rather than raw
+model input; the filter manifest records the disposition, digest, and bounded
+diagnostics without retaining the rejected body. The exact character policy,
+detector versions, dispositions, and compatibility rules belong in the
+versioned content-filter contract shared by all model-bound data paths.
+
+The model-facing prompt MUST preserve the provenance and boundary of filtered
+source-system records relative to system/developer instructions and
+harness-provided task instructions. Content from an authorized actor MAY guide
+task execution within the configured harness scope, including by requesting an
+otherwise permitted change. An authorized record is one trusted text unit for
+this boundary: quoted, forwarded, or copied text inside that record is not
+assigned a separate trust level, and the entire filtered record text is
+admitted under the record actor's authorization. Separate linked records still
+require their own attribution and authorization. Content from a redacted
+source is absent from the model context. No source content may re-dispatch the
+agent or elevate its identity, permissions, tools, capabilities, or
+platform-owned instructions.
+The platform's pre-dispatch command parser and deterministic, schema-validated
+host/post-script paths remain the only paths that select a stage or perform a
+forge mutation.
+
+This is a target contract. At the time of this ADR, the complete boundary is
+not enforced on every model-bound path; existing adapters and runtimes retain
+their compatibility behavior until they adopt the common attribution,
+authorization, filtering, and redaction contract.
+
+Fullsend-controlled retrieval capabilities are part of this target boundary
+and MUST return source-system records with the same attribution,
+authorization, filtering, and redaction guarantees. This ADR does not govern
+model-initiated or agent-authored direct source-system calls; those calls may
+still occur outside this boundary. Future ADRs may define mechanisms that
+encourage models to prefer platform-originated data that passes this boundary
+or apply additional filtering to model-originated retrievals.
+
+## Consequences
+
+- Authorized contributors and recognized bots can provide useful context and task guidance, regardless of how the data is retrieved, without gaining platform authority.
+- The strict per-record threshold means that external contributors whose current source authorization is below the selected harness threshold may have their descriptions or comments redacted even when a maintainer's event authorizes observation; preserving community review of that content is a likely follow-up ADR.
+- Every forge adapter, poller, snapshot builder, proactive data source, and Fullsend-controlled model retrieval capability needs provenance binding, per-record authorization, bounded retrieval, and the common filtering pipeline before its content is model-visible.
+- Fresh authorization at admission and later model-exposure checkpoints adds source-system API load and latency. Implementations may coalesce contiguous checks and cache per actor only within the logical lifetime defined by the Authorization Contract.
+- Hidden-character and prompt-injection findings may omit legitimate-looking content, so the model and operators need bounded diagnostics rather than an assumption that all source text will be preserved.
+- Filtering reduces, but cannot prove the absence of prompt injection; immutable instructions, least privilege, output validation, and deterministic host-side mutations remain required defenses.
+- Quoted, forwarded, or copied text is intentionally not detected or assigned a separate trust level inside an authorized record. A trusted actor or bot can therefore relay hostile text as part of a trusted record; this residual risk is accepted in exchange for a whole-record admission model, and is mitigated by trusted-actor caution, filtering, explicit delimitation, least privilege, output validation, deterministic host-side mutations, and the fresh authorization checkpoints.
+- Any harness that admits an authorized record as task guidance MUST keep that guidance within its configured scope and enforce least privilege, output validation, and deterministic host-side mutation rules; the whole-record rule does not authorize a new stage, capability, provider, or separate source-system record.
+- Direct model-initiated source-system calls remain outside this ADR's guarantee. A future ADR may define ways to encourage use of platform-originated, checked data or add filtering for model-originated retrievals.
+- The data-filter contract becomes a versioned security boundary whose changes require compatibility review and regression testing across all model-bound data consumers.

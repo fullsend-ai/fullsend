@@ -41,6 +41,10 @@ feature that consumes it.
 
 When a CLI change makes an ADR's decision obsolete, write a **new ADR** that supersedes the old one rather than editing the original decision text. Minor annotations (status updates, "see also" links) are welcome — see [ADR conventions](adrs.md) for the full rules.
 
+## Heading anchors
+
+Heading anchors on the docs site follow GitHub's slug rules (for example `## 4. Next step` is `#4-next-step`), so a link that lychee (`make lint-md-links`) accepts also works on the site.
+
 ## Cross-reference by command group
 
 Each row lists the documentation touchpoints for a major CLI command group. The **Go source** column is where inline `Short`/`Long` help text lives.
@@ -70,7 +74,7 @@ The `admin` command group's `uninstall`/`analyze`/`enable`/`disable` subcommands
 | Category | Files |
 |----------|-------|
 | CLI reference | `docs/cli/github.md` |
-| Guides | `docs/guides/getting-started/configuring-github.md`, `docs/guides/getting-started/operations.md`, `docs/guides/dev/cli-internals.md`, `docs/guides/dev/e2e-testing.md` |
+| Guides | `docs/guides/getting-started/configuring-github.md`, `docs/guides/getting-started/migrating-from-github-setup.md`, `docs/guides/getting-started/operations.md`, `docs/guides/dev/cli-internals.md`, `docs/guides/dev/e2e-testing.md` |
 | ADRs | `docs/ADRs/0057-repos-management.md` |
 | Go source | `internal/cli/github.go` |
 
@@ -79,7 +83,7 @@ The `admin` command group's `uninstall`/`analyze`/`enable`/`disable` subcommands
 | Category | Files |
 |----------|-------|
 | CLI reference | `docs/cli/inference.md` |
-| Guides | `docs/guides/getting-started/getting-inference.md`, `docs/guides/getting-started/operations.md`, `docs/guides/dev/cli-internals.md` |
+| Guides | `docs/guides/getting-started/getting-inference.md`, `docs/guides/user/inference-gateway.md`, `docs/guides/getting-started/operations.md`, `docs/guides/dev/cli-internals.md` |
 | Go source | `internal/cli/inference.go` |
 
 ### `mint`
@@ -96,9 +100,9 @@ The `admin` command group's `uninstall`/`analyze`/`enable`/`disable` subcommands
 | Category | Files |
 |----------|-------|
 | CLI reference | `docs/cli/repos.md` |
-| Guides | `docs/guides/getting-started/operations.md`, `docs/guides/getting-started/repo-management.md`, `docs/guides/getting-started/getting-inference.md`, `docs/guides/getting-started/configuring-gitlab.md`, `docs/guides/dev/cli-internals.md`, `docs/guides/infrastructure/layered-config-reference.md` |
+| Guides | `docs/guides/getting-started/operations.md`, `docs/guides/getting-started/repo-management.md`, `docs/guides/getting-started/getting-inference.md`, `docs/guides/getting-started/configuring-gitlab.md`, `docs/guides/getting-started/migrating-from-github-setup.md`, `docs/guides/dev/cli-internals.md`, `docs/guides/infrastructure/layered-config-reference.md` |
 | ADRs | `docs/ADRs/0057-repos-management.md`, `docs/ADRs/0074-repos-command-consolidation.md`, `docs/ADRs/0122-declarative-repo-configuration.md` |
-| Go source | `internal/cli/repos.go`, `internal/cli/repos_gitlab.go` |
+| Go source | `internal/cli/repos.go`, `internal/cli/repos_gitlab.go`, `internal/cli/repos_gitlab_service_accounts.go` |
 
 ### `run`
 
@@ -122,6 +126,6 @@ The `admin` command group's `uninstall`/`analyze`/`enable`/`disable` subcommands
 
 The commands below have lighter documentation footprints. Apply the general `grep` rule when changing them:
 
-`dispatch`, `scan`, `lock`, `poll`, `fetch-skill`, `post-review`, `post-comment`, `reconcile-status`, `resolve-mr-source`, `check-protected-branch`
+`dispatch`, `scan`, `lock`, `poll`, `fetch-skill`, `fetch-review-threads`, `post-review`, `post-comment`, `reconcile-status`, `resolve-mr-source`, `check-protected-branch`
 
 The most comprehensive single reference for all commands (including minor ones) is `docs/guides/dev/cli-internals.md`, which documents the full command tree with flags.

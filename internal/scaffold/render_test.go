@@ -1,6 +1,8 @@
 package scaffold
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -199,4 +201,79 @@ func TestRenderFallbackToDefaultRef(t *testing.T) {
 	out := string(rendered)
 	assert.Contains(t, out, "@main")
 	assert.NotContains(t, out, "fullsend_ai_ref:")
+}
+
+// Inline version comments need two spaces before '#' to satisfy yamllint's
+// default comments rule (#7902).
+func TestRenderRefCommentSpacing(t *testing.T) {
+	const sha = "abc123def456"
+	base := "fullsend-ai/fullsend/.github/workflows/"
+	tests := []struct {
+		name string
+		opts RenderOptions
+		ref  string
+		wf   string
+		disp string
+	}{
+		{
+			name: "sha with tag",
+			opts: RenderOptions{UpstreamRef: sha, UpstreamTag: "v0.19.0"},
+			ref:  sha + "  # v0.19.0",
+			wf:   base + "reusable-prioritize.yml@" + sha + "  # v0.19.0",
+			disp: base + "reusable-dispatch.yml@" + sha + "  # v0.19.0",
+		},
+		{
+			name: "tag equals ref",
+			opts: RenderOptions{UpstreamRef: "v0.19.0", UpstreamTag: "v0.19.0"},
+			ref:  "v0.19.0",
+			wf:   base + "reusable-prioritize.yml@v0.19.0",
+			disp: base + "reusable-dispatch.yml@v0.19.0",
+		},
+		{
+			name: "no tag",
+			opts: RenderOptions{UpstreamRef: sha},
+			ref:  sha,
+			wf:   base + "reusable-prioritize.yml@" + sha,
+			disp: base + "reusable-dispatch.yml@" + sha,
+		},
+		{
+			name: "vendored ignores tag",
+			opts: RenderOptions{Vendored: true, UpstreamRef: sha, UpstreamTag: "v0.19.0"},
+			ref:  sha + "  # v0.19.0",
+			wf:   "./.github/workflows/reusable-prioritize.yml",
+			disp: "./.github/workflows/reusable-dispatch.yml",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.ref, resolvedRefWithComment(tt.opts))
+			assert.Equal(t, tt.wf, reusableWorkflowUses("prioritize", tt.opts))
+			assert.Equal(t, tt.disp, reusableDispatchUses(tt.opts))
+		})
+	}
+}
+
+func TestRenderedTemplatesHaveNoSingleSpaceInlineComments(t *testing.T) {
+	singleSpace := regexp.MustCompile(`\S #`)
+	opts := RenderOptions{UpstreamRef: "abc123def456", UpstreamTag: "v0.19.0"}
+
+	shim, err := PerRepoShimTemplate()
+	require.NoError(t, err)
+	files := map[string][]byte{"templates/shim-per-repo.yaml": shim}
+	for _, w := range thinStageWorkflows {
+		raw, err := FullsendRepoFile(w.path)
+		require.NoError(t, err, w.path)
+		files[w.path] = raw
+	}
+
+	for path, raw := range files {
+		rendered, err := RenderTemplate(path, raw, opts)
+		require.NoError(t, err, path)
+		for i, line := range strings.Split(string(rendered), "\n") {
+			if strings.Contains(line, "uses:") {
+				assert.NotRegexp(t, singleSpace, line, "%s:%d", path, i+1)
+			}
+		}
+		assert.Contains(t, string(rendered), "@abc123def456  # v0.19.0", path)
+	}
 }

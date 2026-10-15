@@ -51,7 +51,7 @@ func NewRepoPoolExternalMint(
 	if err != nil {
 		return nil, err
 	}
-	return withRateLimitReporter(d, client), nil
+	return withRateLimitReporter(withMintURL(d, mintURL), client), nil
 }
 
 // Compile-time check: NewRepoPoolExternalMint satisfies Factory.

@@ -18,6 +18,11 @@ type piPersona struct {
 	Model         string   // frontmatter model (alias or id); empty = inherit parent
 	Tools         []string // Claude tool names; nil = parent's set
 	BashAllowlist []string // Bash(a,b) prefixes; nil = unrestricted
+	// Description, Body and Frontmatter are what a Codex role file and its
+	// diagnostics need (#6970). They are not serialized into the pi manifest.
+	Description string
+	Body        string
+	Frontmatter []byte
 }
 
 // piPersonaManifestEntry is one entry in the manifest's personas table,
@@ -26,6 +31,27 @@ type piPersonaManifestEntry struct {
 	Model         string   `json:"model"`
 	Tools         []string `json:"tools"`
 	BashAllowlist []string `json:"bashAllowlist,omitempty"`
+	// Fallbacks are the specs the persona's child falls back to, in order,
+	// when the run's Vertex project does not serve Model; set only when
+	// the persona's model was given as an alias with a built-in chain
+	// (#8426).
+	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// piPersonaModelSource returns the model that decides persona p's child and
+// where it came from. Resolution order: repo subagents.<persona> >
+// frontmatter model > repo subagents.default > the parent's live model
+// (an empty model). defaultModel is the raw subagents.default value.
+func piPersonaModelSource(p piPersona, subagentsCfg map[string]*string, defaultModel string) (model, source string) {
+	switch {
+	case subagentsCfg[p.Name] != nil:
+		return *subagentsCfg[p.Name], "subagents." + p.Name
+	case p.Model != "":
+		return p.Model, "frontmatter"
+	case defaultModel != "":
+		return defaultModel, "subagents.default"
+	}
+	return "", "parent"
 }
 
 // piSkippedPersona is a sub-agents/*.md file that failed validation and was
@@ -132,6 +158,9 @@ func discoverPersonas(skillDirs []string, agentName string) ([]piPersona, []piSk
 					Model:         def.Model,
 					Tools:         def.Tools,
 					BashAllowlist: def.BashAllowlist,
+					Description:   def.Description,
+					Body:          def.Body,
+					Frontmatter:   def.Frontmatter,
 				})
 			}
 		}
@@ -172,6 +201,7 @@ func resolvePersonaModels(
 	skipped []piSkippedPersona,
 	subagentsCfg map[string]*string,
 	modelsTable map[string]string,
+	modelFallbacks map[string][]string,
 	trustedSpecs map[string]string,
 ) (map[string]piPersonaManifestEntry, string, map[string]string, error) {
 	result := make(map[string]piPersonaManifestEntry, len(personas))
@@ -185,7 +215,7 @@ func resolvePersonaModels(
 
 	// canonicalise resolves a model to a spec this run serves, or refuses
 	// it. piChildSpec does the resolution; this adds the trust check.
-	resolveSpec := piChildSpecResolver(modelsTable)
+	resolveSpec := piChildSpecResolver(modelsTable, modelFallbacks)
 	canonicalise := func(what, model string) (string, error) {
 		spec := resolveSpec(model)
 		if _, ok := trustedSpecs[strings.ToLower(spec)]; !ok {
@@ -282,15 +312,7 @@ func resolvePersonaModels(
 		// floor for personas that say nothing, not an override of ones
 		// that do. The source is echoed to stderr so a user can see why a
 		// persona resolved as it did.
-		model, source := "", "parent"
-		switch {
-		case subagentsCfg[p.Name] != nil:
-			model, source = *subagentsCfg[p.Name], "subagents."+p.Name
-		case p.Model != "":
-			model, source = p.Model, "frontmatter"
-		case defaultModel != "":
-			model, source = defaultModel, "subagents.default"
-		}
+		model, source := piPersonaModelSource(p, subagentsCfg, defaultModel)
 
 		var entry piPersonaManifestEntry
 		if model != "" {
@@ -361,7 +383,13 @@ func piClaudeToolNames() []string {
 // aliases sharing a trailing id must resolve the same way every run. The
 // "@suffix" strip mirrors piAgentModels: ValidModelRef admits
 // `opus@20250101`. A value nothing matches is returned as written.
-func piChildSpecResolver(modelsTable map[string]string) func(model string) string {
+//
+// The bare-id table also carries the specs in modelFallbacks (the
+// manifest's ModelFallbacks), after every alias entry so an alias's own
+// spec wins: the built-in fallback chain ids (claude-sonnet-4-6 and the
+// like) were the alias defaults before #8426, and a child pinned to one
+// must still resolve to its Vertex spec as it did then.
+func piChildSpecResolver(modelsTable map[string]string, modelFallbacks map[string][]string) func(model string) string {
 	byAlias := make(map[string]string, len(modelsTable))
 	byBareID := make(map[string]string, len(modelsTable))
 	aliases := make([]string, 0, len(modelsTable))
@@ -375,6 +403,15 @@ func piChildSpecResolver(modelsTable map[string]string) func(model string) strin
 			continue
 		}
 		byAlias[strings.ToLower(alias)] = spec
+		id := spec
+		if i := strings.LastIndex(spec, "/"); i >= 0 {
+			id = spec[i+1:]
+		}
+		if _, taken := byBareID[strings.ToLower(id)]; !taken {
+			byBareID[strings.ToLower(id)] = spec
+		}
+	}
+	for _, spec := range piFallbackSpecs(modelFallbacks) {
 		id := spec
 		if i := strings.LastIndex(spec, "/"); i >= 0 {
 			id = spec[i+1:]
@@ -455,15 +492,15 @@ func (c PiChild) String() string { return c.Source + " → " + c.Spec }
 // piConfiguredChildren is the single resolver behind OpenAIChildren,
 // VertexChildren and piConfiguredOpenAIIDs (#7981, #7980): the configured
 // children whose model resolves to one of providers. It resolves each
-// model with piChildSpecResolver over modelsTable, exactly as
+// model with piChildSpecResolver over modelsTable and modelFallbacks, exactly as
 // resolvePersonaModels does, and follows its order: a subagents.<persona>
 // entry wins over that persona's frontmatter, and a tombstoned (nil) entry
 // is no reference. subagents.default counts on its own, since anonymous
 // children use it. A frontmatter model counts only for a persona
 // resolvePersonaModels would register (no Bash(...) allowlist, tools pi
 // can serve). Sorted by source.
-func piConfiguredChildren(personas []piPersona, subagentsCfg map[string]*string, modelsTable map[string]string, providers ...string) []PiChild {
-	resolveSpec := piChildSpecResolver(modelsTable)
+func piConfiguredChildren(personas []piPersona, subagentsCfg map[string]*string, modelsTable map[string]string, modelFallbacks map[string][]string, providers ...string) []PiChild {
+	resolveSpec := piChildSpecResolver(modelsTable, modelFallbacks)
 	var out []PiChild
 	add := func(source, model string, configured bool) {
 		if strings.TrimSpace(model) == "" {
@@ -530,7 +567,7 @@ func piChildrenOn(backend, agentPath string, subagentsCfg map[string]*string, sk
 	// discoverPersonas never returns a non-nil error; Bootstrap runs the
 	// same discovery on the same directories.
 	personas, _, _ := discoverPersonas(skillDirs, agentName)
-	return piConfiguredChildren(personas, subagentsCfg, piAgentModels(def.Model, configAliases), providers...)
+	return piConfiguredChildren(personas, subagentsCfg, piAgentModels(def.Model, configAliases), piAgentModelFallbacks(configAliases), providers...)
 }
 
 // VertexChildren lists the configured pi children whose model resolves to
@@ -550,7 +587,9 @@ func VertexChildren(backend, agentPath string, subagentsCfg map[string]*string, 
 func piConfiguredOpenAIIDs(personas []piPersona, subagentsCfg map[string]*string, modelsTable map[string]string) []string {
 	seen := map[string]bool{}
 	var ids []string
-	for _, c := range piConfiguredChildren(personas, subagentsCfg, modelsTable, piOpenAIProvider) {
+	// The fallback specs are all on the Anthropic Vertex provider, so they
+	// cannot add an openai child; nil leaves the result unchanged.
+	for _, c := range piConfiguredChildren(personas, subagentsCfg, modelsTable, nil, piOpenAIProvider) {
 		id := strings.TrimPrefix(c.Spec, piOpenAIProvider+"/")
 		if !seen[id] {
 			seen[id] = true
@@ -562,12 +601,17 @@ func piConfiguredOpenAIIDs(personas []piPersona, subagentsCfg map[string]*string
 }
 
 // piTrustedSpecs is the closed set a persona's model is checked against:
-// the alias table, every provider-model id, the agent definition's model
-// and the model the parent actually runs on. The parent's effective model
-// is included because an anonymous child may inherit it, so a persona
-// pinned to the same spec must not be the one dispatch that fails. It is
-// built before any persona is resolved and never widened by one.
-func piTrustedSpecs(models map[string]string, providerModels map[string][]string, parentModel string, configAliases map[string]string) map[string]string {
+// the alias table, the alias fallback chains (modelFallbacks, the
+// manifest's ModelFallbacks), every provider-model id, the agent
+// definition's model and the model the parent actually runs on. The
+// parent's effective model is included because an anonymous child may
+// inherit it, so a persona pinned to the same spec must not be the one
+// dispatch that fails. The fallback specs are included because they were
+// the alias defaults before #8426, so a child pinned to one keeps working;
+// an alias the repo retargets has no chain, so its old default is not
+// trusted, as it was not before either. It is built before any persona is
+// resolved and never widened by one.
+func piTrustedSpecs(models map[string]string, modelFallbacks map[string][]string, providerModels map[string][]string, parentModel string, configAliases map[string]string) map[string]string {
 	trusted := make(map[string]string)
 	// Only well-formed references are trusted. A resolved child model is
 	// echoed to host stderr and listed in errors, and the agent
@@ -581,6 +625,9 @@ func piTrustedSpecs(models map[string]string, providerModels map[string][]string
 	for _, spec := range models {
 		add(spec)
 	}
+	for _, spec := range piFallbackSpecs(modelFallbacks) {
+		add(spec)
+	}
 	for provider, ids := range providerModels {
 		for _, id := range ids {
 			add(provider + "/" + id)
@@ -591,6 +638,26 @@ func piTrustedSpecs(models map[string]string, providerModels map[string][]string
 		add(translatePiModel(p, configAliases))
 	}
 	return trusted
+}
+
+// piFallbackSpecs lists every spec in a ModelFallbacks table once, in
+// sorted alias order then chain order, so the tables built from it are the
+// same on every run.
+func piFallbackSpecs(modelFallbacks map[string][]string) []string {
+	aliases := make([]string, 0, len(modelFallbacks))
+	for alias := range modelFallbacks {
+		aliases = append(aliases, alias)
+	}
+	slices.Sort(aliases)
+	var specs []string
+	for _, alias := range aliases {
+		for _, spec := range modelFallbacks[alias] {
+			if spec = strings.TrimSpace(spec); spec != "" && !slices.Contains(specs, spec) {
+				specs = append(specs, spec)
+			}
+		}
+	}
+	return specs
 }
 
 // registeredPersonaNames lists the personas that made it into the

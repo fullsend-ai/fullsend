@@ -26,6 +26,9 @@ type piAgentDef struct {
 	// unrestricted or absent.
 	BashAllowlist []string
 	Body          string
+	// Frontmatter is the raw YAML between the fences, for a caller that
+	// reports keys piAgentFrontmatter does not parse.
+	Frontmatter []byte
 }
 
 type piAgentFrontmatter struct {
@@ -76,6 +79,7 @@ func parsePiAgent(data []byte) (*piAgentDef, error) {
 	def.Description = strings.TrimSpace(fm.Description)
 	def.Model = strings.TrimSpace(fm.Model)
 	def.Body = strings.TrimSpace(string(body))
+	def.Frontmatter = front
 
 	specs, err := piToolSpecs(fm.Tools)
 	if err != nil {

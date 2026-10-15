@@ -74,5 +74,6 @@ Feature: pi runtime runs an agent unattended
     When the issue is labeled "ready-for-pi-smoke"
     Then the harness "pi-smoke" workflow completes successfully
     And the run selected the "pi" runtime
+    And the run used model "claude-haiku-5-5" without a fallback
     And the pi session transcript records at least one tool call
     And the run metrics report tokens

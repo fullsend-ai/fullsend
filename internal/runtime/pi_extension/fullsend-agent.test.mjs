@@ -7,26 +7,36 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 
 import defaultExport, {
   AGENT_TOOL_PARAMETERS,
   CHILD_SYSTEM_NOTE,
+  GATEWAY_CONFIG_FILE,
+  GATEWAY_CONFIG_FILE_ENV,
+  GATEWAY_LOCAL_CONFIG_FILE,
   MAX_DESCRIPTION_BYTES,
   MAX_STDOUT_LINE_CHARS,
+  MIN_FALLBACK_MS,
   OVERSIZED_PREFIX_CHARS,
   RESULT_MAX_BYTES,
   childArgs,
   childEnv,
+  childFallbacks,
+  childModelNotServed,
+  childSessionDir,
   childTools,
+  consumeLine,
   createAgentTool,
   isAgentEndPrefix,
   isAssistantMessageEndPrefix,
+  isVertexModelUnavailable,
   resolveModel,
+  sanitizeLogLine,
   vertexChildAuthenticated,
   vertexCredentialsUsable,
 } from "./fullsend-agent.js";
@@ -245,6 +255,30 @@ test("resolveModel: openai under a non-openai parent needs a configured openai c
   assert.throws(() => resolveModel(empty, "openai/gpt-5.6-luna", parent), /provider "openai" is not available in this run/);
 });
 
+test("resolveModel: gateway under a non-gateway parent is admitted by its listed ids (#8280)", () => {
+  const { manifest } = fixture();
+  // The child gets the extension as /usr/local/share/pi-extensions/
+  // inference-gateway; its basename is not the provider id it registers.
+  const extensions = [...manifest.agent.extensions, "/usr/local/share/pi-extensions/inference-gateway"];
+  for (const parent of ["google-vertex/gemini-3.8-flash", "openai/gpt-5.6-luna", "anthropic-vertex/claude-opus-4-6"]) {
+    // No gateway list (no inference.gateway block): the provider is not
+    // available, even with the extension on the -e list.
+    assert.throws(
+      () => resolveModel({ ...manifest.agent, extensions }, "gateway/m1", parent),
+      /provider "gateway" is not available in this run/,
+      `no list under ${parent}`,
+    );
+    const empty = { ...manifest.agent, extensions, providerModels: { ...manifest.agent.providerModels, gateway: [] } };
+    assert.throws(() => resolveModel(empty, "gateway/m1", parent), /provider "gateway" is not available in this run/, `empty list under ${parent}`);
+
+    // Bootstrap lists the rendered config's ids: exactly those resolve.
+    const a = { ...manifest.agent, extensions, providerModels: { ...manifest.agent.providerModels, gateway: ["m1", "Team/M2"] } };
+    assert.equal(resolveModel(a, "gateway/m1", parent), "gateway/m1", `listed id under ${parent}`);
+    assert.equal(resolveModel(a, "gateway/team/m2", parent), "gateway/Team/M2", "an id with a slash, matched case-insensitively");
+    assert.throws(() => resolveModel(a, "gateway/m9", parent), /"m9" is not a model this run serves on "gateway"/, `unlisted id under ${parent}`);
+  }
+});
+
 test("vertexCredentialsUsable: a non-empty regular file, else gcloud's ADC file (#7980)", () => {
   const dir = mkdtempSync(join(tmpdir(), "fullsend-adc-"));
   const file = join(dir, "creds.json");
@@ -453,6 +487,29 @@ test("run: success returns the child's final text, trimmed, and records usage", 
   assert.equal(logs.length, 2);
   assert.match(logs[0], /^\[fullsend-agent\] #1 anthropic-vertex\/claude-sonnet-4-6 start "unit child"$/);
   assert.match(logs[1], /^\[fullsend-agent\] #1 done \d+ms stop$/);
+});
+
+test("sanitizeLogLine strips escapes and control characters and breaks ::", () => {
+  assert.equal(sanitizeLogLine("plain line"), "plain line");
+  assert.equal(sanitizeLogLine("a\x1b[31mred\x1b[0m b"), "ared b");
+  assert.equal(sanitizeLogLine("osc\x1b]0;title\x07 end"), "osc end");
+  assert.equal(sanitizeLogLine("x\n::error::boom"), "x : :error: :boom");
+  assert.equal(sanitizeLogLine(":::"), ": : :", "no :: survives at a replacement seam");
+  assert.ok(!sanitizeLogLine("::::::").includes("::"));
+  assert.equal(sanitizeLogLine("a%0Ab%0dc"), "a b c");
+  assert.equal(sanitizeLogLine("tab\there\x7f\x9fend"), "tab here  end");
+  assert.equal(sanitizeLogLine("über ✓"), "über ✓", "printable non-ASCII is kept");
+});
+
+test("run: values in log lines are sanitized", async () => {
+  const { manifest } = fixture();
+  const logs = [];
+  const tool = createAgentTool(manifest, { log: (l) => logs.push(l) });
+  await tool.run({ prompt: "ok", description: "evil\n::error::injected\x1b[2J", model: "sonnet" }, {});
+  assert.match(logs[0], /^\[fullsend-agent\] #1 anthropic-vertex\/claude-sonnet-4-6 start "evil : :error: :injected"$/);
+  for (const l of logs) {
+    assert.ok(!l.includes("::") && !/[\x00-\x1f]/.test(l), JSON.stringify(l));
+  }
 });
 
 test("run: error stopReason → isError with the child's message", async () => {
@@ -677,6 +734,128 @@ test("run: a hook adapter that vanishes after load stops the next dispatch", asy
   assert.equal(res.isError, true);
   assert.match(res.error, /cannot re-read .*gone-hooks\.js before dispatching/);
   assert.equal(children.length, 0);
+});
+
+// gatewayFixture is a tool whose manifest pins the inference gateway
+// config the runner rendered into configDir.
+function gatewayFixture() {
+  const { dir, manifest } = fixture();
+  const configDir = join(dir, "pi-config");
+  mkdirSync(configDir);
+  const cfg = join(configDir, GATEWAY_CONFIG_FILE);
+  const local = join(configDir, GATEWAY_LOCAL_CONFIG_FILE);
+  const bytes = '{"providers":{"gateway":{"models":[{"id":"m1"}]}}}';
+  writeFileSync(cfg, bytes);
+  const agent = { ...manifest.agent, gatewayConfigDigest: createHash("sha256").update(bytes).digest("hex") };
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool({ ...manifest, agent }, { ...quiet, spawn, configDir });
+  return { dir, cfg, local, bytes, tool, children, agent, manifest };
+}
+
+test("run: the runner's gateway config dispatches; a rewritten one stops the next dispatch", async () => {
+  const { cfg, bytes, tool, children } = gatewayFixture();
+  const first = tool.run({ prompt: "p1" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "the config the runner rendered dispatches");
+  children[0].child.finish(okStream("one"));
+  assert.equal((await first).text, "one");
+
+  // The children load the inference-gateway extension, which reads this
+  // file: a rewrite could point them at another baseUrl or headers.
+  writeFileSync(cfg, '{"providers":{"gateway":{"baseUrl":"https://elsewhere.example"}}}');
+  const res = await tool.run({ prompt: "p2" }, {});
+  assert.equal(res.isError, true);
+  assert.equal(res.error, "inference-gateway.json changed since the runner rendered it; refusing to dispatch");
+  assert.equal(res.stopReason, "rejected");
+  assert.equal(children.length, 1, "nothing was spawned against the rewritten config");
+  assert.equal(tool.inFlight(), 0);
+
+  writeFileSync(cfg, bytes);
+  const again = tool.run({ prompt: "p3" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 2, "restoring the bytes restores dispatch");
+  children[1].child.finish(okStream("three"));
+  assert.equal((await again).text, "three");
+});
+
+test("run: a gateway local overlay, even a dangling symlink, stops the dispatch", async () => {
+  for (const plant of [
+    (local) => writeFileSync(local, '{"baseUrl":"https://elsewhere.example"}'),
+    (local) => symlinkSync("/nonexistent/overlay.json", local),
+    (local) => mkdirSync(local),
+  ]) {
+    const { local, tool, children } = gatewayFixture();
+    plant(local);
+    const res = await tool.run({ prompt: "p" }, {});
+    assert.equal(res.isError, true);
+    assert.equal(res.error, "inference-gateway.local.json is present in the pi config dir; refusing to dispatch");
+    assert.equal(children.length, 0);
+  }
+});
+
+test("run: a gateway config that is a symlink or missing stops the dispatch", async () => {
+  {
+    // A symlink to identical bytes still fails: the file must be the
+    // regular file the runner wrote, not a pointer the agent controls.
+    const { dir, cfg, bytes, tool, children } = gatewayFixture();
+    const target = join(dir, "elsewhere.json");
+    writeFileSync(target, bytes);
+    rmSync(cfg);
+    symlinkSync(target, cfg);
+    const res = await tool.run({ prompt: "p" }, {});
+    assert.equal(res.isError, true);
+    assert.equal(res.error, "inference-gateway.json is not a regular file; refusing to dispatch");
+    assert.equal(children.length, 0);
+  }
+  {
+    const { cfg, tool, children } = gatewayFixture();
+    rmSync(cfg);
+    const res = await tool.run({ prompt: "p" }, {});
+    assert.equal(res.isError, true);
+    assert.match(res.error, /cannot check .*inference-gateway\.json before dispatching/);
+    assert.equal(children.length, 0);
+  }
+});
+
+test("run: a pinned gateway config with no config dir fails closed", async () => {
+  const { manifest } = fixture();
+  const agent = { ...manifest.agent, gatewayConfigDigest: "00" };
+  const { spawn, children } = fakeSpawn();
+  // No manifestPath and no configDir: nowhere to check, so no dispatch.
+  const tool = createAgentTool({ ...manifest, agent }, { ...quiet, spawn });
+  const res = await tool.run({ prompt: "p" }, {});
+  assert.equal(res.isError, true);
+  assert.equal(res.error, "the inference gateway config is pinned but the config dir is unknown; refusing to dispatch");
+  assert.equal(children.length, 0);
+});
+
+test("run: the gateway config dir defaults to the manifest's directory", async () => {
+  const { cfg, local, agent, manifest } = gatewayFixture();
+  const configDir = dirname(cfg);
+  const manifestPath = join(configDir, "fullsend-manifest.json");
+  writeFileSync(manifestPath, JSON.stringify({ ...manifest, agent }));
+  const manifestSum = createHash("sha256").update(readFileSync(manifestPath)).digest("hex");
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool({ ...manifest, agent }, { ...quiet, spawn, manifestPath, manifestSum });
+  writeFileSync(local, "{}");
+  const res = await tool.run({ prompt: "p" }, {});
+  assert.equal(res.error, "inference-gateway.local.json is present in the pi config dir; refusing to dispatch");
+  assert.equal(children.length, 0);
+});
+
+test("run: without a gateway digest the config dir is not consulted", async () => {
+  const { manifest } = fixture();
+  const dir = mkdtempSync(join(tmpdir(), "fullsend-agent-nogw-"));
+  // A local overlay alone changes nothing when no block applies: the
+  // local guide's plugin setup keeps working.
+  writeFileSync(join(dir, GATEWAY_LOCAL_CONFIG_FILE), "{}");
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, configDir: dir });
+  const run = tool.run({ prompt: "p" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1);
+  children[0].child.finish(okStream("ok"));
+  assert.equal((await run).text, "ok");
 });
 
 test("run: model rejection is an error before anything is spawned", async () => {
@@ -1483,4 +1662,342 @@ test("childArgs: non-persona dispatch names session dir with agent prefix", () =
   const sessionDirIdx = args.indexOf("--session-dir");
   assert.ok(sessionDirIdx >= 0);
   assert.ok(args[sessionDirIdx + 1].endsWith("/agent-2"), `session dir should use agent prefix: ${args[sessionDirIdx + 1]}`);
+});
+
+test("run: a child reads a private copy of the verified gateway config, not the writable file", async () => {
+  const { cfg, bytes, tool, children } = gatewayFixture();
+  const pending = tool.run({ prompt: "p" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1);
+  const copy = children[0].opts.env[GATEWAY_CONFIG_FILE_ENV];
+  assert.ok(copy, "the child is pointed at one config file");
+  assert.notEqual(dirname(copy), dirname(cfg), "not the agent-writable config dir");
+  // A file swapped into the config dir once the child is spawned does not
+  // reach it: the child reads its own copy of the bytes verified at load.
+  writeFileSync(cfg, '{"providers":{"gateway":{"baseUrl":"https://elsewhere.example"}}}');
+  assert.equal(readFileSync(copy, "utf8"), bytes);
+  children[0].child.finish(okStream("one"));
+  assert.equal((await pending).text, "one");
+  assert.equal(existsSync(dirname(copy)), false, "the copy goes when the child exits");
+});
+
+test("run: a gateway config that fails verification at load refuses every dispatch", async () => {
+  const { dir, manifest } = fixture();
+  const configDir = join(dir, "pi-config");
+  mkdirSync(configDir);
+  const cfg = join(configDir, GATEWAY_CONFIG_FILE);
+  const bytes = '{"providers":{"gateway":{"models":[{"id":"m1"}]}}}';
+  writeFileSync(cfg, '{"providers":{"gateway":{"baseUrl":"https://elsewhere.example"}}}');
+  const agent = { ...manifest.agent, gatewayConfigDigest: createHash("sha256").update(bytes).digest("hex") };
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool({ ...manifest, agent }, { ...quiet, spawn, configDir });
+  // Putting the runner's bytes back afterwards does not help: the copy
+  // comes from what was verified at load, and nothing was.
+  writeFileSync(cfg, bytes);
+  const res = await tool.run({ prompt: "p" }, {});
+  assert.equal(res.isError, true);
+  assert.match(res.error, /cannot load the runner's inference-gateway\.json: its digest is not the one the runner rendered/);
+  assert.equal(children.length, 0);
+});
+
+test("run: without a pinned gateway config the child gets no config file", async () => {
+  const { manifest } = fixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p" }, {});
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1);
+  assert.equal(children[0].opts.env[GATEWAY_CONFIG_FILE_ENV], process.env[GATEWAY_CONFIG_FILE_ENV], "nothing set or changed");
+  children[0].child.finish(okStream("one"));
+  await pending;
+});
+
+// --- model fallback for children (#8426) ---
+
+const NOT_SERVED = "Publisher model `projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-5-5` not found.";
+const notServedStream = (msg = NOT_SERVED) => [
+  { type: "agent_start" },
+  { type: "message_end", message: { role: "assistant", content: [], model: "m", provider: "anthropic-vertex", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } }, stopReason: "error", errorMessage: msg } },
+  { type: "agent_end", messages: [] },
+  { type: "agent_settled" },
+];
+
+function fallbackFixture() {
+  const { dir, manifest } = fixture();
+  manifest.agent.models = {
+    default: "anthropic-vertex/claude-opus-5-5",
+    opus: "anthropic-vertex/claude-opus-5-5",
+    sonnet: "anthropic-vertex/claude-sonnet-5-5",
+    haiku: "anthropic-vertex/claude-haiku-5-5",
+  };
+  manifest.agent.modelFallbacks = {
+    opus: ["anthropic-vertex/claude-opus-4-6"],
+    sonnet: ["anthropic-vertex/claude-sonnet-4-6"],
+    haiku: ["anthropic-vertex/claude-haiku-4-5"],
+  };
+  return { dir, manifest };
+}
+
+async function untilChildren(children, n) {
+  for (let i = 0; i < 200 && children.length < n; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, n);
+}
+
+const modelArg = (c) => c.args[c.args.indexOf("--model") + 1];
+
+test("isVertexModelUnavailable matches the two not-served shapes only", () => {
+  assert.equal(isVertexModelUnavailable(NOT_SERVED), true);
+  assert.equal(isVertexModelUnavailable("Access to this model requires data sharing to be enabled for publisher 'anthropic'"), true);
+  assert.equal(isVertexModelUnavailable("403 PERMISSION_DENIED: Permission denied on resource project p"), false);
+  assert.equal(isVertexModelUnavailable("quota exhausted"), false);
+  assert.equal(isVertexModelUnavailable(undefined), false);
+});
+
+test("childFallbacks: aliases, personas and subagents.default; pinned specs and inheritance never", () => {
+  const { manifest } = fallbackFixture();
+  const agent = manifest.agent;
+  assert.deepEqual(childFallbacks(agent, { model: "Sonnet" }), ["anthropic-vertex/claude-sonnet-4-6"]);
+  assert.deepEqual(childFallbacks(agent, { model: "sonnet@default" }), ["anthropic-vertex/claude-sonnet-4-6"]);
+  assert.deepEqual(childFallbacks(agent, { model: "anthropic-vertex/claude-sonnet-5-5" }), [], "a provider/id the caller pinned");
+  assert.deepEqual(childFallbacks(agent, { model: "claude-sonnet-5-5" }), [], "a bare id the caller pinned");
+  assert.deepEqual(childFallbacks(agent, { model: "default" }), []);
+  assert.deepEqual(childFallbacks(agent, {}), [], "inherits the parent's live model");
+  assert.deepEqual(childFallbacks({ ...agent, subagentDefault: "anthropic-vertex/claude-haiku-5-5", subagentDefaultFallbacks: ["anthropic-vertex/claude-haiku-4-5"] }, {}),
+    ["anthropic-vertex/claude-haiku-4-5"]);
+  assert.deepEqual(childFallbacks(agent, { model: "opus" }, { model: "anthropic-vertex/claude-sonnet-5-5", fallbacks: ["anthropic-vertex/claude-sonnet-4-6"] }),
+    ["anthropic-vertex/claude-sonnet-4-6"], "a persona uses its own chain, not the caller's");
+  assert.deepEqual(childFallbacks(agent, { model: "opus" }, { model: "", fallbacks: ["x"] }), [], "an inheriting persona");
+  assert.deepEqual(childFallbacks({}, { model: "sonnet" }), [], "a manifest without the table");
+});
+
+test("childModelNotServed: only a silent not-served error on a clean exit", () => {
+  const state = (over) => ({ stopReason: "error", errorMessage: NOT_SERVED, text: "", usage: { output: 0 }, ended: true, assistantLost: false, activity: false, ...over });
+  assert.equal(childModelNotServed({ exitCode: 0, state: state() }), true);
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ assistantLost: true }) }), false, "an assistant message was lost to the line cap");
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ ended: false }) }), false, "the stream did not reach agent_end");
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ ended: undefined }) }), false, "the stream did not reach agent_end");
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ activity: true }) }), false, "a tool ran or the model thought");
+  assert.equal(childModelNotServed({ exitCode: 0, droppedLines: 1, state: state() }), false, "a line was dropped unread");
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ errorMessage: "quota exhausted" }) }), false);
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ usage: { output: 4 } }) }), false, "the model answered");
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ text: "partial" }) }), false, "the model answered");
+  assert.equal(childModelNotServed({ exitCode: 1, state: state() }), false);
+  assert.equal(childModelNotServed({ exitCode: 0, timedOut: true, state: state() }), false);
+  assert.equal(childModelNotServed({ exitCode: null, spawnError: "ENOENT", state: state() }), false);
+  assert.equal(childModelNotServed({ exitCode: 0, state: state({ stopReason: "stop" }) }), false);
+});
+
+test("run: a child asking for an alias falls back when the project does not serve it", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const logs = [];
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { log: (l) => logs.push(l), spawn });
+  const sessionDir = childSessionDir(manifest.agent, 1, "");
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(join(sessionDir, "abandoned.jsonl"), "{}\n");
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  assert.equal(modelArg(children[0]), "anthropic-vertex/claude-sonnet-5-5");
+  children[0].child.finish(notServedStream());
+  await untilChildren(children, 2);
+  assert.equal(modelArg(children[1]), "anthropic-vertex/claude-sonnet-4-6");
+  assert.equal(existsSync(join(sessionDir, "abandoned.jsonl")), false, "the abandoned attempt's session is removed");
+  children[1].child.finish(okStream("served"));
+  const res = await pending;
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.text, "served");
+  assert.equal(res.model, "anthropic-vertex/claude-sonnet-4-6");
+  assert.ok(logs.some((l) => l.includes("model anthropic-vertex/claude-sonnet-5-5 is not available (not served in this project); falling back to anthropic-vertex/claude-sonnet-4-6")), logs.join("\n"));
+  const usage = readFileSync(manifest.agent.usageFile, "utf8").trim().split("\n");
+  assert.equal(usage.length, 1, "one usage record per dispatch");
+  assert.equal(JSON.parse(usage[0]).model, "anthropic-vertex/claude-sonnet-4-6");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: other errors, pinned models and an exhausted chain do not fall back further", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+
+  const denied = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  children[0].child.finish(notServedStream("403 PERMISSION_DENIED: Permission denied on resource project p"));
+  const deniedRes = await denied;
+  assert.equal(deniedRes.isError, true);
+  assert.match(deniedRes.error, /PERMISSION_DENIED/);
+
+  const pinned = tool.run({ prompt: "p", model: "anthropic-vertex/claude-sonnet-5-5" }, {});
+  await untilChildren(children, 2);
+  children[1].child.finish(notServedStream());
+  assert.equal((await pinned).isError, true);
+
+  const exhausted = tool.run({ prompt: "p", model: "haiku" }, {});
+  await untilChildren(children, 3);
+  children[2].child.finish(notServedStream());
+  await untilChildren(children, 4);
+  children[3].child.finish(notServedStream());
+  const exhaustedRes = await exhausted;
+  assert.equal(exhaustedRes.isError, true);
+  assert.equal(exhaustedRes.model, "anthropic-vertex/claude-haiku-4-5");
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 4, "the chain ends at its last model");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: a persona configured with an alias falls back along its chain", async () => {
+  const { dir, manifest } = fallbackFixture();
+  manifest.agent.personas = { challenger: { model: "anthropic-vertex/claude-opus-5-5", tools: ["read"], fallbacks: ["anthropic-vertex/claude-opus-4-6"] } };
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p", subagent_type: "challenger" }, {});
+  await untilChildren(children, 1);
+  children[0].child.finish(notServedStream());
+  await untilChildren(children, 2);
+  assert.equal(modelArg(children[1]), "anthropic-vertex/claude-opus-4-6");
+  assert.ok(children[1].args.includes(childSessionDir(manifest.agent, 1, "challenger")));
+  children[1].child.finish(okStream("ok"));
+  const res = await pending;
+  assert.equal(res.isError, false, res.error);
+  assert.equal(res.model, "anthropic-vertex/claude-opus-4-6");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// The fallback-chain ids were the alias defaults before #8426, so a child
+// pinned to one by the orchestrator is still served.
+test("resolveModel: the alias fallback-chain ids stay servable", () => {
+  const { dir, manifest } = fallbackFixture();
+  const agent = manifest.agent;
+  for (const spec of ["claude-sonnet-4-6", "Claude-Sonnet-4-6", "claude-sonnet-4-6@default", "anthropic/claude-sonnet-4-6", "anthropic-vertex/claude-sonnet-4-6"]) {
+    assert.equal(resolveModel(agent, spec, ""), "anthropic-vertex/claude-sonnet-4-6", spec);
+  }
+  assert.equal(resolveModel(agent, "claude-opus-4-6", ""), "anthropic-vertex/claude-opus-4-6");
+  assert.equal(resolveModel(agent, "claude-haiku-4-5", ""), "anthropic-vertex/claude-haiku-4-5");
+  assert.equal(resolveModel(agent, "sonnet", ""), "anthropic-vertex/claude-sonnet-5-5", "an alias still resolves to its own default");
+  assert.throws(() => resolveModel(agent, "claude-sonnet-4-20250514", ""), /is not available in this sandbox/);
+  assert.throws(() => resolveModel(agent, "anthropic-vertex/claude-sonnet-4-20250514", ""), /is not a model this run serves/);
+  const { modelFallbacks: _drop, ...noChains } = agent;
+  assert.throws(() => resolveModel(noChains, "claude-sonnet-4-6", ""), /is not available in this sandbox/,
+    "a manifest whose alias was retargeted (no chain) does not serve the old default");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: a child pinned to a fallback-chain id dispatches on its Vertex spec", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p", model: "claude-sonnet-4-6" }, {});
+  await untilChildren(children, 1);
+  assert.equal(modelArg(children[0]), "anthropic-vertex/claude-sonnet-4-6");
+  children[0].child.finish(okStream("ok"));
+  const res = await pending;
+  assert.equal(res.isError, false, res.error);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("consumeLine: tool executions, tool results and tool-call or thinking blocks count as activity", () => {
+  const fresh = () => ({ text: "", stopReason: "", errorMessage: "", ended: false, assistantLost: false, activity: false, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } });
+  for (const evt of [
+    { type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: {} },
+    { type: "tool_execution_end", toolCallId: "c1", toolName: "bash", result: {}, isError: false },
+    { type: "message_end", message: { role: "toolResult", toolCallId: "c1", content: [] } },
+    { type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash" }], usage: {} } },
+    { type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "hmm" }], usage: {} } },
+  ]) {
+    const s = fresh();
+    consumeLine(s, JSON.stringify(evt));
+    assert.equal(s.activity, true, evt.type + " " + (evt.message?.role ?? ""));
+  }
+  const s = fresh();
+  for (const evt of notServedStream()) consumeLine(s, JSON.stringify(evt));
+  assert.equal(s.activity, false, "a not-served error is no activity");
+  assert.equal(s.ended, true);
+});
+
+test("run: no fallback once the child showed tool activity", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  const [start, ...rest] = notServedStream();
+  children[0].child.finish([start, { type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: {} }, ...rest]);
+  const res = await pending;
+  assert.equal(res.isError, true);
+  assert.match(res.error, /Publisher model/);
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "no second model is tried");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: no fallback when the stream did not reach agent_end", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  children[0].child.finish(notServedStream().filter((e) => e.type !== "agent_end"));
+  const res = await pending;
+  assert.equal(res.isError, true);
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "no second model is tried");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: no fallback when an assistant message was dropped, and the dispatch still fails closed", async () => {
+  const { dir, manifest } = fallbackFixture();
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn });
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  const [start, notServedEnd, agentEnd] = notServedStream();
+  const bigAssistant = { type: "message_end", message: finalMessage("stop", "x".repeat(MAX_STDOUT_LINE_CHARS + 10)) };
+  await finishRaw(children[0].child, [jsonLine(start), jsonLine(notServedEnd), jsonLine(bigAssistant), jsonLine(agentEnd)]);
+  const res = await pending;
+  assert.equal(res.isError, true);
+  assert.equal(res.stopReason, "incomplete");
+  assert.match(res.error, /exceeded .* chars and was dropped/);
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1, "no second model is tried");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// The fallback chain shares one dispatch deadline: a fallback gets what is
+// left of it, not a fresh timeout, and none starts with too little left.
+test("run: a fallback gets the time left of the dispatch, not a fresh timeout", async () => {
+  const { dir, manifest } = fallbackFixture();
+  manifest.agent.timeoutSeconds = 3;
+  let clock = 0;
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, now: () => clock, killGraceMs: 50 });
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  clock = 3000 - MIN_FALLBACK_MS - 200; // 1.2 s of the 3 s budget left
+  children[0].child.finish(notServedStream());
+  await untilChildren(children, 2);
+  // A fresh 3 s timeout would not have fired yet; the 1.2 s left has.
+  await new Promise((r) => setTimeout(r, 1600));
+  assert.ok(children[1].child.signals.includes("SIGTERM"), "the fallback is stopped at the dispatch deadline");
+  children[1].child.finish([], 143);
+  const res = await pending;
+  assert.equal(res.isError, true);
+  assert.equal(res.stopReason, "timeout");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("run: no fallback starts with less than the minimum attempt time left", async () => {
+  const { dir, manifest } = fallbackFixture();
+  manifest.agent.timeoutSeconds = 3;
+  let clock = 0;
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, now: () => clock });
+  const pending = tool.run({ prompt: "p", model: "sonnet" }, {});
+  await untilChildren(children, 1);
+  clock = 3000 - MIN_FALLBACK_MS + 1;
+  children[0].child.finish(notServedStream());
+  const res = await pending;
+  assert.equal(res.isError, true);
+  assert.match(res.error, /Publisher model/, "the abandoned attempt is final");
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1);
+  rmSync(dir, { recursive: true, force: true });
 });

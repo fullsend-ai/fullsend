@@ -55,3 +55,34 @@ type Driver interface {
 	AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, agent string, after time.Time) error
 	CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error)
 }
+
+// RunLister is an optional extension of Driver for listing a
+// repository's most recent workflow runs across all workflows, newest
+// first, returning at most limit runs. The suite uses it to collect the
+// logs of every run in a failed scenario's repository before the lease
+// ends — including runs no step got hold of (a wait that timed out, a
+// failure before any run was resolved). It is a separate interface so
+// that external Driver implementations keep compiling; a Driver that
+// does not implement it still gets an explanatory failure summary in
+// place of the missing logs.
+type RunLister interface {
+	ListRecentRuns(ctx context.Context, owner, repo string, limit int) ([]forge.WorkflowRun, error)
+}
+
+// EmptyMatrixWaiter is an optional extension of Driver for asserting
+// that a harness dispatch decided to schedule nothing. Counting
+// dispatches or checking for an agent job cannot tell that decision from
+// a dispatch job that failed, or from a run that was never created, so
+// denial scenarios use this to require a positive outcome. It is a
+// separate interface so that external Driver implementations keep
+// compiling; a scenario that uses the step on a Driver without it fails
+// with an explanatory error.
+type EmptyMatrixWaiter interface {
+	// WaitForHarnessEmptyMatrix waits for at least one harness run
+	// created at or after the given time, and for every such run that
+	// was not cancelled to complete with its Harness dispatch job
+	// succeeding and no harness agent job scheduled. It returns the first
+	// such run, or an error when a run's dispatch job failed, a harness
+	// agent job ran, or no run settled before the wait budget elapsed.
+	WaitForHarnessEmptyMatrix(ctx context.Context, owner, repo string, after time.Time) (*forge.WorkflowRun, error)
+}

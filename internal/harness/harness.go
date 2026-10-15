@@ -552,6 +552,9 @@ func (h *Harness) Validate() error {
 		if hf.Dest == "" {
 			return fmt.Errorf("host_files[%d]: dest is required", i)
 		}
+		if err := ValidateHostFileDest(hf.Dest); err != nil {
+			return fmt.Errorf("host_files[%d]: %w", i, err)
+		}
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
 		return fmt.Errorf("validation_loop.script is required when validation_loop is set")
@@ -828,11 +831,21 @@ func (h *Harness) ValidatePluginDirs() error {
 	return nil
 }
 
+// policyRequiredGuidance is the fix named when a sandbox harness has no
+// policy: or names a file OpenShell 0.1 cannot activate. CI layers no
+// policy (#7266); `agent new` only writes one when generating a new agent.
+const policyRequiredGuidance = "commit a copy of the fleet policy from fullsend-ai/agents, or set policy: to its URL with a #sha256= hash under allowed_remote_resources; `fullsend agent new` writes one when generating a new agent"
+
 // ValidateFilesExist checks that all file paths referenced by the harness
 // exist on disk. Callers must invoke ResolveRelativeTo first (to make
 // paths absolute), then resolve.ResolveHarness (to replace any URL
 // references with local cache paths). The IsURL guard inside is
 // defense-in-depth in case the ordering is violated.
+//
+// A sandbox harness must name a policy: OpenShell 0.1 will not activate an
+// empty or comment-only document, and fullsend ships no default (#7266).
+// This runs after base: composition, so a child that inherits its base's
+// policy passes.
 func (h *Harness) ValidateFilesExist() error {
 	check := func(label, path string) error {
 		if path == "" || IsURL(path) {
@@ -847,11 +860,17 @@ func (h *Harness) ValidateFilesExist() error {
 	if err := check("agent", h.Agent); err != nil {
 		return err
 	}
+	if strings.TrimSpace(h.Policy) == "" {
+		return fmt.Errorf("policy field is required (%s)", policyRequiredGuidance)
+	}
 	if err := check("policy", h.Policy); err != nil {
 		// CI layers no policy, so a relative path resolves only if the file is
 		// committed (#6834). Re-running `agent new` is no fix: it refuses on
 		// the existing agent's files before writing the policy.
 		return fmt.Errorf("%w (commit a copy of the fleet policy in fullsend-ai/agents at that path, or set policy: to its URL with a #sha256= hash under allowed_remote_resources; `fullsend agent new` only writes one when generating a new agent)", err)
+	}
+	if err := validatePolicyDeclaresFields(h.Policy); err != nil {
+		return err
 	}
 	if err := check("pre_script", h.PreScript); err != nil {
 		return err
@@ -907,6 +926,30 @@ func (h *Harness) ValidateFilesExist() error {
 	return nil
 }
 
+// validatePolicyDeclaresFields rejects a local policy file that unmarshals
+// to no fields. OpenShell 0.1 fails at sandbox create with "failed to
+// decode sandbox policy fields" for comment-only documents; naming the
+// path here avoids that retry loop. Parse errors are left to OpenShell —
+// this check only catches the empty-document case. URLs are skipped;
+// ResolveHarness replaces them with cache paths before this runs.
+func validatePolicyDeclaresFields(path string) error {
+	if path == "" || IsURL(path) {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("policy: %w", err)
+	}
+	var fields map[string]any
+	if err := yaml.Unmarshal(data, &fields); err != nil {
+		return nil
+	}
+	if len(fields) == 0 {
+		return fmt.Errorf("policy: %s declares no fields (OpenShell 0.1 cannot activate an empty policy; %s)", path, policyRequiredGuidance)
+	}
+	return nil
+}
+
 // Scripts returns all script paths configured in the harness.
 func (h *Harness) Scripts() []string {
 	var scripts []string
@@ -924,7 +967,7 @@ func (h *Harness) Scripts() []string {
 
 // ValidateAllowedRemoteResources checks that each entry in AllowedRemoteResources
 // is a valid HTTPS URL ending with "/" and is covered by at least one entry in the
-// org-level allowlist. Org allowlist entries are also validated: each must be a
+// config-level allowlist. Allowlist entries are also validated: each must be a
 // valid HTTPS URL ending with "/" and must not contain double-encoded sequences.
 func (h *Harness) ValidateAllowedRemoteResources(orgAllowlist []string) error {
 	for i, orgEntry := range orgAllowlist {

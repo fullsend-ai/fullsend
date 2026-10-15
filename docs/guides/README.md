@@ -9,7 +9,9 @@ Guides for onboarding organizations and configuring GitHub or GitLab — the fir
 - [Mint enrollment](getting-started/README.md) — Enroll your repo in a token mint before configuring anything else
 - [Getting Inference](getting-started/getting-inference.md) — Provision GCP inference access for your org or repo
 - [Configuring GitHub](getting-started/configuring-github.md) — Install GitHub Apps and run the setup CLI
-- [Configuring GitLab](getting-started/configuring-gitlab.md) — Install via `repos install --forge gitlab`, runners, polling, and role-credential lifecycle
+- [Configuring GitLab](getting-started/configuring-gitlab.md) — Declare the project in `repos.yaml`, install with `repos install`, runners, polling, and role-credential lifecycle
+- [Repo Management](getting-started/repo-management.md) — Manage many repositories from a declarative `repos.yaml` manifest
+- [Migrating to manifest-driven `repos install`](getting-started/migrating-from-github-setup.md) — Move `github setup` installations and flag-driven `repos install` scripts to `repos.yaml`
 
 ## Operations & Advanced Setup
 
@@ -30,12 +32,15 @@ Advanced guides for platform operators who deploy and manage the GCP-side infras
 - [Gate binaries](infrastructure/gate-binaries.md) — Building statically linked binaries for custom endpoint access constraints beyond L4/L7 rules
 - [Tracing reference](infrastructure/distributed-tracing.md) — Telemetry levels, environment variables, span hierarchy, and attributes
 - [Eval measurements](infrastructure/eval-measurements.md) — Online trace scoring with `eval-measurements.jsonl` and measurement manifests
+- [Inference gateway operator guide](infrastructure/inference-gateway-operator.md) — Run an agentgateway inference gateway on Cloud Run that trusts GitHub Actions OIDC, for `gateway/` models on pi, codex and Claude Code
 
 ## User guides
 
 Guides for developers working in repositories where fullsend is active.
 
 - [Adopting fullsend incrementally](user/adoption.md) — Crawl, walk, run, fly: incremental adoption path from first agents to auto-merge
+- [How fullsend authenticates](user/how-fullsend-authenticates.md) — Which credential path fullsend uses in each case: the mint, GCP and OpenAI Workload Identity, and the gateway's direct OIDC trust
+- [Using an inference gateway](user/inference-gateway.md) — Reach models through an OpenAI/Anthropic-compatible gateway with direct OIDC trust (no token exchange) or a gateway key
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
 - [Issue commands](user/issues-commands.md) — Slash commands and label triggers for interacting with agents
 - [OWNERS file authorization](user/owners-file-authorization.md) — Authorize agent dispatch via Prow-style OWNERS files
@@ -56,7 +61,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 - [CEL Triggers Reference](user/cel-triggers-reference.md) — Dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Custom Poller Example](user/custom-poller-example.md) — Create a custom poller workflow that invokes fullsend harness agents with a pre-computed matrix
 - [Building custom agents from scratch](user/building-custom-agents.md) — _(deprecated — see [Bring Your Own Agent](user/bring-your-own-agent.md))_
-- [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
+- [Default, derived, and custom agents](user/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
 
 ### Integrations & observability
 

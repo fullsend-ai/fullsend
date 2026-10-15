@@ -29,6 +29,14 @@ first adoption, and subsequent convergence. A less-restrictive candidate
 is rejected unless the manifest explicitly declares that relaxation; status
 and install output identify the affected keys.
 
+**Implementation note (#8218):** Management is no longer opt-in: every
+repository selected from `repos.yaml` has a managed
+`.fullsend/config.yaml` (marker included, no `config` key needed) and a
+managed `.fullsend/config.base.yaml` (the declared preset's bytes, or no
+file when none resolves). The safety gate compares the current effective
+configuration with the proposed overlay over the proposed preset. See
+[Repo Management](../guides/getting-started/repo-management.md#managed-configuration).
+
 ## Context
 
 The `fullsend repos` manifest manages installations across many repositories,

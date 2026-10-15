@@ -1,8 +1,8 @@
 # Issue Commands
 
 Read and write issue content across GitHub, GitLab, and Jira from
-custom agent scripts using `fullsend issues get` and
-`fullsend issues post-comment`.
+custom agent scripts using `fullsend issues get`,
+`fullsend issues post-comment`, and `fullsend issues link`.
 
 ## When to use
 
@@ -14,6 +14,8 @@ GitHub-sourced events. Use these commands when:
   comments) from any tracker as structured JSON.
 - You need **sticky comments** (find-and-update-by-marker) on a
   non-GitHub tracker.
+- A workflow depends on **typed issue links** in Jira (for example, a
+  bug that blocks a task).
 
 ## `fullsend issues get`
 
@@ -39,6 +41,43 @@ fullsend issues get \
   --jira-email you@example.com
 ```
 
+The output JSON has `number`, `title`, `body`, `url`, `labels`, and
+`comments`. For Jira, it also always includes `issue_type` (for example
+`"Bug"`, `"Story"`, or `"Task"`).
+
+To read Jira custom fields, pass their field IDs with `--fields`. The
+raw value of each requested field appears under `custom_fields`. A
+requested field that is unset or missing from the issue is `null`:
+
+```bash
+fullsend issues get \
+  --tracker jira \
+  --project PROJ \
+  --number 101 \
+  --fields customfield_10875,customfield_12345
+```
+
+```json
+{
+  "number": 101,
+  "title": "Widget is broken",
+  "body": "...",
+  "url": "https://myteam.atlassian.net/browse/PROJ-101",
+  "labels": [],
+  "issue_type": "Bug",
+  "custom_fields": {
+    "customfield_10875": "https://github.com/acme/widgets/pull/7",
+    "customfield_12345": null
+  },
+  "comments": []
+}
+```
+
+Values keep the shape Jira returns, so select-list or user fields are
+objects, not strings. GitHub and GitLab output has no `issue_type` or
+`custom_fields`. For those trackers, `--fields` prints a warning and is
+otherwise ignored.
+
 ### Flags
 
 | Flag | Required | Description |
@@ -49,6 +88,7 @@ fullsend issues get \
 | `--token` | No | API token (default: env var per tracker) |
 | `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
 | `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
+| `--fields` | Jira only | Comma-separated Jira custom field IDs (`customfield_<digits>`) to include under `custom_fields`. Repeatable. |
 | `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
 
 ## `fullsend issues post-comment`
@@ -99,6 +139,44 @@ body. Jira's ADF format has no HTML comment equivalent, so
 body-embedded markers would be visible to users. Because the marker
 lives in a property, character restrictions do not apply — any
 characters valid in the `--marker` flag are fine for Jira.
+
+## `fullsend issues link`
+
+Creates a typed link from the `--from` issue to the `--to` issue. Only
+Jira supports typed issue links; GitHub and GitLab have no first-class
+equivalent, so `--tracker github` and `--tracker gitlab` fail with a
+"not supported" error.
+
+```bash
+fullsend issues link \
+  --tracker jira \
+  --from PROJ-123 \
+  --to PROJ-456 \
+  --type Blocks \
+  --jira-url https://myteam.atlassian.net \
+  --jira-email you@example.com
+```
+
+`--from` and `--to` are Jira issue keys (`PROJECT-NUMBER`); the two
+issues may be in different projects. `--type` is the Jira link type
+name, such as `Blocks`, `Relates`, or `Cloners`. Link type names are
+instance-specific, so the CLI passes `--type` through without
+validating it; an unknown name fails with Jira's error. The link is
+created in the type's outward direction: the example above records that
+`PROJ-123` blocks `PROJ-456`.
+
+### Flags
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--tracker` | Yes (unless config default set) | Tracker backend: `github`, `gitlab`, or `jira` (only `jira` supports links) |
+| `--from` | Yes | Source issue key (e.g. `PROJ-123`) |
+| `--to` | Yes | Target issue key (e.g. `PROJ-456`) |
+| `--type` | Yes | Link type name (e.g. `Blocks`), passed through verbatim |
+| `--token` | No | API token (default: env var per tracker) |
+| `--jira-url` | If env var unset | Jira instance URL (default: `$JIRA_BASE_URL`) |
+| `--jira-email` | If env var unset | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
+| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources a default `--tracker` from its `config.yaml` when the flag is omitted) |
 
 ## Config-based default tracker
 

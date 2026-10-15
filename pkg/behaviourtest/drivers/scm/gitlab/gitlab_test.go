@@ -65,6 +65,34 @@ func TestCreateRepo_Error(t *testing.T) {
 	}
 }
 
+func TestCreateUserFork(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "outsider"
+	d := New(fc)
+
+	owner, repo, err := d.CreateUserFork(context.Background(), "group", "project")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if owner != "outsider" || repo != "project" {
+		t.Errorf("expected fork outsider/project, got %s/%s", owner, repo)
+	}
+	if len(fc.CreatedForks) != 1 || fc.CreatedForks[0] != "group/project" {
+		t.Errorf("expected CreateFork call for group/project, got %v", fc.CreatedForks)
+	}
+}
+
+func TestCreateUserFork_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["CreateFork"] = errors.New("create failed")
+	d := New(fc)
+
+	_, _, err := d.CreateUserFork(context.Background(), "group", "project")
+	if err == nil || err.Error() != "create failed" {
+		t.Fatalf("expected create failed error, got %v", err)
+	}
+}
+
 func TestCreateForkChangeProposal_DiscardsBaseOwnerRepo(t *testing.T) {
 	fc := forge.NewFakeClient()
 	d := New(fc)

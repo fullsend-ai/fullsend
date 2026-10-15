@@ -235,7 +235,7 @@ func TestBuildRunCommand_Basic(t *testing.T) {
 
 func TestBuildRunCommand_WithModel(t *testing.T) {
 	cmd := testRunCommand("hello-world", "sonnet", "/sandbox/workspace/repo", nil, "")
-	assert.Contains(t, cmd, "--model 'sonnet'")
+	assert.Contains(t, cmd, "--model 'claude-sonnet-5-5'", "an alias gets its built-in default id (#8426)")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 }
 
@@ -248,7 +248,7 @@ func TestBuildRunCommand_WithEffort(t *testing.T) {
 
 func TestBuildRunCommand_WithModelAndEffort(t *testing.T) {
 	cmd := testRunCommandWithEffort("hello-world", "sonnet", "xhigh", "/sandbox/workspace/repo", nil, "")
-	assert.Contains(t, cmd, "--model 'sonnet'")
+	assert.Contains(t, cmd, "--model 'claude-sonnet-5-5'")
 	assert.Contains(t, cmd, "--effort 'xhigh'")
 }
 
@@ -422,15 +422,16 @@ func TestBuildRunCommand_WithConfigAlias(t *testing.T) {
 }
 
 func TestBuildRunCommand_WithConfigAliasNoMatch(t *testing.T) {
-	// When the model is not in the config aliases, it passes through.
+	// When the model is not in the config aliases, it gets its built-in
+	// default id (#8426).
 	cmd := buildRunCommand(RunParams{
 		AgentBaseName: "agent",
 		Model:         "opus",
 		RepoDir:       "/sandbox/workspace/repo",
 		ModelAliases:  map[string]string{"sonnet": "claude-sonnet-5"},
 	})
-	assert.Contains(t, cmd, "--model 'opus'",
-		"unmatched model passes through")
+	assert.Contains(t, cmd, "--model 'claude-opus-5-5'",
+		"unmatched alias takes the built-in default")
 }
 
 func TestBuildRunCommand_WithConfigAliasNilMap(t *testing.T) {
@@ -441,8 +442,8 @@ func TestBuildRunCommand_WithConfigAliasNilMap(t *testing.T) {
 		RepoDir:       "/sandbox/workspace/repo",
 		ModelAliases:  nil,
 	})
-	assert.Contains(t, cmd, "--model 'sonnet'",
-		"nil aliases passes the model through")
+	assert.Contains(t, cmd, "--model 'claude-sonnet-5-5'",
+		"nil aliases resolves the built-in default")
 }
 
 func TestBuildRunCommand_FallbackModelsUseConfigAlias(t *testing.T) {
@@ -457,7 +458,7 @@ func TestBuildRunCommand_FallbackModelsUseConfigAlias(t *testing.T) {
 	})
 	assert.Contains(t, cmd, "--fallback-model 'claude-sonnet-5,claude-haiku-4-5'",
 		"aliased fallback entries are remapped, bare ids pass through")
-	assert.Contains(t, cmd, "--model 'opus'", "unmapped primary passes through")
+	assert.Contains(t, cmd, "--model 'claude-opus-5-5'", "unmapped primary takes the built-in default")
 }
 
 func TestBuildPluginConfigs_SinglePlugin(t *testing.T) {
@@ -1094,7 +1095,7 @@ func TestInstallClaudeHooks_HappyPath(t *testing.T) {
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{} // default hooks (all enabled)
-	require.NoError(t, installClaudeHooks("test-sandbox", hooks))
+	require.NoError(t, installClaudeHooks("test-sandbox", hooks, nil))
 
 	logBytes, err := os.ReadFile(logPath)
 	require.NoError(t, err)
@@ -1113,7 +1114,7 @@ func TestInstallClaudeHooks_SettingsUploadError(t *testing.T) {
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{}
-	err := installClaudeHooks("test-sandbox", hooks)
+	err := installClaudeHooks("test-sandbox", hooks, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying hooks.json to sandbox")
 }
@@ -1124,7 +1125,7 @@ func TestInstallClaudeHooks_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	hooks := security.SandboxHookConfig{}
-	err := installClaudeHooks("test-sandbox", hooks)
+	err := installClaudeHooks("test-sandbox", hooks, nil)
 	require.Error(t, err)
 }
 
@@ -1150,7 +1151,7 @@ func TestInstallClaudeHooks_TempFileError(t *testing.T) {
 		UnicodePostTool:         &off,
 		ContextSuppressPostTool: &off,
 	}}}
-	err := installClaudeHooks("test-sandbox", security.SandboxHookConfigFromHarness(h))
+	err := installClaudeHooks("test-sandbox", security.SandboxHookConfigFromHarness(h), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating temp hooks file")
 }

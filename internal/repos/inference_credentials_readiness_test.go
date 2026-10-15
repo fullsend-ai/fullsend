@@ -62,7 +62,6 @@ func TestConverge_RejectsGCPInputsWhenNoRepoUsesVertex(t *testing.T) {
 	cfg := openAIConvergeCfg("acme/api")
 	cfg.InferenceProject = "test-inference"
 	cfg.InferenceProjectNumber = "123456789"
-	cfg.InferenceRegion = "us-central1"
 
 	sc := &fakeScaffoldCommit{}
 	_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -354,6 +353,15 @@ func TestConverge_AuthSwitchKeepsObsoleteSecretsWhileConfigBlocked(t *testing.T)
 				if a.Action == "delete" && strings.HasPrefix(a.Component, "secret:") {
 					t.Errorf("must not plan or report deleting %s while blocked", a.Component)
 				}
+			}
+			if tc.installed && tc.existing == markerless {
+				// The established gate rejects the markerless overlay before
+				// any write, so the repository fails instead of reporting an
+				// adoption action alongside converged writes.
+				require.Len(t, result.Failed(), 1)
+				assert.Contains(t, result.Failed()[0].Error.Error(), "adoption required")
+				assertNoForgeWrites(t, fc)
+				return
 			}
 			assert.Equal(t, markerless == tc.existing, hasAction(result.Results[0].Actions, ActionAdoptionRequired))
 		})

@@ -12,6 +12,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
+	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,13 +47,14 @@ func newConvergeManifest(repos ...string) *Manifest {
 func populateScaffoldContent(t testing.TB, fc *forge.FakeClient, owner, repo, ref, mintURL string) {
 	t.Helper()
 	files, err := BuildScaffoldFiles(InstallConfig{
-		Owner:       owner,
-		Repo:        repo,
-		Forge:       ForgeGitHub,
-		Roles:       []string{"triage"},
-		MintURL:     mintURL,
-		UpstreamRef: ref,
-		UpstreamTag: ref,
+		Owner:         owner,
+		Repo:          repo,
+		Forge:         ForgeGitHub,
+		Roles:         []string{"triage"},
+		MintURL:       mintURL,
+		UpstreamRef:   ref,
+		UpstreamTag:   ref,
+		ManagedConfig: emptyManagedOverlay(t),
 	})
 	if err != nil {
 		t.Fatalf("populateScaffoldContent: BuildScaffoldFiles: %v", err)
@@ -63,15 +65,25 @@ func populateScaffoldContent(t testing.TB, fc *forge.FakeClient, owner, repo, re
 	}
 }
 
+// emptyManagedOverlay returns the managed .fullsend/config.yaml of a
+// repository whose manifest entry declares no config: the ownership
+// marker over an empty sparse body (#8218).
+func emptyManagedOverlay(t testing.TB) []byte {
+	t.Helper()
+	body, _, err := desiredManagedConfig(ResolvedConfig{ConfigManaged: true})
+	if err != nil {
+		t.Fatalf("emptyManagedOverlay: %v", err)
+	}
+	return body
+}
+
 func convergeCfgWithDefaults(m *Manifest) ConvergeConfig {
 	return ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 }
 
@@ -102,7 +114,6 @@ func TestConverge_AllFresh(t *testing.T) {
 func withoutInferenceInputs(cfg ConvergeConfig) ConvergeConfig {
 	cfg.InferenceProject = ""
 	cfg.InferenceProjectNumber = ""
-	cfg.InferenceRegion = ""
 	cfg.WIFProvider = ""
 	cfg.OpenAIAPIKey = ""
 	return cfg
@@ -122,7 +133,7 @@ func TestConverge_FreshInstallWithoutGCPFailsBeforeWrites(t *testing.T) {
 		t.Fatalf("want one failed repo, got %d", len(failed))
 	}
 	msg := failed[0].Error.Error()
-	for _, want := range []string{"acme/api", InferenceAuthVertexWIF, forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, "--vertex-project", "--vertex-region"} {
+	for _, want := range []string{"acme/api", InferenceAuthVertexWIF, forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, "--vertex-project", "config.inference.project"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error %q does not mention %q", msg, want)
 		}
@@ -653,22 +664,25 @@ func TestConverge_EmptyRepoFilter(t *testing.T) {
 	}
 }
 
-func TestConverge_IncompleteInferenceFlags(t *testing.T) {
+func TestConverge_UnderivableProjectNumberFailsBeforeWrites(t *testing.T) {
 	m := newConvergeManifest("acme/api")
 	cfg := ConvergeConfig{
 		Manifest:         m,
 		MaxConcurrency:   4,
 		InferenceProject: "test-project",
-		// Missing InferenceProjectNumber and InferenceRegion.
+		// No project number, WIF provider, or resolver to derive one.
 	}
 
 	fc := newFakeClientForBatch("acme/api")
 	_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), nil, noopProgress)
 	if err == nil {
-		t.Fatal("expected error for incomplete inference flags")
+		t.Fatal("expected error when the project number cannot be derived")
 	}
-	if !strings.Contains(err.Error(), "incomplete inference flags") {
+	if !strings.Contains(err.Error(), "cannot derive the project number") || !strings.Contains(err.Error(), "--vertex-wif-provider") {
 		t.Errorf("unexpected error: %v", err)
+	}
+	if len(fc.CreatedSecrets) != 0 || len(fc.Variables) != 0 {
+		t.Errorf("expected no writes, got secrets=%v vars=%v", fc.CreatedSecrets, fc.Variables)
 	}
 }
 
@@ -685,7 +699,6 @@ func TestConverge_ExistingSecretsSkipInference(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:       m,
 		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
 		Direct:         true,
 		// No inference flags — should work because secrets already exist.
 	}
@@ -1061,7 +1074,6 @@ func TestConverge_DefaultRoles(t *testing.T) {
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -1173,22 +1185,6 @@ func TestResolveTargetRef(t *testing.T) {
 		}
 		if rr.manifestRef != "v2.0.0" {
 			t.Errorf("manifestRef = %q, want %q", rr.manifestRef, "v2.0.0")
-		}
-	})
-}
-
-func TestDefaultRoles(t *testing.T) {
-	t.Run("returns provided roles", func(t *testing.T) {
-		roles := defaultRoles([]string{"triage", "coder"})
-		if len(roles) != 2 || roles[0] != "triage" || roles[1] != "coder" {
-			t.Errorf("unexpected roles: %v", roles)
-		}
-	})
-
-	t.Run("returns defaults when empty", func(t *testing.T) {
-		roles := defaultRoles(nil)
-		if len(roles) == 0 {
-			t.Error("expected non-empty default roles")
 		}
 	})
 }
@@ -1310,7 +1306,6 @@ func TestConverge_InvalidGCPProjectID(t *testing.T) {
 		MaxConcurrency:         4,
 		InferenceProject:       "INVALID_PROJECT!!",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	fc := newFakeClientForBatch("acme/api")
@@ -1335,11 +1330,9 @@ func TestConverge_ExistingSecretsWithRegionVar(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-project",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
@@ -1556,6 +1549,49 @@ func TestConverge_DryRunSHAPinnedUpgrade(t *testing.T) {
 
 	if sc.called {
 		t.Error("scaffold commit should not be called in dry-run mode")
+	}
+}
+
+// Installs from before #7902 have one space before "# tag". Converging to the
+// same SHA and tag must not rewrite them or report an upgrade (#8339 review).
+func TestConverge_SameVersionSingleSpaceCommentIsNoop(t *testing.T) {
+	sha := "abc123def456789012345678901234567890abcd"
+	for _, dryRun := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dryRun=%v", dryRun), func(t *testing.T) {
+			repoNames := []string{"acme/api"}
+			fc := newFakeClientForBatch(repoNames...)
+			markFullyInstalled(fc, "acme", "api")
+
+			fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflowSHAPinned(sha, "v2.0.0")
+			for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+				fc.FileContents["acme/api/"+tcPath] = makeWorkflowSHAPinned(sha, "v2.0.0")
+			}
+			fc.Refs["fullsend-ai/fullsend/tags/v2.0.0"] = sha
+
+			m := newConvergeManifest(repoNames...)
+			m.GitHub.FullsendRef = "v2.0.0"
+
+			cfg := convergeCfgWithDefaults(m)
+			cfg.DryRun = dryRun
+
+			result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+			if err != nil {
+				t.Fatalf("Converge() error: %v", err)
+			}
+
+			var refActions []ComponentAction
+			for _, cr := range result.Results {
+				for _, a := range cr.Actions {
+					if a.Component == "ref" {
+						refActions = append(refActions, a)
+					}
+				}
+			}
+			// On the real path "none" also means convergeRefFiles returned no files.
+			if len(refActions) != 1 || refActions[0].Action != "none" {
+				t.Errorf("ref actions = %+v, want a single \"none\"", refActions)
+			}
+		})
 	}
 }
 
@@ -1890,7 +1926,6 @@ func TestConverge_InvalidProjectNumber(t *testing.T) {
 		MaxConcurrency:         4,
 		InferenceProject:       "test-project",
 		InferenceProjectNumber: "not-a-number",
-		InferenceRegion:        "us-central1",
 	}
 
 	fc := newFakeClientForBatch("acme/api")
@@ -1903,23 +1938,27 @@ func TestConverge_InvalidProjectNumber(t *testing.T) {
 	}
 }
 
-func TestConverge_InvalidGCPRegion(t *testing.T) {
+func TestConverge_InvalidDeclaredGCPRegionFailsRepoBeforeWrites(t *testing.T) {
 	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "inference:\n  region: INVALID_REGION\n")
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
 		InferenceProject:       "test-project",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "INVALID REGION!!",
 	}
 
 	fc := newFakeClientForBatch("acme/api")
-	_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), nil, noopProgress)
-	if err == nil {
-		t.Fatal("expected error for invalid GCP region")
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), nil, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not a valid GCP region") {
-		t.Errorf("unexpected error: %v", err)
+	failed := result.Failed()
+	if len(failed) != 1 || !strings.Contains(failed[0].Error.Error(), "not a valid GCP region") {
+		t.Fatalf("expected the repository to fail with an invalid region, got %+v", result.Results)
+	}
+	if len(fc.Variables) != 0 || len(fc.CreatedSecrets) != 0 {
+		t.Errorf("an invalid declared region must fail before writes; vars=%v secrets=%v", fc.Variables, fc.CreatedSecrets)
 	}
 }
 
@@ -2119,7 +2158,6 @@ func gitlabConvergeCfg(repo string) ConvergeConfig {
 			},
 		},
 		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
 		Direct:         true,
 		OpenAIAPIKey:   testOpenAIAPIKey,
 	}
@@ -2172,11 +2210,9 @@ func TestConverge_GitLabFreshInstallReleaseRefWithoutManifestPin(t *testing.T) {
 			},
 		},
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 		UpstreamRef:            "v9.9.9",
 		UpstreamTag:            "v9.9.9",
 	}
@@ -2221,11 +2257,9 @@ func TestConverge_GitLabOnlyReleaseDefaultRefWithoutGitHubClient(t *testing.T) {
 			},
 		},
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 		UpstreamRef:            "v9.9.9",
 		UpstreamTag:            "v9.9.9",
 	}
@@ -2250,6 +2284,8 @@ func populateGitLabInstalled(fc *forge.FakeClient, owner, repo string) {
 		content, _ := scaffold.GitLabPerRepoFile(path)
 		fc.FileContents[full+"/"+path] = content
 	}
+	// Every repository's overlay is managed (#8218).
+	fc.FileContents[full+"/.fullsend/config.yaml"] = []byte(managedConfigMarker + "{}\n")
 	fc.Secrets[full+"/"+forge.SecretOpenAIAPIKey] = true
 	fc.Secrets[full+"/"+forge.SecretForgeToken] = true
 	fc.PipelineSchedules[full] = []forge.PipelineSchedule{
@@ -2263,12 +2299,13 @@ func populateGitLabInstalled(fc *forge.FakeClient, owner, repo string) {
 func populateGitLabScaffoldContent(t testing.TB, fc *forge.FakeClient, owner, repo, ref string) {
 	t.Helper()
 	files, err := BuildScaffoldFiles(InstallConfig{
-		Owner:       owner,
-		Repo:        repo,
-		Forge:       ForgeGitLab,
-		Roles:       []string{"triage"},
-		UpstreamRef: ref,
-		UpstreamTag: ref,
+		Owner:         owner,
+		Repo:          repo,
+		Forge:         ForgeGitLab,
+		Roles:         []string{"triage"},
+		UpstreamRef:   ref,
+		UpstreamTag:   ref,
+		ManagedConfig: emptyManagedOverlay(t),
 	})
 	if err != nil {
 		t.Fatalf("populateGitLabScaffoldContent: BuildScaffoldFiles: %v", err)
@@ -3012,11 +3049,9 @@ func TestConverge_GitLab_CreatesMissingSchedules(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -3091,11 +3126,9 @@ func TestConverge_GitLab_SchedulesAlreadyPresent(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -3371,6 +3404,9 @@ func TestConverge_GitLab_MissingScheduleDeferredUntilPollTemplateLands(t *testin
 	var wrapper []byte
 	var compatiblePollTemplate []byte
 	for _, f := range files {
+		if f.Path == preset.OverlayPath {
+			continue // keep the marked overlay the installed fixture carries
+		}
 		fc.FileContents["acme/api/"+f.Path] = f.Content
 		if f.Path == fullsendPipelineInclude {
 			wrapper = f.Content
@@ -3504,6 +3540,9 @@ func TestConverge_GitLab_MissingScheduleDeferredWhileInstalledWrapperIncompatibl
 	require.NoError(t, err)
 	var wrapper []byte
 	for _, f := range files {
+		if f.Path == preset.OverlayPath {
+			continue // keep the marked overlay the installed fixture carries
+		}
 		fc.FileContents["acme/api/"+f.Path] = f.Content
 		if f.Path == fullsendPipelineInclude {
 			wrapper = f.Content
@@ -3783,6 +3822,9 @@ func TestConverge_GitLab_ReleaseDefaultRefUpgradeIdempotentWithDistinctSHATag(t 
 		t.Fatalf("BuildScaffoldFiles: %v", err)
 	}
 	for _, f := range files {
+		if f.Path == preset.OverlayPath {
+			continue // keep the marked overlay the installed fixture carries
+		}
 		fc.FileContents["acme/api/"+f.Path] = f.Content
 	}
 	// The root .gitlab-ci.yml is user-owned and not part of
@@ -4045,11 +4087,9 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &spyScaffoldCommit{}
@@ -4146,11 +4186,9 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &spyScaffoldCommit{}
@@ -4246,11 +4284,9 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 		DryRun:                 true,
 	}
 
@@ -4327,11 +4363,9 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -4393,11 +4427,9 @@ stages:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &spyScaffoldCommit{}
@@ -4493,7 +4525,6 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:       m,
 		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
 		Direct:         true,
 	}
 
@@ -4611,11 +4642,9 @@ stages:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &spyScaffoldCommit{}
@@ -4692,11 +4721,9 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &spyScaffoldCommit{}
@@ -4781,12 +4808,10 @@ stages:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		DryRun:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &spyScaffoldCommit{}
@@ -4857,11 +4882,9 @@ stages:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -4924,11 +4947,9 @@ workflow:
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -4980,11 +5001,9 @@ func TestConverge_GitLab_RootCIReadErrorSurfaces(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -5029,12 +5048,10 @@ func TestConverge_GitLab_MissingSchedules_DryRun(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		DryRun:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -5088,11 +5105,9 @@ func TestConverge_GitLab_ScheduleCreationError(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -5136,11 +5151,9 @@ func TestConverge_GitLab_GetRepoError_ScheduleCreation(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
 	}
 
 	sc := &fakeScaffoldCommit{}
@@ -5437,10 +5450,13 @@ func TestConverge_StaticVariableValueCheck(t *testing.T) {
 	// Install correct scaffold content.
 	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
 
-	// Set GCP_REGION to a wrong value — should be detected as drift.
+	// Set GCP_REGION to a value other than the declared region — should be
+	// detected as drift.
 	fc.VariableValues["acme/api/FULLSEND_GCP_REGION"] = "europe-west1"
 
 	m := newConvergeManifest(repoNames...)
+	m.Defaults.Config = mustManagedConfig(t, "inference:\n  region: us-central1\n")
+	fc.FileContents["acme/api/"+preset.OverlayPath] = mustDesiredManaged(t, m, "acme", "api")
 	sc := &fakeScaffoldCommit{}
 	cfg := convergeCfgWithDefaults(m)
 
@@ -5592,10 +5608,8 @@ func TestConverge_ExplicitWIFProviderUsedForAllRepos(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:         m,
 		MaxConcurrency:   4,
-		Roles:            []string{"triage"},
 		Direct:           true,
 		InferenceProject: "test-inference",
-		InferenceRegion:  "us-central1",
 		WIFProvider:      explicitWIF,
 	}
 
@@ -5634,10 +5648,8 @@ func TestConverge_ExplicitWIFProviderSkipsCollisionCheck(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:         m,
 		MaxConcurrency:   4,
-		Roles:            []string{"triage"},
 		Direct:           true,
 		InferenceProject: "test-inference",
-		InferenceRegion:  "us-central1",
 		WIFProvider:      explicitWIF,
 		// No InferenceProjectNumber — not needed with explicit WIF provider.
 	}
@@ -5664,10 +5676,8 @@ func TestConverge_ExplicitWIFProviderNoProjectNumberRequired(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:         m,
 		MaxConcurrency:   4,
-		Roles:            []string{"triage"},
 		Direct:           true,
 		InferenceProject: "test-inference",
-		InferenceRegion:  "us-central1",
 		WIFProvider:      "projects/999/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc",
 		// InferenceProjectNumber intentionally empty — should work.
 	}
@@ -5726,18 +5736,24 @@ func TestConverge_WIFProviderRequiresInferenceProject(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:       m,
 		MaxConcurrency: 4,
-		Roles:          []string{"triage"},
 		Direct:         true,
 		WIFProvider:    "projects/999/locations/global/workloadIdentityPools/fullsend-inference/providers/github-oidc",
 		// InferenceProject intentionally empty — should be rejected.
 	}
 
-	_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err == nil {
-		t.Fatal("expected error when WIFProvider is set without InferenceProject")
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "--vertex-project is required when --vertex-wif-provider is set") {
-		t.Errorf("unexpected error message: %v", err)
+	failed := result.Failed()
+	if len(failed) != 1 {
+		t.Fatalf("expected the repository to fail when a WIF provider has no project, got %+v", result.Results)
+	}
+	if !strings.Contains(failed[0].Error.Error(), "requires a GCP project") {
+		t.Errorf("unexpected error message: %v", failed[0].Error)
+	}
+	if sc.called || len(fc.CreatedSecrets) != 0 {
+		t.Errorf("expected no writes, got committed=%v secrets=%v", sc.called, fc.CreatedSecrets)
 	}
 }
 
@@ -5754,11 +5770,9 @@ func TestConverge_InvalidWIFProviderRejectedBeforeWrites(t *testing.T) {
 			cfg := ConvergeConfig{
 				Manifest:         m,
 				MaxConcurrency:   4,
-				Roles:            []string{"triage"},
 				Direct:           true,
 				DryRun:           dryRun,
 				InferenceProject: "test-inference",
-				InferenceRegion:  "us-central1",
 				WIFProvider:      "not-a-wif-provider",
 			}
 
@@ -5775,31 +5789,6 @@ func TestConverge_InvalidWIFProviderRejectedBeforeWrites(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestConverge_VendorOverrideSetsVendorBinary(t *testing.T) {
-	repoNames := []string{"acme/api"}
-	fc := newFakeClientForBatch(repoNames...)
-	m := newConvergeManifest(repoNames...)
-
-	sc := &spyScaffoldCommit{}
-	cfg := convergeCfgWithDefaults(m)
-	v := true
-	cfg.VendorOverride = &v
-
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-
-	installed := result.Installed()
-	if len(installed) != 1 {
-		t.Errorf("expected 1 installed, got %d", len(installed))
-	}
-	if len(result.Failed()) != 0 {
-		t.Errorf("expected 0 failed, got %d", len(result.Failed()))
-	}
-	sc.assertVendoredWorkflow(t)
 }
 
 func TestConverge_ManifestVendorFieldSetsVendorBinary(t *testing.T) {
@@ -5833,23 +5822,22 @@ func TestConverge_ManifestVendorFieldSetsVendorBinary(t *testing.T) {
 	sc.assertVendoredWorkflow(t)
 }
 
-func TestConverge_VendorOverrideFalseDisablesManifestVendor(t *testing.T) {
+func TestConverge_EntryVendorFalseDisablesDefaultsVendor(t *testing.T) {
 	v := true
+	f := false
 	m := &Manifest{
 		Version:  1,
 		Defaults: DefaultsConfig{Vendor: &v, Inference: InferenceSettings{Auth: InferenceAuthVertexWIF}},
 		GitHub: &PlatformConfig{
 			MintURL:     "https://mint.example.com",
 			FullsendRef: "v1.0.0",
-			Repos:       []RepoEntry{{Name: "acme/api"}},
+			Repos:       []RepoEntry{{Name: "acme/api", Vendor: &f}},
 		},
 	}
 
 	fc := newFakeClientForBatch("acme/api")
 	sc := &spyScaffoldCommit{}
 	cfg := convergeCfgWithDefaults(m)
-	f := false
-	cfg.VendorOverride = &f
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -5868,9 +5856,11 @@ func TestConverge_VendorOverrideFalseDisablesManifestVendor(t *testing.T) {
 
 func TestConverge_VendorGitLabFailsBeforeCommit(t *testing.T) {
 	v := true
+	defaults := testInferenceDefaults()
+	defaults.Vendor = &v
 	m := &Manifest{
 		Version:  1,
-		Defaults: testInferenceDefaults(),
+		Defaults: defaults,
 		GitLab: &PlatformConfig{
 			URL:         "https://gitlab.example.com",
 			FullsendRef: "v1.0.0",
@@ -5883,12 +5873,9 @@ func TestConverge_VendorGitLabFailsBeforeCommit(t *testing.T) {
 	cfg := ConvergeConfig{
 		Manifest:               m,
 		MaxConcurrency:         4,
-		Roles:                  []string{"triage"},
 		Direct:                 true,
 		InferenceProject:       "test-inference",
 		InferenceProjectNumber: "123456789",
-		InferenceRegion:        "us-central1",
-		VendorOverride:         &v,
 	}
 
 	var warnings []string
@@ -6354,16 +6341,15 @@ func TestConverge_PresetFreshInstallWritesBaseAndOverlay(t *testing.T) {
 		t.Fatal("fresh install must still write config.yaml overlay")
 	}
 
-	// convergeCfgWithDefaults sets Roles to the production cobra-default
-	// ([]string{"triage"}) with RolesExplicit false. The overlay must
-	// leave roles unset so the preset's own roles take effect via the
-	// overlay -> base layered accessor chain, instead of the fleet-wide
-	// default roles shadowing them (converge.go's installRoles = nil
-	// branch). Deleting or inverting that branch would still pass with
-	// only a file-existence assertion, so this asserts both the raw
-	// overlay bytes and the effective layered roles.
+	// The manifest declares no roles. The overlay must leave roles unset
+	// so the preset's own roles take effect via the overlay -> base
+	// layered accessor chain, instead of the fleet-wide default roles
+	// shadowing them (converge.go's installRoles = nil branch). Deleting
+	// or inverting that branch would still pass with only a
+	// file-existence assertion, so this asserts both the raw overlay
+	// bytes and the effective layered roles.
 	if strings.Contains(string(overlayYAML), "roles:") {
-		t.Errorf("overlay must not set roles when the preset owns them (RolesExplicit=false): %s", overlayYAML)
+		t.Errorf("overlay must not set roles when the preset owns them and the manifest declares none: %s", overlayYAML)
 	}
 	effective, err := config.ParsePerRepoConfigWriterLayered(overlayYAML, baseYAML)
 	if err != nil {
@@ -6374,23 +6360,20 @@ func TestConverge_PresetFreshInstallWritesBaseAndOverlay(t *testing.T) {
 	}
 }
 
-// TestConverge_PresetFreshInstallExplicitRolesWritesOverlay is the
-// RolesExplicit=true counterpart to
-// TestConverge_PresetFreshInstallWritesBaseAndOverlay: when the caller
-// explicitly passes --roles, converge.go must not take the
-// installRoles = nil branch, so the caller-supplied roles are written
-// into the overlay and take effect over the preset's own roles.
-func TestConverge_PresetFreshInstallExplicitRolesWritesOverlay(t *testing.T) {
+// TestConverge_PresetFreshInstallManifestRolesWritesOverlay is the
+// counterpart to TestConverge_PresetFreshInstallWritesBaseAndOverlay for
+// roles declared in the manifest: roles in config.roles of repos.yaml are
+// written into the overlay and take effect over the preset's own roles.
+func TestConverge_PresetFreshInstallManifestRolesWritesOverlay(t *testing.T) {
 	presetPath := writePresetFile(t, presetYAMLWithRoles)
 	repoNames := []string{"acme/api"}
 	fc := newFakeClientForBatch(repoNames...)
 	m := newConvergeManifest(repoNames...)
 	m.Defaults.ConfigBase.Source = presetPath
+	m.Defaults.Config = mustManagedConfig(t, "roles: [fix]\n")
 
 	sc := &spyScaffoldCommit{}
 	cfg := convergeCfgWithDefaults(m)
-	cfg.Roles = []string{"fix"}
-	cfg.RolesExplicit = true
 
 	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
 	if err != nil {
@@ -6414,14 +6397,14 @@ func TestConverge_PresetFreshInstallExplicitRolesWritesOverlay(t *testing.T) {
 	}
 
 	if !strings.Contains(string(overlayYAML), "roles:") {
-		t.Errorf("overlay must set roles when the caller explicitly passed --roles: %s", overlayYAML)
+		t.Errorf("overlay must set roles declared in the manifest: %s", overlayYAML)
 	}
 	effective, err := config.ParsePerRepoConfigWriterLayered(overlayYAML, baseYAML)
 	if err != nil {
 		t.Fatalf("composing layered config: %v", err)
 	}
 	if got, want := effective.ConfigRoles(), []string{"fix"}; !slices.Equal(got, want) {
-		t.Errorf("effective roles = %v, want caller-supplied roles %v (RolesExplicit=true must not be shadowed by the preset)", got, want)
+		t.Errorf("effective roles = %v, want manifest roles %v (must not be shadowed by the preset)", got, want)
 	}
 }
 
@@ -6471,7 +6454,9 @@ func TestConverge_PresetChangeReplacesBasePreservesOverlay(t *testing.T) {
 	markFullyInstalled(fc, "acme", "api")
 	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
 	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte("version: \"1\"\nruntime: pi\n")
-	overlay := []byte("version: \"1\"\n# keep me\n")
+	// The installed overlay already carries the ownership marker and
+	// matches the managed body, so only the base layer changes.
+	overlay := emptyManagedOverlay(t)
 	fc.FileContents["acme/api/.fullsend/config.yaml"] = overlay
 
 	m := newConvergeManifest(repoNames...)
@@ -6576,33 +6561,60 @@ func TestConverge_PresetInvalidSourceFailsBeforeApply(t *testing.T) {
 	}
 }
 
-func TestConverge_NoPresetPreservesExistingBase(t *testing.T) {
-	repoNames := []string{"acme/api"}
-	fc := newFakeClientForBatch(repoNames...)
-	markFullyInstalled(fc, "acme", "api")
-	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
-	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+func TestConverge_NoPresetExistingBaseBlocks(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		installed bool
+		dryRun    bool
+	}{
+		{name: "repeat install", installed: true},
+		{name: "repeat install dry run", installed: true, dryRun: true},
+		{name: "fresh install", installed: false},
+		{name: "fresh install dry run", installed: false, dryRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoNames := []string{"acme/api"}
+			fc := newFakeClientForBatch(repoNames...)
+			if tc.installed {
+				markFullyInstalled(fc, "acme", "api")
+				populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+			}
+			fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
 
-	m := newConvergeManifest(repoNames...)
-	committed := false
-	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
-		committed = true
-		return nil
-	}
-	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
+			m := newConvergeManifest(repoNames...)
+			committed := false
+			commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+				committed = true
+				return nil
+			}
+			cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
+			cfg.DryRun = tc.dryRun
 
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
-	if err != nil {
-		t.Fatalf("Converge() error: %v", err)
-	}
-	if len(result.AlreadyCurrent()) != 1 {
-		t.Errorf("expected 1 already current, got %d", len(result.AlreadyCurrent()))
-	}
-	if committed {
-		t.Error("undeclared preset must not rewrite existing base")
-	}
-	if got := string(fc.FileContents["acme/api/.fullsend/config.base.yaml"]); got != testPresetYAML {
-		t.Errorf("existing base was modified: %q", got)
+			varsBefore := len(fc.VariableValues) + len(fc.Secrets)
+			result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+			if err != nil {
+				t.Fatalf("Converge() error: %v", err)
+			}
+			failures := result.Failed()
+			if len(failures) != 1 {
+				t.Fatalf("expected 1 failure, got %d", len(failures))
+			}
+			msg := failures[0].Error.Error()
+			for _, want := range []string{"no config_base preset is declared", "declare a config_base source", "acme/api"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error %q missing %q", msg, want)
+				}
+			}
+			if committed {
+				t.Error("undeclared base must block writes")
+			}
+			if got := len(fc.VariableValues) + len(fc.Secrets); got != varsBefore {
+				t.Errorf("variables/secrets written despite undeclared base: %d -> %d", varsBefore, got)
+			}
+			if got := string(fc.FileContents["acme/api/.fullsend/config.base.yaml"]); got != testPresetYAML {
+				t.Errorf("existing base was modified: %q", got)
+			}
+		})
 	}
 }
 
@@ -6611,7 +6623,7 @@ func TestConverge_GitLab_PresetChangeReplacesBase(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
 	fc.FileContents["acme/api/.fullsend/config.base.yaml"] = []byte("version: \"1\"\nruntime: pi\n")
-	overlay := []byte("version: \"1\"\n# gitlab overlay\n")
+	overlay := emptyManagedOverlay(t)
 	fc.FileContents["acme/api/.fullsend/config.yaml"] = overlay
 
 	cfg := gitlabConvergeCfg("acme/api")
@@ -6811,8 +6823,15 @@ func TestConverge_PerRepoPresetOverrideAndDisable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Converge() error: %v", err)
 	}
-	if len(result.Failed()) != 0 {
-		t.Fatalf("unexpected failures: %v", result.Failed()[0].Error)
+	// source: none disables inheritance, so the desired state for
+	// acme/disabled is no base file; its existing base blocks the repo
+	// instead of being preserved outside management (#8218).
+	failed := result.Failed()
+	if len(failed) != 1 || failed[0].Repo != "disabled" {
+		t.Fatalf("expected only acme/disabled to fail, got %+v", failed)
+	}
+	if !strings.Contains(failed[0].Error.Error(), "no config_base preset is declared") {
+		t.Errorf("disabled repo error = %v", failed[0].Error)
 	}
 
 	if _, ok := committed["acme/inherit"]; ok {
@@ -6831,6 +6850,6 @@ func TestConverge_PerRepoPresetOverrideAndDisable(t *testing.T) {
 		t.Error("override repo must replace base with per-repo preset")
 	}
 	if _, ok := committed["acme/disabled"]; ok {
-		t.Error("disabled repo must preserve existing base without comparison")
+		t.Error("disabled repo with an undeclared base must not be written")
 	}
 }

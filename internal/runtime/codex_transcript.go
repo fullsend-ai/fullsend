@@ -1,20 +1,29 @@
 package runtime
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
 
 // ExtractTranscripts downloads codex's rollout session files (written under
 // the runner-owned $CODEX_HOME/sessions/YYYY/MM/DD/, one per thread) into
-// outputDir as <agentLabel>-<basename>, with the same path containment as the
-// Claude and pi handlers.
+// outputDir, with the same path containment as the Claude and pi handlers.
+// The root thread's rollout is saved as <agentLabel>-<basename>; a child
+// thread's (its session_meta names a parent_thread_id) as
+// <agentLabel>-sub<seq>-<role>.jsonl, where seq counts the kept child
+// rollouts in ascending basename order and role is the child's agent_role
+// when it is a legal persona name, else codexGenericRole.
 //
 // Only `.jsonl` is collected. codex writes the running session's rollout
 // uncompressed and compresses older ones in place
@@ -51,7 +60,13 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 		fmt.Fprintf(os.Stderr, "  [%s] No transcripts found\n", agentLabel)
 		return nil
 	}
-	for _, remotePath := range strings.Split(trimmed, "\n") {
+	// `find` prints directory order; a child's <seq> follows the rollout
+	// basename, which starts with the thread's start time.
+	paths := strings.Split(trimmed, "\n")
+	slices.SortFunc(paths, func(a, b string) int { return strings.Compare(filepath.Base(a), filepath.Base(b)) })
+	children := 0
+	saved := map[string]bool{}
+	for _, remotePath := range paths {
 		remotePath = strings.TrimSpace(remotePath)
 		if remotePath == "" {
 			continue
@@ -69,6 +84,14 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 			continue
 		}
 		localName := fmt.Sprintf("%s-%s", agentLabel, filepath.Base(remotePath))
+		// A name this extraction already saved is never truncated or removed
+		// for a later rollout, whichever of the two was listed first. The
+		// download lands at outputDir/<basename> before the rename, so that
+		// name counts too.
+		if saved[localName] || saved[filepath.Base(remotePath)] {
+			fmt.Fprintf(os.Stderr, "  [%s] Skipping %s: already saved\n", agentLabel, localName)
+			continue
+		}
 		f, createErr := root.Create(localName)
 		if createErr != nil {
 			fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentLabel, localName, createErr)
@@ -97,6 +120,34 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 			os.Remove(stagePath)
 			continue
 		}
+		// A rollout whose first line names a parent thread is a child's. Its
+		// role enters the file name only as a legal persona name that the
+		// redactor leaves alone; anything else is codexGenericRole. The child
+		// name gets the same os.Root check as the root's.
+		isChild := false
+		if meta, metaErr := codexReadSessionMeta(stagePath); metaErr == nil && meta.ParentThreadID != "" {
+			role := meta.AgentRole
+			if !config.ValidSubagentKey(role) || slices.Contains(config.ReservedSubagentKeys(), role) || redactSummary(role) != role {
+				role = codexGenericRole
+			}
+			childName := codexChildTranscriptName(agentLabel, children+1, role)
+			if saved[childName] {
+				fmt.Fprintf(os.Stderr, "  [%s] Skipping %s: already saved\n", agentLabel, childName)
+				os.Remove(stagePath)
+				continue
+			}
+			cf, createErr := root.Create(childName)
+			if createErr != nil {
+				fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentLabel, childName, createErr)
+				os.Remove(stagePath)
+				continue
+			}
+			cf.Close()
+			localName = childName
+			localPath = filepath.Join(outputDir, localName)
+			os.Remove(localPath)
+			isChild = true
+		}
 		// The rollout carries the same raw tool output the stream does, and it
 		// is uploaded as a run artifact, so it gets the same pattern redaction
 		// (codex_redact.go).
@@ -111,6 +162,10 @@ func (r CodexRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir stri
 			os.Remove(stagePath)
 			continue
 		}
+		if isChild {
+			children++
+		}
+		saved[localName] = true
 		fmt.Fprintf(os.Stderr, "  [%s] Saved transcript: %s\n", agentLabel, localName)
 	}
 	return nil
@@ -156,6 +211,59 @@ func codexValidSessionPath(sessionsDir, path string) error {
 		}
 	}
 	return nil
+}
+
+// codexGenericRole names a child transcript whose rollout carries no usable
+// role: null, reserved, not a legal persona name, or credential-shaped.
+const codexGenericRole = "generic"
+
+// codexChildTranscriptName renders <agentLabel>-sub<seq>-<role>.jsonl, the
+// name #6970 gives a native child's rollout.
+func codexChildTranscriptName(agentLabel string, seq int, role string) string {
+	return fmt.Sprintf("%s-sub%d-%s.jsonl", agentLabel, seq, role)
+}
+
+// codexSessionMeta is the payload of a rollout's first line. Only a child
+// thread's rollout carries parent_thread_id and agent_role; a null
+// agent_role decodes to "".
+type codexSessionMeta struct {
+	ID             string `json:"id"`
+	ParentThreadID string `json:"parent_thread_id"`
+	AgentRole      string `json:"agent_role"`
+}
+
+// codexReadSessionMeta decodes the first non-blank line of a rollout. It is
+// an error when that line is not a session_meta envelope.
+func codexReadSessionMeta(path string) (codexSessionMeta, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return codexSessionMeta{}, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxTranscriptLineSize)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var envelope struct {
+			Type    string           `json:"type"`
+			Payload codexSessionMeta `json:"payload"`
+		}
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			return codexSessionMeta{}, fmt.Errorf("line 1 is not JSON")
+		}
+		if envelope.Type != "session_meta" {
+			return codexSessionMeta{}, fmt.Errorf("line 1 is %q, not session_meta", sanitizeOutput(envelope.Type))
+		}
+		return envelope.Payload, nil
+	}
+	if err := scanner.Err(); err != nil {
+		return codexSessionMeta{}, fmt.Errorf("cannot read the first line: %w", err)
+	}
+	return codexSessionMeta{}, fmt.Errorf("no session_meta line")
 }
 
 // ParseTranscriptErrors scans every JSONL file in transcriptDir and reports

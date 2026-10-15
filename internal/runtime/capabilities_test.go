@@ -47,9 +47,13 @@ func TestWantsClaudeMDBridge(t *testing.T) {
 
 func TestGenAISystemFor_FallsBackToSystem(t *testing.T) {
 	t.Parallel()
-	// Single-vendor runtimes omit ProviderResolver; the vendor is System().
+	// Single-vendor runtimes omit ProviderResolver, and codex resolves only
+	// gateway/ models, so the vendor is System().
 	assert.Equal(t, "anthropic", GenAISystemFor(ClaudeRuntime{}, "claude-sonnet-5", "", nil))
 	assert.Equal(t, "openai", GenAISystemFor(CodexRuntime{}, "openai/gpt-5.6-luna", "", nil))
+	// A gateway/ model is served by the inference gateway, not OpenAI.
+	assert.Equal(t, "gateway", GenAISystemFor(CodexRuntime{}, "gateway/vendor/org/model", "", nil))
+	assert.Equal(t, "gateway", GenAISystemFor(CodexRuntime{}, "", "Gateway/gpt-oss-120b", nil))
 	assert.Equal(t, "opencode", GenAISystemFor(OpenCodeRuntime{}, "anthropic/claude-sonnet-5", "", nil))
 	assert.Equal(t, "fullsend.dummy", GenAISystemFor(DummyRuntime{}, "anything", "", nil))
 }

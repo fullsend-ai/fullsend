@@ -37,7 +37,7 @@ func TestReplaceShimRef(t *testing.T) {
 			input:    "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0\n",
 			newRef:   "def456",
 			newTag:   "v2.3.0",
-			wantRef:  "@def456 # v2.3.0",
+			wantRef:  "@def456  # v2.3.0",
 			wantDiff: true,
 		},
 		{
@@ -473,5 +473,42 @@ func TestValidateConcurrency(t *testing.T) {
 	}
 	if err := validateConcurrency(33); err == nil {
 		t.Error("expected 33 to be invalid")
+	}
+}
+
+func TestFormatRefAnnotation(t *testing.T) {
+	tests := []struct {
+		name, ref, tag, forge, want string
+	}{
+		{"github sha with tag", "def456", "v2.3.0", ForgeGitHub, "def456  # v2.3.0"},
+		{"github no tag", "def456", "", ForgeGitHub, "def456"},
+		{"github tag equals ref", "v2.3.0", "v2.3.0", ForgeGitHub, "v2.3.0"},
+		{"gitlab sha with tag", "def456", "v2.3.0", ForgeGitLab, "def456 (v2.3.0)"},
+		{"gitlab no tag", "def456", "", ForgeGitLab, "def456"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatRefAnnotation(tt.ref, tt.tag, tt.forge); got != tt.want {
+				t.Errorf("formatRefAnnotation(%q, %q, %q) = %q, want %q", tt.ref, tt.tag, tt.forge, got, tt.want)
+			}
+		})
+	}
+}
+
+// Upgrading a repo installed with the old single-space comment must rewrite
+// it to the yamllint-compliant two-space form (#7902).
+func TestReplaceShimRef_FixesSingleSpaceComment(t *testing.T) {
+	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v2.1.0\n"
+	want := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@def456  # v2.3.0\n"
+	got, changed := replaceShimRef([]byte(input), "def456", "v2.3.0", GitHubForgeConfig(), ForgeGitHub)
+	if !changed || string(got) != want {
+		t.Errorf("replaceShimRef() = %q (changed=%v), want %q", got, changed, want)
+	}
+}
+
+func TestReplaceShimRef_SpacingOnlyIsNotAChange(t *testing.T) {
+	input := "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v2.1.0\n"
+	if _, changed := replaceShimRef([]byte(input), "abc123", "v2.1.0", GitHubForgeConfig(), ForgeGitHub); changed {
+		t.Error("replaceShimRef() reported a change for a spacing-only difference")
 	}
 }

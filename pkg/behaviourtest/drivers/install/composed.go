@@ -26,6 +26,10 @@ type composedDriver struct {
 	// budget drained across the run (#6702).
 	rate forge.RateLimitReporter
 
+	// mintURL is the suite's mint URL, reported by MintURL. Set by the
+	// factories through withMintURL once the mint is deployed.
+	mintURL string
+
 	names    chan string // buffered channel of available repo names
 	capacity int
 
@@ -186,6 +190,21 @@ func withRateLimitReporter(d Driver, client forge.Client) Driver {
 	}
 	return d
 }
+
+// withMintURL records mintURL as the URL a composed driver reports
+// through MintURLReporter; other drivers are returned unchanged.
+func withMintURL(d Driver, mintURL string) Driver {
+	if cd, ok := d.(*composedDriver); ok {
+		cd.mintURL = mintURL
+	}
+	return d
+}
+
+// MintURL implements MintURLReporter.
+func (d *composedDriver) MintURL() string { return d.mintURL }
+
+// Compile-time check: composedDriver reports its mint URL.
+var _ MintURLReporter = (*composedDriver)(nil)
 
 // logRateLimit writes one primary-quota sample, if a reporter is set
 // and has observed a response.

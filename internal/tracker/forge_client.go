@@ -166,6 +166,16 @@ func (c *ForgeClient) DeleteCommentReaction(ctx context.Context, project string,
 	return c.forge.DeleteIssueCommentReaction(ctx, owner, repo, id, reactionID)
 }
 
+// MoveIssue implements Mover. Both forge-backed trackers have a native
+// move — GitHub's GraphQL transferIssue mutation, GitLab's
+// POST /projects/:id/issues/:iid/move — but neither is exposed on
+// forge.Client yet, so there is nothing for this adapter to delegate to.
+// It reports ErrNotSupported rather than reporting a move it did not
+// perform.
+func (c *ForgeClient) MoveIssue(_ context.Context, sourceProject string, number int, targetProject string) (*MoveResult, error) {
+	return nil, fmt.Errorf("move issue %s#%d to %s: %w", sourceProject, number, targetProject, ErrNotSupported)
+}
+
 // wrapNotFound translates a forge.ErrNotFound-satisfying error into one
 // that also satisfies tracker.ErrNotFound, so ForgeClient upholds the
 // Client interface's NotFound contract without leaking forge as part of

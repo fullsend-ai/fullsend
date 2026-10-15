@@ -12,6 +12,8 @@ All git forge operations (GitHub API calls, PR comments, issue creation, workflo
 
 **When writing code:** If you need a forge operation that `forge.Client` does not yet support, add a new method to the interface and implement it in the GitHub client — do not work around the interface.
 
+**FakeClient thread safety:** Every exported `FakeClient` method must have an entry in `threadSafetyCalls` in [`internal/forge/fake_test.go`](../../internal/forge/fake_test.go), which `TestFakeClient_ThreadSafety` runs concurrently under `-race`. `TestFakeClient_ThreadSafetyCoversAllMethods` fails when an entry is missing. Fake methods must return copies, never slices, maps, or pointers into the fake's own storage: callers read results without holding the fake's lock. Likewise, store copies of caller-supplied slices and maps that a fake method later changes in place: callers keep their own reference.
+
 **When reviewing PRs:** Flag any direct `exec.Command("gh", ...)`, raw GitHub API calls, or other forge-specific operations outside `internal/forge/github/` as a medium-severity or higher finding. This is an architectural violation, not a style preference.
 
 **Composite action (`action.yml`):** The forge abstraction extends to `action.yml` bash scripts. New GitHub API operations in action steps should be implemented as `fullsend` CLI subcommands (under `internal/cli/`) that use `forge.Client`, not as inline `gh api` calls. Existing `gh api` calls in `action.yml` that predate this rule are grandfathered but should be migrated when touched.

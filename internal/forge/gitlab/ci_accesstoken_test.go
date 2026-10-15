@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -124,6 +125,36 @@ func TestRevokeProjectAccessToken(t *testing.T) {
 
 	err := client.RevokeProjectAccessToken(ctx, "mygroup", "myproject", 1)
 	require.NoError(t, err)
+}
+
+// A not-found, forbidden, or unsupported later page means tokens were already
+// discovered: the listing is incomplete and must not keep a classification
+// that callers read as "no tokens".
+func TestListProjectAccessTokens_LaterPageFailureIsIncomplete(t *testing.T) {
+	for name, status := range map[string]int{"forbidden": http.StatusForbidden, "not found": http.StatusNotFound} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			mux.HandleFunc("/api/v4/projects/mygroup%2Fmyproject/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("page") != "1" {
+					writeJSON(t, w, status, map[string]any{"message": "denied"})
+					return
+				}
+				page := make([]map[string]any, 100)
+				for i := range page {
+					page[i] = map[string]any{"id": i + 1, "name": "fullsend-coder", "active": true}
+				}
+				writeJSON(t, w, http.StatusOK, page)
+			})
+
+			got, err := client.ListProjectAccessTokens(context.Background(), "mygroup", "myproject")
+			require.Error(t, err)
+			assert.Nil(t, got)
+			assert.ErrorContains(t, err, "incomplete")
+			assert.False(t, forge.IsForbidden(err))
+			assert.False(t, forge.IsNotFound(err))
+			assert.False(t, forge.IsNotSupported(err))
+		})
+	}
 }
 
 func TestListProjectAccessTokens_Error(t *testing.T) {

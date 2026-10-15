@@ -28,6 +28,8 @@ fullsend github setup <owner/repo> \
   --inference-wif-provider "<WIF_PROVIDER>"
 ```
 
+The values passed to `--inference-gateway-*` and `--openai-*` come from the gateway operator and the OpenAI organization admin; see [Using an inference gateway](../guides/user/inference-gateway.md) and [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+
 **Re-running per-repo setup** (for example after a fullsend upgrade) refreshes the managed
 workflow files but never rewrites an existing `.fullsend/config.yaml` on its own: `agents:` entries and
 their per-agent settings, allowlists and hand-written comments stay as they are, the runtime prompt is skipped,
@@ -55,8 +57,13 @@ parses fails the re-run rather than being regenerated.
 | `--openai-audience` | | OpenAI Workload Identity audience for GPT on pi or codex; with the two flags below, written to `inference.openai` in `config.yaml` (all three or none) |
 | `--openai-identity-provider-id` | | OpenAI Workload Identity provider ID |
 | `--openai-service-account-id` | | OpenAI service account ID the provider maps this repository to |
+| `--inference-gateway-url` | | Inference gateway origin, for example `https://gateway.example.com`, optionally with the path prefix the gateway serves its API under, for example `https://gateway.example.com/team-a` (`https`, no port other than 443, and no trailing `/v1`, because the runner adds the `/v1/...` paths and the egress profile allows port 443 only; plain `http` only for a loopback test host; see the [config reference](../reference/config-reference.md) for the prefix rules) for `gateway/` models on pi, codex or Claude Code ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)), written to `inference.gateway.url` in `config.yaml`. `fullsend run` acts on the block when it is complete; in the default `oidc` mode that also needs a forge OIDC endpoint, while in the `api-key` mode it applies on local runs too (see the [config reference](../reference/config-reference.md)). The resolved block needs the URL, and in the `oidc` mode the audience too, from these flags or inherited from `config.base.yaml`; pass both flags empty to remove the repository's own block (a block in `config.base.yaml` then applies again); the same commit deletes `.fullsend/inference-gateway.json` if the repository has it, unless the inherited block still sets `models_file` to that file (setup then keeps it and says so). Check the result with [`fullsend inference gateway status`](inference.md#inference-gateway-status). Each gateway flag changes only its own key |
+| `--inference-gateway-audience` | | OIDC audience the runner requests for the inference gateway (required in the `oidc` auth mode) |
+| `--inference-gateway-auth` | | Inference gateway credential mode, written to `inference.gateway.auth`: `oidc` (the default; the job's OIDC token) or `api-key` ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)). `api-key` reads the gateway key from `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no audience. It is supported for gateways that cannot trust forge OIDC, but relies on a long-lived secret, so use it with caution. Passing it alone never creates a block without a URL, and clearing the block removes it |
+| `--inference-gateway-model` | | Inference gateway model as `id=api`, where `api` is `openai-responses`, `anthropic-messages` or `openai-completions`. Repeatable; written to `inference.gateway.models`. Mutually exclusive with `--inference-gateway-models-file` |
+| `--inference-gateway-models-file` | | Local [pi-inference-gateway config file](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file) listing the gateway models. Validated with the runner's rules, committed as `.fullsend/inference-gateway.json`, and named in `inference.gateway.models_file` |
 | `--inference-region` | | GCP region for inference; resolved to `global` if unset |
-| `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps. For per-repo setup it is persisted as the `FULLSEND_APP_SET` repository variable; reruns that omit `--app-set` preserve an existing custom value rather than overwriting it with the default. `repos install` accepts the same option and the `app_set` manifest field. |
+| `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps. For per-repo setup it is persisted as the `FULLSEND_APP_SET` repository variable; reruns that omit `--app-set` preserve an existing custom value rather than overwriting it with the default. `repos install` has no `--app-set` flag; manifest-managed repositories declare the `app_set` field in `repos.yaml` instead (see [Migrating to manifest-driven `repos install`](../guides/getting-started/migrating-from-github-setup.md)). |
 | `--agents` | `triage,coder,review,fix,retro,prioritize` | Agent roles to provision |
 | `--direct` | `false` | Push scaffold directly instead of creating a PR |
 | `--runtime` | `claude` | Agent runtime backend (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`; `dummy` and `dummy-playback` are for behaviour test orgs only — see [runtimes.md](../runtimes.md)) |
@@ -94,6 +101,7 @@ fullsend github set <owner/repo> <key> <value>
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project for inference |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | WIF provider resource name |
 | `FULLSEND_OPENAI_API_KEY` | Repo secret | Opt-in OpenAI API key used only when the WIF trio is unset. Do not add this via `github setup`; set it only when you cannot enrol OpenAI WIF. |
+| `FULLSEND_INFERENCE_GATEWAY_API_KEY` | Repo secret | Inference gateway API key, read only when `inference.gateway.auth` is `api-key` ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)). A long-lived secret: prefer `auth: oidc` where the gateway can trust forge OIDC. |
 
 ## See also
 

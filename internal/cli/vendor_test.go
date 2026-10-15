@@ -50,10 +50,10 @@ func TestVendorDryRunMessage(t *testing.T) {
 	msg = vendorDryRunMessage("/tmp/fullsend", "/tmp/src", layers.VendoredBinaryPathPerRepo)
 	assert.Contains(t, msg, "content from /tmp/src")
 
-	msg = vendorDryRunMessage("", "/tmp/src", layers.VendoredBinaryPath)
+	msg = vendorDryRunMessage("", "/tmp/src", layers.VendoredBinaryPathPerRepo)
 	assert.Contains(t, msg, "Would cross-compile from /tmp/src")
 
-	msg = vendorDryRunMessage("", "", layers.VendoredBinaryPath)
+	msg = vendorDryRunMessage("", "", layers.VendoredBinaryPathPerRepo)
 	assert.True(t, strings.Contains(msg, "Would cross-compile and upload") ||
 		strings.Contains(msg, "Would download release") ||
 		strings.Contains(msg, "Would fail: dev CLI"))
@@ -89,11 +89,6 @@ func TestAppendVendorTreeFiles_InvalidBinary(t *testing.T) {
 	_, _, cleanup, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo", files, true, "/nonexistent/fullsend", "")
 	defer cleanup()
 	require.Error(t, err)
-}
-
-func TestVendorPathPrefix(t *testing.T) {
-	assert.Equal(t, "", vendorPathPrefix("org", forge.ConfigRepoName))
-	assert.Equal(t, ".fullsend/", vendorPathPrefix("org", "my-repo"))
 }
 
 func TestApplyDeprecatedVendorBinaryFlag(t *testing.T) {

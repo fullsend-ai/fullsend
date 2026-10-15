@@ -14,6 +14,11 @@ There are independent version reference inputs that control different parts of t
 When no release exists for `fullsend_version`, `action.yml` falls back to cloning
 and building from source at that ref (see the `install-method=source` path).
 
+The standalone prioritize workflow normally leaves inference credential preparation
+to the CLI. With an explicit `fullsend_version` override and both GCP credentials
+supplied, it also runs GCP preparation for compatibility with older Vertex CLIs.
+OpenAI-only callers without GCP credentials skip this step.
+
 If `uses:` and `fullsend_version` diverge, the workflows/agents and
 CLI diverge, potentially causing mismatch in behavior and failures.
 

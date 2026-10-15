@@ -196,8 +196,8 @@ func TestProvisioner_Provision_EnvVars(t *testing.T) {
 	fake := &fakeWranglerRunner{}
 
 	envVars := map[string]string{
-		"ROLE_APP_IDS": `{"coder":"12345"}`,
-		"ALLOWED_ORGS": "acme",
+		"ROLE_APP_IDS":       `{"coder":"12345"}`,
+		"PER_REPO_WIF_REPOS": "acme/widget",
 	}
 
 	p := NewProvisioner(Config{
@@ -211,7 +211,7 @@ func TestProvisioner_Provision_EnvVars(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, fake.deployCalls, 1)
 	assert.Equal(t, `{"coder":"12345"}`, fake.deployCalls[0].envVars["ROLE_APP_IDS"])
-	assert.Equal(t, "acme", fake.deployCalls[0].envVars["ALLOWED_ORGS"])
+	assert.Equal(t, "acme/widget", fake.deployCalls[0].envVars["PER_REPO_WIF_REPOS"])
 	// OIDC_AUDIENCE is no longer set as an env var — it is a compile-time constant.
 	assert.Empty(t, fake.deployCalls[0].envVars["OIDC_AUDIENCE"])
 }
@@ -1462,8 +1462,8 @@ func TestProvisioner_Provision_EmptyEnvVarPassedToWrangler(t *testing.T) {
 		AccountID: "test-account",
 		SourceDir: sourceDir,
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS":       "acme",
-			"PER_REPO_WIF_REPOS": "",
+			"WORKFLOW_HOST_REPOS": "acme/workflows",
+			"PER_REPO_WIF_REPOS":  "",
 		},
 	}, fake)
 
@@ -1472,7 +1472,7 @@ func TestProvisioner_Provision_EmptyEnvVarPassedToWrangler(t *testing.T) {
 
 	require.Len(t, fake.deployCalls, 1)
 	envVars := fake.deployCalls[0].envVars
-	assert.Equal(t, "acme", envVars["ALLOWED_ORGS"])
+	assert.Equal(t, "acme/workflows", envVars["WORKFLOW_HOST_REPOS"])
 	prwr, present := envVars["PER_REPO_WIF_REPOS"]
 	assert.True(t, present, "empty env var should be present in deploy call")
 	assert.Equal(t, "", prwr, "empty env var should be empty string")
@@ -1498,7 +1498,7 @@ func TestProvisioner_Provision_PreviewBootstrap_WorkerMissing(t *testing.T) {
 		PreviewAlias: "bt-run-42",
 		SourceDir:    sourceDir,
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS": "acme",
+			"PER_REPO_WIF_REPOS": "acme/widget",
 		},
 	}, fake)
 
@@ -1516,7 +1516,7 @@ func TestProvisioner_Provision_PreviewBootstrap_WorkerMissing(t *testing.T) {
 	assert.Empty(t, fake.deployCalls[0].secrets,
 		"bootstrap deploy must not include secrets")
 	// Preview deploy should receive the configured env vars.
-	assert.Equal(t, "acme", fake.deployCalls[1].envVars["ALLOWED_ORGS"],
+	assert.Equal(t, "acme/widget", fake.deployCalls[1].envVars["PER_REPO_WIF_REPOS"],
 		"preview deploy should receive configured env vars")
 }
 
@@ -1564,8 +1564,8 @@ func TestProvisioner_Provision_PreviewBootstrap_WithSecrets(t *testing.T) {
 		PreviewAlias: "bt-run-42",
 		SourceDir:    sourceDir,
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS": "acme",
-			"ROLE_APP_IDS": `{"coder":"42"}`,
+			"PER_REPO_WIF_REPOS": "acme/widget",
+			"ROLE_APP_IDS":       `{"coder":"42"}`,
 		},
 		Secrets: secrets,
 	}, fake)
@@ -1581,7 +1581,7 @@ func TestProvisioner_Provision_PreviewBootstrap_WithSecrets(t *testing.T) {
 	// Preview deploy should include both secrets and env vars.
 	assert.Equal(t, []byte("pem-data"), fake.deployCalls[1].secrets["CODER_APP_PEM"],
 		"preview deploy should include PEM secrets")
-	assert.Equal(t, "acme", fake.deployCalls[1].envVars["ALLOWED_ORGS"],
+	assert.Equal(t, "acme/widget", fake.deployCalls[1].envVars["PER_REPO_WIF_REPOS"],
 		"preview deploy should include configured env vars")
 }
 
@@ -1840,8 +1840,8 @@ func TestProvisioner_Provision_PreviewBootstrap_EmptyEnvVars(t *testing.T) {
 	}
 
 	envVars := map[string]string{
-		"ALLOWED_ORGS": "acme",
-		"ROLE_APP_IDS": `{"coder":"42"}`,
+		"PER_REPO_WIF_REPOS": "acme/widget",
+		"ROLE_APP_IDS":       `{"coder":"42"}`,
 	}
 
 	p := NewProvisioner(Config{
@@ -1860,7 +1860,7 @@ func TestProvisioner_Provision_PreviewBootstrap_EmptyEnvVars(t *testing.T) {
 	assert.Empty(t, fake.deployCalls[0].envVars,
 		"bootstrap deploy must not set env vars")
 	// Preview deploy should receive the configured env vars.
-	assert.Equal(t, "acme", fake.deployCalls[1].envVars["ALLOWED_ORGS"],
+	assert.Equal(t, "acme/widget", fake.deployCalls[1].envVars["PER_REPO_WIF_REPOS"],
 		"preview deploy should receive configured env vars")
 	assert.Equal(t, `{"coder":"42"}`, fake.deployCalls[1].envVars["ROLE_APP_IDS"],
 		"preview deploy should receive ROLE_APP_IDS")

@@ -52,6 +52,14 @@ These labels track where an issue is in the pipeline:
 
 Labels are mutually exclusive where it matters — the pipeline enforces this. You generally don't need to manage labels manually.
 
+On PRs, a separate set of control labels governs the [fix agent](../../agents/fix.md#control-labels). These are not pipeline state — you apply `fullsend-fix` or `fullsend-no-fix` to steer fix runs, and the fix agent applies `needs-human` when it needs you:
+
+| Label | Meaning | What happens next |
+|-------|---------|-------------------|
+| `fullsend-fix` | Opts a PR in to automatic fix runs (manual `/fs-fix` works without it) | Bot-triggered fixes run on review feedback; code-agent PRs are always eligible without it |
+| `fullsend-no-fix` | Stops bot-triggered fix runs; applied by `/fs-fix-stop` | Takes priority over `fullsend-fix`; human `/fs-fix` still works. Remove the label to re-enable |
+| `needs-human` | The fix loop is approaching its iteration cap | A human should give direction, e.g. `/fs-fix <instruction>` or push commits |
+
 ### Slash commands
 
 You can control the pipeline from issue or PR comments:

@@ -74,7 +74,7 @@ create_issues:
       - upstream-org/specific-repo
 ```
 
-**Defaults:** At install time, fullsend populates this with your repo, plus `fullsend-ai/fullsend` as an upstream target.
+**Defaults:** At install time, fullsend populates this with only `fullsend-ai/fullsend` as an upstream target. The repository the agent runs in is always allowed, so it needs no entry.
 
 **When to expand the allowlist:** If your project depends on libraries or services
 in other GitHub orgs and you want the triage agent to automatically file

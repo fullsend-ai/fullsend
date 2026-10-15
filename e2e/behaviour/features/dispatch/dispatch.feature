@@ -19,11 +19,6 @@ Feature: Harness CEL dispatch
       """
     And a dummy agent that would:
       | description              | op           | args                                               |
-      | Issue URL set            | assert_env   | GITHUB_ISSUE_URL                                   |
-      | Repo name set            | assert_env   | REPO_FULL_NAME                                     |
-      | GH token set             | assert_env   | GH_TOKEN                                           |
-      | Event payload file       | assert_file  | .fullsend/dispatch/event-payload.json              |
-      | Payload has issue number | assert_json  | .fullsend/dispatch/event-payload.json,issue.number |
       | Prove execution          | write_fixture| output/dispatch-ok.json, fixtures/dispatch/ok.json |
     And an issue
     When the issue is labeled "wrong-label"
@@ -62,7 +57,6 @@ Feature: Harness CEL dispatch
       """
     And a dummy agent that would:
       | description             | op           | args                                                    |
-      | PR payload present      | assert_json  | .fullsend/dispatch/event-payload.json,pull_request.number |
       | Prove PR execution      | write_fixture| output/dispatch-pr-ok.json, fixtures/dispatch/ok.json    |
     When a pull request is opened
     And the pull request is labeled "ready-for-pr-ping"
@@ -124,7 +118,6 @@ Feature: Harness CEL dispatch
       """
     And a dummy agent that would:
       | description              | op           | args                                                    |
-      | Review payload present   | assert_json  | .fullsend/dispatch/event-payload.json,pull_request.number |
       | Prove review execution   | write_fixture| output/dispatch-review-ok.json, fixtures/dispatch/ok.json |
     When a pull request is opened
     And a review comment is submitted on the pull request

@@ -67,6 +67,7 @@ if [ "$2" = "exec" ]; then
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
     "codex --version") echo "` + versionOutput + `"; exit 0 ;;
+    "codex debug models --bundled") cat "${FULLSEND_TEST_CATALOG:-testdata/codex/models-bundled-0.159.3.json}"; exit 0 ;;
     "command -v python3") echo "/usr/bin/python3"; exit 0 ;;
     *"sys.version_info"*) echo "${FULLSEND_TEST_PYVER:-3.12}"; exit 0 ;;
     *fullsend-env-sep*) printf '%s' "${FULLSEND_TEST_ENV_READ-|fullsend-env-sep|}"; exit 0 ;;
@@ -645,7 +646,7 @@ func TestCodexBootstrap_PinsTheHarnessHookEnv(t *testing.T) {
 	cmd := buildCodexRunCommand(RunParams{
 		RepoDir:           sandbox.SandboxWorkspace + "/repo",
 		HooksSettingsPath: r.codexHooksPath(),
-	}, "gpt-5-mini", "", true, held)
+	}, codexModel{ID: "gpt-5-mini"}, "", true, held)
 	envAt := strings.Index(cmd, ". '"+sandbox.SandboxWorkspace+"/.env'")
 	require.Positive(t, envAt)
 	for key, value := range got {
@@ -679,4 +680,240 @@ func (emptyRepoDirInput) RepoDir() string { return "" }
 func TestHomeAgentsMDPath(t *testing.T) {
 	assert.Equal(t, sandbox.SandboxCodexConfig+"/AGENTS.md", HomeAgentsMDPath(CodexRuntime{}))
 	assert.Empty(t, HomeAgentsMDPath(ClaudeRuntime{}), "Claude reads the repo's own context files")
+}
+
+// The catalog preflight is a sandbox exec like codexPreflightVersion: a
+// failed command, unparsable output and an empty catalog each fail
+// Bootstrap with their own message rather than leaving the gate half decided.
+func TestCodexPreflightCatalog(t *testing.T) {
+	t.Run("reads the fixture", func(t *testing.T) {
+		fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")
+		catalog, err := codexPreflightCatalog("sb")
+		require.NoError(t, err)
+		assert.True(t, catalog.resolvesV1("gpt-5.6-luna"))
+	})
+	t.Run("command fails", func(t *testing.T) {
+		fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")
+		t.Setenv("FULLSEND_TEST_FAIL_MATCH", "codex debug models --bundled")
+		_, err := codexPreflightCatalog("sb")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "codex preflight: `codex debug models --bundled` exited 1")
+	})
+	t.Run("output is not a catalog", func(t *testing.T) {
+		bad := filepath.Join(t.TempDir(), "catalog.json")
+		require.NoError(t, os.WriteFile(bad, []byte("codex-cli 0.152.1\n"), 0o644))
+		fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")
+		t.Setenv("FULLSEND_TEST_CATALOG", bad)
+		_, err := codexPreflightCatalog("sb")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "codex preflight: `codex debug models --bundled` printed no model catalog")
+	})
+}
+
+// codexDelegatingHooksInput is the ADR 0126 gate met: an agent whose tools
+// include Agent, with harness security on, whose definition model (the
+// run-level model of the double is "") is the listed V1 model of the fixture.
+func codexDelegatingHooksInput(t *testing.T, skillDirs ...string) codexHooksBootstrapInput {
+	t.Helper()
+	return codexHooksBootstrapInput{
+		bootstrapInput: bootstrapInput{
+			sandboxName: "sb",
+			agentPath:   writeAgentFile(t, codexTestDelegatingAgentDef),
+			agentName:   "review",
+			skillDirs:   skillDirs,
+		},
+		hooks: security.SandboxHookConfigFromHarness(&harness.Harness{}),
+	}
+}
+
+func TestCodexRolesDir(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, sandbox.SandboxCodexConfig+"/agents", CodexRuntime{}.codexRolesDir(),
+		"the directory codex scans for roles at launch")
+}
+
+// TestCodexRuntimeBootstrap_WritesRoleFilesForADelegatingAgent covers the
+// gate passing: one regular file per role under agents/, digests recorded
+// for the spawn guard, and everything else byte-equal to today.
+func TestCodexRuntimeBootstrap_WritesRoleFilesForADelegatingAgent(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	storeDir := t.TempDir()
+	fakeOpenshellCodex(t, logPath, storeDir, "codex-cli 0.152.1")
+	forgetRunnerHeldDigests("sb")
+	t.Cleanup(func() { forgetRunnerHeldDigests("sb") })
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "correctness", codexTestPersona)
+
+	r := CodexRuntime{}
+	require.NoError(t, r.Bootstrap(codexDelegatingHooksInput(t, skill)))
+
+	log := readFileString(t, logPath)
+	assert.Contains(t, log, "mkdir -p "+shellQuote(r.codexRolesDir()), "the roles directory is created only when the gate passes")
+	assert.Contains(t, log, "codex debug models --bundled", "the catalog preflight runs for a delegating agent")
+
+	held, ok := lookupRunnerHeldDigests("sb")
+	require.True(t, ok)
+	want := codexRoles([]string{skill}, "review")
+	require.Len(t, held.RoleFiles, len(want))
+	var names []string
+	for name := range held.RoleFiles {
+		names = append(names, name)
+	}
+	assert.ElementsMatch(t, []string{"correctness", "default", "explore"}, names)
+	for _, role := range want {
+		path := r.codexRolesDir() + "/" + role.Name + ".toml"
+		got := storedUpload(t, storeDir, path)
+		assert.Equal(t, role.toml(), got, "role file %s", path)
+		assert.Equal(t, codexAssetSHA256(got), held.RoleFiles[role.Name], "the spawn guard's digest for %s is bound to the file name", role.Name)
+	}
+
+	// Nothing else changes until delegation is turned on: the multi-agent
+	// tools stay off and the runtime note still says there is no roster.
+	def, err := parsePiAgent([]byte(codexTestDelegatingAgentDef))
+	require.NoError(t, err)
+	wantConfig, err := renderCodexConfig(r.ConfigDir(), "/sandbox/workspace/repo", codexDeveloperInstructions("review", def), "")
+	require.NoError(t, err)
+	assert.Equal(t, wantConfig, storedUpload(t, storeDir, r.codexConfigPath()), "config.toml is byte-equal to a non-delegating render")
+	assert.Contains(t, string(wantConfig), "[agents]\nenabled = false")
+	assert.Contains(t, string(wantConfig), "No fullsend sub-agent roster is available")
+}
+
+// len(RoleFiles) > 0 exactly when the ADR 0126 gate holds: part one
+// (security on, tools include Agent) and part two (codex resolves the parent
+// model to V1: its entry selects V1 or carries no version). With part one
+// failed, no catalog is read; with part two failed, the catalog was read and
+// nothing else happens: no directory is created, nothing is uploaded and the
+// digest set has no role entry. The gpt-5.5 case is the boundary: an entry
+// without a version delegates (ADR 0126), so its files are present.
+func TestCodexRuntimeBootstrap_NoRoleFilesWhenTheGateFails(t *testing.T) {
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "correctness", codexTestPersona)
+	hooks := security.SandboxHookConfigFromHarness(&harness.Harness{})
+	delegating := func(agentDef, parentModel string) codexHooksBootstrapInput {
+		return codexHooksBootstrapInput{
+			bootstrapInput: bootstrapInput{sandboxName: "sb", agentPath: writeAgentFile(t, agentDef), agentName: "review", skillDirs: []string{skill}, parentModel: parentModel},
+			hooks:          hooks,
+		}
+	}
+	v2Def := strings.Replace(codexTestDelegatingAgentDef, "gpt-5.6-luna", "gpt-5.6-sol", 1)
+	unlistedDef := strings.Replace(codexTestDelegatingAgentDef, "gpt-5.6-luna", "gpt-5.6-nova", 1)
+	noVersionDef := strings.Replace(codexTestDelegatingAgentDef, "gpt-5.6-luna", "gpt-5.5", 1)
+	for name, tc := range map[string]struct {
+		input      BootstrapInput
+		preflight  bool
+		delegating bool
+		reason     string // the one stderr line of a declined parent
+	}{
+		"security on, agent without the Agent tool": {codexHooksBootstrapInput{
+			bootstrapInput: bootstrapInput{sandboxName: "sb", agentPath: writeAgentFile(t, codexTestAgentDef), agentName: "triage", skillDirs: []string{skill}},
+			hooks:          hooks,
+		}, false, false, ""},
+		"security off, delegating agent": {bootstrapInput{
+			sandboxName: "sb", agentPath: writeAgentFile(t, codexTestDelegatingAgentDef), agentName: "review", skillDirs: []string{skill},
+		}, false, false, ""},
+		"security on, definition model selects V2":               {delegating(v2Def, ""), true, false, `parent model "gpt-5.6-sol" selects collaboration "v2"`},
+		"security on, definition model not in the catalog":       {delegating(unlistedDef, ""), true, false, `parent model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
+		"security on, run-level V2 model beats a V1 definition":  {delegating(codexTestDelegatingAgentDef, "openai/gpt-5.6-sol"), true, false, `parent model "gpt-5.6-sol" selects collaboration "v2"`},
+		"security on, definition model has no version (gpt-5.5)": {delegating(noVersionDef, ""), true, true, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logPath := filepath.Join(t.TempDir(), "openshell.log")
+			fakeOpenshellCodex(t, logPath, t.TempDir(), "codex-cli 0.152.1")
+			forgetRunnerHeldDigests("sb")
+			t.Cleanup(func() { forgetRunnerHeldDigests("sb") })
+
+			r := CodexRuntime{}
+			var err error
+			out := captureStderr(t, func() { err = r.Bootstrap(tc.input) })
+			require.NoError(t, err)
+			wantLines := 0
+			if tc.reason != "" {
+				wantLines = 1
+				assert.Contains(t, out, "sub-agents: "+tc.reason+"; native sub-agents need a parent Codex resolves to collaboration V1")
+			}
+			assert.Equal(t, wantLines, strings.Count(out, "sub-agents: "), "one stderr line exactly when part two of the gate declines")
+
+			log := readFileString(t, logPath)
+			assert.Equal(t, tc.delegating, strings.Contains(log, r.codexRolesDir()), "the roles directory exists exactly when the gate holds")
+			assert.Equal(t, tc.preflight, strings.Contains(log, "codex debug models --bundled"),
+				"the catalog is read only once part one of the gate passed")
+			held, ok := lookupRunnerHeldDigests("sb")
+			require.True(t, ok)
+			assert.Equal(t, tc.delegating, held.RoleFiles != nil, "role digests are recorded exactly when the gate holds")
+		})
+	}
+}
+
+// The three new infrastructure failures are reported with their own message,
+// like the rows of TestCodexRuntimeBootstrap_ReportsInfrastructureFailures.
+func TestCodexRuntimeBootstrap_ReportsRoleFileFailures(t *testing.T) {
+	r := CodexRuntime{}
+	for name, tc := range map[string]struct{ match, want string }{
+		"roles dir":         {"mkdir -p " + shellQuote(r.codexRolesDir()), "creating codex roles dir"},
+		"role file":         {r.codexRolesDir() + "/default.toml", `writing role "default"`},
+		"catalog preflight": {"codex debug models --bundled", "codex preflight: `codex debug models --bundled` exited 1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")
+			t.Setenv("FULLSEND_TEST_FAIL_MATCH", tc.match)
+
+			err := r.Bootstrap(codexDelegatingHooksInput(t))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// TestCodexBootstrap_PlantedRoleFileDeniesSpawn checks the runner-held role
+// digests (#6970): the files Bootstrap wrote admit a registered role; one
+// extra file in agents/, which is agent-writable, denies every spawn with
+// exit 2 and a reason, through the installed hook adapter. Driven directly:
+// the multi-agent tools are still off, so no Codex process reaches the hook.
+func TestCodexBootstrap_PlantedRoleFileDeniesSpawn(t *testing.T) {
+	h := newCodexAdapterHarness(t)
+	storeDir := t.TempDir()
+	fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), storeDir, "codex-cli 0.152.1")
+	forgetRunnerHeldDigests("sb")
+	t.Cleanup(func() { forgetRunnerHeldDigests("sb") })
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "correctness", codexTestPersona)
+
+	r := CodexRuntime{}
+	require.NoError(t, r.Bootstrap(codexDelegatingHooksInput(t, skill)))
+	held, ok := lookupRunnerHeldDigests("sb")
+	require.True(t, ok)
+	require.NotEmpty(t, held.RoleFiles)
+
+	// CODEX_HOME on the host, exactly the bytes Bootstrap uploaded: the
+	// adapter resolves hooks.json and agents/ relative to its own directory.
+	h.write(codexHooksFile, string(storedUpload(t, storeDir, r.codexHooksPath())))
+	for name := range held.RoleFiles {
+		h.write("agents/"+name+".toml", string(storedUpload(t, storeDir, r.codexRolesDir()+"/"+name+".toml")))
+	}
+	spawn := func(role string) codexAdapterResult {
+		return h.spawnGuardWith(codexSpawnInput(role), codexSpawnDigestsValue(held))
+	}
+
+	t.Run("admits a registered role from the files Bootstrap wrote", func(t *testing.T) {
+		got := spawn("correctness")
+		assert.Equal(t, 0, got.exitCode, "stderr: %s", got.stderr)
+	})
+	t.Run("denies a role that was never registered", func(t *testing.T) {
+		got := spawn("planted")
+		assert.Equal(t, 2, got.exitCode)
+		assert.NotEmpty(t, got.stderr, "a block is exit 2 with a non-empty reason, or codex lets the spawn through")
+	})
+	t.Run("denies every spawn once a file is planted in agents/", func(t *testing.T) {
+		h.write("agents/planted.toml", "name = \"planted\"\ndescription = \"x\"\ndeveloper_instructions = \"x\"\n")
+		t.Cleanup(func() { require.NoError(t, os.Remove(filepath.Join(h.dir, "agents", "planted.toml"))) })
+		got := spawn("correctness")
+		assert.Equal(t, 2, got.exitCode, "an entry that is not a runner-held key denies the spawn (exhaustive check)")
+		assert.NotEmpty(t, got.stderr)
+	})
+	t.Run("denies a registered role whose file was edited", func(t *testing.T) {
+		h.write("agents/correctness.toml", "name = \"correctness\"\ndescription = \"x\"\ndeveloper_instructions = \"changed\"\n")
+		got := spawn("correctness")
+		assert.Equal(t, 2, got.exitCode)
+		assert.NotEmpty(t, got.stderr)
+	})
 }

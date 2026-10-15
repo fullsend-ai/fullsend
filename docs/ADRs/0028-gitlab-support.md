@@ -256,6 +256,25 @@ The implementation document is structured for iterative evolution as GitLab supp
 
 ## Consequences
 
+> **Update (#8083):** GitLab role provisioning on project service accounts,
+> with project access tokens as the capability fallback, is being delivered
+> incrementally under #7772 and is not active until its CLI activation
+> change merges. The Poller remains Developer at runtime. Native trigger
+> creation and rotation as the Poller remain deferred until an adapter can
+> establish server-side request draining before temporary elevation;
+> revocation and empty inventories are insufficient. Existing compliant
+> triggers can be reused, and polling remains available when enabled. See
+> the [lifecycle reference](../cli/repos.md#gitlab-project-service-account-lifecycle).
+>
+> **Update (#8242):** the CLI activation change has merged, so install,
+> rotation, status and uninstall now use the service-account lifecycle
+> described above. Native trigger creation and rotation as the Poller remain
+> deferred.
+>
+> **Update (#8243):** native trigger creation and rotation are now enabled for
+> eligible projects. A fresh Poller service-account generation mints the
+> trigger and is cut over to; the current Poller is never re-elevated.
+
 ### Positive
 
 - **Multi-forge support**: Organizations on GitLab can adopt fullsend

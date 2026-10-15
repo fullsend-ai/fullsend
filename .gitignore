@@ -19,7 +19,6 @@ bin/
 .env.*
 !.env.example
 .transcripts/
-eval/runs/
 docs/plans/
 docs/superpowers/
 docs/.vitepress/cache/

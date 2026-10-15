@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -33,6 +34,275 @@ func TestNewIssuesCmd_SubcommandRegistration(t *testing.T) {
 	}
 	assert.Contains(t, names, "get")
 	assert.Contains(t, names, "post-comment")
+	assert.Contains(t, names, "link")
+}
+
+func TestNewIssuesLinkCmd_Flags(t *testing.T) {
+	cmd := newIssuesLinkCmd()
+
+	for _, name := range []string{"tracker", "from", "to", "type", "token", "jira-url", "jira-email", "fullsend-dir"} {
+		require.NotNil(t, cmd.Flags().Lookup(name), "flag %q should exist", name)
+	}
+	for _, name := range []string{"from", "to", "type"} {
+		f := cmd.Flags().Lookup(name)
+		assert.Equal(t, []string{"true"}, f.Annotations[cobra.BashCompOneRequiredFlag], "flag %q should be required", name)
+	}
+}
+
+func TestRunIssuesLink_Jira(t *testing.T) {
+	jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	var out bytes.Buffer
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "PROJ-123",
+		to:          "OTHER-456",
+		linkType:    "Blocks",
+		testClient:  jc,
+		testPrinter: ui.New(&out),
+	}
+
+	require.NoError(t, runIssuesLink(context.Background(), cfg))
+	require.Equal(t, []tracker.FakeJiraLink{{Type: "Blocks", InwardIssue: "PROJ-123", OutwardIssue: "OTHER-456"}}, fj.Links)
+	assert.Contains(t, out.String(), "Linked PROJ-123 to OTHER-456 (Blocks)")
+}
+
+func TestRunIssuesLink_TypePassedThroughVerbatim(t *testing.T) {
+	jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "PROJ-1",
+		to:          "PROJ-2",
+		linkType:    "Problem/Incident",
+		testClient:  jc,
+		testPrinter: ui.New(io.Discard),
+	}
+
+	require.NoError(t, runIssuesLink(context.Background(), cfg))
+	require.Len(t, fj.Links, 1)
+	assert.Equal(t, "Problem/Incident", fj.Links[0].Type)
+}
+
+func TestRunIssuesLink_TypeWhitespacePreserved(t *testing.T) {
+	jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "PROJ-1",
+		to:          "PROJ-2",
+		linkType:    " Blocks ",
+		testClient:  jc,
+		testPrinter: ui.New(io.Discard),
+	}
+
+	require.NoError(t, runIssuesLink(context.Background(), cfg))
+	require.Len(t, fj.Links, 1)
+	assert.Equal(t, " Blocks ", fj.Links[0].Type)
+}
+
+func TestRunIssuesLink_InvalidKeyBeforeCredentials(t *testing.T) {
+	t.Setenv("JIRA_BASE_URL", "")
+	t.Setenv("JIRA_USER_EMAIL", "")
+	t.Setenv("JIRA_API_TOKEN", "")
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "bogus",
+		to:          "PROJ-2",
+		linkType:    "Blocks",
+		testPrinter: ui.New(io.Discard),
+	}
+
+	err := runIssuesLink(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --from")
+}
+
+func TestRunIssuesLink_ClientWithoutLinker(t *testing.T) {
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "PROJ-1",
+		to:          "PROJ-2",
+		linkType:    "Blocks",
+		testClient:  nonLinkerClient{},
+		testPrinter: ui.New(io.Discard),
+	}
+
+	err := runIssuesLink(context.Background(), cfg)
+	require.Error(t, err)
+	assert.True(t, tracker.IsNotSupported(err))
+	assert.Contains(t, err.Error(), "does not support typed issue links")
+}
+
+// nonLinkerClient is a tracker.Client that does not implement tracker.Linker.
+type nonLinkerClient struct{ tracker.Client }
+
+func TestRunIssuesLink_EmptyFlags(t *testing.T) {
+	tests := []struct {
+		name     string
+		from     string
+		to       string
+		linkType string
+		wantErr  string
+	}{
+		{name: "empty from", from: " ", to: "PROJ-2", linkType: "Blocks", wantErr: "--from must not be empty"},
+		{name: "empty to", from: "PROJ-1", to: "", linkType: "Blocks", wantErr: "--to must not be empty"},
+		{name: "empty type", from: "PROJ-1", to: "PROJ-2", linkType: "  ", wantErr: "--type must not be empty"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+			require.NoError(t, err)
+			cfg := &issuesLinkConfig{
+				trackerName: trackerJira,
+				from:        tt.from,
+				to:          tt.to,
+				linkType:    tt.linkType,
+				testClient:  jc,
+				testPrinter: ui.New(io.Discard),
+			}
+			err = runIssuesLink(context.Background(), cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Empty(t, fj.Links)
+		})
+	}
+}
+
+func TestRunIssuesLink_MalformedKeys(t *testing.T) {
+	tests := []struct {
+		name    string
+		from    string
+		to      string
+		wantErr string
+	}{
+		{name: "from without number", from: "PROJ", to: "PROJ-2", wantErr: "invalid --from"},
+		{name: "from bare number", from: "123", to: "PROJ-2", wantErr: "invalid --from"},
+		{name: "to non-numeric", from: "PROJ-1", to: "PROJ-abc", wantErr: "invalid --to"},
+		{name: "to zero", from: "PROJ-1", to: "PROJ-0", wantErr: "invalid --to"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+			require.NoError(t, err)
+			cfg := &issuesLinkConfig{
+				trackerName: trackerJira,
+				from:        tt.from,
+				to:          tt.to,
+				linkType:    "Blocks",
+				testClient:  jc,
+				testPrinter: ui.New(io.Discard),
+			}
+			err = runIssuesLink(context.Background(), cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Empty(t, fj.Links)
+		})
+	}
+}
+
+func TestRunIssuesLink_UnsupportedTracker(t *testing.T) {
+	for _, name := range []string{trackerGitHub, trackerGitLab} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &issuesLinkConfig{
+				trackerName: name,
+				from:        "acme/widgets#1",
+				to:          "acme/widgets#2",
+				linkType:    "Blocks",
+				testClient:  tracker.NewForgeClient(forge.NewFakeClient()),
+				testPrinter: ui.New(io.Discard),
+			}
+			err := runIssuesLink(context.Background(), cfg)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tracker.ErrNotSupported)
+			assert.Contains(t, err.Error(), "--tracker "+name)
+		})
+	}
+}
+
+func TestRunIssuesLink_UnsupportedTrackerWithoutCredentials(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	for _, name := range []string{trackerGitHub, trackerGitLab} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &issuesLinkConfig{
+				trackerName: name,
+				from:        "PROJ-1",
+				to:          "PROJ-2",
+				linkType:    "Blocks",
+				testPrinter: ui.New(io.Discard),
+			}
+			err := runIssuesLink(context.Background(), cfg)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tracker.ErrNotSupported)
+			assert.Contains(t, err.Error(), "--tracker "+name)
+		})
+	}
+}
+
+func TestRunIssuesLink_TrackerRequired(t *testing.T) {
+	cfg := &issuesLinkConfig{
+		from:        "PROJ-1",
+		to:          "PROJ-2",
+		linkType:    "Blocks",
+		testPrinter: ui.New(io.Discard),
+	}
+	err := runIssuesLink(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--tracker is required")
+}
+
+func TestRunIssuesLink_LinkError(t *testing.T) {
+	jc, fj, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	fj.LinkError = errors.New("jira api: 400 No issue link type with name 'Nope' found.")
+	cfg := &issuesLinkConfig{
+		trackerName: trackerJira,
+		from:        "PROJ-1",
+		to:          "PROJ-2",
+		linkType:    "Nope",
+		testClient:  jc,
+		testPrinter: ui.New(io.Discard),
+	}
+
+	err = runIssuesLink(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "linking issues")
+	assert.Contains(t, err.Error(), "No issue link type")
+}
+
+func TestParseIssueKey(t *testing.T) {
+	tests := []struct {
+		key         string
+		wantProject string
+		wantNumber  int
+		wantErr     bool
+	}{
+		{key: "PROJ-123", wantProject: "PROJ", wantNumber: 123},
+		{key: "AB2-7", wantProject: "AB2", wantNumber: 7},
+		{key: "PROJ", wantErr: true},
+		{key: "-123", wantErr: true},
+		{key: "PROJ-", wantErr: true},
+		{key: "PROJ-x1", wantErr: true},
+		{key: "PROJ--1", wantErr: true},
+		{key: "PROJ-+1", wantErr: true},
+		{key: "PROJ-1-2", wantErr: true},
+		{key: "PROJ-0", wantErr: true},
+		{key: "PROJ-99999999999999999999", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			project, number, err := parseIssueKey(tt.key)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantProject, project)
+			assert.Equal(t, tt.wantNumber, number)
+		})
+	}
 }
 
 func TestNewIssuesGetCmd_RequiredFlags(t *testing.T) {
@@ -332,6 +602,108 @@ func TestRunIssuesGet_NilLabelsOutputAsEmptyArray(t *testing.T) {
 	err = json.Unmarshal(buf.Bytes(), &raw)
 	require.NoError(t, err)
 	assert.Equal(t, "[]", string(raw["labels"]), "nil labels should serialize as empty JSON array, not null")
+}
+
+// newJiraTrackerWithTypedIssue returns a Jira-backed tracker.Client with
+// PROJ-5, a Bug carrying one string and one object custom field.
+func newJiraTrackerWithTypedIssue(t *testing.T) tracker.Client {
+	t.Helper()
+	tc, fc, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	fc.Issues = map[string]*jira.Issue{
+		"PROJ-5": {
+			Key: "PROJ-5",
+			Fields: jira.IssueFields{
+				Summary:   "Typed issue",
+				IssueType: &jira.IssueType{ID: "10001", Name: "Bug"},
+				CustomFields: map[string]json.RawMessage{
+					"customfield_10875": json.RawMessage(`"https://github.com/acme/widgets/pull/7"`),
+					"customfield_12345": json.RawMessage(`{"value":"High","id":"3"}`),
+					"customfield_20000": json.RawMessage(`null`),
+				},
+			},
+		},
+	}
+	return tc
+}
+
+func TestRunIssuesGet_JiraIssueTypeWithoutFields(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &issuesGetConfig{
+		project:    "PROJ",
+		number:     5,
+		testClient: newJiraTrackerWithTypedIssue(t),
+		testWriter: &buf,
+	}
+	require.NoError(t, runIssuesGet(context.Background(), cfg))
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &raw))
+	assert.JSONEq(t, `"Bug"`, string(raw["issue_type"]))
+	assert.NotContains(t, raw, "custom_fields", "custom_fields is opt-in via --fields")
+}
+
+func TestRunIssuesGet_JiraCustomFields(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &issuesGetConfig{
+		project:    "PROJ",
+		number:     5,
+		fields:     []string{" customfield_10875", "customfield_12345", "customfield_10875", "", "customfield_20000", "customfield_30000"},
+		testClient: newJiraTrackerWithTypedIssue(t),
+		testWriter: &buf,
+	}
+	require.NoError(t, runIssuesGet(context.Background(), cfg))
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &raw))
+	assert.JSONEq(t, `{
+		"customfield_10875": "https://github.com/acme/widgets/pull/7",
+		"customfield_12345": {"value": "High", "id": "3"},
+		"customfield_20000": null,
+		"customfield_30000": null
+	}`, string(raw["custom_fields"]), "only requested fields; unset or absent ones are null")
+}
+
+func TestRunIssuesGet_FieldsIgnoredForNonJira(t *testing.T) {
+	var buf, errBuf bytes.Buffer
+	cfg := &issuesGetConfig{
+		project:       "acme/widgets",
+		number:        1,
+		fields:        []string{"customfield_10875"},
+		testClient:    newFakeTrackerWithIssue(t, "acme/widgets", 1),
+		testWriter:    &buf,
+		testErrWriter: &errBuf,
+	}
+	require.NoError(t, runIssuesGet(context.Background(), cfg))
+
+	assert.Contains(t, errBuf.String(), "--fields is only supported for --tracker jira")
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &raw))
+	assert.NotContains(t, raw, "custom_fields")
+	assert.NotContains(t, raw, "issue_type", "GitHub output is unchanged")
+}
+
+func TestRunIssuesGet_InvalidFields(t *testing.T) {
+	for _, f := range []string{"priority", "customfield_", "customfield_12a", "customfield_10875,x"} {
+		cfg := &issuesGetConfig{
+			project:    "PROJ",
+			number:     5,
+			fields:     []string{f},
+			testClient: newJiraTrackerWithTypedIssue(t),
+			testWriter: io.Discard,
+		}
+		err := runIssuesGet(context.Background(), cfg)
+		require.Error(t, err, f)
+		assert.Contains(t, err.Error(), "invalid --fields value")
+	}
+}
+
+func TestIssuesGetCmd_FieldsFlagParsesCommaList(t *testing.T) {
+	cmd := newIssuesGetCmd()
+	require.NoError(t, cmd.ParseFlags([]string{"--fields", "customfield_1,customfield_2", "--fields", "customfield_3"}))
+	got, err := cmd.Flags().GetStringSlice("fields")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"customfield_1", "customfield_2", "customfield_3"}, got)
 }
 
 func TestRunIssuesGet_IssueNotFound(t *testing.T) {

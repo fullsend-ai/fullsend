@@ -45,6 +45,9 @@ func TestNewRepoPoolExternalMint_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	assert.Equal(t, DefaultPoolSize, d.Capacity())
+	reporter, ok := d.(MintURLReporter)
+	require.True(t, ok, "driver reports its mint URL")
+	assert.Equal(t, "https://mint.test", reporter.MintURL())
 }
 
 func TestNewRepoPoolExternalMint_CustomPoolSize(t *testing.T) {

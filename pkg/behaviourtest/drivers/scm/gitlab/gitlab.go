@@ -145,6 +145,10 @@ func (d *Driver) CreateFork(ctx context.Context, owner, repo, forkName string) (
 	return d.Client.CreateForkInOrg(ctx, owner, repo, owner, forkName)
 }
 
+func (d *Driver) CreateUserFork(ctx context.Context, owner, repo string) (string, string, error) {
+	return d.Client.CreateFork(ctx, owner, repo)
+}
+
 func (d *Driver) CommitFileToFork(ctx context.Context, forkOwner, forkRepo, branch, path, message string, content []byte) error {
 	return d.Client.CreateOrUpdateFileOnBranch(ctx, forkOwner, forkRepo, branch, path, message, content)
 }

@@ -51,60 +51,6 @@ func TestEnsureGitLabWebhookFastPath_InstanceVariableOverride(t *testing.T) {
 
 		assert.Len(t, c.triggers(), 1)
 	})
-
-	t.Run("uninspectable instance variables defer and revoke", func(t *testing.T) {
-		c := newWebhookFake()
-		ensureWebhook(t, c, false, false)
-		require.Len(t, c.triggers(), 1)
-		c.Errors["ListInstanceVariables"] = fmt.Errorf("list instance variables: %w", forge.ErrForbidden)
-
-		res, err := ensureWebhookRaw(c)
-
-		require.NoError(t, err)
-		assert.Equal(t, "update", res.Action)
-		assert.Contains(t, strings.Join(res.Details, "\n"), "instance-level CI/CD variables cannot be inspected")
-		assert.Empty(t, c.triggers())
-		assert.Empty(t, c.hooks())
-	})
-}
-
-// A project Maintainer cannot list group variables (group Owner access is
-// required). That defers the fast path rather than failing the install,
-// and still revokes an existing managed credential.
-func TestEnsureGitLabWebhookFastPath_GroupVariablesForbiddenDefers(t *testing.T) {
-	t.Run("fresh install defers without an error", func(t *testing.T) {
-		c := newWebhookFake()
-		c.Errors["ListOrgVariables"] = fmt.Errorf("listing group variables: %w", forge.ErrForbidden)
-
-		res, err := ensureWebhookRaw(c)
-
-		require.NoError(t, err)
-		assert.Equal(t, "deferred", res.Action)
-		assert.Empty(t, c.CreatedTriggerTokens)
-		assert.Contains(t, strings.Join(res.Details, "\n"), "group Owner access")
-	})
-
-	t.Run("existing fast path is revoked", func(t *testing.T) {
-		c := newWebhookFake()
-		ensureWebhook(t, c, false, false)
-		require.Len(t, c.triggers(), 1)
-		c.Errors["ListOrgVariables"] = fmt.Errorf("listing group variables: %w", forge.ErrForbidden)
-
-		res, err := ensureWebhookRaw(c)
-
-		require.NoError(t, err)
-		assert.Equal(t, "update", res.Action)
-		assert.Empty(t, c.triggers())
-	})
-
-	t.Run("other group errors still fail", func(t *testing.T) {
-		c := newWebhookFake()
-		c.Errors["ListOrgVariables"] = errors.New("boom")
-
-		_, err := ensureWebhookRaw(c)
-
-		require.Error(t, err)
-	})
 }
 
 // A same-named dispatcher job in the root or wrapper is merged over the
@@ -183,6 +129,201 @@ func TestGitLabTriggerSafety_EarlyErrorsWithholdServerText(t *testing.T) {
 			require.Error(t, err)
 			assert.NotContains(t, err.Error(), echoed)
 			assert.ErrorIs(t, err, injected, "the original error stays reachable for errors.Is")
+		})
+	}
+}
+
+// groupScopedFake answers ListOrgVariables per group: forbidden for the
+// groups in forbidden, and the listed variable names for the groups in vars.
+type groupScopedFake struct {
+	webhookFake
+	forbidden map[string]bool
+	vars      map[string][]string
+}
+
+func (c groupScopedFake) ListOrgVariables(_ context.Context, group string) ([]forge.OrgVariable, error) {
+	if c.forbidden[group] {
+		return nil, fmt.Errorf("listing group variables: %w", forge.ErrForbidden)
+	}
+	var out []forge.OrgVariable
+	for _, name := range c.vars[group] {
+		out = append(out, forge.OrgVariable{Name: name})
+	}
+	return out, nil
+}
+
+// forbidInheritedScopes makes the instance and every group variable listing
+// answer forbidden, as they do for a project Maintainer without
+// administrator or group Owner access.
+func forbidInheritedScopes(c webhookFake) {
+	c.Errors["ListInstanceVariables"] = fmt.Errorf("list instance variables: %w", forge.ErrForbidden)
+	c.Errors["ListOrgVariables"] = fmt.Errorf("listing group variables: %w", forge.ErrForbidden)
+}
+
+// A project Maintainer without administrator or group Owner access cannot
+// list instance or group variables. Those scopes are unverified, not
+// unsafe: the fast path is activated and retained when the project-level
+// and committed-CI checks pass, with no acceptance setting.
+func TestEnsureGitLabWebhookFastPath_UnreadableInheritedScopes(t *testing.T) {
+	t.Run("fresh install activates the fast path", func(t *testing.T) {
+		c := newWebhookFake()
+		forbidInheritedScopes(c)
+
+		res := ensureWebhook(t, c, false, false)
+
+		assert.Equal(t, "update", res.Action)
+		assert.Len(t, c.triggers(), 1)
+		assert.Len(t, c.hooks(), 1)
+	})
+
+	t.Run("status reports no drift", func(t *testing.T) {
+		c := newWebhookFake()
+		ensureWebhook(t, c, false, false)
+		forbidInheritedScopes(c)
+
+		needs, err := GitLabWebhookNeedsProvisioning(context.Background(), c, webhookTestBase, webhookTestOwner, webhookTestRepo)
+
+		require.NoError(t, err)
+		assert.False(t, needs, "an unreadable inherited scope is not drift")
+	})
+
+	t.Run("existing fast path is retained on reinstall", func(t *testing.T) {
+		c := newWebhookFake()
+		ensureWebhook(t, c, false, false)
+		before := c.triggers()
+		require.Len(t, before, 1)
+		forbidInheritedScopes(c)
+
+		_, err := ensureWebhookRaw(c)
+
+		require.NoError(t, err)
+		assert.Equal(t, before, c.triggers(), "the managed trigger token is not revoked or replaced")
+		assert.Len(t, c.hooks(), 1)
+	})
+
+	t.Run("safety reconciliation does not revoke", func(t *testing.T) {
+		c := newWebhookFake()
+		ensureWebhook(t, c, false, false)
+		before := c.triggers()
+		require.Len(t, before, 1)
+		forbidInheritedScopes(c)
+
+		res, err := ReconcileGitLabWebhookSafety(context.Background(), c, webhookTestOwner, webhookTestRepo, false)
+
+		require.NoError(t, err)
+		assert.NotEqual(t, "deferred", res.Action)
+		assert.Equal(t, before, c.triggers())
+		assert.Len(t, c.hooks(), 1)
+	})
+
+	t.Run("project variable collision still defers", func(t *testing.T) {
+		c := newWebhookFake()
+		forbidInheritedScopes(c)
+		c.VariableValues[webhookTestOwner+"/"+webhookTestRepo+"/CI_PIPELINE_SOURCE"] = "push"
+
+		res := ensureWebhook(t, c, false, false)
+
+		assert.Equal(t, "deferred", res.Action)
+		assert.Empty(t, c.CreatedTriggerTokens)
+		assert.Contains(t, strings.Join(res.Details, "\n"), "predefined project variable override: CI_PIPELINE_SOURCE")
+	})
+
+	t.Run("readable group override defers when instance is unreadable", func(t *testing.T) {
+		c := newWebhookFake()
+		c.Errors["ListInstanceVariables"] = fmt.Errorf("list instance variables: %w", forge.ErrForbidden)
+		c.OrgVariables = map[string]bool{webhookTestOwner + "/CI_PIPELINE_SOURCE": true}
+
+		res := ensureWebhook(t, c, false, false)
+
+		assert.Equal(t, "deferred", res.Action)
+		assert.Empty(t, c.CreatedTriggerTokens)
+		assert.Contains(t, strings.Join(res.Details, "\n"), "predefined group variable override: CI_PIPELINE_SOURCE")
+	})
+
+	t.Run("readable instance override revokes when groups are unreadable", func(t *testing.T) {
+		c := newWebhookFake()
+		ensureWebhook(t, c, false, false)
+		require.Len(t, c.triggers(), 1)
+		c.Errors["ListOrgVariables"] = fmt.Errorf("listing group variables: %w", forge.ErrForbidden)
+		c.InstanceVariables = []string{"CI_COMMIT_REF_PROTECTED"}
+
+		res, err := ReconcileGitLabWebhookSafety(context.Background(), c, webhookTestOwner, webhookTestRepo, false)
+
+		require.NoError(t, err)
+		assert.Equal(t, "update", res.Action)
+		assert.Contains(t, strings.Join(res.Details, "\n"), "predefined instance variable override: CI_COMMIT_REF_PROTECTED")
+		assert.Empty(t, c.triggers())
+		assert.Empty(t, c.hooks())
+	})
+
+	t.Run("readable override in a later group is found past an unreadable one", func(t *testing.T) {
+		c := groupScopedFake{
+			webhookFake: newWebhookFake(),
+			forbidden:   map[string]bool{webhookTestOwner: true},
+			vars:        map[string][]string{webhookTestOwner + "/sub": {"CI_COMMIT_REF_PROTECTED"}},
+		}
+
+		problem, err := gitlabInheritedVariableOverrideProblem(context.Background(), c, webhookTestOwner, "sub/"+webhookTestRepo, triggerPipelineEnv("main"))
+
+		require.NoError(t, err)
+		assert.Equal(t, "webhook fast-path deferred: predefined group variable override: CI_COMMIT_REF_PROTECTED", problem)
+	})
+
+	t.Run("unreadable nested group is skipped", func(t *testing.T) {
+		c := groupScopedFake{
+			webhookFake: newWebhookFake(),
+			forbidden:   map[string]bool{webhookTestOwner + "/sub": true},
+			vars:        map[string][]string{webhookTestOwner: {"UNRELATED"}},
+		}
+
+		problem, err := gitlabInheritedVariableOverrideProblem(context.Background(), c, webhookTestOwner, "sub/"+webhookTestRepo, triggerPipelineEnv("main"))
+
+		require.NoError(t, err)
+		assert.Empty(t, problem)
+	})
+}
+
+// Errors other than forbidden mean the inherited scopes could not be
+// checked at all: they fail rather than counting as verified or as
+// unverified, and never echo server error text.
+func TestGitLabInheritedVariableOverride_NonForbiddenErrorsFail(t *testing.T) {
+	const echoed = "echoed-credential-value"
+	for _, method := range []string{"ListInstanceVariables", "ListOrgVariables"} {
+		t.Run(method+" on install", func(t *testing.T) {
+			c := newWebhookFake()
+			c.Errors[method] = errors.New("server said " + echoed)
+
+			res, err := ensureWebhookRaw(c)
+
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), echoed)
+			assert.Empty(t, c.CreatedTriggerTokens)
+			assert.NotEqual(t, "update", res.Action)
+		})
+
+		t.Run(method+" on status", func(t *testing.T) {
+			c := newWebhookFake()
+			ensureWebhook(t, c, false, false)
+			c.Errors[method] = errors.New("server said " + echoed)
+
+			needs, err := GitLabWebhookNeedsProvisioning(context.Background(), c, webhookTestBase, webhookTestOwner, webhookTestRepo)
+
+			require.Error(t, err)
+			assert.True(t, needs)
+			assert.NotContains(t, err.Error(), echoed)
+		})
+
+		t.Run(method+" on reconcile revokes", func(t *testing.T) {
+			c := newWebhookFake()
+			ensureWebhook(t, c, false, false)
+			require.Len(t, c.triggers(), 1)
+			c.Errors[method] = errors.New("server said " + echoed)
+
+			_, err := ReconcileGitLabWebhookSafety(context.Background(), c, webhookTestOwner, webhookTestRepo, false)
+
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), echoed)
+			assert.Empty(t, c.triggers())
 		})
 	}
 }

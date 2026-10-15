@@ -139,7 +139,7 @@ func TestResolvePersonaModels_Basic(t *testing.T) {
 		"anthropic-vertex/claude-sonnet-4-6": "anthropic-vertex/claude-sonnet-4-6",
 	}
 
-	result, defaultSpec, _, err := resolvePersonaModels(personas, nil, nil, testModels, trustedSpecs)
+	result, defaultSpec, _, err := resolvePersonaModels(personas, nil, nil, testModels, nil, trustedSpecs)
 	require.NoError(t, err)
 	require.Len(t, result, 2)
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", result["correctness"].Model)
@@ -163,7 +163,7 @@ func TestResolvePersonaModels_ConfigOverride(t *testing.T) {
 		"anthropic-vertex/claude-sonnet-4-6": "anthropic-vertex/claude-sonnet-4-6",
 	}
 
-	result, _, _, err := resolvePersonaModels(personas, nil, cfg, testModels, trustedSpecs)
+	result, _, _, err := resolvePersonaModels(personas, nil, cfg, testModels, nil, trustedSpecs)
 	require.NoError(t, err)
 	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", result["correctness"].Model, "config overrides frontmatter")
 }
@@ -182,7 +182,7 @@ func TestResolvePersonaModels_DefaultFallback(t *testing.T) {
 		"anthropic-vertex/claude-sonnet-4-6": "anthropic-vertex/claude-sonnet-4-6",
 	}
 
-	result, defaultSpec, _, err := resolvePersonaModels(personas, nil, cfg, testModels, trustedSpecs)
+	result, defaultSpec, _, err := resolvePersonaModels(personas, nil, cfg, testModels, nil, trustedSpecs)
 	require.NoError(t, err)
 	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", result["style"].Model, "default fills in")
 	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", defaultSpec,
@@ -202,13 +202,13 @@ func TestResolvePersonaModels_Tombstone(t *testing.T) {
 	cfg := map[string]*string{"default": strp("haiku"), "correctness": nil}
 
 	withFrontmatter, _, _, err := resolvePersonaModels([]piPersona{{Name: "correctness", Model: "opus"}}, nil,
-		cfg, testModels, trustedSpecs)
+		cfg, testModels, nil, trustedSpecs)
 	require.NoError(t, err)
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", withFrontmatter["correctness"].Model,
 		"tombstoned persona with a frontmatter model keeps it even when default is set")
 
 	noFrontmatter, _, _, err := resolvePersonaModels([]piPersona{{Name: "correctness"}}, nil,
-		cfg, testModels, trustedSpecs)
+		cfg, testModels, nil, trustedSpecs)
 	require.NoError(t, err)
 	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", noFrontmatter["correctness"].Model,
 		"tombstoned persona with no frontmatter model falls to default")
@@ -224,7 +224,7 @@ func TestResolvePersonaModels_FrontmatterBeatsDefault(t *testing.T) {
 		"anthropic-vertex/claude-haiku-4-5": "anthropic-vertex/claude-haiku-4-5",
 		"anthropic-vertex/claude-opus-4-6":  "anthropic-vertex/claude-opus-4-6",
 	}
-	result, defaultSpec, _, err := resolvePersonaModels(personas, nil, map[string]*string{"default": strp("haiku")}, testModels, trustedSpecs)
+	result, defaultSpec, _, err := resolvePersonaModels(personas, nil, map[string]*string{"default": strp("haiku")}, testModels, nil, trustedSpecs)
 	require.NoError(t, err)
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", result["correctness"].Model, "frontmatter wins over default")
 	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", result["style"].Model, "no frontmatter: default applies")
@@ -241,7 +241,7 @@ func TestResolvePersonaModels_DefaultWithoutPersonas(t *testing.T) {
 	}
 
 	result, defaultSpec, _, err := resolvePersonaModels(nil, nil,
-		map[string]*string{"default": strp("sonnet")}, testModels, trustedSpecs)
+		map[string]*string{"default": strp("sonnet")}, testModels, nil, trustedSpecs)
 	require.NoError(t, err)
 	assert.Empty(t, result)
 	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", defaultSpec)
@@ -252,7 +252,7 @@ func TestResolvePersonaModels_DefaultWithoutPersonas(t *testing.T) {
 func TestResolvePersonaModels_UnknownKeyWithoutPersonas(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
 
-	_, _, _, err := resolvePersonaModels(nil, nil, map[string]*string{"correctnes": strp("opus")}, testModels,
+	_, _, _, err := resolvePersonaModels(nil, nil, map[string]*string{"correctnes": strp("opus")}, testModels, nil,
 		map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "correctnes")
@@ -267,19 +267,19 @@ func TestResolvePersonaModels_UnservableTools(t *testing.T) {
 	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
 
 	// Unreferenced: warned and left out of the manifest, the run proceeds.
-	result, _, _, err := resolvePersonaModels(personas, nil, nil, testModels, trusted)
+	result, _, _, err := resolvePersonaModels(personas, nil, nil, testModels, nil, trusted)
 	require.NoError(t, err)
 	assert.NotContains(t, result, "webby")
 
 	// Referenced by the repo's config: the repo asked for it, so it is fatal.
-	_, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"webby": strp("opus")}, testModels, trusted)
+	_, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"webby": strp("opus")}, testModels, nil, trusted)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "WebFetch")
 	assert.Contains(t, err.Error(), "cannot be served")
 
 	// Referenced through default: it would have received the model.
 	_, _, _, err = resolvePersonaModels([]piPersona{{Name: "webby", Tools: []string{"WebFetch"}}}, nil,
-		map[string]*string{"default": strp("opus")}, testModels, trusted)
+		map[string]*string{"default": strp("opus")}, testModels, nil, trusted)
 	require.Error(t, err)
 }
 
@@ -288,10 +288,10 @@ func TestResolvePersonaModels_EmptyToolsRefused(t *testing.T) {
 
 	personas := []piPersona{{Name: "locked", Model: "opus", Tools: []string{}}}
 	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
-	result, _, _, err := resolvePersonaModels(personas, nil, nil, testModels, trusted)
+	result, _, _, err := resolvePersonaModels(personas, nil, nil, testModels, nil, trusted)
 	require.NoError(t, err)
 	assert.NotContains(t, result, "locked", "skipped, never registered with the parent's tools")
-	_, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"locked": strp("opus")}, testModels, trusted)
+	_, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"locked": strp("opus")}, testModels, nil, trusted)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty tool set")
 }
@@ -303,10 +303,10 @@ func TestResolvePersonaModels_BashAllowlistRefused(t *testing.T) {
 
 	personas := []piPersona{{Name: "risk", Model: "opus", Tools: []string{"Bash"}, BashAllowlist: []string{"git"}}}
 	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
-	result, _, _, err := resolvePersonaModels(personas, nil, nil, testModels, trusted)
+	result, _, _, err := resolvePersonaModels(personas, nil, nil, testModels, nil, trusted)
 	require.NoError(t, err)
 	assert.NotContains(t, result, "risk")
-	_, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"risk": strp("opus")}, testModels, trusted)
+	_, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"risk": strp("opus")}, testModels, nil, trusted)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not supported yet")
 }
@@ -317,7 +317,7 @@ func TestResolvePersonaModels_AtSuffixStripped(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
 
 	personas := []piPersona{{Name: "correctness", Model: "claude-opus-4-6@default"}}
-	result, _, _, err := resolvePersonaModels(personas, nil, nil, testModels,
+	result, _, _, err := resolvePersonaModels(personas, nil, nil, testModels, nil,
 		map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"})
 	require.NoError(t, err)
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", result["correctness"].Model)
@@ -336,7 +336,7 @@ func TestResolvePersonaModels_UnknownConfigKey(t *testing.T) {
 		"anthropic-vertex/claude-sonnet-4-6": "anthropic-vertex/claude-sonnet-4-6",
 	}
 
-	_, _, _, err := resolvePersonaModels(personas, nil, cfg, testModels, trustedSpecs)
+	_, _, _, err := resolvePersonaModels(personas, nil, cfg, testModels, nil, trustedSpecs)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nonexistent")
 	assert.Contains(t, err.Error(), "no persona")
@@ -352,18 +352,18 @@ func TestResolvePersonaModels_UntrustedModel(t *testing.T) {
 		"anthropic-vertex/claude-sonnet-4-6": "anthropic-vertex/claude-sonnet-4-6",
 	}
 
-	result, _, _, err := resolvePersonaModels(personas, nil, nil, testModels, trustedSpecs)
+	result, _, _, err := resolvePersonaModels(personas, nil, nil, testModels, nil, trustedSpecs)
 	require.NoError(t, err, "a bad frontmatter model on an unreferenced persona is skipped, not fatal")
 	assert.NotContains(t, result, "style")
 
 	// The repo names it with a servable model: the config value replaces
 	// the frontmatter and the persona registers.
-	result, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"style": strp("sonnet")}, testModels, trustedSpecs)
+	result, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"style": strp("sonnet")}, testModels, nil, trustedSpecs)
 	require.NoError(t, err)
 	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", result["style"].Model)
 
 	// The repo names it with an unservable value: still fatal.
-	_, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"style": strp("gemini-9")}, testModels, trustedSpecs)
+	_, _, _, err = resolvePersonaModels(personas, nil, map[string]*string{"style": strp("gemini-9")}, testModels, nil, trustedSpecs)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not available")
 }
@@ -392,7 +392,7 @@ func TestResolvePersonaModels_BareValueIgnoresProviderEnv(t *testing.T) {
 		"anthropic-vertex/claude-sonnet-4-6": "anthropic-vertex/claude-sonnet-4-6",
 	}
 	for _, spec := range []string{"opus", "claude-opus-4-6", "anthropic-vertex/claude-opus-4-6"} {
-		result, _, _, err := resolvePersonaModels(personas, nil, map[string]*string{"correctness": strp(spec)}, testModels, trusted)
+		result, _, _, err := resolvePersonaModels(personas, nil, map[string]*string{"correctness": strp(spec)}, testModels, nil, trusted)
 		require.NoError(t, err, "spec %q", spec)
 		assert.Equal(t, "anthropic-vertex/claude-opus-4-6", result["correctness"].Model, "spec %q", spec)
 	}
@@ -417,18 +417,18 @@ func TestResolvePersonaModels_SkippedPersonaReferencedFails(t *testing.T) {
 	skipped := []piSkippedPersona{{Name: "correctnes", Path: "sub-agents/correctnes.md", Model: "opus",
 		Reason: `frontmatter name "correctness" must equal file basename "correctnes"`}}
 
-	result, _, _, err := resolvePersonaModels(nil, skipped, nil, testModels, trusted)
+	result, _, _, err := resolvePersonaModels(nil, skipped, nil, testModels, nil, trusted)
 	require.NoError(t, err, "unreferenced: the run proceeds")
 	assert.Empty(t, result)
 
-	_, _, _, err = resolvePersonaModels(nil, skipped, map[string]*string{"correctnes": strp("opus")}, testModels, trusted)
+	_, _, _, err = resolvePersonaModels(nil, skipped, map[string]*string{"correctnes": strp("opus")}, testModels, nil, trusted)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "was not registered")
 	assert.Contains(t, err.Error(), "must equal file basename")
 
 	// default would have applied to a skipped persona with no model.
 	_, _, _, err = resolvePersonaModels(nil, []piSkippedPersona{{Name: "x", Path: "sub-agents/x.md", Reason: "name is reserved"}},
-		map[string]*string{"default": strp("opus")}, testModels, trusted)
+		map[string]*string{"default": strp("opus")}, testModels, nil, trusted)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "subagents.default would have applied")
 }
@@ -463,7 +463,7 @@ func TestDiscoverPersonas_FleetMainRegistersNine(t *testing.T) {
 		"anthropic-vertex/claude-sonnet-4-6": "anthropic-vertex/claude-sonnet-4-6",
 		"anthropic-vertex/claude-haiku-4-5":  "anthropic-vertex/claude-haiku-4-5",
 	}
-	result, defaultSpec, _, err := resolvePersonaModels(personas, skipped, nil, testModels, trusted)
+	result, defaultSpec, _, err := resolvePersonaModels(personas, skipped, nil, testModels, nil, trusted)
 	require.NoError(t, err)
 	assert.Empty(t, defaultSpec)
 	require.Len(t, result, 9)
@@ -494,7 +494,7 @@ func TestResolvePersonaModels_UnparsedSkipIsNotFatalViaDefault(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
 	trusted := map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}
 	sk := []piSkippedPersona{{Name: "odd", Path: "sub-agents/odd.md", Unparsed: true, Reason: "frontmatter does not parse"}}
-	result, _, skippedOut, err := resolvePersonaModels(nil, sk, map[string]*string{"default": strp("opus")}, testModels, trusted)
+	result, _, skippedOut, err := resolvePersonaModels(nil, sk, map[string]*string{"default": strp("opus")}, testModels, nil, trusted)
 	require.NoError(t, err)
 	assert.Empty(t, result)
 	assert.Contains(t, skippedOut, "odd")
@@ -525,7 +525,7 @@ func TestResolvePersonaModels_BareIDTableIsDeterministic(t *testing.T) {
 		"xai-vertex/xai/claude-opus-4-6":   "xai-vertex/xai/claude-opus-4-6",
 	}
 	for i := 0; i < 20; i++ {
-		result, _, _, err := resolvePersonaModels([]piPersona{{Name: "correctness", Model: "claude-opus-4-6"}}, nil, nil, models, trusted)
+		result, _, _, err := resolvePersonaModels([]piPersona{{Name: "correctness", Model: "claude-opus-4-6"}}, nil, nil, models, nil, trusted)
 		require.NoError(t, err)
 		assert.Equal(t, "anthropic-vertex/claude-opus-4-6", result["correctness"].Model)
 	}
@@ -539,12 +539,12 @@ func TestPiTrustedSpecs_RejectsMalformedSpecs(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
 	injected := "google-vertex/gemini-2.5-pro\n::warning::injected"
 	models := map[string]string{"default": injected, "opus": "anthropic-vertex/claude-opus-4-6"}
-	trusted := piTrustedSpecs(models, map[string][]string{"openai": {"gpt-5\n::warning::x"}}, "", nil)
+	trusted := piTrustedSpecs(models, nil, map[string][]string{"openai": {"gpt-5\n::warning::x"}}, "", nil)
 	assert.Equal(t, map[string]string{"anthropic-vertex/claude-opus-4-6": "anthropic-vertex/claude-opus-4-6"}, trusted)
 
 	_, _, _, err := resolvePersonaModels(
 		[]piPersona{{Name: "checker", Model: injected}},
-		nil, map[string]*string{"checker": strp(injected)}, models, trusted)
+		nil, map[string]*string{"checker": strp(injected)}, models, nil, trusted)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "\n::warning::", "the spec is quoted, never raw")
 }
@@ -554,20 +554,20 @@ func TestPiTrustedSpecs_RejectsMalformedSpecs(t *testing.T) {
 // inherit it, so the named path must not be the one that fails.
 func TestPiTrustedSpecs_IncludesEffectiveParent(t *testing.T) {
 	t.Setenv(piProviderEnv, "")
-	trusted := piTrustedSpecs(testModels, map[string][]string{"google-vertex": {"gemini-3.8-flash"}}, "claude-sonnet-5", nil)
+	trusted := piTrustedSpecs(testModels, nil, map[string][]string{"google-vertex": {"gemini-3.8-flash"}}, "claude-sonnet-5", nil)
 	assert.Contains(t, trusted, "anthropic-vertex/claude-sonnet-5", "the --model override, canonicalised")
 	assert.Contains(t, trusted, "google-vertex/gemini-3.8-flash")
 	assert.Contains(t, trusted, "anthropic-vertex/claude-opus-4-6")
 
 	result, _, _, err := resolvePersonaModels([]piPersona{{Name: "correctness"}}, nil,
-		map[string]*string{"correctness": strp("anthropic-vertex/claude-sonnet-5")}, testModels, trusted)
+		map[string]*string{"correctness": strp("anthropic-vertex/claude-sonnet-5")}, testModels, nil, trusted)
 	require.NoError(t, err)
 	assert.Equal(t, "anthropic-vertex/claude-sonnet-5", result["correctness"].Model)
 
 	// Without the parent in the set the same pin is refused.
 	_, _, _, err = resolvePersonaModels([]piPersona{{Name: "correctness"}}, nil,
-		map[string]*string{"correctness": strp("anthropic-vertex/claude-sonnet-5")}, testModels,
-		piTrustedSpecs(testModels, nil, "", nil))
+		map[string]*string{"correctness": strp("anthropic-vertex/claude-sonnet-5")}, testModels, nil,
+		piTrustedSpecs(testModels, nil, nil, "", nil))
 	require.Error(t, err)
 }
 

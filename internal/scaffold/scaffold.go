@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -69,6 +70,10 @@ var upstreamOnlyDirs = []string{
 	".github/actions/",
 	".github/scripts/",
 }
+
+// excludedDirNames are runtime state dirs never shipped from any embed, at
+// any depth; the all: embed picks them up from dirty dev trees (#5184).
+var excludedDirNames = []string{".fullsend-cache"}
 
 func isSkippedDir(path string) bool {
 	for _, prefix := range layeredDirs {
@@ -197,6 +202,9 @@ func walkEmbedFS(fsys embed.FS, root string, fn func(path string, content []byte
 			return err
 		}
 		if d.IsDir() {
+			if slices.Contains(excludedDirNames, d.Name()) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		relPath := path[len(root)+1:]

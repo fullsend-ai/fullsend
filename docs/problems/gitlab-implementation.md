@@ -372,7 +372,7 @@ This keeps the dispatch scanning logic identical across GitHub and GitLab.
 
 **Phase 4: Configuration**
 - Add `forge: github` or `forge: gitlab` to `config.yaml` (implementation uses `gitlab.url` in the repos manifest — see Config Schema Changes below)
-- Support forge-specific settings (GitLab instance URL for self-hosted; implemented via `--gitlab-url` flag on `repos install`)
+- Support forge-specific settings (GitLab instance URL for self-hosted; declared as `gitlab.url` in `repos.yaml`, for example with `fullsend repos set gitlab.url <url>`)
 - Update config schema and validation
 
 **Phase 5: Testing**
@@ -486,8 +486,13 @@ func detectForge(repoURL string) (string, error) {
 
 ### Install Command Changes
 
-- Add `--forge {github|gitlab}` flag (auto-detected if not specified)
-- Add `--gitlab-url` for self-hosted GitLab instances *(implemented — see PR #7087)*
+> **Historical note.** This section originally proposed `--forge {github|gitlab}` and `--gitlab-url` flags for `fullsend repos install` (the `--gitlab-url` flag shipped in PR #7087). Both flags have since been removed from `repos install`: it takes settings only from `repos.yaml` and rejects them. The forge and the GitLab instance URL are now declared in the manifest:
+>
+> - The forge is the manifest section a repository is listed in: `github.repos` or `gitlab.repos`. Add the entry with `fullsend repos set 'gitlab.repos["group/project"]' '{}'`.
+> - The GitLab instance URL is `gitlab.url`, required whenever GitLab repositories are present, including gitlab.com. Set it with `fullsend repos set gitlab.url https://gitlab.example.com`.
+>
+> `repos install` then only selects declared entries by positional argument and takes credential and one-run flags. See [`fullsend repos`](../cli/repos.md#removed-configuration-flags-breaking) and [Config Schema Changes](#config-schema-changes).
+
 - Update app setup flow to create Project Access Tokens for GitLab
 - Update workflows layer to deploy `.gitlab/` instead of `.github/`
 

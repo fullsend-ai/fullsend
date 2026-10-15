@@ -80,7 +80,7 @@ git log --oneline <previous-final>..HEAD
 ```
 
 Summarize changes into categories (features, fixes, refactors). Exclude
-`docs:`, `test:`, `chore:`, `ci:`, `build:` commits — GoReleaser filters these anyway.
+`docs:`, `test:`, `chore:`, `ci:`, `build:`, `style:` commits — GoReleaser filters these anyway.
 
 ### 6. Create the RC tag
 

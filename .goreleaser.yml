@@ -42,6 +42,7 @@ changelog:
       - '^test(\(.*\))?:'
       - '^chore(\(.*\))?:'
       - '^build(\(.*\))?:'
+      - '^style(\(.*\))?:'
   groups:
     - title: Features
       regexp: '^.*?feat(\([^)]+\))??!?:.+$'

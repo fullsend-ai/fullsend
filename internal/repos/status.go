@@ -108,6 +108,10 @@ type Drift struct {
 	Field    string `json:"field"`
 	Expected string `json:"expected"`
 	Actual   string `json:"actual"`
+	// Detail is optional multi-line guidance, such as the repos.yaml
+	// entry and effective-configuration difference needed to adopt an
+	// existing markerless .fullsend/config.yaml.
+	Detail string `json:"detail,omitempty"`
 }
 
 // RepoStatus holds the status of a single repo as compared against
@@ -132,9 +136,10 @@ type RepoStatus struct {
 	ConfigRejected bool `json:"-"`
 
 	// GitLab role-credential status. Names only; never token values.
-	GitLabRolesReady      bool     `json:"gitlab_roles_ready,omitempty"`
-	GitLabRolesPartial    bool     `json:"gitlab_roles_partial,omitempty"`
-	GitLabRoleDiagnostics []string `json:"gitlab_role_diagnostics,omitempty"`
+	GitLabRolesReady      bool                         `json:"gitlab_roles_ready,omitempty"`
+	GitLabRolesPartial    bool                         `json:"gitlab_roles_partial,omitempty"`
+	GitLabRoleDiagnostics []string                     `json:"gitlab_role_diagnostics,omitempty"`
+	GitLabServiceAccounts []GitLabServiceAccountStatus `json:"gitlab_service_accounts,omitempty"`
 }
 
 // StatusSummary provides aggregate counts across all repos.
@@ -169,14 +174,13 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 
 	var warnings []string
 	if len(repoFilter) > 0 {
-		var unmatched []string
-		var filterErr error
-		resolved, unmatched, filterErr = filterRepos(resolved, repoFilter)
-		if filterErr != nil {
-			return nil, filterErr
-		}
-		for _, p := range unmatched {
-			warnings = append(warnings, fmt.Sprintf("--repo filter %q matched no manifest entries", p))
+		// Select exactly what repos install selects, including concrete
+		// glob-covered repositories that glob expansion does not list. A
+		// selector that matches no declared repository fails the run,
+		// like install does (#8219).
+		resolved, err = selectDeclaredRepos(manifest, resolved, repoFilter)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -192,12 +196,13 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 		refResolver = NewRefResolver(ghFC.Client)
 	}
 
-	// Build the drift config from the manifest. InferenceRegion and
-	// ReviewAppClientID are CLI flags on the install command and are
-	// not available in the status path, so value drift for
-	// GCP region and review client ID can only be
-	// detected by repos install, not repos status. Agent/control
-	// runner tags come from the manifest's GitLab platform section.
+	// Build the drift config from the manifest. ReviewAppClientID is
+	// resolved by the install command and is not available in the status
+	// path, so value drift for the review client ID can only be detected
+	// by repos install, not repos status. The mint URL and GCP region come
+	// from each repository's effective configuration, exactly as install
+	// resolves them (applyEffectiveInfrastructure). Agent/control runner
+	// tags come from the manifest's GitLab platform section.
 	dcfg := DriftConfig{
 		AgentRunnerTags:   gitlabAgentRunnerTags(manifest),
 		ControlRunnerTags: gitlabControlRunnerTags(manifest),
@@ -280,12 +285,39 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	fc := cfg.ForgeConfig
 
 	status := RepoStatus{
-		Owner:           owner,
-		Repo:            repo,
-		Forge:           cfg.Forge,
-		ExpectedRef:     cfg.FullsendRef,
-		ExpectedMintURL: cfg.MintURL,
+		Owner:       owner,
+		Repo:        repo,
+		Forge:       cfg.Forge,
+		ExpectedRef: cfg.FullsendRef,
 	}
+
+	// Load a declared preset up front so the managed-config safety gate
+	// evaluates the proposed overlay over the proposed base, matching
+	// install (#8218). A load failure is reported by checkPresetDrift.
+	presetLoaded := cfg.Config == ""
+	if cfg.Config != "" {
+		if data, loadErr := store.Load(ctx, cfg.Config, cfg.ConfigHash); loadErr == nil {
+			cfg.ProposedBase = data
+			presetLoaded = true
+		}
+	}
+	// Resolve the mint URL and region from the effective configuration, as
+	// install and dry run do (#8220). Without the declared preset the
+	// effective values are unknown; checkPresetDrift reports the load error.
+	if presetLoaded {
+		if err := cfg.applyEffectiveInfrastructure(); err != nil {
+			status.Error = err.Error()
+			return status
+		}
+		// Validate the declared Vertex project/WIF inputs exactly as install
+		// and dry run do (with no command-line inputs), so a configuration
+		// install would reject is not reported healthy.
+		if _, _, err := vertexCredentialInputs(ConvergeConfig{}, cfg); err != nil {
+			status.Error = err.Error()
+			return status
+		}
+	}
+	status.ExpectedMintURL = cfg.MintURL
 
 	// Build expected values for all static variables using the same
 	// function as the converge path, so variable classification
@@ -301,7 +333,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
 		Forge:             cfg.Forge,
 		MintURL:           cfg.MintURL,
-		InferenceRegion:   inferenceRegionForAuth(cfg.InferenceAuth, dcfg.InferenceRegion),
+		InferenceRegion:   cfg.expectedInferenceRegion(),
 		ReviewAppClientID: dcfg.ReviewAppClientID,
 		AppSet:            appSet,
 	}, cfg.MintURL)
@@ -318,6 +350,20 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		// Leftover credentials of an unselected method are drift even
 		// when none of the selected method's components exist.
 		checkObsoleteInferenceConfig(ctx, client, cfg, &status)
+		if status.Error != "" {
+			return status
+		}
+		// Both configuration layers are within repos management before
+		// first install too (#8218): an undeclared existing base blocks
+		// install and a markerless managed overlay requires adoption, so
+		// report them now rather than only after Fullsend components
+		// appear.
+		cfg.FreshInstall = true
+		checkPresetDrift(ctx, cfg, store, &status)
+		if status.Error != "" {
+			return status
+		}
+		checkManagedConfigDrift(ctx, cfg, &status)
 		return status
 	}
 	status.Installed = true
@@ -404,6 +450,9 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		return status
 	}
 
+	// Same predicate as convergence: a pending initialization (credentials
+	// written, shim workflow not yet merged) is not an established install.
+	cfg.FreshInstall = pristineInstallation(components)
 	checkPresetDrift(ctx, cfg, store, &status)
 	if status.Error != "" {
 		return status
@@ -524,6 +573,42 @@ func extractWorkflowRef(content []byte, fc ForgeConfig) string {
 		return ""
 	}
 	return string(m[1])
+}
+
+// selectDeclaredRepos narrows repos to the repositories selected by filter:
+// the expansion plus concrete filter names a glob entry covers but
+// expansion did not list (forks, archived repositories). Every selector
+// must select at least one repository; one that matches none (a name or
+// glob no manifest entry covers, an unrelated glob next to another declared
+// glob) is an error, so install, dry run and status agree and a partially
+// valid selection never runs.
+func selectDeclaredRepos(m *Manifest, repos []ResolvedRepo, filter []string) ([]ResolvedRepo, error) {
+	repos = withGlobCoveredSelections(m, repos, filter)
+	selected, unmatched, err := filterRepos(repos, filter)
+	if err != nil {
+		return nil, err
+	}
+	if len(unmatched) > 0 {
+		return nil, fmt.Errorf("--repo filter matched no manifest entries: %s", strings.Join(unmatched, ", "))
+	}
+	return selected, nil
+}
+
+// RequireDeclaredSelections fails when any selector in filter matches no
+// repository declared by the manifest (an explicit entry, a repository a
+// glob entry covers, or a glob that matches at least one such repository).
+// It only reads from the forge (glob expansion), so repos install runs it
+// before any manifest or forge write.
+func RequireDeclaredSelections(ctx context.Context, m *Manifest, clients ForgeClientFactory, filter []string) error {
+	if len(filter) == 0 {
+		return nil
+	}
+	expanded, err := m.ExpandGlobsFor(ctx, clients, filter)
+	if err != nil {
+		return fmt.Errorf("expanding globs: %w", err)
+	}
+	_, err = selectDeclaredRepos(m, expanded, filter)
+	return err
 }
 
 // filterRepos returns the subset of repos matching at least one filter

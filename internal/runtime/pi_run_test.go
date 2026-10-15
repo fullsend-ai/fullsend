@@ -23,11 +23,11 @@ import (
 func TestTranslatePiModel(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "")
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel("opus", nil))
-	assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", translatePiModel("sonnet", nil))
-	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", translatePiModel("haiku", nil))
+	assert.Equal(t, "anthropic-vertex/claude-opus-5-5", translatePiModel("opus", nil))
+	assert.Equal(t, "anthropic-vertex/claude-sonnet-5-5", translatePiModel("sonnet", nil))
+	assert.Equal(t, "anthropic-vertex/claude-haiku-5-5", translatePiModel("haiku", nil))
 	assert.Equal(t, "anthropic-vertex/claude-fable-5-1", translatePiModel("fable", nil))
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", translatePiModel("", nil), "empty falls back to the opus alias")
+	assert.Equal(t, "anthropic-vertex/claude-opus-5-5", translatePiModel("", nil), "empty falls back to the opus alias")
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8", nil), "bare ids get the provider prefix")
 	assert.Equal(t, "anthropic/claude-sonnet-4-6", translatePiModel("anthropic/claude-sonnet-4-6", nil), "provider/id passes through")
 
@@ -56,13 +56,13 @@ func TestTranslatePiModel(t *testing.T) {
 	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai/grok-4.6", nil), "short form is unaffected by the provider env")
 
 	t.Setenv(piProviderEnv, "anthropic")
-	assert.Equal(t, "anthropic/claude-opus-4-6", translatePiModel("opus", nil))
+	assert.Equal(t, "anthropic/claude-opus-5-5", translatePiModel("opus", nil))
 
 	// The model override is resolved by the CLI (--model, FULLSEND_MODEL,
 	// FULLSEND_PI_MODEL) and arrives as the model argument; the runtime no
 	// longer reads FULLSEND_PI_MODEL itself.
 	t.Setenv("FULLSEND_PI_MODEL", "google-vertex/gemini-2.5-pro")
-	assert.Equal(t, "anthropic/claude-opus-4-6", translatePiModel("opus", nil), "runtime ignores FULLSEND_PI_MODEL")
+	assert.Equal(t, "anthropic/claude-opus-5-5", translatePiModel("opus", nil), "runtime ignores FULLSEND_PI_MODEL")
 	assert.Equal(t, "google-vertex/gemini-2.5-pro", translatePiModel("google-vertex/gemini-2.5-pro", nil))
 	t.Setenv(piProviderEnv, "")
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8", nil), "a bare override still gets the provider prefix")
@@ -113,7 +113,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 		"-e '/usr/local/share/pi-extensions/anthropic-vertex'",
 		"-e '/sandbox/pi-config/fullsend-hooks.js'",
 		"--tools 'bash'",
-		"--model 'anthropic-vertex/claude-opus-4-6'",
+		"--model 'anthropic-vertex/claude-opus-5-5'",
 		"'Run the agent task'",
 	} {
 		assert.Contains(t, cmd, want)
@@ -587,6 +587,7 @@ func TestPiBinaryPin(t *testing.T) {
 // lands in auth.json in exactly the shape the config guard accepts; anything
 // else is refused.
 func TestPiOpenAIAuthSeed(t *testing.T) {
+	requireSeedLock(t)
 	dir := filepath.Join(t.TempDir(), "pi-config")
 	seed := PiOpenAIAuthSeed(dir)
 	auth := filepath.Join(dir, "auth.json")
@@ -745,7 +746,7 @@ func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv(piProviderEnv, "anthropic")
 	cmd := buildPiRunCommand(piTestParams(), &piManifest{}, nil, "")
-	assert.Contains(t, cmd, "--model 'anthropic/claude-opus-4-6'")
+	assert.Contains(t, cmd, "--model 'anthropic/claude-opus-5-5'")
 	assert.NotContains(t, cmd, "unset ANTHROPIC_API_KEY", "direct Anthropic provider needs its key")
 	assert.NotContains(t, cmd, "GOOGLE_CLOUD_PROJECT")
 	assert.NotContains(t, cmd, "/usr/local/share/pi-extensions/anthropic-vertex", "the Vertex extension is only loaded for the anthropic-vertex provider")
@@ -762,7 +763,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 	m := &piManifest{AgentName: "code", Model: "opus", Tools: nil, Hooks: &piHooksManifest{}}
 	cmd := buildPiRunCommand(params, m, nil, "")
 
-	assert.Contains(t, cmd, "--model 'anthropic-vertex/claude-sonnet-4-6'", "harness model wins over the agent definition")
+	assert.Contains(t, cmd, "--model 'anthropic-vertex/claude-sonnet-5-5'", "harness model wins over the agent definition")
 	assert.Contains(t, cmd, "--thinking 'high'")
 	assert.NotContains(t, cmd, "--tools", "nil tools keeps pi's default tool set")
 	assert.NotContains(t, cmd, "--no-builtin-tools")
@@ -893,7 +894,7 @@ func TestTranslatePiModel_WithConfigAlias(t *testing.T) {
 		"config alias overrides fleet default")
 
 	// Unstated aliases retain fleet defaults.
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6",
+	assert.Equal(t, "anthropic-vertex/claude-opus-5-5",
 		translatePiModel("opus", configAliases),
 		"unstated alias keeps fleet default")
 
@@ -1101,7 +1102,7 @@ func TestPiVertexNotServedThroughStream(t *testing.T) {
 		}
 
 		var forwarded []AgentEvent
-		gate := &piAttemptGate{next: func(evt AgentEvent) { forwarded = append(forwarded, evt) }, hold: true}
+		gate := &attemptGate{next: func(evt AgentEvent) { forwarded = append(forwarded, evt) }, hold: true}
 		var last *ResultEvent
 		_, err := parsePiStream(strings.NewReader(strings.Join(lines, "\n")+"\n"), func(evt AgentEvent) {
 			if e, ok := evt.(ResultEvent); ok {
@@ -1141,9 +1142,9 @@ func TestPiFallbackChain(t *testing.T) {
 	// Alias with fallbacks: chain includes primary + translated fallbacks.
 	chain, _ := piFallbackChain("opus", []string{"sonnet", "haiku"}, nil)
 	assert.Equal(t, []string{
-		"anthropic-vertex/claude-opus-4-6",
-		"anthropic-vertex/claude-sonnet-4-6",
-		"anthropic-vertex/claude-haiku-4-5",
+		"anthropic-vertex/claude-opus-5-5",
+		"anthropic-vertex/claude-sonnet-5-5",
+		"anthropic-vertex/claude-haiku-5-5",
 	}, chain)
 
 	// Pinned id: single-element chain, no fallback.
@@ -1158,15 +1159,15 @@ func TestPiFallbackChain(t *testing.T) {
 
 	// Alias with no fallbacks: single-element chain.
 	chain, _ = piFallbackChain("opus", nil, nil)
-	assert.Equal(t, []string{"anthropic-vertex/claude-opus-4-6"}, chain)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-5-5"}, chain)
 	chain, _ = piFallbackChain("opus", []string{}, nil)
-	assert.Equal(t, []string{"anthropic-vertex/claude-opus-4-6"}, chain)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-5-5"}, chain)
 
 	// Deduplication: a fallback that resolves to the same spec is skipped.
 	chain, _ = piFallbackChain("opus", []string{"opus", "sonnet"}, nil)
 	assert.Equal(t, []string{
-		"anthropic-vertex/claude-opus-4-6",
-		"anthropic-vertex/claude-sonnet-4-6",
+		"anthropic-vertex/claude-opus-5-5",
+		"anthropic-vertex/claude-sonnet-5-5",
 	}, chain, "duplicate fallback is skipped")
 
 	// Config aliases are honoured.
@@ -1174,26 +1175,26 @@ func TestPiFallbackChain(t *testing.T) {
 		map[string]string{"sonnet": "claude-sonnet-5"})
 	assert.Equal(t, "anthropic-vertex/claude-sonnet-5", chain[0],
 		"config alias overrides the primary")
-	assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", chain[1])
+	assert.Equal(t, "anthropic-vertex/claude-haiku-5-5", chain[1])
 
 	// Empty model defaults to piDefaultModel alias.
 	chain, _ = piFallbackChain("", []string{"sonnet"}, nil)
-	assert.Equal(t, "anthropic-vertex/claude-opus-4-6", chain[0])
+	assert.Equal(t, "anthropic-vertex/claude-opus-5-5", chain[0])
 	assert.Len(t, chain, 2)
 
 	// A fallback on another provider is dropped: the runner seeds provider
 	// credentials from the primary model alone.
 	chain, skipped := piFallbackChain("opus", []string{"openai/gpt-5.6-luna", "sonnet"}, nil)
 	assert.Equal(t, []string{
-		"anthropic-vertex/claude-opus-4-6",
-		"anthropic-vertex/claude-sonnet-4-6",
+		"anthropic-vertex/claude-opus-5-5",
+		"anthropic-vertex/claude-sonnet-5-5",
 	}, chain, "cross-provider fallback is dropped")
 	assert.Equal(t, []string{"openai/gpt-5.6-luna"}, skipped)
 
 	// A config alias that remaps a fallback onto another provider is dropped too.
 	chain, skipped = piFallbackChain("opus", []string{"haiku"},
 		map[string]string{"haiku": "openai/gpt-5.6-luna"})
-	assert.Equal(t, []string{"anthropic-vertex/claude-opus-4-6"}, chain)
+	assert.Equal(t, []string{"anthropic-vertex/claude-opus-5-5"}, chain)
 	assert.Equal(t, []string{"haiku"}, skipped)
 
 	// A fallback validatePiModel rejects (a documented alias with no
@@ -1203,8 +1204,8 @@ func TestPiFallbackChain(t *testing.T) {
 	t.Cleanup(func() { piModelAliases["fable"] = saved })
 	chain, skipped = piFallbackChain("opus", []string{"fable", "sonnet"}, nil)
 	assert.Equal(t, []string{
-		"anthropic-vertex/claude-opus-4-6",
-		"anthropic-vertex/claude-sonnet-4-6",
+		"anthropic-vertex/claude-opus-5-5",
+		"anthropic-vertex/claude-sonnet-5-5",
 	}, chain)
 	assert.Equal(t, []string{"fable"}, skipped)
 	piModelAliases["fable"] = saved
@@ -1220,7 +1221,7 @@ func TestPiAttemptGate(t *testing.T) {
 
 	// Holding: a Vertex "model not served" answer carries no output, so
 	// nothing reaches the handler.
-	g := &piAttemptGate{next: next, hold: true}
+	g := &attemptGate{next: next, hold: true}
 	g.handle(ErrorEvent{ErrorType: "error", Message: "Publisher model not found"})
 	g.handle(TokensEvent{InputTokens: 1})
 	assert.Empty(t, got, "held events must not be forwarded")
@@ -1229,7 +1230,7 @@ func TestPiAttemptGate(t *testing.T) {
 
 	// The first output event flushes what was held, in order, and
 	// everything after it passes straight through.
-	g = &piAttemptGate{next: next, hold: true}
+	g = &attemptGate{next: next, hold: true}
 	got = nil
 	g.handle(RetryEvent{Attempt: 1})
 	g.handle(TextEvent{Text: "hi"})
@@ -1239,7 +1240,7 @@ func TestPiAttemptGate(t *testing.T) {
 	assert.Equal(t, []AgentEvent{RetryEvent{Attempt: 1}, TextEvent{Text: "hi"}, ToolUseEvent{Name: "bash"}}, got)
 
 	// Not holding: pass-through, but answered is still tracked.
-	g = &piAttemptGate{next: next}
+	g = &attemptGate{next: next}
 	got = nil
 	g.handle(ErrorEvent{Message: "x"})
 	g.handle(ThinkingEvent{Text: "t"})
@@ -1282,8 +1283,8 @@ func TestPiFallbackLoop(t *testing.T) {
 			return res
 		}
 		res := piFallbackLoop(chain, timeout, now, attempt, func(prev, next string, budget time.Duration) bool {
-			assert.GreaterOrEqual(t, deadlineLeft(*clock, timeout, budget), piMinAttemptTimeout,
-				"cleanup budget leaves the next attempt piMinAttemptTimeout")
+			assert.GreaterOrEqual(t, deadlineLeft(*clock, timeout, budget), minFallbackAttemptTimeout,
+				"cleanup budget leaves the next attempt minFallbackAttemptTimeout")
 			fallbacks = append(fallbacks, [2]string{prev, next})
 			for _, c := range cleanup {
 				if !c() {
@@ -1346,7 +1347,7 @@ func TestPiFallbackLoop(t *testing.T) {
 	res, calls, _ = run(map[string]piRunResult{"p/a": notServed, "p/b": ok}, time.Minute, &clock, 50*time.Second,
 		func() bool { clock = clock.Add(9500 * time.Millisecond); return true })
 	assert.Equal(t, "p/a", res.modelSpec)
-	assert.Len(t, calls, 1, "no attempt is started with less than piMinAttemptTimeout left")
+	assert.Len(t, calls, 1, "no attempt is started with less than minFallbackAttemptTimeout left")
 }
 
 // deadlineLeft is what a fallback attempt would have left if onFallback

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -17,6 +18,10 @@ import (
 )
 
 const vendorArch = binary.DefaultArch
+
+// vendorPathPrefix is the in-repo directory that holds vendored assets in a
+// per-repo install.
+const vendorPathPrefix = ".fullsend/"
 
 // Vendor install flags replaced the removed --vendor-fullsend-binary flag (binary-only
 // upload). A hidden --vendor-fullsend-binary alias sets --vendor and prints a deprecation
@@ -69,15 +74,8 @@ func appendVendorTreeFiles(ctx context.Context, client forge.Client, printer *ui
 }
 
 func prepareVendorFiles(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, fullsendBinary, fullsendSource string) (vendorFileBundle, func(), error) {
-	perRepo := repo != forge.ConfigRepoName
-	pathPrefix := ""
-	if perRepo {
-		pathPrefix = ".fullsend/"
-	}
-	destPath := layers.VendoredBinaryPath
-	if perRepo {
-		destPath = layers.VendoredBinaryPathPerRepo
-	}
+	pathPrefix := vendorPathPrefix
+	destPath := layers.VendoredBinaryPathPerRepo
 
 	root, err := binary.ResolveVendorRoot(fullsendSource, version)
 	if err != nil {
@@ -192,7 +190,7 @@ func prepareVendorFiles(ctx context.Context, client forge.Client, printer *ui.Pr
 // new manifest stops tracking them and they persist in the consumer repo
 // as untracked orphans that even uninstall cannot remove.
 func appendStaleVendoredDeletes(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, files []forge.TreeFile) ([]forge.TreeFile, error) {
-	oldManifest, found, err := scaffold.ReadVendorManifest(ctx, client, owner, repo, vendorPathPrefix(owner, repo))
+	oldManifest, found, err := scaffold.ReadVendorManifest(ctx, client, owner, repo, vendorPathPrefix)
 	if err != nil {
 		// A missing manifest (first install) is fine; a present-but-invalid
 		// one is not — proceeding would silently orphan every de-listed path.
@@ -219,15 +217,59 @@ func appendStaleVendoredDeletes(ctx context.Context, client forge.Client, printe
 	return files, nil
 }
 
-func vendorPathPrefix(owner, repo string) string {
-	if repo != forge.ConfigRepoName {
-		return ".fullsend/"
-	}
-	return ""
+func removeStaleVendoredAssets(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string) error {
+	return layers.RemoveStaleVendoredAssets(ctx, client, printer, owner, repo, vendorPathPrefix, layers.VendoredBinaryPathPerRepo)
 }
 
-func removeStaleVendoredAssets(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string) error {
-	return layers.RemoveStaleVendoredAssets(ctx, client, printer, owner, repo, ".fullsend/", layers.VendoredBinaryPathPerRepo)
+// newVendoredWorkflowReader returns a reader for the reusable workflows a
+// vendored install copies from the resolved vendor source (the same source
+// and collection prepareVendorFiles uses), plus a cleanup to call once the
+// run is over. The source is resolved lazily, once, on the first read, so
+// runs that never vendor do no work. A workflow the source lacks yields
+// forge.ErrNotFound.
+func newVendoredWorkflowReader(fullsendSource string) (read func(path string) ([]byte, error), cleanup func()) {
+	var (
+		once      sync.Once
+		files     map[string][]byte
+		loadErr   error
+		cleanupFn func()
+	)
+	load := func() {
+		root, err := binary.ResolveVendorRoot(fullsendSource, version)
+		if err != nil {
+			loadErr = err
+			return
+		}
+		cleanupFn = root.Cleanup
+		assets, err := scaffold.CollectVendoredAssets(root.Path, "")
+		if err != nil {
+			loadErr = fmt.Errorf("collecting vendored content: %w", err)
+			return
+		}
+		files = make(map[string][]byte, len(assets))
+		for _, f := range assets {
+			files[f.Path] = f.Content
+		}
+	}
+	read = func(path string) ([]byte, error) {
+		once.Do(load)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		content, ok := files[path]
+		if !ok {
+			return nil, fmt.Errorf("%s is not in the vendor source: %w", path, forge.ErrNotFound)
+		}
+		return content, nil
+	}
+	cleanup = func() {
+		// once.Do makes a concurrent first read finish loading first.
+		once.Do(func() {})
+		if cleanupFn != nil {
+			cleanupFn()
+		}
+	}
+	return read, cleanup
 }
 
 func vendorDryRunMessage(fullsendBinary, fullsendSource, destPath string) string {

@@ -26,6 +26,7 @@ func TestPiRuntimeMetadata(t *testing.T) {
 	assert.False(t, strings.HasPrefix(rt.ConfigDir(), sandbox.SandboxWorkspace))
 	assert.Equal(t, sandbox.SandboxPiExtensionsDir+"/anthropic-vertex", piVertexExtensionPath)
 	assert.Equal(t, sandbox.SandboxPiExtensionsDir+"/xai-vertex", piXaiVertexExtensionPath)
+	assert.Equal(t, sandbox.SandboxPiExtensionsDir+"/inference-gateway", piInferenceGatewayExtensionPath)
 }
 
 // TestPiExtensionDirsWithinSandboxPolicy asserts that all pi extension
@@ -36,7 +37,7 @@ func TestPiRuntimeMetadata(t *testing.T) {
 func TestPiExtensionDirsWithinSandboxPolicy(t *testing.T) {
 	t.Parallel()
 	allowedPrefixes := []string{"/usr", "/lib", "/app", "/etc", "/var/log"}
-	for _, extPath := range []string{piVertexExtensionPath, piXaiVertexExtensionPath} {
+	for _, extPath := range []string{piVertexExtensionPath, piXaiVertexExtensionPath, piInferenceGatewayExtensionPath} {
 		var matched bool
 		for _, prefix := range allowedPrefixes {
 			if strings.HasPrefix(extPath, prefix) {

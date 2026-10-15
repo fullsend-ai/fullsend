@@ -54,13 +54,14 @@ func populateInstalledRepo(t testing.TB, fc *forge.FakeClient, owner, repo, ref,
 	// Generate scaffold files from the same templates that status
 	// compares against, so content-drift detection is accurate.
 	files, err := BuildScaffoldFiles(InstallConfig{
-		Owner:       owner,
-		Repo:        repo,
-		Forge:       ForgeGitHub,
-		Roles:       config.PerRepoDefaultRoles(),
-		MintURL:     mintURL,
-		UpstreamRef: ref,
-		UpstreamTag: ref,
+		Owner:         owner,
+		Repo:          repo,
+		Forge:         ForgeGitHub,
+		Roles:         config.PerRepoDefaultRoles(),
+		MintURL:       mintURL,
+		UpstreamRef:   ref,
+		UpstreamTag:   ref,
+		ManagedConfig: emptyManagedOverlay(t),
 	})
 	if err != nil {
 		t.Fatalf("populateInstalledRepo: BuildScaffoldFiles: %v", err)
@@ -469,8 +470,10 @@ func TestStatus_RefDrift(t *testing.T) {
 }
 
 func TestStatus_RegionDrift_NoLongerReported(t *testing.T) {
-	// FULLSEND_GCP_REGION is no longer in the manifest (install-time only),
-	// so status should not report region drift.
+	// With no inference.region declared by the effective configuration, an
+	// existing FULLSEND_GCP_REGION is preserved, so status must not report
+	// region drift (a declared region is enforced; see
+	// TestConverge_DeclaredRegionDriftAgreesAcrossStatusDryRunAndInstall).
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
@@ -1340,26 +1343,55 @@ func TestStatus_RepoFilterAllUnmatched(t *testing.T) {
 	}
 }
 
-func TestStatus_RepoFilterPartialUnmatched(t *testing.T) {
+func TestStatus_RepoFilterPartialUnmatchedFails(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
 	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
-	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4,
+	// One valid selector does not rescue an unmatched one: status selects
+	// exactly like install.
+	_, err := Status(context.Background(), m, newTestClientFactory(fc), 4,
 		[]string{"acme-corp/api-server", "org/nonexistent"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error when one selector matches no declared repository")
 	}
-	if result.Summary.Total != 1 {
-		t.Errorf("total = %d, want 1", result.Summary.Total)
+	if !strings.Contains(err.Error(), "org/nonexistent") || strings.Contains(err.Error(), "acme-corp/api-server") {
+		t.Errorf("error should name only the unmatched selector: %v", err)
 	}
-	if len(result.Warnings) != 1 {
-		t.Fatalf("warnings count = %d, want 1", len(result.Warnings))
+}
+
+func TestRequireDeclaredSelections(t *testing.T) {
+	m := &Manifest{
+		Version: 1,
+		GitHub:  &PlatformConfig{Repos: []RepoEntry{{Name: "acme/*"}}},
 	}
-	if result.Warnings[0] != `--repo filter "org/nonexistent" matched no manifest entries` {
-		t.Errorf("warning = %q, want match message", result.Warnings[0])
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "api", FullName: "acme/api", DefaultBranch: "main"},
+	}
+	clients := newTestClientFactory(fc)
+	ctx := context.Background()
+
+	if err := RequireDeclaredSelections(ctx, m, clients, nil); err != nil {
+		t.Fatalf("empty selection: %v", err)
+	}
+	if err := RequireDeclaredSelections(ctx, m, clients, []string{"acme/api", "acme/*"}); err != nil {
+		t.Fatalf("declared selectors: %v", err)
+	}
+	// A concrete fork/archived repository a glob covers needs no listing.
+	if err := RequireDeclaredSelections(ctx, m, clients, []string{"acme/forked"}); err != nil {
+		t.Fatalf("glob-covered concrete name: %v", err)
+	}
+	// An unrelated glob is not declared because another glob exists, even
+	// next to a valid selector.
+	err := RequireDeclaredSelections(ctx, m, clients, []string{"acme/api", "other/*"})
+	if err == nil || !strings.Contains(err.Error(), "other/*") {
+		t.Fatalf("want error naming other/*, got %v", err)
+	}
+	if err := RequireDeclaredSelections(ctx, m, clients, []string{"acme/api", "*/nope"}); err == nil {
+		t.Fatal("want error for a glob selector that matches no resolved repository")
 	}
 }
 
@@ -1908,7 +1940,7 @@ func TestStatus_ConfigPresetDrift(t *testing.T) {
 	}
 }
 
-func TestStatus_NoPresetDoesNotCompareBase(t *testing.T) {
+func TestStatus_NoPresetExistingBaseIsDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
@@ -1922,9 +1954,101 @@ func TestStatus_NoPresetDoesNotCompareBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Summary.Drifted != 0 {
-		t.Errorf("drifted = %d, want 0 when no preset is declared", result.Summary.Drifted)
+	if result.Summary.Drifted != 1 {
+		t.Fatalf("drifted = %d, want 1 for the undeclared base", result.Summary.Drifted)
 	}
+	for _, r := range result.Repos {
+		if r.Repo != "api-server" {
+			continue
+		}
+		found := false
+		for _, d := range r.Drifts {
+			if d.Field == ".fullsend/config.base.yaml" && d.Expected == undeclaredBaseExpected {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("api-server drifts = %+v, want undeclared base drift", r.Drifts)
+		}
+	}
+}
+
+// TestStatus_NotInstalledChecksConfigLayers covers #8218: a manifest repo
+// with no Fullsend components still has both configuration layers
+// checked, so findings that would block install surface beforehand,
+// while files install would simply add are not reported as missing.
+func TestStatus_NotInstalledChecksConfigLayers(t *testing.T) {
+	t.Run("undeclared base", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		m := newTestManifest()
+		fc.FileContents["acme-corp/api-server/.fullsend/config.base.yaml"] = []byte(testPresetYAML)
+
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(result.Repos) != 1 {
+			t.Fatalf("repos = %d, want 1", len(result.Repos))
+		}
+		r := result.Repos[0]
+		if r.Installed {
+			t.Fatal("repo should not be installed")
+		}
+		if len(r.Drifts) != 1 || r.Drifts[0].Field != ".fullsend/config.base.yaml" {
+			t.Errorf("drifts = %+v, want undeclared base drift", r.Drifts)
+		}
+	})
+
+	t.Run("markerless managed overlay", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		m := newTestManifest()
+		m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+		fc.FileContents["acme-corp/api-server/.fullsend/config.yaml"] = []byte("kill_switch: false\n")
+
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		r := result.Repos[0]
+		if r.Error != "" {
+			t.Fatalf("unexpected error: %s", r.Error)
+		}
+		if len(r.Drifts) != 1 || r.Drifts[0].Field != ".fullsend/config.yaml" ||
+			!strings.Contains(r.Drifts[0].Expected, "adoption required") {
+			t.Errorf("drifts = %+v, want adoption-required overlay drift", r.Drifts)
+		}
+	})
+
+	t.Run("absent files are not drift before install", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		m := newTestManifest()
+		m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+		m.Defaults.ConfigBase = ConfigBase{Source: writePresetFile(t, testPresetYAML)}
+
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		r := result.Repos[0]
+		if r.Error != "" || len(r.Drifts) != 0 {
+			t.Errorf("error=%q drifts=%+v, want none", r.Error, r.Drifts)
+		}
+	})
+
+	t.Run("base read error", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		m := newTestManifest()
+		fc.GetFileContentErrors = map[string]error{
+			"acme-corp/api-server/.fullsend/config.base.yaml": fmt.Errorf("boom"),
+		}
+		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result.Repos[0].Error, "reading .fullsend/config.base.yaml") {
+			t.Errorf("error = %q", result.Repos[0].Error)
+		}
+	})
 }
 
 func TestStatus_GitLab_ConfigPresetDrift(t *testing.T) {

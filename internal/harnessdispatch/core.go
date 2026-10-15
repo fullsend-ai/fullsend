@@ -30,8 +30,9 @@ type Options struct {
 // when a confirmed authorization failure prevents at least one matching
 // harness from running; kill-switch and no-trigger results leave it false.
 type Result struct {
-	Refs                []ExecutionRef
-	AuthorizationDenied bool
+	Refs                  []ExecutionRef
+	AuthorizationDenied   bool
+	DispatchBlockedReason string
 }
 
 // Dispatch evaluates authorization, kill switch, harness triggers, and returns execution refs.
@@ -57,7 +58,7 @@ func DispatchResult(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	if dirCfg.IsKillSwitchActive() {
-		return Result{}, nil
+		return Result{DispatchBlockedReason: "kill_switch"}, nil
 	}
 
 	// Compute the effective role for the auth gate without mutating the

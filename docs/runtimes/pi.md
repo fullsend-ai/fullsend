@@ -13,12 +13,15 @@ is what changes once you are on it.
 ## Models and providers
 
 A model on pi is `provider/id`. Aliases and bare ids still work — `opus`/`sonnet`/`haiku`/`fable`
-resolve through fullsend's pinned alias table, and a bare id gets the provider from
+resolve through fullsend's pinned alias table (`opus` → `claude-opus-5-5`, `sonnet` →
+`claude-sonnet-5-5`, `haiku` → `claude-haiku-5-5`, each falling back to the previous default when
+your project does not serve it; `fable` → `claude-fable-5-1`, with no built-in fallback; see
+[Per-repo alias overrides](#per-repo-alias-overrides)), and a bare id gets the provider from
 `FULLSEND_PI_PROVIDER` (default `anthropic-vertex`).
 
 | Model | Spec | Provider |
 |---|---|---|
-| Claude | `anthropic-vertex/claude-opus-4-6` | vendored extension |
+| Claude | `anthropic-vertex/claude-opus-5-5` | vendored extension |
 | Gemini | `google-vertex/gemini-3.8-flash` | pi built-in |
 | Grok | `xai-vertex/xai/grok-4.6` | vendored extension |
 | GPT | `openai/gpt-5.6-luna` | pi built-in |
@@ -48,8 +51,9 @@ actually called.
 > `providers: [openai]` on the harness; the sandbox can then reach `api.openai.com` for the
 > Responses API and nothing else, and never sees the credential
 > ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). A custom harness must carry a
-> `policy:` (the fleet's `policies/base.yaml`); without one the image's default policy leaves an
-> uninspected route to `api.openai.com` and the run stops before the agent starts. **Exercised so
+> `policy:` (the fleet's `policies/base.yaml`); without one `fullsend run` fails at harness
+> validation before it starts the sandbox. The fleet base policy also avoids an uninspected route
+> to `api.openai.com`, which the gateway refuses to carry the credential over. **Exercised so
 > far:** the local static-key path end to end on 2026-08-27 (OpenShell 0.0.115, pi 0.84.3,
 > `gpt-5.6-luna`: placeholder in the sandbox, pi reading it from the runner-seeded `auth.json`, tool
 > calls through the hook adapter, run-scoped provider deleted at the end, expired in place under
@@ -57,14 +61,39 @@ actually called.
 > has no live run yet; `features/runtime/pi-openai.feature` stays gated on `runtime-pi-openai`
 > until an OpenAI organization is mapped to the pool repositories.
 
+> **Any model through an inference gateway (experimental).** A `gateway/<model>` spec sends the
+> model call through an OpenAI/Anthropic-compatible gateway (Praxis, LiteLLM, agentgateway, ...)
+> with the [pi-inference-gateway](https://github.com/fullsend-ai/pi-inference-gateway) extension.
+> On a run with a forge OIDC endpoint (a GitHub Actions job with `id-token: write`), the
+> `inference.gateway` block in `.fullsend/config.yaml` makes the runner own the route: it loads the
+> extension, puts the job's OIDC token behind a run-scoped provider and refreshes it
+> ([config reference](../reference/config-reference.md),
+> [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). With `auth: api-key` the runner
+> owns the route on local runs too: it reads the gateway key from
+> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and puts it behind the same run-scoped provider, with no
+> refresh ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)). Without the
+> block, a harness can still ship the extension as a plugin for local runs: see [Running agents locally › Using an
+> inference gateway](../guides/user/running-agents-locally.md#using-an-inference-gateway-experimental).
+
 Harness `model:` and `agents:` entry `model:` values accept the `provider/id` form directly
 (`xai-vertex/xai/grok-4.6`); a harness can also select a provider with a bare `model:` plus
 `FULLSEND_PI_PROVIDER`.
 
 ### Per-repo alias overrides
 
-fullsend pins what each alias means. Vertex enables models per project, so your project may be
-able to run a newer one than the pin — point the alias at it in `.fullsend/config.yaml`:
+fullsend pins what each alias means, and gives `opus`, `sonnet` and `haiku` a built-in fallback
+chain to the previous default:
+
+| Alias | Default | Built-in fallback chain |
+|---|---|---|
+| `opus` | `claude-opus-5-5` | `claude-opus-4-6` |
+| `sonnet` | `claude-sonnet-5-5` | `claude-sonnet-4-6` |
+| `haiku` | `claude-haiku-5-5` | `claude-haiku-4-5` |
+| `fable` | `claude-fable-5-1` | none |
+
+Vertex enables models per project, so a project that has not enabled the 5.5 models runs on the
+fallback without any config change. To run a different model, point the alias at it in
+`.fullsend/config.yaml`:
 
 ```yaml
 models:
@@ -86,13 +115,22 @@ models:
 
 **If it goes wrong.** A key or value the block does not accept stops `fullsend run` before the
 sandbox is created, naming the key (`models.aliases: unknown alias key "grok"`). A model your
-project cannot serve is not caught here: aliased models (opus, sonnet, etc.) fall back through
-`FULLSEND_FALLBACK_MODELS` when Vertex answers that it does not serve the model: the 404
-`Publisher model ... not found` or the 403 `... data sharing to be enabled for publisher ...`. Any
-other error, including a 403 `PERMISSION_DENIED`, fails the run. Pinned ids fail at the first
-model call. A fallback
-must resolve to the same pi provider as the primary model; others are ignored with a warning.
-Sub-agent children get no fallback: each is launched with the one model its alias maps to.
+project cannot serve is not caught here; at run time:
+
+- **Alias on its default:** falls back along the built-in chain above when Vertex answers that it
+  does not serve the model. `FULLSEND_FALLBACK_MODELS`, when set, replaces the chain.
+- **Retargeted alias, pinned id or `provider/id`:** no fallback (unless `FULLSEND_FALLBACK_MODELS`
+  is set for a retargeted alias); the run fails at the first model call.
+- **Any other error** (auth, quota, `PERMISSION_DENIED`): fails the run.
+- **A fallback on another pi provider** is ignored with a warning.
+- **What you see:** the plan block lists the chain, the run prints `model claude-opus-5-5 is not
+  available (not served in this project); falling back to claude-opus-4-6`, and `metrics.json`
+  records `fallback_from` with `fallback_reasons: ["not_served"]`.
+
+**Sub-agent children** that ask for an alias (directly, through a persona, or through
+`subagents.default`) fall back along the same built-in chain; the `[fullsend-agent]` log line names
+both models. A child that pins an id or inherits the parent's live model does not.
+`FULLSEND_FALLBACK_MODELS` applies to the parent run only.
 
 ### Each provider has its own GCP project
 
@@ -145,7 +183,7 @@ cache-eligible Claude coder. One 98-turn `code` run on `xai-vertex/xai/grok-4.6`
 | Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce`, `FULLSEND_PI_SUBAGENT_THINKING` |
 | Plugins | The pi-format entries of the harness's `plugins:` list, uploaded and loaded with `-e` after a tree-hash preflight ([Plugins](#plugins-pi-extensions)) |
 | Sub-agents | `Agent` (alias `Task`) via a fullsend extension: children are `pi` processes with the same hooks, providers and tool allowlist ([Sub-agents](#sub-agents)) |
-| Fallback chains | Top-level run only: alias requests tried in order when Vertex does not serve the model (404/403, two messages only), same provider only; pinned ids and sub-agent children fail loudly |
+| Fallback chains | Alias requests tried in order when Vertex does not serve the model (404/403, two messages only): `FULLSEND_FALLBACK_MODELS`, else the alias's built-in chain; same provider only; sub-agent children asking for an alias use its built-in chain; pinned ids and `models.aliases` retargets fail loudly |
 | Not supported | Claude-format plugins (named and skipped), Bedrock/Azure providers, [prompt caching for Grok on Vertex](#prompt-caching) |
 
 ## Running it locally
@@ -169,7 +207,7 @@ print bare — and `metrics.json` records the same (`runtime`, `runtime_source`,
 `override_source`):
 
 ```
-    Model: opus
+    Model: opus → claude-opus-5-5 (built-in default)
     Effort: high
     Runtime: pi (from --runtime flag)
 ...
@@ -378,13 +416,14 @@ For a run that reaches all three Vertex providers:
 | `model` | The child runs on |
 |---|---|
 | `sonnet` (also `opus`, `haiku`) | Claude on Vertex, whatever provider the parent runs on |
-| `claude-sonnet-4-6` | the same — a bare Claude id resolves through that alias table, and a persona-style `@default` suffix is dropped |
+| `claude-sonnet-5-5`, `claude-sonnet-4-6` | the same — a bare Claude id resolves through the alias table or, for a previous default, the alias's built-in fallback chain; a persona-style `@default` suffix is dropped |
 | `google-vertex/gemini-3.8-flash` | Gemini, on pi's built-in provider |
 | `xai/grok-4.6` | Grok on Vertex — normalized to `xai-vertex/xai/grok-4.6`, as the runner does for the parent |
 
 Anything else is **rejected, with the accepted forms listed in the error**, so the orchestrator can
 correct itself instead of losing the dispatch. The accepted set is closed — the run's model table,
-the parent's own spec, and the ids registered for a provider that has no table entry — rather than a
+the built-in fallback chains of the aliases the repo does not retarget, the parent's own spec, and
+the ids registered for a provider that has no table entry — rather than a
 provider-prefix check, so an id the model invented (`google-vertex/gemini-9`,
 `anthropic-vertex/claude-sonnet-4-20250514`) is refused even under a provider the run can reach. A
 trailing `:<thinking level>` is dropped rather than passed through.
