@@ -7,7 +7,7 @@ This guide provides implementation details for fullsend CLI internals: command s
 ```
 fullsend
 ├── admin                                    # All-in-one setup (GCP + GitHub)
-│   ├── install      <org|owner/repo>        # Full infrastructure setup
+│   ├── install      <owner/repo>            # Deprecated: use inference provision + github setup / repos install --forge gitlab
 │   ├── uninstall    <org>                   # Tear down (reverse layer order)
 │   ├── analyze      <org>                   # Health check installed state
 │   ├── enable
@@ -239,7 +239,8 @@ The `mint`, `inference`, and `github` subcommands decompose setup into role-spec
 The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Advanced setup](../infrastructure/advanced-setup.md).
 
 > **Deprecated:** The `admin install` command is deprecated. Use the
-> standalone commands above instead. See the
+> standalone commands above instead (GitLab projects use
+> `fullsend repos install --forge gitlab`). See the
 > [Unified Installation Flow](#unified-installation-flow) section below for
 > how the phases are structured internally.
 

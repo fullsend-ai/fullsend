@@ -2056,3 +2056,24 @@ func TestToAgentCredentials(t *testing.T) {
 	assert.Equal(t, "client-id", cred.ClientID)
 	assert.Equal(t, 42, cred.AppID)
 }
+
+func TestInstallCmd_Deprecated(t *testing.T) {
+	installCmd, _, err := newAdminCmd().Find([]string{"install"})
+	require.NoError(t, err)
+	assert.Contains(t, installCmd.Deprecated, "fullsend inference provision")
+	assert.Contains(t, installCmd.Deprecated, "fullsend github setup")
+	assert.Contains(t, installCmd.Deprecated, "fullsend mint add-role")
+	assert.Contains(t, installCmd.Deprecated, "fullsend repos install")
+	assert.Contains(t, installCmd.Deprecated, "--forge gitlab")
+}
+
+func TestInstallCmd_PrintsDeprecationWarning(t *testing.T) {
+	cmd := newRootCmd()
+	// Cobra writes the warning via OutOrStderr: os.Stderr in production, the
+	// out-writer when one is set, so capture it with SetOut.
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"admin", "install"})
+	_ = cmd.Execute() // fails on the missing arg; the warning prints first
+	assert.Contains(t, out.String(), `Command "install" is deprecated`)
+}
