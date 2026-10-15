@@ -7705,15 +7705,11 @@ func TestRunAgent_CancelledReviewUsesCurrentHeadGuidance(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	cancel()
 	fc := forge.NewFakeClient()
 	fc.PullRequestHeadSHA = "new-head"
-	clientCreations := 0
 	statusNewForgeClient = func(token string) forge.Client {
 		assert.Equal(t, "ghs_test_token", token)
-		clientCreations++
-		if clientCreations == 1 {
-			time.AfterFunc(20*time.Millisecond, cancel)
-		}
 		return fc
 	}
 
