@@ -223,7 +223,7 @@ func TestEnsureGitLabWebhookFastPath_InterruptedFinalCutoverRecoversOnReinstall(
 
 	needs, err = GitLabWebhookNeedsProvisioning(context.Background(), c, webhookTestBase, webhookTestOwner, webhookTestRepo)
 	require.NoError(t, err)
-	assert.False(t, needs)
+	assert.True(t, needs, "the superseded Poller generation still awaits retirement by install")
 }
 
 // A cutover contained before the runtime credential was stored leaves the

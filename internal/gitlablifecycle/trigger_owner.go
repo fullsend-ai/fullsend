@@ -577,7 +577,16 @@ func (o *TriggerOwner) ManagedPollerUserIDs(ctx context.Context, owner, repo str
 		if supErr != nil {
 			return nil, supErr
 		}
+		// A recorded account that the service-account inventory confirms is
+		// gone (retirement deleted it but could not clear its record) has no
+		// membership or bootstrap credential to reconcile, and reconciling it
+		// would fail closed and tear down the current fast path. An inventory
+		// that cannot be read confirms nothing, so the account stays listed.
+		accounts, listErr := o.Admin.ListProjectServiceAccounts(ctx, owner, repo)
 		for _, id := range recorded {
+			if listErr == nil && !slices.ContainsFunc(accounts, func(sa gitlab.ServiceAccount) bool { return int64(sa.ID) == id }) {
+				continue
+			}
 			if !slices.Contains(ids, id) && !slices.Contains(excluded, id) {
 				ids = append(ids, id)
 			}

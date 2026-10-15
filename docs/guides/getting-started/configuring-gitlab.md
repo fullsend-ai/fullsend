@@ -597,10 +597,9 @@ no drain barrier for requests accepted before revocation. Install:
 6. Records that the trigger may be distributed, stores the trigger secret
    (`FULLSEND_TRIGGER_TOKEN`), and creates or updates the webhook. Then, only
    after both succeed, publishes the replacement runtime credential and cuts
-   over. The previous Poller stays at Developer as the retiring generation
-   until it is retired
-   ([#8244](https://github.com/fullsend-ai/fullsend/issues/8244)); until then
-   a forced trigger rotation defers and keeps the existing fast path.
+   over. The previous Poller stays at Developer as the retiring generation,
+   and a later install retires it (see below); until then a forced trigger
+   rotation defers and keeps the existing fast path.
 
 The current Poller is never elevated or modified, and keeps polling
 throughout, so polling and in-flight jobs that authenticate as the current
@@ -636,11 +635,38 @@ lost; see the variable table in the
 [operations guide](operations.md) for the full recovery steps.
 
 An unresolved retiring Poller is a separate condition: it blocks any new
-generation and cutover, and removing `pending` does not clear it. Retirement
-completes only after the recorded retiring account's schedules, credentials,
-triggers and account are removed and its `retiring_user_id` is then cleared
-through the retirement step (`finishPollerRetirement`). Polling continues with
-the current Poller in the meantime.
+generation and cutover, and removing `pending` does not clear it. A later
+`repos install` retires it
+([#8244](https://github.com/fullsend-ai/fullsend/issues/8244)) under the project
+lease, once all of these hold:
+
+- the cutover is confirmed, meaning the managed Poller is the recorded current
+  generation;
+- the 24-hour rotation grace has elapsed since the replacement credential was
+  distributed, so in-flight jobs that read the previous credential can finish;
+- no unfinished job runs as the retiring account.
+
+Until then install reports why retirement is waiting and changes nothing.
+Retirement revokes the pipeline triggers the retiring account owns (never the
+trigger the webhook uses). It does not change any merge grant on the protected
+default branch, because fullsend does not record who created a per-user grant
+and it may be an administrator's. Retirement revokes the account's credentials,
+verifies that it holds no active token, SSH key, unfinished job, schedule or
+trigger, deletes it, confirms by listing again that it is gone, and only then
+clears `retiring_user_id`. If the protected default branch still lists a merge
+grant for the retired account, install reports it so you can remove it in
+**Settings → Repository → Protected branches** if it is no longer needed. Each
+step can be safely repeated. A step that fails or
+cannot be verified leaves `retiring_user_id` in place for the next install to
+retry. An account that owns an administrator-supplied credential is never
+deleted. Polling continues with the current Poller throughout.
+
+Retirement also enforces the GitLab Free-tier account quota. ADR 0125 sets no
+numeric Free-tier limit, so the bound is that at most one old/new pair of
+Poller accounts exists at a time: the current Poller plus either one pending
+replacement or one retiring Poller. At most three abandoned replacements may
+also await deletion. Repeated installs and rotations therefore return to a
+single Poller instead of accumulating service accounts.
 
 The current Poller is not raised, so its own credentials do not block the
 handoff. The checks that guard the temporary Maintainer elevation apply to the

@@ -120,6 +120,9 @@ type PollerGenerationState struct {
 
 // maxAbandonedPollerGenerations bounds the abandoned replacement accounts kept
 // before further generations are refused until an operator reconciles them.
+// Together with the single old/new pair that pollerHandoffBlocked and
+// beginPollerCutover enforce, it is the GitLab Free-tier quota for Poller
+// generation accounts (see gitlab_poller_retirement.go).
 const maxAbandonedPollerGenerations = 3
 
 type pollerGenerationEnvelope struct {
@@ -323,7 +326,7 @@ func pollerHandoffBlocked(st PollerGenerationState) string {
 		return fmt.Sprintf("webhook fast-path blocked: %d replacement GitLab Poller accounts were abandoned after their trigger publication failed (user IDs %v), so no further replacement is started. Delete those accounts, then remove abandoned_user_ids from %s. The polling schedules remain in effect", len(st.AbandonedUserIDs), st.AbandonedUserIDs, forge.VarGitLabPollerGenerations)
 	}
 	if st.RetiringUserID != 0 {
-		return fmt.Sprintf("webhook fast-path blocked: the superseded GitLab Poller identity (user ID %d) has not finished retiring, so no replacement Poller generation is started. The polling schedules remain in effect", st.RetiringUserID)
+		return fmt.Sprintf("webhook fast-path blocked: the superseded GitLab Poller identity (user ID %d) has not finished retiring, so no replacement Poller generation is started (at most one old/new Poller pair exists); install retires it once its rotation grace has elapsed and no unfinished job runs as it. The polling schedules remain in effect", st.RetiringUserID)
 	}
 	p := st.Pending
 	if p == nil {
@@ -356,8 +359,9 @@ func beginPollerCutover(st PollerGenerationState, newUserID int64) (PollerGenera
 }
 
 // finishPollerRetirement clears the retiring Poller once its schedules,
-// credentials, triggers, and account were removed. retiredUserID must match
-// the recorded retiring account.
+// credentials, triggers, and account were removed
+// (retireSupersededPollerGeneration). retiredUserID must match the recorded
+// retiring account.
 func finishPollerRetirement(st PollerGenerationState, retiredUserID int64) (PollerGenerationState, error) {
 	if retiredUserID <= 0 || st.RetiringUserID != retiredUserID {
 		return st, fmt.Errorf("GitLab Poller retirement refused: user ID %d is not the recorded retiring Poller", retiredUserID)

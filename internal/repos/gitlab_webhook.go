@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"gopkg.in/yaml.v3"
@@ -477,6 +478,11 @@ func GitLabWebhookNeedsProvisioning(ctx context.Context, client forge.Client, ba
 		case PollerPhaseVerified, PollerPhaseElevated, PollerPhaseTriggerRequested:
 			return true, nil
 		}
+	}
+	// A superseded Poller generation that has not been retired is retired
+	// only by running the install step.
+	if gen.RetiringUserID != 0 {
+		return true, nil
 	}
 	if len(st.hooks) > 0 || len(st.triggers) > 0 {
 		// Live managed credentials with an unmet or unverifiable safety
@@ -1723,6 +1729,24 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, trigg
 			return GitLabWebhookResult{Action: "update", Details: carried}, finErr
 		}
 	}
+	// A superseded Poller generation is retired once its cutover is confirmed
+	// and its rotation grace has elapsed, which also lets a later rotation
+	// start the next generation. Dry runs change nothing.
+	var retirementWait string
+	if triggerOwner != nil && !dryRun && lease != nil {
+		activeTrigger := st.activeTriggerID(baseURL)
+		ret, retErr := retireSupersededPollerGeneration(ctx, client, triggerOwner, lease, owner, repo, activeTrigger, activeTrigger == 0 && len(st.hooks) > 0, time.Now())
+		st.triggers = dropRevokedTriggers(st.triggers, ret.revokedTriggerIDs)
+		carried = append(carried[:len(carried):len(carried)], ret.details...)
+		pollerRes.Details = append(pollerRes.Details[:len(pollerRes.Details):len(pollerRes.Details)], ret.details...)
+		if retErr != nil {
+			return GitLabWebhookResult{Action: "update", Details: carried}, retErr
+		}
+		if ret.waiting != "" {
+			retirementWait = ret.waiting
+			carried = append(carried[:len(carried):len(carried)], ret.waiting)
+		}
+	}
 	// Reconcile trigger ownership after an unflagged legacy-role replacement.
 	// A compliant trigger of the previous Developer identity is safe to retain
 	// while replacement is deferred, but it must not suppress Poller cutover.
@@ -1751,6 +1775,9 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, trigg
 		}
 		if len(pollerRes.Details) > 0 {
 			return GitLabWebhookResult{Action: "update", Details: carried}, nil
+		}
+		if retirementWait != "" {
+			return GitLabWebhookResult{Action: "none", Details: carried}, nil
 		}
 		return GitLabWebhookResult{Action: "none"}, nil
 	}

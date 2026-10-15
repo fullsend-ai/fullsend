@@ -485,9 +485,16 @@ Developer and verifies it, and revokes the bootstrap credential. It then
 records that the trigger may be distributed, stores the trigger secret, and
 creates or updates the webhook. Only after both succeed does it publish the
 replacement runtime credential and cut over. The previous Poller stays at
-Developer as the retiring generation until it is retired
-([#8244](https://github.com/fullsend-ai/fullsend/issues/8244)); until then a
-forced trigger rotation defers and keeps the existing fast path. The current Poller
+Developer as the retiring generation. A later install retires it once the
+24-hour rotation grace after the cutover has elapsed and no unfinished job runs
+as it ([#8244](https://github.com/fullsend-ai/fullsend/issues/8244)).
+Retirement revokes the triggers that account owns, revokes its credentials,
+deletes the account, confirms the deletion by listing again, and clears
+`retiring_user_id`. It leaves any merge grant on the protected default branch
+in place and reports it for operator review, because fullsend does not record
+who created a per-user grant. A step that fails leaves the record for the next install to
+retry. Until retirement completes, a forced trigger rotation defers and keeps
+the existing fast path, so at most one old/new Poller pair exists. The current Poller
 keeps polling throughout, so polling and in-flight jobs that authenticate as it
 are not interrupted. If the trigger request, its verification, or the final
 checks fail, install publishes nothing and quarantines the generation, which
