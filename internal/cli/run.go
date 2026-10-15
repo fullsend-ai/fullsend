@@ -1134,7 +1134,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Run lint checks before merging env.runner into RunnerEnv so that
 	// Lint() sees the original YAML state and only warns when runner_env
 	// was actually declared (not when env.runner entries are merged in).
-	for _, diag := range h.Lint() {
+	// reservedSandboxEnvDiagnostics rides along: it names the env.sandbox
+	// keys this run will drop instead of exporting them (#3373).
+	for _, diag := range append(h.Lint(), reservedSandboxEnvDiagnostics(h)...) {
 		emitDiagnostic(printer, diag)
 	}
 
@@ -3222,7 +3224,10 @@ func harnessEnvLookup(key string) (string, bool) {
 // from harness YAML could break sandbox operation, or are security-sensitive
 // vars that could influence sandbox execution (e.g. shared library injection,
 // auto-sourced shell startup files). OIDC credential vars from oidcDenyKeys
-// are merged in by init() to prevent re-injection into the sandbox (#5832).
+// are merged in by init() to prevent re-injection into the sandbox (#5832),
+// as is the sandbox credential deny-list (sandbox.ReservedCredentialKeys) so a
+// name refused as a provider credential key cannot be injected here (#3373).
+// Entries are matched case-insensitively; every name in the map is uppercase.
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
 	"PATH":                        true,
@@ -3277,12 +3282,34 @@ func init() {
 		// keys there; only credential values (child env) may expand them.
 		sandbox.CredentialOnlyExpansionKeys(k)
 	}
+	// The credential deny-list and env.sandbox reach child processes through
+	// different doors — a credential name lands in the host-side `openshell
+	// provider` environment, env.sandbox is exported inside the sandbox — but
+	// the risk a name carries is the same once it is in a child's
+	// environment. Merging rather than duplicating keeps one source of truth:
+	// a name added to the credential list is now blocked at both doors
+	// automatically (#3373).
+	for _, k := range sandbox.ReservedCredentialKeys() {
+		reservedSandboxKeys[k] = true
+	}
+}
+
+// isReservedSandboxKey reports whether an env.sandbox key is blocked by name.
+// Keys are case-folded because every entry in reservedSandboxKeys is stored
+// uppercase, which TestReservedSandboxKeys_AreUppercase pins. The gate below
+// and the lint diagnostics in reservedSandboxEnvDiagnostics both call this, so
+// they cannot disagree about what a run drops (#3373).
+func isReservedSandboxKey(k string) bool {
+	return reservedSandboxKeys[strings.ToUpper(k)]
 }
 
 // buildSandboxEnvLines generates export lines for env.sandbox values (ADR 0055).
 // Values have already been expanded by the caller. Each value is single-quoted
-// with internal single quotes escaped. Keys that are not valid shell identifiers
-// are silently skipped.
+// with internal single quotes escaped. Keys that are not valid POSIX
+// identifiers, and keys that isReservedSandboxKey rejects, are skipped with a
+// warning on stderr; reservedSandboxEnvDiagnostics reports the reserved ones
+// again as a lint diagnostic, so they also surface with the other harness
+// warnings when the harness loads (#3373).
 func buildSandboxEnvLines(h *harness.Harness) []string {
 	if h.Env == nil || len(h.Env.Sandbox) == 0 {
 		return nil
@@ -3293,8 +3320,18 @@ func buildSandboxEnvLines(h *harness.Harness) []string {
 			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is not a valid POSIX identifier; skipping\n", k)
 			continue
 		}
-		if reservedSandboxKeys[k] {
-			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is reserved for runner infrastructure; skipping\n", k)
+		// Case-folded, like the credential and plugin doors. The two spellings
+		// are not interchangeable for the tools that read them: libcurl
+		// documents http_proxy as lowercase-only while other scheme proxies
+		// are also checked uppercase, and which of https_proxy and HTTPS_PROXY
+		// wins is upstream curl behavior, not something this repo controls.
+		// OpenShell also injects HTTPS_PROXY itself — see the 0.84.4 floor
+		// remark in the PI_VERSION comment in images/sandbox/Containerfile
+		// ("which the OpenShell sandbox always does"). Blocking one spelling
+		// while exporting the other would make the strength of this blocklist
+		// depend on tool internals (#3373).
+		if isReservedSandboxKey(k) {
+			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is reserved (runner infrastructure or security deny-list); skipping\n", k)
 			continue
 		}
 		keys = append(keys, k)

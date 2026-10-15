@@ -442,8 +442,62 @@ codex agent's `PATH`.
 `pre_script`. `host_files` can also place configuration that tools load, such
 as git config or shell rc files; that is trusted like `pre_script` too.
 
-**Note**: `env.sandbox` cannot modify `PATH`, the harness ignores special
-variables to protect sandbox operation.
+**Note**: `env.sandbox` cannot modify runner infrastructure or security
+settings. The runner drops these names before writing the sandbox
+environment, case-insensitively:
+
+- **Runner infrastructure and process-loading safeguards:** `PATH`, `HOME`,
+  `SHELL`, `BASH_ENV`, `ENV`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `TRACEPARENT`,
+  and the `FULLSEND_*` variables it reserves for itself (output and fetch
+  plumbing, `FULLSEND_ROLE`, `FULLSEND_SLUG`, `FULLSEND_TIMEOUT_MINUTES`,
+  `FULLSEND_ITERATION_DEADLINE`, `FULLSEND_RUNNER_PATH`).
+- **Credentials it mints or receives:** `FULLSEND_GCP_OIDC_AUTH_FILE`,
+  `FULLSEND_TRIGGER_TOKEN`, `FULLSEND_WEBHOOK_SECRET`,
+  `FULLSEND_INFERENCE_GATEWAY_API_KEY`, `FULLSEND_OPENAI_API_KEY`,
+  `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the GitHub Actions OIDC request
+  pair `ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN`.
+- **Non-secret, runner-only inputs that select those credentials:**
+  `FULLSEND_GCP_OIDC_URL`, `FULLSEND_GCP_PROJECT_ID`,
+  `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_OPENAI_AUDIENCE`,
+  `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID`,
+  `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID`.
+- **Security-sensitive names that fullsend also refuses as provider
+  credential keys:** proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`,
+  `ALL_PROXY`), TLS trust-chain overrides (`SSL_CERT_FILE`, `SSL_CERT_DIR`,
+  `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`), git configuration
+  (`GIT_SSH_COMMAND`, `GIT_CONFIG_GLOBAL`, `GIT_EXEC_PATH`, `GIT_ASKPASS`,
+  `GIT_TEMPLATE_DIR`), interpreter injection (`NODE_OPTIONS`, `PYTHONPATH`,
+  `PYTHONSTARTUP`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`),
+  dynamic-linker hooks (`LD_AUDIT`, `DYLD_INSERT_LIBRARIES`), shell behavior
+  (`IFS`, `CDPATH`, `PROMPT_COMMAND`) and the resolver alias file
+  (`HOSTALIASES`).
+
+The list is by name, not by namespace: harness-supplied hook inputs such as
+`FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are still delivered
+through `env.sandbox` — see
+[Runtime Implementation](../../contributing/runtime-implementation.md).
+Matching is case-insensitive, so `https_proxy` is dropped exactly as
+`HTTPS_PROXY` is.
+
+`fullsend run` warns when the harness loads, naming all reserved keys it will
+drop, and warns again on stderr for each key as it writes the sandbox
+environment. `fullsend lock` reports the same lint warning when it loads and
+composes the harness. If its lock entry is already current, it skips that work
+and prints a notice that diagnostics were not checked. Use
+`fullsend lock <agent-name> --update` (or `fullsend lock --all --update`) to
+check the composed harness; this also re-resolves its dependencies and may
+update the lock file. No key-specific warning on a cache hit means the keys
+were not checked, not that they are allowed.
+
+A key that is not a valid POSIX identifier is skipped with a stderr warning
+from `fullsend run` only. If a proxy or certificate setting seems to be
+ignored, look for those warnings. Dropping a key removes that one
+`env.sandbox` export; it does not unset a value that reaches the sandbox
+another way, as `host_files` `.env.d` does.
+
+This gate covers `env.sandbox` only: `host_files` `.env.d` content, discussed
+above, is shell that the gate does not filter — it is sourced inside the sandbox
+trusted like `pre_script`.
 
 ### Adding a skill
 
