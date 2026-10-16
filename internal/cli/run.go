@@ -6141,7 +6141,7 @@ func builtInGitHubReview(agentName, forgePlatform, trackerSource string) bool {
 	return agentName == "review" && forgePlatform == "github" && trackerSource != "jira"
 }
 
-const builtInGitHubReviewRetryGuidance = "**Automated review did not complete for this commit. Review the current pull request HEAD before merging. Comment `/fs-review` to retry.**"
+const builtInGitHubReviewRetryGuidance = "**Automated review did not complete for this commit. Check the latest review status before merging. If no review is queued or running, comment `/fs-review` to retry.**"
 const builtInGitHubReviewSupersededGuidance = "**This review was superseded by a newer commit. Check the current pull request HEAD's review status before merging.**"
 
 func resolveBuiltInGitHubReviewCancellationGuidance(

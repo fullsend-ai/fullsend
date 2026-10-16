@@ -8810,7 +8810,7 @@ func TestBuiltInGitHubReviewCancellationGuidance(t *testing.T) {
 			require.Len(t, fc.UpdatedComments, 1)
 			body := fc.UpdatedComments[0].Body
 			assert.Contains(t, body, "Cancelled")
-			assert.Equal(t, tt.wantRetry, strings.Contains(body, "/fs-review"), body)
+			assert.Equal(t, tt.wantRetry, strings.Contains(body, "If no review is queued or running, comment `/fs-review` to retry."), body)
 			assert.Equal(t, tt.wantSuperseded, strings.Contains(body, "superseded by a newer commit"), body)
 		})
 	}
