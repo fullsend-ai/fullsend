@@ -524,6 +524,11 @@ Coordinate these changes with the operator of your OpenShell gateway:
   direct. These are not fullsend harness fields or a general replacement for
   every `HTTP_PROXY` or `ALL_PROXY` use. Do not reintroduce application proxy
   exports through `.env.d` as a workaround.
+  **GitHub Action limitation:** fullsend's own GitHub Action writes
+  `gateway.toml` with a fixed template and has no input for upstream proxy or
+  CA settings. Self-hosted Actions runners behind a corporate proxy that relied
+  on `HTTPS_PROXY` in `env.sandbox` have no configuration step available yet.
+  This is tracked as a follow-up for an Action proxy input.
 - **Additional certificate authorities (CAs):** preserve the active sandbox's
   OpenShell CA certificate and other required roots in application trust.
   OpenShell's supervisor also verifies upstream TLS separately. Follow the
