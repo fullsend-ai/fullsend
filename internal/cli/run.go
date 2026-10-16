@@ -3325,11 +3325,8 @@ func buildSandboxEnvLines(h *harness.Harness) []string {
 		// documents http_proxy as lowercase-only while other scheme proxies
 		// are also checked uppercase, and which of https_proxy and HTTPS_PROXY
 		// wins is upstream curl behavior, not something this repo controls.
-		// OpenShell also injects HTTPS_PROXY itself — see the 0.84.4 floor
-		// remark in the PI_VERSION comment in images/sandbox/Containerfile
-		// ("which the OpenShell sandbox always does"). Blocking one spelling
-		// while exporting the other would make the strength of this blocklist
-		// depend on tool internals (#3373).
+		// Blocking one spelling while exporting the other would make the
+		// strength of this blocklist depend on tool internals (#3373).
 		if isReservedSandboxKey(k) {
 			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is reserved (runner infrastructure or security deny-list); skipping\n", k)
 			continue

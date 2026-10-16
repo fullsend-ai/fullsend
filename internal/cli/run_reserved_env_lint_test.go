@@ -50,7 +50,10 @@ func TestReservedSandboxEnvDiagnostics_ReportsDroppedKeys(t *testing.T) {
 	// the keys but not the case rule or where to read about it leaves the user
 	// to guess. Pin the parts that matter rather than the whole sentence.
 	assert.Contains(t, diags[0].Message, "Matching is case-insensitive")
+	assert.Contains(t, diags[0].Message, "Review the migration guidance")
 	assert.Contains(t, diags[0].Message, "docs/guides/user/customizing-agents.md")
+	assert.NotContains(t, diags[0].Message, ".env.d", "do not recommend reinjecting proxy or CA settings")
+	assert.NotContains(t, diags[0].Message, "named configuration field", "no such fullsend field exists")
 }
 
 func TestReservedSandboxEnvDiagnostics_MatchesGateCaseFolding(t *testing.T) {
