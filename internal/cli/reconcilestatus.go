@@ -54,13 +54,17 @@ func newReconcileStatusCmd() *cobra.Command {
 		Short: "Finalize orphaned status comments left by hard-killed agent processes",
 		Long: `Finds and finalizes a status comment that was left in a non-terminal
 state because the agent process was hard-killed (SIGKILL, OOM, etc.)
-before its deferred PostCompletion call could run.
+before its deferred PostCompletion call could run, or because
+PostCompletion itself failed after the agent finished (for example an
+OIDC timeout while minting a fresh tracker client).
 
 Searches for a comment matching the run's HTML marker
 (<!-- fullsend:agent-status:<runID> -->) that does not contain the
 terminal tag (<!-- fullsend:status:terminal -->). If found, updates it
-to an "Interrupted" state and adds the terminal tag. If already
-finalized, this is a no-op.`,
+to a terminal label: Terminated or Cancelled for a hard kill / job
+cancellation, or "Completed (status update failed)" when --job-status
+is success (the agent finished; only the status comment did not).
+If already finalized, this is a no-op.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var tc tracker.Client
 			var project string
