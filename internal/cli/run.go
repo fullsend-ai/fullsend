@@ -1299,13 +1299,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
-				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+				finalizeTimeout := 15 * time.Second
+				if status == "cancelled" && forgePlatform == "github" {
+					// GitHub escalates cancellation signals quickly, so keep the
+					// in-process finalization below that window. The always()
+					// reconciliation step remains the fallback after a hard kill.
+					finalizeTimeout = 7 * time.Second
+				}
+				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), finalizeTimeout)
 				defer dCancel()
 				if status == "cancelled" && builtInGitHubReview(agentName, forgePlatform, sOpts.trackerSource) {
-					headCtx, headCancel := context.WithTimeout(dCtx, 5*time.Second)
+					headCtx, headCancel := context.WithTimeout(dCtx, 2*time.Second)
 					parts := strings.SplitN(sOpts.statusRepo, "/", 2)
 					client, err := newStatusGitHubForgeClient(headCtx, sOpts.mintURL, h.Role, parts[1])
 					if err == nil {
+						// Reuse this freshly minted write client for completion so
+						// cancellation cleanup does not spend time on a second mint.
+						notifier.SetClientFactory(func(context.Context) (tracker.Client, error) {
+							return tracker.NewForgeClient(client), nil
+						})
 						var guidance string
 						guidance, err = resolveBuiltInGitHubReviewCancellationGuidance(
 							headCtx, client, agentName, forgePlatform, sOpts.trackerSource,
