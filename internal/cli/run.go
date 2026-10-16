@@ -155,6 +155,9 @@ var defaultAgentsRepoKnownAgents = func() map[string]bool {
 // setupStatusNotifier (status comment tokens) and mintAgentToken (agent
 // runtime tokens). Tests that override it affect both paths.
 var statusMintToken = mintclient.MintToken
+var statusNewForgeClient = func(token string) forge.Client {
+	return gh.New(token)
+}
 
 // agentWorkingDirExcludes lists fullsend-reserved directory patterns that
 // must stay out of commits. They are appended to .git/info/exclude before
@@ -1315,8 +1318,37 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
-				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+				finalizeTimeout := 15 * time.Second
+				if status == "cancelled" && forgePlatform == "github" {
+					// GitHub escalates cancellation signals quickly, so keep the
+					// in-process finalization below that window. The always()
+					// reconciliation step remains the fallback after a hard kill.
+					finalizeTimeout = 7 * time.Second
+				}
+				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), finalizeTimeout)
 				defer dCancel()
+				if status == "cancelled" && builtInGitHubReview(agentName, forgePlatform, sOpts.trackerSource) {
+					headCtx, headCancel := context.WithTimeout(dCtx, 2*time.Second)
+					parts := strings.SplitN(sOpts.statusRepo, "/", 2)
+					client, err := newStatusGitHubForgeClient(headCtx, sOpts.mintURL, h.Role, parts[1])
+					if err == nil {
+						// Reuse this freshly minted write client for completion so
+						// cancellation cleanup does not spend time on a second mint.
+						notifier.SetClientFactory(func(context.Context) (tracker.Client, error) {
+							return tracker.NewForgeClient(client), nil
+						})
+						var guidance string
+						guidance, err = resolveBuiltInGitHubReviewCancellationGuidance(
+							headCtx, client, agentName, forgePlatform, sOpts.trackerSource,
+							sOpts.statusRepo, sOpts.statusNum, githubStatusSHA(),
+						)
+						notifier.SetCancellationGuidance(guidance)
+					}
+					headCancel()
+					if err != nil {
+						printer.StepWarn("Could not determine whether cancelled review was superseded; omitting retry guidance: " + err.Error())
+					}
+				}
 				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
 					printer.StepWarn("Failed to post completion status: " + err.Error())
 				}
@@ -6191,6 +6223,45 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 	return setupStatusNotifierGitHub(notifyCfg, owner, repo, role, sOpts, printer)
 }
 
+// builtInGitHubReview identifies the one review run that can be retried with
+// GitHub's /fs-review command. Roles are intentionally excluded: custom
+// agents may declare role: review but that command would run the built-in
+// agent, not the custom one. Jira-routed comments cannot invoke that command,
+// even when the code-hosting forge is GitHub.
+func builtInGitHubReview(agentName, forgePlatform, trackerSource string) bool {
+	return agentName == "review" && forgePlatform == "github" && trackerSource != "jira"
+}
+
+const builtInGitHubReviewRetryGuidance = "**Automated review did not complete for this commit. Check the latest review status before merging. If no review is queued or running, comment `/fs-review` to retry.**"
+const builtInGitHubReviewSupersededGuidance = "**This review was superseded by a newer commit. Check the current pull request HEAD's review status before merging.**"
+
+func resolveBuiltInGitHubReviewCancellationGuidance(
+	ctx context.Context,
+	client forge.Client,
+	agentName, forgePlatform, trackerSource, project string,
+	number int,
+	reviewedSHA string,
+) (string, error) {
+	if !builtInGitHubReview(agentName, forgePlatform, trackerSource) || reviewedSHA == "" {
+		return "", nil
+	}
+	parts := strings.SplitN(project, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("invalid GitHub project %q", project)
+	}
+	currentSHA, err := client.GetPullRequestHeadSHA(ctx, parts[0], parts[1], number)
+	if err != nil {
+		return "", fmt.Errorf("fetching current pull request HEAD: %w", err)
+	}
+	if currentSHA == "" {
+		return "", fmt.Errorf("current pull request HEAD is empty")
+	}
+	if !strings.EqualFold(reviewedSHA, currentSHA) {
+		return builtInGitHubReviewSupersededGuidance, nil
+	}
+	return builtInGitHubReviewRetryGuidance, nil
+}
+
 // setupStatusNotifierGitHub creates a status notifier for GitHub. It mints
 // a fresh token via the mint service for each API call and reads SHA/run ID
 // from GitHub Actions environment variables.
@@ -6203,15 +6274,7 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
 	}
 
-	sha := os.Getenv("GITHUB_SHA")
-	// Prefer explicit PR_HEAD_SHA (set by per-repo workflow_call callers
-	// where GITHUB_EVENT_PATH lacks the dispatched event_payload wrapper).
-	// Fall back to extracting from the workflow_dispatch event payload.
-	if prSHA := os.Getenv("PR_HEAD_SHA"); prSHA != "" {
-		sha = prSHA
-	} else if prSHA := prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH")); prSHA != "" {
-		sha = prSHA
-	}
+	sha := githubStatusSHA()
 	runID := os.Getenv("GITHUB_RUN_ID")
 	if runID == "" {
 		runID = fmt.Sprintf("%d", time.Now().UnixNano())
@@ -6228,25 +6291,50 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 
 	canonRole := resolveRole(role)
 	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
-		result, err := statusMintToken(ctx, mintclient.MintRequest{
-			MintURL: mintURL,
-			Role:    canonRole,
-			Level:   mintcore.LevelWrite,
-			Repos:   []string{repo},
-		})
+		client, err := newStatusGitHubForgeClient(ctx, mintURL, canonRole, repo)
 		if err != nil {
-			return nil, fmt.Errorf("minting status token: %w", err)
+			return nil, err
 		}
-		if !mintTokenPattern.MatchString(result.Token) {
-			return nil, fmt.Errorf("minted status token contains unexpected characters")
-		}
-		if os.Getenv("GITHUB_ACTIONS") == "true" {
-			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
-		}
-		return tracker.NewForgeClient(gh.New(result.Token)), nil
+		return tracker.NewForgeClient(client), nil
 	})
 
 	return n, nil
+}
+
+func githubStatusSHA() string {
+	sha := os.Getenv("GITHUB_SHA")
+	// Prefer explicit PR_HEAD_SHA (set by per-repo workflow_call callers
+	// where GITHUB_EVENT_PATH lacks the dispatched event_payload wrapper).
+	// Fall back to extracting from the workflow_dispatch event payload.
+	if prSHA := os.Getenv("PR_HEAD_SHA"); prSHA != "" {
+		return prSHA
+	}
+	if prSHA := prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH")); prSHA != "" {
+		return prSHA
+	}
+	return sha
+}
+
+func newStatusGitHubForgeClient(ctx context.Context, mintURL, role, repo string) (forge.Client, error) {
+	if mintURL == "" {
+		mintURL = os.Getenv("FULLSEND_MINT_URL")
+	}
+	result, err := statusMintToken(ctx, mintclient.MintRequest{
+		MintURL: mintURL,
+		Role:    resolveRole(role),
+		Level:   mintcore.LevelWrite,
+		Repos:   []string{repo},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("minting status token: %w", err)
+	}
+	if !mintTokenPattern.MatchString(result.Token) {
+		return nil, fmt.Errorf("minted status token contains unexpected characters")
+	}
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
+	}
+	return statusNewForgeClient(result.Token), nil
 }
 
 // setupStatusNotifierGitLab creates a status notifier for GitLab. It uses
