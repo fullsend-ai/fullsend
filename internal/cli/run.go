@@ -1923,9 +1923,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to create sandbox")
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
-	// Anchor for waitForOpenShellFirstPoll (OpenShell #3809) before the first
-	// network request.
-	sandboxReadyAt := time.Now()
 	finalizeSandboxSpan(sandboxSpan, nil)
 
 	if len(runScopedProviders) > 0 {
@@ -2420,14 +2417,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// 9b-1. Let OpenShell 0.1.2's first settings poll pass before any network
-	// request; it terminates connections in flight (OpenShell #3809). Remove
-	// with openShellFirstPollSettle once the pin includes the upstream fix.
-	if _, err := waitForOpenShellFirstPoll(ctx, sandboxReadyAt, printer); err != nil {
-		return fmt.Errorf("waiting for the sandbox's first policy poll: %w", err)
-	}
-
-	// 9b-2. Pre-flight GitHub API connectivity check.
+	// 9b. Pre-flight GitHub API connectivity check.
 	// Validates that the sandbox can reach api.github.com through the proxy
 	// before starting the agent. Without this, agents that depend on gh CLI
 	// burn their entire timeout on doomed API calls. See #2143.
