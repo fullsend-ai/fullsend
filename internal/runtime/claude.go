@@ -795,7 +795,7 @@ func buildRunCommandWithDigests(params RunParams, hookDigests claudeHookDigests)
 		// function or alias can shadow either. With sandbox hooks the hooks
 		// guard runs on both sides of .env (claudeGuardedEnv).
 		fmt.Sprintf("cd %s && %s%s && %s%s && \"$%s\"",
-			params.RepoDir, claudeBinaryPin(), preEnv,
+			shellQuote(params.RepoDir), claudeBinaryPin(), preEnv,
 			claudeGuardedEnv(envFile, params.HooksSettingsPath != "", gw == nil, hookDigests),
 			postEnv, claudeBinaryVar),
 		"--print",

@@ -227,10 +227,17 @@ func TestBootstrap_AgentNameMatch(t *testing.T) {
 
 func TestBuildRunCommand_Basic(t *testing.T) {
 	cmd := testRunCommand("hello-world", "", "/sandbox/workspace/repo", nil, "")
-	assert.Contains(t, cmd, "cd /sandbox/workspace/repo")
+	assert.Contains(t, cmd, "cd '/sandbox/workspace/repo' && ")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 	assert.NotContains(t, cmd, "--model")
 	assert.NotContains(t, cmd, "--plugin-dir")
+}
+
+// TestBuildRunCommand_QuotesRepoDir checks the launch quotes RepoDir with
+// shellQuote, the same as the Codex and pi runtimes (#8530).
+func TestBuildRunCommand_QuotesRepoDir(t *testing.T) {
+	cmd := testRunCommand("hello-world", "", "/sandbox/workspace/it's a repo; touch x", nil, "")
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/it'\''s a repo; touch x' && `), cmd)
 }
 
 func TestBuildRunCommand_WithModel(t *testing.T) {

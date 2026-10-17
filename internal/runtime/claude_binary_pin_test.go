@@ -34,7 +34,7 @@ func TestBuildRunCommand_PinsClaudeBinary(t *testing.T) {
 	require.NotEqual(t, -1, unsetAt, cmd)
 	require.NotEqual(t, -1, loaderAt, cmd)
 	require.NotEqual(t, -1, launchAt, cmd)
-	assert.True(t, strings.HasPrefix(cmd, "cd /sandbox/workspace/repo && "+pin), cmd)
+	assert.True(t, strings.HasPrefix(cmd, "cd '/sandbox/workspace/repo' && "+pin), cmd)
 	assert.Less(t, pinAt, envAt, "pin must precede sourcing .env")
 	assert.Less(t, envAt, unsetAt, "unset -f must follow sourcing .env")
 	assert.Less(t, envAt, loaderAt, "loader variables are cleared after sourcing .env")

@@ -89,7 +89,7 @@ func TestBuildRunCommand_HooksGuardPlacement(t *testing.T) {
 
 	t.Run("hooks disabled leaves the launch unchanged", func(t *testing.T) {
 		cmd := buildRunCommand(RunParams{AgentBaseName: "agent", RepoDir: "/repo"})
-		assert.True(t, strings.HasPrefix(cmd, "cd /repo && "+claudeBinaryPin()+" && "+envSource+" && unset -f claude && "+claudeLoaderEnvUnset+" && \"$"+claudeBinaryVar+"\" --print"), cmd)
+		assert.True(t, strings.HasPrefix(cmd, "cd '/repo' && "+claudeBinaryPin()+" && "+envSource+" && unset -f claude && "+claudeLoaderEnvUnset+" && \"$"+claudeBinaryVar+"\" --print"), cmd)
 		assert.NotContains(t, cmd, "sha256sum")
 	})
 
@@ -101,7 +101,7 @@ func TestBuildRunCommand_HooksGuardPlacement(t *testing.T) {
 			HooksSettingsPath: security.SandboxHooksSettings,
 		}, d)
 		guard := claudeHooksGuard(d, true)
-		want := "cd /repo && " + claudeBinaryPin() + " && " + guard + " && " + envSource +
+		want := "cd '/repo' && " + claudeBinaryPin() + " && " + guard + " && " + envSource +
 			" && unset -f claude test command cut wc sha256sum find echo && " + claudeLoaderEnvUnset +
 			" && " + guard + " && \"$" + claudeBinaryVar + "\" --print"
 		assert.True(t, strings.HasPrefix(cmd, want), cmd)

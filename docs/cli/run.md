@@ -432,11 +432,18 @@ See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md
 ## GitHub Packages credentials
 
 On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's workflow token) to
-`GH_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted App token. Provider
+`GH_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted App token. When `GH_TOKEN` is
+unset or empty it copies the pre-mint `GITHUB_TOKEN` instead. Provider
 credentials may expand `${GH_WORKFLOW_TOKEN}`; every other harness `${}` site refuses it, and
 pre/post/validation child environments never receive it. Outside Actions the variable is not
-derived from a local PAT — a caller may set it explicitly. `GH_TOKEN` / `PUSH_TOKEN` still receive
-the minted App identity.
+derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB_TOKEN` and
+`PUSH_TOKEN` still receive the minted App identity.
+
+Every mint sets both `GH_TOKEN` and `GITHUB_TOKEN` to the minted token, even when the caller
+workflow did not export `GITHUB_TOKEN`. When the mint is cleaned up, each one goes back to the value
+it held before that mint, or is unset if it was unset. A caller workflow that exports
+`GITHUB_TOKEN` for its own pre- or post-script therefore gets the minted App token in that
+variable, not the job token.
 
 Host-side scripts (pre/post and validation) also no longer inherit `JIRA_TOKEN`,
 `JIRA_USER_EMAIL`, or the OTLP collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and

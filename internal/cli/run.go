@@ -6617,8 +6617,14 @@ type tokenVar struct {
 	Value string // empty = use minted token
 }
 
+// agentTokenEnvVars are the process env vars mintAgentTokenAtLevel sets to
+// the minted token for every role. GITHUB_TOKEN is included so a caller
+// workflow that exports it does not leave the job token in place for tools
+// that read it instead of GH_TOKEN, or for pre/post scripts (#8530).
+var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN"}
+
 // roleTokenVars maps canonical role names to the additional env vars they
-// require beyond GH_TOKEN. These match the vars declared in
+// require beyond agentTokenEnvVars. These match the vars declared in
 // forge.github.runner_env across the harness YAML files.
 var roleTokenVars = map[string][]tokenVar{
 	"coder":  {{Name: "PUSH_TOKEN"}, {Name: "PUSH_TOKEN_SOURCE", Value: "github-app"}},
@@ -6705,7 +6711,7 @@ func syncRunnerEnvTokens(h *harness.Harness) {
 	if h == nil || h.RunnerEnv == nil {
 		return
 	}
-	names := []string{"GH_TOKEN"}
+	names := append([]string(nil), agentTokenEnvVars...)
 	for _, tv := range roleTokenVars[resolveRole(h.Role)] {
 		names = append(names, tv.Name)
 	}
@@ -6761,8 +6767,12 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 // The caller should defer cleanup() to clear tokens from the process env.
 // forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
 // set to "github-app" for GitHub and "pat" for GitLab.
-// On GitHub Actions the pre-mint GH_TOKEN is copied to GH_WORKFLOW_TOKEN
-// for provider credential expansion (#6649); cleanup unsets it. Remint-safe:
+// The minted token replaces every agentTokenEnvVars name (GH_TOKEN and
+// GITHUB_TOKEN); cleanup restores each to its value before this call, or
+// unsets it if it was unset (#8530).
+// On GitHub Actions the pre-mint GH_TOKEN (or, when that is unset or empty,
+// the pre-mint GITHUB_TOKEN) is copied to GH_WORKFLOW_TOKEN for provider
+// credential expansion (#6649); cleanup unsets it. Remint-safe:
 // if GH_WORKFLOW_TOKEN is already set (remintAgentTokenForPostScript's
 // second call, after the first mint replaced GH_TOKEN with the App token),
 // the copy is skipped so the already-preserved workflow token is left alone.
@@ -6801,15 +6811,22 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 	// NOTE: os.Setenv is not goroutine-safe. Minting MUST complete
 	// before any goroutines that read env vars (sandbox streaming,
 	// post-script execution) are launched.
+	//
+	// Record each agentTokenEnvVars name as it was before this call so
+	// cleanup restores exactly that value, or unsets a name that was unset.
+	// A nested remint records the outer mint's token and so restores it.
 	originals := make(map[string]string)
-	envVars := []string{"GH_TOKEN"}
-	if v, ok := os.LookupEnv("GH_TOKEN"); ok {
-		originals["GH_TOKEN"] = v
+	envVars := append([]string(nil), agentTokenEnvVars...)
+	for _, name := range agentTokenEnvVars {
+		if v, ok := os.LookupEnv(name); ok {
+			originals[name] = v
+		}
 	}
-	// Preserve the Actions workflow token before GH_TOKEN is replaced so
-	// provider credentials can authenticate to GitHub Packages. Outside
-	// Actions leave a caller-set value alone and never derive one from a
-	// local PAT (#6649).
+	// Preserve the Actions workflow token before GH_TOKEN and GITHUB_TOKEN
+	// are replaced so provider credentials can authenticate to GitHub
+	// Packages. The pre-mint GH_TOKEN is preferred; a caller that exports
+	// only GITHUB_TOKEN falls back to that (#8530). Outside Actions leave a
+	// caller-set value alone and never derive one from a local PAT (#6649).
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		// A non-empty existing value means either a prior mintAgentToken
 		// call in this process already preserved the real workflow token
@@ -6827,18 +6844,23 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 		existing, alreadyPreserved := os.LookupEnv(workflowTokenEnv)
 		alreadyPreserved = alreadyPreserved && existing != ""
 		if !alreadyPreserved {
-			preMint := originals["GH_TOKEN"]
+			preMintName := "GH_TOKEN"
+			preMint := originals[preMintName]
+			if preMint == "" {
+				preMintName = "GITHUB_TOKEN"
+				preMint = originals[preMintName]
+			}
 			switch {
 			case preMint == "":
 				// A future caller could override the workflow's github_token
 				// input to empty; fail loud instead of silently skipping the
 				// preserve step (#6649).
-				printer.StepWarn("GITHUB_ACTIONS is set but no pre-mint GH_TOKEN was found; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
+				printer.StepWarn("GITHUB_ACTIONS is set but no pre-mint GH_TOKEN or GITHUB_TOKEN was found; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
 			case !mintTokenPattern.MatchString(preMint):
 				// Gate the same as result.Token below before it reaches
 				// Setenv/add-mask/RegisterRuntimeSecret: fail closed rather
 				// than trust an unvalidated value (#6649).
-				printer.StepWarn("pre-mint GH_TOKEN has an unexpected format; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
+				printer.StepWarn("pre-mint " + preMintName + " has an unexpected format; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
 			default:
 				os.Setenv(workflowTokenEnv, preMint)
 				envVars = append(envVars, workflowTokenEnv)
@@ -6847,7 +6869,11 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 			}
 		}
 	}
-	os.Setenv("GH_TOKEN", result.Token)
+	// GITHUB_TOKEN is set even when the caller did not export it, so no
+	// tool that reads it instead of GH_TOKEN keeps the job token (#8530).
+	for _, name := range agentTokenEnvVars {
+		os.Setenv(name, result.Token)
+	}
 
 	for _, tv := range roleTokenVars[role] {
 		if v, ok := os.LookupEnv(tv.Name); ok {
