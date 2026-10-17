@@ -1,8 +1,7 @@
 ---
 # fullsend shim workflow (per-repo installation mode)
 # Routes events to agent workflows via reusable-dispatch.yml.
-# All agent execution happens in this repo's context — no external
-# repository-level config is used; no external config repo is needed.
+# All agent execution happens in this repository's context.
 #
 # Security: pull_request_target runs the BASE branch version of this workflow,
 # preventing PRs from modifying it to exfiltrate credentials.
