@@ -12,7 +12,7 @@ builds:
   - main: ./cmd/fullsend/
     binary: fullsend
     ldflags:
-      - -s -w -X github.com/fullsend-ai/fullsend/internal/cli.version={{.Version}} -X github.com/fullsend-ai/fullsend/internal/cli.commitSHA={{.FullCommit}}
+      - -s -w -X github.com/fullsend-ai/fullsend/internal/buildinfo.version={{.Version}} -X github.com/fullsend-ai/fullsend/internal/buildinfo.commitSHA={{.FullCommit}}
     env:
       - CGO_ENABLED=0
     goos:

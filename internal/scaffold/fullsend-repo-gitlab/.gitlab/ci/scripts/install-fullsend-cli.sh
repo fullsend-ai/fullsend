@@ -90,8 +90,10 @@ case "${FULLSEND_VERSION}" in
     git -C "${FSSRC}" remote add origin "https://github.com/${FULLSEND_REPO}.git"
     git -C "${FSSRC}" fetch --depth 1 origin "${FULLSEND_VERSION}"
     git -C "${FSSRC}" checkout FETCH_HEAD
+    # Stamp both internal/buildinfo (current) and internal/cli (refs that
+    # predate buildinfo); the linker ignores -X for a missing symbol.
     CGO_ENABLED=0 go build -C "${FSSRC}" \
-      -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION}" \
+      -ldflags "-X github.com/fullsend-ai/fullsend/internal/buildinfo.version=${FULLSEND_VERSION} -X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION}" \
       -o /usr/local/bin/fullsend ./cmd/fullsend/
     rm -rf "${FSSRC}"
     ;;

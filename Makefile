@@ -100,7 +100,7 @@ mindmap:
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 go-build:
-	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
+	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/buildinfo.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
 
 go-test:
 	GH_TOKEN= GITHUB_TOKEN= \
