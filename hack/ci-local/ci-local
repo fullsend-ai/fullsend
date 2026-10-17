@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# Run fullsend's CI tests and linters in a container that mirrors the
+# GitHub Actions ubuntu-24.04 runner. See `ci-local help`.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENGINE=${CI_LOCAL_ENGINE:-$(command -v podman >/dev/null && echo podman || echo docker)}
+PLATFORM=""
+REPO=$PWD
+
+usage() {
+  cat <<'EOF'
+Usage: ci-local [-C REPO] [--amd64] TARGET [TARGET...]
+
+Targets (each maps to the command CI or the Makefile runs):
+  go-test        make go-test: go test -race ./... + internal/mintcore -tags github, merged coverage.out
+  go-test-ci     exactly lint.yml's step: go test -race -coverprofile=coverage.out ./...
+  go-modules     go test the extra modules CI never runs: cmd/mint, internal/mint (+ build cmd/mint-wasm)
+  go-vet         make go-vet
+  go-fmt         gofmt -l . (fails if anything is unformatted; does not rewrite)
+  go-build       make go-build
+  coverage       make go-test, then total + per-file coverage of .go files changed vs origin/main
+  lint-all       make lint-all with SKIP=check-gateway-doc-configs (as lint.yml)
+  lint           make lint (pre-commit on staged files)
+  check          make check (ruff + ty on hack/)
+  lint-md-links  make lint-md-links (lychee --offline)
+  script-test    make script-test (shell, python, node:test suites)
+  web            npm ci && npm test (lint.yml `web` job)
+  mint-cf        make mint-cf-worker-test (WASM build + CF Worker typecheck + vitest)
+  docs           npm ci && npx mvb docs (site-build.yml); builds a clone of HEAD, so commit first
+  commit-lint    gitlint every non-merge commit in origin/main..HEAD (lint.yml commit-lint)
+  ci             everything the PR CI runs: lint-all go-test-ci script-test web mint-cf docs commit-lint
+  all            ci + go-test go-modules go-fmt check
+  shell          interactive shell in the container
+  build-image    rebuild the image, re-resolving floating versions (Node 22.x, Python 3.x, uv) to latest
+
+Not supported: behaviour-test / playback-test (need a real GitHub org, OIDC
+mint and secrets) and check-gateway-doc-configs (runs a container itself).
+
+Options:
+  -C REPO   repository or worktree to test (default: current directory)
+  --amd64   run linux/amd64 like GitHub's runners (emulated on Apple silicon; slow;
+            needs Rosetta, e.g. Docker Desktop: uv segfaults under QEMU)
+
+Environment:
+  CI_LOCAL_ENGINE  podman or docker (default: podman if installed)
+  CI_LOCAL_DNS     resolver for the container (default 1.1.1.1; empty = engine default)
+
+Isolation: no host environment variables (podman builds and runs with --http-proxy=false),
+SSH agent or credential files from outside the checkout enter the container;
+only the checkout (including gitignored files), its .git directory and cache
+volumes are mounted, read-write. GH_TOKEN/GITHUB_TOKEN are empty, as on CI.
+This keeps host secrets out; it is not a sandbox against the code under test.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case $1 in
+  -C) REPO=$(cd "$2" && pwd); shift 2 ;;
+  --amd64) PLATFORM=linux/amd64; shift ;;
+  -h|--help|help) usage; exit 0 ;;
+  *) break ;;
+  esac
+done
+[ $# -gt 0 ] || { usage; exit 2; }
+
+ARCH_TAG=${PLATFORM:+-amd64}
+# Always name the platform: the base image is a multi-arch digest, and podman
+# can otherwise resolve it to a cached image of another architecture.
+case "$(uname -m)" in
+arm64 | aarch64) NATIVE=linux/arm64 ;;
+x86_64 | amd64) NATIVE=linux/amd64 ;;
+*) NATIVE="" ;;
+esac
+PLATFORM=${PLATFORM:-$NATIVE}
+
+die() { echo "ci-local: $*" >&2; exit 1; }
+
+# short_hash: first 12 hex chars of the SHA256 of stdin.
+short_hash() {
+  if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -c1-12
+}
+# Per-checkout id, so state that must not be shared between checkouts or
+# worktrees (node_modules, the worktree .git pointer) never collides.
+REPO_ID=$(printf '%s' "$REPO" | short_hash)
+
+# Tool versions come from the checkout's own CI config (go.mod, lint.yml), so
+# the image follows CI, Renovate bumps included, with nothing to keep in sync
+# by hand. A value that can't be read is an error, never a guess.
+BUILD_ARGS=()
+resolve_versions() {
+  local wf=$REPO/.github/workflows/lint.yml gomod=$REPO/go.mod
+  [ -f "$wf" ] || die "missing $wf"
+  [ -f "$gomod" ] || die "missing $gomod"
+  add() { [ -n "$2" ] || die "cannot read $1 from $3"; BUILD_ARGS+=(--build-arg "$1=$2"); }
+  add GO_VERSION "$(sed -nE 's/^go ([0-9]+\.[0-9]+(\.[0-9]+)?)$/\1/p' "$gomod")" go.mod
+  add PYTHON_VERSION "$(grep -m1 -E '^ *python-version:' "$wf" | sed -E 's/.*: *"?([0-9.]+)"?.*/\1/')" lint.yml
+  add NODE_VERSION "$(grep -m1 -E '^ *node-version:' "$wf" | sed -E 's/.*: *"?([0-9.]+)"?.*/\1/')" lint.yml
+  add PIP_PACKAGES "$(grep -m1 'uv pip install --system ' "$wf" | sed -E 's/.*uv pip install --system //')" lint.yml
+  add LYCHEE_VERSION "$(grep -m1 -oE 'lychee/releases/download/lychee-v[0-9.]+/' "$wf" | sed -E 's#.*lychee-v##; s#/$##')" lint.yml
+  add LYCHEE_SHA256_AMD64 "$(grep -m1 -E 'lychee\.tar\.gz.*sha256sum' "$wf" | grep -oE '[0-9a-f]{64}')" lint.yml
+  add PINACT_VERSION "$(grep -m1 -oE 'pinact/releases/download/v[0-9.]+/' "$wf" | sed -E 's#.*/v##; s#/$##')" lint.yml
+  add PINACT_SHA256_AMD64 "$(grep -m1 -E 'pinact\.tar\.gz.*sha256sum' "$wf" | grep -oE '[0-9a-f]{64}')" lint.yml
+  # Tag by platform + versions + everything the build copies in (Containerfile
+  # and the fetch/sumof helpers), so any of them changing triggers a rebuild
+  # (and hosts sharing an image store never mix arches).
+  local sum
+  sum=$( { echo "$PLATFORM"; printf '%s\n' "${BUILD_ARGS[@]}"
+    cat "$SCRIPT_DIR/Containerfile" "$SCRIPT_DIR/fetch" "$SCRIPT_DIR/sumof"; } | short_hash)
+  IMAGE=fullsend-ci-local${ARCH_TAG}:$sum
+}
+
+# build-image passes --no-cache so floating versions (Node 22.x, Python 3.x,
+# uv) are re-resolved to their latest releases, as CI's setup actions do.
+# podman copies host HTTP(S)_PROXY into build RUN steps too, as it does for
+# runs (see run_in); CI builds without a proxy, so turn that off here as well.
+build_image() {
+  local noproxy=()
+  [ "$(basename "$ENGINE")" = podman ] && noproxy=(--http-proxy=false)
+  "$ENGINE" build ${PLATFORM:+--platform "$PLATFORM"} ${noproxy[@]+"${noproxy[@]}"} "$@" "${BUILD_ARGS[@]}" \
+    -f "$SCRIPT_DIR/Containerfile" -t "$IMAGE" "$SCRIPT_DIR"
+}
+
+# SELinux hosts (Fedora, RHEL) block bind mounts unless relabelled with :z.
+Z=""
+command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" = Enforcing ] && Z=":z"
+
+# Rootless podman maps the host user onto the image's runner user; Docker
+# needs the host uid/gid passed explicitly.
+user_args() {
+  if [ "$(basename "$ENGINE")" = podman ]; then echo --userns=keep-id
+  else echo --user; echo "$(id -u):$(id -g)"; fi
+}
+
+# Mounts: the checkout at /src, named volumes for caches and for Linux
+# node_modules (so they never land in the host checkout).
+mount_args() {
+  local args=(-v "$REPO:/src$Z")
+  if [ -f "$REPO/.git" ]; then
+    # A git worktree: its .git file points at an absolute host path the
+    # container cannot see. Mount the shared git dir at /gitcommon and
+    # overlay .git with a pointer to it.
+    local common wt
+    common=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)
+    wt=$(basename "$(git -C "$REPO" rev-parse --path-format=absolute --git-dir)")
+    local ptr="$HOME/.cache/ci-local/gitfile-$REPO_ID"
+    mkdir -p "$(dirname "$ptr")"
+    echo "gitdir: /gitcommon/worktrees/$wt" > "$ptr"
+    args+=(-v "$common:/gitcommon$Z" -v "$ptr:/src/.git:ro${Z:+,z}")
+  fi
+  local v
+  # Download caches are shared by every checkout; node_modules is per
+  # checkout, since npm ci rewrites it from that checkout's lockfile and
+  # concurrent runs in two worktrees would otherwise race on one volume.
+  for v in go:/home/runner/go gobuild:/home/runner/.cache/go-build \
+    precommit:/home/runner/.cache/pre-commit uv:/home/runner/.cache/uv npm:/home/runner/.npm; do
+    args+=(-v "fullsend-ci-local${ARCH_TAG}-${v%%:*}:${v#*:}")
+  done
+  for v in nm-root:/src/node_modules nm-workersrc:/src/internal/dispatch/cf/workersrc/node_modules; do
+    args+=(-v "fullsend-ci-local${ARCH_TAG}-${v%%:*}-${REPO_ID}:${v#*:}")
+  done
+  printf '%s\n' "${args[@]}"
+}
+
+target_cmd() {
+  case $1 in
+  go-test) echo 'make go-test' ;;
+  go-test-ci) echo 'go test -race -coverprofile=coverage.out ./...' ;;
+  go-modules) echo 'set -e; for m in cmd/mint internal/mint; do echo "==> $m"; (cd $m && go test -race ./...); done; echo "==> cmd/mint-wasm (build)"; (cd cmd/mint-wasm && GOOS=js GOARCH=wasm go build -o /dev/null .)' ;;
+  go-vet) echo 'make go-vet' ;;
+  # gofmt's own failure (e.g. a parse error) must fail the target, not read as "clean".
+  go-fmt) echo 'out=$(gofmt -l .) || { echo "gofmt: failed to run"; exit 1; }; out=$(grep -v "/node_modules/" <<< "$out" || true); [ -z "$out" ] || { echo "unformatted:"; echo "$out"; exit 1; }; echo "gofmt: clean"' ;;
+  go-build) echo 'make go-build' ;;
+  coverage) cat <<'EOF'
+set -e
+make go-test
+echo "==> coverage of .go files changed vs origin/main"
+# Assigned first so a failed diff (e.g. no origin/main) aborts, not passes.
+files=$(git diff --name-only origin/main...HEAD -- '*.go' ':!*_test.go')
+for f in $files; do
+  # coverage.out lines: <pkg>/<file>:<range> <statements> <hit-count>
+  awk -v f="github.com/fullsend-ai/fullsend/$f:" 'index($0,f)==1 {s+=$2; if ($3>0) c+=$2}
+    END {if (s>0) printf "  %6.1f%%  %s (%d stmts)\n", 100*c/s, substr(f,1,length(f)-1), s}' coverage.out
+done
+EOF
+    ;;
+  lint-all) echo 'SKIP=check-gateway-doc-configs make lint-all' ;;
+  lint) echo 'make lint' ;;
+  check) echo 'make check' ;;
+  lint-md-links) echo 'make lint-md-links' ;;
+  # make -i runs every suite even after one fails, so one failure cannot hide the rest.
+  # pipefail: if make itself cannot run, fail instead of counting zero failures.
+  script-test) echo 'set -o pipefail; make -i script-test 2>&1 | tee "${TMPDIR:-/tmp}/st.log" || { echo "script-test: make did not run"; exit 1; }; n=$(grep -cE "^make(\[[0-9]+\])?: .*Error [0-9]+ \(ignored\)$" "${TMPDIR:-/tmp}/st.log" || true); echo "script-test: ${n} suite(s) failed"; [ "$n" -eq 0 ]' ;;
+  web) echo 'npm ci --no-audit --no-fund && npm test' ;;
+  mint-cf) echo 'make mint-cf-worker-test' ;;
+  # mvb runs `git fetch --tags --force` in the source repo, so build from a
+  # throwaway clone: the host repo is never fetched into. GITHUB_ACTIONS=true
+  # makes mvb build the checked-out commit, and VPL_MVB_BRANCH names it, both
+  # as in site-build.yml, which also runs `git submodule update --init` right
+  # before mvb (the experiments submodule supplies docs pages). Committed
+  # content only.
+  docs) echo 'set -e; rm -rf /tmp/site; git clone -q /src /tmp/site; cd /tmp/site; sha=$(git -C /src rev-parse HEAD); git checkout -q --detach "$sha"; npm ci --no-audit --no-fund; git submodule update --init; GITHUB_ACTIONS=true VPL_MVB_BRANCH="$sha" npx mvb docs' ;;
+  commit-lint) cat <<'EOF'
+set -e
+fail=0
+# Assigned first so a git failure aborts instead of looping over nothing.
+shas=$(git rev-list --no-merges origin/main..HEAD)
+[ -n "$shas" ] || { echo "commit-lint: no commits in origin/main..HEAD"; exit 0; }
+for sha in $shas; do
+  git log --format='%s' -1 "$sha" > "${TMPDIR:-/tmp}/msg"
+  printf '%s ' "$(git log --format='%h %s' -1 "$sha")"
+  if uvx --from gitlint-core gitlint --config .gitlint --ignore B6 --msg-filename "${TMPDIR:-/tmp}/msg"; then echo "✓"; else fail=1; fi
+done
+exit $fail
+EOF
+    ;;
+  *) echo "unknown target: $1 (see ci-local help)" >&2; return 1 ;;
+  esac
+}
+
+expand() {
+  local t
+  for t in "$@"; do
+    case $t in
+    ci) expand lint-all go-test-ci script-test web mint-cf docs commit-lint ;;
+    all) expand ci go-test go-modules go-fmt check ;;
+    *) echo "$t" ;;
+    esac
+  done
+}
+
+run_in() {
+  # -i so `... | ci-local shell` works; -t only on a real terminal.
+  local tty=(-i)
+  [ -t 0 ] && [ -t 1 ] && tty=(-it)
+  local mounts=() users=() noproxy=()
+  while IFS= read -r m; do mounts+=("$m"); done < <(mount_args)
+  while IFS= read -r u; do users+=("$u"); done < <(user_args)
+  # podman copies the host's HTTP(S)_PROXY into containers by default, and
+  # proxy URLs can carry credentials. (Docker's equivalent is config.json.)
+  [ "$(basename "$ENGINE")" = podman ] && noproxy=(--http-proxy=false)
+  if [ "$(basename "$ENGINE")" != podman ]; then
+    # Docker creates named volumes root-owned; open them up for the host uid.
+    "$ENGINE" run --rm --user 0 ${PLATFORM:+--platform "$PLATFORM"} "${mounts[@]}" "$IMAGE" \
+      sh -c 'chmod 1777 /home/runner/go /home/runner/.cache/* /home/runner/.npm /src/node_modules /src/internal/dispatch/cf/workersrc/node_modules' >/dev/null
+  fi
+  # DNS: internal/fetch tests need example.com, which some networks' resolvers
+  # refuse (seen on a home/office router; podman and docker both forward to
+  # the host's). A public resolver sees every lookup and can't resolve
+  # internal names, so CI_LOCAL_DNS= (empty) keeps the engine's own resolver.
+  local dns=${CI_LOCAL_DNS-1.1.1.1}
+  # safe.directory: the mounts show a host owner; trust only those two repos.
+  "$ENGINE" run --rm "${tty[@]}" ${PLATFORM:+--platform "$PLATFORM"} \
+    "${users[@]}" ${noproxy[@]+"${noproxy[@]}"} ${dns:+--dns "$dns"} -e HOME=/home/runner "${mounts[@]}" "$IMAGE" \
+    bash -c 'git config --global --add safe.directory /src; git config --global --add safe.directory /gitcommon; git config --global commit.gpgsign false; '"$1"
+}
+
+targets=()
+if [ "$1" != build-image ] && [ "$1" != shell ]; then
+  while IFS= read -r t; do targets+=("$t"); done < <(expand "$@")
+  for t in "${targets[@]}"; do target_cmd "$t" >/dev/null || exit 2; done
+fi
+
+resolve_versions
+if [ "$1" = build-image ]; then build_image --no-cache; exit; fi
+"$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 || build_image
+if [ "$1" = shell ]; then run_in 'exec bash'; exit; fi
+
+results=()
+rc=0
+for t in "${targets[@]}"; do
+  echo; echo "════════ ci-local: $t ════════"
+  start=$(date +%s)
+  if run_in "$(target_cmd "$t")"; then r=PASS; else r=FAIL; rc=1; fi
+  results+=("$(printf '%-14s %s  %4ss' "$t" "$r" $(( $(date +%s) - start )))")
+done
+echo; echo "════════ ci-local summary ════════"
+printf '  %s\n' "${results[@]}"
+exit $rc

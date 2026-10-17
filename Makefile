@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        mindmap go-build go-test go-fmt go-vet go-tidy \
-       lint-md-links script-test test \
+       lint-md-links script-test test ci-local \
        behaviour-test playback-test \
        wasm-build wasm-stage mint-cf-worker-test
 
@@ -25,8 +25,9 @@ help:
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
-	@echo "  script-test          - Run shell script tests (topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, gateway doc configs, artifact redaction, kill_stray_processes)"
+	@echo "  script-test          - Run shell script tests (topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, gateway doc configs, artifact redaction, kill_stray_processes, ci-local)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
+	@echo "  ci-local             - Run CI checks in a container matching the ubuntu-24.04 runner (T=\"targets\"; see hack/ci-local)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
 	@echo "  playback-test        - Run @playback behaviour scenarios on the dummy-playback runtime (CI: OIDC mint)"
 	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
@@ -200,6 +201,7 @@ script-test:
 	$(call run-timed,bash hack/setup-e2e-inference-gateway_test.sh)
 	$(call run-timed,bash hack/setup-new-e2e-org_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
+	$(call run-timed,bash hack/ci-local/ci-local_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
 	$(call run-timed,python3 skills/nextwork/scripts/nextwork_test.py)
 	$(call run-timed,python3 skills/adr-corner/scripts/adr_corner_test.py)
@@ -211,6 +213,12 @@ script-test:
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 
 test: lint-all go-test script-test
+
+# Run CI checks in a container matching the ubuntu-24.04 runner, for macOS and
+# non-Ubuntu Linux (#8479). Default: everything PR CI runs.
+#   make ci-local T="go-test lint-all"
+ci-local:
+	hack/ci-local/ci-local $(or $(T),ci)
 
 # Capabilities the runner declares for @requires:capability:<name> scenarios.
 # Declared here rather than in the e2e workflow so a PR that adds a gated

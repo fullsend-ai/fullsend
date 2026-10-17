@@ -1,0 +1,7 @@
+#!/bin/sh
+# fetch URL SHA256: download URL to /tmp/dl and verify its SHA256, or fail.
+# Copied into the ci-local image (see Containerfile); runs at build time.
+set -eu
+[ $# -eq 2 ] || { echo "usage: fetch URL SHA256" >&2; exit 2; }
+curl -sSfL "$1" -o /tmp/dl
+echo "$2  /tmp/dl" | sha256sum -c - >/dev/null
