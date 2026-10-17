@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // readyTriggerDispatchEnv returns a trigger environment whose account is
@@ -20,6 +21,7 @@ import (
 func readyTriggerDispatchEnv(t *testing.T) *trigEnv {
 	t.Helper()
 	e := newTrigEnv()
+	commitDispatchRouteScripts(t, e)
 	res, err := ConvergeGitLabTriggerAccount(context.Background(), e.opts())
 	require.NoError(t, err)
 	e.assertConverged(t, res)
@@ -30,6 +32,18 @@ func readyTriggerDispatchEnv(t *testing.T) *trigEnv {
 		{ID: 13, Description: "nightly build", Ref: trigBranch, Variables: map[string]string{"BUILD": "1"}},
 	}
 	return e
+}
+
+// commitDispatchRouteScripts commits the shipped poll script and
+// pin-ci-job-identity.sh, which select the child-pipeline dispatch route.
+func commitDispatchRouteScripts(t *testing.T, e *trigEnv) {
+	t.Helper()
+	prefix := trigOwner + "/" + trigRepo + "/"
+	for _, path := range []string{gitlabPinCIJobIdentityScriptPath, gitlabPollJobScriptPath} {
+		content, err := scaffold.GitLabPerRepoFile(path)
+		require.NoError(t, err)
+		e.state.FileContents[prefix+path] = content
+	}
 }
 
 func (e *trigEnv) dispatchGate() GitLabTriggerDispatchGate {
@@ -195,6 +209,7 @@ func TestCheckGitLabTriggerDispatchGate_JobTokenPushMustBeDisabled(t *testing.T)
 func TestCheckGitLabTriggerDispatchGate_TriggerAccountMustBeReady(t *testing.T) {
 	t.Run("not installed", func(t *testing.T) {
 		e := newTrigEnv()
+		commitDispatchRouteScripts(t, e)
 		gate := e.dispatchGate()
 		assert.False(t, gate.Ready)
 		require.Len(t, gate.Deferred, 1)
@@ -217,8 +232,90 @@ func TestCheckGitLabTriggerDispatchGate_TriggerAccountMustBeReady(t *testing.T) 
 	})
 }
 
+// An installation upgraded through scaffold MR delivery can still have the
+// pre-#8438 scripts committed: they leave FULLSEND_GITLAB_DISPATCH_ROUTE unset,
+// which `fullsend poll` treats as the Poller API route. The gate defers, so
+// neither the activation nor the schedule ownership moves, until the scripts
+// that select the child-pipeline route are committed.
+func TestCheckGitLabTriggerDispatchGate_DispatchRouteScaffoldMustBeCommitted(t *testing.T) {
+	prefix := trigOwner + "/" + trigRepo + "/"
+	older := []byte("#!/usr/bin/env bash\nset -euo pipefail\necho poll\n")
+	cases := map[string]struct {
+		mutate func(e *trigEnv)
+		want   string
+	}{
+		"older pin script": {
+			mutate: func(e *trigEnv) { e.state.FileContents[prefix+gitlabPinCIJobIdentityScriptPath] = older },
+			want:   "committed " + gitlabPinCIJobIdentityScriptPath + " does not match the compatible scaffold",
+		},
+		"older poll script": {
+			mutate: func(e *trigEnv) { e.state.FileContents[prefix+gitlabPollJobScriptPath] = older },
+			want:   "committed " + gitlabPollJobScriptPath + " does not match the compatible scaffold",
+		},
+		"pin script missing": {
+			mutate: func(e *trigEnv) { delete(e.state.FileContents, prefix+gitlabPinCIJobIdentityScriptPath) },
+			want:   "committed " + gitlabPinCIJobIdentityScriptPath + " is missing",
+		},
+		"poll script missing": {
+			mutate: func(e *trigEnv) { delete(e.state.FileContents, prefix+gitlabPollJobScriptPath) },
+			want:   "committed " + gitlabPollJobScriptPath + " is missing",
+		},
+		"selector only mentioned in a comment": {
+			mutate: func(e *trigEnv) {
+				e.state.FileContents[prefix+gitlabPollJobScriptPath] = []byte("# fullsend_select_gitlab_dispatch_route is not called yet\n")
+			},
+			want: "committed " + gitlabPollJobScriptPath + " does not match the compatible scaffold",
+		},
+		"no-op pin selector with matching markers": {
+			mutate: func(e *trigEnv) {
+				e.state.FileContents[prefix+gitlabPinCIJobIdentityScriptPath] = []byte("fullsend_select_gitlab_dispatch_route() { :; } # FULLSEND_GITLAB_DISPATCH_ROUTE\n")
+			},
+			want: "committed " + gitlabPinCIJobIdentityScriptPath + " does not match the compatible scaffold",
+		},
+		"comment-only pin markers": {
+			mutate: func(e *trigEnv) {
+				e.state.FileContents[prefix+gitlabPinCIJobIdentityScriptPath] = []byte("# fullsend_select_gitlab_dispatch_route()\n# FULLSEND_GITLAB_DISPATCH_ROUTE\n")
+			},
+			want: "committed " + gitlabPinCIJobIdentityScriptPath + " does not match the compatible scaffold",
+		},
+		"poll selector inside heredoc": {
+			mutate: func(e *trigEnv) {
+				e.state.FileContents[prefix+gitlabPollJobScriptPath] = []byte("cat <<'EOF'\nfullsend_select_gitlab_dispatch_route\nEOF\n")
+			},
+			want: "committed " + gitlabPollJobScriptPath + " does not match the compatible scaffold",
+		},
+		"poll selector inside uncalled function": {
+			mutate: func(e *trigEnv) {
+				e.state.FileContents[prefix+gitlabPollJobScriptPath] = []byte("unused() {\nfullsend_select_gitlab_dispatch_route\n}\n")
+			},
+			want: "committed " + gitlabPollJobScriptPath + " does not match the compatible scaffold",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := readyTriggerDispatchEnv(t)
+			tc.mutate(e)
+
+			gate := e.dispatchGate()
+			assert.False(t, gate.Ready)
+			require.Len(t, gate.Deferred, 1)
+			assert.Contains(t, gate.Deferred[0], tc.want)
+			assert.Contains(t, gate.Deferred[0], "scaffold repair")
+		})
+	}
+	t.Run("unreadable", func(t *testing.T) {
+		e := readyTriggerDispatchEnv(t)
+		e.state.Errors["GetFileContent"] = errors.New("boom")
+
+		reason := gitlabDispatchRouteScaffoldProblem(context.Background(), e.state, trigOwner, trigRepo)
+		assert.Contains(t, reason, "could not verify that the committed "+gitlabPinCIJobIdentityScriptPath)
+		assert.NotContains(t, reason, "boom", "raw API errors are not echoed")
+	})
+}
+
 func TestCheckGitLabTriggerDispatchGate_ReportsEveryReason(t *testing.T) {
 	e := newTrigEnv()
+	commitDispatchRouteScripts(t, e)
 	e.state.PipelineSchedules[trigOwner+"/"+trigRepo] = []forge.PipelineSchedule{
 		{ID: 21, Description: "fullsend event poll", Variables: map[string]string{forge.VarPollMode: "events"}},
 	}
@@ -248,4 +345,54 @@ func TestCheckGitLabTriggerDispatchGate_ScheduleIdentityChangeDefers(t *testing.
 	assert.False(t, gate.Ready)
 	require.Len(t, gate.Deferred, 2)
 	assert.Contains(t, gate.Deferred[0], `managed schedule 11 ("fullsend slash poll") changed while it was being verified`)
+}
+
+// seedTypedScheduleTemplates commits the typed wrapper, root, agent and poll
+// templates that convergeSchedules requires before it reactivates a schedule.
+func seedTypedScheduleTemplates(t *testing.T, e *trigEnv) {
+	t.Helper()
+	prefix := trigOwner + "/" + trigRepo + "/"
+	for _, path := range []string{".gitlab-ci.yml", fullsendPipelineInclude, fullsendAgentTemplatePath, fullsendPollTemplatePath} {
+		content, err := scaffold.GitLabPerRepoFile(path)
+		require.NoError(t, err)
+		e.state.FileContents[prefix+path] = content
+	}
+}
+
+func TestGitLabScheduleReactivationDeferral(t *testing.T) {
+	ctx := context.Background()
+	t.Run("typed templates landed", func(t *testing.T) {
+		e := newTrigEnv()
+		seedTypedScheduleTemplates(t, e)
+		assert.Empty(t, GitLabScheduleReactivationDeferral(ctx, e.state, trigOwner, trigRepo))
+	})
+	t.Run("legacy wrapper", func(t *testing.T) {
+		e := newTrigEnv()
+		assert.Empty(t, GitLabScheduleReactivationDeferral(ctx, e.state, trigOwner, trigRepo))
+	})
+	t.Run("stale agent template", func(t *testing.T) {
+		e := newTrigEnv()
+		seedTypedScheduleTemplates(t, e)
+		key := trigOwner + "/" + trigRepo + "/" + fullsendAgentTemplatePath
+		e.state.FileContents[key] = []byte(strings.ReplaceAll(string(e.state.FileContents[key]), "event_payload_chunk_00", "event_payload_record"))
+		assert.Contains(t, GitLabScheduleReactivationDeferral(ctx, e.state, trigOwner, trigRepo), "templates have not landed")
+	})
+	t.Run("root without the input contract", func(t *testing.T) {
+		e := newTrigEnv()
+		seedTypedScheduleTemplates(t, e)
+		delete(e.state.FileContents, trigOwner+"/"+trigRepo+"/.gitlab-ci.yml")
+		assert.Contains(t, GitLabScheduleReactivationDeferral(ctx, e.state, trigOwner, trigRepo), "root .gitlab-ci.yml")
+	})
+	t.Run("weak override role", func(t *testing.T) {
+		e := newTrigEnv()
+		seedTypedScheduleTemplates(t, e)
+		e.state.PipelineVarOverrideRoles[trigOwner+"/"+trigRepo] = forge.PipelineVarOverrideDeveloper
+		assert.Contains(t, GitLabScheduleReactivationDeferral(ctx, e.state, trigOwner, trigRepo), "override restriction")
+	})
+	t.Run("unreadable template", func(t *testing.T) {
+		e := newTrigEnv()
+		seedTypedScheduleTemplates(t, e)
+		e.state.Errors["GetFileContent"] = errors.New("boom")
+		assert.NotEmpty(t, GitLabScheduleReactivationDeferral(ctx, e.state, trigOwner, trigRepo))
+	})
 }

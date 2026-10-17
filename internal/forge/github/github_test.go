@@ -5224,6 +5224,10 @@ func TestUnsupportedMethods(t *testing.T) {
 		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("CreatePipelineScheduleWithActive", func(t *testing.T) {
+		_, err := client.CreatePipelineScheduleWithActive(ctx, "o", "r", "main", "desc", "0 * * * *", nil, false)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("DeletePipelineSchedule", func(t *testing.T) {
 		err := client.DeletePipelineSchedule(ctx, "o", "r", 1)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)

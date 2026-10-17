@@ -683,9 +683,12 @@ for details.
 
 `repos install` also sets up a separate, trigger-only project service account
 for the protected-branch dispatch route that
-[#8438](https://github.com/fullsend-ai/fullsend/issues/8438) will activate.
-Nothing reads its trigger token yet, so polling and the existing webhook fast
-path behave as before. It needs only project Maintainer (or Owner) access: no
+[#8438](https://github.com/fullsend-ai/fullsend/issues/8438) activates. The
+webhook fast path is unchanged
+([#8509](https://github.com/fullsend-ai/fullsend/issues/8509)), but once
+install records the dispatch activation, scheduled polling moves onto the
+trigger-only account and dispatches through the child-pipeline route (see
+"Polling schedule ownership" below). It needs only project Maintainer (or Owner) access: no
 instance administrator and no persistent Maintainer token or private key.
 
 Install creates the account (`fullsend-trigger-<nonce>`), temporarily raises it
@@ -707,7 +710,9 @@ protected default branch is not the one the ledger recorded. Install fails inste
 owns an SSH key, a pipeline schedule, or a trigger token that fullsend did not
 create, or when any pipeline trigger token or schedule has no reported owner
 (its ID is named; fullsend never deletes it by inference); remove or reassign
-it, then re-run install. As soon as the manifest and forge clients are
+it, then re-run install. The managed polling schedules the account owns once
+dispatch is activated (see below) are fullsend's and do not block install. As
+soon as the manifest and forge clients are
 available, every install runs a containment-only recovery that revokes an
 unfinished bootstrap token and restores Developer access without creating
 anything, before the configuration preflights and every later stage can fail.
@@ -760,12 +765,35 @@ reason and resource IDs.
   it rotates, repairs or removes the account, the record no longer matches the
   ledger and the scaffold falls back to the Poller route until a current CLI
   install records a fresh activation. The gate also defers when a committed CI
-  job, other than Fullsend's own, would run in a trigger or agent child
-  (`source=pipeline`) pipeline. A newer scaffold with an older CLI is refused
+  job, other than Fullsend's own, would run in a trigger, agent child
+  (`source=pipeline`) or scheduled (`source=schedule`) pipeline, and while the
+  committed `pin-ci-job-identity.sh` and `run-poll-job.sh` do not match the
+  shipped compatible scripts. Customized or older scripts need a merged
+  scaffold repair; a selector name in a comment or unexecuted code does not
+  establish readiness. A newer scaffold with an older CLI is refused
   explicitly: before choosing the child-pipeline route the job runs
   `fullsend poll --print-dispatch-routes`, and a CLI that does not list
   `child-pipeline` stops the job before any dispatch with a message to upgrade
   the pinned CLI.
+- **Polling schedule ownership:** once install records the activation, it
+  recreates the managed polling schedules (`fullsend slash poll`,
+  `fullsend event poll`) under the trigger account, so a scheduled poll runs as
+  that account and dispatches the agent through the child-pipeline route
+  (`CI_JOB_TOKEN`, `source=pipeline`). The account creates them with a
+  short-lived token while it stays at Developer, and that token is revoked in
+  the same run. Each new schedule keeps the cron, the protected default branch,
+  and the enabled or disabled state of the schedule it replaces. The
+  installer-owned originals are deleted only after GitLab reports the new
+  schedules as owned by the account, so a failure leaves polling unchanged.
+  When the activation is not recorded (the account or the gate deferred, or the
+  account stage failed), install hands any account-owned schedule back to the
+  installer instead. This also happens before the account is ever raised to
+  Maintainer and when rotation or repair retires an account. Each move creates
+  the replacement before deleting the original, so an interrupted run leaves a
+  duplicate that the next install removes. If an install stops before it
+  reaches the trigger-account stage, the activation stays withdrawn and the
+  account-owned schedules cannot dispatch until an install completes. Re-run
+  install.
 - **Deferral and unsafe token variable:** a branch-change, override-role, or
   capability deferral first removes an unsafe published token variable and
   revokes its ownership-verified trigger. A weakened or unreadable override
@@ -776,7 +804,8 @@ reason and resource IDs.
 - **Change the default branch:** run `repos uninstall` (it removes the
   resources from the recorded branch), then `repos install`.
 - **Uninstall:** `repos uninstall` removes the published token, trigger token,
-  push entry, deploy key, and account, then the ledger. It does not delete the
+  push entry, deploy key, the managed polling schedules the account owns, and
+  the account, then the ledger. It does not delete the
   account while it still owns an active personal access token, SSH key,
   pipeline schedule, or trigger token that fullsend did not create, and
   rotation retires a previous account under the same rule; remove the

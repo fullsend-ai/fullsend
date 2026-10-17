@@ -783,9 +783,11 @@ from that path and is not used by it.
 > **Status:** `repos install`, `--rotate-gitlab-trigger-account`, `repos
 > status`, and `repos uninstall` run the lifecycle implemented in
 > [`internal/repos/gitlab_trigger_account.go`](../../internal/repos/gitlab_trigger_account.go).
-> The dispatch route that would use its trigger token stays inactive until
-> [#8438](https://github.com/fullsend-ai/fullsend/issues/8438). Polling is
-> unchanged. Tracked by
+> [#8438](https://github.com/fullsend-ai/fullsend/issues/8438) delivered
+> dispatch activation, and
+> [#8508](https://github.com/fullsend-ai/fullsend/issues/8508) implements
+> polling schedule ownership: once the activation is recorded, managed polling
+> schedules move to the trigger account. Tracked by
 > [#8437](https://github.com/fullsend-ai/fullsend/issues/8437). It is
 > not yet validated against a real GitLab instance
 > ([#8245](https://github.com/fullsend-ai/fullsend/issues/8245)); the
@@ -843,7 +845,20 @@ to the protected default branch, so a job token that could push the repository
 would let a dispatched job rewrite the code later protected pipelines run;
 enabled, unreadable, and unreported all defer, read through
 `forge.Client.GetJobTokenRepositoryPushAllowed`), and
-`DiagnoseGitLabTriggerAccount` reports `ready` for the default branch. `repos install` rechecks it whenever
+`DiagnoseGitLabTriggerAccount` reports `ready` for the default branch. The gate
+also defers until the committed `pin-ci-job-identity.sh` and `run-poll-job.sh`
+match the shipped compatible scripts. This exact-content check avoids treating
+a selector name in a comment, heredoc, or uncalled function as proof that the
+child-pipeline route runs. An older or customized script needs a scaffold
+repair merged before schedule ownership moves to the account. The gate also
+reads the committed CI files and defers when a job or include other than
+the managed ones would run in a trigger, an agent child (`source=pipeline`) or
+a scheduled (`source=schedule`) pipeline, or when a managed template's job-level
+or inherited global execution configuration (`after_script`, `services`,
+`hooks`) cannot be ruled out. The `source=schedule` check matters because the
+managed polling schedules move to the trigger-only account, so a user job
+restricted to schedules would otherwise run as that account with its
+`CI_JOB_TOKEN`. `repos install` rechecks it whenever
 the trigger account converges to ready. That includes the legacy (non-typed)
 path, where the schedules still set `FULLSEND_POLL_MODE` and the gate defers,
 and the path that prepares the trigger account after the Poller protected-ref
@@ -883,7 +898,8 @@ The route is implemented and selected per job:
   `CheckGitLabTriggerDispatchGate` returns Ready (schedules migrated off
   pipeline variables, override role `no_one_allowed`, job-token repository
   push disabled, no unrelated committed job reachable from a trigger or agent
-  child `source=pipeline` pipeline, trigger account ready). It is stored in
+  child `source=pipeline` pipeline, committed poll and identity scripts that
+  select the route, trigger account ready). It is stored in
   `FULLSEND_GITLAB_DISPATCH_ACTIVATION`, not in the ledger. Every converge,
   rotate, containment or uninstall run deletes it before doing anything else,
   including runs that defer, so a ready ledger with a published trigger token
@@ -927,20 +943,81 @@ The route is implemented and selected per job:
   therefore just running the older CLI: dispatch falls back to the Poller
   route.
 
-The route becomes active once install moves a dispatch entry point onto the
-trigger-only account: pointing the webhook at its trigger token and creating
-the polling schedules it owns. That ownership change and its lifecycle are not
-yet implemented, so today's webhook and schedule pipelines keep using the
-`api` route.
+The route becomes active for a dispatch entry point once install moves it onto
+the trigger-only account. Scheduled polling moves when the activation is
+recorded (below). The managed webhook still uses its own trigger token and the
+`api` route; moving it is tracked in
+[#8509](https://github.com/fullsend-ai/fullsend/issues/8509).
 
-**No schedule in #8437.** A pipeline schedule runs as its owner, and its cron,
-ref, and variables are defined by the dispatch admission rules of #8438.
-Creating one now would activate the dispatch route this change keeps inactive.
-So no schedule belongs to the trigger account in #8437, and any schedule it owns
-is foreign: install fails closed. #8438 adds the schedule lifecycle (creation,
-adoption, drift, rotation, interrupted cleanup, uninstall) when it activates
-scheduled dispatch. The installer's own polling schedules are not owned by the
-trigger account and are untouched.
+**Polling schedule ownership** ([#8508](https://github.com/fullsend-ai/fullsend/issues/8508)).
+A pipeline schedule creates every pipeline as its owner. Once install has
+recorded the activation for the current ledger generation,
+`ConvergeGitLabTriggerSchedules` recreates the managed polling schedules
+(`fullsend slash poll`, `fullsend event poll`) under the trigger account, so a
+scheduled poll runs as that account and dispatches through the child-pipeline
+route. When the activation is not recorded (the account or the gate deferred,
+or the account stage failed), `ReleaseGitLabTriggerSchedules` hands every
+account-owned managed schedule back to the installer instead, so a poll job
+only runs as the trigger account while the child-pipeline route is selectable.
+The lifecycle
+lives in `internal/repos/gitlab_trigger_schedules.go`:
+
+- **Creation and adoption.** GitLab records the caller as a schedule's owner,
+  so the account creates its schedules itself, with a short-lived bootstrap PAT
+  minted while it stays at Developer. Creating a schedule needs no elevation;
+  the account starts pipelines on the protected branch through its deploy-key
+  grant. The PAT reuses the ledger's `pat_pending`/`pat_id` obligation, so an
+  interrupted run is contained like an interrupted bootstrap and the ledger
+  gains no field. Each replacement runs on the recorded branch with the spec's
+  cron, no pipeline variables, and the active state of the schedule it
+  replaces. GitLab must report every replacement as owned by the account.
+  Only then are the installer-owned originals deleted, so a failure keeps
+  polling on the installer's schedules. A spec with no live schedule at all is
+  left to `convergeSchedules`, and the next install moves the schedule it
+  creates.
+
+  **Accepted temporary-PAT risk (#8519).** GitLab records the caller as the
+  schedule owner, so account-owned creation currently requires a temporary
+  `api`-scoped PAT for that account. Its scope grants broader Developer API
+  authority than schedule creation needs. Together with the account's deploy-key
+  grant, a compromised PAT could permit protected-branch writes; treat it as a
+  protected-branch-write credential while it exists. Before minting, install
+  records `pat_pending` in the ledger and verifies Developer access. It records
+  the PAT ID before use, gives the PAT a one-day expiry, and keeps its value
+  only in memory. `endBootstrap` revokes it on both success and failure;
+  `containBootstrap` handles an interrupted run. This risk is accepted for
+  #8508 in this PR, with no follow-up work deferred.
+- **Drift.** An account-owned managed schedule on another ref, with another
+  cron, or with pipeline variables is replaced the same way, and duplicates are
+  deleted. One that carries pipeline variables would fail the variable
+  migration preflight that convergence runs, so install hands it back to the
+  installer after the repository selection and configuration preflights succeed,
+  before convergence. That repair
+  inspects every ownership-verified generation, current and retired, even when
+  the current one is not ready or published.
+- **Hand-back.** An installer-owned copy (same description, ref, cron and
+  active state, no variables) is created first, unless one already exists, and
+  then the account's schedule is deleted. The hand-back also runs before the
+  account is ever raised to Maintainer (a schedule fires on the server's clock
+  and would run with Maintainer access) and when rotation or repair retires a
+  generation, before its account is deleted.
+- **Interrupted cleanup.** Every move creates before it deletes, so an
+  interruption leaves a duplicate that the next run removes, never a project
+  without a polling schedule.
+- **Uninstall** deletes the account-owned managed schedules without a copy,
+  because uninstall removes every fullsend schedule.
+
+A managed schedule is recognized only by its exact description and the account
+as its reported owner. Only a holder of the account's credentials can make it a
+schedule's owner, and fullsend holds the only one: any other active PAT fails
+closed. Any other schedule the account owns is foreign. The activation is
+withdrawn at the start of every install. Withdrawing it turns off
+child-pipeline route selection, and the poll job selects the `api` route. If an
+install stops before the trigger-account stage, the account-owned schedules
+keep running as the account on that `api` route until an install completes.
+That route uses the Poller credential, which GitLab injects into every
+protected-branch job whoever owns the pipeline. The account does not hold that
+credential itself, and scheduled dispatch is not necessarily interrupted.
 
 **Fresh generations; no re-elevation.** A trigger credential that was already
 published is never re-elevated. A trigger request accepted before revocation
@@ -954,7 +1031,8 @@ generation stays at Developer until retirement. Retirement is recorded in the
 ledger (the `retired` list) and retried by install and uninstall; status
 reports an unfinished retirement as drift.
 
-**Foreign resources.** Each account must own no SSH authentication key, no pipeline schedule, and
+**Foreign resources.** Each account must own no SSH authentication key, no pipeline schedule other
+than the managed polling schedules, and
 no pipeline trigger token other than the recorded one: any of those fails
 closed, because each would let a holder act as the account, and fullsend
 removes only what it can prove it owns.
@@ -997,6 +1075,7 @@ a Poller identity.
 | Push-capable deploy key `fullsend-trigger-<nonce>` | bootstrap PAT, so the trigger account owns it | Title and the SHA-256 fingerprint recorded before creation |
 | Deploy-key push entry on the branch's exact-name protected-branch rule | installer | Entry read back by deploy key ID; removed only after the key's title and fingerprint are verified and while it still names that key |
 | Pipeline trigger token `fullsend-trigger-<nonce>` | bootstrap PAT, so the trigger account owns it | Recorded ID, description, and owner ID, all checked before any revocation; unrecorded leftovers need the nonce description and the account as owner |
+| Managed polling schedules (`fullsend slash poll`, `fullsend event poll`) | bootstrap PAT at Developer, only while the dispatch activation is recorded | Exact managed description and the account as reported owner; handed back to the installer (or deleted on uninstall) before the account is raised or deleted |
 
 The deploy key pair is generated in memory and the private key is discarded
 immediately; only the public key reaches GitLab. Trigger token values go to
@@ -1049,8 +1128,9 @@ or install while the phase is `rotating` or while a retirement is recorded
 finishes it.
 
 **Uninstall** (`RemoveGitLabTriggerAccount`) records phase `removing`, then
-deletes the published token variable and revokes the trigger token, the grant
-entry, the deploy key, any bootstrap PAT, and the account, clearing each from
+deletes the published token variable, deletes the account-owned managed
+polling schedules without an installer-owned copy, and revokes the trigger
+token, the grant entry, the deploy key, any bootstrap PAT, and the account, clearing each from
 the ledger only after it is gone (including any unfinished retirement of a
 previous generation), and finally deletes the ledger. Generic variable cleanup
 never deletes the ledger or the token sink. Install refuses to run while phase is `removing`.

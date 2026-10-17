@@ -182,6 +182,12 @@ func (b bootstrapClient) CreatePipelineTriggerToken(ctx context.Context, owner, 
 	return b.c.CreatePipelineTriggerToken(ctx, owner, repo, description)
 }
 
+// CreatePipelineSchedule creates a variable-free schedule owned by the
+// trigger account (#8508).
+func (b bootstrapClient) CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, active bool) (int64, error) {
+	return b.c.CreatePipelineScheduleWithActive(ctx, owner, repo, ref, description, cron, nil, active)
+}
+
 // VerifiedPollerUserIDs is the authoritative Poller identity inventory the
 // trigger account is kept separate from: every managed Poller service account,
 // including the current, retiring and abandoned Poller generations recorded in

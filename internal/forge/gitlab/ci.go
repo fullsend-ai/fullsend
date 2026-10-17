@@ -1221,12 +1221,25 @@ func (c *LiveClient) TriggerPipelineWithJobToken(ctx context.Context, owner, rep
 // CreatePipelineSchedule creates a pipeline schedule and attaches variables.
 // Returns the schedule ID.
 func (c *LiveClient) CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error) {
+	return c.CreatePipelineScheduleWithActive(ctx, owner, repo, ref, description, cron, variables, true)
+}
+
+// CreatePipelineScheduleWithActive creates a pipeline schedule and attaches
+// variables. GitLab creates a schedule active unless the request says
+// otherwise, so an inactive schedule sends active=false in the create
+// request itself: a separate disable afterwards leaves a window in which the
+// schedule is active and can fire. The attribute is omitted for an active
+// schedule, keeping that request unchanged.
+func (c *LiveClient) CreatePipelineScheduleWithActive(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string, active bool) (int64, error) {
 	path := fmt.Sprintf("/projects/%s/pipeline_schedules", projectPath(owner, repo))
-	body := map[string]string{
+	body := map[string]any{
 		"ref":           ref,
 		"description":   description,
 		"cron":          cron,
 		"cron_timezone": "UTC",
+	}
+	if !active {
+		body["active"] = false
 	}
 	resp, err := c.post(ctx, path, body)
 	if err != nil {

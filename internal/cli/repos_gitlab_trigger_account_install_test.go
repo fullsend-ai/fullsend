@@ -347,3 +347,119 @@ func (e *installEmulation) handle(w http.ResponseWriter, r *http.Request) bool {
 	}
 	return true
 }
+
+// The early repair of drifted trigger-account-owned schedules only runs against
+// the live GitLab client and never in a dry run; other clients are skipped
+// without touching the forge.
+func TestRepairGitLabTriggerSchedules_SkipsClientsWithoutTriggerAccountAPI(t *testing.T) {
+	fc := newTriggerInstallFake(t)
+	err := repairGitLabTriggerSchedules(context.Background(), &reposInstallConfig{}, fc, ui.New(io.Discard), "group", "project")
+	require.NoError(t, err)
+	assert.Empty(t, fc.Variables)
+	assert.Empty(t, fc.CreatedSchedules)
+
+	called := false
+	opts := &reposInstallConfig{testRepairTriggerSchedules: func(context.Context, forge.Client, string, string) error {
+		called = true
+		return errors.New("repair unavailable")
+	}}
+	err = repairGitLabTriggerSchedules(context.Background(), opts, fc, ui.New(io.Discard), "group", "project")
+	require.EqualError(t, err, "repair unavailable")
+	assert.True(t, called)
+}
+
+// An account-owned schedule that drifted to carry pipeline variables blocks
+// the migration preflight convergence reaches, so the repair runs after
+// containment and the configuration preflights, before repos.Converge writes
+// anything (#8508). A repo whose containment failed is not repaired, and an
+// install that fails a preflight does not repair.
+func TestRunReposInstall_GitLabScheduleRepairRunsAfterContainmentBeforeConverge(t *testing.T) {
+	t.Run("not run when a configuration preflight fails", func(t *testing.T) {
+		manifestPath := writeTestManifest(t, triggerInstallManifest)
+		fc := newTriggerInstallFake(t)
+		seedPipelineSchedules(fc)
+
+		opts := gitlabInstallOpts(manifestPath, fc)
+		// A WIF provider without a GCP project fails the effective
+		// infrastructure preflight.
+		opts.inferenceProject = ""
+		opts.inferenceWIFProvider = "projects/123456789/locations/global/workloadIdentityPools/pool/providers/prov"
+		containCalls, repairCalls := 0, 0
+		opts.testContainTriggerAccount = func(context.Context, forge.Client, string, string) error {
+			containCalls++
+			return nil
+		}
+		opts.testRepairTriggerSchedules = func(context.Context, forge.Client, string, string) error {
+			repairCalls++
+			return nil
+		}
+		var runErr error
+		_ = captureStdout(t, func() { runErr = runReposInstall(context.Background(), opts) })
+		require.ErrorContains(t, runErr, "effective infrastructure preflight")
+		assert.Equal(t, 1, containCalls, "containment still runs first")
+		assert.Zero(t, repairCalls, "a failed preflight leaves live schedules untouched")
+	})
+
+	t.Run("after containment and before convergence", func(t *testing.T) {
+		manifestPath := writeTestManifest(t, triggerInstallManifest)
+		fc := newTriggerInstallFake(t)
+		seedPipelineSchedules(fc)
+
+		opts := gitlabInstallOpts(manifestPath, fc)
+		var order []string
+		opts.testContainTriggerAccount = func(context.Context, forge.Client, string, string) error {
+			order = append(order, "contain")
+			return nil
+		}
+		opts.testRepairTriggerSchedules = func(context.Context, forge.Client, string, string) error {
+			order = append(order, "repair")
+			assert.Empty(t, fc.CommittedFilesToBranch, "convergence has not committed anything yet")
+			assert.Empty(t, fc.CommittedFiles, "convergence has not committed anything yet")
+			assert.Empty(t, fc.CreatedProposals, "convergence has not opened a proposal yet")
+			assert.Empty(t, fc.Variables, "convergence has not written a variable yet")
+			return nil
+		}
+		opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string) error {
+			order = append(order, "converge")
+			return nil
+		}
+		_ = captureStdout(t, func() { _ = runReposInstall(context.Background(), opts) })
+		assert.Equal(t, []string{"contain", "repair", "converge"}, order)
+	})
+
+	t.Run("a repair failure is only reported", func(t *testing.T) {
+		manifestPath := writeTestManifest(t, triggerInstallManifest)
+		fc := newTriggerInstallFake(t)
+		seedPipelineSchedules(fc)
+
+		opts := gitlabInstallOpts(manifestPath, fc)
+		opts.testRepairTriggerSchedules = func(context.Context, forge.Client, string, string) error {
+			return errors.New("repair unavailable")
+		}
+		triggerCalls := 0
+		opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string) error {
+			triggerCalls++
+			return nil
+		}
+		output := captureStdout(t, func() { _ = runReposInstall(context.Background(), opts) })
+		assert.Contains(t, output, "GitLab trigger account schedule repair failed: repair unavailable")
+		assert.Equal(t, 1, triggerCalls, "install continues past a repair failure")
+	})
+
+	t.Run("skipped when containment failed", func(t *testing.T) {
+		manifestPath := writeTestManifest(t, triggerInstallManifest)
+		fc := newTriggerInstallFake(t)
+
+		opts := gitlabInstallOpts(manifestPath, fc)
+		opts.testContainTriggerAccount = func(context.Context, forge.Client, string, string) error {
+			return errors.New("restoring Developer access")
+		}
+		repairCalls := 0
+		opts.testRepairTriggerSchedules = func(context.Context, forge.Client, string, string) error {
+			repairCalls++
+			return nil
+		}
+		_ = captureStdout(t, func() { _ = runReposInstall(context.Background(), opts) })
+		assert.Zero(t, repairCalls)
+	})
+}

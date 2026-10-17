@@ -1157,6 +1157,9 @@ func threadSafetyCalls(ctx context.Context) map[string]func(fc *FakeClient) []an
 		"CreatePipelineSchedule": func(fc *FakeClient) []any {
 			return pack(fc.CreatePipelineSchedule(ctx, "o", "r", "main", "d", "0 * * * *", map[string]string{"K": "v"}))
 		},
+		"CreatePipelineScheduleWithActive": func(fc *FakeClient) []any {
+			return pack(fc.CreatePipelineScheduleWithActive(ctx, "o", "r", "main", "d", "0 * * * *", map[string]string{"K": "v"}, false))
+		},
 		"DeletePipelineSchedule": func(fc *FakeClient) []any { return pack(fc.DeletePipelineSchedule(ctx, "o", "r", 2)) },
 		"GetPipelineSchedule":    func(fc *FakeClient) []any { return pack(fc.GetPipelineSchedule(ctx, "o", "r", 1)) },
 		"DeletePipelineScheduleVariable": func(fc *FakeClient) []any {

@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // GitLabTriggerDispatchGate is the result of CheckGitLabTriggerDispatchGate.
@@ -45,6 +47,11 @@ type GitLabTriggerDispatchGate struct {
 //     child (source=pipeline) pipeline (gitlabDispatchExtraWorkProblem).
 //  5. The trigger account (DiagnoseGitLabTriggerAccount) is ready on branch,
 //     verified against live project state.
+//  6. The committed poll script and pin-ci-job-identity.sh select the
+//     child-pipeline dispatch route (gitlabDispatchRouteScaffoldProblem). Older
+//     committed scripts leave the route unset, which `fullsend poll` treats as
+//     the Poller API route, so an activation would not move dispatch to the
+//     trigger account while a scaffold repair is still unmerged (#8508).
 //
 // A nil api or an empty branch makes the live account checks and the
 // default-branch comparison impossible, so the gate never returns Ready for
@@ -74,6 +81,9 @@ func CheckGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, ap
 			deferred = append(deferred, problem)
 		}
 	}
+	if reason := gitlabDispatchRouteScaffoldProblem(ctx, client, owner, repo); reason != "" {
+		deferred = append(deferred, reason)
+	}
 	if status := DiagnoseGitLabTriggerAccount(ctx, client, api, owner, repo, branch); status.State != GitLabTriggerStateReady {
 		reason := "the trigger account is " + status.State
 		if len(status.Reasons) > 0 {
@@ -82,6 +92,69 @@ func CheckGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, ap
 		deferred = append(deferred, reason)
 	}
 	return GitLabTriggerDispatchGate{Ready: len(deferred) == 0, Deferred: deferred}
+}
+
+// GitLabScheduleReactivationDeferral returns a reason to keep disabled managed
+// polling schedules disabled, or "" when reactivating them is safe. It applies
+// the committed-template prerequisites convergeSchedules requires before it
+// reactivates or creates a schedule: a compatible installed wrapper and, for a
+// typed installation, a root .gitlab-ci.yml that forwards the pipeline-input
+// contract, landed agent and poll templates, and the verified pipeline-variable
+// override restriction. The trigger-account ownership stage consults it before
+// honoring --reactivate-schedules, so replacing a disabled account-owned
+// schedule with an active one cannot resume polling ahead of those
+// prerequisites (#8508). It only reads; a failed read defers.
+func GitLabScheduleReactivationDeferral(ctx context.Context, client forge.Client, owner, repo string) string {
+	typed, err := GitLabUsesTypedDispatch(ctx, client, owner, repo)
+	if err != nil {
+		return "the installed GitLab wrapper cannot be shown to support scheduled polling: " + safeAPIError("checking the committed GitLab dispatch transport", err).Error()
+	}
+	if !typed {
+		return ""
+	}
+	rootReady, err := gitlabRootDeclaresDispatchInputs(ctx, client, owner, repo)
+	if err != nil {
+		return "could not verify the committed root .gitlab-ci.yml pipeline-input contract: " + safeAPIError("reading the root .gitlab-ci.yml", err).Error()
+	}
+	if !rootReady {
+		return "the root .gitlab-ci.yml does not yet declare and forward the pipeline-input contract"
+	}
+	landed, err := gitlabPollAndAgentTemplatesLanded(ctx, client, owner, repo)
+	if err != nil {
+		return "could not verify the committed agent and poll templates: " + safeAPIError("reading the agent and poll templates", err).Error()
+	}
+	if !landed {
+		return "compatible agent and poll templates have not landed on the default branch"
+	}
+	if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
+		return "the pipeline-variable override restriction is not verified as no_one_allowed"
+	}
+	return ""
+}
+
+// gitlabDispatchRouteScaffoldProblem returns a deferral reason unless the
+// committed pin and poll scripts match the shipped compatible scaffold. A
+// marker search cannot prove that the selector runs: comments, heredocs, and
+// dead functions can all carry the same text. A customized script is deferred
+// until the compatible scaffold is committed, rather than being guessed safe.
+func gitlabDispatchRouteScaffoldProblem(ctx context.Context, client forge.Client, owner, repo string) string {
+	for _, path := range []string{gitlabPinCIJobIdentityScriptPath, gitlabPollJobScriptPath} {
+		committed, err := client.GetFileContent(ctx, owner, repo, path)
+		switch {
+		case forge.IsNotFound(err):
+			return "the committed " + path + " is missing, so the child-pipeline dispatch route cannot be selected; merge the scaffold repair first"
+		case err != nil:
+			return "could not verify that the committed " + path + " selects the dispatch route: " + safeAPIError("reading "+path, err).Error()
+		}
+		shipped, err := scaffold.GitLabPerRepoFile(path)
+		if err != nil {
+			return "could not verify the shipped " + path + " dispatch-route contract: " + err.Error()
+		}
+		if !bytes.Equal(committed, shipped) {
+			return "the committed " + path + " does not match the compatible scaffold needed for the child-pipeline dispatch route; merge the scaffold repair first"
+		}
+	}
+	return ""
 }
 
 // gitlabScheduleMigrationProblems reports managed pipeline schedules that

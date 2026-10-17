@@ -2578,15 +2578,31 @@ func activatePipelineSchedules(ctx context.Context, client forge.Client,
 
 		foundInactive := false
 		var activateErr error
+		forbidden := false
 		for _, s := range schedules {
 			if s.Description != spec.Description || s.Active {
 				continue
 			}
 			foundInactive = true
 			if err := client.UpdatePipelineSchedule(ctx, owner, repo, s.ID, true); err != nil {
+				if forge.IsForbidden(err) {
+					// GitLab lets only a schedule's owner edit it. A schedule
+					// the trigger account owns is reactivated by the
+					// trigger-account stage that follows (#8508).
+					forbidden = true
+					continue
+				}
 				activateErr = err
 				break
 			}
+		}
+		if activateErr == nil && forbidden {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "none",
+				Detail:    fmt.Sprintf("%s is owned by another user and cannot be edited by the installer; if the GitLab trigger account owns it, the trigger-account stage reactivates it", DriftFieldName(name)),
+			})
+			continue
 		}
 		if !foundInactive {
 			actions = append(actions, ComponentAction{

@@ -4687,6 +4687,11 @@ func (c *LiveClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref,
 	return 0, forge.ErrNotSupported
 }
 
+// CreatePipelineScheduleWithActive is not supported on GitHub.
+func (c *LiveClient) CreatePipelineScheduleWithActive(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string, _ bool) (int64, error) {
+	return 0, forge.ErrNotSupported
+}
+
 // DeletePipelineSchedule is not supported on GitHub.
 func (c *LiveClient) DeletePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64) error {
 	return forge.ErrNotSupported

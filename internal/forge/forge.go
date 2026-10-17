@@ -1230,6 +1230,11 @@ type Client interface {
 	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]PipelineInputValue) (*Pipeline, error)
 
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
+	// CreatePipelineScheduleWithActive is CreatePipelineSchedule with the
+	// schedule's initial active state sent in the create request. With
+	// active false the schedule is never active, so it cannot fire between
+	// a create and a separate disable. GitHub returns ErrNotSupported.
+	CreatePipelineScheduleWithActive(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string, active bool) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	// GetPipelineSchedule includes variables omitted by GitLab's list endpoint.
 	GetPipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error)

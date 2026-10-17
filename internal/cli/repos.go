@@ -383,6 +383,10 @@ type reposInstallConfig struct {
 	// testConvergeTriggerAccount replaces the live GitLab trigger-account
 	// convergence step, which only runs against the live client.
 	testConvergeTriggerAccount func(ctx context.Context, client forge.Client, owner, repo string) error
+	// testRepairTriggerSchedules replaces the live repair of drifted
+	// trigger-account-owned polling schedules, which only runs against the
+	// live client.
+	testRepairTriggerSchedules func(ctx context.Context, client forge.Client, owner, repo string) error
 }
 
 func newReposInstallCmd() *cobra.Command {
@@ -660,6 +664,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				Owner: gr.Owner, Repo: gr.Repo,
 				Error: fmt.Errorf("GitLab trigger account recovery: %w", cErr),
 			})
+			continue
 		}
 	}
 	if selectionMatchErr != nil {
@@ -856,6 +861,30 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
 		default:
 			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+		}
+	}
+
+	// A managed schedule the trigger account owns that drifted to carry
+	// pipeline variables goes back to the installer before convergence: the
+	// pipeline-variable migration preflight convergence reaches rejects it and
+	// cannot edit it as the installer (#8508). It runs only here, after the
+	// repository selection and every configuration preflight succeeded, so an
+	// install that fails those checks leaves live schedules untouched. A repo
+	// whose containment failed is skipped. A failure here is only reported; a
+	// schedule left carrying variables fails the convergence or override-role
+	// check that rejects it.
+	for _, gr := range gitlabRepos {
+		key := gr.Owner + "/" + gr.Repo
+		if _, failed := containFailed[key]; failed {
+			continue
+		}
+		fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+		if fcErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client for trigger account schedule repair: %v", key, fcErr))
+			continue
+		}
+		if rErr := repairGitLabTriggerSchedules(ctx, opts, fc.Client, printer, gr.Owner, gr.Repo); rErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] GitLab trigger account schedule repair failed: %v", key, rErr))
 		}
 	}
 

@@ -1813,3 +1813,21 @@ func TestGitLabTriggerAccountHTTP_UninstallContainsBootstrapWhenInventoryUnreada
 	assert.Equal(t, led.AccountID, after.AccountID, "the ledger and account are kept for a retry")
 	e.requireLeaseReleased()
 }
+
+// The early schedule repair is a no-op without a ledger, and with a ready
+// account that owns no schedule it takes and releases the project lease and
+// changes nothing.
+func TestRepairGitLabTriggerSchedules_LiveClientNoops(t *testing.T) {
+	e := newTAHEnv(t)
+	var client forge.Client = e.client
+	require.NoError(t, repairGitLabTriggerSchedules(context.Background(), &reposInstallConfig{}, client, ui.New(e.out), "g", "p"))
+	e.requireNoLedger()
+
+	e.installReady()
+	e.out.Reset()
+	require.NoError(t, repairGitLabTriggerSchedules(context.Background(), &reposInstallConfig{}, client, ui.New(e.out), "g", "p"))
+	assert.NotContains(t, e.out.String(), "repaired")
+	e.requireLeaseReleased()
+
+	require.NoError(t, repairGitLabTriggerSchedules(context.Background(), &reposInstallConfig{dryRun: true}, client, ui.New(e.out), "g", "p"))
+}
