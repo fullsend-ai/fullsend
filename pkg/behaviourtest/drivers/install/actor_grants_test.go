@@ -185,7 +185,7 @@ func TestEnsurer_VerifiesActorsOnRecreatedRepo(t *testing.T) {
 		binary:      "/usr/bin/fullsend",
 		token:       "tok",
 		runCLI:      noopCLI,
-		setupOpts:   common.DefaultGitHubSetupOpts(),
+		installOpts: common.DefaultInstallOpts(),
 		settle:      noopSettle,
 		logf:        t.Logf,
 		ensured:     make(map[string]struct{}),

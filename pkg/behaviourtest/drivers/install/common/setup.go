@@ -3,39 +3,62 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
 type CLIRunnerFunc = func(binary, token string, args ...string) (string, error)
 
-// GitHubSetupOpts configures how RunGitHubSetupWithOpts invokes
-// `fullsend github setup`. Use DefaultGitHubSetupOpts() for
-// vendored-mode defaults (zero value is non-vendored).
-type GitHubSetupOpts struct {
-	// Vendor controls whether --vendor is passed. When false,
-	// FullsendRef must be set so the shim references a remote ref
-	// instead of a vendored binary.
+// InstallOpts configures how RunReposInstallWithOpts provisions a test
+// repository with manifest-driven `fullsend repos install`. Persistent
+// settings are written to a generated repos.yaml entry; only credential
+// inputs and one-run controls are passed as flags. Use
+// DefaultInstallOpts() for vendored-mode defaults (zero value is
+// non-vendored).
+type InstallOpts struct {
+	// Vendor is the entry's vendor setting. When true, repos install
+	// vendors the binary it resolves from the CLI's working directory
+	// (the current checkout). When false, FullsendRef must be set so the
+	// shim references a remote ref instead of a vendored binary.
 	Vendor bool
 
-	// FullsendRef is passed as --fullsend-ref when non-empty. Used in
+	// FullsendRef is the entry's fullsend_ref when non-empty. Used in
 	// non-vendored mode to pin the reusable workflow ref (e.g. "main").
 	FullsendRef string
 
-	// ConfigPreset is passed as --config when non-empty (a local path
-	// or HTTPS URL to a config base layer preset). When set, --runtime
-	// dummy is omitted so the preset's runtime: dummy is inherited
-	// rather than pinned in the overlay.
+	// ConfigPreset is the entry's config_base.source when non-empty (a
+	// local path or HTTPS URL to a config base layer preset). A local
+	// preset is copied next to the generated manifest, because repos
+	// install only reads local presets from inside the manifest
+	// directory. When set and Runtime is empty, config.runtime is omitted
+	// so the preset's runtime is inherited rather than pinned in the
+	// managed configuration.
 	ConfigPreset string
 
-	// Runtime overrides the runtime passed to github setup. When empty,
-	// github setup uses the normal "dummy" runtime. Playback suites set
+	// PresetBaseDir is the directory a relative local ConfigPreset is
+	// resolved against. Empty uses the module root, the working directory
+	// e2etest.TryRunCLI runs the CLI in.
+	PresetBaseDir string
+
+	// Runtime is the entry's config.runtime. When empty, the "dummy"
+	// runtime is used unless a preset is supplied. Playback suites set
 	// this to "dummy-playback" while retaining the standard repo-pool
 	// lifecycle (allocation, install, validation, teardown).
 	Runtime string
 
-	// AppSet selects the GitHub App identities used by the configured mint.
+	// AppSet is the entry's app_set: the GitHub App identities used by the
+	// configured mint.
 	AppSet string
+
+	// ManifestDir is the parent directory for the temporary directory
+	// holding each install's generated repos.yaml. Empty uses the
+	// system temporary directory.
+	ManifestDir string
 
 	// ResolveWIFProvider, when set, returns the inference WIF provider
 	// for target in project. Callers use it to cache or serialise the
@@ -43,69 +66,105 @@ type GitHubSetupOpts struct {
 	ResolveWIFProvider func(target, project string) (string, error)
 }
 
-// DefaultGitHubSetupOpts returns vendored-mode defaults.
-func DefaultGitHubSetupOpts() GitHubSetupOpts {
-	return GitHubSetupOpts{Vendor: true}
+// DefaultInstallOpts returns vendored-mode defaults.
+func DefaultInstallOpts() InstallOpts {
+	return InstallOpts{Vendor: true}
 }
 
-// RunGitHubSetup runs fullsend github setup for the given target with the
-// provided mint URL. If gcpProjectID is non-empty, the inference WIF
-// provider is resolved first (see ResolveInferenceWIFProvider) and
-// threaded to setup.
-func RunGitHubSetup(
-	binary, token, target, mintURL, gcpProjectID string,
-	runCLI CLIRunnerFunc,
-	logf func(string, ...any),
-) error {
-	return RunGitHubSetupWithOpts(binary, token, target, mintURL, gcpProjectID, DefaultGitHubSetupOpts(), runCLI, logf)
+// inferenceAuthVertexWIF is the inference.auth method declared for every
+// test repository. Behaviour suites resolve a repo-scoped Vertex WIF
+// provider (see ResolveInferenceWIFProvider) and pass it with the project
+// as credential inputs. Duplicated from internal/repos so this package
+// does not import it (internal/repos pulls the nested mintcore module).
+const inferenceAuthVertexWIF = "vertex-wif"
+
+// manifestFileName is the file name of the generated manifest inside the
+// per-install temporary directory.
+const manifestFileName = "repos.yaml"
+
+// presetFileName is the name a local ConfigPreset is copied to, next to
+// the generated manifest.
+const presetFileName = "config-base.yaml"
+
+// installManifest mirrors the subset of the repos.yaml schema the
+// behaviour driver declares. It is kept local so this package does not
+// import internal/repos.
+type installManifest struct {
+	Version int                  `yaml:"version"`
+	GitHub  installManifestForge `yaml:"github"`
 }
 
-// RunGitHubSetupWithOpts is like RunGitHubSetup but accepts GitHubSetupOpts
-// to control vendoring and fullsend-ref behaviour.
-func RunGitHubSetupWithOpts(
+type installManifestForge struct {
+	Repos []installManifestEntry `yaml:"repos"`
+}
+
+type installManifestEntry struct {
+	Name        string                     `yaml:"name"`
+	FullsendRef string                     `yaml:"fullsend_ref,omitempty"`
+	AppSet      string                     `yaml:"app_set,omitempty"`
+	Inference   installManifestInference   `yaml:"inference"`
+	Vendor      bool                       `yaml:"vendor"`
+	ConfigBase  *installManifestConfigBase `yaml:"config_base,omitempty"`
+	Config      installManifestConfig      `yaml:"config"`
+}
+
+type installManifestInference struct {
+	Auth string `yaml:"auth"`
+}
+
+type installManifestConfigBase struct {
+	Source string `yaml:"source"`
+}
+
+// installManifestConfig is the managed .fullsend/config.yaml layer for
+// the entry. mint_url lives here rather than in the entry's mint_url so
+// it overrides a preset's mint_url field by field, as github setup's
+// --mint-url did, instead of conflicting with it.
+type installManifestConfig struct {
+	Runtime string `yaml:"runtime,omitempty"`
+	MintURL string `yaml:"mint_url,omitempty"`
+}
+
+// moduleRoot returns the module root directory. Overridden in tests.
+var moduleRoot = func() (string, error) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		return "", fmt.Errorf("finding module root: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// RunReposInstallWithOpts installs fullsend on target with `fullsend
+// repos install`. It writes a repos.yaml that declares target with the
+// settings from opts and mintURL, then runs install against that
+// manifest with --direct. If gcpProjectID is non-empty, the inference
+// WIF provider is resolved first (see ResolveInferenceWIFProvider) and
+// passed with the project as --vertex-project / --vertex-wif-provider.
+//
+// The fullsend binary must support `repos install --manifest` together
+// with --vertex-project and --vertex-wif-provider. A relative local
+// ConfigPreset is resolved against InstallOpts.PresetBaseDir, which
+// defaults to the module root found with `go list -m`; that default
+// needs `go` on PATH and a working directory inside a module.
+//
+// The manifest lives in a temporary directory that is removed on return,
+// so every call (including a retry) installs from a fresh manifest.
+// repos install never creates a manifest; when this one cannot be
+// written, the error is returned and the CLI is not run.
+func RunReposInstallWithOpts(
 	binary, token, target, mintURL, gcpProjectID string,
-	opts GitHubSetupOpts,
+	opts InstallOpts,
 	runCLI CLIRunnerFunc,
 	logf func(string, ...any),
 ) error {
 	if !opts.Vendor && opts.FullsendRef == "" {
-		return fmt.Errorf("github setup %s: non-vendored mode requires FullsendRef to be set", target)
+		return fmt.Errorf("repos install %s: non-vendored mode requires FullsendRef to be set", target)
 	}
 	if opts.Vendor && opts.FullsendRef != "" {
-		return fmt.Errorf("github setup %s: vendored mode conflicts with FullsendRef %q — use one or the other", target, opts.FullsendRef)
+		return fmt.Errorf("repos install %s: vendored mode conflicts with FullsendRef %q — use one or the other", target, opts.FullsendRef)
 	}
-	args := []string{
-		"github", "setup", target,
-		"--direct",
-		"--mint-url", mintURL,
-	}
-	if opts.AppSet != "" {
-		args = append(args, "--app-set", opts.AppSet)
-	}
-	// Omit the implicit default runtime when a preset is supplied so the
-	// preset's runtime is inherited rather than pinned in the overlay.
-	// When the caller explicitly set Runtime (e.g. "dummy-playback"), it
-	// must still win over the preset's embedded runtime — otherwise the
-	// install runs the preset's runtime while doEnsure's post-install
-	// validation checks against opts.Runtime, a mismatch.
-	if preset := strings.TrimSpace(opts.ConfigPreset); preset != "" {
-		args = append(args, "--config", preset)
-		if opts.Runtime != "" {
-			args = append(args, "--runtime", opts.Runtime)
-		}
-	} else {
-		runtime := opts.Runtime
-		if runtime == "" {
-			runtime = "dummy"
-		}
-		args = append(args, "--runtime", runtime)
-	}
-	if opts.Vendor {
-		args = append(args, "--vendor")
-	}
-	if opts.FullsendRef != "" {
-		args = append(args, "--fullsend-ref", opts.FullsendRef)
-	}
+
+	var credentialArgs []string
 	if project := strings.TrimSpace(gcpProjectID); project != "" {
 		resolve := opts.ResolveWIFProvider
 		if resolve == nil {
@@ -117,14 +176,109 @@ func RunGitHubSetupWithOpts(
 		if err != nil {
 			return err
 		}
-		args = append(args, "--inference-project", project, "--inference-wif-provider", wifProvider)
+		credentialArgs = []string{"--vertex-project", project, "--vertex-wif-provider", wifProvider}
 	}
 
+	dir, err := os.MkdirTemp(opts.ManifestDir, "fullsend-bt-manifest-")
+	if err != nil {
+		return fmt.Errorf("repos install %s: creating manifest directory: %w", target, err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	manifest, err := writeInstallManifest(dir, target, mintURL, opts)
+	if err != nil {
+		return fmt.Errorf("repos install %s: %w", target, err)
+	}
+	manifestPath := filepath.Join(dir, manifestFileName)
+
+	args := []string{
+		"repos", "install", target,
+		"--manifest", manifestPath,
+		"--direct",
+	}
+	args = append(args, credentialArgs...)
+
+	logf("[install] generated %s for %s:\n%s", manifestPath, target, manifest)
 	logf("[install] running fullsend %s", strings.Join(args, " "))
 	if _, err := runCLI(binary, token, args...); err != nil {
-		return fmt.Errorf("github setup %s: %w", target, err)
+		return fmt.Errorf("repos install %s: %w", target, err)
 	}
 	return nil
+}
+
+// writeInstallManifest writes dir/repos.yaml declaring target with the
+// settings from opts and mintURL, and returns the manifest content. A
+// local ConfigPreset is copied into dir and referenced by its relative
+// name. dir must already exist.
+func writeInstallManifest(dir, target, mintURL string, opts InstallOpts) ([]byte, error) {
+	entry := installManifestEntry{
+		Name:        target,
+		FullsendRef: opts.FullsendRef,
+		AppSet:      opts.AppSet,
+		Inference:   installManifestInference{Auth: inferenceAuthVertexWIF},
+		Vendor:      opts.Vendor,
+		Config: installManifestConfig{
+			Runtime: opts.Runtime,
+			MintURL: strings.TrimSpace(mintURL),
+		},
+	}
+	// Explicit Runtime wins over a preset's runtime: doEnsure's
+	// post-install validation checks against opts.Runtime, so the
+	// installed runtime must match it. Without a preset, an empty
+	// Runtime selects the normal "dummy" runtime.
+	if preset := strings.TrimSpace(opts.ConfigPreset); preset != "" {
+		source, err := stagePreset(dir, preset, opts.PresetBaseDir)
+		if err != nil {
+			return nil, err
+		}
+		entry.ConfigBase = &installManifestConfigBase{Source: source}
+	} else if entry.Config.Runtime == "" {
+		entry.Config.Runtime = "dummy"
+	}
+
+	data, err := yaml.Marshal(installManifest{
+		Version: 1,
+		GitHub:  installManifestForge{Repos: []installManifestEntry{entry}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encoding manifest: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, manifestFileName), data, 0o600); err != nil {
+		return nil, fmt.Errorf("writing manifest: %w", err)
+	}
+	return data, nil
+}
+
+// stagePreset returns the config_base.source for preset. An HTTPS URL is
+// used as is. A local path (resolved against baseDir, or the module root
+// when baseDir is empty) is copied into dir, because repos install
+// rejects local presets outside the manifest directory.
+func stagePreset(dir, preset, baseDir string) (string, error) {
+	if strings.HasPrefix(strings.ToLower(preset), "https://") {
+		return preset, nil
+	}
+	if strings.Contains(preset, "://") {
+		return "", fmt.Errorf("config preset %q: only local paths and https:// URLs are supported", preset)
+	}
+	path := preset
+	if !filepath.IsAbs(path) {
+		if baseDir == "" {
+			root, err := moduleRoot()
+			if err != nil {
+				return "", fmt.Errorf("resolving config preset %q: %w", preset, err)
+			}
+			baseDir = root
+		}
+		path = filepath.Join(baseDir, path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading config preset: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, presetFileName), data, 0o600); err != nil {
+		return "", fmt.Errorf("copying config preset: %w", err)
+	}
+	return presetFileName, nil
 }
 
 // ResolveInferenceWIFProvider returns the healthy WIF provider for target.
