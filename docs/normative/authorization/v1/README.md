@@ -273,7 +273,10 @@ This is the future path adopted by
 implemented by `fullsend dispatch` or `fullsend poll`, and entity-first
 execution MUST NOT be enabled until the versioned normalized-entity contract
 defines CEL-eligible and prompt-eligible fields. That contract is a platform
-allowlist; a harness may request fewer fields but cannot expand it.
+allowlist; a harness may request fewer fields but cannot expand it. It is
+specified by [Normalized entity v1](../../normalized-entity/v1/README.md),
+which also defines how action-indicating elements, their current actor
+permissions, and incomplete enumeration are represented.
 
 `fullsend poll` may perform scheduled entity discovery without synthesizing a
 `NormalizedEvent` or event actor. This path is authorized only when its caller
