@@ -3621,6 +3621,22 @@ func TestActivatePipelineSchedules_ErrorPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("owner-only update is left to the trigger-account stage", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+			{ID: 1, Description: "fullsend slash poll", Active: false},
+		}
+		fc.Errors["UpdatePipelineSchedule"] = forge.ErrForbidden
+		actions := activatePipelineSchedules(ctx, fc, "acme", "api", "acme/api",
+			[]string{"schedule:slash-poll"}, noopProgress)
+		if len(actions) != 1 || actions[0].Action != "none" {
+			t.Fatalf("got %+v, want one none action", actions)
+		}
+		if !strings.Contains(actions[0].Detail, "trigger-account stage") {
+			t.Errorf("detail = %q, want trigger-account wording", actions[0].Detail)
+		}
+	})
+
 	t.Run("inactive not found on re-list", func(t *testing.T) {
 		fc := forge.NewFakeClient()
 		// Probe saw an inactive schedule, but the re-list returns only an active one.

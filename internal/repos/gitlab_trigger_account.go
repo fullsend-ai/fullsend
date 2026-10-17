@@ -46,6 +46,11 @@ import (
 //  7. Only then hand the new trigger value to the caller's publisher, so no
 //     usable trigger token exists while the account is a Maintainer.
 //
+// Steps 2-7 are the Maintainer bootstrap. Creating a pipeline schedule needs no
+// elevation, so the schedule migration of #8508 (gitlab_trigger_schedules.go)
+// mints its own short-lived PAT while the account stays at Developer, creates
+// the schedules with it, then revokes it and confirms Developer access again.
+//
 // Every step records its intent or result in a protected, unmasked ledger
 // (forge.VarGitLabTriggerAccount) before the next mutating call, so an
 // interrupted install or uninstall leaves a retriable obligation. Removal
@@ -54,8 +59,10 @@ import (
 // removed by inference. The account must never be the Poller role identity:
 // a PAT on an identity with a deploy-key grant could write the branch.
 //
-// The dispatch route that uses these resources stays inactive until #8438.
-// Every public entry point requires the project lease.
+// The dispatch route that uses these resources is selected only while the
+// activation gate passes and the activation is recorded (#8438). The account
+// then also owns the managed polling schedules (gitlab_trigger_schedules.go,
+// #8508). Every public entry point requires the project lease.
 
 const (
 	gitLabTriggerAccountStateVersion = 1
@@ -69,7 +76,8 @@ const (
 )
 
 // gitLabTriggerBootstrapPATScopes are the scopes the temporary bootstrap PAT
-// needs to add a deploy key and a pipeline trigger token.
+// needs to add a deploy key and a pipeline trigger token, and the temporary
+// schedule PAT needs to create pipeline schedules as the account.
 var gitLabTriggerBootstrapPATScopes = []string{"api"}
 
 // GitLabDeployKey is the non-secret metadata of a project deploy key.
@@ -128,6 +136,11 @@ type GitLabTriggerAccountAPI interface {
 type GitLabTriggerBootstrapAPI interface {
 	CreateProjectDeployKey(ctx context.Context, owner, repo, title, publicKey string, canPush bool) (GitLabDeployKey, error)
 	CreatePipelineTriggerToken(ctx context.Context, owner, repo, description string) (*forge.PipelineTriggerToken, error)
+	// CreatePipelineSchedule creates a pipeline schedule without pipeline
+	// variables on ref and returns its ID. GitLab records the caller, the
+	// trigger account, as the schedule's owner. With active false the create
+	// request itself asks for a disabled schedule, so it is never active.
+	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, active bool) (int64, error)
 }
 
 // GitLabTriggerAccountOptions configures one trigger-account operation.
@@ -162,6 +175,11 @@ type GitLabTriggerAccountOptions struct {
 	UnpublishTriggerToken func(ctx context.Context) error
 	// State stores the ledger as a protected CI/CD variable.
 	State forge.Client
+	// ReactivateSchedules mirrors --reactivate-schedules: a disabled managed
+	// polling schedule the trigger account owns is replaced by an active one.
+	// The installer cannot edit a schedule the account owns, so the install's
+	// schedule repair, which runs first, leaves those for this stage.
+	ReactivateSchedules bool
 	// Now and Rand are injectable for tests.
 	Now  func() time.Time
 	Rand io.Reader
@@ -320,6 +338,10 @@ type gitLabTriggerAccountOp struct {
 	retired bool
 	// persist replaces the ledger write for a retired generation's copy.
 	persist func(ctx context.Context) error
+	// uninstalling marks a removal run: the account's managed schedules are
+	// deleted without an installer-owned copy, because uninstall removes
+	// every fullsend schedule.
+	uninstalling bool
 }
 
 // errTriggerAccountUnleased refuses a lifecycle run whose caller does not hold
@@ -1010,7 +1032,7 @@ func (op *gitLabTriggerAccountOp) removeRevokeAndSave(ctx context.Context, remov
 // failure keeps the obligation and a later install or uninstall resumes.
 func (op *gitLabTriggerAccountOp) retirePrevious(ctx context.Context) error {
 	for len(op.st.Retired) > 0 {
-		sub := &gitLabTriggerAccountOp{opts: op.opts, st: op.st.Retired[0], exists: true, retired: true}
+		sub := &gitLabTriggerAccountOp{opts: op.opts, st: op.st.Retired[0], exists: true, retired: true, uninstalling: op.uninstalling}
 		sub.persist = func(ctx context.Context) error {
 			op.st.Retired[0] = sub.st
 			return op.save(ctx)
@@ -1128,16 +1150,17 @@ func (op *gitLabTriggerAccountOp) checkForeignPATs(ctx context.Context) error {
 }
 
 // checkForeignResources fails closed when the trigger account owns anything
-// fullsend did not create: an SSH key, a pipeline schedule, or a pipeline
-// trigger token whose description is not the recorded one. Each would let a
-// holder act as the account, including while it is elevated, and fullsend
-// removes only what it can prove it owns.
+// fullsend did not create: an SSH key, a pipeline schedule that is not one of
+// the managed polling schedules, or a pipeline trigger token whose description
+// is not the recorded one. Each would let a holder act as the account,
+// including while it is elevated, and fullsend removes only what it can prove
+// it owns.
 //
-// No pipeline schedule belongs to this account in #8437: a schedule's cron,
-// variables and ref are defined by the dispatch admission rules of #8438, and
-// creating one now would activate the dispatch route that must stay inactive.
-// Any schedule owned by the account is therefore foreign. #8438 adds and owns
-// the schedule lifecycle when it activates scheduled dispatch.
+// The managed polling schedules (PipelineScheduleSpecs) the account owns are
+// fullsend's: ConvergeGitLabTriggerSchedules creates them once dispatch is
+// activated (#8508). They are recognised by their exact description and are
+// handed back to the installer before the account is ever raised to
+// Maintainer (createWithBootstrap) or deleted (removeAccount).
 func (op *gitLabTriggerAccountOp) checkForeignResources(ctx context.Context) error {
 	o, r, id := op.opts.Owner, op.opts.Repo, op.st.AccountID
 	keys, err := op.opts.API.AccountSSHKeyIDs(ctx, id)
@@ -1147,12 +1170,12 @@ func (op *gitLabTriggerAccountOp) checkForeignResources(ctx context.Context) err
 	if len(keys) > 0 {
 		return fmt.Errorf("GitLab trigger account %d has %d SSH authentication key(s) that fullsend did not create; remove them, then re-run install", id, len(keys))
 	}
-	schedules, err := op.opts.API.AccountScheduleIDs(ctx, o, r, id)
+	_, _, foreignSchedules, err := op.accountSchedules(ctx)
 	if err != nil {
-		return safeAPIError("listing the GitLab trigger account's pipeline schedules", err)
+		return err
 	}
-	if len(schedules) > 0 {
-		return fmt.Errorf("GitLab trigger account %d owns %d pipeline schedule(s) that fullsend did not create; remove or reassign them, then re-run install", id, len(schedules))
+	if len(foreignSchedules) > 0 {
+		return fmt.Errorf("GitLab trigger account %d owns %d pipeline schedule(s) that fullsend did not create (IDs %v); remove or reassign them, then re-run install", id, len(foreignSchedules), foreignSchedules)
 	}
 	// A schedule GitLab reported without an owner is not attributed to this
 	// account: it may or may not run as it. Elevation is refused until an
@@ -1503,6 +1526,12 @@ func (op *gitLabTriggerAccountOp) bootstrap(ctx context.Context, keyOK, triggerO
 
 func (op *gitLabTriggerAccountOp) createWithBootstrap(ctx context.Context, keyOK, triggerOK bool) (*pendingTrigger, error) {
 	o, r := op.opts.Owner, op.opts.Repo
+	// A schedule creates pipelines on the server's clock, so a schedule the
+	// account owns would run with Maintainer access while it is elevated.
+	// Hand the managed schedules back to the installer first.
+	if _, err := op.releaseSchedules(ctx, true); err != nil {
+		return nil, fmt.Errorf("handing the managed pipeline schedules back before raising the GitLab trigger account: %w", err)
+	}
 	op.st.Elevated = true
 	if err := op.save(ctx); err != nil {
 		return nil, err
@@ -1661,6 +1690,7 @@ func RemoveGitLabTriggerAccount(ctx context.Context, opts GitLabTriggerAccountOp
 	if err != nil {
 		return err
 	}
+	op.uninstalling = true
 	// Withdraw the dispatch activation before any resource it relies on is
 	// removed, whether or not a ledger remains, so no pipeline selects the
 	// child-pipeline route while the account is being torn down.
@@ -1795,6 +1825,12 @@ func (op *gitLabTriggerAccountOp) removeAccount(ctx context.Context) error {
 			if err := op.revokeBootstrapPATs(ctx); err != nil {
 				return err
 			}
+		}
+		// The managed schedules the account owns are handed back to the
+		// installer (rotation and repair keep polling) or, on uninstall,
+		// deleted, before the account they run as is deleted.
+		if _, err := op.releaseSchedules(ctx, !op.uninstalling); err != nil {
+			return err
 		}
 		// Deleting the account invalidates every credential it owns, so refuse
 		// while anything fullsend did not create remains: an active PAT, an SSH

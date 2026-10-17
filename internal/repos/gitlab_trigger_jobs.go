@@ -22,6 +22,16 @@ const gitlabDispatcherJobName = "fullsend webhook dispatcher"
 // creator and HMAC checks (#8438).
 const fullsendAgentJobName = "fullsend $[[ inputs.stage | expand_vars ]] agent"
 
+// fullsendPollJobName is the exact top-level key the committed poll template
+// (fullsendPollTemplatePath) uses for the one job a scheduled pipeline
+// (source=schedule) is allowed to run. Its name interpolates the schedule
+// name, so it is matched by exact raw-key equality rather than evaluated.
+// Once the trigger-only account owns the managed polling schedules, every
+// source=schedule pipeline runs as that account and its jobs receive the
+// account's CI_JOB_TOKEN, so any other job or include admitted there is extra
+// work (#8508).
+const fullsendPollJobName = "$[[ inputs.schedule_name | expand_vars ]]"
+
 // triggerExtraWorkRemedy is appended to every diagnostic about work other
 // than the dispatcher that a trigger pipeline would run. Fullsend never
 // rewrites user-owned jobs, so the remediation is the owner's to apply.
@@ -50,10 +60,19 @@ const triggerExtraWorkRemedy = "; add rules to it that reject $CI_PIPELINE_SOURC
 // pipeline either. Only the agent template include, which the Fullsend
 // wrapper admits for exactly api and pipeline sources, is allowed there.
 //
-// agentChild selects whether the source=pipeline check also runs. It is set
-// for the trigger-dispatch activation gate, which is what makes agent child
-// pipelines reachable; the webhook fast path alone never starts one, so a job
-// that only a source=pipeline pipeline would run does not defer it.
+// The same check runs for source=schedule (#8508): the managed polling
+// schedules move to the trigger-only account once dispatch activation is
+// recorded, so a job that a scheduled pipeline would admit runs as that
+// account and receives its CI_JOB_TOKEN, which can create source=pipeline
+// child pipelines attributed to the account. Only the poll template include,
+// which the Fullsend wrapper admits for exactly source=schedule, is allowed
+// there.
+//
+// agentChild selects whether the source=pipeline and source=schedule checks
+// also run. It is set for the trigger-dispatch activation gate, which is what
+// makes agent child pipelines reachable and moves schedule ownership; the
+// webhook fast path alone does neither, so a job that only a source=pipeline
+// or source=schedule pipeline would run does not defer it.
 func triggerExtraWorkProblem(content []byte, file, defaultBranch string, agentChild bool, allowInclude func(*yaml.Node) bool, allowJob func(string) bool) string {
 	if problem := triggerExtraWorkProblemForSource(content, file, defaultBranch, "trigger", allowInclude, allowJob, nil); problem != "" {
 		return problem
@@ -64,22 +83,38 @@ func triggerExtraWorkProblem(content []byte, file, defaultBranch string, agentCh
 	pipelineInclude := func(n *yaml.Node) bool {
 		return (allowInclude != nil && allowInclude(n)) || namesAgentInclude(n)
 	}
-	return triggerExtraWorkProblemForSource(content, file, defaultBranch, "pipeline", pipelineInclude, allowJob, nil)
+	if problem := triggerExtraWorkProblemForSource(content, file, defaultBranch, "pipeline", pipelineInclude, allowJob, nil); problem != "" {
+		return problem
+	}
+	scheduleInclude := func(n *yaml.Node) bool {
+		return (allowInclude != nil && allowInclude(n)) || namesPollInclude(n)
+	}
+	return triggerExtraWorkProblemForSource(content, file, defaultBranch, "schedule", scheduleInclude, allowJob, nil)
 }
 
 // namesAgentInclude reports whether an include item is a local include of the
 // Fullsend agent template.
 func namesAgentInclude(item *yaml.Node) bool {
+	return namesLocalInclude(item, fullsendAgentTemplatePath)
+}
+
+// namesPollInclude reports whether an include item is a local include of the
+// Fullsend poll template.
+func namesPollInclude(item *yaml.Node) bool {
+	return namesLocalInclude(item, fullsendPollTemplatePath)
+}
+
+func namesLocalInclude(item *yaml.Node, path string) bool {
 	switch item.Kind {
 	case yaml.ScalarNode:
-		return item.Value == fullsendAgentTemplatePath
+		return item.Value == path
 	case yaml.MappingNode:
 		local := findMappingValue(item, "local")
 		if local == nil {
 			return false
 		}
 		value, ok := isLiteralScalarValue(local)
-		return ok && value == fullsendAgentTemplatePath
+		return ok && value == path
 	}
 	return false
 }
@@ -102,9 +137,13 @@ func triggerExtraWorkProblemForSource(content []byte, file, defaultBranch, sourc
 	// wording is unchanged.
 	kind, alongside := "trigger pipelines", "a trigger pipeline would run alongside the dispatcher"
 	remedy := triggerExtraWorkRemedy
-	if source == "pipeline" {
+	switch source {
+	case "pipeline":
 		kind, alongside = "agent child pipelines (source=pipeline)", "an agent child pipeline (source=pipeline) would run alongside the agent job"
 		remedy = "; add rules to it that reject $CI_PIPELINE_SOURCE == \"pipeline\" pipelines (Fullsend does not edit user-owned jobs)"
+	case "schedule":
+		kind, alongside = "scheduled pipelines (source=schedule)", "a scheduled pipeline (source=schedule) would run alongside the poll job as the trigger-only account"
+		remedy = "; add rules to it that reject $CI_PIPELINE_SOURCE == \"schedule\" pipelines (Fullsend does not edit user-owned jobs)"
 	}
 	if problem := duplicateMappingKeyProblem(root); problem != "" {
 		return file + " has a " + problem + ", so its exclusion from " + kind + " cannot be established" + remedy
@@ -235,6 +274,21 @@ func agentGlobalExecProblem(content []byte, file string) string {
 	return globalExecProblem(content, file, "agent job", "an agent child pipeline (source=pipeline)", fullsendAgentTemplatePath)
 }
 
+// pollGlobalExecProblem is triggerGlobalExecProblem for the scheduled pipeline
+// (source=schedule): global execution config in a committed file is inherited
+// by the poll job unless it disables default inheritance (#8508).
+func pollGlobalExecProblem(content []byte, file string) string {
+	return globalExecProblem(content, file, "poll job", "a scheduled pipeline (source=schedule) as the trigger-only account", fullsendPollTemplatePath)
+}
+
+// managedGlobalExecProblem is globalExecProblem for the managed Fullsend jobs
+// that inherit defaults (the dispatcher or agent job) when the poll job has
+// disabled inheritance: global execution config in the poll template would
+// still reach them wherever a scheduled pipeline also admits them.
+func managedGlobalExecProblem(content []byte, file, pipelineKind string) string {
+	return globalExecProblem(content, file, "managed Fullsend jobs", pipelineKind, "the dispatcher, agent and poll templates")
+}
+
 func globalExecProblem(content []byte, file, inheritorLabel, pipelineKind, inheritFile string) string {
 	docs, err := decodeGitLabDocuments(content)
 	if err != nil || len(docs) == 0 || docs[len(docs)-1].Kind != yaml.DocumentNode || len(docs[len(docs)-1].Content) == 0 {
@@ -303,6 +357,16 @@ func triggerAgentExecProblem(content []byte, file string) string {
 	return jobExecSurfaceProblem(content, file, fullsendAgentJobName, "agent job",
 		"the execution configuration it runs outside run-agent-job.sh's authorization",
 		"which would run in an agent child pipeline (source=pipeline) outside run-agent-job.sh's creator and HMAC checks")
+}
+
+// triggerPollExecProblem is triggerDispatcherExecProblem for the poll job in
+// the scheduled pipeline (source=schedule, #8508). The poll job runs as the
+// trigger-only account once it owns the schedules; a job-level after_script,
+// services or hooks on it would run outside run-poll-job.sh's checks.
+func triggerPollExecProblem(content []byte, file string) string {
+	return jobExecSurfaceProblem(content, file, fullsendPollJobName, "poll job",
+		"the execution configuration it runs outside run-poll-job.sh's checks",
+		"which would run in a scheduled pipeline (source=schedule) as the trigger-only account outside run-poll-job.sh's checks")
 }
 
 // jobExecSurfaceProblem reports job-level after_script, services and hooks set
@@ -384,6 +448,14 @@ func dispatcherDisablesDefaultInheritance(template []byte) bool {
 // does, independently of the dispatcher's own inherit setting (#8438).
 func agentJobDisablesDefaultInheritance(template []byte) bool {
 	return jobDisablesDefaultInheritance(template, fullsendAgentJobName)
+}
+
+// pollJobDisablesDefaultInheritance reports whether the committed poll
+// template's poll job sets inherit: default: false. The scheduled pipeline
+// inherits global and default execution config into the poll job unless it
+// does (#8508).
+func pollJobDisablesDefaultInheritance(template []byte) bool {
+	return jobDisablesDefaultInheritance(template, fullsendPollJobName)
 }
 
 func jobDisablesDefaultInheritance(template []byte, jobName string) bool {
@@ -470,6 +542,22 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 			return "", safeAPIError("reading "+fullsendAgentTemplatePath, err)
 		}
 	}
+	// The poll template is read once when the source=schedule check runs, for
+	// the same reason as the agent template: it is scanned below and its poll
+	// job inherits global defaults unless it disables them, independently of
+	// the dispatcher's inherit setting.
+	var pollContent []byte
+	checkPollInherited := false
+	if agentChild {
+		content, err := client.GetFileContent(ctx, owner, repo, fullsendPollTemplatePath)
+		switch {
+		case err == nil:
+			pollContent = content
+			checkPollInherited = !pollJobDisablesDefaultInheritance(content)
+		case !forge.IsNotFound(err):
+			return "", safeAPIError("reading "+fullsendPollTemplatePath, err)
+		}
+	}
 	for _, f := range []struct {
 		path         string
 		allowInclude func(*yaml.Node) bool
@@ -500,6 +588,10 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 			if problem := triggerGlobalExecProblem(content, "the committed "+f.path); problem != "" {
 				return problem, nil
 			}
+		} else if checkPollInherited {
+			if problem := pollGlobalExecProblem(content, "the committed "+f.path); problem != "" {
+				return problem, nil
+			}
 		}
 	}
 	// The agent template itself must contain only the one agent job, no extra
@@ -520,6 +612,33 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 		// global defaults; the dispatcher is not part of the agent child pipeline.
 		if !agentJobDisablesDefaultInheritance(agentContent) {
 			if problem := agentGlobalExecProblem(agentContent, agentFile); problem != "" {
+				return problem, nil
+			}
+		}
+	}
+	// The poll template is included by name for source=schedule, so its own
+	// contents are scanned too: an extra job or include, a predefined-variable
+	// override or a job-level execution surface committed there would run in a
+	// scheduled pipeline as the trigger-only account (#8508).
+	if pollContent != nil {
+		pollFile := "the committed " + fullsendPollTemplatePath
+		allowPollJob := func(n string) bool { return n == fullsendPollJobName }
+		if problem := triggerExtraWorkProblemForSource(pollContent, pollFile, defaultBranch, "schedule", nil, nil, allowPollJob); problem != "" {
+			return problem, nil
+		}
+		if problem := triggerPollExecProblem(pollContent, pollFile); problem != "" {
+			return problem, nil
+		}
+		// The poll job disabling default inheritance does not protect the other
+		// managed jobs: the dispatcher and agent jobs are exempt by name from
+		// the scans above, so a scheduled pipeline that also admits one of them
+		// would run it with the poll template's global defaults.
+		if checkPollInherited {
+			if problem := pollGlobalExecProblem(pollContent, pollFile); problem != "" {
+				return problem, nil
+			}
+		} else if checkInherited {
+			if problem := managedGlobalExecProblem(pollContent, pollFile, "a scheduled pipeline (source=schedule) as the trigger-only account"); problem != "" {
 				return problem, nil
 			}
 		}

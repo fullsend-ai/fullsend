@@ -27,6 +27,7 @@ func commitShippedScaffold(t *testing.T, e *trigEnv) {
 	root, err := mergeGitLabCIWithWrapper(base, e.state.FileContents[prefix+fullsendPipelineInclude])
 	require.NoError(t, err)
 	e.state.FileContents[prefix+".gitlab-ci.yml"] = root
+	commitDispatchRouteScripts(t, e)
 }
 
 func (e *trigEnv) appendRootCI(t *testing.T, extra string) {
@@ -78,8 +79,16 @@ func TestDispatchExtraWork_UnrelatedJobInAgentChildPipelineDefersActivation(t *t
 			extra: "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\"'\n      when: never\n    - changes: [src/**]\n",
 			want:  "source=pipeline",
 		},
-		"job excluded from trigger and pipeline sources": {
+		"job excluded from trigger and pipeline sources only": {
 			extra: "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\" || $CI_PIPELINE_SOURCE == \"pipeline\"'\n      when: never\n    - when: on_success\n",
+			want:  "scheduled pipeline (source=schedule)",
+		},
+		"job restricted to scheduled pipelines": {
+			extra: "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"schedule\"'\n",
+			want:  "scheduled pipeline (source=schedule)",
+		},
+		"job excluded from trigger, pipeline and schedule sources": {
+			extra: "\ndeploy:\n  script: [./deploy.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\" || $CI_PIPELINE_SOURCE == \"pipeline\" || $CI_PIPELINE_SOURCE == \"schedule\"'\n      when: never\n    - when: on_success\n",
 		},
 		"job that only runs for merge requests": {
 			extra: "\nlint:\n  script: [./lint.sh]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"merge_request_event\"'\n",
@@ -215,6 +224,148 @@ func TestDispatchExtraWork_UnrelatedWorkInAgentTemplateDefersActivation(t *testi
 			assert.Empty(t, fastPath)
 		})
 	}
+}
+
+// appendPollTemplate appends to the committed poll template's config document
+// (the last document, after spec:inputs).
+func (e *trigEnv) appendPollTemplate(t *testing.T, extra string) {
+	t.Helper()
+	key := trigOwner + "/" + trigRepo + "/" + fullsendPollTemplatePath
+	e.state.FileContents[key] = append(e.state.FileContents[key], []byte(extra)...)
+}
+
+// Managed polling schedules move to the trigger-only account once dispatch is
+// activated, so a user include restricted to source=schedule would run as that
+// account with its CI_JOB_TOKEN. The activation gate defers on it (#8508).
+func TestDispatchExtraWork_UnrelatedScheduleIncludeDefersActivation(t *testing.T) {
+	e := readyTriggerDispatchEnv(t)
+	commitShippedScaffold(t, e)
+	key := trigOwner + "/" + trigRepo + "/.gitlab-ci.yml"
+	root := strings.Replace(string(e.state.FileContents[key]), "include:\n", "include:\n  - local: other.yml\n    rules:\n      - if: '$CI_PIPELINE_SOURCE == \"schedule\"'\n", 1)
+	e.state.FileContents[key] = []byte(root)
+
+	problem, err := gitlabDispatchExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	assert.Contains(t, problem, "source=schedule")
+	assert.Contains(t, problem, "include")
+	gate := e.dispatchGate()
+	assert.False(t, gate.Ready)
+
+	// The webhook fast path never moves schedule ownership, so a
+	// schedule-only include does not defer it.
+	fastPath, err := gitlabTriggerExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	assert.Empty(t, fastPath)
+}
+
+// The committed poll template is included by name for source=schedule, so its
+// own contents are scanned too: an extra job or include, a predefined-variable
+// override or a job-level execution surface committed there would run as the
+// trigger-only account (#8508).
+func TestDispatchExtraWork_UnrelatedWorkInPollTemplateDefersActivation(t *testing.T) {
+	const pollJobPrefix = "\"$[[ inputs.schedule_name | expand_vars ]]\":\n  stage: poll\n"
+	cases := map[string]struct {
+		mutate func(t *testing.T, e *trigEnv)
+		want   string
+	}{
+		"extra job in the poll template": {
+			mutate: func(t *testing.T, e *trigEnv) { e.appendPollTemplate(t, "\ndeploy:\n  script: [./deploy.sh]\n") },
+			want:   "scheduled pipeline (source=schedule)",
+		},
+		"extra include in the poll template": {
+			mutate: func(t *testing.T, e *trigEnv) { e.appendPollTemplate(t, "\ninclude:\n  - local: evil.yml\n") },
+			want:   "source=schedule",
+		},
+		"job-level after_script on the poll job": {
+			mutate: func(t *testing.T, e *trigEnv) {
+				key := trigOwner + "/" + trigRepo + "/" + fullsendPollTemplatePath
+				e.state.FileContents[key] = []byte(strings.Replace(string(e.state.FileContents[key]),
+					pollJobPrefix, pollJobPrefix+"  after_script: [./leak.sh]\n", 1))
+			},
+			want: "job-level after_script on the poll job",
+		},
+		"job-level hooks on the poll job": {
+			mutate: func(t *testing.T, e *trigEnv) {
+				key := trigOwner + "/" + trigRepo + "/" + fullsendPollTemplatePath
+				e.state.FileContents[key] = []byte(strings.Replace(string(e.state.FileContents[key]),
+					pollJobPrefix, pollJobPrefix+"  hooks:\n    pre_get_sources_script: [./leak.sh]\n", 1))
+			},
+			want: "job-level hooks on the poll job",
+		},
+		"extends on the poll job": {
+			mutate: func(t *testing.T, e *trigEnv) {
+				key := trigOwner + "/" + trigRepo + "/" + fullsendPollTemplatePath
+				e.state.FileContents[key] = []byte(strings.Replace(string(e.state.FileContents[key]),
+					pollJobPrefix, ".extra:\n  after_script: [./leak.sh]\n"+pollJobPrefix+"  extends: .extra\n", 1))
+			},
+			want: "extends",
+		},
+		"predefined-variable override in the poll template": {
+			mutate: func(t *testing.T, e *trigEnv) {
+				e.appendPollTemplate(t, "\n.tpl:\n  variables:\n    CI_PIPELINE_SOURCE: trigger\n")
+			},
+			want: "predefined-variable override",
+		},
+		"global after_script in the poll template": {
+			mutate: func(t *testing.T, e *trigEnv) {
+				e.appendPollTemplate(t, "\ndefault:\n  after_script: [./leak.sh]\n")
+			},
+			want: "after_script",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := readyTriggerDispatchEnv(t)
+			commitShippedScaffold(t, e)
+			tc.mutate(t, e)
+
+			problem, err := gitlabDispatchExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+			require.NoError(t, err)
+			assert.Contains(t, problem, tc.want)
+			assert.Contains(t, problem, fullsendPollTemplatePath)
+			gate := e.dispatchGate()
+			assert.False(t, gate.Ready)
+
+			// The webhook fast path never moves schedule ownership, so
+			// poll-template-only work does not defer it.
+			fastPath, err := gitlabTriggerExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+			require.NoError(t, err)
+			assert.Empty(t, fastPath)
+		})
+	}
+}
+
+// A global after_script in a user CI file is inherited by the poll job unless
+// it sets inherit: default: false, independently of the dispatcher's own
+// inherit setting (#8508).
+func TestDispatchExtraWork_PollInheritsGlobalEvenWhenDispatcherAndAgentDisableInheritance(t *testing.T) {
+	const agentJobPrefix = "\"fullsend $[[ inputs.stage | expand_vars ]] agent\":\n  stage: agent\n"
+	const pollJobPrefix = "\"$[[ inputs.schedule_name | expand_vars ]]\":\n  stage: poll\n"
+	e := readyTriggerDispatchEnv(t)
+	commitShippedScaffold(t, e)
+
+	dispKey := trigOwner + "/" + trigRepo + "/" + fullsendDispatcherTemplatePath
+	e.state.FileContents[dispKey] = []byte(strings.Replace(string(e.state.FileContents[dispKey]),
+		"\"fullsend webhook dispatcher\":\n  stage: dispatch\n",
+		"\"fullsend webhook dispatcher\":\n  stage: dispatch\n  inherit:\n    default: false\n", 1))
+	agentKey := trigOwner + "/" + trigRepo + "/" + fullsendAgentTemplatePath
+	e.state.FileContents[agentKey] = []byte(strings.Replace(string(e.state.FileContents[agentKey]),
+		agentJobPrefix, agentJobPrefix+"  inherit:\n    default: false\n", 1))
+	e.appendRootCI(t, "\ndefault:\n  after_script: [./leak.sh]\n")
+
+	problem, err := gitlabDispatchExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	assert.Contains(t, problem, "after_script")
+	assert.Contains(t, problem, "poll job")
+
+	// Once the poll job disables default inheritance too, the global is not
+	// inherited by any managed job and does not defer activation.
+	pollKey := trigOwner + "/" + trigRepo + "/" + fullsendPollTemplatePath
+	e.state.FileContents[pollKey] = []byte(strings.Replace(string(e.state.FileContents[pollKey]),
+		pollJobPrefix, pollJobPrefix+"  inherit:\n    default: false\n", 1))
+	problem, err = gitlabDispatchExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	assert.Empty(t, problem)
 }
 
 // Inherited global execution defaults must be evaluated for the agent job

@@ -2502,6 +2502,37 @@ func TestCreatePipelineSchedule_NoVariables(t *testing.T) {
 	assert.Equal(t, int64(456), id)
 }
 
+func TestCreatePipelineScheduleWithActive_SendsActiveStateInCreateRequest(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var bodies []map[string]any
+	var otherRequests int
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		bodies = append(bodies, body)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 789})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules/789", func(http.ResponseWriter, *http.Request) {
+		otherRequests++
+	})
+
+	id, err := client.CreatePipelineScheduleWithActive(ctx, "myorg", "myrepo", "main", "Disabled", "0 0 * * 0", nil, false)
+	require.NoError(t, err)
+	assert.Equal(t, int64(789), id)
+	_, err = client.CreatePipelineScheduleWithActive(ctx, "myorg", "myrepo", "main", "Enabled", "0 0 * * 0", nil, true)
+	require.NoError(t, err)
+	_, err = client.CreatePipelineSchedule(ctx, "myorg", "myrepo", "main", "Default", "0 0 * * 0", nil)
+	require.NoError(t, err)
+
+	require.Len(t, bodies, 3)
+	assert.Equal(t, false, bodies[0]["active"], "a disabled schedule is created disabled")
+	assert.NotContains(t, bodies[1], "active", "an active schedule keeps GitLab's default")
+	assert.NotContains(t, bodies[2], "active", "CreatePipelineSchedule is unchanged")
+	assert.Zero(t, otherRequests, "no separate request edits the schedule")
+}
+
 func TestDeletePipelineSchedule(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

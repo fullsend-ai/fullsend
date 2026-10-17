@@ -312,7 +312,7 @@ Install flags supply only secrets and sensitive provisioning inputs, local vendo
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--force` | `false` | Allow scaffold ref downgrades |
-| `--reactivate-schedules` | `false` | Reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted) |
+| `--reactivate-schedules` | `false` | Reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted). A schedule the GitLab trigger account owns can be edited only by that account, so the trigger-account stage reactivates it by replacing it |
 | `--vertex-project` | | GCP project ID for Vertex inference, written as the `FULLSEND_GCP_PROJECT_ID` secret. Optional when the effective configuration declares `inference.project`; a different value from the declared one fails that repo. See [Effective infrastructure values](#effective-infrastructure-values) |
 | `--vertex-wif-provider` | | Full WIF provider resource name (`projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}`), written as the `FULLSEND_GCP_WIF_PROVIDER` secret instead of deriving per-repo providers. The project number is embedded in the path, so no lookup is needed. Optional when the effective configuration declares `inference.wif_provider`; a different value from the declared one fails that repo. Requires a project |
 | `--openai-api-key` | | OpenAI API key written as `FULLSEND_OPENAI_API_KEY` to selected repos whose `inference.auth` is `openai-api-key` (GitHub and GitLab). Command-line only: never written to `repos.yaml` and never logged. See [Inference credentials](#inference-credentials). |
@@ -656,8 +656,9 @@ variable, which no pipeline reads until the dispatch route is activated
 is never one of the Poller identities (managed Poller generations and owners
 of supplied credentials are checked first). Every resource is recorded in the
 `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger before it is created, so a re-run
-finishes an interrupted install. No pipeline schedule is owned by this account
-until #8438; a schedule it owns makes install fail.
+finishes an interrupted install. The account owns pipeline schedules only
+while dispatch is activated (see below), and then only the managed polling
+schedules; any other schedule it owns makes install fail.
 
 Install and rotation (`--rotate-gitlab-trigger-account`) defer (reported, not
 an error; polling stays in place) when the default branch has only a wildcard
@@ -692,15 +693,54 @@ already published), CI job-token repository push
 (`ci_push_repository_for_job_token_allowed`) is disabled (enabled, unreadable,
 and unreported all defer), and the trigger account is ready on the default branch,
 verified against live GitLab state. A legacy install, whose schedules still set
-`FULLSEND_POLL_MODE`, defers, and so does a committed CI job that a trigger or
-agent child (`source=pipeline`) pipeline would run besides Fullsend's own.
+`FULLSEND_POLL_MODE`, defers, and so does a committed CI job that a trigger,
+agent child (`source=pipeline`) or scheduled (`source=schedule`) pipeline would
+run besides Fullsend's own. Activation also defers until the committed
+`pin-ci-job-identity.sh` and `run-poll-job.sh` match the shipped compatible
+scripts and the committed poll job in `fullsend-poll.yml` keeps the shipped
+`before_script` and `script` entries that source `run-poll-job.sh` (no
+`extends` or `trigger`). The agent and dispatcher jobs must also keep their
+shipped `before_script` and `script` entries, and the committed files that
+consume an agent child (`source=pipeline`) pipeline (the root workflow, the root
+and wrapper includes, the agent job rules, and `run-agent-job.sh`) must admit
+it. Customized or older versions need a merged scaffold repair; a selector name in a comment or unexecuted code does not establish
+readiness. Activation also defers when the project selects a custom CI
+configuration path, when a project, group, or instance CI/CD variable
+redefines a predefined variable such as `CI_PIPELINE_SOURCE`, or when either
+inventory cannot be read (group and instance scopes the installing credential
+may not read are skipped).
 Every converge, rotate, containment or uninstall run first deletes the
 `FULLSEND_GITLAB_DISPATCH_ACTIVATION` variable, before it rechecks the gate.
 When the gate passes, `repos install` records that variable, bound to the exact
 `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger generation, which activates the
 CI_JOB_TOKEN child-pipeline (`source=pipeline`) dispatch route; install fails
-if recording the activation fails. A deferral leaves the activation cleared,
-and polling stays the dispatch path through the Poller credential. The ledger
+if recording the activation fails. Install then recreates the managed polling
+schedules (`fullsend slash poll`, `fullsend event poll`) under the trigger
+account, so scheduled polls run as the account and use that route. The account
+creates them with a short-lived token while it stays at Developer. Each keeps
+the cron, branch, and enabled or disabled state of the schedule it replaces,
+and the installer-owned originals are deleted only after the replacements are
+confirmed. A spec with no schedule at all is left to schedule convergence and
+moved on the next install
+([#8508](https://github.com/fullsend-ai/fullsend/issues/8508)).
+An account-owned managed schedule that carries pipeline variables is handed
+back to the installer after the containment-only recovery, the repository
+selection check and the configuration preflights, before convergence reaches the pipeline-variable schedule migration, which cannot edit
+a schedule the account owns. The repair inspects the current and every retired
+generation whether or not the current one is ready or published, and the
+ownership stage after the install adopts the schedules again once the
+activation is recorded. A failure of that early repair is reported and the
+install continues.
+With `--reactivate-schedules`, the ownership stage reactivates a disabled
+account-owned schedule only when the committed-template prerequisites schedule
+convergence requires also hold (the typed wrapper, the root pipeline-input
+contract, the agent and poll templates, and the verified override restriction);
+otherwise it reports `Not reactivating disabled GitLab polling schedules` and
+keeps the schedule disabled.
+A deferral leaves the activation cleared and hands any account-owned managed
+schedule back to the installer, so polling stays the dispatch path through the
+Poller credential. Rotation and repair hand a retired account's schedules back
+before deleting it, and uninstall deletes them. The ledger
 carries no activation field, so an older CLI still reads it; see the
 [older-CLI behavior and rollback](../contributing/gitlab-role-credentials.md#trigger-only-service-account)
 note.
@@ -752,7 +792,8 @@ other than `not-installed`, `deferred`, and `ready` add `gitlab-trigger-account`
 drift.
 
 `repos uninstall` removes the published token, trigger token, push entry,
-deploy key, and account under the project lease, after the webhook fast path
+deploy key, the managed polling schedules the account owns (deleted without an
+installer-owned copy), and the account under the project lease, after the webhook fast path
 and before role-identity cleanup, and then deletes the ledger (generic
 role-variable cleanup never deletes the ledger or the token variable). A failure, or an
 unverified Poller inventory, stops uninstall, keeps the ledger and the manifest
@@ -1015,7 +1056,7 @@ GitLab uninstall holds the `FULLSEND_GITLAB_INSTALL_LEASE` project lease for the
 For the service-account cleanup, see
 [GitLab project service-account lifecycle § Service-account uninstall](#service-account-uninstall).
 
-For GitLab, uninstall first contains an interrupted trigger-account bootstrap under the project lease, before the Poller is reconciled and without reading the Poller inventory: it revokes recorded bootstrap tokens and restores Developer access, and a containment failure stops the uninstall. Uninstall then also removes the trigger-only service account after the webhook fast path and before role-identity cleanup: the published `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN` variable, the trigger token, the protected-branch push entry, the deploy key, the account, and finally the `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger. Before deleting the account, uninstall and rotation retirement check that it owns no active personal access token, SSH key, pipeline schedule or trigger token that Fullsend did not create, and that each of those inventories can be read; otherwise the account is kept. The ledger is kept until cleanup succeeds, so a retried uninstall resumes. See [Trigger-only service account](#trigger-only-service-account).
+For GitLab, uninstall first contains an interrupted trigger-account bootstrap under the project lease, before the Poller is reconciled and without reading the Poller inventory: it revokes recorded bootstrap tokens and restores Developer access, and a containment failure stops the uninstall. Uninstall then also removes the trigger-only service account after the webhook fast path and before role-identity cleanup: the published `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN` variable, the trigger token, the protected-branch push entry, the deploy key, the managed polling schedules the account owns (deleted without an installer-owned copy), the account, and finally the `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger. Before deleting the account, uninstall and rotation retirement check that it owns no active personal access token, SSH key, pipeline schedule or trigger token that Fullsend did not create, and that each of those inventories can be read; otherwise the account is kept. The ledger is kept until cleanup succeeds, so a retried uninstall resumes. See [Trigger-only service account](#trigger-only-service-account).
 
 Uninstall PR delivery intentionally reuses the same branch as `repos install`/`converge` (`fullsend/scaffold-install`), since already-deployed per-repo shims only exclude that branch name from dispatch. **Known limitation:** if an install PR is still open on that branch when uninstall runs (or an uninstall PR is open when install/converge runs), the existing PR is updated with the new commit but its title and body are left unchanged — the PR may show an install-oriented title while its diff now removes files, or vice versa. Check the PR's diff, not just its title, before merging when install and uninstall run close together against the same repo.
 

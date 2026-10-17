@@ -19,8 +19,10 @@ import (
 // protected-branch resources (#8437). It holds the project lease for the whole
 // transaction and passes it to the lifecycle. A deferral is reported and is not
 // a failure: existing polling stays the dispatch path, and the new dispatch
-// route stays inactive until #8438. Clients that are not the live GitLab client
-// (tests) have no trigger-account API and are skipped.
+// route stays inactive until the activation gate passes (#8438). The managed
+// polling schedules are owned by the trigger account only while the activation
+// is recorded (#8508). Clients that are not the live GitLab client (tests) have
+// no trigger-account API and are skipped.
 func maybeConvergeGitLabTriggerAccount(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string, rotate bool) (err error) {
 	if opts.testConvergeTriggerAccount != nil {
 		return opts.testConvergeTriggerAccount(ctx, client, owner, repo)
@@ -52,6 +54,7 @@ func maybeConvergeGitLabTriggerAccount(ctx context.Context, opts *reposInstallCo
 		printer.StepFail(fmt.Sprintf("[%s] GitLab trigger account inventory failed", repoFullName))
 		return err
 	}
+	lifecycleOpts.ReactivateSchedules = gitlabReactivateSchedules(ctx, opts, client, printer, owner, repo)
 	var result repos.GitLabTriggerAccountResult
 	diag := repos.DiagnoseGitLabTriggerAccount(ctx, client, nil, owner, repo, "")
 	if rotate && diag.State == repos.GitLabTriggerStateReady {
@@ -61,21 +64,126 @@ func maybeConvergeGitLabTriggerAccount(ctx context.Context, opts *reposInstallCo
 	}
 	if err != nil {
 		printer.StepFail(fmt.Sprintf("[%s] GitLab trigger account failed", repoFullName))
-		return err
+		// The dispatch activation was withdrawn, so the managed polling
+		// schedules go back to the installer (#8508).
+		return errors.Join(err, reconcileGitLabTriggerScheduleOwnership(ctx, lifecycleOpts, printer, repoFullName, false))
 	}
 	switch {
 	case result.Deferred != "":
 		printer.StepInfo(fmt.Sprintf("[%s] GitLab trigger account deferred: %s. Polling stays the dispatch path", repoFullName, result.Deferred))
+		return reconcileGitLabTriggerScheduleOwnership(ctx, lifecycleOpts, printer, repoFullName, false)
 	case result.Ready:
 		printer.StepDone(fmt.Sprintf("[%s] GitLab trigger account ready (the dispatch route stays inactive until it is activated separately)", repoFullName))
 		gate := reportGitLabTriggerDispatchGate(ctx, client, lifecycleOpts.API, printer, owner, repo, info.DefaultBranch)
 		// Only a gate that just passed activates the route; a deferred gate
 		// leaves the ledger without the activation (the lifecycle cleared it).
-		if err := repos.SetGitLabTriggerDispatchActive(ctx, lifecycleOpts, gate.Ready); err != nil {
-			printer.StepFail(fmt.Sprintf("[%s] Recording the GitLab trigger dispatch activation failed", repoFullName))
+		if err := recordGitLabTriggerDispatchActivation(ctx, lifecycleOpts, printer, repoFullName, gate.Ready); err != nil {
 			return err
 		}
+		// The managed polling schedules move to the trigger account only once
+		// the activation is recorded; otherwise they stay with (or go back to)
+		// the installer, so a poll job runs as the trigger account only while
+		// the child-pipeline dispatch route can be selected.
+		return reconcileGitLabTriggerScheduleOwnership(ctx, lifecycleOpts, printer, repoFullName, gate.Ready)
 	}
+	return nil
+}
+
+// gitlabReactivateSchedules reports whether the trigger account lifecycle may
+// reactivate disabled managed polling schedules. --reactivate-schedules is
+// honored only when the committed-template prerequisites convergeSchedules
+// requires hold; otherwise disabled schedules stay disabled, including when
+// the ownership stage replaces them (#8508).
+func gitlabReactivateSchedules(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string) bool {
+	if !opts.reactivateSchedules {
+		return false
+	}
+	reason := repos.GitLabScheduleReactivationDeferral(ctx, client, owner, repo)
+	if reason == "" {
+		return true
+	}
+	printer.StepInfo(fmt.Sprintf("[%s] Not reactivating disabled GitLab polling schedules: %s", owner+"/"+repo, reason))
+	return false
+}
+
+// repairGitLabTriggerSchedules hands managed polling schedules the trigger
+// account owns back to the installer when they carry pipeline variables (#8508).
+// Install runs it after the repository selection and configuration preflights
+// succeed, before convergence reaches the
+// pipeline-variable migration preflight, which rejects variables on any managed
+// schedule and cannot remove them from an account-owned one. It takes the
+// project lease for its own transaction and does nothing without a
+// trigger-account ledger. Clients that are not the live GitLab client (tests)
+// have no trigger-account API and are skipped.
+func repairGitLabTriggerSchedules(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string) (err error) {
+	if opts.testRepairTriggerSchedules != nil {
+		return opts.testRepairTriggerSchedules(ctx, client, owner, repo)
+	}
+	glClient, ok := client.(*gitlab.LiveClient)
+	if !ok || opts.dryRun {
+		return nil
+	}
+	_, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabTriggerAccount)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", forge.VarGitLabTriggerAccount, repos.SafeAPIError("reading the trigger account ledger", err))
+	}
+	if !exists {
+		return nil
+	}
+	repoFullName := owner + "/" + repo
+	lease, release, err := repos.LockGitLabProjectLease(ctx, client, owner, repo)
+	if err != nil {
+		return fmt.Errorf("serializing the GitLab trigger account with other installers: %w", err)
+	}
+	defer release(&err)
+	// ReactivateSchedules is deliberately not forwarded: this repair runs
+	// before the typed-wrapper, input-contract, template and restriction
+	// gates, so it keeps a disabled schedule disabled and leaves reactivation
+	// to convergeSchedules and the ownership stage, which check them.
+	lifecycleOpts := gitlablifecycle.NewTriggerOwner(glClient).ContainmentOptions(owner, repo, lease)
+	res, err := repos.RepairGitLabTriggerSchedules(ctx, lifecycleOpts)
+	if err != nil {
+		return err
+	}
+	if len(res.Created) > 0 || len(res.Removed) > 0 {
+		printer.StepDone(fmt.Sprintf("[%s] GitLab polling schedules owned by the trigger account that carried pipeline variables were handed back to the installer (%d created, %d removed)", repoFullName, len(res.Created), len(res.Removed)))
+	}
+	return nil
+}
+
+// recordGitLabTriggerDispatchActivation records (or withdraws) the dispatch
+// activation. When the write fails the activation has been withdrawn as far as
+// possible, so the child-pipeline route is not selected. The poll job can
+// still use the protected Poller credential injected by GitLab, but every
+// account-owned managed schedule goes back to the installer so its ownership
+// matches the selected route. A hand-back failure is joined to the original
+// error (#8508).
+func recordGitLabTriggerDispatchActivation(ctx context.Context, lifecycleOpts repos.GitLabTriggerAccountOptions, printer *ui.Printer, repoFullName string, active bool) error {
+	err := repos.SetGitLabTriggerDispatchActive(ctx, lifecycleOpts, active)
+	if err == nil {
+		return nil
+	}
+	printer.StepFail(fmt.Sprintf("[%s] Recording the GitLab trigger dispatch activation failed", repoFullName))
+	return errors.Join(err, reconcileGitLabTriggerScheduleOwnership(ctx, lifecycleOpts, printer, repoFullName, false))
+}
+
+// reconcileGitLabTriggerScheduleOwnership moves the managed polling schedules
+// to the trigger account when dispatchActive is set, or hands every
+// account-owned managed schedule back to the installer otherwise (#8508).
+func reconcileGitLabTriggerScheduleOwnership(ctx context.Context, lifecycleOpts repos.GitLabTriggerAccountOptions, printer *ui.Printer, repoFullName string, dispatchActive bool) error {
+	res, err := repos.ReconcileGitLabTriggerScheduleOwnership(ctx, lifecycleOpts, dispatchActive)
+	if err != nil {
+		printer.StepFail(fmt.Sprintf("[%s] Reconciling the owner of the GitLab polling schedules failed", repoFullName))
+		return err
+	}
+	if len(res.Created) == 0 && len(res.Removed) == 0 {
+		return nil
+	}
+	owner := "the installer"
+	if dispatchActive {
+		owner = "the trigger account"
+	}
+	printer.StepDone(fmt.Sprintf("[%s] GitLab polling schedules are owned by %s (%d created, %d removed)", repoFullName, owner, len(res.Created), len(res.Removed)))
 	return nil
 }
 

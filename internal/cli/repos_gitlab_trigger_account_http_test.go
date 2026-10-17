@@ -276,6 +276,15 @@ func (s *tahServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"default_branch": tahBranch, "visibility": "private",
 			"ci_pipeline_variables_minimum_override_role": s.overrideRole,
 		})
+	case p == "/admin/ci/variables" && r.Method == http.MethodGet:
+		// The activation gate inventories inherited variable overrides. The
+		// emulated instance and namespace define none.
+		s.hits["GET /admin/ci/variables"]++
+		tahJSON(w, http.StatusOK, []any{})
+	case strings.HasPrefix(p, "/groups/") && strings.HasSuffix(p, "/variables") && r.Method == http.MethodGet:
+		// The project lives in a personal namespace, which has no group.
+		s.hits["GET /groups/:id/variables"]++
+		tahJSON(w, http.StatusNotFound, map[string]any{"message": "404 Group Not Found"})
 	case strings.HasPrefix(p, "/users/") && strings.HasSuffix(p, "/keys") && r.Method == http.MethodGet:
 		s.hits["GET /users/:id/keys"]++
 		tahJSON(w, http.StatusOK, []any{})
@@ -1812,4 +1821,22 @@ func TestGitLabTriggerAccountHTTP_UninstallContainsBootstrapWhenInventoryUnreada
 	assert.Zero(t, after.PATID)
 	assert.Equal(t, led.AccountID, after.AccountID, "the ledger and account are kept for a retry")
 	e.requireLeaseReleased()
+}
+
+// The early schedule repair is a no-op without a ledger, and with a ready
+// account that owns no schedule it takes and releases the project lease and
+// changes nothing.
+func TestRepairGitLabTriggerSchedules_LiveClientNoops(t *testing.T) {
+	e := newTAHEnv(t)
+	var client forge.Client = e.client
+	require.NoError(t, repairGitLabTriggerSchedules(context.Background(), &reposInstallConfig{}, client, ui.New(e.out), "g", "p"))
+	e.requireNoLedger()
+
+	e.installReady()
+	e.out.Reset()
+	require.NoError(t, repairGitLabTriggerSchedules(context.Background(), &reposInstallConfig{}, client, ui.New(e.out), "g", "p"))
+	assert.NotContains(t, e.out.String(), "repaired")
+	e.requireLeaseReleased()
+
+	require.NoError(t, repairGitLabTriggerSchedules(context.Background(), &reposInstallConfig{dryRun: true}, client, ui.New(e.out), "g", "p"))
 }
