@@ -31,6 +31,7 @@ func TestPerRepoDefaults_CodeDefaults(t *testing.T) {
 
 	// Mint/inference operational defaults.
 	assert.Equal(t, DefaultPerRepoMintURL, d.ConfigMintURL())
+	assert.Empty(t, d.ConfigMintURLFromFile(), "the defaults layer has no file to read from")
 	assert.Equal(t, DefaultPerRepoInferenceProvider, d.ConfigInferenceProvider())
 	assert.Equal(t, "", d.ConfigInferenceProject(), "project has no code default")
 	assert.Equal(t, DefaultPerRepoInferenceRegion, d.ConfigInferenceRegion())
@@ -54,6 +55,7 @@ func TestPerRepoConfig_EmptyConfigResolvesDefaults(t *testing.T) {
 
 	// Mint/inference fields fall through to code defaults.
 	assert.Equal(t, DefaultPerRepoMintURL, cfg.ConfigMintURL())
+	assert.Empty(t, cfg.ConfigMintURLFromFile(), "neither file sets mint_url, and the defaults layer is not a file")
 	assert.Equal(t, DefaultPerRepoInferenceProvider, cfg.ConfigInferenceProvider())
 	assert.Equal(t, "", cfg.ConfigInferenceProject(), "project has no code default")
 	assert.Equal(t, DefaultPerRepoInferenceRegion, cfg.ConfigInferenceRegion())

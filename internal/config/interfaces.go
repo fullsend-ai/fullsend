@@ -66,6 +66,14 @@ type PerRepoConfigReader interface {
 	ConfigForge() string
 	ConfigTracker() string
 	ConfigMintURL() string
+	// ConfigMintURLFromFile returns the mint URL as set in config.yaml or
+	// config.base.yaml only. Empty means neither file sets mint_url — the
+	// compiled default is not consulted here (contrast with
+	// ConfigMintURL, which falls all the way through to the compiled
+	// default). Callers that need to distinguish "the file is silent" from
+	// "the file resolves to the default" (e.g. fullsend run's
+	// warn-and-skip-minting fallback) use this instead of ConfigMintURL.
+	ConfigMintURLFromFile() string
 	ConfigKeepHistory() bool
 	ConfigInferenceProvider() string
 	ConfigInferenceProject() string
@@ -408,6 +416,20 @@ func (c *perRepoConfig) ConfigMintURL() string {
 	}
 	if c.parent != nil {
 		return c.parent.ConfigMintURL()
+	}
+	return ""
+}
+
+// ConfigMintURLFromFile returns the mint URL as set in config.yaml or
+// config.base.yaml only; see the PerRepoConfigReader doc comment for why
+// this stops short of the compiled default that ConfigMintURL falls
+// through to.
+func (c *perRepoConfig) ConfigMintURLFromFile() string {
+	if c.MintURL != "" {
+		return c.MintURL
+	}
+	if c.parent != nil {
+		return c.parent.ConfigMintURLFromFile()
 	}
 	return ""
 }
