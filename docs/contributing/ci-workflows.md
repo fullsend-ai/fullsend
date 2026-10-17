@@ -200,13 +200,13 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code:
 
 - **Trusted authors** — org members and repo collaborators are auto-authorized.
-- **External contributors** — require a maintainer with write access to apply the `ok-to-test` label after reviewing the PR diff; the gate checks the labeler's permission. The gate removes stale labels when new commits land.
+- **External contributors** — require a user with write access (Write role or above) to apply the `ok-to-test` label after reviewing the PR diff; the gate checks the labeler's permission. The gate removes stale labels when new commits land.
 - **Separation of concerns** — the gate job runs on the base-branch checkout with `pull-requests: write`; the behaviour/playback jobs run on the PR-head checkout without write permissions.
 
 **Limitations of the gate:**
 
 - The gate authorizes *authors*, not *code*. A trusted author whose account is compromised bypasses the gate.
-- The gate does not inspect the PR diff — it trusts that maintainers reviewed the code before labeling `ok-to-test`.
+- The gate does not inspect the PR diff — it trusts that the labeler reviewed the code before labeling `ok-to-test`.
 - The `ok-to-test` label check has a TOCTOU window: code can change between label application and job execution (mitigated by the stale-label removal on `synchronize` events, but not eliminated).
 
 ### Review checklist for secrets in behaviour/playback jobs

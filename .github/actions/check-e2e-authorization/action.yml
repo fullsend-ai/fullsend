@@ -33,7 +33,7 @@ inputs:
   docs_url:
     description: Link to e2e testing documentation
     required: false
-    default: https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/dev/e2e-testing.md#ci-authorization
+    default: https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/dev/e2e-testing.md#blocked-runs
 
 outputs:
   authorized:
@@ -88,11 +88,11 @@ runs:
 
         case "${REASON}" in
           stale_ok_to_test)
-            body+="The \`ok-to-test\` label was removed because new commits landed after it was applied. A maintainer must re-apply \`ok-to-test\` after reviewing the latest changes.
+            body+="The \`ok-to-test\` label was removed because the PR changed after it was applied (usually a new push). Someone with write access must re-apply \`ok-to-test\` after reviewing the latest changes.
         "
             ;;
           untrusted_labeler)
-            body+="The \`ok-to-test\` label was removed because it was applied by a user without write access. A maintainer with write access must re-apply \`ok-to-test\` after reviewing the latest changes.
+            body+="The \`ok-to-test\` label did not authorize this run because it was applied by a user without write access. Do not re-apply it yourself: ask a member of [writers](https://github.com/orgs/fullsend-ai/teams/writers) or [core](https://github.com/orgs/fullsend-ai/teams/core) to apply \`ok-to-test\` after reviewing the latest changes.
         "
             ;;
           error)
@@ -102,7 +102,7 @@ runs:
           *)
             body+="E2E tests run automatically for org/repo **members and collaborators** on pull requests.
 
-        For other contributors, a maintainer with write access must add the \`ok-to-test\` label **after** the latest push.
+        For other contributors, someone with write access must add the \`ok-to-test\` label **after** the latest push.
         "
             ;;
         esac
@@ -114,6 +114,8 @@ runs:
         fi
 
         body+="
+        Reason: \`${REASON}\`
+
         See [E2E testing guide](${DOCS_URL}) for details."
 
         existing_id="$(gh api "repos/${owner}/${repo}/issues/${PR_NUMBER}/comments" --paginate \
