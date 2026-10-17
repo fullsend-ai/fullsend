@@ -212,8 +212,9 @@ Check its output for:
 - **Revision state**: confirms which Cloud Run revision is serving traffic
   and whether it matches the latest template
 - **Per-Repo WIF Repos**: confirms the enrolled repo is listed. This list is
-  read from the traffic-serving Cloud Run revision (falling back to Cloud
-  Functions metadata only when revision env vars are unavailable); the
+  read from the traffic-serving Cloud Run revision; if that serving state
+  cannot be verified, the command reports "(unknown — serving state could not
+  be verified)" rather than falling back to Cloud Functions metadata. The
   traffic-serving revision is the authoritative enrollment check
 - **ROLE_APP_IDS**: confirms shared role keys (e.g., `coder`, `review`) are configured on the mint
 
