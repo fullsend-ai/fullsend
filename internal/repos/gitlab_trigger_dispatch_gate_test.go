@@ -469,6 +469,22 @@ func TestCheckGitLabTriggerDispatchGate_AgentChildConsumerMustAdmitPipelineSourc
 			mutate: replaceIn(fullsendAgentTemplatePath, agentStageRule, agentStageRule+` && $CI_PIPELINE_SOURCE == "api"`),
 			want:   "agent job in " + fullsendAgentTemplatePath + " does not admit agent child pipelines",
 		},
+		"root workflow admits only the triage stage": {
+			mutate: replaceIn(".gitlab-ci.yml", `$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $STAGE`+"\n", `$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $STAGE == "triage"`+"\n"),
+			want:   "root workflow rules do not admit agent child pipelines",
+		},
+		"agent job admits only the triage stage": {
+			mutate: replaceIn(fullsendAgentTemplatePath, agentStageRule, agentStageRule+` == "triage"`),
+			want:   "agent job in " + fullsendAgentTemplatePath + " does not admit agent child pipelines",
+		},
+		"wrapper include depends on STAGE": {
+			mutate: replaceIn(fullsendPipelineInclude, wrapperPipelineRule, wrapperPipelineRule+" && $STAGE"),
+			want:   "does not include " + fullsendAgentTemplatePath + " for agent child pipelines",
+		},
+		"root include depends on STAGE": {
+			mutate: replaceIn(".gitlab-ci.yml", "  - local: '.gitlab/ci/fullsend-pipeline.yml'\n", "  - local: '.gitlab/ci/fullsend-pipeline.yml'\n    rules:\n      - if: $CI_PIPELINE_SOURCE == \"pipeline\" && $STAGE\n"),
+			want:   "does not include " + fullsendPipelineInclude + " for agent child pipelines",
+		},
 		"agent script replaced": {
 			mutate: func(e *trigEnv) {
 				key := trigOwner + "/" + trigRepo + "/" + gitlabAgentJobScriptPath
@@ -706,7 +722,7 @@ func TestGitLabScheduleReactivationDeferral(t *testing.T) {
 func TestGitLabEffectiveWorkflowProblemForEnv_UsesAgentTemplate(t *testing.T) {
 	root := []byte("include:\n  - local: " + fullsendPipelineInclude + "\n")
 	wrapper := []byte("include:\n  - local: " + fullsendAgentTemplatePath + "\n")
-	env := gitlabAgentChildEnv("main")
+	env := gitlabAgentChildEnv("main", "triage")
 	rejecting := []byte("workflow:\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"push\"\n")
 	admitting := []byte("workflow:\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"pipeline\"\n")
 

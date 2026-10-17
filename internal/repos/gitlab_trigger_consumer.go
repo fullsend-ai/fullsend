@@ -5,18 +5,35 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
+// customAgentChildStage stands for a dispatched stage whose name is not a
+// built-in agent: polling dispatches whatever stages the configuration names,
+// so a rule that admits only particular stage values must not pass for it.
+const customAgentChildStage = "fullsend-custom-stage"
+
+// gitlabAgentChildStages are the STAGE values the consumer checks evaluate:
+// every built-in agent plus a custom one. A condition that admits only some of
+// them (for example `$STAGE == "triage"`) fails the check, because polling can
+// dispatch any configured stage.
+func gitlabAgentChildStages() []string {
+	return append(config.ValidAgentNames(), customAgentChildStage)
+}
+
 // gitlabAgentChildEnv is the predefined-variable set of an agent child
 // pipeline (source=pipeline) the trigger-account dispatch route starts on the
-// protected default branch. STAGE is set because every dispatched agent
-// pipeline carries a non-empty stage input, which the root workflow and the
-// agent job rules test for.
-func gitlabAgentChildEnv(defaultBranch string) map[string]*string {
+// protected default branch, dispatching the given stage. STAGE is set because
+// every dispatched agent pipeline carries a non-empty stage input, which the
+// root workflow and the agent job rules test for. An empty stage leaves STAGE
+// unknown: GitLab evaluates include:rules before the YAML-defined variables
+// (STAGE is one) exist, so those rules cannot depend on it.
+func gitlabAgentChildEnv(defaultBranch, stage string) map[string]*string {
 	env := pipelineSourceEnv(defaultBranch, "pipeline")
-	stage := "triage"
-	env["STAGE"] = &stage
+	if stage != "" {
+		env["STAGE"] = &stage
+	}
 	return env
 }
 
@@ -41,10 +58,19 @@ func gitlabDispatchConsumerProblem(ctx context.Context, client forge.Client, own
 		}
 		files[path] = content
 	}
-	env := gitlabAgentChildEnv(defaultBranch)
-	if problem := gitlabEffectiveWorkflowProblemForEnv(files[".gitlab-ci.yml"], files[fullsendPipelineInclude], files[fullsendAgentTemplatePath], fullsendAgentTemplatePath, env, "agent child (source=pipeline)"); problem != "" {
-		return "the committed root workflow rules do not admit agent child pipelines: " + problem + repair
+	// Workflow rules and job rules see STAGE; check them for every stage that
+	// polling can dispatch.
+	for _, stage := range gitlabAgentChildStages() {
+		env := gitlabAgentChildEnv(defaultBranch, stage)
+		if problem := gitlabEffectiveWorkflowProblemForEnv(files[".gitlab-ci.yml"], files[fullsendPipelineInclude], files[fullsendAgentTemplatePath], fullsendAgentTemplatePath, env, "agent child (source=pipeline, stage "+stage+")"); problem != "" {
+			return "the committed root workflow rules do not admit agent child pipelines: " + problem + repair
+		}
+		if !gitlabAgentJobAdmits(files[fullsendAgentTemplatePath], env) {
+			return "the committed agent job in " + fullsendAgentTemplatePath + " does not admit agent child pipelines (source=pipeline, stage " + stage + ")" + repair
+		}
 	}
+	// Include rules are evaluated before STAGE exists, so STAGE is unknown.
+	env := gitlabAgentChildEnv(defaultBranch, "")
 	if !gitlabIncludeAdmits(files[".gitlab-ci.yml"], isFullsendPipelineInclude, env) {
 		return "the committed .gitlab-ci.yml does not include " + fullsendPipelineInclude + " for agent child pipelines (source=pipeline)" + repair
 	}
@@ -60,9 +86,6 @@ func gitlabDispatchConsumerProblem(ctx context.Context, client forge.Client, own
 	}
 	if !rootReady {
 		return "the committed root .gitlab-ci.yml does not declare and forward the pipeline-input contract" + repair
-	}
-	if !gitlabAgentJobAdmits(files[fullsendAgentTemplatePath], env) {
-		return "the committed agent job in " + fullsendAgentTemplatePath + " does not admit agent child pipelines (source=pipeline)" + repair
 	}
 	return ""
 }

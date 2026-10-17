@@ -282,12 +282,12 @@ For the full list of install flags, see the
 
 ### Inherited CI/CD variable trust
 
-> **Security assumption:** the webhook fast path trusts GitLab instance
-> administrators and group Owners not to define CI/CD variables that
-> redefine predefined variables such as `CI_PIPELINE_SOURCE` or
-> `CI_COMMIT_REF_PROTECTED`. Fullsend checks only the scopes the installing
-> credential can read. It does not verify the others and cannot prove that
-> no override exists there.
+> **Security assumption:** the webhook fast path and the trigger-account
+> schedule ownership both trust GitLab instance administrators and group
+> Owners not to define CI/CD variables that redefine predefined variables
+> such as `CI_PIPELINE_SOURCE` or `CI_COMMIT_REF_PROTECTED`. Fullsend checks
+> only the scopes the installing credential can read. It does not verify the
+> others and cannot prove that no override exists there.
 
 GitLab gives instance and group CI/CD variables
 [precedence](https://docs.gitlab.com/ci/variables/#ci-cd-variable-precedence)
@@ -303,8 +303,9 @@ and `repos status` runs cannot inspect that scope either.
 Without administrator access, `repos install` cannot list instance-level
 variables. Without group Owner access, it cannot list the variables of an
 ancestor group. A forbidden response means the scope is unverified, not
-unsafe: the fast path is activated or retained when the remaining checks
-pass. These checks still apply:
+unsafe: the fast path is activated or retained, and the polling schedules
+move to the trigger account, when the remaining checks pass. These checks
+still apply:
 
 * A collision found in any scope the credential **can** read defers the
   fast path and revokes existing managed credentials. So does a
