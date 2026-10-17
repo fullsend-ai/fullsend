@@ -12,8 +12,15 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
+// EnrolledTestRepositoryStep is the step pattern that leases a fresh
+// pool repository (Driver.AllocateRepo) for the scenario. The suite
+// runner matches scenario steps against it before the run to count the
+// scenarios that provision a repository, so it must stay the only step
+// that allocates.
+const EnrolledTestRepositoryStep = `^the enrolled test repository$`
+
 func registerTriageSteps(sc *godog.ScenarioContext) {
-	sc.Step(`^the enrolled test repository$`, func(ctx context.Context) (context.Context, error) {
+	sc.Step(EnrolledTestRepositoryStep, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenEnrolledTestRepository(ctx, world.FromContext(ctx))
 	})
 	sc.Step(`^an enrolled repository "([^"]+)"$`, func(ctx context.Context, fullName string) (context.Context, error) {

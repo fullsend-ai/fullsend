@@ -2239,3 +2239,44 @@ func TestAwaitCreation_ContextCancellation(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context cancelled")
 }
+
+// A provision that finds the process-wide gate busy logs that it is
+// waiting and how long it waited once it gets the gate; a free gate logs
+// nothing extra.
+func TestEnsurer_WIFProvider_LogsGateWait(t *testing.T) {
+	var mu sync.Mutex
+	var lines []string
+	e := &repoEnsurer{
+		runCLI: func(_, _ string, _ ...string) (string, error) { return healthyStatusJSON, nil },
+		logf: func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			lines = append(lines, fmt.Sprintf(format, args...))
+		},
+	}
+	logged := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Join(lines, "\n")
+	}
+
+	// Free gate: no wait lines.
+	_, err := e.provisionWIFProvider(context.Background(), "org/test-repo-01", "test-project")
+	require.NoError(t, err)
+	assert.NotContains(t, logged(), "provision gate")
+
+	// Busy gate: the waiter logs, then logs the wait once released.
+	provisionGate <- struct{}{}
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.provisionWIFProvider(context.Background(), "org/test-repo-02", "test-project")
+		done <- err
+	}()
+	require.Eventually(t, func() bool {
+		return strings.Contains(logged(), "waiting for the inference provision gate for org/test-repo-02")
+	}, 5*time.Second, 5*time.Millisecond)
+	<-provisionGate
+	require.NoError(t, <-done)
+	assert.Contains(t, logged(), "got the inference provision gate for org/test-repo-02 after waiting")
+	assert.Zero(t, len(provisionGate), "gate must be free")
+}

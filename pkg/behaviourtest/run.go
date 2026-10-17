@@ -4,13 +4,16 @@ package behaviourtest
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/cucumber/godog"
 	"github.com/google/uuid"
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/suite"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -20,12 +23,20 @@ const fullsendModulePath = "github.com/fullsend-ai/fullsend"
 
 // RunSuite bootstraps and executes the behaviour test suite.
 //
-// It loads runner and e2e config from the environment, acquires a pool
-// org, selects SCM/CI/install drivers, builds the fullsend CLI from
-// module github.com/fullsend-ai/fullsend, and runs godog with shared
-// step registration. Callers supply only FeaturePaths and FixturesRoot;
-// tags, concurrency, and driver selection continue to come from env
-// vars (GODOG_TAGS, GODOG_CONCURRENCY, BEHAVIOUR_*, ENVIRONMENT).
+// It loads runner and e2e config from the environment, counts the
+// scenario instances the run will execute, acquires as many pool orgs
+// as the provisioning instances need (at most maxProvisioningPerOrg per
+// DEV org, fewer when an org's GitHub primary budget is low; STAGE uses
+// its single org for everything), sets each org up concurrently with its
+// own token, install driver and SCM/CI drivers, and runs one godog suite
+// whose Before hook routes every scenario to an org. It builds the
+// fullsend CLI from module github.com/fullsend-ai/fullsend and shares
+// step registration with external consumers. Callers supply only
+// FeaturePaths and FixturesRoot; tags, concurrency, and driver selection
+// continue to come from env vars (GODOG_TAGS, GODOG_CONCURRENCY,
+// BEHAVIOUR_*, ENVIRONMENT). By default each acquired org runs up to its
+// driver capacity (12 repo slots) of scenarios at once; an explicit
+// GODOG_CONCURRENCY bounds the active scenarios across all orgs together.
 //
 // The test file that calls RunSuite must be built with `-tags behaviour`.
 func RunSuite(t *testing.T, opts SuiteOptions) {
@@ -45,80 +56,155 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 	e2eCfg := e2etest.LoadEnvConfig(t)
 	ctx := context.Background()
 
-	runID := uuid.New().String()
-	orgPool := orgPoolForEnvironment(cfg.Environment)
-	org, token, err := e2etest.AcquireOrg(ctx, e2eCfg, runID, orgPool, e2eCfg.LockTimeout, t.Logf)
+	policy, err := quotaPolicyFromEnv()
 	if err != nil {
-		t.Fatalf("acquiring org (env=%s): %v", cfg.Environment, err)
+		t.Fatal(err)
 	}
-	client := e2etest.NewLiveClient(token)
-	t.Cleanup(func() {
-		e2etest.ReleaseLock(context.Background(), client, org, runID, t)
+
+	// base carries everything that does not depend on the org. Tag skips
+	// are evaluated against it, and each org's template is cloned from it.
+	base := &world.World{
+		Config:       cfg,
+		Logf:         t.Logf,
+		FixturesRoot: opts.FixturesRoot,
+	}
+
+	tagFilter := os.Getenv("GODOG_TAGS")
+	instances, err := loadScenarioInstances(opts.FeaturePaths, tagFilter)
+	if err != nil {
+		t.Fatalf("reading feature files: %v", err)
+	}
+	demand := summarizeDemand(instances, func(tags []string) error {
+		return suite.SkipErrorForTagNames(tags, base)
 	})
+	t.Logf("[org-shard] %d scenario instance(s) selected, %d skipped by compatibility tags, %d will run, %d provision a fresh repository",
+		demand.Selected, demand.Skipped, demand.Eligible, demand.Provisioning)
 
 	// Build from the fullsend module, not the caller's module root, so
 	// external consumers (fullsend-ai/agents) get this repo's cmd/fullsend.
 	binary := e2etest.BuildModuleBinary(t, fullsendModulePath)
+	base.CLIBinary = binary
 
-	e2etest.CleanupStaleResources(ctx, client, token, org, t)
+	resolveActors(ctx, t, cfg, base)
 
-	driverFactory := installFactoryFor(cfg.Environment)
-	driver, err := driverFactory(org, client, token, binary, e2eCfg.GCPProjectID, t.Logf)
-	if err != nil {
-		t.Fatalf("creating install driver (env=%s): %v", cfg.Environment, err)
+	runID := uuid.New().String()
+	sharded := &shardedSuite{
+		Deps: orgPoolDeps{
+			Acquire: func(ctx context.Context, pool []string, wait bool) (string, string, error) {
+				timeout := time.Duration(0)
+				if wait {
+					timeout = e2eCfg.LockTimeout
+				}
+				return e2etest.AcquireOrg(ctx, e2eCfg, runID, pool, timeout, t.Logf)
+			},
+			Release: func(org, token string) {
+				e2etest.ReleaseLock(context.Background(), e2etest.NewLiveClient(token), org, runID, t)
+			},
+			SampleQuota: func(ctx context.Context, org, token string) (forge.RateLimit, bool) {
+				return e2etest.SampleRateLimit(ctx, e2etest.NewLiveClient(token), org)
+			},
+			Logf: t.Logf,
+		},
+		Config: orgPlanConfig{
+			Pool:      orgPoolForEnvironment(cfg.Environment),
+			SingleOrg: cfg.Environment == "stage",
+			PerOrgCap: maxProvisioningPerOrg,
+			Policy:    policy,
+
+			ReserveTimeout: e2eCfg.LockTimeout,
+			RetryBackoff:   reserveRetryBackoff,
+		},
+		Setup: func(ctx context.Context, lease orgLease, st *shardSetup) error {
+			org, token := lease.Org, lease.Token
+			logf := orgLogf(t.Logf, org)
+			client := e2etest.NewLiveClient(token)
+
+			e2etest.CleanupStaleResources(ctx, client, token, org, t)
+
+			driver, err := installFactoryFor(cfg.Environment)(org, client, token, binary, e2eCfg.GCPProjectID, logf)
+			if err != nil {
+				return fmt.Errorf("creating install driver (env=%s): %w", cfg.Environment, err)
+			}
+			// Registered in st at once, even if a later step fails or
+			// panics, so Run finalizes the driver (mint teardown) before
+			// releasing the org's lock.
+			st.Driver = driver
+			st.Quota = client.RateLimit
+
+			scmDriver, err := newSCMDriver(cfg.SCM, client)
+			if err != nil {
+				return err
+			}
+			ciDriver, err := newCIDriver(cfg.CI, client, token)
+			if err != nil {
+				return err
+			}
+
+			template := base.Clone()
+			template.SCM = scmDriver
+			template.CI = ciDriver
+			template.Driver = driver
+			template.Org = org
+			template.Token = token
+			template.RepoOwner = org
+			template.Logf = logf
+			st.Template = template
+			return nil
+		},
 	}
 
-	// Register Finalize as cleanup so mint resources are torn down
-	// even if the suite fails partway through. Finalize also reclaims
-	// any outstanding leases, logging them as errors.
-	t.Cleanup(func() {
-		if finalizeErr := driver.Finalize(context.Background()); finalizeErr != nil {
-			t.Logf("driver finalize: %v", finalizeErr)
+	err = sharded.Run(ctx, demand, func(assigner *shardAssigner) error {
+		concurrency := 1
+		if capacity := assigner.driverCapacity(); capacity > 0 {
+			n, overCapacity, cerr := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), capacity)
+			if cerr != nil {
+				return cerr
+			}
+			concurrency = n
+			if overCapacity {
+				t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds the orgs' combined driver capacity %d; excess workers will block in AllocateRepo", concurrency, capacity)
+			}
 		}
+		t.Logf("[org-shard] running with %d concurrent scenario(s) across all orgs", concurrency)
+
+		router := assigner.Router()
+		suiteRunner := godog.TestSuite{
+			Name:                "behaviour",
+			ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitRoutedScenario(sc, base, router) },
+			Options: &godog.Options{
+				Format:      "pretty",
+				Paths:       opts.FeaturePaths,
+				TestingT:    t,
+				Tags:        tagFilter,
+				Concurrency: concurrency,
+			},
+		}
+		if st := suiteRunner.Run(); st != 0 {
+			return fmt.Errorf("behaviour suite failed with status %d", st)
+		}
+		return nil
 	})
-
-	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), driver.Capacity())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if overCapacity {
-		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block in AllocateRepo", concurrency, driver.Capacity())
-	}
+}
 
-	scmDriver, err := newSCMDriver(cfg.SCM, client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ciDriver, err := newCIDriver(cfg.CI, client, token)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	template := &world.World{
-		Config:       cfg,
-		SCM:          scmDriver,
-		CI:           ciDriver,
-		Driver:       driver,
-		Org:          org,
-		Token:        token,
-		Logf:         t.Logf,
-		FixturesRoot: opts.FixturesRoot,
-		RepoOwner:    org,
-		CLIBinary:    binary,
-	}
-
+// resolveActors sets the org-independent test actor drivers (outsider,
+// write, triage) on base from their PATs, when set.
+func resolveActors(ctx context.Context, t *testing.T, cfg env.RunnerConfig, base *world.World) {
+	t.Helper()
 	if outsiderPAT := os.Getenv("TEST_ACTOR_OUTSIDER_PAT"); outsiderPAT != "" {
 		outsiderClient := e2etest.NewLiveClient(outsiderPAT)
 		outsiderSCM, err := newSCMDriver(cfg.SCM, outsiderClient)
 		if err != nil {
 			t.Fatal(err)
 		}
-		template.OutsiderSCM = outsiderSCM
+		base.OutsiderSCM = outsiderSCM
 		login, err := outsiderClient.GetAuthenticatedUser(ctx)
 		if err != nil {
 			t.Fatalf("resolving outsider login: %v", err)
 		}
-		template.OutsiderLogin = login
+		base.OutsiderLogin = login
 	}
 
 	if writePAT := os.Getenv("TEST_ACTOR_WRITE_PAT"); writePAT != "" {
@@ -127,13 +213,13 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		template.WriteSCM = writeSCM
-		template.WriteToken = writePAT
+		base.WriteSCM = writeSCM
+		base.WriteToken = writePAT
 		login, err := writeClient.GetAuthenticatedUser(ctx)
 		if err != nil {
 			t.Fatalf("resolving write actor login: %v", err)
 		}
-		template.WriteLogin = login
+		base.WriteLogin = login
 	}
 
 	if triagePAT := os.Getenv("TEST_ACTOR_TRIAGE_PAT"); triagePAT != "" {
@@ -142,26 +228,11 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		template.TriageSCM = triageSCM
+		base.TriageSCM = triageSCM
 		login, err := triageClient.GetAuthenticatedUser(ctx)
 		if err != nil {
 			t.Fatalf("resolving triage actor login: %v", err)
 		}
-		template.TriageLogin = login
-	}
-
-	suiteRunner := godog.TestSuite{
-		Name:                "behaviour",
-		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template) },
-		Options: &godog.Options{
-			Format:      "pretty",
-			Paths:       opts.FeaturePaths,
-			TestingT:    t,
-			Tags:        os.Getenv("GODOG_TAGS"),
-			Concurrency: concurrency,
-		},
-	}
-	if st := suiteRunner.Run(); st != 0 {
-		t.Fatalf("behaviour suite failed with status %d", st)
+		base.TriageLogin = login
 	}
 }
