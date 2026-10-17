@@ -942,6 +942,10 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 				"human PR auto-fix requires write+ on the PR author")
 			assert.Regexp(t, `(?s)PR_USER_LOGIN.*\[bot\].*STAGE="fix".*fullsend-fix.*has_repo_permission "\$\{PR_USER_LOGIN\}" write`, s)
 
+			// Fix iteration count comes from the tested filter in .github/scripts,
+			// which trusts the Authored-by trailer only from the App bot.
+			assert.Contains(t, s, `jq -s --arg bot_email "${GIT_BOT_EMAIL}" -f .defaults/.github/scripts/count-fix-commits.jq`)
+
 			// ready-to-code is a mutation path: bot handoff OR write+ (default min)
 			assert.Regexp(t, `(?s)ready-to-code".*\\\[bot\\\]\$.*is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}"`, s,
 				"ready-to-code must check bot bypass before write+ gate")

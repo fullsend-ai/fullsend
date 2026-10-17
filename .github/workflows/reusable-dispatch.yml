@@ -1247,7 +1247,7 @@ jobs:
 
           FIX_COMMITS="$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/commits" \
             --paginate 2>/dev/null \
-            | jq -s 'add | [.[] | select(.commit.author.name == "fullsend-fix")] | length')" \
+            | jq -s --arg bot_email "${GIT_BOT_EMAIL}" -f .defaults/.github/scripts/count-fix-commits.jq)" \
             || { echo "::warning::Could not count prior fix commits — defaulting to cap"; FIX_COMMITS="${ITERATION_CAP:-5}"; }
           ITERATION=$(( FIX_COMMITS + 1 ))
           echo "Fix iteration: ${ITERATION} (${FIX_COMMITS} previous fix commits)" >&2
