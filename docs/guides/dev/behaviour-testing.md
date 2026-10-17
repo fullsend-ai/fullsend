@@ -474,7 +474,7 @@ Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ens
 
 Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete leftover state + create + `github setup` + Actions settle; the first lease of each name also resolves inference WIF), including when a later scenario reuses the same `test-repo-NN` name. The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leases in the suite.
 
-Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) lease one repo per Examples row. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection. The same rule applies to the `playback-test` target (also 45 minutes) and to any CI job that runs it.
+Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) and the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios) lease one repo per Examples row. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection. The same rule applies to the `playback-test` target (also 45 minutes) and to any CI job that runs it.
 
 Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
 
@@ -599,6 +599,21 @@ The Scenario Outline holds a negative control for each failure class, and none o
 
 The steps register the credential with the secret redactor. They store only redacted CLI output and save it as `mint-status-<scenario>-*/cli-output.txt` under `BEHAVIOUR_ARTIFACT_DIR`. The last step of each scenario fails if the raw CLI output held the credential, or if any file under `BEHAVIOUR_ARTIFACT_DIR` holds the write actor's PAT. In CI the PAT is a repository secret, so GitHub Actions also masks it in the job log.
 
+## GitHub bot-role lookup scenarios
+
+`e2e/behaviour/features/platform/bot-role-lookup.feature` covers the GitHub bot-role lookup ([ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)): the mint's `POST /v1/bot-role`, called with a real GitHub Actions OIDC token, against the suite's own mint. It reuses the [mint probe topology](#probe-topology): the steps commit a reusable probe workflow (`pkg/behaviourtest/steps/bot_role_probe_workflow.yml`) as `.github/workflows/bot-role-probe.yml` to the slot's approved host `test-repo-NN-mint-host`, then push a shim to a temporary branch (`behaviour/bot-role-probe-<nonce>`) of the leased repository. The suite's mints accept any workflow basename (`ALLOWED_WORKFLOW_FILES` is `*` on the preview and stage mints). Each Examples row is one identity:
+
+| Identity | Subject lookup | Expected outcome |
+|----------|----------------|------------------|
+| `registered:<role>` | `<app set>-<role>[bot]`, where the app set is `BEHAVIOUR_APP_SET` (default `fullsend-test`, see `install.AppSet`) and the role a `fullsend-test` role | `recognized` with that role |
+| `unregistered-e2e` | The suite's own e2e App, discovered at runtime from the suite's GitHub credential. It must be a `[bot]` login and none of the registered logins, or the row fails as an infrastructure failure | `no-match` |
+| `claimed-in-event` | The suite's e2e App, with `"role":"review"` added to the request body, which the mint must ignore | `no-match` |
+| `forced-failure` | The registered review bot, sent with a credential that keeps the verified token's header and payload but replaces its signature | `lookup-failed` |
+
+The same run makes a **control** lookup of the registered review bot, which must answer 200 `recognized` with role `review`, from a token the probe verified, with the leased repository as the OIDC `repository` claim. Otherwise the row fails as an infrastructure failure. As in the mint probe, each job verifies its own OIDC token first (`oidc_verified`). Probe-side configuration, OIDC and transport failures are always infrastructure failures, and so is a lookup-mode answer that `botidentity.ParseMintBotRoleResponse` rejects. A forced failure counts as `lookup-failed` only for a verified token answered 401 `authentication failed`. Any other status is an infrastructure failure, and a 200 fails the row because the mint accepted an invalid credential. No infrastructure failure can satisfy an expected outcome.
+
+The probe uploads only the request fields, `oidc_verified`, the two OIDC claims, the HTTP status, the `outcome`, `role` and `error` strings of the mint's body (each at most 300 characters), and a probe-side error class. It never writes a token. The remaining steps project the subject's outcome onto a normalized actor with `botidentity.ApplyBotRoleResult`, and check the pre-CEL gate (`harnessdispatch.IsAuthorized`) for a non-label `review_submitted` event. A `no-match` and a `lookup-failed` are both denied before CEL, and `role_verified` (`true` and `false`) keeps them apart. `TestBotRoleLookupFeature_RowsMatchSteps` checks every Examples row against the step patterns and classification. Each of the 4 rows leases a pool repository.
+
 ## Version pinning for `fullsend-ai/agents`
 
 External behaviour runners import the shared libraries from this module:
@@ -722,6 +737,10 @@ suiteRunner := godog.TestSuite{
 **`install.MintURLReporter` optional interface and `install.MintStatusTeamSlug`:** `MintURL() string` reports the suite's mint URL. The [CLI mint status scenarios](#cli-mint-status-scenarios) use it to get the mint address. It is a separate interface, not an `install.Driver` method, so external `install.Driver` implementations keep compiling. The mint status steps fail with a `deployment` error on a driver without it. `MintStatusTeamSlug` (`mint-status`) names the team the CF mint drivers pass as `--status-github-group <org>/mint-status`.
 
 **`world.World.CLIBinary`, `world.World.WriteToken` and `world.World.MintStatus` additions:** `RunSuite` sets `CLIBinary` to the CLI it builds and `WriteToken` to `TEST_ACTOR_WRITE_PAT`. `MintStatus` (type `world.MintStatus`) holds the CLI mint status scenario state. All three are non-breaking additions. A custom bootstrap must set `CLIBinary` and `WriteToken` to run the mint status scenarios.
+
+**`world.World.BotRoleProbe` addition:** The new `BotRoleProbe *world.BotRoleProbe` field (with the `world.BotRoleProbe`, `world.BotRoleProbeResult` and `world.BotRoleProbeResponse` types) holds the state of the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios). It is a non-breaking addition. Like the mint probe steps, the bot-role probe steps need a CI driver that implements `ci.RunLister`.
+
+**`install.AppSet` addition:** `AppSet()` returns the GitHub App set the behaviour mints are deployed with (`BEHAVIOUR_APP_SET`, default `fullsend-test`). The bot-role lookup steps derive registered bot logins (`<app set>-<role>[bot]`) from it.
 
 **`ci.EmptyMatrixWaiter` optional interface:** `WaitForHarnessEmptyMatrix(ctx, owner, repo string, after time.Time) (*forge.WorkflowRun, error)` backs the `the harness dispatch completes with an empty matrix` step. It is a separate interface, not a `ci.Driver` method, so external `ci.Driver` implementations keep compiling; the step fails with an explanatory error on a driver without it. Only the GitHub Actions reference driver implements it.
 

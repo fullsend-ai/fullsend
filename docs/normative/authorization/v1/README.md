@@ -10,10 +10,16 @@ The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
 consumed by this contract. Bot identity and role resolution are specified by
 [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
 
-> **ADR 0107 target contract — not yet implemented:** The bot identity fields,
-> resolver outcomes, and bot-specific fail-closed rows below describe the
-> behavior to be implemented by the adapters and dispatch path. Until that
-> migration lands, existing compatibility behavior remains authoritative.
+> **ADR 0107 target contract — partially implemented:** The bot identity
+> fields, resolver outcomes, and bot-specific fail-closed rows below describe
+> the target behavior. The building blocks exist: the `actor.bot_role` and
+> `actor.role_verified` fields in `internal/normevent`, the forge-neutral
+> `BotRoleResolver` contract in `internal/botidentity`, the mint's GitHub
+> `POST /v1/bot-role` lookup, and a non-label bot branch in `IsAuthorized()`.
+> That branch applies only to events that carry a lookup result
+> (`actor.role_verified` set). No production adapter performs the lookup yet,
+> so existing compatibility behavior remains authoritative for current events.
+> Non-GitHub lookup is not implemented.
 
 ## Role ordering
 

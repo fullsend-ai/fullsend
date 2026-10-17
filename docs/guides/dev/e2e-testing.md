@@ -808,7 +808,10 @@ The `fullsend-test-*` apps are **test-only** GitHub Apps owned by `fullsend-ai`,
 separate from the production `fullsend-ai-*` app set. They exist for temporary
 and test mints, including the Cloudflare Worker mint BT chain. There is **no
 `e2e` test app**. The `fix` role shares the coder test app and PEM (same as
-production).
+production). Because no test role uses it, the bot-role lookup feature uses
+the suite's own e2e App identity, discovered at runtime, as its unregistered
+third-party bot (see
+[GitHub bot-role lookup scenarios](behaviour-testing.md#github-bot-role-lookup-scenarios)).
 
 Pool organizations intentionally do not keep the production agent apps
 installed as baseline test infrastructure. The test mint uses the isolated

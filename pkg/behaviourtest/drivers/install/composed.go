@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -73,6 +74,11 @@ func newComposedDriver(
 // repo is created and installed from a clean base (delete+recreate if
 // it already exists). Blocks until a slot is free or ctx is cancelled.
 func (d *composedDriver) AllocateRepo(ctx context.Context) (string, error) {
+	// Pace setup against the shared installation token's primary quota.
+	if err := d.awaitQuota(ctx); err != nil {
+		return "", fmt.Errorf("allocating repo: %w", err)
+	}
+
 	// Acquire a name from the pool (blocks if all slots are in use).
 	var name string
 	select {
@@ -205,6 +211,50 @@ func (d *composedDriver) MintURL() string { return d.mintURL }
 
 // Compile-time check: composedDriver reports its mint URL.
 var _ MintURLReporter = (*composedDriver)(nil)
+
+// quotaLowWater is the primary-quota budget below which AllocateRepo waits
+// for the reset before starting another repo setup. One setup (create
+// repo, push scaffold, set variables and secrets) costs well over a
+// hundred calls, so starting one near the bottom of the window only
+// exhausts the quota partway through it.
+const quotaLowWater = 300
+
+// quotaSleep waits d or until ctx is done. Replaced in tests.
+var quotaSleep = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// awaitQuota delays an allocation while the last observed primary quota is
+// below quotaLowWater and its reset is still ahead. A reset the context
+// deadline cannot cover is logged and not waited for (the setup's own
+// rate-limit handling then reports the cause); a stale observation whose
+// reset has passed is ignored.
+func (d *composedDriver) awaitQuota(ctx context.Context) error {
+	if d.rate == nil {
+		return nil
+	}
+	rl, seen := d.rate.RateLimit()
+	if !seen || rl.Remaining >= quotaLowWater || rl.Reset.IsZero() {
+		return nil
+	}
+	wait := time.Until(rl.Reset) + time.Second
+	if wait <= time.Second {
+		return nil
+	}
+	if deadline, ok := ctx.Deadline(); ok && wait > time.Until(deadline) {
+		d.logf("[driver] primary quota low (%s) and its reset in %s is beyond the suite deadline; allocating anyway", rl, wait.Round(time.Second))
+		return nil
+	}
+	d.logf("[driver] primary quota low (%s); waiting %s for the reset before allocating", rl, wait.Round(time.Second))
+	return quotaSleep(ctx, wait)
+}
 
 // logRateLimit writes one primary-quota sample, if a reporter is set
 // and has observed a response.

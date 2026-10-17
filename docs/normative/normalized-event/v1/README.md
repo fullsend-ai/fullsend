@@ -23,10 +23,12 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
   decision is recorded in
   [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 
-> **ADR 0107 target contract — not yet implemented:** The bot-specific actor
-> fields and lookup semantics described below are normative design, but current
-> adapters and Go event types have not yet been migrated to emit or enforce
-> them. Existing compatibility behavior remains authoritative until migration.
+> **ADR 0107 target contract — partially implemented:** The bot-specific actor
+> fields and lookup semantics described below are normative design. The Go
+> event types (`bot_role`, `role_verified` on the actor) and the dispatch
+> authorization gate that enforces them exist, but no production adapter emits
+> the fields yet. Existing compatibility behavior remains authoritative until
+> adapters are migrated.
 
 ## Scope (v1)
 
@@ -225,8 +227,12 @@ and actor-transition evidence before enabling the target behavior.
 Whether an event uses the legacy representation is determined by the adapter's
 implementation contract, not inferred from field omission alone.
 
-This is the ADR 0107 target representation; it is not yet emitted by the
-production adapters or available as a runtime CEL field.
+This is the ADR 0107 target representation. The Go `normevent.Actor` type
+carries both fields (omitted when unset), `internal/botidentity`
+(`ApplyBotRoleResult`) projects a lookup outcome onto them, and the dispatch
+gate denies a bot with `role_verified` set but no recognized `bot_role` on
+non-label paths. The production adapters do not emit the fields yet, so
+triggers that read them must guard with `has()`.
 
 ### Fork security (`state.change_proposal.is_fork`)
 
@@ -336,7 +342,7 @@ contract):
 | `event_payload.issue` | `entity` when `entity.kind == "work_item"`: `{number: entity.id, html_url: entity.url}` |
 | `event_payload.pull_request` | See below |
 | `event_payload.comment` | `transition.comment` when present: `{body: transition.comment.body}` |
-| `event_payload._normalized_event` | Complete `NormalizedEvent` embedded by `buildEventPayload` for CEL overlay resolution during `fullsend run` (#6748) |
+| `event_payload._normalized_event` | Complete `NormalizedEvent` embedded by `buildEventPayload` for CEL overlay resolution during `fullsend run` (#6748); includes `actor.bot_role` and `actor.role_verified` only when the adapter set them (ADR 0107) |
 | `trigger_source` (fix agent only) | See below |
 | `status-repo` | `repo` |
 | `status-number` | `entity.id` |

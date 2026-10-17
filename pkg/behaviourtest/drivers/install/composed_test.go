@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -370,4 +371,65 @@ func TestComposedDriver_SamplesRateLimitOnAllocateAndDeallocate(t *testing.T) {
 	require.NoError(t, d.DeallocateRepo(context.Background(), name))
 	assert.Contains(t, lines, "[driver] rate limit after allocating org/"+name+": remaining=42/5000 reset=2026-01-01T00:00:00Z resource=core")
 	assert.Contains(t, lines, "[driver] rate limit after deallocating org/"+name+": remaining=42/5000 reset=2026-01-01T00:00:00Z resource=core")
+}
+
+func TestComposedDriver_PacesAllocationWhenQuotaLow(t *testing.T) {
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	var waited []time.Duration
+	orig := quotaSleep
+	quotaSleep = func(_ context.Context, d time.Duration) error { waited = append(waited, d); return nil }
+	defer func() { quotaSleep = orig }()
+
+	d, err := newComposedDriver("org", &fakeMintDriver{}, newFakeEnsurer(), 2, logf)
+	require.NoError(t, err)
+
+	low := func(remaining int, resetIn time.Duration) *rateReportingClient {
+		return &rateReportingClient{seen: true, rl: forge.RateLimit{Limit: 5000, Remaining: remaining, Reset: time.Now().Add(resetIn), Resource: "core"}}
+	}
+
+	// Plenty of budget, or a reset already behind us: no wait.
+	withRateLimitReporter(d, low(quotaLowWater, 10*time.Minute))
+	name, err := d.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, d.DeallocateRepo(context.Background(), name))
+	withRateLimitReporter(d, low(5, -time.Minute))
+	name, err = d.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, d.DeallocateRepo(context.Background(), name))
+	assert.Empty(t, waited)
+
+	// Low budget with the reset ahead: wait for it, then allocate.
+	withRateLimitReporter(d, low(5, 10*time.Minute))
+	name, err = d.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, d.DeallocateRepo(context.Background(), name))
+	require.Len(t, waited, 1)
+	assert.InDelta(t, (10*time.Minute + time.Second).Seconds(), waited[0].Seconds(), 2)
+
+	// A reset the suite deadline cannot cover is not waited for.
+	waited, lines = nil, nil
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	name, err = d.AllocateRepo(ctx)
+	require.NoError(t, err)
+	require.NoError(t, d.DeallocateRepo(ctx, name))
+	assert.Empty(t, waited)
+	assert.Contains(t, strings.Join(lines, "\n"), "beyond the suite deadline")
+}
+
+func TestComposedDriver_QuotaWaitHonoursContextCancel(t *testing.T) {
+	orig := quotaSleep
+	quotaSleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	defer func() { quotaSleep = orig }()
+
+	e := newFakeEnsurer()
+	d, err := newComposedDriver("org", &fakeMintDriver{}, e, 1, func(string, ...any) {})
+	require.NoError(t, err)
+	withRateLimitReporter(d, &rateReportingClient{seen: true, rl: forge.RateLimit{Remaining: 1, Reset: time.Now().Add(time.Hour)}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = d.AllocateRepo(ctx)
+	require.ErrorIs(t, err, context.Canceled)
 }

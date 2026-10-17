@@ -251,6 +251,12 @@ type World struct {
 	// mint status steps (steps/mint_status.go). Nil when the scenario
 	// does not run `fullsend mint status`.
 	MintStatus *MintStatus
+	// BotRoleProbe holds the GitHub bot-role lookup scenario state, set by
+	// the bot-role probe steps (steps/bot_role_probe.go). Nil when the
+	// scenario does not look up bot roles. CleanupScenario deletes the
+	// repositories it lists; the probe's shim branch is tracked in
+	// CreatedBranches.
+	BotRoleProbe *BotRoleProbe
 }
 
 // MintStatus is the state of one CLI mint status scenario: the mint
@@ -276,6 +282,86 @@ type MintStatus struct {
 	// CredentialInOutput records that the raw output contained the
 	// credential, before redaction.
 	CredentialInOutput bool
+}
+
+// BotRoleProbe is the state of one bot-role lookup scenario (ADR 0107): a
+// reusable probe workflow in a temporary host repository, called from a
+// shim workflow on a temporary branch of the leased repository. Each probe
+// job asks the mint's POST /v1/bot-role for the registered role of one bot
+// login, authenticated by the job's GitHub Actions OIDC token, whose
+// repository claim is the leased repository.
+type BotRoleProbe struct {
+	// Forge is the forge the Examples row targets ("github").
+	Forge string
+	// HostRepo hosts the reusable probe workflow (the approved
+	// mint-probe host of the leased slot).
+	HostRepo string
+	// CreatedRepos lists the host repositories this scenario created in
+	// the pool org, for CleanupScenario.
+	CreatedRepos []string
+
+	// Identity is the identity token under test, for example
+	// "registered:review" or "unregistered-e2e".
+	Identity string
+	// Mode is the subject probe's mode: "lookup" or "forced_failure"
+	// (the probe sends a deliberately invalid credential).
+	Mode string
+	// ActorLogin is the bot login the subject asks about.
+	ActorLogin string
+	// ClaimedRole is a role the subject request claims in its body, which
+	// the mint must ignore; empty when none is claimed.
+	ClaimedRole string
+	// RegisteredRole is the role a registered identity must resolve to;
+	// empty for identities that are not registered.
+	RegisteredRole string
+	// ControlLogin is the registered bot login the control asks about.
+	ControlLogin string
+
+	// Branch and WorkflowName identify the shim run.
+	Branch       string
+	WorkflowName string
+	Run          *forge.WorkflowRun
+
+	// Control is a lookup of the registered review bot, made in the same
+	// workflow run; it must be recognized for any subject outcome to
+	// count. Subject is the lookup under test.
+	Control *BotRoleProbeResult
+	Subject *BotRoleProbeResult
+}
+
+// BotRoleProbeResult is the compact, token-free result a bot-role probe
+// job uploads as an artifact.
+type BotRoleProbeResult struct {
+	// Mode, ActorLogin, Repo and ClaimedRole echo the probe's request.
+	Mode        string `json:"mode"`
+	ActorLogin  string `json:"actor_login"`
+	Repo        string `json:"repo"`
+	ClaimedRole string `json:"claimed_role,omitempty"`
+
+	// OIDCVerified is true when the probe verified the OIDC token's
+	// signature, issuer, audience and time claims before calling the mint.
+	OIDCVerified bool `json:"oidc_verified"`
+
+	// Repository and JobWorkflowRef are the OIDC claims of the job.
+	Repository     string `json:"repository,omitempty"`
+	JobWorkflowRef string `json:"job_workflow_ref,omitempty"`
+
+	// HTTPStatus is the mint's status code; zero when the mint was not
+	// called or did not answer.
+	HTTPStatus int `json:"http_status,omitempty"`
+	// Response keeps only the outcome, role and error strings of the
+	// mint's body (each truncated to 300 characters).
+	Response *BotRoleProbeResponse `json:"response,omitempty"`
+
+	// Error is a probe-side failure: "config", "oidc" or "transport".
+	Error string `json:"error,omitempty"`
+}
+
+// BotRoleProbeResponse is the sanitized body of the mint's answer.
+type BotRoleProbeResponse struct {
+	Outcome string `json:"outcome,omitempty"`
+	Role    string `json:"role,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // MintProbe is the state of one mint-probe scenario: a reusable probe

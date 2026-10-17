@@ -60,7 +60,8 @@ export interface Env {
   /** JSON-encoded map of custom role permissions. */
   CUSTOM_ROLE_PERMISSIONS?: string;
   /**
-   * Native Workers rate limiter for POST /v1/token. Bound via
+   * Native Workers rate limiter for POST /v1/token and POST
+   * /v1/bot-role (one counter per path). Bound via
    * [[ratelimits]] in wrangler.toml. The key includes the request
    * hostname so preview aliases (which produce distinct hostnames)
    * get isolated counters without extra namespace_id patching.
@@ -722,17 +723,22 @@ export default {
       );
     }
 
-    // Rate-limit POST /v1/token before WASM init to avoid wasting
-    // CPU on abusive traffic. The key includes the hostname so that
-    // preview aliases (which produce distinct hostnames like
-    // <alias>-<worker>.<subdomain>.workers.dev) get isolated
-    // counters — concurrent BT preview instances do not affect each
-    // other. Durable deploys use a stable hostname.
+    // Rate-limit POST /v1/token and POST /v1/bot-role before WASM init
+    // to avoid wasting CPU (and shared GitHub API capacity, for the
+    // bot-role lookup) on abusive traffic. The key includes the
+    // hostname so that preview aliases (which produce distinct
+    // hostnames like <alias>-<worker>.<subdomain>.workers.dev) get
+    // isolated counters — concurrent BT preview instances do not
+    // affect each other. Durable deploys use a stable hostname. The
+    // key also includes the path, so each endpoint has its own counter.
     const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/v1/token") {
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/v1/token" || url.pathname === "/v1/bot-role")
+    ) {
       const rl = env.MINT_TOKEN_RATE_LIMITER;
       if (rl) {
-        const key = `${url.hostname}:/v1/token:${clientIp(request)}`;
+        const key = `${url.hostname}:${url.pathname}:${clientIp(request)}`;
         const { success } = await rl.limit({ key });
         if (!success) {
           return errorResponse(429, "rate_limited");

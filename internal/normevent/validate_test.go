@@ -84,3 +84,41 @@ func TestMapGitHubPermission_AllRoles(t *testing.T) {
 	assert.Equal(t, RoleTriage, MapGitHubPermission("triage"))
 	assert.Equal(t, RoleRead, MapGitHubPermission("read"))
 }
+
+func TestValidate_BotRoleFields(t *testing.T) {
+	verified, unverified := true, false
+	base := func() *Event {
+		return &Event{
+			Repo:       "o/r",
+			Entity:     Entity{Kind: EntityChangeProposal, ID: 1, URL: "https://github.com/o/r/pull/1"},
+			Transition: Transition{Kind: TransitionOpened},
+			Actor:      Actor{ID: "app[bot]", Kind: ActorBot, Role: RoleNone},
+			State:      State{Labels: []string{}},
+			Source:     Source{System: SystemGitHub, RawType: "pull_request"},
+		}
+	}
+
+	ev := base()
+	ev.Actor.BotRole, ev.Actor.RoleVerified = "review", &verified
+	require.NoError(t, ev.Validate())
+
+	ev = base()
+	ev.Actor.RoleVerified = &verified // successful no-match
+	require.NoError(t, ev.Validate())
+
+	ev = base()
+	ev.Actor.RoleVerified = &unverified // lookup failure
+	require.NoError(t, ev.Validate())
+
+	ev = base()
+	ev.Actor.BotRole, ev.Actor.RoleVerified = "review", &unverified
+	assert.ErrorContains(t, ev.Validate(), "role_verified")
+
+	ev = base()
+	ev.Actor.BotRole = "review"
+	assert.ErrorContains(t, ev.Validate(), "role_verified")
+
+	ev = base()
+	ev.Actor.Kind, ev.Actor.BotRole, ev.Actor.RoleVerified = ActorHuman, "review", &verified
+	assert.ErrorContains(t, ev.Validate(), "actor.kind is bot")
+}

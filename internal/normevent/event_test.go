@@ -212,3 +212,30 @@ func TestValidate_ConversationRules(t *testing.T) {
 		require.NoError(t, ev.Validate())
 	})
 }
+
+func TestParseJSON_ADR0107Examples(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(examplesDir(t), "adr-0107", "review-changes-requested.json"))
+	require.NoError(t, err)
+	ev, err := ParseJSON(data)
+	require.NoError(t, err)
+	assert.Equal(t, ActorBot, ev.Actor.Kind)
+	assert.Equal(t, RoleNone, ev.Actor.Role)
+	assert.Equal(t, "review", ev.Actor.BotRole)
+	require.NotNil(t, ev.Actor.RoleVerified)
+	assert.True(t, *ev.Actor.RoleVerified)
+
+	m, err := ev.ToMap()
+	require.NoError(t, err)
+	actor := m["actor"].(map[string]any)
+	assert.Equal(t, "review", actor["bot_role"])
+	assert.Equal(t, true, actor["role_verified"])
+}
+
+func TestToMap_OmitsUnsetBotRoleFields(t *testing.T) {
+	ev := &Event{Actor: Actor{ID: "alice", Kind: ActorHuman, Role: RoleWrite}}
+	m, err := ev.ToMap()
+	require.NoError(t, err)
+	actor := m["actor"].(map[string]any)
+	assert.NotContains(t, actor, "bot_role")
+	assert.NotContains(t, actor, "role_verified")
+}

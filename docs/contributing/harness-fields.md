@@ -227,7 +227,7 @@ Overlay `when` expressions are evaluated with:
 
 | Variable | Type | Source |
 |---|---|---|
-| `event` | `normevent.Event` | The triggering event — fields like `source.system`, `entity.kind`, `transition.kind` |
+| `event` | `normevent.Event` | The triggering event — fields like `source.system`, `entity.kind`, `transition.kind`. The ADR 0107 fields `actor.bot_role` and `actor.role_verified` are present only when an adapter performed a bot-role lookup; guard them with `has()` |
 | `runtime.forge` | `string` | Effective forge platform (precedence: CLI flag > config.forge > CI env vars) |
 | `config` | `map[string]any` | Full per-repo config from `config.yaml` |
 

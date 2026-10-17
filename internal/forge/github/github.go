@@ -394,6 +394,20 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		delay := retryDelay(resp, attempt)
 		retryAfter := resp.Header.Get("Retry-After")
 
+		// An exhausted primary quota only recovers at X-RateLimit-Reset,
+		// so wait for that instead of spending the retries on short
+		// backoffs inside the same window. When the caller's deadline
+		// cannot cover the wait, fail now with the rate-limit cause
+		// rather than sleeping into a deadline error.
+		resetWait, primaryExhausted := primaryResetWait(resp, time.Now())
+		if primaryExhausted {
+			delay = resetWait
+			if deadline, ok := ctx.Deadline(); ok && resetWait > time.Until(deadline) {
+				return nil, c.rateLimitError(resp, method, path,
+					fmt.Sprintf("primary quota exhausted, reset in %s is beyond the context deadline on %s %s", resetWait.Round(time.Second), method, path))
+			}
+		}
+
 		if attempt == maxRetries-1 {
 			msg := fmt.Sprintf("retryable error after %d attempts on %s %s (last delay: %s", maxRetries, method, path, delay)
 			if retryAfter != "" {
@@ -406,19 +420,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 			// that only has the error can still tell "rate limited"
 			// from a generic 403.
 			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
-				msg = "rate limit: " + msg
-				// Report the budget from the response that failed —
-				// the client-wide observation may belong to another
-				// goroutine's request. A response without the headers
-				// (secondary limits may omit them) says so, and names
-				// the last observation with its age.
-				if rl, ok := parseRateLimit(resp.Header); ok {
-					msg += " [" + rl.String() + "]"
-				} else if last, seen := c.RateLimit(); seen {
-					msg += fmt.Sprintf(" [rate-limit headers absent; last seen %s, %s ago]", last, time.Since(last.Observed).Round(time.Second))
-				} else {
-					msg += " [rate-limit headers absent; no prior observation]"
-				}
+				msg = "rate limit: " + msg + c.rateBudgetSuffix(resp)
 			}
 			return nil, &APIError{StatusCode: resp.StatusCode, Message: msg}
 		}
@@ -431,6 +433,54 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 
 	// Unreachable, but the compiler needs it.
 	return nil, fmt.Errorf("exhausted retries for %s %s", method, path)
+}
+
+// rateBudgetSuffix renders the budget a rate-limited response reported, so
+// a caller that only has the error can tell "rate limited" from a generic
+// 403. It reports the budget from the response that failed — the
+// client-wide observation may belong to another goroutine's request. A
+// response without the headers (secondary limits may omit them) says so,
+// and names the last observation with its age.
+func (c *LiveClient) rateBudgetSuffix(resp *http.Response) string {
+	if rl, ok := parseRateLimit(resp.Header); ok {
+		return " [" + rl.String() + "]"
+	}
+	if last, seen := c.RateLimit(); seen {
+		return fmt.Sprintf(" [rate-limit headers absent; last seen %s, %s ago]", last, time.Since(last.Observed).Round(time.Second))
+	}
+	return " [rate-limit headers absent; no prior observation]"
+}
+
+// rateLimitError is the APIError for a rate-limited response that is not
+// retried further; IsRateLimitError matches it.
+func (c *LiveClient) rateLimitError(resp *http.Response, method, path, detail string) error {
+	return &APIError{StatusCode: resp.StatusCode, Message: "rate limit: " + detail + c.rateBudgetSuffix(resp)}
+}
+
+// maxPrimaryResetWait bounds a wait for X-RateLimit-Reset. The primary
+// window is an hour, so a longer wait means a bad header.
+const maxPrimaryResetWait = 65 * time.Minute
+
+// primaryResetWait reports how long to wait for an exhausted primary rate
+// limit to reset: 429 or 403 with X-RateLimit-Remaining 0, a usable
+// X-RateLimit-Reset and no Retry-After (which, when present, is the
+// explicit instruction and wins). The extra second covers clock skew.
+func primaryResetWait(resp *http.Response, now time.Time) (time.Duration, bool) {
+	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusForbidden {
+		return 0, false
+	}
+	if resp.Header.Get("Retry-After") != "" || strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")) != "0" {
+		return 0, false
+	}
+	secs, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
+	if err != nil || secs <= 0 {
+		return 0, false
+	}
+	wait := max(time.Unix(secs, 0).Sub(now), 0) + time.Second
+	if wait > maxPrimaryResetWait {
+		return 0, false
+	}
+	return wait, true
 }
 
 // isRetryable returns true for responses that should trigger a retry.
