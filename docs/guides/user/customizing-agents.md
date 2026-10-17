@@ -443,8 +443,101 @@ codex agent's `PATH`.
 `pre_script`. `host_files` can also place configuration that tools load, such
 as git config or shell rc files; that is trusted like `pre_script` too.
 
-**Note**: `env.sandbox` cannot modify `PATH`, the harness ignores special
-variables to protect sandbox operation.
+**Note**: `env.sandbox` cannot modify runner infrastructure or security
+settings through the reserved names below. The runner drops these names
+before writing the sandbox environment, case-insensitively:
+
+- **Runner infrastructure and process-loading safeguards:** `PATH`, `HOME`,
+  `SHELL`, `BASH_ENV`, `ENV`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `TRACEPARENT`,
+  and the `FULLSEND_*` variables it reserves for itself (output and fetch
+  plumbing, `FULLSEND_ROLE`, `FULLSEND_SLUG`, `FULLSEND_TIMEOUT_MINUTES`,
+  `FULLSEND_ITERATION_DEADLINE`, `FULLSEND_RUNNER_PATH`).
+- **Credentials it mints or receives:** `FULLSEND_GCP_OIDC_AUTH_FILE`,
+  `FULLSEND_TRIGGER_TOKEN`, `FULLSEND_WEBHOOK_SECRET`,
+  `FULLSEND_INFERENCE_GATEWAY_API_KEY`, `FULLSEND_OPENAI_API_KEY`,
+  `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the GitHub Actions OpenID Connect
+  (OIDC) request pair `ACTIONS_ID_TOKEN_REQUEST_URL` /
+  `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. The runner uses this pair to request a
+  token proving the job's identity.
+- **Non-secret, runner-only inputs that select those credentials:**
+  `FULLSEND_GCP_OIDC_URL`, `FULLSEND_GCP_PROJECT_ID`,
+  `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_OPENAI_AUDIENCE`,
+  `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID`,
+  `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID`.
+- **Security-sensitive names also refused in URL-sourced provider credential
+  definitions:** proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`,
+  `ALL_PROXY`), Transport Layer Security (TLS) trust settings that select
+  certificates for verifying encrypted connections (`SSL_CERT_FILE`,
+  `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`), git configuration
+  (`GIT_SSH_COMMAND`, `GIT_CONFIG_GLOBAL`, `GIT_EXEC_PATH`, `GIT_ASKPASS`,
+  `GIT_TEMPLATE_DIR`), interpreter injection (`NODE_OPTIONS`, `PYTHONPATH`,
+  `PYTHONSTARTUP`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`),
+  dynamic-linker hooks (`LD_AUDIT`, `DYLD_INSERT_LIBRARIES`), shell behavior
+  (`IFS`, `CDPATH`, `PROMPT_COMMAND`) and the resolver alias file
+  (`HOSTALIASES`).
+
+The list is by name, not by namespace: harness-supplied hook inputs such as
+`FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are still delivered
+through `env.sandbox` — see
+[Runtime Implementation](../../contributing/runtime-implementation.md).
+Matching is case-insensitive, so `https_proxy` is dropped exactly as
+`HTTPS_PROXY` is.
+
+This deny-list covers selected names, not every variable that can affect
+network routing, certificate trust, Git or interpreter behavior. An unlisted
+name is not necessarily safe.
+
+`fullsend run` warns when the harness loads, naming all reserved keys it will
+drop, and warns again on stderr for each key as it writes the sandbox
+environment. To check the harness without starting an agent:
+
+1. Run `fullsend lock <agent-name>`. It reports the same lint warning when it
+   loads and composes the harness. Locking may fetch dependencies and write the
+   lock file. If the entry is already current, it skips composition and reports
+   that diagnostics were not checked.
+2. Run `fullsend lock <agent-name> --update` (or
+   `fullsend lock --all --update`) if diagnostics were skipped and you want to
+   check the composed harness. This forces dependency re-resolution and may
+   change the lock file; it is not a diagnostics-only operation.
+
+No key-specific warning on a cache hit means the keys were not checked, not
+that they are allowed.
+
+A key must start with an ASCII letter or underscore, followed only by ASCII
+letters, digits or underscores. `fullsend run` skips invalid names and warns
+on stderr; this separate identifier check is not reported by `fullsend lock`.
+Dropping a key removes that one `env.sandbox` export; it does not unset a value
+that reaches the sandbox another way, as `host_files` `.env.d` does.
+
+This gate covers `env.sandbox` only. `host_files` `.env.d` content is sourced
+as shell inside the sandbox and is trusted like `pre_script`, but it is not a
+general migration path for blocked proxy or certificate settings.
+
+#### Migrating proxy and certificate settings
+
+Coordinate these changes with the operator of your OpenShell gateway:
+
+- **Corporate proxies:** use the operator-managed outbound-network settings
+  for the OpenShell version and compute driver you deploy. The
+  [OpenShell v0.1.2 gateway configuration reference](https://github.com/NVIDIA/OpenShell/blob/v0.1.2/docs/how-it-works/gateways/configuration.mdx)
+  describes proxy chaining for policy-approved TLS connections using the HTTP
+  CONNECT method to establish a tunnel. Plain-HTTP destination traffic remains
+  direct. These are not fullsend harness fields or a general replacement for
+  every `HTTP_PROXY` or `ALL_PROXY` use. Do not reintroduce application proxy
+  exports through `.env.d` as a workaround.
+  **GitHub Action limitation:** fullsend's own GitHub Action writes
+  `gateway.toml` with a fixed template and has no input for upstream proxy or
+  CA settings. Self-hosted Actions runners behind a corporate proxy that relied
+  on `HTTPS_PROXY` in `env.sandbox` have no configuration step available yet.
+  This is tracked as a follow-up for an Action proxy input.
+- **Additional certificate authorities (CAs):** preserve the active sandbox's
+  OpenShell CA certificate and other required roots in application trust.
+  OpenShell's supervisor also verifies upstream TLS separately. Follow the
+  selected driver's certificate-provisioning instructions, including
+  `proxy_ca_bundle` where supported and applicable. Do not assume that replacing
+  a generated bundle with a custom-only file, or changing only the agent image's
+  trust store, configures both trust paths. Have the gateway operator validate
+  the required application and supervisor connections before deployment.
 
 ### Adding a skill
 

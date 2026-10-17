@@ -95,8 +95,7 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # 0.84.4 is the FLOOR for Gemini on Vertex (the pin is above it): 0.84.3
 # bundles https-proxy-agent without its named export, so every google-vertex
 # request fails with "HttpsProxyAgent is not a constructor" whenever
-# HTTPS_PROXY is set — which the OpenShell sandbox always does
-# (earendil-works/pi#8610, fixed in 0.84.4).
+# HTTPS_PROXY is set (earendil-works/pi#8610, fixed in 0.84.4).
 # To update: bump PI_VERSION; renovate tracks this ARG via a customManagers
 # regex entry in renovate.json. pi releases ~weekly minors and has changed
 # its --mode json wire shape within a minor before (0.84.0) — the pi stream

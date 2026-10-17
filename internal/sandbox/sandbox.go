@@ -627,6 +627,35 @@ var reservedCredentialKeys = map[string]bool{
 	"GIT_ASKPASS":       true,
 }
 
+// ReservedCredentialKeys returns the names reservedCredentialKeys refuses as
+// provider credential keys, for consumers that gate a different input to a
+// child process.
+//
+// A name is on this list because letting harness-supplied configuration set it
+// in a child process could change process loading, shell behavior, TLS trust
+// or git behavior. The doors differ: a credential name reaches the host-side
+// `openshell provider` environment, while harness `env.sandbox` is exported
+// inside the sandbox. The exposure is the same once the name is in a child's
+// environment, so every name here is blocked on both sides — internal/cli
+// merges this list into its sandbox env blocklist at init so the two cannot
+// drift apart again (#3373). Absence from this list is not a statement that a
+// name is safe — the plugin-env deny-list is deliberately broader, in the
+// direction reserved_env_drift_test.go pins: every credential name is also a
+// plugin-env name, not the converse. The cross-door invariant added here is
+// pinned by TestReservedSandboxKeys_CoversReservedCredentialKeys in
+// internal/cli.
+//
+// The result is a copy in deterministic order: callers must not be able to edit
+// the blocklist, and the order is part of this function's contract.
+func ReservedCredentialKeys() []string {
+	keys := make([]string, 0, len(reservedCredentialKeys))
+	for k := range reservedCredentialKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // EnsureProvider creates or updates a provider on the gateway. Credential
 // values may contain ${VAR} references which are expanded from the host
 // environment before being passed to openshell.
