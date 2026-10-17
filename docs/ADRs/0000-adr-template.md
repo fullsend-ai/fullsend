@@ -26,6 +26,10 @@ Date: YYYY-MM-DD
 
 What is the issue that we're seeing that motivates this decision or change?
 
+_When describing how fullsend works today, cite the implementing file or
+function on `main` (e.g., `internal/cli/repos.go`) and confirm the description
+matches the code._
+
 ## Options
 
 _Optional. Include only when there are genuine alternatives worth documenting.
@@ -35,6 +39,13 @@ context. If the decision is obvious, skip this section._
 ## Decision
 
 What is the change that we're proposing and/or doing?
+
+## Forge scope
+
+_Required. State which forges (GitHub, GitLab, Forgejo) this decision applies
+to and how each is handled. For any forge left out, say so explicitly with a
+reason or a tracking issue (e.g., "GitHub only; GitLab tracked in #NNN"). If
+the decision is forge-neutral, say that._
 
 ## Consequences
 

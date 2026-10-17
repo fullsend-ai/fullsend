@@ -135,8 +135,16 @@ Follow these steps in order:
    Options section only when there are genuine alternatives worth documenting;
    if the decision is obvious, just decide it.
 5. **Write the ADR.** Follow the conciseness rules above.
-6. **Run linters.** Stage your changes, then execute `make lint` and fix any errors before committing.
-7. **If status is Accepted, update living documents** (see below).
+6. **Cite current behavior.** When the Context or Decision describes how
+   fullsend works today, cite the implementing file or function on `main` and
+   open it to confirm the description matches the code. Do not describe an
+   existing mechanism from general knowledge of the underlying tool.
+7. **Fill in Forge scope.** State which forges (GitHub, GitLab, Forgejo) the
+   decision applies to and how each is handled. For any forge left out, say so
+   explicitly with a reason or a tracking issue (e.g., "GitHub only; GitLab
+   tracked in #NNN").
+8. **Run linters.** Stage your changes, then execute `make lint` and fix any errors before committing.
+9. **If status is Accepted, update living documents** (see below).
 
 ## Updating Living Documents After Acceptance
 
@@ -217,3 +225,5 @@ If the ADR partially answers a question, add a parenthetical:
 | Treating old ADRs as evolving design docs | Use `docs/architecture.md` for living narrative |
 | Forgetting to update architecture.md | It must always reflect current decisions |
 | Leading zeros in title number | Use `"1. Title"` not `"0001. Title"` — zero-padded numbers are only for filenames |
+| Missing or implicit forge scope (only GitHub mechanisms discussed) | Fill in Forge scope; name every forge left out with a reason or tracking issue |
+| Uncited claims about how fullsend works today | Cite the implementing file/function on `main` and confirm it matches |
