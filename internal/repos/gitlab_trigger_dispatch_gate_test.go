@@ -34,12 +34,13 @@ func readyTriggerDispatchEnv(t *testing.T) *trigEnv {
 	return e
 }
 
-// commitDispatchRouteScripts commits the shipped poll script and
-// pin-ci-job-identity.sh, which select the child-pipeline dispatch route.
+// commitDispatchRouteScripts commits the shipped poll script,
+// pin-ci-job-identity.sh, and poll template, which together select the
+// child-pipeline dispatch route and run it from the scheduled poll job.
 func commitDispatchRouteScripts(t *testing.T, e *trigEnv) {
 	t.Helper()
 	prefix := trigOwner + "/" + trigRepo + "/"
-	for _, path := range []string{gitlabPinCIJobIdentityScriptPath, gitlabPollJobScriptPath} {
+	for _, path := range []string{gitlabPinCIJobIdentityScriptPath, gitlabPollJobScriptPath, fullsendPollTemplatePath} {
 		content, err := scaffold.GitLabPerRepoFile(path)
 		require.NoError(t, err)
 		e.state.FileContents[prefix+path] = content
@@ -310,6 +311,156 @@ func TestCheckGitLabTriggerDispatchGate_DispatchRouteScaffoldMustBeCommitted(t *
 		reason := gitlabDispatchRouteScaffoldProblem(context.Background(), e.state, trigOwner, trigRepo)
 		assert.Contains(t, reason, "could not verify that the committed "+gitlabPinCIJobIdentityScriptPath)
 		assert.NotContains(t, reason, "boom", "raw API errors are not echoed")
+	})
+}
+
+// A customized poll template can keep the expected job name and schedule rules
+// while running an older inline implementation, so the gate must verify that
+// the poll job's execution chain still runs the compatible run-poll-job.sh.
+func TestCheckGitLabTriggerDispatchGate_PollJobMustRunPollScript(t *testing.T) {
+	pollKey := trigOwner + "/" + trigRepo + "/" + fullsendPollTemplatePath
+	const scriptLine = `    - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/run-poll-job.sh"`
+	const beforeLine = `    - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/install-fullsend-cli.sh"`
+	replace := func(old, repl string) func(e *trigEnv) {
+		return func(e *trigEnv) {
+			committed := string(e.state.FileContents[pollKey])
+			require.Contains(t, committed, old)
+			e.state.FileContents[pollKey] = []byte(strings.Replace(committed, old, repl, 1))
+		}
+	}
+	cases := map[string]struct {
+		mutate func(e *trigEnv)
+		want   string
+	}{
+		"inline poll implementation": {
+			mutate: replace(scriptLine, "    - fullsend poll --inline"),
+			want:   "does not run " + gitlabPollJobScriptPath,
+		},
+		"script only named in a comment": {
+			mutate: replace(scriptLine, "    - echo polling # run-poll-job.sh"),
+			want:   "does not run " + gitlabPollJobScriptPath,
+		},
+		"extra script entry before the poll script": {
+			mutate: replace(scriptLine, "    - exit 0\n"+scriptLine),
+			want:   "does not run " + gitlabPollJobScriptPath,
+		},
+		"before_script that ends the job": {
+			mutate: replace(beforeLine, "    - exit 0"),
+			want:   "does not run " + gitlabPollJobScriptPath,
+		},
+		"extends another job": {
+			mutate: func(e *trigEnv) {
+				e.state.FileContents[pollKey] = append(e.state.FileContents[pollKey], []byte("  extends: .other\n")...)
+			},
+			want: "does not run " + gitlabPollJobScriptPath,
+		},
+		"poll template missing": {
+			mutate: func(e *trigEnv) { delete(e.state.FileContents, pollKey) },
+			want:   "committed " + fullsendPollTemplatePath + " is missing",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := readyTriggerDispatchEnv(t)
+			tc.mutate(e)
+
+			gate := e.dispatchGate()
+			assert.False(t, gate.Ready)
+			joined := strings.Join(gate.Deferred, "\n")
+			assert.Contains(t, joined, tc.want)
+			assert.Contains(t, joined, "scaffold repair")
+		})
+	}
+}
+
+// The gate scans the committed standard .gitlab-ci.yml, so a project that runs
+// other configuration (a custom local path or another project's file) must not
+// pass: GitLab would run uninspected content as the trigger account.
+func TestCheckGitLabTriggerDispatchGate_CustomCIConfigPathDefers(t *testing.T) {
+	for name, path := range map[string]string{
+		"custom local file":      "ci/other.yml",
+		"another project's file": ".gitlab-ci.yml@group/other-project",
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := readyTriggerDispatchEnv(t)
+			e.state.Repos[0].CIConfigPath = path
+
+			gate := e.dispatchGate()
+			assert.False(t, gate.Ready)
+			joined := strings.Join(gate.Deferred, "\n")
+			assert.Contains(t, joined, "custom CI configuration path")
+		})
+	}
+	t.Run("standard path is accepted", func(t *testing.T) {
+		e := readyTriggerDispatchEnv(t)
+		e.state.Repos[0].CIConfigPath = ".gitlab-ci.yml"
+		assert.True(t, e.dispatchGate().Ready)
+	})
+	t.Run("unreadable project defers", func(t *testing.T) {
+		e := readyTriggerDispatchEnv(t)
+		e.state.Errors["GetRepo"] = errors.New("boom")
+
+		reason := gitlabDispatchCIConfigPathProblem(context.Background(), e.state, trigOwner, trigRepo)
+		assert.Contains(t, reason, "could not read the project's CI configuration path")
+		assert.NotContains(t, reason, "boom", "raw API errors are not echoed")
+	})
+}
+
+// The unrelated-work scan evaluates job rules against assumed predefined
+// variables. A project, group, or instance variable that redefines one of them
+// invalidates that evaluation, so activation (and the schedule ownership move
+// it authorizes) defers.
+func TestCheckGitLabTriggerDispatchGate_PredefinedVariableOverrideDefers(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(e *trigEnv)
+		want   string
+	}{
+		"project variable": {
+			mutate: func(e *trigEnv) {
+				e.state.VariableValues[trigOwner+"/"+trigRepo+"/CI_PIPELINE_SOURCE"] = "push"
+			},
+			want: "a project variable overrides the predefined variable CI_PIPELINE_SOURCE",
+		},
+		"group variable": {
+			mutate: func(e *trigEnv) {
+				if e.state.OrgVariables == nil {
+					e.state.OrgVariables = map[string]bool{}
+				}
+				e.state.OrgVariables[trigOwner+"/CI_COMMIT_REF_PROTECTED"] = true
+			},
+			want: "predefined group variable override: CI_COMMIT_REF_PROTECTED",
+		},
+		"instance variable": {
+			mutate: func(e *trigEnv) { e.state.InstanceVariables = []string{"CI_DEFAULT_BRANCH"} },
+			want:   "predefined instance variable override: CI_DEFAULT_BRANCH",
+		},
+		"unreadable project inventory": {
+			mutate: func(e *trigEnv) { e.state.Errors["ListRepoVariables"] = errors.New("boom") },
+			want:   "could not verify that no project variable overrides a predefined variable",
+		},
+		"unreadable group inventory": {
+			mutate: func(e *trigEnv) { e.state.Errors["ListOrgVariables"] = errors.New("boom") },
+			want:   "could not verify that no inherited variable overrides a predefined variable",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := readyTriggerDispatchEnv(t)
+			tc.mutate(e)
+
+			gate := e.dispatchGate()
+			assert.False(t, gate.Ready)
+			joined := strings.Join(gate.Deferred, "\n")
+			assert.Contains(t, joined, tc.want)
+			assert.NotContains(t, joined, "webhook fast-path deferred", "the gate reports the reason without the fast-path prefix")
+			assert.NotContains(t, joined, "boom", "raw API errors are not echoed")
+		})
+	}
+	t.Run("unreadable scopes the credential cannot see are skipped", func(t *testing.T) {
+		e := readyTriggerDispatchEnv(t)
+		e.state.Errors["ListInstanceVariables"] = forge.ErrForbidden
+		e.state.Errors["ListOrgVariables"] = forge.ErrForbidden
+		assert.True(t, e.dispatchGate().Ready)
 	})
 }
 

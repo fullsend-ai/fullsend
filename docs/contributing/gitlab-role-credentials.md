@@ -849,8 +849,19 @@ enabled, unreadable, and unreported all defer, read through
 also defers until the committed `pin-ci-job-identity.sh` and `run-poll-job.sh`
 match the shipped compatible scripts. This exact-content check avoids treating
 a selector name in a comment, heredoc, or uncalled function as proof that the
-child-pipeline route runs. An older or customized script needs a scaffold
-repair merged before schedule ownership moves to the account. The gate also
+child-pipeline route runs. The committed `fullsend-poll.yml` must also keep
+the shipped poll job's execution chain (the same `before_script` and `script`
+entries that source `run-poll-job.sh`, with no `extends` or `trigger`), because
+a poll template that keeps the job name and schedule rules can still run an
+older inline implementation that never reaches the scripts. An older or
+customized script or poll job needs a scaffold repair merged before schedule
+ownership moves to the account. The gate also defers when the project selects a
+custom CI configuration path (the committed-file scans would not describe the
+pipeline GitLab runs; an unreadable project defers) and when a project, group,
+or instance CI/CD variable redefines a predefined variable the rules evaluation
+assumes (`CI_PIPELINE_SOURCE`, for example). Group and instance scopes the
+installing credential cannot read are skipped, as on the webhook path; other
+inventory read failures defer. The gate also
 reads the committed CI files and defers when a job or include other than
 the managed ones would run in a trigger, an agent child (`source=pipeline`) or
 a scheduled (`source=schedule`) pipeline, or when a managed template's job-level

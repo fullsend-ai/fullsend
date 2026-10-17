@@ -689,8 +689,15 @@ verified against live GitLab state. A legacy install, whose schedules still set
 agent child (`source=pipeline`) or scheduled (`source=schedule`) pipeline would
 run besides Fullsend's own. Activation also defers until the committed
 `pin-ci-job-identity.sh` and `run-poll-job.sh` match the shipped compatible
-scripts. Customized or older versions need a merged scaffold repair; a
-selector name in a comment or unexecuted code does not establish readiness.
+scripts and the committed poll job in `fullsend-poll.yml` keeps the shipped
+`before_script` and `script` entries that source `run-poll-job.sh` (no
+`extends` or `trigger`). Customized or older versions need a merged scaffold
+repair; a selector name in a comment or unexecuted code does not establish
+readiness. Activation also defers when the project selects a custom CI
+configuration path, when a project, group, or instance CI/CD variable
+redefines a predefined variable such as `CI_PIPELINE_SOURCE`, or when either
+inventory cannot be read (group and instance scopes the installing credential
+may not read are skipped).
 Every converge, rotate, containment or uninstall run first deletes the
 `FULLSEND_GITLAB_DISPATCH_ACTIVATION` variable, before it rechecks the gate.
 When the gate passes, `repos install` records that variable, bound to the exact

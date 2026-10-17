@@ -276,6 +276,15 @@ func (s *tahServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"default_branch": tahBranch, "visibility": "private",
 			"ci_pipeline_variables_minimum_override_role": s.overrideRole,
 		})
+	case p == "/admin/ci/variables" && r.Method == http.MethodGet:
+		// The activation gate inventories inherited variable overrides. The
+		// emulated instance and namespace define none.
+		s.hits["GET /admin/ci/variables"]++
+		tahJSON(w, http.StatusOK, []any{})
+	case strings.HasPrefix(p, "/groups/") && strings.HasSuffix(p, "/variables") && r.Method == http.MethodGet:
+		// The project lives in a personal namespace, which has no group.
+		s.hits["GET /groups/:id/variables"]++
+		tahJSON(w, http.StatusNotFound, map[string]any{"message": "404 Group Not Found"})
 	case strings.HasPrefix(p, "/users/") && strings.HasSuffix(p, "/keys") && r.Method == http.MethodGet:
 		s.hits["GET /users/:id/keys"]++
 		tahJSON(w, http.StatusOK, []any{})

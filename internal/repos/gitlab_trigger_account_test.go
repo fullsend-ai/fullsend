@@ -482,6 +482,7 @@ type trigEnv struct {
 func newTrigEnv() *trigEnv {
 	e := &trigEnv{f: newTrigFakeGitLab(), state: &trigState{FakeClient: forge.NewFakeClient()}}
 	e.f.state = e.state.FakeClient
+	e.state.Repos = append(e.state.Repos, forge.Repository{FullName: trigOwner + "/" + trigRepo})
 	e.state.PipelineVarOverrideRoles[trigOwner+"/"+trigRepo] = forge.PipelineVarOverrideNoOneAllowed
 	e.publish = func(_ context.Context, id int64, token string) error {
 		ok, err := e.f.enter("Publish")

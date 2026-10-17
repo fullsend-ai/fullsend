@@ -768,9 +768,14 @@ reason and resource IDs.
   job, other than Fullsend's own, would run in a trigger, agent child
   (`source=pipeline`) or scheduled (`source=schedule`) pipeline, and while the
   committed `pin-ci-job-identity.sh` and `run-poll-job.sh` do not match the
-  shipped compatible scripts. Customized or older scripts need a merged
+  shipped compatible scripts, or the committed poll job in `fullsend-poll.yml`
+  does not keep the shipped `before_script` and `script` entries that source
+  `run-poll-job.sh`. Customized or older scripts need a merged
   scaffold repair; a selector name in a comment or unexecuted code does not
-  establish readiness. A newer scaffold with an older CLI is refused
+  establish readiness. The gate also defers when the project selects a custom
+  CI configuration path, or when a project, group, or instance CI/CD variable
+  redefines a predefined variable such as `CI_PIPELINE_SOURCE`; group and
+  instance scopes the installing credential cannot read are skipped. A newer scaffold with an older CLI is refused
   explicitly: before choosing the child-pipeline route the job runs
   `fullsend poll --print-dispatch-routes`, and a CLI that does not list
   `child-pipeline` stops the job before any dispatch with a message to upgrade

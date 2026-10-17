@@ -1882,6 +1882,18 @@ func TestFakeClient_ListWorkflowRunsSince_OwnErrorKey(t *testing.T) {
 	require.Error(t, err, "injecting ListWorkflowRunsSince's own error key must fail the call")
 }
 
+// TestFakeClient_CreatePipelineScheduleWithActive_OwnErrorKey checks that the
+// method honors its own name as an error-injection key, not only the shared
+// "CreatePipelineSchedule" key.
+func TestFakeClient_CreatePipelineScheduleWithActive_OwnErrorKey(t *testing.T) {
+	fc := NewFakeClient()
+	fc.Errors = map[string]error{"CreatePipelineScheduleWithActive": errors.New("boom")}
+
+	_, err := fc.CreatePipelineScheduleWithActive(context.Background(), "org", "repo", "main", "d", "0 * * * *", nil, false)
+	require.Error(t, err, "injecting the method's own error key must fail the call")
+	assert.Empty(t, fc.CreatedSchedules)
+}
+
 func TestFakeClient_DownloadWorkflowRunArtifact(t *testing.T) {
 	fc := NewFakeClient()
 	fc.WorkflowArtifactContents = map[int][]byte{

@@ -2685,12 +2685,16 @@ func (f *FakeClient) CreatePipelineSchedule(ctx context.Context, owner, repo, re
 }
 
 // CreatePipelineScheduleWithActive shares CreatePipelineSchedule's error
-// injection ("CreatePipelineSchedule", CreatePipelineScheduleErrSeq) and
-// records the schedule with the requested active state.
+// injection ("CreatePipelineSchedule", CreatePipelineScheduleErrSeq), also
+// honors its own "CreatePipelineScheduleWithActive" error key, and records the
+// schedule with the requested active state.
 func (f *FakeClient) CreatePipelineScheduleWithActive(_ context.Context, owner, repo, ref, description, cron string, variables map[string]string, active bool) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if e := f.err("CreatePipelineScheduleWithActive"); e != nil {
+		return 0, e
+	}
 	if len(f.CreatePipelineScheduleErrSeq) > 0 {
 		e := f.CreatePipelineScheduleErrSeq[0]
 		f.CreatePipelineScheduleErrSeq = f.CreatePipelineScheduleErrSeq[1:]

@@ -292,6 +292,10 @@ func (e *installEmulation) handle(w http.ResponseWriter, r *http.Request) bool {
 	case r.Method == http.MethodGet && strings.HasPrefix(p, proj+"repository/files/"):
 		// The project holds none of the scaffold yet.
 		tahJSON(w, http.StatusNotFound, map[string]any{"message": "404 File Not Found"})
+	case r.Method == http.MethodGet && p == "/api/v4/admin/ci/variables":
+		// The activation gate inventories inherited variable overrides; the
+		// emulated instance defines none.
+		tahJSON(w, http.StatusOK, []any{})
 	case r.Method == http.MethodGet && p == "/api/v4/projects/fullsend-ai%2Ffullsend/repository/commits/v0.43.0":
 		tahJSON(w, http.StatusOK, map[string]any{"id": strings.Repeat("a", 40)})
 	case r.Method == http.MethodGet && strings.HasPrefix(p, tmpl):

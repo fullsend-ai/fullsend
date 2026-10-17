@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
@@ -48,10 +50,18 @@ type GitLabTriggerDispatchGate struct {
 //  5. The trigger account (DiagnoseGitLabTriggerAccount) is ready on branch,
 //     verified against live project state.
 //  6. The committed poll script and pin-ci-job-identity.sh select the
-//     child-pipeline dispatch route (gitlabDispatchRouteScaffoldProblem). Older
-//     committed scripts leave the route unset, which `fullsend poll` treats as
-//     the Poller API route, so an activation would not move dispatch to the
-//     trigger account while a scaffold repair is still unmerged (#8508).
+//     child-pipeline dispatch route, and the committed poll job actually runs
+//     that script (gitlabDispatchRouteScaffoldProblem). Older committed
+//     scripts, or a poll job that bypasses them, leave the route unset, which
+//     `fullsend poll` treats as the Poller API route, so an activation would
+//     not move dispatch to the trigger account while a scaffold repair is
+//     still unmerged (#8508).
+//  7. The project runs the standard .gitlab-ci.yml
+//     (gitlabDispatchCIConfigPathProblem) and no project or inherited variable
+//     overrides a predefined variable the rules evaluation assumes
+//     (gitlabDispatchVariableOverrideProblem). Both are what make the
+//     committed-file scans above describe the pipelines GitLab actually runs
+//     as the trigger account.
 //
 // A nil api or an empty branch makes the live account checks and the
 // default-branch comparison impossible, so the gate never returns Ready for
@@ -71,7 +81,13 @@ func CheckGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, ap
 	if reason := gitlabTriggerDispatchJobTokenPushProblem(ctx, client, owner, repo); reason != "" {
 		deferred = append(deferred, reason)
 	}
+	if reason := gitlabDispatchCIConfigPathProblem(ctx, client, owner, repo); reason != "" {
+		deferred = append(deferred, reason)
+	}
 	if branch != "" {
+		if reason := gitlabDispatchVariableOverrideProblem(ctx, client, owner, repo, branch); reason != "" {
+			deferred = append(deferred, reason)
+		}
 		// Unrelated user jobs must not run in the trigger or agent child
 		// (source=pipeline) pipelines: they would receive the protected
 		// credentials those pipelines carry.
@@ -133,10 +149,13 @@ func GitLabScheduleReactivationDeferral(ctx context.Context, client forge.Client
 }
 
 // gitlabDispatchRouteScaffoldProblem returns a deferral reason unless the
-// committed pin and poll scripts match the shipped compatible scaffold. A
-// marker search cannot prove that the selector runs: comments, heredocs, and
-// dead functions can all carry the same text. A customized script is deferred
-// until the compatible scaffold is committed, rather than being guessed safe.
+// committed pin and poll scripts match the shipped compatible scaffold and the
+// committed poll job runs the poll script. A marker search cannot prove that
+// the selector runs: comments, heredocs, and dead functions can all carry the
+// same text, and a poll template that keeps the expected job name and schedule
+// rules can still run an older inline implementation instead of the script. A
+// customized file is deferred until the compatible scaffold is committed,
+// rather than being guessed safe.
 func gitlabDispatchRouteScaffoldProblem(ctx context.Context, client forge.Client, owner, repo string) string {
 	for _, path := range []string{gitlabPinCIJobIdentityScriptPath, gitlabPollJobScriptPath} {
 		committed, err := client.GetFileContent(ctx, owner, repo, path)
@@ -153,6 +172,158 @@ func gitlabDispatchRouteScaffoldProblem(ctx context.Context, client forge.Client
 		if !bytes.Equal(committed, shipped) {
 			return "the committed " + path + " does not match the compatible scaffold needed for the child-pipeline dispatch route; merge the scaffold repair first"
 		}
+	}
+	committedPoll, err := client.GetFileContent(ctx, owner, repo, fullsendPollTemplatePath)
+	switch {
+	case forge.IsNotFound(err):
+		return "the committed " + fullsendPollTemplatePath + " is missing, so the poll job cannot be shown to run " + gitlabPollJobScriptPath + "; merge the scaffold repair first"
+	case err != nil:
+		return "could not verify that the committed poll job runs " + gitlabPollJobScriptPath + ": " + safeAPIError("reading "+fullsendPollTemplatePath, err).Error()
+	}
+	shippedPoll, err := scaffold.GitLabPerRepoFile(fullsendPollTemplatePath)
+	if err != nil {
+		return "could not verify the shipped " + fullsendPollTemplatePath + " poll job contract: " + err.Error()
+	}
+	if !gitlabPollJobRunsShippedScript(committedPoll, shippedPoll) {
+		return "the committed poll job in " + fullsendPollTemplatePath + " does not run " + gitlabPollJobScriptPath + " through the compatible scaffold's script configuration, so the child-pipeline dispatch route would not be selected; merge the scaffold repair first"
+	}
+	return ""
+}
+
+// gitlabPollJobRunsShippedScript reports whether the poll job in the committed
+// poll template has the same execution chain as the shipped scaffold's: the
+// same before_script and script entries, which source run-poll-job.sh, and no
+// extends or trigger that would change what the job runs. Anything that cannot
+// be evaluated is not accepted.
+func gitlabPollJobRunsShippedScript(committed, shipped []byte) bool {
+	committedJob, ok := gitlabPollJobNode(committed)
+	if !ok {
+		return false
+	}
+	shippedJob, ok := gitlabPollJobNode(shipped)
+	if !ok {
+		return false
+	}
+	for _, key := range []string{"extends", "trigger"} {
+		if v, ok := effectiveMappingValue(committedJob, key); !ok || v != nil {
+			return false
+		}
+	}
+	for _, key := range []string{"before_script", "script"} {
+		want, ok := gitlabJobScriptLines(shippedJob, key)
+		if !ok || len(want) == 0 {
+			return false
+		}
+		got, ok := gitlabJobScriptLines(committedJob, key)
+		if !ok || len(got) != len(want) {
+			return false
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func gitlabPollJobNode(template []byte) (*yaml.Node, bool) {
+	docs, err := decodeGitLabDocuments(template)
+	if err != nil || len(docs) == 0 || docs[len(docs)-1].Kind != yaml.DocumentNode || len(docs[len(docs)-1].Content) == 0 {
+		return nil, false
+	}
+	root := docs[len(docs)-1].Content[0]
+	if root.Kind != yaml.MappingNode || duplicateMappingKeyProblem(root) != "" {
+		return nil, false
+	}
+	jobNode, ok := effectiveMappingValue(root, fullsendPollJobName)
+	if !ok || jobNode == nil {
+		return nil, false
+	}
+	job := resolveAlias(jobNode)
+	if job == nil || job.Kind != yaml.MappingNode {
+		return nil, false
+	}
+	return job, true
+}
+
+// gitlabJobScriptLines returns the entries of a job's script-like key as raw
+// text (script lines legitimately contain $ expansions, so they are compared
+// verbatim rather than through isLiteralScalarValue). ok is false when the
+// value cannot be read as a flat list of plain scalars.
+func gitlabJobScriptLines(job *yaml.Node, key string) ([]string, bool) {
+	value, ok := effectiveMappingValue(job, key)
+	if !ok || value == nil {
+		return nil, ok
+	}
+	value = resolveAlias(value)
+	if value == nil {
+		return nil, false
+	}
+	items := []*yaml.Node{value}
+	if value.Kind == yaml.SequenceNode {
+		items = value.Content
+	}
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		item = resolveAlias(item)
+		if item == nil || item.Kind != yaml.ScalarNode || hasNonCoreTag(item) {
+			return nil, false
+		}
+		lines = append(lines, item.Value)
+	}
+	return lines, true
+}
+
+// gitlabDispatchCIConfigPathProblem returns a deferral reason unless the
+// project runs the standard .gitlab-ci.yml. Every committed-file scan in this
+// gate reads that file and the files it reaches; a custom ci_config_path
+// (possibly in another project) selects configuration the gate never inspects,
+// which would then run as the trigger account with its CI_JOB_TOKEN and
+// protected variables. A failed read defers, as gitlabTriggerSafetyProblem does
+// for the webhook path.
+func gitlabDispatchCIConfigPathProblem(ctx context.Context, client forge.Client, owner, repo string) string {
+	project, err := client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return "could not read the project's CI configuration path: " + safeAPIError("reading project CI configuration path", err).Error()
+	}
+	if path := strings.TrimSpace(project.CIConfigPath); path != "" && path != ".gitlab-ci.yml" {
+		return "the project selects a custom CI configuration path, so the pipelines that would run as the trigger account cannot be verified (only the standard .gitlab-ci.yml is evaluated)"
+	}
+	return ""
+}
+
+// gitlabDispatchVariableOverrideProblem returns a deferral reason when a
+// project, group, or instance CI/CD variable redefines a predefined variable
+// that the rules evaluation behind the unrelated-work scan assumes (for example
+// CI_PIPELINE_SOURCE). Such an override would let a job the evaluator considers
+// excluded from scheduled or child pipelines run as the trigger account. A
+// failed inventory defers. Group and instance scopes the installing credential
+// cannot read are skipped as the webhook path does (see
+// gitlabInheritedVariableOverrideProblem).
+func gitlabDispatchVariableOverrideProblem(ctx context.Context, client forge.Client, owner, repo, branch string) string {
+	const suffix = ", so job exclusion from scheduled and child pipelines cannot be established"
+	env := pipelineSourceEnv(branch, "schedule")
+	vars, err := client.ListRepoVariables(ctx, owner, repo)
+	if err != nil {
+		return "could not verify that no project variable overrides a predefined variable: " + safeAPIError("checking project variable overrides", err).Error()
+	}
+	keys := make([]string, 0, len(vars))
+	for key := range vars {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if _, reserved := env[key]; reserved {
+			return "a project variable overrides the predefined variable " + key + suffix
+		}
+	}
+	problem, err := gitlabInheritedVariableOverrideProblem(ctx, client, owner, repo, env)
+	if err != nil {
+		return "could not verify that no inherited variable overrides a predefined variable: " + err.Error()
+	}
+	if problem != "" {
+		return strings.TrimPrefix(problem, "webhook fast-path deferred: ") + suffix
 	}
 	return ""
 }
