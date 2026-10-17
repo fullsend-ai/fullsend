@@ -376,8 +376,14 @@ func rulesProblem(outcome ruleOutcome, idx int, kind string) string {
 // default branch admits protected-default-branch trigger pipelines")
 // when it is rejected or admission cannot be established.
 func workflowAdmissionProblem(rules *yaml.Node, defaultBranch string) string {
-	const subject = "admits protected-default-branch trigger pipelines"
-	outcome, idx := evaluateRules(rules, triggerPipelineEnv(defaultBranch))
+	return workflowAdmissionProblemForEnv(rules, triggerPipelineEnv(defaultBranch), "trigger")
+}
+
+// workflowAdmissionProblemForEnv is workflowAdmissionProblem for the pipeline
+// described by env; source names its pipeline source in the diagnostic.
+func workflowAdmissionProblemForEnv(rules *yaml.Node, env map[string]*string, source string) string {
+	subject := "admits protected-default-branch " + source + " pipelines"
+	outcome, idx := evaluateRules(rules, env)
 	if p := rulesProblem(outcome, idx, "workflow rule"); p != "" {
 		return subject + " " + p
 	}

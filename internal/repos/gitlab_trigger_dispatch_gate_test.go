@@ -34,13 +34,18 @@ func readyTriggerDispatchEnv(t *testing.T) *trigEnv {
 	return e
 }
 
-// commitDispatchRouteScripts commits the shipped poll script,
-// pin-ci-job-identity.sh, and poll template, which together select the
-// child-pipeline dispatch route and run it from the scheduled poll job.
+// commitDispatchRouteScripts commits the shipped poll and agent scripts,
+// pin-ci-job-identity.sh, and the root, wrapper, poll, agent, and dispatcher
+// templates, which together select the child-pipeline dispatch route, run it
+// from the scheduled poll job, and consume the resulting source=pipeline
+// dispatch.
 func commitDispatchRouteScripts(t *testing.T, e *trigEnv) {
 	t.Helper()
 	prefix := trigOwner + "/" + trigRepo + "/"
-	for _, path := range []string{gitlabPinCIJobIdentityScriptPath, gitlabPollJobScriptPath, fullsendPollTemplatePath} {
+	for _, path := range []string{
+		gitlabPinCIJobIdentityScriptPath, gitlabPollJobScriptPath, gitlabAgentJobScriptPath,
+		".gitlab-ci.yml", fullsendPipelineInclude, fullsendPollTemplatePath, fullsendAgentTemplatePath, fullsendDispatcherTemplatePath,
+	} {
 		content, err := scaffold.GitLabPerRepoFile(path)
 		require.NoError(t, err)
 		e.state.FileContents[prefix+path] = content
@@ -371,6 +376,131 @@ func TestCheckGitLabTriggerDispatchGate_PollJobMustRunPollScript(t *testing.T) {
 			assert.Contains(t, joined, "scaffold repair")
 		})
 	}
+}
+
+// The agent and dispatcher jobs are exempt by name from the unrelated-work
+// scans, so their before_script and script chains must match the shipped
+// scaffold: a customized job with the expected name must not run commands before
+// or instead of the script that authorizes the pipeline.
+func TestCheckGitLabTriggerDispatchGate_AgentAndDispatcherJobsMustRunShippedScripts(t *testing.T) {
+	replaceIn := func(path, old, repl string) func(e *trigEnv) {
+		return func(e *trigEnv) {
+			key := trigOwner + "/" + trigRepo + "/" + path
+			committed := string(e.state.FileContents[key])
+			require.Contains(t, committed, old)
+			e.state.FileContents[key] = []byte(strings.Replace(committed, old, repl, 1))
+		}
+	}
+	const agentScript = `    - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/run-agent-job.sh"`
+	const dispatcherScript = `    - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/run-dispatcher-job.sh"`
+	const installLine = `    - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/install-fullsend-cli.sh"`
+	cases := map[string]struct {
+		mutate func(e *trigEnv)
+		want   string
+	}{
+		"agent command before authorization": {
+			mutate: replaceIn(fullsendAgentTemplatePath, agentScript, "    - echo before-authorization\n"+agentScript),
+			want:   "the committed agent job in " + fullsendAgentTemplatePath + " does not run " + gitlabAgentJobScriptPath,
+		},
+		"agent script body replaced": {
+			mutate: replaceIn(fullsendAgentTemplatePath, agentScript, "    - echo replaced"),
+			want:   "the committed agent job in " + fullsendAgentTemplatePath + " does not run " + gitlabAgentJobScriptPath,
+		},
+		"agent before_script replaced": {
+			mutate: replaceIn(fullsendAgentTemplatePath, installLine, "    - echo replaced"),
+			want:   "the committed agent job in " + fullsendAgentTemplatePath + " does not run " + gitlabAgentJobScriptPath,
+		},
+		"dispatcher command before authorization": {
+			mutate: replaceIn(fullsendDispatcherTemplatePath, dispatcherScript, "    - echo before-authorization\n"+dispatcherScript),
+			want:   "the committed dispatcher job in " + fullsendDispatcherTemplatePath + " does not run " + gitlabDispatcherJobScriptPath,
+		},
+		"dispatcher script body replaced": {
+			mutate: replaceIn(fullsendDispatcherTemplatePath, dispatcherScript, "    - echo replaced"),
+			want:   "the committed dispatcher job in " + fullsendDispatcherTemplatePath + " does not run " + gitlabDispatcherJobScriptPath,
+		},
+		"dispatcher before_script replaced": {
+			mutate: replaceIn(fullsendDispatcherTemplatePath, installLine, "    - echo replaced"),
+			want:   "the committed dispatcher job in " + fullsendDispatcherTemplatePath + " does not run " + gitlabDispatcherJobScriptPath,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := readyTriggerDispatchEnv(t)
+			tc.mutate(e)
+
+			gate := e.dispatchGate()
+			assert.False(t, gate.Ready)
+			joined := strings.Join(gate.Deferred, "\n")
+			assert.Contains(t, joined, tc.want)
+			assert.Contains(t, joined, "scaffold repair")
+		})
+	}
+}
+
+// The gate checks the consumer of a source=pipeline dispatch as well as its
+// producers: a customized root workflow, include, agent job rule, or agent
+// script that does not admit source=pipeline must defer activation, because
+// every agent job would fail once the trigger account owns the schedules.
+func TestCheckGitLabTriggerDispatchGate_AgentChildConsumerMustAdmitPipelineSource(t *testing.T) {
+	replaceIn := func(path, old, repl string) func(e *trigEnv) {
+		return func(e *trigEnv) {
+			key := trigOwner + "/" + trigRepo + "/" + path
+			committed := string(e.state.FileContents[key])
+			require.Contains(t, committed, old)
+			e.state.FileContents[key] = []byte(strings.Replace(committed, old, repl, 1))
+		}
+	}
+	const rootPipelineRule = `    - if: $CI_PIPELINE_SOURCE == "pipeline" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $STAGE` + "\n"
+	const wrapperPipelineRule = `      - if: $CI_PIPELINE_SOURCE == "pipeline" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i`
+	const agentStageRule = `    - if: $CI_DEBUG_TRACE !~ /^(1|t|true)$/i && $STAGE`
+	cases := map[string]struct {
+		mutate func(e *trigEnv)
+		want   string
+	}{
+		"root workflow excludes source=pipeline": {
+			mutate: replaceIn(".gitlab-ci.yml", rootPipelineRule, ""),
+			want:   "root workflow rules do not admit agent child pipelines",
+		},
+		"wrapper include of the agent template excludes source=pipeline": {
+			mutate: replaceIn(fullsendPipelineInclude, wrapperPipelineRule, `      - if: $CI_PIPELINE_SOURCE == "push" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i`),
+			want:   "does not include " + fullsendAgentTemplatePath + " for agent child pipelines",
+		},
+		"agent job rules exclude source=pipeline": {
+			mutate: replaceIn(fullsendAgentTemplatePath, agentStageRule, agentStageRule+` && $CI_PIPELINE_SOURCE == "api"`),
+			want:   "agent job in " + fullsendAgentTemplatePath + " does not admit agent child pipelines",
+		},
+		"agent script replaced": {
+			mutate: func(e *trigEnv) {
+				key := trigOwner + "/" + trigRepo + "/" + gitlabAgentJobScriptPath
+				e.state.FileContents[key] = append(e.state.FileContents[key], []byte("\nFULLSEND_ADMIT_SOURCE=api\n")...)
+			},
+			want: "the committed " + gitlabAgentJobScriptPath + " does not match the compatible scaffold",
+		},
+		"agent template missing": {
+			mutate: func(e *trigEnv) {
+				delete(e.state.FileContents, trigOwner+"/"+trigRepo+"/"+fullsendAgentTemplatePath)
+			},
+			want: "the committed " + fullsendAgentTemplatePath + " is missing",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := readyTriggerDispatchEnv(t)
+			tc.mutate(e)
+
+			gate := e.dispatchGate()
+			assert.False(t, gate.Ready)
+			assert.Contains(t, strings.Join(gate.Deferred, "\n"), tc.want)
+		})
+	}
+	t.Run("unreadable consumer file defers without echoing the error", func(t *testing.T) {
+		e := readyTriggerDispatchEnv(t)
+		e.state.Errors["GetFileContent"] = errors.New("boom")
+
+		reason := gitlabDispatchConsumerProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+		assert.Contains(t, reason, "could not verify that agent child pipelines")
+		assert.NotContains(t, reason, "boom")
+	})
 }
 
 // The gate scans the committed standard .gitlab-ci.yml, so a project that runs

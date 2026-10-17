@@ -1358,6 +1358,13 @@ func gitlabRootCIDispatcherProblem(rootCI []byte, defaultBranch string) string {
 // unparseable files). The returned text completes "…on the default branch
 // admits …" like workflowAdmissionProblem, or is "" when admitted.
 func gitlabEffectiveWorkflowProblem(rootCI, wrapper, template []byte, defaultBranch string) string {
+	return gitlabEffectiveWorkflowProblemForEnv(rootCI, wrapper, template, triggerPipelineEnv(defaultBranch), "trigger")
+}
+
+// gitlabEffectiveWorkflowProblemForEnv is gitlabEffectiveWorkflowProblem for
+// the pipeline described by env; source names its pipeline source in the
+// diagnostics.
+func gitlabEffectiveWorkflowProblemForEnv(rootCI, wrapper, template []byte, env map[string]*string, source string) string {
 	for _, f := range []struct {
 		content []byte
 		file    string
@@ -1374,7 +1381,7 @@ func gitlabEffectiveWorkflowProblem(rootCI, wrapper, template []byte, defaultBra
 		if root.Kind != yaml.MappingNode {
 			continue
 		}
-		unevaluable := "admits protected-default-branch trigger pipelines (the workflow rules in " + f.file + " cannot be evaluated, so admission cannot be established)"
+		unevaluable := "admits protected-default-branch " + source + " pipelines (the workflow rules in " + f.file + " cannot be evaluated, so admission cannot be established)"
 		workflow, ok := effectiveMappingValue(root, "workflow")
 		if !ok {
 			return unevaluable
@@ -1394,7 +1401,7 @@ func gitlabEffectiveWorkflowProblem(rootCI, wrapper, template []byte, defaultBra
 			continue
 		}
 		// This file's rules replace those of every file it includes.
-		if problem := workflowAdmissionProblem(rules, defaultBranch); problem != "" {
+		if problem := workflowAdmissionProblemForEnv(rules, env, source); problem != "" {
 			return problem + " (effective workflow rules from " + f.file + ")"
 		}
 		return ""

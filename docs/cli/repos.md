@@ -691,8 +691,11 @@ run besides Fullsend's own. Activation also defers until the committed
 `pin-ci-job-identity.sh` and `run-poll-job.sh` match the shipped compatible
 scripts and the committed poll job in `fullsend-poll.yml` keeps the shipped
 `before_script` and `script` entries that source `run-poll-job.sh` (no
-`extends` or `trigger`). Customized or older versions need a merged scaffold
-repair; a selector name in a comment or unexecuted code does not establish
+`extends` or `trigger`). The agent and dispatcher jobs must also keep their
+shipped `before_script` and `script` entries, and the committed files that
+consume an agent child (`source=pipeline`) pipeline (the root workflow, the root
+and wrapper includes, the agent job rules, and `run-agent-job.sh`) must admit
+it. Customized or older versions need a merged scaffold repair; a selector name in a comment or unexecuted code does not establish
 readiness. Activation also defers when the project selects a custom CI
 configuration path, when a project, group, or instance CI/CD variable
 redefines a predefined variable such as `CI_PIPELINE_SOURCE`, or when either

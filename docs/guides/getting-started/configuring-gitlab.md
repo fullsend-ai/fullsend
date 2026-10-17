@@ -770,7 +770,11 @@ reason and resource IDs.
   committed `pin-ci-job-identity.sh` and `run-poll-job.sh` do not match the
   shipped compatible scripts, or the committed poll job in `fullsend-poll.yml`
   does not keep the shipped `before_script` and `script` entries that source
-  `run-poll-job.sh`. Customized or older scripts need a merged
+  `run-poll-job.sh`. The agent and dispatcher jobs must keep their shipped
+  `before_script` and `script` entries, and the committed files that consume an
+  agent child (`source=pipeline`) pipeline (the root workflow, the root and
+  wrapper includes, the agent job rules, and `run-agent-job.sh`) must admit it.
+  Customized or older scripts and templates need a merged
   scaffold repair; a selector name in a comment or unexecuted code does not
   establish readiness. The gate also defers when the project selects a custom
   CI configuration path, or when a project, group, or instance CI/CD variable

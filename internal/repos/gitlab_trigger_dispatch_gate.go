@@ -62,6 +62,12 @@ type GitLabTriggerDispatchGate struct {
 //     (gitlabDispatchVariableOverrideProblem). Both are what make the
 //     committed-file scans above describe the pipelines GitLab actually runs
 //     as the trigger account.
+//  8. The committed consumer of a source=pipeline dispatch admits and runs it
+//     (gitlabDispatchConsumerProblem): the root workflow, the root and wrapper
+//     includes and input forwarding, the agent job rules, and the shipped agent
+//     script. The agent and dispatcher jobs, like the poll job, must also run
+//     the shipped before_script and script chain (gitlabJobChainProblem), since
+//     the unrelated-work scans exempt those jobs by name.
 //
 // A nil api or an empty branch makes the live account checks and the
 // default-branch comparison impossible, so the gate never returns Ready for
@@ -99,6 +105,11 @@ func CheckGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, ap
 	}
 	if reason := gitlabDispatchRouteScaffoldProblem(ctx, client, owner, repo); reason != "" {
 		deferred = append(deferred, reason)
+	}
+	if branch != "" {
+		if reason := gitlabDispatchConsumerProblem(ctx, client, owner, repo, branch); reason != "" {
+			deferred = append(deferred, reason)
+		}
 	}
 	if status := DiagnoseGitLabTriggerAccount(ctx, client, api, owner, repo, branch); status.State != GitLabTriggerStateReady {
 		reason := "the trigger account is " + status.State
@@ -157,7 +168,7 @@ func GitLabScheduleReactivationDeferral(ctx context.Context, client forge.Client
 // customized file is deferred until the compatible scaffold is committed,
 // rather than being guessed safe.
 func gitlabDispatchRouteScaffoldProblem(ctx context.Context, client forge.Client, owner, repo string) string {
-	for _, path := range []string{gitlabPinCIJobIdentityScriptPath, gitlabPollJobScriptPath} {
+	for _, path := range []string{gitlabPinCIJobIdentityScriptPath, gitlabPollJobScriptPath, gitlabAgentJobScriptPath} {
 		committed, err := client.GetFileContent(ctx, owner, repo, path)
 		switch {
 		case forge.IsNotFound(err):
@@ -173,34 +184,82 @@ func gitlabDispatchRouteScaffoldProblem(ctx context.Context, client forge.Client
 			return "the committed " + path + " does not match the compatible scaffold needed for the child-pipeline dispatch route; merge the scaffold repair first"
 		}
 	}
-	committedPoll, err := client.GetFileContent(ctx, owner, repo, fullsendPollTemplatePath)
-	switch {
-	case forge.IsNotFound(err):
-		return "the committed " + fullsendPollTemplatePath + " is missing, so the poll job cannot be shown to run " + gitlabPollJobScriptPath + "; merge the scaffold repair first"
-	case err != nil:
-		return "could not verify that the committed poll job runs " + gitlabPollJobScriptPath + ": " + safeAPIError("reading "+fullsendPollTemplatePath, err).Error()
-	}
-	shippedPoll, err := scaffold.GitLabPerRepoFile(fullsendPollTemplatePath)
-	if err != nil {
-		return "could not verify the shipped " + fullsendPollTemplatePath + " poll job contract: " + err.Error()
-	}
-	if !gitlabPollJobRunsShippedScript(committedPoll, shippedPoll) {
-		return "the committed poll job in " + fullsendPollTemplatePath + " does not run " + gitlabPollJobScriptPath + " through the compatible scaffold's script configuration, so the child-pipeline dispatch route would not be selected; merge the scaffold repair first"
+	// The jobs exempted by name from the unrelated-work scans (poll, agent,
+	// dispatcher) must run exactly the shipped chain: a customized job with the
+	// expected name could otherwise run commands before or instead of the
+	// script that authorizes the pipeline.
+	for _, job := range []gitlabScaffoldJobChain{
+		{
+			templatePath: fullsendPollTemplatePath,
+			jobName:      fullsendPollJobName,
+			label:        "poll job",
+			scriptPath:   gitlabPollJobScriptPath,
+			consequence:  "the child-pipeline dispatch route would not be selected",
+		},
+		{
+			templatePath: fullsendAgentTemplatePath,
+			jobName:      fullsendAgentJobName,
+			label:        "agent job",
+			scriptPath:   gitlabAgentJobScriptPath,
+			consequence:  "commands could run before or instead of its creator and HMAC checks",
+		},
+		{
+			templatePath: fullsendDispatcherTemplatePath,
+			jobName:      gitlabDispatcherJobName,
+			label:        "dispatcher job",
+			scriptPath:   gitlabDispatcherJobScriptPath,
+			consequence:  "commands could run before or instead of its payload authorization",
+		},
+	} {
+		if reason := gitlabJobChainProblem(ctx, client, owner, repo, job); reason != "" {
+			return reason
+		}
 	}
 	return ""
 }
 
-// gitlabPollJobRunsShippedScript reports whether the poll job in the committed
-// poll template has the same execution chain as the shipped scaffold's: the
-// same before_script and script entries, which source run-poll-job.sh, and no
-// extends or trigger that would change what the job runs. Anything that cannot
-// be evaluated is not accepted.
-func gitlabPollJobRunsShippedScript(committed, shipped []byte) bool {
-	committedJob, ok := gitlabPollJobNode(committed)
+// gitlabScaffoldJobChain names one committed job whose before_script and
+// script chain must match the shipped scaffold's, so that it runs scriptPath
+// and nothing else ahead of it.
+type gitlabScaffoldJobChain struct {
+	templatePath string
+	jobName      string
+	label        string
+	scriptPath   string
+	consequence  string
+}
+
+// gitlabJobChainProblem returns a deferral reason unless the committed job in
+// job.templatePath has the shipped scaffold's execution chain.
+func gitlabJobChainProblem(ctx context.Context, client forge.Client, owner, repo string, job gitlabScaffoldJobChain) string {
+	committed, err := client.GetFileContent(ctx, owner, repo, job.templatePath)
+	switch {
+	case forge.IsNotFound(err):
+		return "the committed " + job.templatePath + " is missing, so the " + job.label + " cannot be shown to run " + job.scriptPath + "; merge the scaffold repair first"
+	case err != nil:
+		return "could not verify that the committed " + job.label + " runs " + job.scriptPath + ": " + safeAPIError("reading "+job.templatePath, err).Error()
+	}
+	shipped, err := scaffold.GitLabPerRepoFile(job.templatePath)
+	if err != nil {
+		return "could not verify the shipped " + job.templatePath + " " + job.label + " contract: " + err.Error()
+	}
+	if !gitlabJobRunsShippedScript(committed, shipped, job.jobName) {
+		return "the committed " + job.label + " in " + job.templatePath + " does not run " + job.scriptPath + " through the compatible scaffold's script configuration, so " + job.consequence + "; merge the scaffold repair first"
+	}
+	return ""
+}
+
+// gitlabJobRunsShippedScript reports whether the named job in the committed
+// template has the same execution chain as the shipped scaffold's: the same
+// before_script and script entries, which source the job's shell script, and
+// no extends or trigger that would change what the job runs. Anything that
+// cannot be evaluated is not accepted.
+func gitlabJobRunsShippedScript(committed, shipped []byte, jobName string) bool {
+	committedJob, ok := gitlabJobNode(committed, jobName)
 	if !ok {
 		return false
 	}
-	shippedJob, ok := gitlabPollJobNode(shipped)
+	shippedJob, ok := gitlabJobNode(shipped, jobName)
 	if !ok {
 		return false
 	}
@@ -227,7 +286,7 @@ func gitlabPollJobRunsShippedScript(committed, shipped []byte) bool {
 	return true
 }
 
-func gitlabPollJobNode(template []byte) (*yaml.Node, bool) {
+func gitlabJobNode(template []byte, jobName string) (*yaml.Node, bool) {
 	docs, err := decodeGitLabDocuments(template)
 	if err != nil || len(docs) == 0 || docs[len(docs)-1].Kind != yaml.DocumentNode || len(docs[len(docs)-1].Content) == 0 {
 		return nil, false
@@ -236,7 +295,7 @@ func gitlabPollJobNode(template []byte) (*yaml.Node, bool) {
 	if root.Kind != yaml.MappingNode || duplicateMappingKeyProblem(root) != "" {
 		return nil, false
 	}
-	jobNode, ok := effectiveMappingValue(root, fullsendPollJobName)
+	jobNode, ok := effectiveMappingValue(root, jobName)
 	if !ok || jobNode == nil {
 		return nil, false
 	}

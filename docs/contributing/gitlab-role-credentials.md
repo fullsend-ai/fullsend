@@ -853,9 +853,16 @@ child-pipeline route runs. The committed `fullsend-poll.yml` must also keep
 the shipped poll job's execution chain (the same `before_script` and `script`
 entries that source `run-poll-job.sh`, with no `extends` or `trigger`), because
 a poll template that keeps the job name and schedule rules can still run an
-older inline implementation that never reaches the scripts. An older or
-customized script or poll job needs a scaffold repair merged before schedule
-ownership moves to the account. The gate also defers when the project selects a
+older inline implementation that never reaches the scripts. The agent job in
+`fullsend-agent.yml` and the dispatcher job in `fullsend-dispatcher.yml`, which
+the unrelated-work scans exempt by name, must keep the shipped `before_script`
+and `script` chains too, so no command runs before or instead of
+`run-agent-job.sh` or `run-dispatcher-job.sh`. The consumer of a
+`source=pipeline` dispatch must also admit it: the root workflow rules, the root
+and wrapper includes with their input forwarding, the agent job rules, and the
+committed `run-agent-job.sh` (which must match the shipped script that admits
+`api pipeline`). An older or customized script, job, or consumer file needs a
+scaffold repair merged before schedule ownership moves to the account. The gate also defers when the project selects a
 custom CI configuration path (the committed-file scans would not describe the
 pipeline GitLab runs; an unreadable project defers) and when a project, group,
 or instance CI/CD variable redefines a predefined variable the rules evaluation
