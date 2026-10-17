@@ -547,23 +547,31 @@ func TestPreflightEffectiveInfrastructure(t *testing.T) {
 	t.Run("accepts consistent configuration", func(t *testing.T) {
 		fc := newFakeClientForBatch("acme/api")
 		m := newConvergeManifest("acme/api")
-		require.NoError(t, PreflightEffectiveInfrastructure(ctx, m, newTestClientFactory(fc), nil, "test-inference", ""))
+		require.NoError(t, PreflightEffectiveInfrastructure(ctx, m, newTestClientFactory(fc), nil, nil, "test-inference", ""))
 	})
 
 	t.Run("rejects a mint URL conflict", func(t *testing.T) {
 		fc := newFakeClientForBatch("acme/api")
 		m := newConvergeManifest("acme/api")
 		m.Defaults.Config = mustManagedConfig(t, "mint_url: https://other-mint.example.com\n")
-		err := PreflightEffectiveInfrastructure(ctx, m, newTestClientFactory(fc), nil, "", "")
+		err := PreflightEffectiveInfrastructure(ctx, m, newTestClientFactory(fc), nil, nil, "", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "mint URL conflict")
+	})
+
+	t.Run("skips an excluded repository", func(t *testing.T) {
+		// install excludes a repository that needs adoption (#8511).
+		fc := newFakeClientForBatch("acme/api")
+		m := newConvergeManifest("acme/api")
+		m.Defaults.Config = mustManagedConfig(t, "mint_url: https://other-mint.example.com\n")
+		require.NoError(t, PreflightEffectiveInfrastructure(ctx, m, newTestClientFactory(fc), nil, []string{"ACME/api"}, "", ""))
 	})
 
 	t.Run("rejects a flag contradicting the declared project on a glob-covered selection", func(t *testing.T) {
 		fc := newFakeClientForBatch("acme/api")
 		m := newConvergeManifest("acme/*")
 		m.Defaults.Config = mustManagedConfig(t, "inference:\n  project: declared-project\n")
-		err := PreflightEffectiveInfrastructure(ctx, m, newTestClientFactory(fc), []string{"acme/api"}, "flag-project", "")
+		err := PreflightEffectiveInfrastructure(ctx, m, newTestClientFactory(fc), []string{"acme/api"}, nil, "flag-project", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "disagrees with inference.project")
 	})
@@ -580,8 +588,8 @@ func TestPreflight_UnloadablePresetFailsOnlyItsRepository(t *testing.T) {
 	m.GitHub.Repos[1].ConfigBase = ConfigBase{Source: filepath.Join(t.TempDir(), "missing.yaml")}
 	clients := newTestClientFactory(fc)
 
-	require.NoError(t, PreflightProposedManagedSafety(ctx, m, clients, nil))
-	require.NoError(t, PreflightEffectiveInfrastructure(ctx, m, clients, nil, "test-inference", ""))
+	require.NoError(t, PreflightProposedManagedSafety(ctx, m, clients, nil, nil))
+	require.NoError(t, PreflightEffectiveInfrastructure(ctx, m, clients, nil, nil, "test-inference", ""))
 
 	sc := &fakeScaffoldCommit{}
 	result, err := Converge(ctx, convergeCfgWithDefaults(m), clients, sc.fn(), noopProgress)

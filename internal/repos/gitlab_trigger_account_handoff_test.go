@@ -303,6 +303,59 @@ gitlab:
 	assert.Empty(t, fc.CreatedFiles)
 }
 
+// An excluded repo takes no write but still counts as a consumer when
+// credential inputs are validated: a skipped repo that is the only consumer of
+// --openai-api-key does not fail the run for the healthy repos, and a flag no
+// selected repo uses is still rejected.
+func TestConverge_ExcludedRepoStillCountsAsCredentialConsumer(t *testing.T) {
+	newCfg := func(t *testing.T, skippedAuth string) ConvergeConfig {
+		var m Manifest
+		require.NoError(t, yaml.Unmarshal([]byte(`
+version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v0.43.0
+  repos:
+    - name: group/skipped
+      inference:
+        auth: `+skippedAuth+`
+    - name: group/healthy
+`), &m))
+		return ConvergeConfig{
+			Manifest:       &m,
+			DryRun:         true,
+			ExcludeRepos:   []string{"group/skipped"},
+			MaxConcurrency: 1,
+			OpenAIAPIKey:   testOpenAIAPIKey,
+		}
+	}
+	newClient := func() *forge.FakeClient {
+		fc := forge.NewFakeClient()
+		fc.Repos = []forge.Repository{
+			{FullName: "group/skipped", Name: "skipped", DefaultBranch: "main"},
+			{FullName: "group/healthy", Name: "healthy", DefaultBranch: "main"},
+		}
+		return fc
+	}
+
+	t.Run("skipped consumer satisfies the credential flag", func(t *testing.T) {
+		res, err := Converge(context.Background(), newCfg(t, InferenceAuthOpenAIAPIKey), newTestClientFactory(newClient()), nil, nil)
+		require.NoError(t, err)
+		for _, r := range res.Results {
+			assert.NotEqual(t, "skipped", r.Repo, "the excluded repo is not converged")
+		}
+	})
+
+	t.Run("flag with no consumer is still rejected", func(t *testing.T) {
+		_, err := Converge(context.Background(), newCfg(t, InferenceAuthVertexWIF), newTestClientFactory(newClient()), nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--openai-api-key was supplied but no selected repository uses")
+	})
+}
+
 // Containment deletes the unsafe variable before it revokes the trigger. When
 // the revocation fails, a later install that finds the variable already gone
 // and returns a deferral must retry the revocation rather than leave the

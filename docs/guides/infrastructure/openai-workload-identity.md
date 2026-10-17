@@ -419,8 +419,8 @@ fullsend repos install acme/api
   partial set fails before anything is written, and the error names only the missing identifiers.
 - Migrating from `fullsend github setup --openai-*` needs no new OpenAI values: the existing
   `inference.openai` block or repository variables are still read as they are. The existing
-  `.fullsend/config.yaml` has no ownership marker, though, so `repos install` stops before any
-  write until it is adopted: move the settings you want to keep, including `inference.openai`,
+  `.fullsend/config.yaml` has no ownership marker, though, so `repos install` skips that
+  repository, writing nothing to it, until it is adopted (the other repositories still converge): move the settings you want to keep, including `inference.openai`,
   into the repository's `repos.yaml` entry, then add the ownership marker to the file (see
   [Migrating to manifest-driven `repos install`](../getting-started/migrating-from-github-setup.md#repository-installed-with-github-setup-markerless-overlay)).
   The identifiers are configuration, not secrets, and install never treats them as credentials.

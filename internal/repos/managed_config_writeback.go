@@ -34,6 +34,10 @@ type ManagedConfigWritebackConfig struct {
 	// persisted rather than as a preview. Ignored without DryRun.
 	Deferred   bool
 	RepoFilter []string
+	// ExcludeRepos lists owner/repo names (case-insensitive) that gain no
+	// manifest edit, such as repositories install skips because their
+	// overlay needs adoption (#8511).
+	ExcludeRepos []string
 }
 
 // selectManifestRepos returns the manifest repositories selected by filter:
@@ -67,16 +71,59 @@ func selectManifestRepos(ctx context.Context, m *Manifest, clients ForgeClientFa
 	return selected, nil
 }
 
+// withoutRepos returns selected minus the repositories named in exclude
+// (owner/repo, case-insensitive).
+func withoutRepos(selected []ResolvedRepo, exclude []string) []ResolvedRepo {
+	if len(exclude) == 0 {
+		return selected
+	}
+	excluded := make(map[string]bool, len(exclude))
+	for _, name := range exclude {
+		excluded[strings.ToLower(name)] = true
+	}
+	kept := make([]ResolvedRepo, 0, len(selected))
+	for _, rr := range selected {
+		if !excluded[strings.ToLower(rr.Owner+"/"+rr.Repo)] {
+			kept = append(kept, rr)
+		}
+	}
+	return kept
+}
+
+// AdoptionRequiredRepo is a selected repository whose only configuration
+// preflight problem is an existing .fullsend/config.yaml without the
+// ownership marker (ADR-0122). `repos install` skips it, reports it as a
+// failed repository and converges the others (#8511).
+type AdoptionRequiredRepo struct {
+	Owner string
+	Repo  string
+	// Guidance is the adoption message with the proposed repos.yaml entry
+	// and the setting-level difference. It does not name the repository.
+	Guidance string
+}
+
+// Name returns the repository as owner/repo.
+func (a AdoptionRequiredRepo) Name() string {
+	return a.Owner + "/" + a.Repo
+}
+
 // PreflightManagedConfig reads the existing configuration layers of every
-// manifest repository selected by filter and fails, before any manifest or
-// forge write, when one needs operator action: an existing
-// .fullsend/config.yaml without the ownership marker (adoption required),
-// an existing .fullsend/config.base.yaml with no resolved preset, or a
-// read error. Every offending repository is reported.
-func PreflightManagedConfig(ctx context.Context, m *Manifest, clients ForgeClientFactory, filter []string) error {
+// manifest repository selected by filter, before any manifest or forge
+// write.
+//
+// A repository whose only problem is an existing .fullsend/config.yaml
+// without the ownership marker (adoption required) is returned in the
+// adoption set with its guidance, so the caller can skip and report that
+// repository alone (#8511). Every other problem fails the run: a read or
+// client error, a malformed or non-per-repo overlay, an existing
+// .fullsend/config.base.yaml with no resolved preset or with invalid
+// content, and an invalid selector. The error then reports every offending
+// repository, including the adoption guidance of each, and the adoption
+// set is nil.
+func PreflightManagedConfig(ctx context.Context, m *Manifest, clients ForgeClientFactory, filter []string) ([]AdoptionRequiredRepo, error) {
 	selected, err := selectManifestRepos(ctx, m, clients, filter)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	return preflightManagedConfigRepos(ctx, m, clients, selected)
 }
@@ -90,11 +137,14 @@ func PreflightManagedConfig(ctx context.Context, m *Manifest, clients ForgeClien
 // a rejection leaves the manifest file untouched (#8218). Every offending
 // repository is reported. A repository whose preset cannot be loaded is
 // skipped: convergence reports that failure for the repository alone.
-func PreflightProposedManagedSafety(ctx context.Context, m *Manifest, clients ForgeClientFactory, filter []string) error {
+// Repositories named in exclude (owner/repo) are not checked: install skips
+// them, as it does those that need adoption (#8511).
+func PreflightProposedManagedSafety(ctx context.Context, m *Manifest, clients ForgeClientFactory, filter, exclude []string) error {
 	selected, err := selectManifestRepos(ctx, m, clients, filter)
 	if err != nil {
 		return err
 	}
+	selected = withoutRepos(selected, exclude)
 	var errs []error
 	store := newPresetCache()
 	for _, rr := range selected {
@@ -162,14 +212,19 @@ func PreflightProposedManagedSafety(ctx context.Context, m *Manifest, clients Fo
 	return errors.Join(errs...)
 }
 
-func preflightManagedConfigRepos(ctx context.Context, m *Manifest, clients ForgeClientFactory, selected []ResolvedRepo) error {
-	var errs []error
+func preflightManagedConfigRepos(ctx context.Context, m *Manifest, clients ForgeClientFactory, selected []ResolvedRepo) ([]AdoptionRequiredRepo, error) {
+	// all holds every problem in repository order, adoption included, for
+	// the run-level error; hard records whether any problem stops the run.
+	var all []error
+	var adoption []AdoptionRequiredRepo
+	hard := false
 	store := newPresetCache()
 	for _, rr := range selected {
 		resolved := m.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
 		fc, err := clients.ConfigFor(rr.Forge)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("creating %q client for %s/%s: %w", rr.Forge, rr.Owner, rr.Repo, err))
+			all = append(all, fmt.Errorf("creating %q client for %s/%s: %w", rr.Forge, rr.Owner, rr.Repo, err))
+			hard = true
 			continue
 		}
 		resolved.ForgeConfig = fc
@@ -177,52 +232,67 @@ func preflightManagedConfigRepos(ctx context.Context, m *Manifest, clients Forge
 		// Both layers are always checked so one run reports every
 		// problem: a repository needing overlay adoption and base action
 		// gets both messages (#8218).
-		if overlayErr := preflightOverlay(ctx, store, fc.Client, resolved, name); overlayErr != nil {
-			errs = append(errs, overlayErr)
+		var repoErrs []error
+		guidance, overlayErr := preflightOverlay(ctx, store, fc.Client, resolved, name)
+		if overlayErr != nil {
+			repoErrs = append(repoErrs, overlayErr)
 		}
 		if baseErr := checkUndeclaredBase(ctx, resolved); baseErr != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", name, baseErr))
+			repoErrs = append(repoErrs, fmt.Errorf("%s: %w", name, baseErr))
 		} else if resolved.Config != "" {
 			existing, found, readErr := readManagedConfigBaseFile(ctx, resolved)
 			switch {
 			case readErr != nil:
-				errs = append(errs, fmt.Errorf("%s: reading %s: %w", name, preset.BasePath, readErr))
+				repoErrs = append(repoErrs, fmt.Errorf("%s: reading %s: %w", name, preset.BasePath, readErr))
 			case found:
 				if validErr := validateExistingBase(existing); validErr != nil {
-					errs = append(errs, fmt.Errorf("%s: %w", name, validErr))
+					repoErrs = append(repoErrs, fmt.Errorf("%s: %w", name, validErr))
 				}
 			}
 		}
+		if guidance != "" {
+			all = append(all, fmt.Errorf("%s: %s", name, guidance))
+			if len(repoErrs) == 0 {
+				adoption = append(adoption, AdoptionRequiredRepo{Owner: rr.Owner, Repo: rr.Repo, Guidance: guidance})
+			}
+		}
+		if len(repoErrs) > 0 {
+			all = append(all, repoErrs...)
+			hard = true
+		}
 	}
-	return errors.Join(errs...)
+	if hard {
+		return nil, errors.Join(all...)
+	}
+	return adoption, nil
 }
 
 // preflightOverlay checks the existing .fullsend/config.yaml of one
-// repository: a read error, malformed or non-per-repo content, and a
-// markerless file (adoption required) all fail with the proposed
-// repos.yaml entry and effective-config difference so the guidance is
-// available from an install failure, not only from status. The declared
-// preset is loaded only when adoption guidance needs it, to show the
-// effective layered change; a load failure stops the install here, so it
-// is added to the guidance and the comparison falls back to the installed
-// base.
-func preflightOverlay(ctx context.Context, store *presetCache, client forge.Client, resolved ResolvedConfig, name string) error {
+// repository. A read error and malformed or non-per-repo content are
+// returned as an error. A markerless file (adoption required) is returned
+// as guidance, without the repository name: the proposed repos.yaml entry
+// and effective-config difference, so the guidance is available from an
+// install, not only from status. The declared preset is loaded only when
+// adoption guidance needs it, to show the effective layered change; a load
+// failure is added to the guidance and the comparison falls back to the
+// installed base.
+func preflightOverlay(ctx context.Context, store *presetCache, client forge.Client, resolved ResolvedConfig, name string) (string, error) {
 	existing, found, readErr := readExistingFile(ctx, client, resolved.Owner, resolved.Repo, preset.OverlayPath)
 	if readErr != nil {
-		return fmt.Errorf("%s: reading %s: %w", name, preset.OverlayPath, readErr)
+		return "", fmt.Errorf("%s: reading %s: %w", name, preset.OverlayPath, readErr)
 	}
 	if !found {
-		return nil
+		return "", nil
 	}
 	if err := validateExistingOverlay(existing); err != nil {
-		return fmt.Errorf("%s: %w: fix or remove it, then re-run; nothing was written", name, err)
+		return "", fmt.Errorf("%s: %w: fix or remove it, then re-run; nothing was written", name, err)
 	}
 	if !overlayNeedsAdoption(found, existing) {
-		return nil
+		return "", nil
 	}
-	msg := fmt.Sprintf("%s: %s exists without the managed-configuration ownership marker; adoption required (ADR-0122): "+
+	msg := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required (ADR-0122): "+
 		"put every existing setting you want to keep into the repository's config in repos.yaml "+
-		"or accept its removal, then remove or replace the file; nothing was written", name, preset.OverlayPath)
+		"or accept its removal, then remove or replace the file; nothing was written", preset.OverlayPath)
 	if desired, _, err := desiredManagedConfig(resolved); err == nil {
 		var presetNote string
 		if resolved.Config != "" && len(resolved.ProposedBase) == 0 {
@@ -234,7 +304,7 @@ func preflightOverlay(ctx context.Context, store *presetCache, client forge.Clie
 		}
 		msg += "\n" + adoptionGuidance(ctx, resolved, existing, desired) + presetNote
 	}
-	return errors.New(msg)
+	return msg, nil
 }
 
 type pendingWriteback struct {
@@ -254,7 +324,7 @@ type pendingWriteback struct {
 // explicit manifest value is never overridden. A repository covered only
 // by a glob gets its own explicit entry copied from the glob so sibling
 // repositories are unaffected. Existing overlays are not touched here
-// (PreflightManagedConfig has already rejected a markerless one).
+// (install excludes a repository whose markerless overlay needs adoption).
 //
 // The in-memory manifest is always updated so rendering sees the values.
 // The file is rewritten unless DryRun is set. When the manifest is an
@@ -273,6 +343,7 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 	if err != nil {
 		return nil, err
 	}
+	selected = withoutRepos(selected, cfg.ExcludeRepos)
 
 	var pending []pendingWriteback
 	for _, rr := range selected {

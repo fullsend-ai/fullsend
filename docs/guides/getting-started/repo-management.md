@@ -345,8 +345,9 @@ Every repository selected from the manifest has a managed
 `.fullsend/config.yaml`; neither `defaults.config` nor a repository
 `config` is required. A repository with no `config` gets the sparse file
 with only the ownership marker. An existing overlay without the marker
-blocks install (adoption required) even when the repository has no
-`config` key. On a first install with no `config_base` preset and no
+blocks that repository's install (adoption required) even when the
+repository has no `config` key; the other selected repositories still
+converge. On a first install with no `config_base` preset and no
 explicit `create_issues` declaration, install records
 `config.create_issues.allow_targets.repos: [fullsend-ai/fullsend]` in the
 repository's manifest entry before rendering the overlay. If the manifest is an
@@ -430,7 +431,11 @@ enough. Both files are checked together, before any manifest or forge
 write: when the overlay needs adoption and the base needs action, install
 reports both problems, and an adoption failure prints the same proposed
 `repos.yaml` entry and file and effective-configuration differences that
-`repos status` shows. The same checks run again inside convergence: a fresh
+`repos status` shows. A repository whose only problem is adoption is
+skipped: install prints that guidance for it, lists it as `FAILED` in the
+summary, converges the other selected repositories and exits non-zero, in
+a dry run and a live run alike. Any other problem these checks find stops
+the whole run before any write. The same checks run again inside convergence: a fresh
 install blocked by adoption or the safety gate stops before any variable,
 secret, scaffold file or PR/MR write, in a dry run and a live run alike.
 Adding a `config_base` preset to a repository with no base file is compared
@@ -719,8 +724,9 @@ exception — see above); a changed preset replaces only
 drifted managed configuration file is rewritten wholesale, unless the
 existing file predates managed-configuration adoption (missing the
 ownership marker) — that case is reported as adoption required and left
-untouched instead of rewritten, and it stops install or convergence before
-any writes until the file is adopted. Ref
+untouched instead of rewritten, and it stops that repository's install or
+convergence before any writes until the file is adopted; the other
+repositories still converge. Ref
 updates are committed as PRs (or direct pushes with `--direct`).
 
 Use `repos status` for a read-only drift report (no changes applied). For

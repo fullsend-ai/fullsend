@@ -290,19 +290,26 @@ func TestEnsureManagedConfigDefaults_ProbesOnlyWhenDefaultPossible(t *testing.T)
 }
 
 // runInstallPreflights runs the read-only configuration preflights in the
-// order `repos install` does, all through clients.
-func runInstallPreflights(ctx context.Context, m *Manifest, clients ForgeClientFactory) ([]string, error) {
-	if err := PreflightManagedConfig(ctx, m, clients, nil); err != nil {
-		return nil, err
-	}
-	names, err := EnsureManagedConfigDefaults(ctx, ManagedConfigWritebackConfig{Manifest: m, DryRun: true, Deferred: true}, clients, nil)
+// order `repos install` does, all through clients. Repositories that need
+// adoption are returned and skipped by the later preflights, as install
+// skips them (#8511).
+func runInstallPreflights(ctx context.Context, m *Manifest, clients ForgeClientFactory) ([]string, []AdoptionRequiredRepo, error) {
+	adoption, err := PreflightManagedConfig(ctx, m, clients, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := PreflightProposedManagedSafety(ctx, m, clients, nil); err != nil {
-		return names, err
+	skip := make([]string, 0, len(adoption))
+	for _, a := range adoption {
+		skip = append(skip, a.Name())
 	}
-	return names, PreflightEffectiveInfrastructure(ctx, m, clients, nil, "", "")
+	names, err := EnsureManagedConfigDefaults(ctx, ManagedConfigWritebackConfig{Manifest: m, DryRun: true, Deferred: true, ExcludeRepos: skip}, clients, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := PreflightProposedManagedSafety(ctx, m, clients, nil, skip); err != nil {
+		return names, adoption, err
+	}
+	return names, adoption, PreflightEffectiveInfrastructure(ctx, m, clients, nil, skip, "", "")
 }
 
 // behaviourTestManifest is the entry shape the behaviour-test install
@@ -348,7 +355,7 @@ func TestInstallPreflights_SharedCacheReadsEachStateOnce(t *testing.T) {
 			ctx := context.Background()
 
 			counter := newReadCountingClient(newFakeClientForBatch("acme/api"))
-			names, err := runInstallPreflights(ctx, tc.manifest(t), newTestClientFactory(counter))
+			names, _, err := runInstallPreflights(ctx, tc.manifest(t), newTestClientFactory(counter))
 			require.NoError(t, err)
 			assert.Equal(t, tc.writeback, len(names) == 1)
 			assert.Equal(t, tc.uncached, counter.total(), "uncached reads: %v", counter.calls)
@@ -359,7 +366,7 @@ func TestInstallPreflights_SharedCacheReadsEachStateOnce(t *testing.T) {
 			}
 
 			counter.reset()
-			names, err = runInstallPreflights(ctx, tc.manifest(t), NewPreflightReadCache(newTestClientFactory(counter)))
+			names, _, err = runInstallPreflights(ctx, tc.manifest(t), NewPreflightReadCache(newTestClientFactory(counter)))
 			require.NoError(t, err)
 			assert.Equal(t, tc.writeback, len(names) == 1)
 			assert.Empty(t, counter.repeated(), "every state is read once across the preflights")
@@ -378,9 +385,6 @@ func TestInstallPreflights_SharedCacheKeepsRejections(t *testing.T) {
 		setup  func(t *testing.T, m *Manifest, fc *forge.FakeClient)
 		expect string
 	}{
-		{"markerless overlay", func(_ *testing.T, _ *Manifest, fc *forge.FakeClient) {
-			fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("runtime: claude\n")
-		}, "adoption required"},
 		{"undeclared base", func(_ *testing.T, _ *Manifest, fc *forge.FakeClient) {
 			fc.FileContents["acme/api/"+preset.BasePath] = []byte("version: \"1\"\n")
 		}, preset.BasePath},
@@ -399,7 +403,7 @@ func TestInstallPreflights_SharedCacheKeepsRejections(t *testing.T) {
 			fc := newFakeClientForBatch("acme/api")
 			tc.setup(t, m, fc)
 			before := len(fc.FileContents)
-			_, err := runInstallPreflights(context.Background(), m, NewPreflightReadCache(newTestClientFactory(fc)))
+			_, _, err := runInstallPreflights(context.Background(), m, NewPreflightReadCache(newTestClientFactory(fc)))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "acme/api")
 			assert.Contains(t, err.Error(), tc.expect)
@@ -407,4 +411,24 @@ func TestInstallPreflights_SharedCacheKeepsRejections(t *testing.T) {
 			assertNoForgeWrites(t, fc)
 		})
 	}
+}
+
+// A markerless overlay is a failure of that repository only: the shared
+// cache preflights return it in the adoption set and the later preflights
+// skip it, so the other repository still gets its install default (#8511).
+func TestInstallPreflights_SharedCacheReportsAdoptionPerRepo(t *testing.T) {
+	m := newConvergeManifest("acme/api", "acme/web")
+	fc := newFakeClientForBatch("acme/api", "acme/web")
+	original := []byte("runtime: claude\n")
+	fc.FileContents["acme/api/"+preset.OverlayPath] = original
+
+	names, adoption, err := runInstallPreflights(context.Background(), m, NewPreflightReadCache(newTestClientFactory(fc)))
+	require.NoError(t, err)
+	require.Len(t, adoption, 1)
+	assert.Equal(t, "acme/api", adoption[0].Name())
+	assert.Contains(t, adoption[0].Guidance, "adoption required")
+	assert.Contains(t, adoption[0].Guidance, "proposed repos.yaml entry")
+	assert.Equal(t, []string{"acme/web"}, names, "only the repository being installed gains the install default")
+	assert.Equal(t, original, fc.FileContents["acme/api/"+preset.OverlayPath])
+	assertNoForgeWrites(t, fc)
 }

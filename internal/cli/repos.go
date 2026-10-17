@@ -15,6 +15,7 @@ import (
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/spf13/cobra"
@@ -679,9 +680,27 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	// Preflight the existing configuration layers of manifest-tracked repos
 	// before any manifest or forge write: a markerless overlay needs
-	// adoption and an undeclared base needs resolution (#8218).
-	if err := repos.PreflightManagedConfig(ctx, manifest, preflightClients, opts.repoFilter); err != nil {
+	// adoption and an undeclared base needs resolution (#8218). A repo that
+	// only needs adoption is skipped and reported as failed, so the other
+	// repos still converge (#8511); every other problem stops the run.
+	adoptionRequired, err := repos.PreflightManagedConfig(ctx, manifest, preflightClients, opts.repoFilter)
+	if err != nil {
 		return fmt.Errorf("configuration preflight: %w", err)
+	}
+	adoptionFailedRepos := make([]repos.ConvergeResult, 0, len(adoptionRequired))
+	adoptionSkip := make([]string, 0, len(adoptionRequired))
+	for _, a := range adoptionRequired {
+		printer.StepFail(fmt.Sprintf("[%s] skipped: %s", a.Name(), a.Guidance))
+		adoptionSkip = append(adoptionSkip, a.Name())
+		if _, failed := containFailed[a.Name()]; failed {
+			// Already excluded and counted as failed by trigger-account
+			// recovery.
+			continue
+		}
+		adoptionFailedRepos = append(adoptionFailedRepos, repos.ConvergeResult{
+			Owner: a.Owner, Repo: a.Repo,
+			Error: fmt.Errorf("adoption required: %s exists without the managed-configuration ownership marker (ADR-0122); see the guidance above; nothing was written", preset.OverlayPath),
+		})
 	}
 
 	// The only manifest edit install still plans is the initial
@@ -705,6 +724,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		DryRun:       true,
 		Deferred:     !opts.dryRun,
 		RepoFilter:   opts.repoFilter,
+		ExcludeRepos: adoptionSkip,
 	}, preflightClients, func(repo, _, msg string) {
 		deferOutput(func() { printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg)) })
 	})
@@ -718,14 +738,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// Compare the proposed layered configuration (manifest edits and declared
 	// presets) with each repository's installed layers before anything is
 	// persisted or written to the forge.
-	if err := repos.PreflightProposedManagedSafety(ctx, manifest, preflightClients, opts.repoFilter); err != nil {
+	if err := repos.PreflightProposedManagedSafety(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip); err != nil {
 		return fmt.Errorf("configuration safety preflight: %w", err)
 	}
 	// Resolve the effective infrastructure and reconcile the Vertex inputs
 	// of every selected repository before the manifest is persisted, so a
 	// mint URL conflict or a flag that contradicts the declared
 	// configuration leaves repos.yaml byte-identical.
-	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
+	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
 		return fmt.Errorf("effective infrastructure preflight: %w", err)
 	}
 	if manifestChanged && !opts.dryRun && opts.manifest != "" {
@@ -833,7 +853,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		Manifest:                manifest,
 		DryRun:                  opts.dryRun,
 		RepoFilter:              opts.repoFilter,
-		ExcludeRepos:            containFailedKeys(containFailedRepos),
+		ExcludeRepos:            append(containFailedKeys(containFailedRepos), adoptionSkip...),
 		MaxConcurrency:          opts.concurrency,
 		UpstreamRef:             upstreamRef,
 		UpstreamTag:             upstreamTag,
@@ -942,6 +962,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// deliberately not fed to the webhook safety reconciliation, so the
 	// existing fast path is preserved.
 	for _, r := range containFailedRepos {
+		failedRepoKeys[r.Owner+"/"+r.Repo] = true
+	}
+	// A repo skipped because its overlay needs adoption was excluded the
+	// same way and is likewise counted once and takes no later stage.
+	for _, r := range adoptionFailedRepos {
 		failedRepoKeys[r.Owner+"/"+r.Repo] = true
 	}
 	postInstallRepos := make([]repos.ConvergeResult, 0, len(installed)+len(converged)+len(alreadyCurrent))
@@ -1232,7 +1257,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	printer.Blank()
 	installedCount := len(installed) - installedPostFail - roleFailInstalledCount
-	failedCount := len(failed) + len(postInstallFailedRepos) + len(containFailedRepos) + pollStateFail + roleFail
+	failedCount := len(failed) + len(postInstallFailedRepos) + len(containFailedRepos) + len(adoptionFailedRepos) + pollStateFail + roleFail
 
 	for _, r := range failed {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
@@ -1244,6 +1269,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
 	for _, r := range containFailedRepos {
+		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+	for _, r := range adoptionFailedRepos {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
 	for _, r := range roleFailedRepos {

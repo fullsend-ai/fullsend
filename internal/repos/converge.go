@@ -785,6 +785,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			return nil, err
 		}
 	}
+	excludedUsesOpenAI, excludedUsesVertex := false, false
 	if len(cfg.ExcludeRepos) > 0 {
 		excluded := make(map[string]bool, len(cfg.ExcludeRepos))
 		for _, name := range cfg.ExcludeRepos {
@@ -794,6 +795,16 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		for _, rr := range repos {
 			if !excluded[strings.ToLower(rr.Owner+"/"+rr.Repo)] {
 				kept = append(kept, rr)
+				continue
+			}
+			// An excluded repo takes no write, but it is still part of the
+			// selection the credential inputs are validated against, so a
+			// skipped consumer does not fail the run for the others.
+			switch manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry).InferenceAuth {
+			case InferenceAuthOpenAIAPIKey:
+				excludedUsesOpenAI = true
+			case InferenceAuthVertexWIF, InferenceAuthOpenAIWIF:
+				excludedUsesVertex = true
 			}
 		}
 		repos = kept
@@ -1039,8 +1050,9 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	// Reject credential inputs that no selected repository consumes, before
 	// any write: silently ignoring them would leave the caller believing the
 	// credentials were provisioned. Mixed fleets keep working because each
-	// input group only needs one consumer.
-	usesOpenAI, usesVertex := false, false
+	// input group only needs one consumer. Excluded repos still count as
+	// consumers (they remain selected) but receive no write.
+	usesOpenAI, usesVertex := excludedUsesOpenAI, excludedUsesVertex
 	for _, d := range discoveries {
 		switch d.resolved.InferenceAuth {
 		case InferenceAuthOpenAIAPIKey:

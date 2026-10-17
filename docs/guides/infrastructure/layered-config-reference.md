@@ -82,8 +82,8 @@ ownership marker; a pre-existing `config.yaml` that lacks the marker requires
 adoption — `repos status` reports "managed configuration (adoption
 required)" with the proposed `repos.yaml` entry, the file difference and the
 effective layered-configuration change instead of ordinary drift, and
-install/convergence stop before any write (including for a fresh install) and
-leave that file untouched until it is adopted. Once a file carries
+install/convergence skip that repository before any write (including for a fresh install),
+leave that file untouched until it is adopted, and converge the other repositories. Once a file carries
 the marker, `repos install` writes the canonical sparse configuration,
 `repos status` reports whole-file managed-configuration drift, and
 convergence rewrites a drifted file unless the candidate would become less

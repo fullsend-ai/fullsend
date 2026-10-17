@@ -335,8 +335,9 @@ key out.
 ### Repository installed with `github setup` (markerless overlay)
 
 `github setup` writes `.fullsend/config.yaml` without the managed-file
-ownership marker. Install never overwrites such a file. It stops with
-`adoption required` before any write, including in a dry run.
+ownership marker. Install never overwrites such a file. It skips that repository
+and reports `adoption required` for it before any write to it, including in a dry run;
+the rest of the fleet still converges and the run exits non-zero.
 
 1. Declare the repository with its manifest-level settings, such as
    `inference.auth`, `app_set`, `fullsend_ref`, and `vendor`:

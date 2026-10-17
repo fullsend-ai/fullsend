@@ -17,12 +17,15 @@ import (
 // flag that contradicts the declared configuration fails before any write
 // and leaves repos.yaml untouched. Every offending repository is reported.
 // A repository whose preset cannot be loaded is skipped: convergence
-// reports that failure for the repository alone.
-func PreflightEffectiveInfrastructure(ctx context.Context, m *Manifest, clients ForgeClientFactory, filter []string, inferenceProject, wifProvider string) error {
+// reports that failure for the repository alone. Repositories named in
+// exclude (owner/repo) are not checked: install skips them, as it does
+// those that need adoption (#8511).
+func PreflightEffectiveInfrastructure(ctx context.Context, m *Manifest, clients ForgeClientFactory, filter, exclude []string, inferenceProject, wifProvider string) error {
 	selected, err := selectManifestRepos(ctx, m, clients, filter)
 	if err != nil {
 		return err
 	}
+	selected = withoutRepos(selected, exclude)
 	var errs []error
 	store := newPresetCache()
 	cfg := ConvergeConfig{InferenceProject: inferenceProject, WIFProvider: wifProvider}
