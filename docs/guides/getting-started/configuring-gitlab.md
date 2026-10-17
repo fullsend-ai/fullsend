@@ -802,7 +802,8 @@ reason and resource IDs.
   the replacement before deleting the original, so an interrupted run leaves a
   duplicate that the next install removes. If an install stops before it
   reaches the trigger-account stage, the activation stays withdrawn and the
-  account-owned schedules cannot dispatch until an install completes. Re-run
+  poll job selects the `api` route, so the account-owned schedules keep
+  dispatching with the Poller credential until an install completes. Re-run
   install.
 - **Deferral and unsafe token variable:** a branch-change, override-role, or
   capability deferral first removes an unsafe published token variable and
