@@ -116,6 +116,33 @@ func TestLoadGHAEvent_PROpenedByBot(t *testing.T) {
 	assert.Equal(t, normevent.RoleNone, ev.Actor.Role)
 }
 
+func TestLoadGHAEvent_PermissionLookupFailureIsUnavailable(t *testing.T) {
+	raw := map[string]any{
+		"action": "opened",
+		"pull_request": map[string]any{
+			"number":   float64(100),
+			"html_url": "https://github.com/o/r/pull/100",
+			"user":     map[string]any{"login": "alice"},
+			"labels":   []any{},
+			"head":     map[string]any{"ref": "feature", "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "repo": map[string]any{"full_name": "o/r"}},
+			"base":     map[string]any{"ref": "main", "repo": map[string]any{"full_name": "o/r"}},
+		},
+		"sender": map[string]any{"login": "alice", "type": "User"},
+	}
+	path := writeEventFile(t, raw)
+	client := forge.NewFakeClient()
+	client.Errors["GetCollaboratorPermission"] = assert.AnError
+
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  path,
+		EventName:  "pull_request_target",
+		Repository: "o/r",
+		Forge:      client,
+	})
+	require.NoError(t, err)
+	assert.False(t, ev.AuthorizationAvailable())
+}
+
 func TestLoadGHAEvent_PRLabeled(t *testing.T) {
 	raw := map[string]any{
 		"action": "labeled",
@@ -166,7 +193,7 @@ func TestLoadGHAEvent_IssueComment(t *testing.T) {
 		"comment": map[string]any{
 			"body": "/fs-fix please repair",
 		},
-		"sender": map[string]any{"login": "alice", "type": "User"},
+		"sender": map[string]any{"login": "alice", "id": float64(1234), "type": "User"},
 	}
 	path := writeEventFile(t, raw)
 
@@ -193,6 +220,7 @@ func TestLoadGHAEvent_IssueComment(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, normevent.TransitionCommentAdded, ev.Transition.Kind)
+	assert.Equal(t, int64(1234), ev.Actor.NumericID)
 	assert.Equal(t, "/fs-fix", ev.Transition.Comment.Command)
 	assert.NotNil(t, ev.Entity.LinkedChangeProposal)
 	assert.Equal(t, 42, ev.Entity.LinkedChangeProposal.ID)

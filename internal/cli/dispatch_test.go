@@ -14,7 +14,141 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
+
+func TestWriteAuthorizationOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	event := &normevent.Event{
+		Entity: normevent.Entity{ID: 42},
+		Actor:  normevent.Actor{ID: "alice", NumericID: 1234, Kind: normevent.ActorHuman},
+		Transition: normevent.Transition{
+			Kind:    normevent.TransitionCommentAdded,
+			Comment: &normevent.Comment{Command: "/fs-code"},
+		},
+		Source: normevent.Source{RawType: "issue_comment"},
+	}
+
+	require.NoError(t, writeAuthorizationOutput(event, true))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "authorization_denied=true\nauthorization_actor=alice\nauthorization_actor_id=1234\nauthorization_number=42\n", string(data))
+}
+
+func TestWriteAuthorizationOutputSupportsCustomSlashCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	event := &normevent.Event{
+		Entity: normevent.Entity{ID: 42},
+		Actor:  normevent.Actor{ID: "alice", NumericID: 1234, Kind: normevent.ActorHuman},
+		Transition: normevent.Transition{
+			Kind:    normevent.TransitionCommentAdded,
+			Comment: &normevent.Comment{Command: "/analyze"},
+		},
+		Source: normevent.Source{RawType: "issue_comment"},
+	}
+
+	require.NoError(t, writeAuthorizationOutput(event, true))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "authorization_actor_id=1234")
+}
+
+func TestWriteDispatchOutputKillSwitch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+	event := &normevent.Event{
+		Entity: normevent.Entity{ID: 42},
+		Actor:  normevent.Actor{ID: "alice", NumericID: 1234, Kind: normevent.ActorHuman},
+		Transition: normevent.Transition{
+			Kind:    normevent.TransitionCommentAdded,
+			Comment: &normevent.Comment{Command: "/fs-code"},
+		},
+		Source: normevent.Source{RawType: "issue_comment"},
+	}
+
+	require.NoError(t, writeDispatchOutput(event, false, "kill_switch"))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "dispatch_blocked_reason=kill_switch\nauthorization_actor=alice\nauthorization_actor_id=1234\nauthorization_number=42\n", string(data))
+}
+
+func TestWriteAuthorizationOutputSkipsNonDeniedOrNonHuman(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	for _, event := range []*normevent.Event{
+		{Entity: normevent.Entity{ID: 42}, Actor: normevent.Actor{ID: "alice", NumericID: 1234, Kind: normevent.ActorHuman}},
+		{Entity: normevent.Entity{ID: 42}, Actor: normevent.Actor{ID: "agent[bot]", Kind: normevent.ActorBot}},
+	} {
+		require.NoError(t, writeAuthorizationOutput(event, false))
+	}
+	_, err := os.Stat(path)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestWriteAuthorizationOutputSkipsInvalidLogin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	event := &normevent.Event{
+		Entity:     normevent.Entity{ID: 42},
+		Actor:      normevent.Actor{ID: "alice\nforged", NumericID: 1234, Kind: normevent.ActorHuman},
+		Transition: normevent.Transition{Kind: normevent.TransitionCommentAdded, Comment: &normevent.Comment{Command: "/fs-code"}},
+		Source:     normevent.Source{RawType: "issue_comment"},
+	}
+
+	require.NoError(t, writeAuthorizationOutput(event, true))
+	_, err := os.Stat(path)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestWriteAuthorizationOutputSkipsAutomaticTrigger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	event := &normevent.Event{
+		Entity:     normevent.Entity{ID: 42},
+		Actor:      normevent.Actor{ID: "alice", NumericID: 1234, Kind: normevent.ActorHuman},
+		Transition: normevent.Transition{Kind: normevent.TransitionOpened},
+		Source:     normevent.Source{RawType: "issues"},
+	}
+
+	require.NoError(t, writeAuthorizationOutput(event, true))
+	_, err := os.Stat(path)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestWriteAuthorizationOutputSkipsMissingNumericID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", path)
+	event := &normevent.Event{
+		Entity:     normevent.Entity{ID: 42},
+		Actor:      normevent.Actor{ID: "alice", Kind: normevent.ActorHuman},
+		Transition: normevent.Transition{Kind: normevent.TransitionCommentAdded, Comment: &normevent.Comment{Command: "/fs-code"}},
+		Source:     normevent.Source{RawType: "issue_comment"},
+	}
+
+	require.NoError(t, writeAuthorizationOutput(event, true))
+	_, err := os.Stat(path)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestWriteAuthorizationOutputReportsOutputError(t *testing.T) {
+	outputPath := t.TempDir()
+	t.Setenv("GITHUB_OUTPUT", outputPath)
+	event := &normevent.Event{
+		Entity:     normevent.Entity{ID: 42},
+		Actor:      normevent.Actor{ID: "alice", NumericID: 1234, Kind: normevent.ActorHuman},
+		Transition: normevent.Transition{Kind: normevent.TransitionCommentAdded, Comment: &normevent.Comment{Command: "/fs-code"}},
+		Source:     normevent.Source{RawType: "issue_comment"},
+	}
+
+	err := writeAuthorizationOutput(event, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "write authorization output")
+}
 
 func TestRunDispatch_JSONDriver(t *testing.T) {
 	dir := t.TempDir()

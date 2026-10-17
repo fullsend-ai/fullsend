@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -213,15 +214,21 @@ func TestCheckKillSwitchStep_ConsultsConfigBaseYAML(t *testing.T) {
 
 			scriptPath := filepath.Join(root, "check-kill-switch.sh")
 			require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+			outputPath := filepath.Join(root, "github-output")
+			require.NoError(t, os.WriteFile(outputPath, nil, 0o600))
 
 			cmd := exec.Command("bash", scriptPath)
 			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "REQUESTED_STAGE=code", "GITHUB_OUTPUT="+outputPath)
 			out, err := cmd.CombinedOutput()
+			output, readErr := os.ReadFile(outputPath)
+			require.NoError(t, readErr)
 
+			require.NoError(t, err, "stdout/stderr: %s", out)
 			if tc.wantHalt {
-				require.Error(t, err, "stdout/stderr: %s", out)
+				assert.Contains(t, string(output), "skipped=true")
 			} else {
-				require.NoError(t, err, "stdout/stderr: %s", out)
+				assert.NotContains(t, string(output), "skipped=true")
 			}
 		})
 	}

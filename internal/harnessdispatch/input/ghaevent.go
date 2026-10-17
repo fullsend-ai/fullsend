@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -73,6 +75,7 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 
 	sender := nestedMap(raw, "sender")
 	actorID := stringField(sender, "login")
+	actorNumericID := int64Field(sender, "id")
 	if actorID == "" {
 		actorID = opts.GitHubActor
 	}
@@ -82,12 +85,14 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 	}
 
 	role := normevent.RoleNone
+	authorizationUnavailable := true
 	if opts.Forge != nil && actorID != "" {
 		parts := strings.SplitN(opts.Repository, "/", 2)
 		if len(parts) == 2 {
 			if gh, ok := opts.Forge.(forge.GitHubExtensions); ok {
 				if perm, err := gh.GetCollaboratorPermission(ctx, parts[0], parts[1], actorID); err == nil {
 					role = normevent.MapGitHubPermission(perm)
+					authorizationUnavailable = false
 				} else {
 					log.Printf("harness dispatch: collaborator permission lookup failed for %s on %s: %v", actorID, opts.Repository, err)
 				}
@@ -99,6 +104,7 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 		Repo: opts.Repository,
 		Actor: normevent.Actor{
 			ID:             actorID,
+			NumericID:      actorNumericID,
 			Kind:           actorKind,
 			Role:           role,
 			IsEntityAuthor: false,
@@ -110,6 +116,9 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 		State: normevent.State{
 			Labels: []string{},
 		},
+	}
+	if authorizationUnavailable {
+		ev.MarkAuthorizationUnavailable()
 	}
 	if action != "" {
 		ev.Source.RawAction = action
@@ -123,7 +132,7 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 	case "pull_request_review":
 		return mapPRReviewEvent(ev, raw, action, actorID)
 	case "issue_comment":
-		return mapIssueCommentEvent(ctx, opts, raw, action, actorID)
+		return mapIssueCommentEvent(ctx, opts, ev, raw, action, actorID)
 	default:
 		return nil, fmt.Errorf("unsupported github event name %q", opts.EventName)
 	}
@@ -263,46 +272,10 @@ func mapPREvent(ev *normevent.Event, raw map[string]any, action, actorID string)
 	return ev, nil
 }
 
-func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, raw map[string]any, action, actorID string) (*normevent.Event, error) {
+func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, ev *normevent.Event, raw map[string]any, action, actorID string) (*normevent.Event, error) {
 	issue := nestedMap(raw, "issue")
 	if issue == nil {
 		return nil, fmt.Errorf("issue_comment missing issue")
-	}
-	ev := &normevent.Event{
-		Repo: opts.Repository,
-		Actor: normevent.Actor{
-			ID:             actorID,
-			Kind:           normevent.ActorHuman,
-			Role:           normevent.RoleNone,
-			IsEntityAuthor: false,
-		},
-		Source: normevent.Source{
-			System:  normevent.SystemGitHub,
-			RawType: opts.EventName,
-		},
-		State: normevent.State{
-			Labels: []string{},
-		},
-	}
-	if action != "" {
-		ev.Source.RawAction = action
-	}
-
-	sender := nestedMap(raw, "sender")
-	if strings.HasSuffix(strings.ToLower(actorID), "[bot]") || stringField(sender, "type") == "Bot" {
-		ev.Actor.Kind = normevent.ActorBot
-	}
-	if opts.Forge != nil && actorID != "" {
-		parts := strings.SplitN(opts.Repository, "/", 2)
-		if len(parts) == 2 {
-			if gh, ok := opts.Forge.(forge.GitHubExtensions); ok {
-				if perm, err := gh.GetCollaboratorPermission(ctx, parts[0], parts[1], actorID); err == nil {
-					ev.Actor.Role = normevent.MapGitHubPermission(perm)
-				} else {
-					log.Printf("harness dispatch: collaborator permission lookup failed for %s on %s: %v", actorID, opts.Repository, err)
-				}
-			}
-		}
 	}
 
 	ev.Entity = entityFromIssue(issue)
@@ -495,6 +468,34 @@ func intField(m map[string]any, key string) int {
 	case json.Number:
 		i, _ := v.Int64()
 		return int(i)
+	default:
+		return 0
+	}
+}
+
+func int64Field(m map[string]any, key string) int64 {
+	switch v := m[key].(type) {
+	case float64:
+		if v < 1 || v >= float64(math.MaxInt64) || math.Trunc(v) != v {
+			return 0
+		}
+		return int64(v)
+	case int:
+		if v < 1 {
+			return 0
+		}
+		return int64(v)
+	case int64:
+		if v < 1 {
+			return 0
+		}
+		return v
+	case json.Number:
+		i, err := strconv.ParseInt(string(v), 10, 64)
+		if err != nil || i < 1 {
+			return 0
+		}
+		return i
 	default:
 		return 0
 	}

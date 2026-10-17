@@ -51,6 +51,18 @@ func TestIsWriteAuthorized(t *testing.T) {
 	assert.False(t, IsWriteAuthorized(RoleNone))
 }
 
+func TestAuthorizationAvailability(t *testing.T) {
+	event := &Event{}
+	assert.True(t, event.AuthorizationAvailable())
+
+	event.MarkAuthorizationUnavailable()
+	assert.False(t, event.AuthorizationAvailable())
+
+	var nilEvent *Event
+	assert.False(t, nilEvent.AuthorizationAvailable())
+	nilEvent.MarkAuthorizationUnavailable()
+}
+
 func TestMapGitHubPermission(t *testing.T) {
 	assert.Equal(t, RoleWrite, MapGitHubPermission("write"))
 	assert.Equal(t, RoleNone, MapGitHubPermission("unknown"))
