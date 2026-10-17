@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/cucumber/gherkin/go/v42 v42.0.0
 	github.com/cucumber/godog v0.16.0
 	github.com/cucumber/messages/go/v34 v34.2.0
 	github.com/google/cel-go v0.30.0
@@ -30,7 +31,6 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cucumber/gherkin/go/v42 v42.0.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gomlx/compute v0.1.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect

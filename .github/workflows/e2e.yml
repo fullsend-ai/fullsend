@@ -47,6 +47,11 @@ on:
   merge_group:
   workflow_dispatch:
     inputs:
+      run_behaviour:
+        description: Run the behaviour suite on the selected branch
+        required: true
+        type: boolean
+        default: false
       run_playback:
         description: Run the playback behaviour suite
         required: true
@@ -98,33 +103,28 @@ jobs:
           pr_author_login: ${{ github.event.pull_request.user.login }}
           label_actor_login: ${{ github.event.sender.login }}
 
-  behaviour:
-    # Share a group with playback only for stage; dev jobs reserve separate orgs.
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.run_id }}-${{ github.event_name == 'push' && 'stage-org' || 'behaviour-dev' }}
-      cancel-in-progress: false
-    # Gate authorization protects checkout of untrusted PR-head code with secrets.
-    # Runs only on authorized PRs, merge_group (required check; treated as
-    # PR-class / dev), and push to main (stage). Skip workflow_dispatch.
-    # Environment uses event_name, not github.ref: pull_request_target sets
-    # github.ref to the base branch (usually main).
+  behaviour-plan:
+    # Plan one DEV CI job per shard, with at most 20 provisioning scenarios
+    # per shard. This job runs PR-head code but receives no DEV credentials.
     needs: gate
     if: >-
       !cancelled() &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'merge_group') ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_behaviour) ||
         (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true')
       )
-    # Scalar form keeps default deployment: true so runs list under Environments.
-    environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write
     env:
       ENVIRONMENT: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
+    outputs:
+      relevant: ${{ steps.changes.outputs.relevant }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      total: ${{ steps.plan.outputs.total }}
     steps:
       - name: Check for behaviour-relevant changes
         id: changes
@@ -179,20 +179,87 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Authenticate to GCP
+      - name: Plan behaviour shards
+        id: plan
         if: steps.changes.outputs.relevant != 'false'
+        shell: bash
+        env:
+          BEHAVIOUR_SCM: github
+          BEHAVIOUR_CI: githubactions
+          BEHAVIOUR_INSTALL_MODE: per-repo
+          BEHAVIOUR_SHARD_PLAN_FILE: ${{ runner.temp }}/behaviour-shard-plan.json
+        run: |
+          make behaviour-plan
+          total=$(jq -er '.total' "$BEHAVIOUR_SHARD_PLAN_FILE")
+          matrix=$(jq -ec '{shard: .shards}' "$BEHAVIOUR_SHARD_PLAN_FILE")
+          echo "total=${total}" >> "$GITHUB_OUTPUT"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Behaviour shard plan'
+            echo
+            jq -r '"\(.total) shard(s) for \(.selected) selected scenario instance(s), \(.skipped) skipped by compatibility tags, \(.provisioning) provisioning (max \(.max_provisioning_per_shard) per shard)"' "$BEHAVIOUR_SHARD_PLAN_FILE"
+            echo
+            jq -r '.per_shard[] | "- shard \(.index): \(.instances) instance(s), \(.provisioning) provisioning, \(.other) other"' "$BEHAVIOUR_SHARD_PLAN_FILE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  behaviour-shard:
+    name: behaviour shard ${{ matrix.shard }}
+    # Each matrix entry gets its own runner. Distinct DEV concurrency groups
+    # allow shards to overlap; STAGE still shares its org with playback.
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.run_id }}-${{ github.event_name == 'push' && 'stage-org' || format('behaviour-dev-{0}', matrix.shard) }}
+      cancel-in-progress: false
+    needs: [gate, behaviour-plan]
+    if: >-
+      !cancelled() &&
+      needs.behaviour-plan.result == 'success' &&
+      needs.behaviour-plan.outputs.relevant != 'false' &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'merge_group') ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_behaviour) ||
+        (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true')
+      )
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.behaviour-plan.outputs.matrix) }}
+    environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
+    steps:
+      - name: Record job start
+        run: echo "SHARD_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Authenticate to GCP
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
 
       - name: Run behaviour tests
-        if: steps.changes.outputs.relevant != 'false'
         shell: bash
         run: |
+          echo "SHARD_TEST_START=$(date +%s)" >> "$GITHUB_ENV"
           mkdir -p "${{ runner.temp }}/behaviour-artifacts"
           make behaviour-test 2>&1 | tee "${{ runner.temp }}/behaviour-artifacts/behaviour-test.log"
         env:
+          BEHAVIOUR_SHARD_INDEX: ${{ matrix.shard }}
+          BEHAVIOUR_SHARD_TOTAL: ${{ needs.behaviour-plan.outputs.total }}
           BEHAVIOUR_SCM: github
           BEHAVIOUR_CI: githubactions
           BEHAVIOUR_INSTALL_MODE: per-repo
@@ -221,19 +288,23 @@ jobs:
           TEST_ACTOR_TRIAGE_PAT: ${{ secrets.TEST_ACTOR_TRIAGE_PAT }}
           TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.TEST_ACTOR_OUTSIDER_PAT }}
 
+      - name: Record test end
+        if: always()
+        run: echo "SHARD_TEST_END=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Check out redaction script from base branch
-        if: always() && steps.changes.outputs.relevant != 'false'
+        if: always()
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Base-branch script only — PR head must not control artifact redaction (#5221).
-          ref: ${{ github.sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch || github.sha }}
           sparse-checkout: scripts/redact-behaviour-artifacts.sh
           path: base-scripts
           persist-credentials: false
 
       - name: Redact secrets from behaviour debug artifacts
         id: redact
-        if: always() && steps.changes.outputs.relevant != 'false'
+        if: always()
         env:
           ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
           TEST_FULLSEND_PEM: ${{ secrets.TEST_FULLSEND_PEM }}
@@ -277,13 +348,101 @@ jobs:
             /usr/bin/bash "${{ github.workspace }}/base-scripts/scripts/redact-behaviour-artifacts.sh"
 
       - name: Upload behaviour debug artifacts
-        if: always() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
+          name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/behaviour-artifacts/
           if-no-files-found: ignore
           retention-days: 5
+
+      - name: Summarize shard timing
+        if: always()
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ needs.behaviour-plan.outputs.total }}
+          ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
+          REDACT_OUTCOME: ${{ steps.redact.outcome }}
+        run: |
+          now=$(date +%s)
+          start=${SHARD_JOB_START:-$now}
+          test_start=${SHARD_TEST_START:-$now}
+          test_end=${SHARD_TEST_END:-$now}
+          {
+            echo "### Behaviour shard ${SHARD} of ${TOTAL}"
+            echo
+            echo "- checkout and tool setup: $((test_start - start))s"
+            echo "- behaviour-test (build, org setup, scenarios, cleanup): $((test_end - test_start))s"
+            echo "- redaction and upload: $((now - test_end))s"
+            echo "- job total: $((now - start))s"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Read only known fields from the metrics file, after redaction.
+          n=$((SHARD + 1))
+          metrics_file="${ARTIFACT_DIR}/shard-metrics-${n}.json"
+          if [ "$REDACT_OUTCOME" = success ] && [ -f "$metrics_file" ]; then
+            jq -r '"- planned: \(.planned_instances) instance(s), \(.planned_provisioning) provisioning, concurrency \(.concurrency)",
+                   "- build \(.build_seconds)s, org setup \(.org_setup_seconds)s, first install \(if .first_install_seconds == null then "n/a" else "\(.first_install_seconds)s" end), body \(.body_seconds)s, cleanup \(.cleanup_seconds)s, total \(.total_seconds)s",
+                   "- rate-limit failures: \(.rate_limit_failures)",
+                   (.orgs[]? | "- org \(.org): capacity \(.capacity), start \(.start_quota), end \(.end_quota // "n/a")")' \
+              "$metrics_file" >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+  behaviour:
+    # Keep one stable branch-protection check for the whole matrix.
+    needs: [gate, behaviour-plan, behaviour-shard]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail cancelled behaviour run
+        if: ${{ cancelled() }}
+        run: |
+          echo '::error::Workflow was cancelled before behaviour completed'
+          exit 1
+      - name: Check behaviour plan and shards
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+          PLAN_RESULT: ${{ needs.behaviour-plan.result }}
+          RELEVANT: ${{ needs.behaviour-plan.outputs.relevant }}
+          TOTAL: ${{ needs.behaviour-plan.outputs.total }}
+          SHARDS_RESULT: ${{ needs.behaviour-shard.result }}
+          EXPECT_PLAN: >-
+            ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+                github.event_name == 'merge_group' ||
+                (github.event_name == 'workflow_dispatch' && inputs.run_behaviour) ||
+                (github.event_name == 'pull_request_target' && needs.gate.outputs.authorized == 'true') }}
+        run: |
+          echo "gate: ${GATE_RESULT}, plan: ${PLAN_RESULT}, relevant: ${RELEVANT:-n/a}, shards: ${TOTAL:-n/a}, shard result: ${SHARDS_RESULT}"
+          case "$PLAN_RESULT" in
+            skipped)
+              if [ "$GATE_RESULT" = failure ] || [ "$GATE_RESULT" = cancelled ]; then
+                echo "::error::Authorization gate ${GATE_RESULT}"
+                exit 1
+              fi
+              if [ "$EXPECT_PLAN" = true ]; then
+                echo '::error::Behaviour plan was skipped for an eligible run'
+                exit 1
+              fi
+              echo '::notice::Behaviour was not requested or authorized for this event'
+              exit 0
+              ;;
+            success) ;;
+            *)
+              echo "::error::Behaviour plan ${PLAN_RESULT}"
+              exit 1
+              ;;
+          esac
+          if [ "$RELEVANT" = false ]; then
+            echo '::notice::No behaviour-relevant changes — shards skipped'
+            exit 0
+          fi
+          if [ "$SHARDS_RESULT" != success ]; then
+            echo "::error::Behaviour shards ${SHARDS_RESULT} (one or more of ${TOTAL} shard(s) failed, were cancelled or did not run)"
+            exit 1
+          fi
+          echo "All ${TOTAL} behaviour shard(s) passed"
 
   playback:
     # Serialize with behaviour only on stage, whose pool has a single org.

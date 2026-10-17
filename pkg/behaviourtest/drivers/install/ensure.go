@@ -630,10 +630,20 @@ func (e *repoEnsurer) provisionWIFProvider(ctx context.Context, target, project 
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("waiting to provision inference for %s: %w", target, err)
 	}
+	// Provisions are serialised process-wide, so this wait is a possible
+	// source of silence when many installs start together. Log it when
+	// the gate is busy and again once it is acquired.
+	gateStart := time.Now()
 	select {
 	case provisionGate <- struct{}{}:
-	case <-ctx.Done():
-		return "", fmt.Errorf("waiting to provision inference for %s: %w", target, ctx.Err())
+	default:
+		e.logf("[ensure] waiting for the inference provision gate for %s (another provision is running)", target)
+		select {
+		case provisionGate <- struct{}{}:
+		case <-ctx.Done():
+			return "", fmt.Errorf("waiting to provision inference for %s: %w", target, ctx.Err())
+		}
+		e.logf("[ensure] got the inference provision gate for %s after waiting %s", target, time.Since(gateStart).Round(time.Millisecond))
 	}
 	defer func() { <-provisionGate }()
 
