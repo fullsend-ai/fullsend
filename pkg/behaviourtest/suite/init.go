@@ -30,6 +30,64 @@ func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	steps.Register(sc)
 }
 
+// TemplateRouter returns the template World a scenario runs against.
+// The multi-org behaviour suite uses it to send each scenario to the
+// pool org it was assigned, with that org's token and drivers.
+type TemplateRouter func(scenario *godog.Scenario) (*world.World, error)
+
+// InitRoutedScenario is InitScenario for a suite whose scenarios run
+// against different template Worlds. Compatibility tags are evaluated
+// against base first, so a skipped scenario, or one whose tags are
+// malformed (which fails with the tag error), is never routed; every
+// other scenario is cloned from the template route returns, and its
+// After hook deallocates through that template's Driver. A routing error
+// fails the scenario before any step runs.
+func InitRoutedScenario(sc *godog.ScenarioContext, base *world.World, route TemplateRouter) {
+	InitGatedRoutedScenario(sc, base, nil, route)
+}
+
+// ScenarioGate decides whether this run executes a scenario at all. A
+// suite split across CI jobs uses it so each job runs only its own
+// share: nil runs the scenario, godog.ErrSkip leaves it to another job,
+// and any other error fails it before any step runs.
+type ScenarioGate func(scenario *godog.Scenario) error
+
+// InitGatedRoutedScenario is InitRoutedScenario with a gate evaluated
+// before compatibility tags, so a scenario another job owns is skipped
+// here even when its tags would skip or fail it. A nil gate admits
+// every scenario.
+func InitGatedRoutedScenario(sc *godog.ScenarioContext, base *world.World, gate ScenarioGate, route TemplateRouter) {
+	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
+		if gate != nil {
+			if err := gate(scenario); err != nil {
+				return ctx, err
+			}
+		}
+		tags := tagNames(scenario.Tags)
+		if SkipErrorForTagNames(tags, base) != nil {
+			// A skip or a malformed tag: the scenario is never routed, so
+			// it consumes no org capacity. beforeScenario returns the same
+			// error and, for a malformed tag, attaches a World (cloned from
+			// base, without a driver) so the After hook can still write a
+			// failure summary.
+			return beforeScenario(ctx, tags, base, scenario.Name)
+		}
+		template, err := route(scenario)
+		if err != nil {
+			return ctx, err
+		}
+		return beforeScenario(ctx, tags, template, scenario.Name)
+	})
+	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
+		var driver install.Driver
+		if w := world.FromContext(ctx); w != nil {
+			driver = w.Driver
+		}
+		return afterScenario(ctx, driver, err)
+	})
+	steps.Register(sc)
+}
+
 // beforeScenario clones the template World, resets scenario fields, and
 // records the scenario name. Repo allocation is handled by the step (via
 // Driver.AllocateRepo), not by the Before hook.

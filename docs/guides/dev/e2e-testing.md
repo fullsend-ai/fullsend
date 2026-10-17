@@ -61,8 +61,16 @@ gh workflow run e2e.yml --repo fullsend-ai/fullsend \
   --ref YOUR_BRANCH -f run_playback=true
 ```
 
-Manual runs use the dev org pool and run playback only. Normal CI runs both
-suites, concurrently in dev and serialized against the single stage org.
+To test the behaviour matrix on a selected branch before merging, enable
+**Run the behaviour suite on the selected branch** and disable playback:
+
+```bash
+gh workflow run e2e.yml --repo fullsend-ai/fullsend \
+  --ref YOUR_BRANCH -f run_behaviour=true -f run_playback=false
+```
+
+Manual runs use the dev org pool. Normal CI runs both suites, concurrently in
+dev and serialized against the single stage org.
 
 Optional environment variables:
 
@@ -75,8 +83,9 @@ Optional environment variables:
 
 Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
-Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
+Tests acquire an exclusive lock on an org from the pool (`halfsend-01` …
 `halfsend-12` for DEV, or `halfsend` for STAGE) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
+A DEV behaviour run (`RunSuite`) locks as many orgs as its provisioning demand requires; the playback suite and STAGE lock a single org. See [Pool orgs and the per-org scenario cap](behaviour-testing.md#pool-orgs-and-the-per-org-scenario-cap). In DEV CI the suite is split into a dynamic matrix of shard jobs, each with at most 20 provisioning scenarios and its own orgs, and the `behaviour` job aggregates them into one check. See [CI shards](behaviour-testing.md#ci-shards).
 
 Shared pool, CLI, and cleanup helpers used by the behaviour and playback suites live in `internal/e2etest/`.
 
@@ -105,7 +114,7 @@ Mint URL uses the hosted public endpoint by default (same as `fullsend admin --m
 
 ### Behaviour job GitHub Environments
 
-The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (authorized pull requests and the merge queue) and `stage` (push to `main`). It skips `workflow_dispatch` and other triggers. The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
+The behaviour shard jobs (`behaviour-shard`) in `e2e.yml` bind to GitHub Environments `dev` (authorized pull requests, the merge queue, and manual runs with `run_behaviour=true`) and `stage` (push to `main`). They skip other manual runs. Each job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). The `behaviour-plan` job, which sizes the matrix, and the aggregate `behaviour` check get no environment and no secrets. GitHub auto-creates those environments on first use.
 
 After the environments exist, restrict `stage` to `main`:
 

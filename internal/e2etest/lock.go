@@ -145,9 +145,7 @@ func tryCreateLock(ctx context.Context, client forge.Client, org, runID string, 
 	})
 	if createErr != nil {
 		logf("[e2e-lock] Failed to write lock file, cleaning up repo: %v", createErr)
-		if delErr := client.DeleteRepo(ctx, org, lockRepo); delErr != nil {
-			logf("[e2e-lock] Warning: cleanup delete of %s/%s also failed: %v", org, lockRepo, delErr)
-		}
+		deleteOrphanLockRepo(ctx, client, org, logf)
 		return false, fmt.Errorf("writing lock file after retries: %w", createErr)
 	}
 
@@ -159,11 +157,13 @@ func tryCreateLock(ctx context.Context, client forge.Client, org, runID string, 
 			select {
 			case <-time.After(time.Duration(i+1) * time.Second):
 			case <-ctx.Done():
+				deleteOrphanLockRepo(ctx, client, org, logf)
 				return false, ctx.Err()
 			}
 		}
 		content, err := client.GetFileContent(ctx, org, lockRepo, "README.md")
 		if err != nil {
+			deleteOrphanLockRepo(ctx, client, org, logf)
 			return false, fmt.Errorf("verifying lock: %w", err)
 		}
 		holder := strings.TrimSpace(string(content))
@@ -178,6 +178,22 @@ func tryCreateLock(ctx context.Context, client forge.Client, org, runID string, 
 	content, _ := client.GetFileContent(ctx, org, lockRepo, "README.md")
 	logf("[e2e-lock] Lost lock race for %s/%s (holder: %s)", org, lockRepo, truncateUUID(strings.TrimSpace(string(content))))
 	return false, nil
+}
+
+// lockCleanupTimeout bounds the cleanup delete of an orphaned lock repo.
+const lockCleanupTimeout = 30 * time.Second
+
+// deleteOrphanLockRepo removes the lock repo that tryCreateLock just
+// created but cannot hand to the caller (the caller gets no org or token
+// back, so it could never release the lock). It runs on a context detached
+// from ctx's cancellation, so a deadline that expired mid-acquisition does
+// not also prevent the cleanup, and is bounded by lockCleanupTimeout.
+func deleteOrphanLockRepo(ctx context.Context, client forge.Client, org string, logf func(string, ...any)) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lockCleanupTimeout)
+	defer cancel()
+	if err := client.DeleteRepo(cleanupCtx, org, lockRepo); err != nil && !forge.IsNotFound(err) {
+		logf("[e2e-lock] Warning: cleanup delete of %s/%s failed: %v", org, lockRepo, err)
+	}
 }
 
 // releaseLock deletes the lock repo, but only if we still hold it.
@@ -203,6 +219,21 @@ func releaseLock(ctx context.Context, client forge.Client, org, runID string, t 
 // ReleaseLock deletes the org lock repo when the run still holds it.
 func ReleaseLock(ctx context.Context, client forge.Client, org, runID string, t *testing.T) {
 	releaseLock(ctx, client, org, runID, t)
+}
+
+// SampleRateLimit reads the primary REST budget of client's credential
+// while the run holds org's lock. It makes one read of the held lock
+// repo, whose response carries the X-RateLimit-* headers, and returns
+// what client observed. ok is false when client does not track the
+// headers (forge.RateLimitReporter) or no response carried them; the
+// read's own error is not returned because only the headers matter.
+func SampleRateLimit(ctx context.Context, client forge.Client, org string) (state forge.RateLimit, ok bool) {
+	reporter, isReporter := client.(forge.RateLimitReporter)
+	if !isReporter {
+		return forge.RateLimit{}, false
+	}
+	_, _ = client.GetRepo(ctx, org, lockRepo)
+	return reporter.RateLimit()
 }
 
 // tryReclaimStaleLock checks whether the lock on org is stale (older than

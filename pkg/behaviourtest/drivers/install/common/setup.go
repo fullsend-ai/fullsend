@@ -121,7 +121,7 @@ func RunGitHubSetupWithOpts(
 	}
 
 	logf("[install] running fullsend %s", strings.Join(args, " "))
-	if _, err := runCLI(binary, token, args...); err != nil {
+	if _, err := runCLILogged(runCLI, logf, binary, token, target, args...); err != nil {
 		return fmt.Errorf("github setup %s: %w", target, err)
 	}
 	return nil
@@ -153,7 +153,7 @@ func InferenceStatusWIFProvider(
 ) (string, error) {
 	statusArgs := []string{"inference", "status", target, "--project", project, "--format", "json"}
 	logf("[install] running fullsend %s", strings.Join(statusArgs, " "))
-	out, err := runCLI(binary, token, statusArgs...)
+	out, err := runCLILogged(runCLI, logf, binary, token, target, statusArgs...)
 	if err != nil {
 		return "", fmt.Errorf("inference status %s: %w", target, err)
 	}
@@ -175,7 +175,7 @@ func ProvisionInference(
 ) (string, error) {
 	provisionArgs := []string{"inference", "provision", target, "--project", project}
 	logf("[install] running fullsend %s", strings.Join(provisionArgs, " "))
-	if _, err := runCLI(binary, token, provisionArgs...); err != nil {
+	if _, err := runCLILogged(runCLI, logf, binary, token, target, provisionArgs...); err != nil {
 		return "", fmt.Errorf("inference provision %s: %w", target, err)
 	}
 	return InferenceStatusWIFProvider(binary, token, target, project, runCLI, logf)
