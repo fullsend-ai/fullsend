@@ -449,7 +449,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
 
 - What normative entity-history, query-planning, and handled-state contract
   can support entity-first harness evaluation without unbounded provider reads
-  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md))?
+  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md))? Discovery and
+  query-planning requirements are gathered in
+  [entity-source discovery](problems/entity-source-discovery.md).
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner

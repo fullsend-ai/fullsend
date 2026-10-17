@@ -148,7 +148,10 @@ The repository's existing infrastructure provides all the coordination needed:
 - **Forge events and scheduled entity discovery** identify entities whose
   harness predicates should be evaluated. Each predicate can inspect the
   resolved entity and an optional prompting event
-  ([ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md)).
+  ([ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md)). How
+  scheduled discovery finds candidates and reads them completely enough to
+  evaluate is an open requirements question
+  ([entity-source discovery](entity-source-discovery.md)).
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 

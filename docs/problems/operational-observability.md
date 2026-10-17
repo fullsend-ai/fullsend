@@ -32,6 +32,7 @@ The most basic operational question. At a glance, an operator should be able to 
 - Are agents completing their work? What is the success/failure rate of agent runs?
 - Are there backlogs building up — PRs waiting for review, issues waiting for triage?
 - Are any agents stuck, crashed, or in error loops?
+- Is scheduled work discovery complete? An entity denied because its history exceeds a read bound, or a poll cycle held because candidate enumeration failed, should be visible rather than look like "no work" (see [entity-source discovery](entity-source-discovery.md#safety-invariants)).
 
 This is the "dashboard on the wall" level of observability — system health, not individual decisions. It should be answerable without drilling into any specific agent run.
 
