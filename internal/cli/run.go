@@ -1923,9 +1923,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to create sandbox")
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
-	// Anchor for waitForOpenShellFirstPoll (OpenShell #3809) before the first
-	// network request.
-	sandboxReadyAt := time.Now()
 	finalizeSandboxSpan(sandboxSpan, nil)
 
 	if len(runScopedProviders) > 0 {
@@ -2418,13 +2415,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		} else {
 			printer.StepDone("Pre-agent scan passed")
 		}
-	}
-
-	// 9b-1. Let OpenShell 0.1.2's first settings poll pass before any network
-	// request; it terminates connections in flight (OpenShell #3809). Remove
-	// with openShellFirstPollSettle once the pin includes the upstream fix.
-	if _, err := waitForOpenShellFirstPoll(ctx, sandboxReadyAt, printer); err != nil {
-		return fmt.Errorf("waiting for the sandbox's first policy poll: %w", err)
 	}
 
 	// 9b-2. Pre-flight GitHub API connectivity check.
