@@ -51,6 +51,35 @@ func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) 
 	}, nil
 }
 
+// CreateIssue implements Client by splitting project into owner/repo for
+// the underlying forge call. GitHub and GitLab have no equivalent of
+// Jira's issue type ID or parent key here, so a non-empty IssueType or
+// Parent is rejected with ErrNotSupported instead of being silently
+// dropped.
+func (c *ForgeClient) CreateIssue(ctx context.Context, project, title string, body Body, opts CreateIssueOptions) (*Issue, error) {
+	if opts.IssueType != "" {
+		return nil, fmt.Errorf("tracker: issue type: %w (Jira only)", ErrNotSupported)
+	}
+	if opts.Parent != "" {
+		return nil, fmt.Errorf("tracker: parent issue: %w (Jira only)", ErrNotSupported)
+	}
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return nil, err
+	}
+	issue, err := c.forge.CreateIssue(ctx, owner, repo, title, string(body))
+	if err != nil {
+		return nil, wrapNotFound(err)
+	}
+	return &Issue{
+		Number: issue.Number,
+		Title:  issue.Title,
+		Body:   Body(issue.Body),
+		URL:    issue.URL,
+		Labels: issue.Labels,
+	}, nil
+}
+
 // ListComments implements Client by splitting project into owner/repo for
 // the underlying forge call.
 func (c *ForgeClient) ListComments(ctx context.Context, project string, number int) ([]Comment, error) {

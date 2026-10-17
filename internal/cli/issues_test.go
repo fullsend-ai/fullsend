@@ -33,6 +33,7 @@ func TestNewIssuesCmd_SubcommandRegistration(t *testing.T) {
 		names = append(names, sub.Name())
 	}
 	assert.Contains(t, names, "get")
+	assert.Contains(t, names, "create")
 	assert.Contains(t, names, "post-comment")
 	assert.Contains(t, names, "link")
 }

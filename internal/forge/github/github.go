@@ -2988,17 +2988,18 @@ func (c *LiveClient) DispatchWorkflow(ctx context.Context, owner, repo, workflow
 // if GitHub rejects the create because a label is unavailable in the target
 // repo, the request is retried without labels so issue creation still succeeds.
 func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*forge.Issue, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues", url.PathEscape(owner), url.PathEscape(repo))
 	payload := map[string]any{"title": title, "body": body}
 	if len(labels) > 0 {
 		payload["labels"] = labels
 	}
-	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues", owner, repo), payload)
+	resp, err := c.post(ctx, path, payload)
 	if err != nil {
 		var apiErr *APIError
 		if len(labels) == 0 || !errors.As(err, &apiErr) || !isValidationErrorForField(apiErr, "labels") {
 			return nil, fmt.Errorf("create issue: %w", err)
 		}
-		resp, err = c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues", owner, repo), map[string]any{"title": title, "body": body})
+		resp, err = c.post(ctx, path, map[string]any{"title": title, "body": body})
 		if err != nil {
 			return nil, fmt.Errorf("create issue without labels after label rejection: %w", err)
 		}

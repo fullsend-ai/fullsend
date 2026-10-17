@@ -70,6 +70,12 @@ type Issue struct {
 	// "customfield_10875") to their raw JSON values. Set by the Jira
 	// client; nil for GitHub and GitLab.
 	CustomFields map[string]json.RawMessage
+
+	// Key is the tracker-assigned issue key (e.g. "PROJ-43"). It is
+	// populated by JiraClient.GetIssue and JiraClient.CreateIssue (the
+	// latter carries the key exactly as Jira returned it); it is empty
+	// for other trackers.
+	Key string
 }
 
 // Comment represents a comment on an issue.
@@ -87,6 +93,19 @@ type Comment struct {
 	CreatedAt string
 }
 
+// CreateIssueOptions carries the tracker-specific fields of CreateIssue.
+type CreateIssueOptions struct {
+	// IssueType selects the issue type. Required for Jira, where an
+	// all-digit value is an issue type ID (e.g. "10003") and anything
+	// else an issue type name (e.g. "Sub-task"). GitHub and GitLab
+	// reject a non-empty value with ErrNotSupported.
+	IssueType string
+	// Parent is the parent issue key (e.g. "PROJ-42") for Jira sub-task
+	// creation. GitHub and GitLab reject a non-empty value with
+	// ErrNotSupported.
+	Parent string
+}
+
 // Client abstracts issue-content read/write operations across trackers
 // (GitHub, GitLab, and eventually Jira). Project identifies the issue's
 // container: "owner/repo" for GitHub/GitLab, a Jira project key for Jira.
@@ -96,6 +115,10 @@ type Comment struct {
 type Client interface {
 	// GetIssue returns the issue identified by project and number.
 	GetIssue(ctx context.Context, project string, number int) (*Issue, error)
+	// CreateIssue creates a new issue in project and returns it. For Jira,
+	// the returned Issue.Number is the numeric part of the new issue key
+	// (PROJ-<number>).
+	CreateIssue(ctx context.Context, project, title string, body Body, opts CreateIssueOptions) (*Issue, error)
 	// ListComments returns all comments on the issue identified by project and number.
 	ListComments(ctx context.Context, project string, number int) ([]Comment, error)
 	// CreateComment adds a new comment with the given body to the issue.
