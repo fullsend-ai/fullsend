@@ -476,6 +476,22 @@ func TestCheckGitLabTriggerDispatchGate_AgentChildConsumerMustAdmitPipelineSourc
 			},
 			want: "the committed " + gitlabAgentJobScriptPath + " does not match the compatible scaffold",
 		},
+		"agent job rule when manual": {
+			mutate: replaceIn(fullsendAgentTemplatePath, agentStageRule, agentStageRule+"\n      when: manual"),
+			want:   "agent job in " + fullsendAgentTemplatePath + " does not admit agent child pipelines",
+		},
+		"agent job rule when on_failure": {
+			mutate: replaceIn(fullsendAgentTemplatePath, agentStageRule, agentStageRule+"\n      when: on_failure"),
+			want:   "agent job in " + fullsendAgentTemplatePath + " does not admit agent child pipelines",
+		},
+		"agent job when manual": {
+			mutate: replaceIn(fullsendAgentTemplatePath, `  resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"`, "  when: manual\n"+`  resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"`),
+			want:   "agent job in " + fullsendAgentTemplatePath + " does not admit agent child pipelines",
+		},
+		"agent job when on_failure": {
+			mutate: replaceIn(fullsendAgentTemplatePath, `  resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"`, "  when: on_failure\n"+`  resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"`),
+			want:   "agent job in " + fullsendAgentTemplatePath + " does not admit agent child pipelines",
+		},
 		"agent template missing": {
 			mutate: func(e *trigEnv) {
 				delete(e.state.FileContents, trigOwner+"/"+trigRepo+"/"+fullsendAgentTemplatePath)
@@ -493,6 +509,11 @@ func TestCheckGitLabTriggerDispatchGate_AgentChildConsumerMustAdmitPipelineSourc
 			assert.Contains(t, strings.Join(gate.Deferred, "\n"), tc.want)
 		})
 	}
+	t.Run("agent job rule when always still admits", func(t *testing.T) {
+		e := readyTriggerDispatchEnv(t)
+		replaceIn(fullsendAgentTemplatePath, agentStageRule, agentStageRule+"\n      when: always")(e)
+		assert.Empty(t, gitlabDispatchConsumerProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch))
+	})
 	t.Run("unreadable consumer file defers without echoing the error", func(t *testing.T) {
 		e := readyTriggerDispatchEnv(t)
 		e.state.Errors["GetFileContent"] = errors.New("boom")
@@ -675,5 +696,65 @@ func TestGitLabScheduleReactivationDeferral(t *testing.T) {
 		seedTypedScheduleTemplates(t, e)
 		e.state.Errors["GetFileContent"] = errors.New("boom")
 		assert.NotEmpty(t, GitLabScheduleReactivationDeferral(ctx, e.state, trigOwner, trigRepo))
+	})
+}
+
+// The agent child pipeline includes the agent template, not the dispatcher
+// template, so the effective workflow rules that decide whether it is admitted
+// come from the agent template when neither the root nor the wrapper defines
+// any.
+func TestGitLabEffectiveWorkflowProblemForEnv_UsesAgentTemplate(t *testing.T) {
+	root := []byte("include:\n  - local: " + fullsendPipelineInclude + "\n")
+	wrapper := []byte("include:\n  - local: " + fullsendAgentTemplatePath + "\n")
+	env := gitlabAgentChildEnv("main")
+	rejecting := []byte("workflow:\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"push\"\n")
+	admitting := []byte("workflow:\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"pipeline\"\n")
+
+	problem := gitlabEffectiveWorkflowProblemForEnv(root, wrapper, rejecting, fullsendAgentTemplatePath, env, "agent child (source=pipeline)")
+	assert.Contains(t, problem, "effective workflow rules from "+fullsendAgentTemplatePath)
+	assert.NotContains(t, problem, fullsendDispatcherTemplatePath)
+
+	assert.Empty(t, gitlabEffectiveWorkflowProblemForEnv(root, wrapper, admitting, fullsendAgentTemplatePath, env, "agent child (source=pipeline)"))
+}
+
+// The poll, dispatcher, and agent jobs are exempt by name from the
+// unrelated-work scans, so a poll job that disables default inheritance does
+// not protect a dispatcher or agent job that inherits: the poll template's
+// global execution defaults still defer activation.
+func TestCheckGitLabTriggerDispatchGate_PollTemplateGlobalsReachOtherManagedJobs(t *testing.T) {
+	const globals = "default:\n  after_script:\n    - echo cleanup\n\n"
+	mutatePoll := func(e *trigEnv) {
+		key := trigOwner + "/" + trigRepo + "/" + fullsendPollTemplatePath
+		committed := string(e.state.FileContents[key])
+		const header = "# fullsend-stage: poll\n\n"
+		require.Contains(t, committed, header)
+		committed = strings.Replace(committed, header, header+globals, 1)
+		const jobStage = "  stage: poll\n"
+		require.Contains(t, committed, jobStage)
+		e.state.FileContents[key] = []byte(strings.Replace(committed, jobStage, jobStage+"  inherit:\n    default: false\n", 1))
+	}
+	disableInherit := func(e *trigEnv, path, stage string) {
+		key := trigOwner + "/" + trigRepo + "/" + path
+		committed := string(e.state.FileContents[key])
+		require.Contains(t, committed, stage)
+		e.state.FileContents[key] = []byte(strings.Replace(committed, stage, stage+"  inherit:\n    default: false\n", 1))
+	}
+
+	t.Run("dispatcher inherits", func(t *testing.T) {
+		e := readyTriggerDispatchEnv(t)
+		mutatePoll(e)
+
+		gate := e.dispatchGate()
+		assert.False(t, gate.Ready)
+		assert.Contains(t, strings.Join(gate.Deferred, "\n"), "defines global default:after_script")
+	})
+	t.Run("every other managed job disables inheritance", func(t *testing.T) {
+		e := readyTriggerDispatchEnv(t)
+		mutatePoll(e)
+		disableInherit(e, fullsendDispatcherTemplatePath, "  stage: dispatch\n")
+		disableInherit(e, fullsendAgentTemplatePath, "  stage: agent\n")
+
+		gate := e.dispatchGate()
+		assert.NotContains(t, strings.Join(gate.Deferred, "\n"), "defines global default:after_script")
 	})
 }

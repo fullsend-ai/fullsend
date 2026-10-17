@@ -281,6 +281,14 @@ func pollGlobalExecProblem(content []byte, file string) string {
 	return globalExecProblem(content, file, "poll job", "a scheduled pipeline (source=schedule) as the trigger-only account", fullsendPollTemplatePath)
 }
 
+// managedGlobalExecProblem is globalExecProblem for the managed Fullsend jobs
+// that inherit defaults (the dispatcher or agent job) when the poll job has
+// disabled inheritance: global execution config in the poll template would
+// still reach them wherever a scheduled pipeline also admits them.
+func managedGlobalExecProblem(content []byte, file, pipelineKind string) string {
+	return globalExecProblem(content, file, "managed Fullsend jobs", pipelineKind, "the dispatcher, agent and poll templates")
+}
+
 func globalExecProblem(content []byte, file, inheritorLabel, pipelineKind, inheritFile string) string {
 	docs, err := decodeGitLabDocuments(content)
 	if err != nil || len(docs) == 0 || docs[len(docs)-1].Kind != yaml.DocumentNode || len(docs[len(docs)-1].Content) == 0 {
@@ -621,8 +629,16 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 		if problem := triggerPollExecProblem(pollContent, pollFile); problem != "" {
 			return problem, nil
 		}
+		// The poll job disabling default inheritance does not protect the other
+		// managed jobs: the dispatcher and agent jobs are exempt by name from
+		// the scans above, so a scheduled pipeline that also admits one of them
+		// would run it with the poll template's global defaults.
 		if checkPollInherited {
 			if problem := pollGlobalExecProblem(pollContent, pollFile); problem != "" {
+				return problem, nil
+			}
+		} else if checkInherited {
+			if problem := managedGlobalExecProblem(pollContent, pollFile, "a scheduled pipeline (source=schedule) as the trigger-only account"); problem != "" {
 				return problem, nil
 			}
 		}

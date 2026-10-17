@@ -1358,20 +1358,22 @@ func gitlabRootCIDispatcherProblem(rootCI []byte, defaultBranch string) string {
 // unparseable files). The returned text completes "…on the default branch
 // admits …" like workflowAdmissionProblem, or is "" when admitted.
 func gitlabEffectiveWorkflowProblem(rootCI, wrapper, template []byte, defaultBranch string) string {
-	return gitlabEffectiveWorkflowProblemForEnv(rootCI, wrapper, template, triggerPipelineEnv(defaultBranch), "trigger")
+	return gitlabEffectiveWorkflowProblemForEnv(rootCI, wrapper, template, fullsendDispatcherTemplatePath, triggerPipelineEnv(defaultBranch), "trigger")
 }
 
 // gitlabEffectiveWorkflowProblemForEnv is gitlabEffectiveWorkflowProblem for
 // the pipeline described by env; source names its pipeline source in the
-// diagnostics.
-func gitlabEffectiveWorkflowProblemForEnv(rootCI, wrapper, template []byte, env map[string]*string, source string) string {
+// diagnostics. template is the committed template the wrapper includes for
+// that pipeline (the dispatcher template for trigger pipelines, the agent
+// template for agent child pipelines) and templateFile its path.
+func gitlabEffectiveWorkflowProblemForEnv(rootCI, wrapper, template []byte, templateFile string, env map[string]*string, source string) string {
 	for _, f := range []struct {
 		content []byte
 		file    string
 	}{
 		{rootCI, ".gitlab-ci.yml"},
 		{wrapper, fullsendPipelineInclude},
-		{template, fullsendDispatcherTemplatePath},
+		{template, templateFile},
 	} {
 		docs, err := decodeGitLabDocuments(f.content)
 		if err != nil || len(docs) == 0 || docs[len(docs)-1].Kind != yaml.DocumentNode || len(docs[len(docs)-1].Content) == 0 {

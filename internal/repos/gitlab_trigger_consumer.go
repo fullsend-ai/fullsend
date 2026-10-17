@@ -31,7 +31,7 @@ func gitlabAgentChildEnv(defaultBranch string) map[string]*string {
 func gitlabDispatchConsumerProblem(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) string {
 	const repair = "; merge the scaffold repair first"
 	files := map[string][]byte{}
-	for _, path := range []string{".gitlab-ci.yml", fullsendPipelineInclude, fullsendDispatcherTemplatePath, fullsendAgentTemplatePath} {
+	for _, path := range []string{".gitlab-ci.yml", fullsendPipelineInclude, fullsendAgentTemplatePath} {
 		content, err := client.GetFileContent(ctx, owner, repo, path)
 		switch {
 		case forge.IsNotFound(err):
@@ -42,7 +42,7 @@ func gitlabDispatchConsumerProblem(ctx context.Context, client forge.Client, own
 		files[path] = content
 	}
 	env := gitlabAgentChildEnv(defaultBranch)
-	if problem := gitlabEffectiveWorkflowProblemForEnv(files[".gitlab-ci.yml"], files[fullsendPipelineInclude], files[fullsendDispatcherTemplatePath], env, "agent child (source=pipeline)"); problem != "" {
+	if problem := gitlabEffectiveWorkflowProblemForEnv(files[".gitlab-ci.yml"], files[fullsendPipelineInclude], files[fullsendAgentTemplatePath], fullsendAgentTemplatePath, env, "agent child (source=pipeline)"); problem != "" {
 		return "the committed root workflow rules do not admit agent child pipelines: " + problem + repair
 	}
 	if !gitlabIncludeAdmits(files[".gitlab-ci.yml"], isFullsendPipelineInclude, env) {
@@ -115,20 +115,48 @@ func gitlabIncludeAdmits(content []byte, names func(*yaml.Node) bool, env map[st
 }
 
 // gitlabAgentJobAdmits reports whether the agent job in the committed agent
-// template runs in the pipeline described by env: it has no only/except or
-// other admission the scan cannot model, and its rules: admit that pipeline.
+// template runs automatically in the pipeline described by env: it has no
+// only/except or other admission the scan cannot model, its rules: admit that
+// pipeline, and the effective when (the matching rule's own, else the
+// job-level one) starts the job without a person or an earlier failure. A
+// job that is admitted only as a manual or on_failure job stays blocked or
+// skipped, so dispatched agents would never run.
 func gitlabAgentJobAdmits(template []byte, env map[string]*string) bool {
 	job, ok := gitlabJobNode(template, fullsendAgentJobName)
 	if !ok || jobHasUnevaluableAdmission(job) {
 		return false
 	}
+	effectiveWhen := ""
+	if when, ok := effectiveMappingValue(job, "when"); !ok {
+		return false
+	} else if when != nil {
+		w, lit := isLiteralScalarValue(when)
+		if !lit {
+			return false
+		}
+		effectiveWhen = w
+	}
 	rules, ok := effectiveMappingValue(job, "rules")
 	if !ok {
 		return false
 	}
-	if rules == nil {
+	if rules != nil {
+		outcome, idx := evaluateRules(rules, env)
+		if outcome != ruleAdmitted {
+			return false
+		}
+		matched := resolveAlias(resolveAlias(rules).Content[idx-1])
+		if when := findMappingValue(matched, "when"); when != nil {
+			w, lit := isLiteralScalarValue(when)
+			if !lit {
+				return false
+			}
+			effectiveWhen = w
+		}
+	}
+	switch effectiveWhen {
+	case "", "on_success", "always", "delayed":
 		return true
 	}
-	outcome, _ := evaluateRules(rules, env)
-	return outcome == ruleAdmitted
+	return false
 }
