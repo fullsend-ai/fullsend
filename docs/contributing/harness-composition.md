@@ -157,3 +157,8 @@ matching `_test.go` file.
   generalizes forge-specific config with CEL expressions
 - Issue #5579: Harness field integration pipeline (complementary
   checklist covering the broader field addition workflow)
+- [Last-writer-wins AgentEntries resolution](go-code.md#last-writer-wins-agententries-resolution):
+  Caller-side guidance for comparing or diffing `AgentEntries()` after
+  the keyed merge by `DerivedName()` described in the checklist above —
+  reuse `IsAgentExplicitlyDisabled` / `AgentSettingsFor` rather than
+  scanning raw entries
