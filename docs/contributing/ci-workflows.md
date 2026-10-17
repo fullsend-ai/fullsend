@@ -237,13 +237,11 @@ Redaction covers:
 
 **Residual limitations:** content scanning cannot catch every encoding or obfuscation of a secret in a text-classified file (base64, hex, split tokens). Same-job PR-head code could theoretically race the upload step after redaction; isolating redaction in a separate job would narrow that window further.
 
-## Scaffold-sync dispatch recursion
+## Scaffold sync
 
-`notify-scaffold-sync` fires on every `push` to `main`. Its job generates a GitHub App installation token for `fullsend-ai-sync[bot]` and dispatches `fullsend-updated` to `fullsend-ai/.fullsend`, which runs `sync-scaffold` to converge per-repo variables and scaffold files.
+Per-repo scaffold convergence for the fullsend-ai organization (shim workflow, prioritize caller, managed `.fullsend/config.yaml`, variables and secrets) is driven from the `sync-scaffold` workflow in `fullsend-ai/.fullsend`, which runs `fullsend repos install -f repos.yaml` against that repository's manifest. This repository's release workflow calls `notify-scaffold-sync` after a final release is published, and that job dispatches `fullsend-updated` to it. The call sits in `release.yml` rather than on a `release: published` trigger because GoReleaser publishes with `GITHUB_TOKEN`, and events created with that token start no workflow runs, so a release trigger would never fire (the same reason Build Site is rerun by hand after a final). The receiver also runs weekly and by hand (dry run by default), builds the CLI from this repository's `main`, and delivers changes as one pull request per drifted repository on the `fullsend/scaffold-install` branch. It does not push to `main` and needs no ruleset bypass.
 
-Because the sync App authenticates with an App installation token (not `GITHUB_TOKEN`), GitHub's workflow-suppression rule does not apply — a sync commit pushed to `main` re-triggers `notify-scaffold-sync`, which dispatches again. Each scaffold-touching merge therefore costs ≥2 dispatch rounds: the first sync converges files, the second re-enters and converges any state that depends on the first sync's output. The chain terminates when a sync round produces no diff.
-
-This recursion is by design but interacts with the convergence non-idempotence tracked in #6553. See also [Bot Identities § App-token push recursion](bot-identities.md#app-token-push-recursion) for the observed dispatch chain and the security-relevant distinction between the coder token (no `workflows` permission) and the sync App (has `workflows` permission plus `bypass_mode: always` on the `main` ruleset).
+Until 2026-10-16 the dispatch fired on every push to `main` and the receiver pushed with `--direct --force`. Because the sync App authenticated with an installation token rather than `GITHUB_TOKEN`, each sync commit to `main` re-triggered the dispatch, so every scaffold-touching merge cost at least two sync rounds (see [Bot Identities § App-token push recursion](bot-identities.md#app-token-push-recursion)). Moving the dispatch to final releases and the delivery to pull requests removed both.
 
 ## Additional conventions
 

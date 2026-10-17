@@ -1,7 +1,14 @@
-# Notify the .fullsend repo to run sync-scaffold, which reconciles
-# per-repo variables across all fullsend-ai per-repo installs whenever
-# fullsend main is updated. Scaffold file convergence requires
-# fullsend_ref to be set in repos.yaml (tracked separately).
+# Notify the .fullsend repo to run sync-scaffold, which converges the
+# fullsend-ai per-repo installs (shims, managed config, variables) after
+# a final fullsend release is published. The receiver delivers pull
+# requests. Scaffold file convergence requires fullsend_ref to be set in
+# repos.yaml (tracked separately).
+#
+# This workflow is called from release.yml (job notify-scaffold-sync)
+# rather than triggered by `release: published`: GoReleaser publishes
+# the release with GITHUB_TOKEN, and events created with that token
+# start no workflow runs, so a release trigger here would never fire.
+# workflow_dispatch remains for manual re-dispatch.
 #
 # Required setup:
 #   1. Set repository variable SYNC_CLIENT_ID to the fullsend-ai-sync App client ID.
@@ -14,21 +21,24 @@
 name: Notify Scaffold Sync
 
 on:
-  push:
-    branches: [main]
+  workflow_call:
+    secrets:
+      SYNC_PRIVATE_KEY:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: true
   workflow_dispatch: {}
-
-concurrency:
-  group: ${{ github.workflow }}
 
 permissions: {}
 
 jobs:
   notify:
-    if: github.repository == 'fullsend-ai/fullsend' && github.ref == 'refs/heads/main'
+    if: github.repository == 'fullsend-ai/fullsend'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
+    concurrency:
+      group: notify-scaffold-sync
     steps:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
