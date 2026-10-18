@@ -86,3 +86,16 @@ type EmptyMatrixWaiter interface {
 	// agent job ran, or no run settled before the wait budget elapsed.
 	WaitForHarnessEmptyMatrix(ctx context.Context, owner, repo string, after time.Time) (*forge.WorkflowRun, error)
 }
+
+// HarnessDispatchTracer is an optional extension of Driver for counting
+// harness dispatches while reporting polling progress. The
+// "dispatched exactly N times" step uses it to log which run is keeping
+// the count pending; a Driver without it is counted through
+// CountHarnessDispatches, without the progress lines. It is a separate
+// interface so that external Driver implementations keep compiling.
+type HarnessDispatchTracer interface {
+	// CountHarnessDispatchesWithTrace is like CountHarnessDispatches, but
+	// reports intermediate polling progress (pending runs, visible jobs)
+	// to trace when it is non-nil.
+	CountHarnessDispatchesWithTrace(ctx context.Context, owner, repo, agent string, after time.Time, trace func(string)) (int, error)
+}

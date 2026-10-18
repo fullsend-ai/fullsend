@@ -2286,6 +2286,21 @@ type settlingJobsClient struct {
 	afterJobs  []forge.WorkflowJob
 }
 
+type settlingWorkflowRunsClient struct {
+	*settlingJobsClient
+	listed bool
+}
+
+func (c *settlingWorkflowRunsClient) ListWorkflowRuns(_ context.Context, _, _, _ string) ([]forge.WorkflowRun, error) {
+	run := forge.WorkflowRun{ID: 10, Event: "pull_request_target", Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"}
+	if c.listed {
+		run.Status = "completed"
+		run.Conclusion = "success"
+	}
+	c.listed = true
+	return []forge.WorkflowRun{run}, nil
+}
+
 func (c *settlingJobsClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
 	if runID != c.settleRun {
 		return c.FakeClient.ListWorkflowRunJobs(ctx, owner, repo, runID)
@@ -2297,6 +2312,148 @@ func (c *settlingJobsClient) ListWorkflowRunJobs(ctx context.Context, owner, rep
 		return c.beforeJobs, nil
 	}
 	return c.afterJobs, nil
+}
+
+func TestCountHarnessDispatchesWithTrace_ReportsPendingRun(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"},
+		},
+	}
+	client := &settlingJobsClient{
+		FakeClient: fake,
+		settleRun:  10,
+		callsLeft:  1,
+		afterJobs:  []forge.WorkflowJob{{ID: 2, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "success"}},
+	}
+	d := newTestDriver(client)
+	var progress []string
+	count, err := d.CountHarnessDispatchesWithTrace(context.Background(), "org", "repo", "triage", after, func(message string) {
+		progress = append(progress, message)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	require.Len(t, progress, 2)
+	assert.Contains(t, progress[0], "count=0 pending=1 runs=[run=10 event=\"\" created_at=\"2026-01-02T00:00:00Z\" status=in_progress conclusion= agent_job=missing jobs=[]]")
+	assert.Contains(t, progress[1], "count=1 pending=0 runs=[]")
+}
+
+func TestCountHarnessDispatchesWithTrace_ReportsJobsAndSettledRun(t *testing.T) {
+	t.Parallel()
+
+	client := &settlingWorkflowRunsClient{settlingJobsClient: &settlingJobsClient{
+		FakeClient: forge.NewFakeClient(),
+		settleRun:  10,
+		callsLeft:  1,
+		beforeJobs: []forge.WorkflowJob{
+			{Name: "dispatch / Harness dispatch", Status: "in_progress"},
+			{Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
+		},
+		afterJobs: []forge.WorkflowJob{
+			{Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"},
+			{Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
+		},
+	}}
+	d := newTestDriver(client)
+	var progress []string
+	count, err := d.CountHarnessDispatchesWithTrace(context.Background(), "org", "repo", "fork-pr-sync", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), func(message string) {
+		progress = append(progress, message)
+	})
+	require.NoError(t, err)
+	assert.Zero(t, count)
+	require.Len(t, progress, 2)
+	assert.Contains(t, progress[0], `run=10 event="pull_request_target" created_at="2026-01-02T00:00:00Z" status=in_progress conclusion= agent_job=missing`)
+	assert.Contains(t, progress[0], `"dispatch / Harness dispatch":in_progress/`)
+	assert.Contains(t, progress[0], `"dispatch / Route":completed/success`)
+	assert.Contains(t, progress[1], `pending=0 runs=[run=10 event="pull_request_target" created_at="2026-01-02T00:00:00Z" status=completed conclusion=success agent_job=missing`)
+	assert.Contains(t, progress[1], `"dispatch / Harness dispatch":completed/success`)
+}
+
+func TestCountHarnessDispatches_EmptyMatrixDoesNotWaitForReview(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "completed", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "in_progress", CreatedAt: "2026-01-02T00:00:01Z"},
+		},
+	}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{Name: "dispatch / Harness run (fork-pr-sync)", Status: "completed", Conclusion: "success"}},
+		20: {
+			{Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"},
+			{Name: "dispatch / Harness run (${{ matrix.agent }})", Status: "completed", Conclusion: "skipped"},
+			{Name: "dispatch / Review", Status: "in_progress"},
+		},
+	}
+	d := newTestDriver(fake)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var progress []string
+	count, err := d.CountHarnessDispatchesWithTrace(ctx, "org", "repo", "fork-pr-sync", after, func(message string) {
+		progress = append(progress, message)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+	require.Len(t, progress, 1)
+	assert.Contains(t, progress[0], "count=1 pending=0")
+	assert.Contains(t, progress[0], "agent_job=missing matrix=empty")
+	assert.Contains(t, progress[0], `"dispatch / Review":in_progress/`)
+}
+
+func TestSettleHarnessDispatchCount_EmptyMatrixMustBeConfirmed(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		agent string
+		jobs  []forge.WorkflowJob
+	}{
+		{
+			name:  "dispatch still running",
+			agent: "fork-pr-sync",
+			jobs: []forge.WorkflowJob{
+				{Name: "dispatch / Harness dispatch", Status: "in_progress"},
+				{Name: "dispatch / Harness run (${{ matrix.agent }})", Status: "completed", Conclusion: "skipped"},
+			},
+		},
+		{
+			name:  "placeholder cancelled",
+			agent: "fork-pr-sync",
+			jobs: []forge.WorkflowJob{
+				{Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"},
+				{Name: "dispatch / Harness run (${{ matrix.agent }})", Status: "completed", Conclusion: "cancelled"},
+			},
+		},
+		{
+			name:  "built-in stage not yet visible",
+			agent: "triage",
+			jobs: []forge.WorkflowJob{
+				{Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"},
+				{Name: "dispatch / Harness run (${{ matrix.agent }})", Status: "completed", Conclusion: "skipped"},
+				{Name: "dispatch / Route", Status: "in_progress"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := forge.NewFakeClient()
+			fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+				"org/repo/fullsend.yaml": {{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"}},
+			}
+			fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{10: tc.jobs}
+			d := newTestDriver(fake)
+			count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", tc.agent, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+			require.NoError(t, err)
+			assert.Zero(t, count)
+			assert.Equal(t, 1, pending)
+		})
+	}
 }
 
 func TestCountHarnessDispatches_PendingDuplicateSettlesToCancelled(t *testing.T) {

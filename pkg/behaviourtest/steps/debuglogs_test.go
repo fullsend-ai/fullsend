@@ -174,6 +174,14 @@ type fakeHarnessWaitCI struct {
 	err error
 }
 
+type fakeHarnessWaitArtifactCI struct {
+	*fakeHarnessWaitCI
+}
+
+func (f *fakeHarnessWaitArtifactCI) DownloadNamedArtifactFromRun(context.Context, string, string, int, string, string) error {
+	return nil
+}
+
 func (f *fakeHarnessWaitCI) WaitForHarnessAgent(context.Context, string, string, string, time.Time) (*forge.WorkflowRun, error) {
 	return f.run, f.err
 }
@@ -205,6 +213,29 @@ func TestThenHarnessWorkflowCompletes_SavesFailedRunLogs(t *testing.T) {
 	data, readErr := os.ReadFile(filepath.Join(artifactDir, "debug-pi-smoke-run-77", "workflow-logs.txt"))
 	require.NoError(t, readErr, "the failed run's logs must be saved")
 	assert.Equal(t, "=== pi-smoke failed run ===", string(data))
+}
+
+func TestThenHarnessWorkflowCompletes_LogsPhaseTimings(t *testing.T) {
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", t.TempDir())
+	var logs []string
+	w := &world.World{
+		Org:           "org",
+		RepoName:      "repo",
+		ScenarioStart: time.Now(),
+		CI: &fakeHarnessWaitArtifactCI{fakeHarnessWaitCI: &fakeHarnessWaitCI{
+			fakeDebugCI: fakeDebugCI{logs: "workflow log"},
+			run:         &forge.WorkflowRun{ID: 77, Conclusion: "success"},
+		}},
+		Logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}
+	require.NoError(t, thenHarnessWorkflowCompletes(w, "triage"))
+	assert.Equal(t, 77, w.WorkflowRun.ID)
+	assert.NotEmpty(t, w.ArtifactDir)
+	assert.Contains(t, strings.Join(logs, "\n"), "phase=workflow")
+	assert.Contains(t, strings.Join(logs, "\n"), "phase=save-logs")
+	assert.Contains(t, strings.Join(logs, "\n"), "phase=download-artifact")
 }
 
 // TestThenHarnessWorkflowCompletes_TimeoutWithoutRun keeps the timeout

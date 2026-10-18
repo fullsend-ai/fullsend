@@ -25,6 +25,15 @@ type mockCIDriver struct {
 	waitForWorkflowFn          func(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error)
 }
 
+type tracedCountCIDriver struct {
+	*mockCIDriver
+}
+
+func (m *tracedCountCIDriver) CountHarnessDispatchesWithTrace(ctx context.Context, owner, repo, agent string, after time.Time, trace func(string)) (int, error) {
+	trace("elapsed=0s count=0 pending=1 runs=[run=10 status=in_progress agent_job=missing]")
+	return m.countFn(ctx, owner, repo, agent, after)
+}
+
 func (m *mockCIDriver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
 	return m.countFn(ctx, owner, repo, agent, after)
 }
@@ -83,6 +92,24 @@ func TestThenHarnessDispatchedExactly_SingleDispatch(t *testing.T) {
 		ScenarioStart: time.Now(),
 	}
 	require.NoError(t, thenHarnessDispatchedExactly(w, "triage", 1))
+}
+
+func TestThenHarnessDispatchedExactly_LogsPendingRun(t *testing.T) {
+	var logs []string
+	w := &world.World{
+		CI: &tracedCountCIDriver{mockCIDriver: &mockCIDriver{
+			countFn: func(_ context.Context, _, _, _ string, _ time.Time) (int, error) { return 1, nil },
+		}},
+		Org:           "test-org",
+		RepoName:      "test-repo",
+		ScenarioStart: time.Now(),
+		Logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}
+	require.NoError(t, thenHarnessDispatchedExactly(w, "triage", 1))
+	assert.Contains(t, logs[0], "run=10 status=in_progress agent_job=missing")
+	assert.Contains(t, logs[1], "phase=count elapsed=")
 }
 
 func TestThenHarnessDispatchedExactly_MultipleDispatches(t *testing.T) {

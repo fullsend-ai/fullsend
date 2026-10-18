@@ -375,17 +375,37 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
 	ctx := context.Background()
+	started := time.Now()
 	run, err := w.CI.WaitForHarnessAgent(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
+	runID := 0
+	if run != nil {
+		runID = run.ID
+	}
+	logRedacted(w, "[dispatch-timing] agent=%q phase=workflow elapsed=%s run=%d outcome=%s", agent, time.Since(started).Round(time.Millisecond), runID, timingOutcome(err))
 	if err != nil {
 		// A failed harness run is the one whose logs matter most, and the
 		// pool repository (with its run logs) is deleted when the lease
 		// ends, so save them before returning.
+		started = time.Now()
 		saveWorkflowRunLogs(ctx, w, agent, run)
+		logRedacted(w, "[dispatch-timing] agent=%q phase=save-logs elapsed=%s", agent, time.Since(started).Round(time.Millisecond))
 		return err
 	}
 	w.WorkflowRun = run
+	started = time.Now()
 	saveWorkflowRunLogs(ctx, w, agent, run)
-	return ensureHarnessArtifacts(w, agent)
+	logRedacted(w, "[dispatch-timing] agent=%q phase=save-logs elapsed=%s", agent, time.Since(started).Round(time.Millisecond))
+	started = time.Now()
+	err = ensureHarnessArtifacts(w, agent)
+	logRedacted(w, "[dispatch-timing] agent=%q phase=download-artifact elapsed=%s outcome=%s", agent, time.Since(started).Round(time.Millisecond), timingOutcome(err))
+	return err
+}
+
+func timingOutcome(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "success"
 }
 
 // defaultSettleDuration is the maximum time to wait for the dispatch

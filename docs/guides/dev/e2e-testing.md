@@ -61,8 +61,16 @@ gh workflow run e2e.yml --repo fullsend-ai/fullsend \
   --ref YOUR_BRANCH -f run_playback=true
 ```
 
-Manual runs use the dev org pool and run playback only. Normal CI runs both
-suites, concurrently in dev and serialized against the single stage org.
+To test the behaviour matrix on a selected branch before merging, enable
+**Run the behaviour suite on the selected branch** and disable playback:
+
+```bash
+gh workflow run e2e.yml --repo fullsend-ai/fullsend \
+  --ref YOUR_BRANCH -f run_behaviour=true -f run_playback=false
+```
+
+Manual runs use the dev org pool. Normal CI runs both suites, concurrently in
+dev and serialized against the single stage org.
 
 Optional environment variables:
 
@@ -75,8 +83,9 @@ Optional environment variables:
 
 Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
-Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
+Tests acquire an exclusive lock on an org from the pool (`halfsend-01` …
 `halfsend-12` for DEV, or `halfsend` for STAGE) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
+A DEV behaviour run (`RunSuite`) locks as many orgs as its provisioning demand requires; the playback suite and STAGE lock a single org. See [Pool orgs and the per-org scenario cap](behaviour-testing.md#pool-orgs-and-the-per-org-scenario-cap). In DEV CI the suite is split into a dynamic matrix of shard jobs, each with at most 20 provisioning scenarios and its own orgs, and the `behaviour` job aggregates them into one check. See [CI shards](behaviour-testing.md#ci-shards).
 
 Shared pool, CLI, and cleanup helpers used by the behaviour and playback suites live in `internal/e2etest/`.
 
@@ -95,17 +104,17 @@ Required repository secrets:
 | `E2E_GCP_WIF_PROVIDER` | GCP WIF provider (inference / auxiliary GCP access) |
 | `E2E_GCP_SERVICE_ACCOUNT` | GCP service account for WIF |
 | `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
-| `TEST_CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for CF mint behaviour-test deploys (mapped to env `CLOUDFLARE_ACCOUNT_ID` in the behaviour job) |
+| `TEST_CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for CF mint behaviour-test deploys (mapped to env `CLOUDFLARE_ACCOUNT_ID` in the `behaviour-shard` jobs) |
 | `TEST_CLOUDFLARE_API_TOKEN` | Test-only Cloudflare API token for Wrangler against Worker `mint-test` (DEV) and `stage-mint` (STAGE) (mapped to env `CLOUDFLARE_API_TOKEN`; distinct from site-deploy `CLOUDFLARE_*`) |
-| `TEST_ACTOR_WRITE_PAT` | Classic PAT for the write-level human-like test actor (`fstest-write`); exposed to the behaviour job under the same env name |
-| `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the behaviour job under the same env name |
-| `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the behaviour job under the same env name |
+| `TEST_ACTOR_WRITE_PAT` | Classic PAT for the write-level human-like test actor (`fstest-write`); exposed to the `behaviour-shard` jobs under the same env name |
+| `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the `behaviour-shard` jobs under the same env name |
+| `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the `behaviour-shard` jobs under the same env name |
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
 ### Behaviour job GitHub Environments
 
-The behaviour job in `e2e.yml` binds to GitHub Environments `dev` (authorized pull requests and the merge queue) and `stage` (push to `main`). It skips `workflow_dispatch` and other triggers. The job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). GitHub auto-creates those environments on first use.
+The behaviour shard jobs (`behaviour-shard`) in `e2e.yml` bind to GitHub Environments `dev` (authorized pull requests, the merge queue, and manual runs with `run_behaviour=true`) and `stage` (push to `main`). They skip other manual runs. Each job sets `ENVIRONMENT` to the same value for the suite (`dev` or `stage`). The `behaviour-plan` job, which sizes the matrix, and the aggregate `behaviour` check get no environment and no secrets. GitHub auto-creates those environments on first use.
 
 After the environments exist, restrict `stage` to `main`:
 
@@ -115,7 +124,7 @@ After the environments exist, restrict `stage` to `main`:
 
 ### Cloudflare Worker mint BT credentials
 
-The behaviour job wires `TEST_CLOUDFLARE_*` into Wrangler’s standard `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` env names so CF mint BT (#5109) can upload versions of Worker **`mint-test`**. These secrets must **not** reuse the production site-deploy `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` used by `site-deploy.yml` (Worker `site`).
+The `behaviour-shard` jobs wire `TEST_CLOUDFLARE_*` into Wrangler’s standard `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` env names so CF mint BT (#5109) can upload versions of Worker **`mint-test`**. These secrets must **not** reuse the production site-deploy `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` used by `site-deploy.yml` (Worker `site`).
 
 Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so runs use preview URLs (`<alias>-mint-test.<subdomain>.workers.dev`) rather than inventing new Worker names or relying on the production `mint-test.…workers.dev` route (which may stay disabled). Cloudflare Account API tokens cannot currently attach Workers Scripts permissions under a Specified-Workers-only policy; operators use a dedicated Workers Edit token (for example `fullsend-ai/fullsend-mint-test`) that is separate from site-deploy credentials and intended only for this test path.
 
@@ -486,8 +495,9 @@ three probes above.
 
 ### Change control
 
-The `behaviour` job of `e2e.yml` calls this gateway on every run, and the
-merge queue requires that job. A bad deploy, or a deploy in the middle of a
+The `behaviour-shard` jobs of `e2e.yml` call this gateway on every run, and
+the merge queue requires the aggregate `behaviour` check, which fails when
+any shard fails. A bad deploy, or a deploy in the middle of a
 run, fails the queue. `release.yml` does not call the gateway, but the
 script also waits for release runs, so nothing changes while a release is
 cut. So a run that changes the gateway goes through three checks. A run that
@@ -671,14 +681,16 @@ script changes no workflow files; the wiring is:
 
    `E2E_INFERENCE_GATEWAY_AUDIENCE` defaults to `fullsend-e2e-gateway` and
    needs setting only if it changes.
-2. `e2e.yml` passes both secrets in the env of the `behaviour` job's "Run
-   behaviour tests" step, next to the `E2E_GCP_*` secrets, and to the
+2. `e2e.yml` passes both secrets in the env of the `behaviour-shard` jobs'
+   "Run behaviour tests" step, next to the `E2E_GCP_*` secrets, and to the
    artifact redaction step. The gateway scenarios skip when these variables
    are unset. Pull requests that the
-   `gate` job does not authorize never run the `behaviour` job, so they
-   receive neither secret. Authorized pull requests, including forks, do
-   receive them, and the `behaviour` job runs the pull request's head code
-   with those secrets in its environment. Authorizing a pull request
+   `gate` job does not authorize never run the `behaviour-shard` jobs, so
+   they receive neither secret. Authorized pull requests, including forks,
+   do receive them, and the `behaviour-shard` jobs run the pull request's
+   head code with those secrets in their environment. The aggregate
+   `behaviour` check runs on every pull request, but it has no secrets and
+   runs no pull request code. Authorizing a pull request
    therefore lets its head code read both values, as it can already read
    the `E2E_GCP_*` secrets. The echo-only key scope limits what the key can
    call, not whether it can be read. To keep fork pull requests away from
@@ -686,7 +698,7 @@ script changes no workflow files; the wiring is:
 
 CI declares only the gateway capabilities that reach no real model. They
 are part of the `BEHAVIOUR_CAPABILITIES` default in the `Makefile`, which
-`make behaviour-test` and the `behaviour` job use:
+`make behaviour-test` and the `behaviour-shard` jobs use:
 
 | Capability | Scenarios | Declared in CI |
 |------------|-----------|----------------|
@@ -707,8 +719,9 @@ BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,ru
 ```
 
 To run them in CI, add them to the `BEHAVIOUR_CAPABILITIES` default in the
-`Makefile` on a pull request. The behaviour job reads the `Makefile` from
-the pull request.
+`Makefile` on a pull request. The `behaviour-plan` job checks out the
+pull request and reads its `Makefile`, and the `behaviour-shard` jobs run
+with the result.
 
 ### Removing it
 

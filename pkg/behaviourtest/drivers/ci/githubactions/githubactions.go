@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -68,6 +69,8 @@ const (
 	// avoiding false positives from unrelated workflow failures.
 	harnessWorkflowFile = "fullsend.yaml"
 )
+
+var _ ci.HarnessDispatchTracer = (*Driver)(nil)
 
 // Driver implements ci.Driver against GitHub Actions.
 type Driver struct {
@@ -1000,6 +1003,23 @@ func harnessMatrixExpanded(jobs []forge.WorkflowJob) bool {
 	return false
 }
 
+// harnessMatrixConfirmedEmpty requires both the successful producer and the
+// skipped empty-matrix placeholder. A still-running built-in stage can keep
+// the workflow run open after this decision is final for custom harnesses.
+func harnessMatrixConfirmedEmpty(jobs []forge.WorkflowJob) bool {
+	dispatchSucceeded := false
+	placeholderSkipped := false
+	for _, job := range jobs {
+		switch {
+		case strings.HasSuffix(job.Name, harnessDispatchJobSuffix):
+			dispatchSucceeded = job.Status == "completed" && job.Conclusion == "success"
+		case strings.HasSuffix(job.Name, harnessJobPlaceholder):
+			placeholderSkipped = job.Status == "completed" && job.Conclusion == "skipped"
+		}
+	}
+	return dispatchSucceeded && placeholderSkipped
+}
+
 // harnessMatrixUnresolved reports whether the harness dispatch decision is
 // still in progress. An unrelated expanded matrix is not sufficient evidence
 // that the requested built-in stage has been scheduled: the Route job can
@@ -1538,11 +1558,31 @@ func (d *Driver) failedHarnessPollOnce(ctx context.Context, remaining time.Durat
 // classified by its final conclusion instead of being counted while its
 // cancellation is still in progress.
 func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
+	return d.CountHarnessDispatchesWithTrace(ctx, owner, repo, agent, after, nil)
+}
+
+// CountHarnessDispatchesWithTrace implements ci.HarnessDispatchTracer. It
+// counts like CountHarnessDispatches and also reports which run is keeping an
+// exact-count assertion pending, including its trigger event and visible
+// jobs. It uses the same API responses as the count and accepts nil when logs
+// are unwanted.
+func (d *Driver) CountHarnessDispatchesWithTrace(ctx context.Context, owner, repo, agent string, after time.Time, trace func(string)) (int, error) {
 	deadline := time.Now().Add(dispatchWait)
+	started := time.Now()
+	lastProgress := time.Time{}
+	lastDetails := ""
 	for {
-		count, pending, err := d.settleHarnessDispatchCount(ctx, owner, repo, agent, after)
+		count, pending, details, err := d.settleHarnessDispatchCountWithDetails(ctx, owner, repo, agent, after)
 		if err != nil {
 			return 0, err
+		}
+		if trace != nil {
+			progress := strings.Join(details, "; ")
+			if progress != lastDetails || lastProgress.IsZero() || time.Since(lastProgress) >= 30*time.Second || pending == 0 {
+				trace(fmt.Sprintf("elapsed=%s count=%d pending=%d runs=[%s]", time.Since(started).Round(time.Second), count, pending, progress))
+				lastProgress = time.Now()
+				lastDetails = progress
+			}
 		}
 		if pending == 0 {
 			return count, nil
@@ -1577,9 +1617,14 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 // harnessRoundPollOnce's guard; cancelled static jobs added #7996 review;
 // success/failure built-in matches added #7996 review, second pass).
 func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, agent string, after time.Time) (count, pending int, err error) {
+	count, pending, _, err = d.settleHarnessDispatchCountWithDetails(ctx, owner, repo, agent, after)
+	return count, pending, err
+}
+
+func (d *Driver) settleHarnessDispatchCountWithDetails(ctx context.Context, owner, repo, agent string, after time.Time) (count, pending int, details []string, err error) {
 	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 	for _, r := range allRuns {
 		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
@@ -1588,24 +1633,46 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 		}
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, nil, err
 		}
 		hasJob, job := matchAgentJob(jobs, agent)
 		switch {
 		case hasJob && job.Status != "completed":
 			pending++
+			details = append(details, dispatchRunDiagnostic(r, jobs, job.Status))
 		case hasJob && r.Status != "completed" && harnessMatrixUnresolved(jobs) && (isWeakJobMatch(job) || isBuiltinRoleMatch(job, agent)):
 			pending++
+			details = append(details, dispatchRunDiagnostic(r, jobs, job.Status+" matrix=unresolved"))
 		case hasJob && !isConcurrencySuperseded(job.Conclusion):
 			count++
+		case !hasJob && builtinRoleJobName(agent) == "" && harnessMatrixConfirmedEmpty(jobs):
+			// The completed empty matrix rules out a future custom agent job.
+			// An unrelated built-in stage may keep this run in progress.
+			details = append(details, dispatchRunDiagnostic(r, jobs, "missing matrix=empty"))
 		case !hasJob && r.Status != "completed":
 			// The agent's matrix job does not exist until the Route
 			// job finishes expanding the matrix, so an executing run
 			// cannot be classified yet.
 			pending++
+			details = append(details, dispatchRunDiagnostic(r, jobs, "missing"))
+		case !hasJob:
+			// Keep the terminal snapshot in the trace so a deleted test
+			// repository does not erase why this run stopped being pending.
+			details = append(details, dispatchRunDiagnostic(r, jobs, "missing"))
 		}
 	}
-	return count, pending, nil
+	sort.Strings(details)
+	return count, pending, details, nil
+}
+
+func dispatchRunDiagnostic(run forge.WorkflowRun, jobs []forge.WorkflowJob, agentJob string) string {
+	states := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		states = append(states, fmt.Sprintf("%q:%s/%s", job.Name, job.Status, job.Conclusion))
+	}
+	sort.Strings(states)
+	return fmt.Sprintf("run=%d event=%q created_at=%q status=%s conclusion=%s agent_job=%s jobs=[%s]",
+		run.ID, run.Event, run.CreatedAt, run.Status, run.Conclusion, agentJob, strings.Join(states, "; "))
 }
 
 // WaitForHarnessEmptyMatrix implements ci.EmptyMatrixWaiter. It waits

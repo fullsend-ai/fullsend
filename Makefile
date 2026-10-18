@@ -2,7 +2,7 @@
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        mindmap go-build go-test go-fmt go-vet go-tidy \
        lint-md-links script-test test \
-       behaviour-test playback-test \
+       behaviour-test behaviour-plan playback-test \
        wasm-build wasm-stage mint-cf-worker-test
 
 # Let Go automatically download the toolchain version required by go.mod.
@@ -28,6 +28,7 @@ help:
 	@echo "  script-test          - Run shell script tests (topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, gateway doc configs, artifact redaction, kill_stray_processes)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
+	@echo "  behaviour-plan       - Plan behaviour CI shards (no credentials; writes BEHAVIOUR_SHARD_PLAN_FILE)"
 	@echo "  playback-test        - Run @playback behaviour scenarios on the dummy-playback runtime (CI: OIDC mint)"
 	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
 	@echo "  wasm-stage           - Build and stage WASM + wasm_exec.js into CF Worker source tree"
@@ -244,6 +245,15 @@ BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
 behaviour-test:
 	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/
+
+# Shard plan for the DEV CI matrix (e2e/behaviour/shard_plan_test.go ->
+# behaviourtest.WriteSuiteShardPlan). Built with -tags behaviourplan only, so
+# it compiles neither suite and needs no credentials. It reads the same
+# GODOG_TAGS, BEHAVIOUR_* and ENVIRONMENT as behaviour-test, so each matrix
+# job (BEHAVIOUR_SHARD_INDEX / BEHAVIOUR_SHARD_TOTAL) recomputes the same
+# plan; set BEHAVIOUR_SHARD_PLAN_FILE to write the plan as JSON.
+behaviour-plan:
+	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -tags behaviourplan -v -count=1 -run '^TestBehaviourShardPlan$$' ./e2e/behaviour/
 
 # Dummy-playback behaviour suite (e2e/behaviour/playback_suite_test.go ->
 # behaviourtest.RunPlaybackSuite). Built with -tags playback only, never

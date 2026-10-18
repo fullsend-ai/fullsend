@@ -197,7 +197,7 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 
 ### Gate job mitigation
 
-The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code:
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour (`behaviour-plan`, `behaviour-shard`) and playback jobs check out PR-head code. `behaviour-plan` also checks out and runs PR-head code (`make behaviour-plan`) to size the shard matrix, so it carries the same `needs: gate` condition, but it gets no secrets, no GitHub Environment and no `id-token`:
 
 - **Trusted authors** — org members and repo collaborators are auto-authorized.
 - **External contributors** — require a maintainer with write access to apply the `ok-to-test` label after reviewing the PR diff; the gate checks the labeler's permission. The gate removes stale labels when new commits land.
@@ -221,7 +221,7 @@ When a PR adds or modifies secret references in a `pull_request_target` job, rev
 
 ### Behaviour debug artifact redaction
 
-The behaviour job in `e2e.yml` uploads debug artifacts after every relevant run, whether the tests succeed or fail. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
+Each behaviour shard job (`behaviour-shard`) in `e2e.yml` uploads debug artifacts after every relevant run, whether the tests succeed or fail, under a per-shard name (`behaviour-artifacts-<pr-or-run-id>-shard-<n>`) so the matrix jobs' uploads do not collide. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
 
 Before upload, the workflow checks out `scripts/redact-behaviour-artifacts.sh` from the **base branch** (`github.sha` on `pull_request_target`; the merge-group head on `merge_group`) into a separate `base-scripts/` path. PR-head code cannot modify the checked-in script contents. The redaction step runs via `env -i` with a pinned `PATH` so earlier job steps cannot poison the interpreter search path or dynamic-linker hooks.
 

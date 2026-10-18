@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
 
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -25,7 +27,17 @@ func thenHarnessDispatchedExactly(w *world.World, agent string, expected int) er
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
 	ctx := context.Background()
-	actual, err := w.CI.CountHarnessDispatches(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
+	started := time.Now()
+	var actual int
+	var err error
+	if traced, ok := w.CI.(ci.HarnessDispatchTracer); ok {
+		actual, err = traced.CountHarnessDispatchesWithTrace(ctx, w.Org, w.RepoName, agent, w.ScenarioStart, func(progress string) {
+			logRedacted(w, "[dispatch-count] agent=%q %s", agent, progress)
+		})
+	} else {
+		actual, err = w.CI.CountHarnessDispatches(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
+	}
+	logRedacted(w, "[dispatch-timing] agent=%q phase=count elapsed=%s outcome=%s", agent, time.Since(started).Round(time.Millisecond), timingOutcome(err))
 	if err != nil {
 		return fmt.Errorf("counting harness dispatches: %w", err)
 	}
