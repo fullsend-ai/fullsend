@@ -2081,9 +2081,10 @@ func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
 	// Base-composed skills use raw.githubusercontent.com URLs ending in
 	// /SKILL.md (see fetchBaseSkill). resolveFromLock must strip the marker
 	// file to derive the skill directory name — otherwise every skill is
-	// materialized under a directory literally named "SKILL.md", which
-	// becomes the sandbox upload basename and collides across skills. Two
-	// skills reproduce the collision the fix exists to prevent.
+	// materialized under a directory literally named "SKILL.md", the
+	// identity fallback and the bootstrap log label, which collides for
+	// skills whose SKILL.md declares no valid name. Two skills reproduce
+	// the collision the fix exists to prevent.
 	putSkill := func(t *testing.T, root, slug string) lock.DependencyEntry {
 		t.Helper()
 		skillMD := []byte("---\nname: " + slug + "\n---\n")
@@ -2126,7 +2127,7 @@ func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
 	assert.Equal(t, "pr-review", filepath.Base(h.Skills[0].Source),
 		"skill basename must be derived from the URL directory, not the SKILL.md marker file")
 	assert.Equal(t, "code-review", filepath.Base(h.Skills[1].Source),
-		"skills must keep distinct basenames — identical ones collide on sandbox upload")
+		"skills must keep distinct basenames — the basename is the identity fallback when SKILL.md declares no valid name")
 	for _, s := range h.Skills {
 		assert.False(t, harness.IsURL(s.Source))
 		assert.FileExists(t, filepath.Join(s.Source, "SKILL.md"))

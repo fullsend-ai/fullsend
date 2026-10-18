@@ -15,6 +15,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -476,7 +477,9 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 	}
 
 	existing := findMarkedTrackerComment(comments, cfg.Marker, self)
-	markedBody := cfg.Marker + "\n" + body
+	// Escape marker syntax in the agent-written body before the runner's
+	// own marker is prepended, so the runner's marker is the only live one.
+	markedBody := cfg.Marker + "\n" + statuscomment.NeutralizeMarkers(body)
 
 	if existing != nil {
 		printer.StepStart("Found existing comment, updating in-place")

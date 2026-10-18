@@ -26,7 +26,7 @@ func TestEnsureGitLabWebhookFastPath_InstanceVariableOverride(t *testing.T) {
 		assert.Equal(t, "deferred", res.Action)
 		assert.Empty(t, c.CreatedTriggerTokens)
 		assert.Empty(t, c.CreatedProjectHooks)
-		assert.Contains(t, strings.Join(res.Details, "\n"), "predefined instance variable override: CI_PIPELINE_SOURCE")
+		assert.Contains(t, strings.Join(res.Details, "\n"), "instance variable override: CI_PIPELINE_SOURCE")
 	})
 
 	t.Run("existing fast path is revoked", func(t *testing.T) {
@@ -237,7 +237,7 @@ func TestEnsureGitLabWebhookFastPath_UnreadableInheritedScopes(t *testing.T) {
 
 		assert.Equal(t, "deferred", res.Action)
 		assert.Empty(t, c.CreatedTriggerTokens)
-		assert.Contains(t, strings.Join(res.Details, "\n"), "predefined group variable override: CI_PIPELINE_SOURCE")
+		assert.Contains(t, strings.Join(res.Details, "\n"), "group variable override: CI_PIPELINE_SOURCE")
 	})
 
 	t.Run("readable instance override revokes when groups are unreadable", func(t *testing.T) {
@@ -251,7 +251,7 @@ func TestEnsureGitLabWebhookFastPath_UnreadableInheritedScopes(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Equal(t, "update", res.Action)
-		assert.Contains(t, strings.Join(res.Details, "\n"), "predefined instance variable override: CI_COMMIT_REF_PROTECTED")
+		assert.Contains(t, strings.Join(res.Details, "\n"), "instance variable override: CI_COMMIT_REF_PROTECTED")
 		assert.Empty(t, c.triggers())
 		assert.Empty(t, c.hooks())
 	})
@@ -266,7 +266,7 @@ func TestEnsureGitLabWebhookFastPath_UnreadableInheritedScopes(t *testing.T) {
 		problem, err := gitlabInheritedVariableOverrideProblem(context.Background(), c, webhookTestOwner, "sub/"+webhookTestRepo, triggerPipelineEnv("main"))
 
 		require.NoError(t, err)
-		assert.Equal(t, "webhook fast-path deferred: predefined group variable override: CI_COMMIT_REF_PROTECTED", problem)
+		assert.Equal(t, "webhook fast-path deferred: group variable override: CI_COMMIT_REF_PROTECTED", problem)
 	})
 
 	t.Run("unreadable nested group is skipped", func(t *testing.T) {

@@ -124,11 +124,23 @@ to a backend like MLflow, Jaeger, Grafana Tempo, etc.
 ## Capture conversation content
 
 Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` to add the agent's
-text, reasoning, tool calls, and tool results — when the runtime's stream
-provides them; Claude runs do — to each `agent` span, in the
+text, reasoning, tool calls, and their arguments and results — when the
+runtime's stream provides them; Claude runs do — to each `agent` span, in the
 local file and
-at the endpoint. Content is redacted for secrets and bounded per iteration,
-but may still contain proprietary code or PII — make sure your backend's
+at the endpoint. A retry that carries validation feedback also records the
+prompt the runner composed. Content is redacted for secrets and bounded per iteration;
+a string that held a terminal colour or title code or tag characters, as most
+coloured CLI output does, or that was not valid UTF-8 or held the replacement character (U+FFFD), is recorded as `***` whole, and so is a retry
+prompt the runner sanitized, or cut at its size bound while it held compatibility
+characters or a URL with userinfo, a query or a fragment; feedback cut otherwise is still recorded. Content may still contain proprietary code or PII:
+tool arguments carry the commands an agent ran and the paths and patterns it used.
+A `Write`, `Edit` or `NotebookEdit` body, an `Agent` or `WebFetch` prompt and the
+input of MCP tools are not recorded as arguments, though a tool's result can quote
+what it wrote and a call's summary keeps the first 120 characters of its input;
+a `Bash` command is recorded whole (up to 8 KiB) and can embed the file content
+it writes. A URL in the record has its userinfo, query and fragment masked, as
+written in a command, text or JSON; the developer guide's tracing page lists the
+forms it does not read. Make sure your backend's
 access controls fit before enabling it.
 
 ```bash

@@ -17,8 +17,8 @@ fullsend run <agent-name> [flags]
 | Flag | Description |
 |------|-------------|
 | `--fullsend-dir` | Path to the `.fullsend` configuration directory (default `.fullsend`; when omitted and `.fullsend` does not exist in the current directory, the command stops and names the flag) |
-| `--runtime` | Override the agent runtime from `config.yaml` for this run (`claude`, `pi`, `codex`, `dummy` or `dummy-playback`); also `FULLSEND_RUNTIME` |
-| `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi and codex — codex takes OpenAI ids and `gateway/<model>` only); also `FULLSEND_MODEL` |
+| `--runtime` | Override the agent runtime from `config.yaml` for this run (`claude`, `pi`, `codex`, `opencode`, `dummy` or `dummy-playback`); also `FULLSEND_RUNTIME` |
+| `--model` | Override the harness/agent model for this run (alias, model id, or `provider/id` on pi, codex, and opencode — codex takes OpenAI ids and `gateway/<model>` only); also `FULLSEND_MODEL` |
 | `--effort` | Override the harness effort level for this run (`low`…`max`); also `FULLSEND_EFFORT` |
 | `--output-dir` | Base directory for run output (default: `/tmp/fullsend`) |
 | `--target-repo` | Path to the target repository |
@@ -125,7 +125,7 @@ depend on the process cwd.
 
 | Field | Description |
 |-------|-------------|
-| `runtime` | Runtime that executed the run (e.g. `claude`, `pi`, `codex`) |
+| `runtime` | Runtime that executed the run (e.g. `claude`, `pi`, `codex`, `opencode`) |
 | `model` | Model the provider reported using |
 | `requested_runtime` | Runtime selected for the run (config file, or a `--runtime`/`FULLSEND_RUNTIME` override) |
 | `requested_model` | Model the harness/agent requested |
@@ -179,7 +179,7 @@ Each agent iteration gets the harness's `timeout_minutes` (30 when it sets none)
 is spent the runner ends the iteration and sweeps the processes the agent left running in the
 sandbox, best effort. Before every iteration the runner rewrites `.fullsend/iteration.env` (sourced
 last by the sandbox `.env`) with the budget, the kill time, and this iteration's W3C trace context,
-on every runtime (claude, pi, codex):
+on every runtime (claude, pi, codex, opencode):
 
 | Variable | Value |
 |---|---|
@@ -413,7 +413,10 @@ and refresh. The runner exports the gateway URL (the origin plus its path prefix
 `--model`, and skips the Vertex credential checks. The credential reaches Claude Code through an
 `apiKeyHelper` that re-reads the re-seeded token file in the `oidc` mode, or as an
 `ANTHROPIC_AUTH_TOKEN` placeholder in the `api-key` mode. Both are sent as `Authorization: Bearer`,
-as on pi. The per-host egress profile is a Claude Code rendering that admits only
+as on pi. An `api-key` block that sets `messages_auth_header: x-api-key`
+([ADR 0142](../ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md)) instead gets an
+`ANTHROPIC_API_KEY` placeholder, sent as `x-api-key` only, and pi `anthropic-messages` models send
+`x-api-key` too. The per-host egress profile is a Claude Code rendering that admits only
 `POST <prefix>/v1/messages` and `POST <prefix>/v1/messages/count_tokens` (`<prefix>` is empty for a
 bare origin). Claude Code has no plugin-carried
 setup, so a `gateway/` model without a block that applies (no block, or an `oidc` block on a run
@@ -429,11 +432,18 @@ See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md
 ## GitHub Packages credentials
 
 On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's workflow token) to
-`GH_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted App token. Provider
+`GH_WORKFLOW_TOKEN` before replacing `GH_TOKEN` with the minted App token. When `GH_TOKEN` is
+unset or empty it copies the pre-mint `GITHUB_TOKEN` instead. Provider
 credentials may expand `${GH_WORKFLOW_TOKEN}`; every other harness `${}` site refuses it, and
 pre/post/validation child environments never receive it. Outside Actions the variable is not
-derived from a local PAT — a caller may set it explicitly. `GH_TOKEN` / `PUSH_TOKEN` still receive
-the minted App identity.
+derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB_TOKEN` and
+`PUSH_TOKEN` still receive the minted App identity.
+
+Every mint sets both `GH_TOKEN` and `GITHUB_TOKEN` to the minted token, even when the caller
+workflow did not export `GITHUB_TOKEN`. When the mint is cleaned up, each one goes back to the value
+it held before that mint, or is unset if it was unset. A caller workflow that exports
+`GITHUB_TOKEN` for its own pre- or post-script therefore gets the minted App token in that
+variable, not the job token.
 
 Host-side scripts (pre/post and validation) also no longer inherit `JIRA_TOKEN`,
 `JIRA_USER_EMAIL`, or the OTLP collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
@@ -443,6 +453,18 @@ receives one only when the harness declares it under `env.runner`; see
 
 Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 [Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).
+
+## Runner secrets
+
+`fullsend run` reads a JSON object of name → value for host-side scripts
+([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md)) from one of two variables:
+
+| Runner environment | Effect |
+|---|---|
+| `FULLSEND_GITHUB_RUNNER_SECRETS_FILE` | Path to a file holding the object. The composite action writes the `FULLSEND_GITHUB_RUNNER_SECRETS` secret to a mode 0600 file and passes only this path. `fullsend run` deletes the file as soon as it has read it, even when the content is invalid, so for a local run point it at a copy. An empty value means no bundle. |
+| `FULLSEND_GITHUB_RUNNER_SECRETS` | The object inline. Use it for local runs only: in CI the value would stay readable in `/proc/<pid>/environ` for the life of the process. |
+
+Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process. Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
 
 ## Related
 

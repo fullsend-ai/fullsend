@@ -57,6 +57,13 @@ func CommitFilesViaPR(ctx context.Context, client forge.Client, printer *ui.Prin
 		owner, repo, defaultBranch, branch, commitMsg, prTitle, prBody, files)
 }
 
+// signedCommitsRequiredHint explains a required_signatures rejection; only
+// the unsigned Git Data path (vendored installs, non-regular modes) or a
+// GHES without web commit signing reaches it.
+const signedCommitsRequiredHint = "the repository requires signed commits and this commit is not signed " +
+	"(vendored installs and files with non-regular modes use the unsigned Git Data API, so install without vendoring; " +
+	"GitHub Enterprise Server must have web commit signing enabled)"
+
 // knownScaffoldBranches lists all branch names that have been used to deliver
 // scaffold files across different install modes. The removed per-org mode
 // used "fullsend/onboard" (via reconcile-repos.sh), kept here so stale
@@ -338,6 +345,10 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 
 	branchCommitted, commitErr := client.CommitFilesToBranch(ctx, targetOwner, targetRepo, scaffoldBranch, commitMsg, files)
 	if commitErr != nil {
+		if forge.IsSignedCommitsRequired(commitErr) {
+			printer.StepFail("Repository rules require signed commits — scaffold commit rejected")
+			return false, fmt.Errorf("scaffold branch %q: %s: %w", scaffoldBranch, signedCommitsRequiredHint, commitErr)
+		}
 		if forge.IsBranchProtected(commitErr) {
 			printer.StepFail("Scaffold branch is also protected — cannot commit")
 			return false, fmt.Errorf("scaffold branch %q is protected; configure branch protection to allow pushes to scaffold branches: %w", scaffoldBranch, commitErr)
@@ -462,6 +473,10 @@ func commitViaPR(ctx context.Context, client forge.Client, printer *ui.Printer,
 
 	branchCommitted, commitErr := client.CommitFilesToBranch(ctx, owner, repo, branch, commitMsg, files)
 	if commitErr != nil {
+		if forge.IsSignedCommitsRequired(commitErr) {
+			printer.StepFail("Repository rules require signed commits — commit rejected")
+			return false, fmt.Errorf("branch %q: %s: %w", branch, signedCommitsRequiredHint, commitErr)
+		}
 		if forge.IsBranchProtected(commitErr) {
 			printer.StepFail("Feature branch is protected — cannot commit")
 			return false, fmt.Errorf("branch %q is protected; configure branch protection to allow pushes: %w", branch, commitErr)
@@ -638,6 +653,11 @@ func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.
 	if err != nil && forge.IsNonFastForward(err) {
 		printer.StepWarn("Concurrent modification race — retrying")
 		committed, err = client.CommitFiles(ctx, owner, repo, commitMsg, files)
+	}
+	if err != nil && forge.IsSignedCommitsRequired(err) {
+		// No PR fallback: its head would be unsigned too, which blocks the merge.
+		printer.StepFail("Repository rules require signed commits — commit rejected")
+		return false, fmt.Errorf("branch %q: %s: %w", defaultBranch, signedCommitsRequiredHint, err)
 	}
 	if err != nil && forge.IsBranchProtected(err) {
 		printer.StepWarn("Default branch is protected — creating scaffold PR instead")

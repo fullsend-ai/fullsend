@@ -227,10 +227,17 @@ func TestBootstrap_AgentNameMatch(t *testing.T) {
 
 func TestBuildRunCommand_Basic(t *testing.T) {
 	cmd := testRunCommand("hello-world", "", "/sandbox/workspace/repo", nil, "")
-	assert.Contains(t, cmd, "cd /sandbox/workspace/repo")
+	assert.Contains(t, cmd, "cd '/sandbox/workspace/repo' && ")
 	assert.Contains(t, cmd, "--agent 'hello-world'")
 	assert.NotContains(t, cmd, "--model")
 	assert.NotContains(t, cmd, "--plugin-dir")
+}
+
+// TestBuildRunCommand_QuotesRepoDir checks the launch quotes RepoDir with
+// shellQuote, the same as the Codex and pi runtimes (#8530).
+func TestBuildRunCommand_QuotesRepoDir(t *testing.T) {
+	cmd := testRunCommand("hello-world", "", "/sandbox/workspace/it's a repo; touch x", nil, "")
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/it'\''s a repo; touch x' && `), cmd)
 }
 
 func TestBuildRunCommand_WithModel(t *testing.T) {
@@ -736,65 +743,11 @@ func TestClaudeRuntime_ExtractTranscripts_OpenshellNotInPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "finding transcripts")
 }
 
-func TestResolveSkillDisplayName(t *testing.T) {
-	tests := []struct {
-		name     string
-		dirName  string
-		skillMD  string // empty means no SKILL.md
-		expected string
-	}{
-		{
-			name:     "frontmatter name overrides directory name",
-			dirName:  "tree",
-			skillMD:  "---\nname: architecture\n---\n# Architecture skill",
-			expected: "architecture",
-		},
-		{
-			name:     "falls back to filepath.Base when no SKILL.md",
-			dirName:  "my-skill",
-			skillMD:  "",
-			expected: "my-skill",
-		},
-		{
-			name:     "falls back when frontmatter has no name field",
-			dirName:  "tree",
-			skillMD:  "---\ndescription: some skill\n---\n# Content",
-			expected: "tree",
-		},
-		{
-			name:     "falls back when SKILL.md has no frontmatter",
-			dirName:  "tree",
-			skillMD:  "# Just a heading\nNo frontmatter here.",
-			expected: "tree",
-		},
-		{
-			name:     "local skill with matching directory name",
-			dirName:  "public-research",
-			skillMD:  "---\nname: public-research\n---\n# Public Research",
-			expected: "public-research",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), tc.dirName)
-			require.NoError(t, os.MkdirAll(dir, 0o755))
-			if tc.skillMD != "" {
-				require.NoError(t, os.WriteFile(
-					filepath.Join(dir, "SKILL.md"),
-					[]byte(tc.skillMD), 0o644))
-			}
-
-			got := resolveSkillDisplayName(dir)
-			assert.Equal(t, tc.expected, got)
-		})
-	}
-}
-
 // fakeOpenshellBootstrap installs a fake "openshell" on PATH (ahead of the
 // real "tar", which is left reachable via the pre-existing PATH) that logs
-// every invocation's full argv to logPath and, on "sandbox upload <name>
-// <local> <remote>" where <local> is a tarball, copies it to sentinelPath.
+// every invocation's full argv to logPath and, on "sandbox upload
+// --no-git-ignore <name> <local> <remote>" where <local> is a tarball,
+// copies it to sentinelPath.
 // Bootstrap uploads several other regular files (the agent definition,
 // plugin marketplace config) in the same run, so the copy is restricted to
 // *.tar.gz uploads — otherwise a later, unrelated file upload would
@@ -809,8 +762,17 @@ func fakeOpenshellBootstrap(t *testing.T, logPath, sentinelPath string) {
 	script := "#!/bin/sh\n" +
 		"echo \"$@\" >> '" + logPath + "'\n" +
 		"if [ \"$2\" = \"upload\" ]; then\n" +
-		"  case \"$4\" in\n" +
-		"    *.tar.gz) cp \"$4\" '" + sentinelPath + "' ;;\n" +
+		"  case \"$5\" in\n" +
+		"    *.tar.gz) cp \"$5\" '" + sentinelPath + "' ;;\n" +
+		"  esac\n" +
+		"fi\n" +
+		// The probes Bootstrap makes for the Claude hook interpreter.
+		"if [ \"$2\" = \"exec\" ]; then\n" +
+		"  for last; do :; done\n" +
+		"  case \"$last\" in\n" +
+		"    \"command -v python3\") echo /usr/bin/python3 ;;\n" +
+		"    *sys.version_info*) echo 3.12 ;;\n" +
+		"    *'\"$PATH\"'*) printf '%s' /usr/local/bin:/usr/bin:/bin ;;\n" +
 		"  esac\n" +
 		"fi\n" +
 		"exit 0\n"
@@ -908,6 +870,123 @@ func TestClaudeRuntime_Bootstrap_SkillRegularDir(t *testing.T) {
 	log, readErr := os.ReadFile(logPath)
 	require.NoError(t, readErr)
 	assert.Contains(t, string(log), sandbox.SandboxClaudeConfig+"/skills/my-skill")
+}
+
+// TestClaudeRuntime_Bootstrap_NestedForgeSkillsShareBasename is the #7830
+// runtime half: two skill dirs named "github" with distinct SKILL.md names
+// must both upload, each to skills/<declared-name>, not skills/github.
+func TestClaudeRuntime_Bootstrap_NestedForgeSkillsShareBasename(t *testing.T) {
+	root := t.TempDir()
+	labelsDir := filepath.Join(root, "issue-labels", "github")
+	reviewDir := filepath.Join(root, "pr-review", "github")
+	require.NoError(t, os.MkdirAll(labelsDir, 0o755))
+	require.NoError(t, os.MkdirAll(reviewDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(labelsDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# labels"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(reviewDir, "SKILL.md"),
+		[]byte("---\nname: pr-review-github\n---\n# review"), 0o644))
+
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "uploaded.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent"), 0o644))
+
+	stderr := captureStderr(t, func() {
+		require.NoError(t, ClaudeRuntime{}.Bootstrap(bootstrapInput{
+			sandboxName: "test-sandbox",
+			agentPath:   agentFile,
+			agentName:   "review",
+			skillDirs:   []string{labelsDir, reviewDir},
+		}))
+	})
+
+	log, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	logStr := string(log)
+	assert.Contains(t, logStr, sandbox.SandboxClaudeConfig+"/skills/issue-labels")
+	assert.Contains(t, logStr, sandbox.SandboxClaudeConfig+"/skills/pr-review-github")
+	assert.NotContains(t, logStr, sandbox.SandboxClaudeConfig+"/skills/github")
+	// The operator is told where a skill landed when the name differs.
+	assert.Contains(t, stderr, `Skill "github": uploaded to sandbox as "issue-labels", its declared SKILL.md name`)
+	assert.Contains(t, stderr, `Skill "github": uploaded to sandbox as "pr-review-github", its declared SKILL.md name`)
+}
+
+func TestClaudeRuntime_Bootstrap_DuplicateDeclaredSkillName(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "one", "github")
+	b := filepath.Join(root, "two", "github")
+	require.NoError(t, os.MkdirAll(a, 0o755))
+	require.NoError(t, os.MkdirAll(b, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(a, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(b, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "uploaded.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "review",
+		skillDirs:   []string{a, b},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox name \"issue-labels\"")
+}
+
+func TestSkillDestNames_UsesDeclaredName(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "issue-labels", "github")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+
+	got := skillDestNames([]string{"", nested})
+	require.Len(t, got, 1)
+	assert.Equal(t, nameEntry{name: "issue-labels", path: nested}, got[0])
+}
+
+// TestClaudeRuntime_Bootstrap_DuplicateDeclaredSkillName_SameParent covers
+// the gap the #7830 fix left open: two skill directories that share both a
+// parent directory and a declared SKILL.md name (e.g. a "github" and a
+// "gitlab" forge variant nested under the same skill, both declaring the
+// same `name:`) synthesize into an identical joined path under the old
+// skillDestPaths rewrite and skip the collision check entirely, letting the
+// second upload silently overwrite the first. skillDestNames must catch this
+// by comparing the original directories, not a synthesized path.
+func TestClaudeRuntime_Bootstrap_DuplicateDeclaredSkillName_SameParent(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "issue-labels", "github")
+	b := filepath.Join(root, "issue-labels", "gitlab")
+	require.NoError(t, os.MkdirAll(a, 0o755))
+	require.NoError(t, os.MkdirAll(b, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(a, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(b, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "uploaded.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	agentFile := filepath.Join(t.TempDir(), "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("# agent"), 0o644))
+
+	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "test-sandbox",
+		agentPath:   agentFile,
+		agentName:   "review",
+		skillDirs:   []string{a, b},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox name \"issue-labels\"")
 }
 
 // TestClaudeRuntime_Bootstrap_PluginSymlink verifies that plugin uploads
@@ -1083,6 +1162,32 @@ func TestClaudeRuntimeSystem(t *testing.T) {
 	assert.Equal(t, "anthropic", ClaudeRuntime{}.System())
 }
 
+// claudeHooksStubScript is a stub openshell for installClaudeHooks: every call
+// succeeds, and the sandbox probes Bootstrap makes for the hook interpreter
+// answer like a sandbox image would. logPath, when set, records each call;
+// failOn, when set, is a case pattern over the whole argument list that makes
+// the call fail.
+func claudeHooksStubScript(logPath, failOn string) string {
+	script := "#!/bin/sh\n"
+	if logPath != "" {
+		script += "echo \"$@\" >> '" + logPath + "'\n"
+	}
+	if failOn != "" {
+		script += "case \"$*\" in " + failOn + ") exit 1 ;; esac\n"
+	}
+	script += `if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    "command -v python3") echo /usr/bin/python3 ;;
+    *sys.version_info*) echo 3.12 ;;
+    *'"$PATH"'*) printf '%s' /usr/local/bin:/usr/bin:/bin ;;
+  esac
+fi
+exit 0
+`
+	return script
+}
+
 // TestInstallClaudeHooks_HappyPath verifies that installClaudeHooks writes
 // hook scripts and the hooks.json wiring to the runner-owned config
 // directory. Uses a stub openshell so sandbox.Exec/Upload succeed without a
@@ -1090,8 +1195,7 @@ func TestClaudeRuntimeSystem(t *testing.T) {
 func TestInstallClaudeHooks_HappyPath(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "openshell.log")
 	stubDir := t.TempDir()
-	script := "#!/bin/sh\necho \"$@\" >> '" + logPath + "'\nexit 0\n"
-	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(claudeHooksStubScript(logPath, "")), 0o755))
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{} // default hooks (all enabled)
@@ -1104,13 +1208,47 @@ func TestInstallClaudeHooks_HappyPath(t *testing.T) {
 	assert.Contains(t, log, security.SandboxHooksSettings)
 }
 
+// TestInstallClaudeHooks_PinsInterpreter verifies the hooks.json Bootstrap
+// uploads names the absolute interpreter and the sandbox PATH it resolved.
+func TestInstallClaudeHooks_PinsInterpreter(t *testing.T) {
+	uploadDir := t.TempDir()
+	stubDir := t.TempDir()
+	script := claudeHooksStubScript("", "") // upload copies are inspected below
+	script = strings.Replace(script, `if [ "$2" = "exec" ]`, `if [ "$2" = "upload" ]; then case "$5" in */hooks.json) /bin/cp "$5" '`+uploadDir+`/hooks.json' ;; esac; fi
+if [ "$2" = "exec" ]`, 1)
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	require.NoError(t, installClaudeHooks("test-pin", security.SandboxHookConfig{}, nil))
+	got, err := os.ReadFile(filepath.Join(uploadDir, "hooks.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "PATH='/usr/local/bin:/usr/bin:/bin' '/usr/bin/python3' -E -s -B "+security.SandboxHooksDir+"/tirith_check.py")
+	assert.NotContains(t, string(got), `"python3 `)
+}
+
+// TestInstallClaudeHooks_FailsWithoutInterpreter: no resolvable python3 means
+// no hooks.json, rather than a bare `python3` the agent could shadow.
+func TestInstallClaudeHooks_FailsWithoutInterpreter(t *testing.T) {
+	const name = "claude-no-python"
+	t.Cleanup(func() { forgetClaudeHookDigests(name) })
+	stubDir := t.TempDir()
+	script := strings.Replace(claudeHooksStubScript("", ""), `"command -v python3") echo /usr/bin/python3 ;;`, `"command -v python3") exit 1 ;;`, 1)
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	err := installClaudeHooks(name, security.SandboxHookConfig{}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving python3")
+	_, ok := lookupClaudeHookDigests(name)
+	assert.False(t, ok)
+}
+
 // TestInstallClaudeHooks_SettingsUploadError verifies that installClaudeHooks
 // returns a descriptive error when the hooks.json wiring upload fails.
 func TestInstallClaudeHooks_SettingsUploadError(t *testing.T) {
 	stubDir := t.TempDir()
 	// Stub that succeeds for all operations except the hooks.json upload.
-	script := "#!/bin/sh\ncase \"$*\" in *hooks.json*) exit 1 ;; esac\nexit 0\n"
-	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(claudeHooksStubScript("", "*hooks.json*")), 0o755))
 	t.Setenv("PATH", stubDir)
 
 	hooks := security.SandboxHookConfig{}
@@ -1135,7 +1273,7 @@ func TestInstallClaudeHooks_OpenshellNotInPath(t *testing.T) {
 // a regular file makes it fail.
 func TestInstallClaudeHooks_TempFileError(t *testing.T) {
 	stubDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(claudeHooksStubScript("", "")), 0o755))
 	t.Setenv("PATH", stubDir)
 	notADir := filepath.Join(t.TempDir(), "file")
 	require.NoError(t, os.WriteFile(notADir, []byte("x"), 0o644))

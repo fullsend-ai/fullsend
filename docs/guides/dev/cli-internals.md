@@ -70,6 +70,7 @@ fullsend
 │   │   ├── --rotate-gitlab-roles            #   Force-rotate GitLab role credentials
 │   │   ├── --rotate-gitlab-role <name>      #   Rotate a specific GitLab role (repeatable)
 │   │   ├── --rotate-gitlab-trigger-token    #   Force-rotate the GitLab webhook fast-path trigger token
+│   │   ├── --rotate-gitlab-trigger-account  #   Replace the GitLab trigger-only account's key, push entry, and trigger token
 │   ├── uninstall    <repos...>              # Tear down fullsend from repos and remove from manifest
 │   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
@@ -91,7 +92,7 @@ fullsend
 │   │   ├── --role <name>                    #   Mint role: triage|review|coder|retro|prioritize
 │   │   ├── --on <preset>                    #   Trigger preset (command:/label:/issue-opened/pr-opened)
 │   │   ├── --trigger <cel>                  #   Raw CEL trigger (mutually exclusive with --on)
-│   │   ├── --runtime <claude|pi|codex>      #   Runtime in config.yaml; shapes Vertex vs OpenAI harness fields
+│   │   ├── --runtime <claude|pi|codex|opencode> #   Runtime in config.yaml; shapes Vertex vs OpenAI harness fields
 │   │   ├── --model <alias|id>               #   Model (opus default; OpenAI id or gateway/<model> for codex)
 │   │   ├── -f, --file <spec.yaml>           #   Read the agent definition from a spec file
 │   │   ├── --validation-loop                #   Add a schema validation_loop
@@ -101,7 +102,7 @@ fullsend
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
 │   ├── set          <name>                   # Set an agent's runtime, model or effort (per-repo)
-│   │   ├── --runtime <claude|pi>            #   Runtime for this agent
+│   │   ├── --runtime <claude|pi|codex|opencode> # Runtime for this agent
 │   │   ├── --model <alias|id|provider/id>   #   Model for this agent
 │   │   └── --effort <level>                 #   Effort level for this agent
 │   ├── update       <name> [sha]             # Re-pin URL agent or local harness base
@@ -380,7 +381,7 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
-Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `.fullsend/bin/fullsend` when `--vendor` is not set.
+Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `.fullsend/bin/fullsend` when `--vendor` is not set. `repos install` removes them for GitHub repositories whose `repos.yaml` settings resolve `vendor: false`. The read-only plan comes from `scaffold.FindStaleVendoredAssets` and `internal/repos/stale_vendored.go`, and install, dry run and `repos status` all use it. The deletions and any caller rewrites go into the scaffold commit. Ownership comes from the embedded `.defaults/` layout plus the explicit historical lists in `internal/scaffold/vendorhistory.go`, never from the manifest alone. On an established install with stale assets, `convergeEstablishedPhases` completes this planning before any variable or secret write and reuses the plan for the scaffold commit.
 
 ---
 

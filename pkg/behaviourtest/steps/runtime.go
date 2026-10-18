@@ -42,6 +42,9 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a claude agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
 	})
+	sc.Step(`^an opencode agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
+	})
 	sc.Step(`^the repository agents are configured with:$`, func(ctx context.Context, doc string) (context.Context, error) {
 		return ctx, givenRepositoryAgentSettings(world.FromContext(ctx), doc)
 	})

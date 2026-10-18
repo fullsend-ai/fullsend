@@ -527,6 +527,16 @@ func TestGitLabAgentBridgeRequiresExplicitNoExpand(t *testing.T) {
 			assert.False(t, gitlabAgentBridgesDispatchInputs([]byte(content)))
 		})
 	}
+	for name, replacement := range map[string]string{
+		"missing managed job variables":   "  bridge_variables:\n",
+		"ambiguous managed job variables": "  variables: {}\n  variables:\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			content := strings.Replace(string(agent), "  variables:\n", replacement, 1)
+			require.NotEqual(t, string(agent), content)
+			assert.False(t, gitlabAgentBridgesDispatchInputs([]byte(content)))
+		})
+	}
 
 	// Root STAGE compatibility remains permissive for scalar and extended forms.
 	var doc yaml.Node

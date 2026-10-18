@@ -32,3 +32,15 @@ func TestSecretRedactor_RuntimeSecrets(t *testing.T) {
 	assert.True(t, clean.Safe)
 	assert.Empty(t, clean.Sanitized)
 }
+
+// A shorter value that is a substring of a longer one, registered first,
+// must not leave part of the longer value visible.
+func TestSecretRedactor_RuntimeSecretsLongestFirst(t *testing.T) {
+	resetRuntimeSecrets()
+	t.Cleanup(resetRuntimeSecrets)
+	assert.True(t, RegisterRuntimeSecret("opaqueAA"))
+	assert.True(t, RegisterRuntimeSecret("opaqueAABBBBBBBB"))
+
+	res := NewSecretRedactor().Scan("token opaqueAABBBBBBBB and opaqueAA")
+	assert.Equal(t, "token *** and ***", res.Sanitized)
+}

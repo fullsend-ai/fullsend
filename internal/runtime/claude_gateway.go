@@ -43,6 +43,11 @@ import (
 //     Bearer. Both modes send the header ADR 0137 sets for the route (pi
 //     sends the same), so a gateway reads one header whatever the runtime
 //     or mode. ANTHROPIC_API_KEY (x-api-key) is cleared, never set.
+//   - api-key with messages_auth_header: x-api-key (ADR 0142): the
+//     placeholder goes into ANTHROPIC_API_KEY instead, which Claude Code
+//     sends as x-api-key, and ANTHROPIC_AUTH_TOKEN is cleared, so the
+//     credential travels in one header only (pi anthropic-messages models
+//     send the same).
 
 const (
 	// claudeGatewayHelperTTLMs is CLAUDE_CODE_API_KEY_HELPER_TTL_MS on an
@@ -107,13 +112,18 @@ type claudeGatewayRun struct {
 	baseURL string
 	// apiKey is the block's api-key mode; false is oidc.
 	apiKey bool
+	// xAPIKey is set on an api-key run whose block sets
+	// messages_auth_header: x-api-key: the placeholder is pinned as
+	// ANTHROPIC_API_KEY (sent as x-api-key) instead of ANTHROPIC_AUTH_TOKEN.
+	xAPIKey bool
 	// agentModel is the agent definition's frontmatter model, recorded at
 	// Bootstrap: Claude Code reads it itself when no --model is passed, so
 	// a gateway/ prefix there must become an explicit --model.
 	agentModel string
 	// placeholder is the api-key mode's placeholder, read from the sandbox
 	// at Bootstrap (claudeGatewayAPIKeyPlaceholder) and pinned as
-	// ANTHROPIC_AUTH_TOKEN in the --settings env. The key is not rotated,
+	// ANTHROPIC_AUTH_TOKEN, or ANTHROPIC_API_KEY when xAPIKey is set
+	// (credentialEnv), in the --settings env. The key is not rotated,
 	// so its generation does not change during the run; the launch checks
 	// that the sandbox still hands out this value.
 	placeholder string
@@ -121,6 +131,17 @@ type claudeGatewayRun struct {
 	// installClaudeHooks generated, passed inline with --settings: the
 	// runner-owned route must not depend on a file in the sandbox.
 	settings []byte
+}
+
+// credentialEnv returns the variable an api-key run hands the placeholder
+// to Claude Code in: ANTHROPIC_API_KEY (x-api-key) when the block sets
+// messages_auth_header: x-api-key, otherwise ANTHROPIC_AUTH_TOKEN
+// (Authorization: Bearer).
+func (gw *claudeGatewayRun) credentialEnv() string {
+	if gw.xAPIKey {
+		return "ANTHROPIC_API_KEY"
+	}
+	return "ANTHROPIC_AUTH_TOKEN"
 }
 
 var claudeGatewayRuns sync.Map // sandboxName -> *claudeGatewayRun
@@ -232,7 +253,12 @@ func (r ClaudeRuntime) PrepareGatewayRun(sandboxName string, run GatewayRun) err
 	if base == "" {
 		return fmt.Errorf("inference.gateway applies but has no base URL; refusing to start a %s/ run on Claude Code", piGatewayProvider)
 	}
-	claudeGatewayRuns.Store(sandboxName, &claudeGatewayRun{baseURL: base, apiKey: run.Block.IsAPIKey()})
+	apiKey := run.Block.IsAPIKey()
+	claudeGatewayRuns.Store(sandboxName, &claudeGatewayRun{
+		baseURL: base,
+		apiKey:  apiKey,
+		xAPIKey: apiKey && run.Block.MessagesUseXAPIKey(),
+	})
 	return nil
 }
 
@@ -276,9 +302,10 @@ func (r ClaudeRuntime) claudeGatewayHelper() string {
 //     it is "", which overrides a project helper (null would not), so no
 //     agent-chosen value is added as x-api-key.
 //
-// On an api-key run env also pins ANTHROPIC_AUTH_TOKEN to the placeholder
-// read at Bootstrap (claudeGatewayAPIKeyPlaceholder). It is only the
-// placeholder, so the settings file exposes nothing.
+// On an api-key run env also pins ANTHROPIC_AUTH_TOKEN (or ANTHROPIC_API_KEY
+// with messages_auth_header: x-api-key, gw.credentialEnv) to the placeholder
+// read at Bootstrap (claudeGatewayAPIKeyPlaceholder); the other one stays
+// "". It is only the placeholder, so the settings file exposes nothing.
 func (r ClaudeRuntime) claudeGatewaySettings(sandboxName string) map[string]any {
 	gw := claudeGatewayRunFor(sandboxName)
 	if gw == nil {
@@ -292,9 +319,10 @@ func (r ClaudeRuntime) claudeGatewaySettings(sandboxName string) map[string]any 
 	env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 	helper := ""
 	if gw.apiKey {
-		delete(env, "ANTHROPIC_AUTH_TOKEN")
+		credEnv := gw.credentialEnv()
+		delete(env, credEnv)
 		if gw.placeholder != "" {
-			env["ANTHROPIC_AUTH_TOKEN"] = gw.placeholder
+			env[credEnv] = gw.placeholder
 		}
 	} else {
 		env["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"] = strconv.Itoa(claudeGatewayHelperTTLMs)
@@ -350,7 +378,7 @@ func claudeGatewayPostEnv(gw *claudeGatewayRun) string {
 		"export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 	}
 	if gw.apiKey {
-		parts = append(parts, `export ANTHROPIC_AUTH_TOKEN="$`+claudeGatewayPlaceholderVar+`"`)
+		parts = append(parts, `export `+gw.credentialEnv()+`="$`+claudeGatewayPlaceholderVar+`"`)
 	} else {
 		parts = append(parts, "export CLAUDE_CODE_API_KEY_HELPER_TTL_MS="+strconv.Itoa(claudeGatewayHelperTTLMs))
 	}

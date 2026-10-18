@@ -55,6 +55,15 @@ which is a stronger check than the trust hash it replaces.
 > against the runner-held digests, and each script run gets only what is left of the 30 s handler
 > budget; a run with too little left is withheld rather than started and killed.
 
+> **Implementation note (October 2026):** Since #8259 Claude Code checks `hooks.json` and the
+> hook scripts before each launch (exit 97), so the script-integrity part of the residue described
+> below no longer applies to it. Bootstrap also resolves an absolute `python3` and the sandbox
+> `PATH` and renders them into `hooks.json` (covered by its digest) with `-E -s -B`, so the hook
+> interpreter and its `PATH` no longer come from the agent-writable `.env`. Claude Code does not use
+> `-I`, because its scripts import `hook_io` from their own directory. The check runs before launch:
+> a process still running in the sandbox, including one the iteration's `.env` starts in the
+> background, can change the files after it, as on codex.
+
 Because the hook scripts and their directory stay agent-writable between iterations — the residue
 Claude Code and pi also have — codex additionally **re-verifies every script against runner-held digests
 before each invocation** — digests the runner records outside the sandbox at Bootstrap and injects into the launch command at Run, here carried in the codex process's

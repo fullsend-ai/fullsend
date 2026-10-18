@@ -118,7 +118,12 @@ func planGatewayRoute(rc runConfig, backend runtime.Backend, sandboxName string,
 		return nil, err
 	}
 	plan := &gatewayRoutePlan{block: block, host: gu.Hostname}
-	plan.profile = gatewayProfile{host: plan.host, prefix: gu.Prefix, claude: name == "claude"}
+	plan.profile = gatewayProfile{
+		host:            plan.host,
+		prefix:          gu.Prefix,
+		claude:          name == "claude",
+		messagesXAPIKey: name == "claude" && block.IsAPIKey() && block.MessagesUseXAPIKey(),
+	}
 	gr, ok := backend.Runtime.(runtime.GatewayRouteRuntime)
 	if !ok {
 		return plan, nil

@@ -79,6 +79,20 @@ func TestSetup_FileExporter(t *testing.T) {
 	assert.Equal(t, "test-span", td.ResourceSpans[0].ScopeSpans[0].Spans[0].Name)
 }
 
+// TestSetup_TelemetryFileIsPrivate pins the record's mode: under the
+// content gate it holds prompts and tool arguments, like the feedback
+// audit file the runner keeps at 0600.
+func TestSetup_TelemetryFileIsPrivate(t *testing.T) {
+	pinOTELEnv(t)
+	dir := t.TempDir()
+	_, cleanup := Setup(dir, "1.0.0-test")
+	cleanup(context.Background())
+
+	info, err := os.Stat(filepath.Join(dir, TelemetryFile))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
 // TestSetup_SpanAttributeValueLengthLimit pins the provider-level bound on
 // attribute values: a free-text attribute (model name, skip reason) cannot
 // ride an export at arbitrary size.

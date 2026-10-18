@@ -330,3 +330,81 @@ func TestRevokeProtectedBranchPushDeployKeyEntry_Errors(t *testing.T) {
 	})
 	assert.Error(t, failing.RevokeProtectedBranchPushDeployKeyEntry(context.Background(), "myorg", "myrepo", "main", 5, 12))
 }
+
+func TestHasExactProtectedBranchRule(t *testing.T) {
+	client, mux := setupTest(t)
+	mainCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		mainCalled = true
+		writeJSON(t, w, http.StatusOK, map[string]any{"name": "main"})
+	})
+	devCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/dev", func(w http.ResponseWriter, r *http.Request) {
+		devCalled = true
+		w.WriteHeader(http.StatusNotFound)
+	})
+	brokenCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/broken", func(w http.ResponseWriter, r *http.Request) {
+		brokenCalled = true
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	ok, err := client.HasExactProtectedBranchRule(context.Background(), "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.True(t, mainCalled, "the main handler must have been invoked")
+	ok, err = client.HasExactProtectedBranchRule(context.Background(), "myorg", "myrepo", "dev")
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.True(t, devCalled, "the dev handler must have been invoked")
+	_, err = client.HasExactProtectedBranchRule(context.Background(), "myorg", "myrepo", "broken")
+	assert.Error(t, err)
+	assert.True(t, brokenCalled, "the broken handler must have been invoked")
+	_, err = client.HasExactProtectedBranchRule(context.Background(), "myorg", "myrepo", "release/*")
+	assert.ErrorContains(t, err, "wildcard")
+}
+
+func TestProtectedBranchPushDeployKeyEntryID(t *testing.T) {
+	client, mux := setupTest(t)
+	mainCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		mainCalled = true
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "main",
+			"push_access_levels": []map[string]any{
+				{"id": 1, "access_level": 40},
+				{"id": 7, "access_level": 40, "deploy_key_id": 12},
+			},
+		})
+	})
+	devCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/dev", func(w http.ResponseWriter, r *http.Request) {
+		devCalled = true
+		w.WriteHeader(http.StatusNotFound)
+	})
+	brokenCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/broken", func(w http.ResponseWriter, r *http.Request) {
+		brokenCalled = true
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	ctx := context.Background()
+	id, err := client.ProtectedBranchPushDeployKeyEntryID(ctx, "myorg", "myrepo", "main", 12)
+	require.NoError(t, err)
+	assert.Equal(t, 7, id)
+	assert.True(t, mainCalled, "the main handler must have been invoked")
+	id, err = client.ProtectedBranchPushDeployKeyEntryID(ctx, "myorg", "myrepo", "main", 13)
+	require.NoError(t, err)
+	assert.Zero(t, id)
+	id, err = client.ProtectedBranchPushDeployKeyEntryID(ctx, "myorg", "myrepo", "dev", 12)
+	require.NoError(t, err)
+	assert.Zero(t, id)
+	assert.True(t, devCalled, "the dev handler must have been invoked")
+	_, err = client.ProtectedBranchPushDeployKeyEntryID(ctx, "myorg", "myrepo", "broken", 12)
+	assert.Error(t, err)
+	assert.True(t, brokenCalled, "the broken handler must have been invoked")
+	_, err = client.ProtectedBranchPushDeployKeyEntryID(ctx, "myorg", "myrepo", "main", 0)
+	assert.Error(t, err)
+	_, err = client.ProtectedBranchPushDeployKeyEntryID(ctx, "myorg", "myrepo", "*", 12)
+	assert.ErrorContains(t, err, "wildcard")
+}

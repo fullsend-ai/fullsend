@@ -200,9 +200,12 @@ reads the key from a file. You mount that file from Secret Manager in [step 6](#
 
 A repository that sets `auth: api-key`
 ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)) sends a key you issue
-instead of an OIDC token, in the same `Authorization: Bearer` header. Serve these repositories only
-if you must: a key is a long-lived secret, and a leaked key works until you revoke it. Prefer
-OIDC wherever it is possible.
+instead of an OIDC token, in the same `Authorization: Bearer` header. (A repository can instead
+send its key as `x-api-key` on `/v1/messages` with `messages_auth_header: x-api-key`; that needs a
+gateway that reads the header, see
+[Header custody for an x-api-key gateway](#header-custody-for-an-x-api-key-gateway).) Serve these
+repositories only if you must: a key is a long-lived secret, and a leaked key works until you
+revoke it. Prefer OIDC wherever it is possible.
 
 > **Not executed here:** this section has no live run, so no output is shown. Validate the config
 > as in [step 4](#4-validate-the-config-locally) before you deploy it. To repeat the
@@ -556,6 +559,38 @@ to the whole host, so the job's token never reaches another service behind the s
   port 443.
 - One gateway per repository still applies ([ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md)):
   a repository's `inference.gateway.url` names one host and prefix.
+
+## Header custody for an x-api-key gateway
+
+> **Not executed in this walkthrough:** the agentgateway setup above reads the caller's credential
+> from `Authorization` and needs none of this. This section describes what fullsend expects of a
+> gateway that reads it from `x-api-key`; the configuration depends on the gateway and is not
+> shown.
+
+Some gateways read the caller's key on the Messages API (`/v1/messages`) from `x-api-key`, the
+header Anthropic documents for API keys on that API. A repository in the `api-key` mode can send
+its key there by setting `messages_auth_header: x-api-key` in its `inference.gateway` block
+([ADR 0142](../../ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md)). Then:
+
+- Claude Code, and pi models with `api: anthropic-messages`, send the key as `x-api-key` and set
+  no credential in `Authorization`.
+- pi `openai-responses` and `openai-completions` models, and codex, keep `Authorization: Bearer`
+  on `/v1/responses` and `/v1/chat/completions`.
+- The setting is refused with `auth: oidc`, and fullsend never tries one header and retries in the
+  other after a `401`.
+
+On such a gateway, `x-api-key` is first the caller's credential and then the header an Anthropic
+upstream reads for the provider key. The gateway must therefore:
+
+- authenticate the caller from `x-api-key`, then remove that header before the request goes
+  upstream;
+- set the upstream's `x-api-key` from its own provider key by **replacing** the header, never by
+  appending to it, so the caller's value cannot reach the upstream as a second header or as the
+  first of two;
+- still remove any caller `Authorization` header, on every path and toward every upstream;
+- pass the [step 9](#9-check-that-no-caller-credential-reaches-the-upstream) custody check with a
+  canary value in the caller's `x-api-key` on `/v1/messages`, and show that the upstream sees only
+  the gateway's own key.
 
 ## Change the config
 

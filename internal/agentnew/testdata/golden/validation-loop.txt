@@ -68,7 +68,7 @@ agent: agents/lint-docs.md
 description: Check docs changes for broken links
 role: triage
 slug: my-org-lint-docs
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:f8255971fec8a72a60adb20f501e55098f237e699dc829f0894647c0de2a19c2
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:bcf8cd84a37623d761d38f2a6f51d20283f8798b7d3eeb9c509a2503c074bd55
 policy: policies/base.yaml
 providers:
   - vertex-ai

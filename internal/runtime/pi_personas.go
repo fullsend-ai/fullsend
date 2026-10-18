@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/skill"
 )
 
 // piPersona is one discovered sub-agent persona: a file under
@@ -105,7 +106,7 @@ func discoverPersonas(skillDirs []string, agentName string) ([]piPersona, []piSk
 			}
 			continue
 		}
-		skillName := filepath.Base(skillDir)
+		skillName := skill.SandboxName(skillDir)
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 				continue

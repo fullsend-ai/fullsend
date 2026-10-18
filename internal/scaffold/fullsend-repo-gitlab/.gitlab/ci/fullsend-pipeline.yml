@@ -100,9 +100,10 @@ include:
   # Webhook dispatcher (ADR 0125, #7771). GitLab's native "use a webhook"
   # pipeline trigger starts a source=trigger pipeline; only this include
   # admits it, so a trigger pipeline runs the dispatcher alone and never
-  # the agent job below (api only) or the poller above (schedule only).
-  # The dispatcher reads the native TRIGGER_PAYLOAD file variable and
-  # launches agents through a separate signed-input API pipeline, so no
+  # the agent job below (api and pipeline only) or the poller above
+  # (schedule only). The dispatcher reads the native TRIGGER_PAYLOAD file
+  # variable and launches agents through a separate signed-input API or
+  # CI_JOB_TOKEN child pipeline (#8438), so no
   # inputs are forwarded into it. This is the distinct
   # fullsend-dispatcher.yml, not the retired fullsend-dispatch.yml.
   - local: '.gitlab/ci/fullsend-dispatcher.yml'
@@ -147,6 +148,13 @@ include:
       # available. Stage admission therefore belongs to fullsend-agent.yml's
       # job rules, after the root input has been forwarded.
       - if: $CI_PIPELINE_SOURCE == "api" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
+      # Child-pipeline dispatch (#8438): a poll or dispatcher job of the
+      # trigger-only account starts the agent pipeline with its
+      # CI_JOB_TOKEN through the pipeline trigger API, which GitLab
+      # records as source=pipeline. run-agent-job.sh admits it only when
+      # the pipeline's creator is that ready account and the dispatch
+      # fields carry a valid HMAC.
+      - if: $CI_PIPELINE_SOURCE == "pipeline" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i
 
 # Bridges the stage input into a real CI/CD variable so the include rule
 # above can reference it. GitLab's rules:if requires a CI/CD variable on

@@ -713,7 +713,10 @@ if ! grep -q 'secrets create' "${STATE}/gcloud.log"; then
   pass "describe error creates nothing"; else fail "describe error created a secret"; fi
 
 fresh_state
-if bash "${SETUP}" --help 2>/dev/null | grep -q '^Usage: hack/setup-e2e-inference-gateway.sh'; then
+# Capture first: the help text is over 4 KB, so piping it into grep -q races
+# SIGPIPE under pipefail (grep exits on the first match and kills the writer).
+help_out=$(bash "${SETUP}" --help 2>/dev/null)
+if grep -q '^Usage: hack/setup-e2e-inference-gateway.sh' <<< "${help_out}"; then
   pass "--help prints usage to stdout"; else fail "--help output"; fi
 
 fresh_state

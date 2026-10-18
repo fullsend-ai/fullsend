@@ -10,7 +10,7 @@ import (
 )
 
 func TestPipelineScheduleVariables(t *testing.T) {
-	for _, response := range []string{`{"id":7,"description":"fullsend slash poll","variables":[{"key":"FULLSEND_POLL_MODE","value":"slash"}]}`, `invalid`, `denied`, `{"id":7}`} {
+	for _, response := range []string{`{"id":7,"owner":{"id":42},"description":"fullsend slash poll","variables":[{"key":"FULLSEND_POLL_MODE","value":"slash"}]}`, `invalid`, `denied`, `{"id":7}`, `{"id":7,"owner":{"id":0},"variables":[]}`} {
 		t.Run(response, func(t *testing.T) {
 			client, mux := setupTest(t)
 			called := false
@@ -24,11 +24,12 @@ func TestPipelineScheduleVariables(t *testing.T) {
 			})
 			schedule, err := client.GetPipelineSchedule(context.Background(), "myorg", "myrepo", 7)
 			assert.True(t, called)
-			if response == "invalid" || response == "denied" || response == `{"id":7}` {
+			if response == "invalid" || response == "denied" || response == `{"id":7}` || response == `{"id":7,"owner":{"id":0},"variables":[]}` {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
+			assert.Equal(t, int64(42), schedule.OwnerID)
 			assert.Equal(t, "slash", schedule.Variables["FULLSEND_POLL_MODE"])
 		})
 	}

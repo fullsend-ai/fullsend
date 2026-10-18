@@ -1560,7 +1560,8 @@ func TestAttachContent_SetsContentAndMarkerAttrs(t *testing.T) {
 		OutputMessages: `[{"role":"assistant","parts":[{"type":"text","content":"hi"}]}]`,
 		DroppedBytes:   7,
 		Truncated:      true,
-		Findings:       []security.Finding{{Severity: "high"}},
+		Findings: []security.Finding{{Severity: "high"},
+			{Scanner: "unicode_normalizer", Name: "fullwidth"}, {Scanner: "unicode_normalizer", Name: "ansi_escape"}, {Scanner: "url", Name: "url_masked"}},
 	})
 	span.End()
 
@@ -1574,7 +1575,8 @@ func TestAttachContent_SetsContentAndMarkerAttrs(t *testing.T) {
 	assert.Contains(t, attrs[attribute.Key("gen_ai.output.messages")].AsString(), `"type":"text"`)
 	assert.Equal(t, int64(7), attrs[attribute.Key("fullsend.content.dropped_bytes")].AsInt64())
 	assert.True(t, attrs[attribute.Key("fullsend.content.truncated")].AsBool())
-	assert.Equal(t, int64(1), attrs[attribute.Key("fullsend.content.redactions")].AsInt64())
+	assert.Equal(t, int64(1), attrs[attribute.Key("fullsend.content.redactions")].AsInt64(), "only what matched a known secret")
+	assert.Equal(t, int64(3), attrs[attribute.Key("fullsend.content.sanitizations")].AsInt64(), "what was masked for its shape, apart")
 }
 
 func TestAttachContent_EmptyResultAddsNothing(t *testing.T) {
@@ -1655,10 +1657,10 @@ func TestIterationEventHandler_TeesToRendererAndCollector(t *testing.T) {
 
 func TestNewContentCollectorIfEnabled_FollowsGate(t *testing.T) {
 	t.Setenv(telemetry.ContentCaptureEnvVar, "")
-	assert.Nil(t, newContentCollectorIfEnabled(), "gate off => nil collector")
+	assert.Nil(t, newContentCollectorIfEnabled(nil), "gate off => nil collector")
 
 	t.Setenv(telemetry.ContentCaptureEnvVar, "true")
-	assert.NotNil(t, newContentCollectorIfEnabled(), "gate on => live collector")
+	assert.NotNil(t, newContentCollectorIfEnabled(nil), "gate on => live collector")
 }
 
 // TestContentCapture_EndToEndFileSink drives the REAL telemetry.Setup —
@@ -1678,12 +1680,16 @@ func TestContentCapture_EndToEndFileSink(t *testing.T) {
 	dir := t.TempDir()
 	tracer, cleanup := telemetry.Setup(dir, "test")
 
-	c := newContentCollectorIfEnabled()
+	c := newContentCollectorIfEnabled(nil)
 	require.NotNil(t, c)
 	big := strings.Repeat("all work and no play makes claude a dull agent. ", 400) // ~19KB > 8192
+	c.Handle(agentruntime.ToolUseEvent{ID: "toolu_01", Name: "Bash", Arguments: `{"command":"make lint"}`})
 	c.Handle(agentruntime.TextEvent{Text: big})
 
+	prompt, _ := buildFeedbackPrompt(strings.Repeat("the validator said no. ", 500)) // cut at 10 KiB > 8192
+
 	_, span := tracer.Start(context.Background(), "agent")
+	c.attachInput(span, prompt, false)
 	res := c.Result("stop")
 	attachContent(span, res)
 	span.End()
@@ -1693,9 +1699,18 @@ func TestContentCapture_EndToEndFileSink(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, raw)
 	content := string(raw)
+	require.Greater(t, len(prompt), telemetry.MaxSpanAttrValueLen)
+	promptJSON, err := json.Marshal(prompt)
+	require.NoError(t, err)
+	escapedInput, err := json.Marshal(`[{"role":"user","parts":[{"type":"text","content":` + string(promptJSON) + `}]}]`)
+	require.NoError(t, err)
+	require.Contains(t, content, "gen_ai.input.messages")
+	assert.Contains(t, content, string(escapedInput[1:len(escapedInput)-1]),
+		"the input record must appear byte-intact in the file sink")
 	require.Contains(t, content, "gen_ai.output.messages")
 	assert.Contains(t, content, "dull agent",
 		"content must reach the file sink")
+	assert.Contains(t, res.OutputMessages, `"arguments":{"command":"make lint"}`)
 	// The whole redacted content must survive — no SDK truncation at 8192.
 	var decoded []map[string]any
 	require.NoError(t, json.Unmarshal([]byte(res.OutputMessages), &decoded),
@@ -1722,17 +1737,26 @@ func TestContentCapture_GateOffProducesNoContent(t *testing.T) {
 	dir := t.TempDir()
 	tracer, cleanup := telemetry.Setup(dir, "test")
 
-	c := newContentCollectorIfEnabled()
+	c := newContentCollectorIfEnabled(nil)
 	require.Nil(t, c, "gate off must mean no collector")
 	c.Handle(agentruntime.TextEvent{Text: "would-be content"}) // nil-safe no-op
 
-	_, span := tracer.Start(context.Background(), "agent")
+	ctx, span := tracer.Start(context.Background(), "agent")
+	c.attachInput(span, "would-be prompt", false) // nil-safe no-op
+	handle := iterationEventHandler(func(agentruntime.AgentEvent) {}, c, newToolSpanTracker(tracer, ctx))
+	handle(agentruntime.ToolUseEvent{ID: "toolu_01", Name: "Bash", Arguments: `{"command":"would-be arguments"}`})
+	handle(agentruntime.ToolResultEvent{ID: "toolu_01", Result: "would-be result"})
 	attachContent(span, c.Result("stop"))
 	span.End()
 	cleanup(context.Background())
 
 	raw, err := os.ReadFile(filepath.Join(dir, telemetry.TelemetryFile))
 	require.NoError(t, err)
+	assert.Contains(t, string(raw), "execute_tool Bash", "the tool span is metadata")
+	assert.NotContains(t, string(raw), "would-be arguments")
+	assert.NotContains(t, string(raw), "would-be result")
+	assert.NotContains(t, string(raw), "gen_ai.input.messages")
+	assert.NotContains(t, string(raw), "would-be prompt")
 	assert.NotContains(t, string(raw), "gen_ai.output.messages")
 	assert.NotContains(t, string(raw), "would-be content")
 	assert.NotContains(t, string(raw), "fullsend.content.")

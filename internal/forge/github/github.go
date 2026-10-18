@@ -1295,11 +1295,7 @@ func isGitDataReadLag(apiErr *APIError) bool {
 	if apiErr.StatusCode != http.StatusUnprocessableEntity {
 		return false
 	}
-	msg := strings.ToLower(apiErr.Message)
-	for _, d := range apiErr.Errors {
-		msg += " " + strings.ToLower(d.Message)
-	}
-	return strings.Contains(msg, "invalid object requested")
+	return strings.Contains(lowerAPIErrorText(apiErr), "invalid object requested")
 }
 
 // getCommitTreeSHA returns the tree SHA of commitSHA, retrying replica
@@ -1317,16 +1313,16 @@ func (c *LiveClient) getCommitTreeSHA(ctx context.Context, owner, repo, commitSH
 	return commitObj.Tree.SHA, nil
 }
 
-// CommitFiles atomically commits multiple files to the default branch
-// using the Git Trees/Blobs/Commits API. Returns (false, nil) when
-// all files already match the current tree (idempotent).
-// Text files are embedded as UTF-8 tree content. Binary files (e.g.
-// vendored ELF) are uploaded via the Git Blob API and referenced by SHA.
-// TreeFile.LocalPath is hashed and streamed from disk so callers do not
-// have to buffer the payload in TreeFile.Content.
+// CommitFiles atomically commits multiple files to the default branch.
+// Returns (false, nil) when all files already match the current tree.
 //
-// Returns forge.ErrBranchProtected (wrapped) when the ref update fails
-// with a 422, which indicates branch protection rules prevent direct pushes.
+// Regular inline files are committed with createCommitOnBranch, which
+// GitHub signs (see commit_graphql.go). Anything else uses the Git
+// Trees/Blobs/Commits API: text as inline tree content, binaries via the
+// Blob API, TreeFile.LocalPath hashed and streamed from disk.
+//
+// Returns forge.ErrBranchProtected when a rule rejects the commit, also
+// wrapping forge.ErrSignedCommitsRequired for a signature rule.
 func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message string, files []forge.TreeFile) (bool, error) {
 	if len(files) == 0 {
 		return false, nil
@@ -1345,25 +1341,35 @@ func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message strin
 }
 
 func (c *LiveClient) commitFilesWithRetry(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile) (bool, error) {
+	return retryCommitOp(ctx, c, fmt.Sprintf("commit to %s/%s@%s", owner, repo, branch), func() (bool, error) {
+		return c.commitFilesTo(ctx, owner, repo, branch, message, files)
+	})
+}
+
+// retryCommitOp runs op up to three times while it fails with a retriable
+// commit error (see isRetriableCommitError), with a jittered delay between
+// attempts.
+func retryCommitOp[T any](ctx context.Context, c *LiveClient, label string, op func() (T, error)) (T, error) {
 	const maxAttempts = 3
-	var changed bool
+	var result T
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
 			jitter := time.Duration(100+rand.IntN(400)) * time.Millisecond
 			select {
 			case <-ctx.Done():
-				return false, ctx.Err()
+				var zero T
+				return zero, ctx.Err()
 			case <-c.afterFunc(jitter):
 			}
-			log.Printf("retrying commit to %s/%s@%s (attempt %d/%d): %v", owner, repo, branch, attempt+1, maxAttempts, err)
+			log.Printf("retrying %s (attempt %d/%d): %v", label, attempt+1, maxAttempts, err)
 		}
-		changed, err = c.commitFilesTo(ctx, owner, repo, branch, message, files)
-		if err == nil || !forge.IsNonFastForward(err) {
+		result, err = op()
+		if err == nil || !isRetriableCommitError(err) {
 			break
 		}
 	}
-	return changed, err
+	return result, err
 }
 
 // CommitFilesToBranch atomically commits multiple files to a specific
@@ -1436,28 +1442,67 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		existing[entry.Path] = blobInfo{sha: entry.SHA, mode: entry.Mode}
 	}
 
-	// 4. Compute expected blob SHAs and filter to changed files.
-	var changedEntries []map[string]any
+	// 4. Diff the requested files against the tree.
+	type pendingChange struct {
+		file        forge.TreeFile
+		expectedSHA string
+		modeOnly    bool // content already matches; only the mode differs
+	}
+	var changes []pendingChange
 	for _, f := range files {
 		if f.Delete {
-			if _, exists := existing[f.Path]; !exists {
-				continue
+			if _, exists := existing[f.Path]; exists {
+				changes = append(changes, pendingChange{file: f})
 			}
-			changedEntries = append(changedEntries, map[string]any{
-				"path": f.Path,
-				"mode": "100644",
-				"type": "blob",
-				"sha":  nil,
-			})
 			continue
 		}
-
 		expectedSHA, err := treeFileBlobSHA(f)
 		if err != nil {
 			return false, fmt.Errorf("hash %s: %w", f.Path, err)
 		}
 		info, exists := existing[f.Path]
 		if exists && info.sha == expectedSHA && info.mode == f.Mode {
+			continue
+		}
+		changes = append(changes, pendingChange{file: f, expectedSHA: expectedSHA, modeOnly: exists && info.sha == expectedSHA})
+	}
+
+	// 5. Signed GraphQL path unless a changed file needs the Git Data API
+	// (see usesGitDataPath).
+	changedFiles := make([]forge.TreeFile, 0, len(changes))
+	for _, p := range changes {
+		changedFiles = append(changedFiles, p.file)
+	}
+	if !usesGitDataPath(changedFiles) {
+		// The mutation cannot change a mode, so a mode-only difference is
+		// unchanged here; otherwise every converge would commit an empty diff.
+		signed := make([]forge.TreeFile, 0, len(changes))
+		for _, p := range changes {
+			if !p.modeOnly {
+				signed = append(signed, p.file)
+			}
+		}
+		if len(signed) == 0 {
+			return false, nil
+		}
+		if err := c.commitFilesViaGraphQL(ctx, owner, repo, branch, commitSHA, message, signed); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	// 6. Git Data path: build tree entries, uploading blobs for binary and
+	// streamed content not already in the tree.
+	var changedEntries []map[string]any
+	for _, p := range changes {
+		f := p.file
+		if f.Delete {
+			changedEntries = append(changedEntries, map[string]any{
+				"path": f.Path,
+				"mode": "100644",
+				"type": "blob",
+				"sha":  nil,
+			})
 			continue
 		}
 
@@ -1470,10 +1515,8 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		if inlineText {
 			entry["content"] = string(f.Content)
 		} else {
-			blobSHAValue := expectedSHA
-			if exists && info.sha == expectedSHA {
-				blobSHAValue = info.sha
-			} else {
+			blobSHAValue := p.expectedSHA
+			if !p.modeOnly {
 				createdSHA, err := c.createBlobForFile(ctx, owner, repo, f)
 				if err != nil {
 					return false, fmt.Errorf("create blob for %s: %w", f.Path, err)
@@ -1485,11 +1528,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		changedEntries = append(changedEntries, entry)
 	}
 
-	if len(changedEntries) == 0 {
-		return false, nil
-	}
-
-	// 5. Create new tree with base_tree + changed entries.
+	// 7. Create new tree with base_tree + changed entries.
 	treePayload := map[string]any{
 		"base_tree": baseTreeSHA,
 		"tree":      changedEntries,
@@ -1513,7 +1552,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		return false, fmt.Errorf("decode new tree: %w", err)
 	}
 
-	// 6. Create commit with new tree and old commit as parent.
+	// 8. Create commit with new tree and old commit as parent.
 	commitPayload := map[string]any{
 		"message": message,
 		"tree":    newTree.SHA,
@@ -1535,7 +1574,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		return false, fmt.Errorf("decode new commit: %w", err)
 	}
 
-	// 7. Update branch ref to point to new commit.
+	// 9. Update branch ref to point to new commit.
 	// A 422 may indicate branch protection or a non-fast-forward
 	// (concurrent modification race).
 	refPayload := map[string]string{
@@ -1547,6 +1586,9 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
 			// Check order matters: protection messages can contain "fast forward"
 			if isBranchProtectionError(apiErr) {
+				if isSignedCommitsRequiredMessage(lowerAPIErrorText(apiErr)) {
+					return false, fmt.Errorf("update ref: %w: %w: %w", forge.ErrBranchProtected, forge.ErrSignedCommitsRequired, err)
+				}
 				return false, fmt.Errorf("update ref: %w: %w", forge.ErrBranchProtected, err)
 			}
 			if isNonFastForwardError(apiErr) {
@@ -1560,7 +1602,8 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	return true, nil
 }
 
-// DeleteFiles atomically removes paths from the repository default branch.
+// DeleteFiles atomically removes paths from the repository default branch
+// with a createCommitOnBranch commit, retried like CommitFiles.
 func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message string, paths []string) (int, error) {
 	if len(paths) == 0 {
 		return 0, nil
@@ -1574,9 +1617,15 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 		return 0, err
 	}
 
+	return retryCommitOp(ctx, c, fmt.Sprintf("delete from %s/%s@%s", owner, repo, repoInfo.DefaultBranch), func() (int, error) {
+		return c.deleteFilesOnce(ctx, owner, repo, repoInfo.DefaultBranch, message, paths)
+	})
+}
+
+func (c *LiveClient) deleteFilesOnce(ctx context.Context, owner, repo, branch, message string, paths []string) (int, error) {
 	var commitSHA string
 	if err := c.retryOnRepoRace(ctx, "get branch ref", func() error {
-		refResp, refErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, repoInfo.DefaultBranch))
+		refResp, refErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, branch))
 		if refErr != nil {
 			return fmt.Errorf("get branch ref: %w", refErr)
 		}
@@ -1602,7 +1651,6 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 	var existingTree struct {
 		Tree []struct {
 			Path string `json:"path"`
-			Mode string `json:"mode"`
 		} `json:"tree"`
 		Truncated bool `json:"truncated"`
 	}
@@ -1614,96 +1662,76 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 		return 0, fmt.Errorf("tree too large (truncated); cannot delete")
 	}
 
-	existing := make(map[string]string, len(existingTree.Tree))
+	existing := make(map[string]struct{}, len(existingTree.Tree))
 	for _, entry := range existingTree.Tree {
-		existing[entry.Path] = entry.Mode
+		existing[entry.Path] = struct{}{}
 	}
 
-	var deleteEntries []map[string]any
+	var deletions []string
 	for _, path := range paths {
-		mode, ok := existing[path]
-		if !ok {
+		if _, ok := existing[path]; !ok {
 			continue
 		}
-		if mode == "" {
-			mode = "100644"
-		}
-		deleteEntries = append(deleteEntries, map[string]any{
-			"path": path,
-			"mode": mode,
-			"type": "blob",
-			"sha":  nil,
-		})
+		deletions = append(deletions, path)
 	}
-	if len(deleteEntries) == 0 {
+	if len(deletions) == 0 {
 		return 0, nil
 	}
 
-	treePayload := map[string]any{
-		"base_tree": baseTreeSHA,
-		"tree":      deleteEntries,
-	}
-	newTreeResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/trees", owner, repo), treePayload)
-	if err != nil {
-		return 0, fmt.Errorf("create tree: %w", err)
-	}
-	var newTree struct {
-		SHA string `json:"sha"`
-	}
-	if err := decodeJSON(newTreeResp, &newTree); err != nil {
-		return 0, fmt.Errorf("decode new tree: %w", err)
-	}
-
-	commitPayload := map[string]any{
-		"message": message,
-		"tree":    newTree.SHA,
-		"parents": []string{commitSHA},
-	}
-	newCommitResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo), commitPayload)
-	if err != nil {
-		return 0, fmt.Errorf("create commit: %w", err)
-	}
-	var newCommit struct {
-		SHA string `json:"sha"`
-	}
-	if err := decodeJSON(newCommitResp, &newCommit); err != nil {
-		return 0, fmt.Errorf("decode new commit: %w", err)
-	}
-
-	refPayload := map[string]string{"sha": newCommit.SHA}
-	if err := c.retryOnRepoRace(ctx, "update ref", func() error {
-		refUpdateResp, patchErr := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, repoInfo.DefaultBranch), refPayload)
-		if patchErr != nil {
-			return fmt.Errorf("update ref: %w", patchErr)
-		}
-		refUpdateResp.Body.Close()
-		return nil
-	}); err != nil {
+	if _, err := c.createCommitOnBranch(ctx, owner, repo, branch, commitSHA, message, nil, deletions); err != nil {
 		return 0, err
 	}
 
-	return len(deleteEntries), nil
+	return len(deletions), nil
 }
 
 // isBranchProtectionError checks whether a 422 APIError indicates branch
 // protection rather than another validation failure (e.g. non-fast-forward).
 // It matches both legacy branch protection rules and newer repository rulesets.
+// A bare "protected" is safe here because callers only ask on a 422 ref
+// update; GraphQL errors use the narrower isBranchProtectionMessage.
 func isBranchProtectionError(apiErr *APIError) bool {
-	msg := strings.ToLower(apiErr.Message)
+	msg := lowerAPIErrorText(apiErr)
+	return strings.Contains(msg, "protected") || isBranchProtectionMessage(msg)
+}
+
+// lowerAPIErrorText joins the top-level and detail messages, lower-cased,
+// for the substring classifiers below.
+func lowerAPIErrorText(apiErr *APIError) string {
+	msg := apiErr.Message
 	for _, d := range apiErr.Errors {
-		msg += " " + strings.ToLower(d.Message)
+		msg += " " + d.Message
 	}
-	return strings.Contains(msg, "protected") ||
+	return strings.ToLower(msg)
+}
+
+// isBranchProtectionMessage matches REST ref-update and createCommitOnBranch
+// rejections. Rulesets say "Repository rule violations found"; classic
+// protection lists the failed checks ("Changes must be made through a pull
+// request. Required status check "ci" is expected."), which GraphQL
+// prefixes with "protected branch 'x' check failed:". "protected branch"
+// rather than "protected": a SAML-enforcement FORBIDDEN says "Resource
+// protected by organization SAML enforcement".
+func isBranchProtectionMessage(message string) bool {
+	msg := strings.ToLower(message)
+	return strings.Contains(msg, "protected branch") ||
 		strings.Contains(msg, "required status") ||
 		strings.Contains(msg, "required review") ||
-		strings.Contains(msg, "rule violation")
+		strings.Contains(msg, "rule violation") ||
+		strings.Contains(msg, "made through a pull request") ||
+		strings.Contains(msg, "locked branch") ||
+		isSignedCommitsRequiredMessage(msg)
+}
+
+// isSignedCommitsRequiredMessage reports whether a protection message is
+// GitHub's signed-commits rejection ("Commits must have verified
+// signatures."), from a ruleset or classic protection.
+func isSignedCommitsRequiredMessage(message string) bool {
+	return strings.Contains(strings.ToLower(message), "verified signatures")
 }
 
 func isNonFastForwardError(apiErr *APIError) bool {
-	msg := strings.ToLower(apiErr.Message)
-	for _, d := range apiErr.Errors {
-		msg += " " + strings.ToLower(d.Message)
-	}
+	msg := lowerAPIErrorText(apiErr)
 	return strings.Contains(msg, "not a fast forward") || strings.Contains(msg, "not a fast-forward")
 }
 
@@ -1713,27 +1741,15 @@ func isNonFastForwardError(apiErr *APIError) bool {
 // e2e cleanup). This is the same class of race as a non-fast-forward ref
 // update and should be retried from scratch.
 func isStaleTreeSHAError(apiErr *APIError) bool {
-	msg := strings.ToLower(apiErr.Message)
-	for _, d := range apiErr.Errors {
-		msg += " " + strings.ToLower(d.Message)
-	}
-	return strings.Contains(msg, "tree sha does not exist")
+	return strings.Contains(lowerAPIErrorText(apiErr), "tree sha does not exist")
 }
 
 func isAlreadyExistsError(apiErr *APIError) bool {
-	msg := strings.ToLower(apiErr.Message)
-	for _, d := range apiErr.Errors {
-		msg += " " + strings.ToLower(d.Message)
-	}
-	return strings.Contains(msg, "already exists")
+	return strings.Contains(lowerAPIErrorText(apiErr), "already exists")
 }
 
 func isNoChangesError(apiErr *APIError) bool {
-	msg := strings.ToLower(apiErr.Message)
-	for _, d := range apiErr.Errors {
-		msg += " " + strings.ToLower(d.Message)
-	}
-	return strings.Contains(msg, "no commits between")
+	return strings.Contains(lowerAPIErrorText(apiErr), "no commits between")
 }
 
 // blobSHA computes the Git blob object SHA-1 for the given content.
@@ -1827,7 +1843,7 @@ func decodeBlobSHA(resp *http.Response) (string, error) {
 
 // GetFileContent retrieves the content of a file from a repository.
 func (c *LiveClient) GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path))
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, escapePathSegments(path)))
 	if err != nil {
 		return nil, fmt.Errorf("get file content: %w", err)
 	}
@@ -2292,7 +2308,7 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 		"variables": variables,
 	}
 
-	resp, err := c.post(ctx, "/graphql", gqlPayload)
+	resp, err := c.post(ctx, c.graphqlEndpoint(), gqlPayload)
 	if err != nil {
 		return nil, fmt.Errorf("create cross-repo pull request via graphql: %w", err)
 	}
@@ -2452,7 +2468,7 @@ func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 const graphqlViewerLoginQuery = `query { viewer { login } }`
 
 func (c *LiveClient) graphqlViewerLogin(ctx context.Context) (string, error) {
-	resp, err := c.do(ctx, http.MethodPost, "/graphql", map[string]string{
+	resp, err := c.do(ctx, http.MethodPost, c.graphqlEndpoint(), map[string]string{
 		"query": graphqlViewerLoginQuery,
 	})
 	if err != nil {
@@ -3298,7 +3314,7 @@ func (c *LiveClient) MinimizeComment(ctx context.Context, nodeID, reason string)
 			"reason": reason,
 		},
 	}
-	gqlResp, err := c.post(ctx, "/graphql", gqlPayload)
+	gqlResp, err := c.post(ctx, c.graphqlEndpoint(), gqlPayload)
 	if err != nil {
 		return fmt.Errorf("minimize comment %s: %w", nodeID, err)
 	}
@@ -3753,11 +3769,7 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 			"number": number,
 			"cursor": cursor,
 		}
-		graphqlURL := strings.TrimRight(c.baseURL, "/") + "/graphql"
-		if strings.HasSuffix(strings.TrimRight(c.baseURL, "/"), "/api/v3") {
-			graphqlURL = strings.TrimSuffix(strings.TrimRight(c.baseURL, "/"), "/api/v3") + "/api/graphql"
-		}
-		resp, err := c.post(ctx, graphqlURL, map[string]any{"query": query, "variables": variables})
+		resp, err := c.post(ctx, c.graphqlEndpoint(), map[string]any{"query": query, "variables": variables})
 		if err != nil {
 			return forge.ReviewThreadPage{}, fmt.Errorf("list pull request review threads page %d: %w", page, err)
 		}
@@ -4687,6 +4699,11 @@ func (c *LiveClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref,
 	return 0, forge.ErrNotSupported
 }
 
+// CreatePipelineScheduleWithActive is not supported on GitHub.
+func (c *LiveClient) CreatePipelineScheduleWithActive(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string, _ bool) (int64, error) {
+	return 0, forge.ErrNotSupported
+}
+
 // DeletePipelineSchedule is not supported on GitHub.
 func (c *LiveClient) DeletePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64) error {
 	return forge.ErrNotSupported
@@ -4770,6 +4787,11 @@ func (c *LiveClient) GetPipelineVariablesMinimumOverrideRole(_ context.Context, 
 // SetPipelineVariablesMinimumOverrideRole is not supported on GitHub.
 func (c *LiveClient) SetPipelineVariablesMinimumOverrideRole(_ context.Context, _, _, _ string) error {
 	return forge.ErrNotSupported
+}
+
+// GetJobTokenRepositoryPushAllowed is not supported on GitHub.
+func (c *LiveClient) GetJobTokenRepositoryPushAllowed(_ context.Context, _, _ string) (bool, error) {
+	return false, forge.ErrNotSupported
 }
 
 // ForceCommitFileToBranch is not supported on GitHub.

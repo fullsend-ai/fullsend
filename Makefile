@@ -237,6 +237,9 @@ test: lint-all go-test script-test
 # runtime-codex-openai (features/runtime/codex-openai.feature) is undeclared
 # for the same reason, and codex has no direct Vertex path — so unlike pi it
 # has no default behaviour coverage at all until that organization exists.
+# runtime-opencode (features/runtime/opencode.feature) is not declared until
+# fullsend-sandbox:latest ships OpenCode, i.e. after the image change is
+# published from main; then add it here (one small haiku run on Vertex).
 BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
 behaviour-test:

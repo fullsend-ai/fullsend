@@ -20,7 +20,8 @@ import (
 )
 
 // fakeOpenshellPi installs a fake "openshell" that records every argv line
-// to logPath, stores each "sandbox upload <name> <local> <remote>" payload
+// to logPath, stores each
+// "sandbox upload --no-git-ignore <name> <local> <remote>" payload
 // under storeDir keyed by the remote path, answers `pi --version` and `cat
 // <remote>` execs from that store, and streams streamFixture for the pi run
 // command. Everything else succeeds silently.
@@ -40,8 +41,8 @@ func fakeOpenshellPi(t *testing.T, logPath, storeDir, streamFixture string) {
 	script := `#!/bin/sh
 echo "$@" >> '` + logPath + `'
 if [ "$2" = "upload" ]; then
-  case "$5" in /tmp/fs-upload-*/) cp -- "$4" "$5/"; exit $? ;; esac
-  cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
+  case "$6" in /tmp/fs-upload-*/) cp -- "$5" "$6/"; exit $? ;; esac
+  cp "$5" '` + storeDir + `'/"$(printf '%s' "$6" | tr '/' '_')"
   exit 0
 fi
 if [ "$2" = "exec" ]; then
@@ -541,6 +542,62 @@ func TestPiRuntimeBootstrap_SkillDirsOnlyAddsRead(t *testing.T) {
 	require.NoError(t, json.Unmarshal(storedUpload(t, store, PiRuntime{}.ConfigDir()+"/fullsend-manifest.json"), &m))
 	assert.Equal(t, []string{"bash", "read"}, m.Tools)
 	assert.Equal(t, []string{"go"}, m.BashAllowlist)
+}
+
+func TestPiRuntimeBootstrap_NestedForgeSkillsShareBasename(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	fakeOpenshellPi(t, logPath, filepath.Join(work, "store"), "/dev/null")
+
+	root := t.TempDir()
+	labelsDir := filepath.Join(root, "issue-labels", "github")
+	reviewDir := filepath.Join(root, "pr-review", "github")
+	require.NoError(t, os.MkdirAll(labelsDir, 0o755))
+	require.NoError(t, os.MkdirAll(reviewDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(labelsDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(reviewDir, "SKILL.md"),
+		[]byte("---\nname: pr-review-github\n---\n"), 0o644))
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, testAgentDef),
+		agentName:   "triage",
+		skillDirs:   []string{labelsDir, reviewDir},
+	}
+	require.NoError(t, PiRuntime{}.Bootstrap(in))
+
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	cfg := PiRuntime{}.ConfigDir()
+	assert.Contains(t, string(log), cfg+"/skills/issue-labels")
+	assert.Contains(t, string(log), cfg+"/skills/pr-review-github")
+	assert.NotContains(t, string(log), cfg+"/skills/github")
+}
+
+func TestPiRuntimeBootstrap_RejectsInvalidSkillDestinationName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(root string) string
+	}{
+		{"dotdot", func(root string) string { return root + "/sub/.." }},
+		{"dot", func(root string) string { return root + "/sub/." }},
+		{"control-char", func(root string) string { return root + "/bad\x01name" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := t.TempDir()
+			fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), filepath.Join(work, "store"), "/dev/null")
+
+			err := PiRuntime{}.Bootstrap(bootstrapInput{
+				sandboxName: "sb",
+				agentPath:   writeAgentFile(t, testAgentDef),
+				agentName:   "triage",
+				skillDirs:   []string{tc.path(t.TempDir())},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid sandbox name")
+		})
+	}
 }
 
 func TestPiRuntimeExtractTranscripts(t *testing.T) {

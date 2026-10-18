@@ -2538,6 +2538,10 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		// The GitLab webhook fast-path credentials must stay runner-only.
 		"FULLSEND_TRIGGER_TOKEN",
 		"FULLSEND_WEBHOOK_SECRET",
+		// The runner secrets bundle must never be expandable as a whole (ADR 0136).
+		"FULLSEND_GITHUB_RUNNER_SECRETS",
+		// Nor may a harness or script learn where the bundle file was staged.
+		"FULLSEND_GITHUB_RUNNER_SECRETS_FILE",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)
@@ -3193,6 +3197,19 @@ func TestTruncateUTF8_ShortInputUnchanged(t *testing.T) {
 	assert.NotContains(t, truncateUTF8("short", maxFeedbackBytes), "[truncated]")
 }
 
+func TestReplaceEnvSecrets_LongerValuesGoFirst(t *testing.T) {
+	// One value inside another: replacing the short one first would leave
+	// the rest of the long one in the text, and map order would pick.
+	short := strings.Repeat("v", minRedactableSecretLen)
+	long := short + "-and-more"
+	env := map[string]string{"A_TOKEN": short, "B_TOKEN": long}
+	for range 50 {
+		got, keys := replaceEnvSecrets("x "+long+" y "+short, env)
+		require.Equal(t, "x [REDACTED:B_TOKEN] y [REDACTED:A_TOKEN]", got)
+		require.Equal(t, []string{"B_TOKEN", "A_TOKEN"}, keys)
+	}
+}
+
 func TestRedactFeedback_RedactsRunnerCredentialLiterals(t *testing.T) {
 	// The validation script runs with the full runner env, which for the code
 	// and fix harnesses includes PUSH_TOKEN \u2014 a credential that must never
@@ -3252,6 +3269,43 @@ func TestWriteValidationFeedback_RedactsBeforeWritingFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "s3cret-push-value-1234")
 	assert.Contains(t, string(data), "[REDACTED:PUSH_TOKEN]")
+}
+
+func TestReplaceEnvSecrets_OneLongestFirstPassOverBothSources(t *testing.T) {
+	short := strings.Repeat("v", minRedactableSecretLen)
+	long := short + "-and-more"
+	for name, tc := range map[string]struct{ runner, process string }{
+		"runner value inside the provider value": {short, long},
+		"provider value inside the runner value": {long, short},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(workflowTokenEnv, tc.process)
+			env := map[string]string{"PUSH_TOKEN": tc.runner}
+			got, _ := replaceEnvSecrets("a "+long+" b "+short, env)
+			longKey, shortKey := "PUSH_TOKEN", workflowTokenEnv
+			if tc.process == long {
+				longKey, shortKey = workflowTokenEnv, "PUSH_TOKEN"
+			}
+			assert.Equal(t, "a [REDACTED:"+longKey+"] b [REDACTED:"+shortKey+"]", got)
+			assert.Equal(t, got, redactFeedback("a "+long+" b "+short, env), "redactFeedback runs the same pass")
+		})
+	}
+}
+
+func TestReplaceEnvSecrets_ProviderOnlyValues(t *testing.T) {
+	t.Setenv(workflowTokenEnv, "abcdefgh")
+	got, keys := replaceEnvSecrets("x abcdefgh y", nil)
+	assert.Equal(t, "x [REDACTED:"+workflowTokenEnv+"] y", got)
+	assert.Equal(t, []string{workflowTokenEnv}, keys)
+
+	got, keys = replaceEnvSecrets("nothing here", nil)
+	assert.Equal(t, "nothing here", got)
+	assert.Empty(t, keys, "a value absent from the text is not reported")
+
+	t.Setenv(workflowTokenEnv, "abcdefg") // under minRedactableSecretLen
+	got, keys = replaceEnvSecrets("x abcdefg y", nil)
+	assert.Equal(t, "x abcdefg y", got)
+	assert.Empty(t, keys)
 }
 
 func TestRedactFeedback_RedactsWorkflowTokenFromProcessEnv(t *testing.T) {
@@ -4226,6 +4280,79 @@ func TestBootstrapEnv_ValidationLoopSchemaPrecedence(t *testing.T) {
 	// Expected to fail at sandbox operations — the schema code path is
 	// exercised before the failure.
 	require.Error(t, err)
+}
+
+// A failed output-schema upload must fail bootstrap rather than continue
+// without FULLSEND_OUTPUT_SCHEMA in the sandbox (#8484).
+func TestBootstrapEnv_SchemaUploadFailureIsError(t *testing.T) {
+	schemaFile := filepath.Join(t.TempDir(), "schema.json")
+	require.NoError(t, os.WriteFile(schemaFile, []byte(`{"type":"object"}`), 0o644))
+
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = \"upload\" ]; then echo 'Git filtering selected no files' >&2; exit 1; fi\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+	h := &harness.Harness{
+		Agent:          "agents/test.md",
+		ValidationLoop: &harness.ValidationLoop{Script: "scripts/validate.sh", Schema: schemaFile},
+	}
+	err := bootstrapEnv("test-sandbox", "/workspace/repo", h, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "uploading output schema "+schemaFile)
+	assert.Contains(t, err.Error(), "Git filtering selected no files")
+}
+
+// A successful schema upload exports FULLSEND_OUTPUT_SCHEMA in the .env.
+func TestBootstrapEnv_SchemaUploadExportsEnv(t *testing.T) {
+	schemaFile := filepath.Join(t.TempDir(), "schema.json")
+	require.NoError(t, os.WriteFile(schemaFile, []byte(`{"type":"object"}`), 0o644))
+
+	store := t.TempDir()
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = \"upload\" ]; then cp \"$5\" " + shellQuoteForTest(store) + "/; fi\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+	h := &harness.Harness{
+		Agent:          "agents/test.md",
+		ValidationLoop: &harness.ValidationLoop{Script: "scripts/validate.sh", Schema: schemaFile},
+	}
+	require.NoError(t, bootstrapEnv("test-sandbox", "/workspace/repo", h, nil))
+
+	entries, err := os.ReadDir(store)
+	require.NoError(t, err)
+	var exported bool
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(store, e.Name()))
+		require.NoError(t, err)
+		if strings.Contains(string(data), "export FULLSEND_OUTPUT_SCHEMA=/sandbox/workspace/.fullsend/output-schema.json") {
+			exported = true
+		}
+	}
+	assert.True(t, exported, "FULLSEND_OUTPUT_SCHEMA should be exported in the uploaded .env")
+}
+
+// Failing to create the schema directory in the sandbox is also an error.
+func TestBootstrapEnv_SchemaMkdirFailureIsError(t *testing.T) {
+	schemaFile := filepath.Join(t.TempDir(), "schema.json")
+	require.NoError(t, os.WriteFile(schemaFile, []byte(`{"type":"object"}`), 0o644))
+	// No openshell on PATH: the mkdir exec cannot start.
+	t.Setenv("PATH", t.TempDir())
+
+	h := &harness.Harness{
+		Agent:          "agents/test.md",
+		ValidationLoop: &harness.ValidationLoop{Script: "scripts/validate.sh", Schema: schemaFile},
+	}
+	err := bootstrapEnv("test-sandbox", "/workspace/repo", h, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating .fullsend dir for output schema")
 }
 
 func TestBootstrapEnv_ValidationLoopSchemaFallback(t *testing.T) {
@@ -6616,6 +6743,7 @@ func TestMintAgentToken_WarnsWhenNoPreMintTokenInActions(t *testing.T) {
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv(workflowTokenEnv, "")
 
 	var buf bytes.Buffer
@@ -6625,7 +6753,7 @@ func TestMintAgentToken_WarnsWhenNoPreMintTokenInActions(t *testing.T) {
 	defer cleanup()
 	assert.True(t, minted)
 
-	assert.Contains(t, buf.String(), "no pre-mint GH_TOKEN was found")
+	assert.Contains(t, buf.String(), "no pre-mint GH_TOKEN or GITHUB_TOKEN was found")
 	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "must not preserve a workflow token when none was found")
 }
 
@@ -6725,6 +6853,307 @@ func TestMintAgentToken_RemintDoesNotClobberWorkflowToken(t *testing.T) {
 	cleanup()
 	assert.Equal(t, realWorkflowToken, os.Getenv("GH_TOKEN"), "cleanup restores the pre-mint value set by the test")
 	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "cleanup unsets the workflow token that was empty before the first mint")
+}
+
+// unsetEnvForTest unsets key for the rest of the test and restores its
+// prior state afterwards (t.Setenv registers the restore).
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	t.Setenv(key, "")
+	require.NoError(t, os.Unsetenv(key))
+}
+
+// TestMintAgentToken_SwapsGitHubTokenSetBefore covers #8530: a caller that
+// exports GITHUB_TOKEN gets the minted token in it for the run, and cleanup
+// restores each name to its own pre-mint value.
+func TestMintAgentToken_SwapsGitHubTokenSetBefore(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_minted_app_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_caller_gh_token")
+	t.Setenv("GITHUB_TOKEN", "ghp_caller_github_token")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	assert.Equal(t, "ghs_minted_app_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "ghs_minted_app_token", os.Getenv("GITHUB_TOKEN"), "GITHUB_TOKEN must not keep the caller's token")
+
+	cleanup()
+	assert.Equal(t, "ghp_caller_gh_token", os.Getenv("GH_TOKEN"), "cleanup restores GH_TOKEN to its own pre-mint value")
+	assert.Equal(t, "ghp_caller_github_token", os.Getenv("GITHUB_TOKEN"), "cleanup restores GITHUB_TOKEN to its own pre-mint value")
+}
+
+// TestMintAgentToken_SetsGitHubTokenUnsetBefore covers #8530: GITHUB_TOKEN
+// is set to the minted token even when the caller did not export it, and
+// cleanup unsets (rather than empties) a name that was unset before.
+func TestMintAgentToken_SetsGitHubTokenUnsetBefore(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_minted_app_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	unsetEnvForTest(t, "GH_TOKEN")
+	unsetEnvForTest(t, "GITHUB_TOKEN")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	assert.Equal(t, "ghs_minted_app_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "ghs_minted_app_token", os.Getenv("GITHUB_TOKEN"), "GITHUB_TOKEN is set even when the caller did not export it")
+
+	cleanup()
+	_, ghSet := os.LookupEnv("GH_TOKEN")
+	_, githubSet := os.LookupEnv("GITHUB_TOKEN")
+	assert.False(t, ghSet, "cleanup must unset GH_TOKEN that was unset before the mint")
+	assert.False(t, githubSet, "cleanup must unset GITHUB_TOKEN that was unset before the mint")
+}
+
+// TestMintAgentToken_NestedRemintRestoresGitHubTokenPerMint covers #8530's
+// nested case: remintAgentTokenForPostScript mints on top of the first mint,
+// so its cleanup must restore the first mint's token and the first mint's
+// cleanup must restore the pre-mint state (a set value, or unset).
+func TestMintAgentToken_NestedRemintRestoresGitHubTokenPerMint(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_first_app_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "ghs_second_app_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_caller_gh_token")
+	unsetEnvForTest(t, "GITHUB_TOKEN")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+	require.Equal(t, "ghs_first_app_token", os.Getenv("GITHUB_TOKEN"))
+
+	h := &harness.Harness{Role: "coder"}
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), h, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+	require.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_second_app_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "ghs_second_app_token", os.Getenv("GITHUB_TOKEN"))
+
+	remintCleanup()
+	assert.Equal(t, "ghs_first_app_token", os.Getenv("GH_TOKEN"), "remintCleanup restores the first mint's GH_TOKEN")
+	assert.Equal(t, "ghs_first_app_token", os.Getenv("GITHUB_TOKEN"), "remintCleanup restores the first mint's GITHUB_TOKEN")
+
+	cleanup()
+	assert.Equal(t, "ghp_caller_gh_token", os.Getenv("GH_TOKEN"), "cleanup restores the pre-mint GH_TOKEN")
+	_, githubSet := os.LookupEnv("GITHUB_TOKEN")
+	assert.False(t, githubSet, "cleanup unsets GITHUB_TOKEN that was unset before the first mint")
+}
+
+// TestMintAgentToken_PreservesWorkflowTokenFromGitHubToken covers #8530: on
+// Actions, a caller that exports only GITHUB_TOKEN (GH_TOKEN unset or empty)
+// still gets GH_WORKFLOW_TOKEN preserved, masked and registered.
+func TestMintAgentToken_PreservesWorkflowTokenFromGitHubToken(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		ghToken func(t *testing.T)
+	}{
+		{"GH_TOKEN unset", func(t *testing.T) { unsetEnvForTest(t, "GH_TOKEN") }},
+		{"GH_TOKEN empty", func(t *testing.T) { t.Setenv("GH_TOKEN", "") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			origMint := statusMintToken
+			defer func() { statusMintToken = origMint }()
+
+			const jobToken = "ghs_workflow_job_token_only"
+			const mintedToken = "ghs_minted_app_token"
+			statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+				return &mintclient.MintResult{Token: mintedToken, ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+			}
+
+			t.Setenv("REPO_FULL_NAME", "org/my-repo")
+			t.Setenv("GITHUB_ACTIONS", "true")
+			tc.ghToken(t)
+			t.Setenv("GITHUB_TOKEN", jobToken)
+			t.Setenv(workflowTokenEnv, "")
+
+			oldStderr := os.Stderr
+			r, w, _ := os.Pipe()
+			os.Stderr = w
+
+			var out bytes.Buffer
+			printer := ui.New(&out)
+			minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
+
+			w.Close()
+			os.Stderr = oldStderr
+			var stderrBuf bytes.Buffer
+			_, _ = io.Copy(&stderrBuf, r)
+
+			require.NoError(t, err)
+			require.True(t, minted)
+			require.NotNil(t, cleanup)
+			defer cleanup()
+
+			assert.Equal(t, jobToken, os.Getenv(workflowTokenEnv), "pre-mint GITHUB_TOKEN is preserved when GH_TOKEN is unset or empty")
+			assert.Equal(t, mintedToken, os.Getenv("GITHUB_TOKEN"))
+			assert.Equal(t, mintedToken, os.Getenv("GH_TOKEN"))
+			assert.Contains(t, stderrBuf.String(), "::add-mask::"+jobToken)
+			assert.NotContains(t, out.String(), "no pre-mint", "no warning when GITHUB_TOKEN supplies the workflow token")
+
+			scan := security.NewSecretRedactor().Scan("log " + jobToken + " here")
+			assert.NotContains(t, scan.Sanitized, jobToken, "preserved value is registered as a runtime secret")
+
+			cleanup()
+			assert.Equal(t, jobToken, os.Getenv("GITHUB_TOKEN"), "cleanup restores the pre-mint GITHUB_TOKEN")
+			assert.Equal(t, "", os.Getenv(workflowTokenEnv), "cleanup unsets GH_WORKFLOW_TOKEN when it was not preset")
+		})
+	}
+}
+
+// TestMintAgentToken_WorkflowTokenPrefersGHToken checks GH_TOKEN keeps
+// precedence over GITHUB_TOKEN for the preserve step (#8530).
+func TestMintAgentToken_WorkflowTokenPrefersGHToken(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_minted_app_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", "ghs_pre_mint_gh_token")
+	t.Setenv("GITHUB_TOKEN", "ghs_pre_mint_github_token")
+	t.Setenv(workflowTokenEnv, "")
+
+	oldStderr := os.Stderr
+	_, w, _ := os.Pipe()
+	os.Stderr = w
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	require.NoError(t, err)
+	require.True(t, minted)
+	defer cleanup()
+	assert.Equal(t, "ghs_pre_mint_gh_token", os.Getenv(workflowTokenEnv))
+}
+
+// TestMintAgentToken_WarnsWhenPreMintGitHubTokenMalformed checks the
+// GITHUB_TOKEN fallback gets the same format check as GH_TOKEN (#8530).
+func TestMintAgentToken_WarnsWhenPreMintGitHubTokenMalformed(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_minted_app_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	unsetEnvForTest(t, "GH_TOKEN")
+	t.Setenv("GITHUB_TOKEN", "not a valid token\nwith control chars")
+	t.Setenv(workflowTokenEnv, "")
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
+
+	w.Close()
+	os.Stderr = oldStderr
+	var stderrBuf bytes.Buffer
+	_, _ = io.Copy(&stderrBuf, r)
+
+	require.NoError(t, err)
+	require.True(t, minted)
+	defer cleanup()
+
+	assert.Contains(t, buf.String(), "pre-mint GITHUB_TOKEN has an unexpected format")
+	assert.Equal(t, "", os.Getenv(workflowTokenEnv), "malformed pre-mint GITHUB_TOKEN must not be preserved")
+	assert.NotContains(t, stderrBuf.String(), "::add-mask::not a valid token", "malformed token must not reach add-mask")
+}
+
+// TestRemintAgentTokenForPostScript_PostScriptGitHubTokenIsMinted covers
+// #8530: a pre-set GITHUB_TOKEN reaches the post-script environment only as
+// the minted value, whether the script inherits it from the process env or
+// the harness declares it in runner_env (expanded after the first mint).
+func TestRemintAgentTokenForPostScript_PostScriptGitHubTokenIsMinted(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const jobToken = "ghs_preset_caller_job_token"
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", jobToken)
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, minted)
+	defer cleanup()
+
+	declared := &harness.Harness{
+		Role:      "coder",
+		RunnerEnv: map[string]string{"GITHUB_TOKEN": os.Getenv("GITHUB_TOKEN")},
+	}
+	inherited := &harness.Harness{Role: "coder"}
+
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), declared, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+	defer remintCleanup()
+	require.Equal(t, 2, calls)
+
+	for name, h := range map[string]*harness.Harness{"declared": declared, "inherited": inherited} {
+		env := postScriptEnv(h, "")
+		assert.NotContains(t, env, "GITHUB_TOKEN="+jobToken, "%s: the pre-set GITHUB_TOKEN must not reach the post-script", name)
+		assert.Equal(t, "ghs_refreshed_token", envLast(env, "GITHUB_TOKEN"), "%s: post-script GITHUB_TOKEN is the freshly minted token", name)
+	}
 }
 
 func TestMintAgentToken_CoderRole_GitLabSetsPAT(t *testing.T) {

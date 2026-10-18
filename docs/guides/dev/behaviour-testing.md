@@ -292,6 +292,7 @@ BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
 BEHAVIOUR_APP_SET=fullsend-test # app identities for both mint deployment and github setup; must match the supplied role PEMs
 BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
+BEHAVIOUR_TRACE_COLLECTOR=     # job-scoped OTel Collector: unset = on in GitHub Actions when BEHAVIOUR_ARTIFACT_DIR is set; true/false to force
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
 ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs) or stage (push to main)
@@ -311,6 +312,22 @@ When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install driv
 When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver which deploys a durable CF Worker mint at `stage-mint.fullsend.sh` and uses the `halfsend` org with a non-vendored per-repo install (referencing main HEAD via `--fullsend-ref=main`). The `halfsend` org uses the same repo pool pattern as the DEV pool orgs.
 
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
+
+### Job-scoped trace collection
+
+The tested Fullsend workflows run on separate GitHub-hosted runners, so the suite gives them a single place to send traces. When the trace collector is enabled, the CF mint install drivers (`NewRepoPoolCFMintPreviews`, `NewRepoPoolCFMintStage`) set it up during suite setup. No workflow changes are needed:
+
+1. Generate a random bearer token for the job. The token is registered with the process secret redactor. It is never placed on a command line, in a file or on stdout. In particular it is not announced with `::add-mask::`: the step log is tee'd into the artifact directory, and a suite killed by the timeout never runs the scrub, so that line would leave the raw token in the uploaded log.
+2. Start the OpenTelemetry Collector (`otelcol-contrib`) with Podman. Its OTLP/HTTP receiver is published on `127.0.0.1` of the CI worker and requires the token through the `bearertokenauth` extension. The file exporter writes received traces as OTLP/JSON lines, one file per trace ID (`/traces/trace-<trace ID>.jsonl`). The file exporter can only route by a resource attribute, so the traces pipeline first copies each span's trace ID into a temporary `bt.trace_id` span attribute (`transform` processor) and promotes it to a resource attribute (`groupbyattrs` processor). Spans of one trace that arrive in different OTLP requests are appended to the same file, and different trace IDs never share a file.
+3. Probe the receiver. Startup fails unless a request without a token and a request with a wrong token are both rejected and the job token is accepted.
+4. Start a Cloudflare quick tunnel (`cloudflared` container) that gives the receiver a public HTTPS endpoint under `trycloudflare.com`, so the token is protected by TLS in transit.
+5. On every `AllocateRepo`, set the leased repository's `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` variable to the tunnel endpoint (path `/v1/traces`) and its `OTEL_EXPORTER_OTLP_TRACES_HEADERS` secret to `Authorization=Bearer%20<token>`. The reusable workflows already forward both to `fullsend`. Deleting the repository at deallocation removes both.
+
+`Driver.Finalize` stops the tunnel, then stops the Collector with a grace period so it flushes, and removes both containers. It then copies every `trace-<trace ID>.jsonl` file and `collector.log` to `otel-collector/` under `BEHAVIOUR_ARTIFACT_DIR` (mode `0600`) and overwrites every literal occurrence of the token in files under `BEHAVIOUR_ARTIFACT_DIR` with a mask of the same length. The scrub matches raw bytes only, so it does not look inside compressed or archived files. Existing files and symlinks at the destination are replaced, never written through. If the traces cannot be copied, the source files are kept and the next `Stop` call retries the copy. If the collector fails to start and its cleanup also fails, `Finalize` retries that cleanup. The overwrite is done in place, so a file that did capture the token keeps its size and offsets. Cleanup runs under its own bounded timeout, and if removing a container fails it is retried by the next `Stop` call. Finalize runs in `t.Cleanup` within the `make behaviour-test` step, which ends before the workflow's redaction and `behaviour-artifacts-*` upload steps, whether the suite passed or failed. The trace files then pass through the redaction step like any other artifact. The trace files work with `hack/upload-traces.sh` (see [tracing.md](tracing.md)) if you want to replay them into a trace backend.
+
+`BEHAVIOUR_TRACE_COLLECTOR` controls the collector. When unset, it runs only in GitHub Actions and only when `BEHAVIOUR_ARTIFACT_DIR` is set. Set it to `true` to run the collector locally (requires Podman and `BEHAVIOUR_ARTIFACT_DIR`), or `false` to turn it off. Trace collection is diagnostic: if the collector cannot start (no Podman, image pull or tunnel failure), the suite logs a warning and runs without it. If a repository cannot be configured, the suite logs that and continues. A suite killed by the `go test` timeout skips `t.Cleanup`, so no trace files are saved for that run.
+
+To check the per-trace routing against the pinned Collector image, run `BT_OTELCOL_INTEGRATION=1 go test ./pkg/behaviourtest/drivers/install -run PerTraceFilesWithRealCollector` (requires Podman). The test sends interleaved spans of two trace IDs across several export requests and verifies that every span is preserved and each trace ID has its own file. The test is skipped otherwise.
 
 ### Test actor account permission scope
 

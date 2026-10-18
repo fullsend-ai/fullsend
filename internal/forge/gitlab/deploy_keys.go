@@ -197,3 +197,44 @@ func (c *LiveClient) RevokeProtectedBranchPushDeployKeyEntry(ctx context.Context
 	resp.Body.Close()
 	return nil
 }
+
+// HasExactProtectedBranchRule reports whether branch has an exact-name
+// protected-branch rule. A branch that is unprotected or covered only by
+// wildcard rules reports false, so a caller can defer before it creates any
+// resource that GrantProtectedBranchPushDeployKey would then refuse to grant.
+func (c *LiveClient) HasExactProtectedBranchRule(ctx context.Context, owner, repo, branch string) (bool, error) {
+	if strings.Contains(branch, "*") {
+		return false, fmt.Errorf("read exact protected branch rule: branch %q is a wildcard pattern, not an exact branch name", branch)
+	}
+	exact, err := c.getProtectedBranchExact(ctx, owner, repo, branch)
+	if err != nil {
+		return false, fmt.Errorf("read exact protected branch rule: %w", err)
+	}
+	return exact != nil, nil
+}
+
+// ProtectedBranchPushDeployKeyEntryID returns the ID of the push entry on the
+// branch's exact-name protected-branch rule that grants deployKeyID. It
+// returns 0 when the rule or the entry is absent. Entries on wildcard rules
+// are never reported, because fullsend never grants or revokes them.
+func (c *LiveClient) ProtectedBranchPushDeployKeyEntryID(ctx context.Context, owner, repo, branch string, deployKeyID int) (int, error) {
+	if deployKeyID <= 0 {
+		return 0, fmt.Errorf("read protected branch deploy key push entry: invalid deploy key ID %d", deployKeyID)
+	}
+	if strings.Contains(branch, "*") {
+		return 0, fmt.Errorf("read protected branch deploy key push entry: branch %q is a wildcard pattern, not an exact branch name", branch)
+	}
+	exact, err := c.getProtectedBranchExact(ctx, owner, repo, branch)
+	if err != nil {
+		return 0, fmt.Errorf("read protected branch deploy key push entry: %w", err)
+	}
+	if exact == nil {
+		return 0, nil
+	}
+	for _, l := range exact.PushAccessLevels {
+		if l.DeployKeyID == deployKeyID && l.ID > 0 {
+			return l.ID, nil
+		}
+	}
+	return 0, nil
+}

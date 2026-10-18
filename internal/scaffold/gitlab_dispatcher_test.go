@@ -99,6 +99,10 @@ func TestGitLabDispatcherScriptContent(t *testing.T) {
 
 	assert.Contains(t, s, "FULLSEND_ADMIT_SOURCE=trigger")
 	assert.Contains(t, s, "FULLSEND_JOB_KIND=poller")
+	routeIdx := strings.Index(s, "\nfullsend_select_gitlab_dispatch_route\n")
+	require.NotEqual(t, -1, routeIdx, "the dispatcher must select the agent dispatch route (#8438)")
+	assert.Less(t, tokenIdx, routeIdx, "the route is selected after the Poller credential, which may re-read the creator")
+	assert.Less(t, routeIdx, pollIdx)
 	assert.Contains(t, s, "--input-driver gitlab-webhook")
 	assert.Contains(t, s, `--project "${FULLSEND_PINNED_PROJECT_PATH}"`)
 	assert.Contains(t, s, `--gitlab-url "${FULLSEND_PINNED_GITLAB_URL}"`)
@@ -125,26 +129,32 @@ func TestGitLabPipelineWrapperSourceSeparation(t *testing.T) {
 	}
 	gitlabLastYAMLDocument(t, ".gitlab/ci/fullsend-pipeline.yml", &wrapper)
 
-	want := map[string]string{
-		".gitlab/ci/fullsend-poll.yml":  "schedule",
-		gitlabDispatcherTemplatePath:    "trigger",
-		".gitlab/ci/fullsend-agent.yml": "api",
+	// Each include admits a disjoint set of sources, one admit rule per
+	// source. The agent template admits api (Poller pipelines API) and
+	// pipeline (CI_JOB_TOKEN child dispatch, #8438).
+	want := map[string][]string{
+		".gitlab/ci/fullsend-poll.yml":  {"schedule"},
+		gitlabDispatcherTemplatePath:    {"trigger"},
+		".gitlab/ci/fullsend-agent.yml": {"api", "pipeline"},
 	}
-	sources := []string{"schedule", "trigger", "api"}
+	sources := []string{"schedule", "trigger", "api", "pipeline"}
 	seen := map[string]bool{}
 	for _, inc := range wrapper.Include {
-		source, ok := want[inc.Local]
+		admitted, ok := want[inc.Local]
 		require.True(t, ok, "unexpected include %s", inc.Local)
 		seen[inc.Local] = true
 
-		require.Len(t, inc.Rules, 2, inc.Local)
+		require.Len(t, inc.Rules, 1+len(admitted), inc.Local)
 		assert.Equal(t, gitlabDebugTraceDenyIf, inc.Rules[0].If, "%s: debug-trace deny must come first", inc.Local)
 		assert.Equal(t, "never", inc.Rules[0].When, inc.Local)
-		admit := inc.Rules[1].If
-		assert.Contains(t, admit, `$CI_PIPELINE_SOURCE == "`+source+`"`, inc.Local)
-		for _, other := range sources {
-			if other != source {
-				assert.NotContains(t, admit, `"`+other+`"`, "%s must admit only %s pipelines", inc.Local, source)
+		for i, source := range admitted {
+			admit := inc.Rules[1+i].If
+			assert.Empty(t, inc.Rules[1+i].When, inc.Local)
+			assert.Contains(t, admit, `$CI_PIPELINE_SOURCE == "`+source+`"`, inc.Local)
+			for _, other := range sources {
+				if other != source {
+					assert.NotContains(t, admit, `"`+other+`"`, "%s rule %d must admit only %s pipelines", inc.Local, 1+i, source)
+				}
 			}
 		}
 	}
@@ -398,4 +408,58 @@ echo "WEBHOOK_SECRET=${FULLSEND_WEBHOOK_SECRET:-<unset>}"
 	assert.NotContains(t, got, "webhook-secret")
 	assert.NotContains(t, got, "unpinned")
 	assert.NotContains(t, got, "attacker-ref")
+}
+
+// The dispatcher hands `fullsend poll` the CI_JOB_TOKEN child-pipeline
+// route only when the webhook pipeline was created by the ready
+// trigger-only account recorded in the protected ledger (#8438); a
+// pipeline created by any other identity keeps the Poller API route.
+func TestRunDispatcherJobScript_SelectsDispatchRouteFromPipelineCreator(t *testing.T) {
+	const ledger = triggerLedgerGeneration
+	for _, tc := range []struct {
+		name       string
+		creator    string
+		ledger     string
+		activation string
+		want       string
+	}{
+		{"trigger account webhook pipeline", "77", ledger, triggerActivationRecord, "child-pipeline"},
+		{"ready ledger without dispatch activation", "77", ledger, "", "api"},
+		{"activation bound to another generation", "77", ledger, `{"version":1,"nonce":"fedcba9876543210","account_id":77,"deploy_key_id":5,"grant_entry_id":6,"trigger_token_id":9}`, "api"},
+		{"Poller-owned webhook pipeline", "5", ledger, triggerActivationRecord, "api"},
+		{"no trigger account recorded", "77", "", "", "api"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			script := writeDispatcherScripts(t, root)
+			st := dispatcherPinState("trigger", "main")
+			st.pipelineJSON = `{"id":100,"source":"trigger","user":{"id":` + tc.creator + `}}`
+			st.jobJSON = pinJobJSONWithUser("42", "100", "main", tc.creator)
+			srv := startPinAPI(t, st)
+			t.Cleanup(srv.Close)
+
+			env := append([]string{
+				"SCRIPT=" + script,
+				withCLI(t, true),
+				"HOME=" + t.TempDir(),
+				"CI_PROJECT_DIR=" + root,
+				"RUNNER_TEMP=" + t.TempDir(),
+				"CI_JOB_TOKEN=job-token",
+				"CI_PIPELINE_SOURCE=trigger",
+				"TRIGGER_PAYLOAD=" + writeTriggerPayload(t),
+				"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
+			}, pinTLSEnv(t, srv)...)
+			if tc.ledger != "" {
+				env = append(env, "FULLSEND_GITLAB_TRIGGER_ACCOUNT="+tc.ledger)
+			}
+			if tc.activation != "" {
+				env = append(env, "FULLSEND_GITLAB_DISPATCH_ACTIVATION="+tc.activation)
+			}
+			cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"")
+			cmd.Env = env
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, "stdout/stderr: %s", out)
+			assert.Contains(t, string(out), "ROUTE="+tc.want)
+		})
+	}
 }

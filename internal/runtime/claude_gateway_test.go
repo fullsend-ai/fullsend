@@ -186,7 +186,9 @@ func TestInstallClaudeHooks_GatewaySettings(t *testing.T) {
 	stubDir := t.TempDir()
 	captured := filepath.Join(t.TempDir(), "hooks.json")
 	// Copy the uploaded hooks.json aside: `sandbox upload <name> <src> <dest>`.
-	script := "#!/bin/sh\ncase \"$*\" in *hooks.json*) for a; do last2=$prev; prev=$a; done; cp \"$last2\" '" + captured + "' ;; esac\nexit 0\n"
+	// The rest answers Bootstrap's interpreter preflight (claudeHooksStubScript).
+	script := "#!/bin/sh\ncase \"$*\" in *upload*hooks.json*) for a; do last2=$prev; prev=$a; done; cp \"$last2\" '" + captured + "' ;; esac\n" +
+		strings.TrimPrefix(claudeHooksStubScript("", ""), "#!/bin/sh\n")
 	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
 

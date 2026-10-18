@@ -2568,14 +2568,11 @@ func TestManifest_RuntimeResolvesAndValidates(t *testing.T) {
 	rc, _ = none.ResolveConfig("acme", "c")
 	assert.Equal(t, "", rc.Runtime, "no layer declares runtime: preset or code default")
 
-	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{Config: mustManagedConfig(t, "runtime: opencode\n")}}
-	err := bad.Validate()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "defaults.config")
-	assert.Contains(t, err.Error(), `invalid runtime "opencode"`)
+	opencode := &Manifest{Version: 1, Defaults: DefaultsConfig{Config: mustManagedConfig(t, "runtime: opencode\n")}}
+	require.NoError(t, opencode.Validate())
 
-	bad = &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Config: mustManagedConfig(t, "runtime: nope\n")}}}}
-	err = bad.Validate()
+	bad := &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Config: mustManagedConfig(t, "runtime: nope\n")}}}}
+	err := bad.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "github.repos[acme/x].config")
 	assert.Contains(t, err.Error(), `invalid runtime "nope"`)

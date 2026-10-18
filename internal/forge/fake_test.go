@@ -862,6 +862,10 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"SetPipelineVariablesMinimumOverrideRole", func(fc *FakeClient) error {
 			return fc.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", PipelineVarOverrideOwner)
 		}},
+		{"GetJobTokenRepositoryPushAllowed", func(fc *FakeClient) error {
+			_, err := fc.GetJobTokenRepositoryPushAllowed(ctx, "o", "r")
+			return err
+		}},
 		{"CreateOrUpdateOrgVariableAll", func(fc *FakeClient) error {
 			return fc.CreateOrUpdateOrgVariableAll(ctx, "o", "n", "v")
 		}},
@@ -1153,6 +1157,9 @@ func threadSafetyCalls(ctx context.Context) map[string]func(fc *FakeClient) []an
 		"CreatePipelineSchedule": func(fc *FakeClient) []any {
 			return pack(fc.CreatePipelineSchedule(ctx, "o", "r", "main", "d", "0 * * * *", map[string]string{"K": "v"}))
 		},
+		"CreatePipelineScheduleWithActive": func(fc *FakeClient) []any {
+			return pack(fc.CreatePipelineScheduleWithActive(ctx, "o", "r", "main", "d", "0 * * * *", map[string]string{"K": "v"}, false))
+		},
 		"DeletePipelineSchedule": func(fc *FakeClient) []any { return pack(fc.DeletePipelineSchedule(ctx, "o", "r", 2)) },
 		"GetPipelineSchedule":    func(fc *FakeClient) []any { return pack(fc.GetPipelineSchedule(ctx, "o", "r", 1)) },
 		"DeletePipelineScheduleVariable": func(fc *FakeClient) []any {
@@ -1185,6 +1192,9 @@ func threadSafetyCalls(ctx context.Context) map[string]func(fc *FakeClient) []an
 		},
 		"SetPipelineVariablesMinimumOverrideRole": func(fc *FakeClient) []any {
 			return pack(fc.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", PipelineVarOverrideOwner))
+		},
+		"GetJobTokenRepositoryPushAllowed": func(fc *FakeClient) []any {
+			return pack(fc.GetJobTokenRepositoryPushAllowed(ctx, "o", "r"))
 		},
 		"CompareCommits": func(fc *FakeClient) []any { return pack(fc.CompareCommits(ctx, "o", "r", "a", "b")) },
 
@@ -1870,6 +1880,18 @@ func TestFakeClient_ListWorkflowRunsSince_OwnErrorKey(t *testing.T) {
 	since := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	_, err := fc.ListWorkflowRunsSince(context.Background(), "org", "repo", "ci.yml", since)
 	require.Error(t, err, "injecting ListWorkflowRunsSince's own error key must fail the call")
+}
+
+// TestFakeClient_CreatePipelineScheduleWithActive_OwnErrorKey checks that the
+// method honors its own name as an error-injection key, not only the shared
+// "CreatePipelineSchedule" key.
+func TestFakeClient_CreatePipelineScheduleWithActive_OwnErrorKey(t *testing.T) {
+	fc := NewFakeClient()
+	fc.Errors = map[string]error{"CreatePipelineScheduleWithActive": errors.New("boom")}
+
+	_, err := fc.CreatePipelineScheduleWithActive(context.Background(), "org", "repo", "main", "d", "0 * * * *", nil, false)
+	require.Error(t, err, "injecting the method's own error key must fail the call")
+	assert.Empty(t, fc.CreatedSchedules)
 }
 
 func TestFakeClient_DownloadWorkflowRunArtifact(t *testing.T) {

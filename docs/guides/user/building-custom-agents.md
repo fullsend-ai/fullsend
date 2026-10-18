@@ -125,7 +125,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 | `name` | Must match the filename (without `.md`) |
 | `tools` | The tools the agent may use, in Claude Code's names (`Read`, `Grep`, `Glob`, `LS`, `Bash(gh,jq)`, ...). Restrict to what's needed. On pi the names are translated, and two of them surprise people — see [What to write in `tools:`](../../runtimes/pi.md#what-to-write-in-tools) |
 | `model` | LLM model (`opus`, `sonnet`, etc.) |
-| `skills` | [Skill](../../glossary.md#skill) directories to mount (relative to `skills/`) |
+| `skills` | [Skill](../../glossary.md#skill) names to load, as uploaded under `skills/`: a skill's declared `SKILL.md` `name:`, or its directory basename when none is declared |
 | `disallowedTools` | Bash patterns the agent is forbidden from running |
 
 ### Design principles
@@ -641,7 +641,74 @@ reusable workflow that invokes the agent.
 
 5. **`ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION`** — must be in the workflow `env` block so the `gcp-vertex.env` file (copied into the sandbox with `expand: true`) resolves correctly.
 
-6. **All `env.runner` variables** must appear in the workflow `env` block. If your harness references `MY_VAR: "${MY_VAR}"`, the workflow must set `MY_VAR`.
+6. **All `env.runner` variables** must appear in the workflow `env` block. If your harness references `MY_VAR: "${MY_VAR}"`, the workflow must set `MY_VAR`. For a secret, use the stored `FULLSEND_GITHUB_RUNNER_SECRETS` object instead (next section).
+
+### Pass secrets to host-side scripts (GitHub)
+
+A pre-script that calls Jira, CodeRabbit or another service needs a token. This channel is an interim one for your own tools on GitHub: external secret manager support, read with the job's OIDC token, is the expected successor (long-term design in [#6359](https://github.com/fullsend-ai/fullsend/issues/6359)), and this secret stays as the fallback when your workflow cannot use GitHub OIDC or a WIF provider with your secret manager. Integrations fullsend owns, such as the inference gateway, keep their own named secrets. If your Jira poller workflow already passes `JIRA_TOKEN` and `JIRA_USER_EMAIL` to the reusable workflow ([Jira integration](jira-integration.md)), declare them in `env.runner` (`JIRA_TOKEN: "${JIRA_TOKEN}"`) and your `harness-run` scripts receive them; this channel is for every other secret and every other stage. On GitHub, store all such tokens in one secret, `FULLSEND_GITHUB_RUNNER_SECRETS`, as a JSON object of name → value. The installed shim forwards it, and the reusable workflow hands it to each stage's composite action. The action writes it to a file that only the job user can read and passes `fullsend run` the path, never the value. `fullsend run` deletes the file as soon as it has read it, so the object is never in the environment of `fullsend run` or of any process it starts. A host-side script receives only the names its harness references in `env.runner`, as ordinary environment variables. The values never enter the sandbox ([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)).
+
+The example below is a review harness whose pre-script fetches the Jira issue named in the pull request title.
+
+1. Store the object on the repository, or on the organization for every repository the agent serves:
+
+   ```bash
+   gh secret set FULLSEND_GITHUB_RUNNER_SECRETS --repo OWNER/REPO \
+     --body '{"JIRA_API_TOKEN":"...","JIRA_API_EMAIL":"..."}'
+
+   gh secret set FULLSEND_GITHUB_RUNNER_SECRETS --org OWNER --visibility selected \
+     --repos REPO_A,REPO_B --body '{"JIRA_API_TOKEN":"...","JIRA_API_EMAIL":"..."}'
+   ```
+
+   The object holds literal values: GitHub never expands a reference such as `${{ secrets.JIRA_TOKEN }}` inside a stored secret, so a token you already keep as its own secret must be copied into the object too. A secret holds one value, so adding or rotating a key means setting the whole object again. Keep the JSON in a file outside the repository and run `gh secret set FULLSEND_GITHUB_RUNNER_SECRETS --repo OWNER/REPO < runner-secrets.json`. Each value must be a string of at least 8 characters (the redactor's current minimum), so that `fullsend run` can redact it; keys may not repeat. Every agent run that receives the secret validates the whole object, so one invalid key fails every agent in every repository that gets it, not only your custom agent.
+
+2. Reference each name from `env.runner` in `.fullsend/harness/my-agent.yaml`:
+
+   ```yaml
+   env:
+     runner:
+       JIRA_API_TOKEN: "${JIRA_API_TOKEN}"
+       JIRA_API_EMAIL: "${JIRA_API_EMAIL}"
+       JIRA_BASE_URL: "https://example.atlassian.net"
+   ```
+
+   A name the harness does not reference reaches no script. The name may not be runner-owned (`GH_TOKEN`, `GITHUB_*`, `FULLSEND_*`, `OTEL_*`, `PATH`, ...) or one the reusable workflow already sets, such as `JIRA_TOKEN` or `JIRA_USER_EMAIL`, so pick your own names, and it may appear only in `env.runner`. A reference from `env.sandbox`, a provider credential, an expanded `host_files` entry, or an overlay guarded by anything other than `runtime.forge` or `config` fails the run. The full rules are in the [harness reference](../../reference/harness-reference.md#field-details).
+
+3. Read the variables in the pre-script as usual. `JIRA_API_TOKEN`, `JIRA_API_EMAIL` and `JIRA_BASE_URL` come from `env.runner`. `REPO_FULL_NAME` and `PR_NUMBER` are set by the review stage of the reusable workflow, and `GH_TOKEN` is the token `fullsend run` mints for the agent. This example uses the token for a decision: it skips the review when the Jira issue named in the pull request title (for example `PROJ-123: fix login`) is already done. It hands the agent nothing, because raw forge or Jira content must not reach the model ([ADR 0133](../../ADRs/0133-actor-attributed-data-security-boundary.md)):
+
+   ```bash
+   #!/usr/bin/env bash
+   set -euo pipefail
+
+   TITLE=$(gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json title --jq .title)
+   JIRA_KEY=$(grep -oE '[A-Z][A-Z0-9]+-[0-9]+' <<<"$TITLE" | head -n 1 || true)
+   [[ -n "$JIRA_KEY" ]] || exit 0
+
+   STATUS=$(curl --fail-with-body --silent \
+     --user "${JIRA_API_EMAIL}:${JIRA_API_TOKEN}" \
+     "${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}?fields=status" |
+     jq -r '.fields.status.statusCategory.key')
+   if [[ "$STATUS" == "done" ]]; then
+     echo "reason=${JIRA_KEY} is already done" >> "$FULLSEND_PRESCRIPT_OUTPUT"
+     echo "skipped=true" >> "$FULLSEND_PRESCRIPT_OUTPUT"
+   fi
+   ```
+
+4. Trigger the agent and check the run log. The `Run fullsend` step prints `Runner secrets` followed by the names the harness references, and GitHub shows each value as `***`:
+
+   ```bash
+   gh run list --repo OWNER/REPO --workflow fullsend.yaml --limit 1
+   gh run view RUN_ID --repo OWNER/REPO --log | grep -E 'Runner secrets|Pre-script'
+   ```
+
+`fullsend run` masks each value, and each line of a multi-line value, in the log, and redacts them from pre-script failure detail and validation feedback. Masking matches exact strings: a value your script transforms (base64, URL-encoded, a substring) is printed as is, so never echo a secret or anything derived from it.
+
+The shim always passes `FULLSEND_GITHUB_RUNNER_SECRETS`, and GitHub rejects a call that passes a secret the called workflow does not declare. If you set up a repository with `--fullsend-ref` pointing at a release older than this channel, render the shim with the CLI from that same release.
+
+If you run `fullsend run` from your own workflow instead of the installed shim, use the composite action and pass `with: runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}`; the action stages the file for you. The `FULLSEND_GITHUB_RUNNER_SECRETS` environment variable also works, but only for local runs: in CI the value would stay readable in `/proc/<pid>/environ` for the whole run. See [`fullsend run` § Runner secrets](../../cli/run.md#runner-secrets).
+
+On GitLab, skip the object. Add each secret as its own masked CI/CD variable (for example `JIRA_API_TOKEN`) and reference it from `env.runner` the same way. The rules above (refused names, host side only, overlays) apply to names in the GitHub object only; GitLab behaves as before, and every CI/CD variable in the job except `JIRA_TOKEN`, `JIRA_USER_EMAIL` and the OTLP headers still reaches host-side scripts.
+
+**Pre-script context is a snapshot.** The pre-script sees the work item as it was when the run started. Changes made after that (a new push, an edited title or body) arrive only through a later run ([ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)). When a script decides something from the work item, read the head SHA, title and body from the forge API (for example `gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json headRefOid,title,body`), not from the event payload, which can be older still. Do not stage that content where the agent reads it: [ADR 0133](../../ADRs/0133-actor-attributed-data-security-boundary.md) forbids exposing unfiltered source content to the model, and forge context for the agent will come from the runner's filtered snapshot ([ADR 0141](../../ADRs/0141-deterministic-filtered-entity-context-staging.md), not yet implemented).
 
 ### Bringing your own identity
 

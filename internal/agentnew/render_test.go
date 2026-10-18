@@ -427,6 +427,53 @@ func TestPiHarnessKeepsVertexCredentials(t *testing.T) {
 	}
 }
 
+func TestOpenCodeHarnessHasOpenCodeConfigContent(t *testing.T) {
+	dir := t.TempDir()
+	opts := testOptions("lint-docs", "triage")
+	opts.Runtime = "opencode"
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	files, err := Render(opts)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	writeTree(t, dir, files)
+
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated opencode harness does not load: %v", err)
+	}
+	if got := h.Env.Sandbox["OPENCODE_CONFIG_CONTENT"]; got != "${OPENCODE_CONFIG_CONTENT}" {
+		t.Errorf("env.sandbox OPENCODE_CONFIG_CONTENT = %q, want ${OPENCODE_CONFIG_CONTENT}", got)
+	}
+	// Vertex credentials are retained for provider registration.
+	for k, v := range vertexSandboxEnv() {
+		if got := h.Env.Sandbox[k]; got != v {
+			t.Errorf("env.sandbox[%s] = %q, want %q", k, got, v)
+		}
+	}
+}
+
+// TestNonOpenCodeHarnessLacksOpenCodeConfigContent guards that
+// OPENCODE_CONFIG_CONTENT does not leak into non-opencode harnesses.
+func TestNonOpenCodeHarnessLacksOpenCodeConfigContent(t *testing.T) {
+	for _, runtime := range []string{"", "pi", "codex"} {
+		t.Run(runtime, func(t *testing.T) {
+			opts := testOptions("lint-docs", "triage")
+			opts.Runtime = runtime
+			files, err := Render(opts)
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			yaml := string(fileByPath(t, files, "harness/lint-docs.yaml").Data)
+			if strings.Contains(yaml, "OPENCODE_CONFIG_CONTENT") {
+				t.Errorf("%q harness must not contain OPENCODE_CONFIG_CONTENT", runtime)
+			}
+		})
+	}
+}
+
 func TestRenderRejectsUnknownRole(t *testing.T) {
 	opts := testOptions("lint-docs", "triage")
 	opts.Role = "scribe"

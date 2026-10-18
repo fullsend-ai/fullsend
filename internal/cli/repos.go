@@ -15,6 +15,7 @@ import (
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/gitlabroles"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/spf13/cobra"
@@ -362,6 +363,9 @@ type reposInstallConfig struct {
 	// rotateGitLabTriggerToken force-rotates the webhook fast-path
 	// pipeline trigger token (FULLSEND_TRIGGER_TOKEN, ADR 0125).
 	rotateGitLabTriggerToken bool
+	// rotateGitLabTriggerAccount replaces the trigger-only service account's
+	// deploy key, branch grant, and trigger token (#8437).
+	rotateGitLabTriggerAccount bool
 
 	// Local vendoring artifacts, used for repositories whose manifest
 	// settings resolve vendor: true. They are never persisted.
@@ -374,6 +378,16 @@ type reposInstallConfig struct {
 	testGitLabTokenInventory repos.ProjectAccessTokenClient
 	testGitLabTriggerOwner   repos.GitLabTriggerOwner
 	testProjectNumberFn      func(ctx context.Context, projectID string) (string, error)
+	// testContainTriggerAccount replaces the live GitLab trigger-account
+	// containment step, which only runs against the live client.
+	testContainTriggerAccount func(ctx context.Context, client forge.Client, owner, repo string) error
+	// testConvergeTriggerAccount replaces the live GitLab trigger-account
+	// convergence step, which only runs against the live client.
+	testConvergeTriggerAccount func(ctx context.Context, client forge.Client, owner, repo string) error
+	// testRepairTriggerSchedules replaces the live repair of drifted
+	// trigger-account-owned polling schedules, which only runs against the
+	// live client.
+	testRepairTriggerSchedules func(ctx context.Context, client forge.Client, owner, repo string) error
 }
 
 func newReposInstallCmd() *cobra.Command {
@@ -484,6 +498,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
 	cmd.Flags().StringArrayVar(&opts.rotateGitLabRoleNames, "rotate-gitlab-role", nil, "rotate a specific GitLab role (repeatable); default is all own-credential roles that are due")
 	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerToken, "rotate-gitlab-trigger-token", false, "force-rotate the GitLab webhook fast-path pipeline trigger token (FULLSEND_TRIGGER_TOKEN); the previous token is revoked after the webhook is updated")
+	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerAccount, "rotate-gitlab-trigger-account", false, "replace the GitLab trigger-only service account's deploy key, protected-branch push entry, and trigger token (FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN); requires a ready trigger account, otherwise install finishes it instead")
 	cmd.Flags().StringVar(&opts.fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to upload for repos whose repos.yaml settings resolve vendor: true (default: auto-resolve)")
 	cmd.Flags().StringVar(&opts.fullsendSource, "fullsend-source", "", "fullsend source checkout for vendored content and cross-compile, for repos whose repos.yaml settings resolve vendor: true (default: auto-detect or GitHub fetch)")
 
@@ -604,15 +619,93 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// (other/* next to a declared acme/*) fails here even when another
 	// selector matches. This only reads from the forge, so dry run and live
 	// install fail identically before any manifest or forge write.
-	if err := repos.RequireDeclaredSelections(ctx, manifest, clients, opts.repoFilter); err != nil {
-		return fmt.Errorf("matching repository selection: %w; repos install only selects repositories the manifest declares; nothing was changed. Declare a missing repository first, for example:\n  fullsend repos set 'github.repos[\"owner/repo\"]' '{}'", err)
+	//
+	// The error is held, not returned, until the containment-only recovery
+	// below has run for the repositories that did resolve: an unrelated glob
+	// that cannot be listed must not leave an explicit repository's interrupted
+	// bootstrap uncontained. Normal installation stages stay blocked.
+	selectionMatchErr := repos.RequireDeclaredSelections(ctx, manifest, clients, opts.repoFilter)
+
+	// Containment-only recovery of an interrupted GitLab trigger-account
+	// bootstrap (#8437). It runs for every targeted GitLab repository as soon as
+	// the manifest and forge clients exist, before the configuration preflights,
+	// convergence, the Poller inventory and every later stage, none of which
+	// can then fail or skip it. It creates nothing and leaves the webhook fast
+	// path alone. A repo whose containment failed is reported as failed and
+	// skips the later stages.
+	containFailed := make(map[string]error)
+	var containFailedRepos []repos.ConvergeResult
+	// A selection error (for example a glob that cannot be expanded) does not
+	// stop containment of the repos that did resolve: SelectedGitLabRepos
+	// returns every repo it could resolve alongside the error.
+	gitlabRepos, selErr := repos.SelectedGitLabRepos(ctx, manifest, clients, opts.repoFilter)
+	if selErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not select every GitLab repo for trigger account recovery: %v", selErr))
 	}
+	for _, gr := range gitlabRepos {
+		key := gr.Owner + "/" + gr.Repo
+		fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+		if fcErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client for trigger account recovery: %v", key, fcErr))
+			continue
+		}
+		contain := func() error {
+			if opts.testContainTriggerAccount != nil {
+				return opts.testContainTriggerAccount(ctx, fc.Client, gr.Owner, gr.Repo)
+			}
+			return containGitLabTriggerAccount(ctx, opts, fc.Client, printer, gr.Owner, gr.Repo)
+		}
+		if _, dup := containFailed[key]; dup {
+			continue
+		}
+		if cErr := contain(); cErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] GitLab trigger account recovery failed: %v", key, cErr))
+			containFailed[key] = cErr
+			containFailedRepos = append(containFailedRepos, repos.ConvergeResult{
+				Owner: gr.Owner, Repo: gr.Repo,
+				Error: fmt.Errorf("GitLab trigger account recovery: %w", cErr),
+			})
+			continue
+		}
+	}
+	if selectionMatchErr != nil {
+		errs := []error{fmt.Errorf("matching repository selection: %w; repos install only selects repositories the manifest declares; nothing was changed. Declare a missing repository first, for example:\n  fullsend repos set 'github.repos[\"owner/repo\"]' '{}'", selectionMatchErr)}
+		for _, r := range containFailedRepos {
+			errs = append(errs, r.Error)
+		}
+		return errors.Join(errs...)
+	}
+
+	// The configuration preflights below only read the forge, and the
+	// manifest is written only after all of them, so they share one read
+	// cache: equivalent layer, component and glob reads are made once
+	// (#8501). It is discarded before the manifest write; convergence
+	// reads current state through clients.
+	preflightClients := repos.NewPreflightReadCache(clients)
 
 	// Preflight the existing configuration layers of manifest-tracked repos
 	// before any manifest or forge write: a markerless overlay needs
-	// adoption and an undeclared base needs resolution (#8218).
-	if err := repos.PreflightManagedConfig(ctx, manifest, clients, opts.repoFilter); err != nil {
+	// adoption and an undeclared base needs resolution (#8218). A repo that
+	// only needs adoption is skipped and reported as failed, so the other
+	// repos still converge (#8511); every other problem stops the run.
+	adoptionRequired, err := repos.PreflightManagedConfig(ctx, manifest, preflightClients, opts.repoFilter)
+	if err != nil {
 		return fmt.Errorf("configuration preflight: %w", err)
+	}
+	adoptionFailedRepos := make([]repos.ConvergeResult, 0, len(adoptionRequired))
+	adoptionSkip := make([]string, 0, len(adoptionRequired))
+	for _, a := range adoptionRequired {
+		printer.StepFail(fmt.Sprintf("[%s] skipped: %s", a.Name(), a.Guidance))
+		adoptionSkip = append(adoptionSkip, a.Name())
+		if _, failed := containFailed[a.Name()]; failed {
+			// Already excluded and counted as failed by trigger-account
+			// recovery.
+			continue
+		}
+		adoptionFailedRepos = append(adoptionFailedRepos, repos.ConvergeResult{
+			Owner: a.Owner, Repo: a.Repo,
+			Error: fmt.Errorf("adoption required: %s exists without the managed-configuration ownership marker (ADR-0122); see the guidance above; nothing was written", preset.OverlayPath),
+		})
 	}
 
 	// The only manifest edit install still plans is the initial
@@ -636,7 +729,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		DryRun:       true,
 		Deferred:     !opts.dryRun,
 		RepoFilter:   opts.repoFilter,
-	}, clients, func(repo, _, msg string) {
+		ExcludeRepos: adoptionSkip,
+	}, preflightClients, func(repo, _, msg string) {
 		deferOutput(func() { printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg)) })
 	})
 	if wbErr != nil {
@@ -649,14 +743,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// Compare the proposed layered configuration (manifest edits and declared
 	// presets) with each repository's installed layers before anything is
 	// persisted or written to the forge.
-	if err := repos.PreflightProposedManagedSafety(ctx, manifest, clients, opts.repoFilter); err != nil {
+	if err := repos.PreflightProposedManagedSafety(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip); err != nil {
 		return fmt.Errorf("configuration safety preflight: %w", err)
 	}
 	// Resolve the effective infrastructure and reconcile the Vertex inputs
 	// of every selected repository before the manifest is persisted, so a
 	// mint URL conflict or a flag that contradicts the declared
 	// configuration leaves repos.yaml byte-identical.
-	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, clients, opts.repoFilter, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
+	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
 		return fmt.Errorf("effective infrastructure preflight: %w", err)
 	}
 	if manifestChanged && !opts.dryRun && opts.manifest != "" {
@@ -764,6 +858,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		Manifest:                manifest,
 		DryRun:                  opts.dryRun,
 		RepoFilter:              opts.repoFilter,
+		ExcludeRepos:            append(containFailedKeys(containFailedRepos), adoptionSkip...),
 		MaxConcurrency:          opts.concurrency,
 		UpstreamRef:             upstreamRef,
 		UpstreamTag:             upstreamTag,
@@ -786,6 +881,30 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
 		default:
 			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+		}
+	}
+
+	// A managed schedule the trigger account owns that drifted to carry
+	// pipeline variables goes back to the installer before convergence: the
+	// pipeline-variable migration preflight convergence reaches rejects it and
+	// cannot edit it as the installer (#8508). It runs only here, after the
+	// repository selection and every configuration preflight succeeded, so an
+	// install that fails those checks leaves live schedules untouched. A repo
+	// whose containment failed is skipped. A failure here is only reported; a
+	// schedule left carrying variables fails the convergence or override-role
+	// check that rejects it.
+	for _, gr := range gitlabRepos {
+		key := gr.Owner + "/" + gr.Repo
+		if _, failed := containFailed[key]; failed {
+			continue
+		}
+		fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+		if fcErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client for trigger account schedule repair: %v", key, fcErr))
+			continue
+		}
+		if rErr := repairGitLabTriggerSchedules(ctx, opts, fc.Client, printer, gr.Owner, gr.Repo); rErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] GitLab trigger account schedule repair failed: %v", key, rErr))
 		}
 	}
 
@@ -866,6 +985,19 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	var installedPostFail int
 	var postInstallFailedRepos []repos.ConvergeResult
+	// A repo whose trigger-account containment failed was excluded from
+	// Converge above, so it is in none of the result lists. It is counted once
+	// as failed here, takes no later stage (failedRepoKeys), and is
+	// deliberately not fed to the webhook safety reconciliation, so the
+	// existing fast path is preserved.
+	for _, r := range containFailedRepos {
+		failedRepoKeys[r.Owner+"/"+r.Repo] = true
+	}
+	// A repo skipped because its overlay needs adoption was excluded the
+	// same way and is likewise counted once and takes no later stage.
+	for _, r := range adoptionFailedRepos {
+		failedRepoKeys[r.Owner+"/"+r.Repo] = true
+	}
 	postInstallRepos := make([]repos.ConvergeResult, 0, len(installed)+len(converged)+len(alreadyCurrent))
 	postInstallRepos = append(postInstallRepos, installed...)
 	postInstallRepos = append(postInstallRepos, converged...)
@@ -880,6 +1012,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				continue
 			}
 			repoFullName := r.Owner + "/" + r.Repo
+			if failedRepoKeys[repoFullName] {
+				// Trigger-account containment failed for this repo: it is
+				// already counted once and takes no further mutating stage.
+				continue
+			}
 			printer.Blank()
 			printer.StepStart(fmt.Sprintf("[%s] GitLab post-install setup", repoFullName))
 
@@ -1030,8 +1167,24 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
+			// The trigger account does not use the Poller credential or its
+			// protected-ref grant, so a Poller credential failure does not
+			// stop its preparation (GitLab.com Free refuses the grant while a
+			// replacement Poller is verified, which surfaces here as an opaque
+			// provisioning failure). The failure stays the repo's recorded
+			// error and the dispatch-route stages below remain skipped, so
+			// it is counted once. Identity separation is still enforced by the
+			// trigger-account lifecycle.
+			convergeTriggerAfterPollerFailure := func(pollerErr error) error {
+				if tErr := maybeConvergeGitLabTriggerAccount(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo, opts.rotateGitLabTriggerAccount, manifest); tErr != nil {
+					printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab trigger account failed: %v", item.r.Owner, item.r.Repo, tErr))
+					return errors.Join(pollerErr, tErr)
+				}
+				return pollerErr
+			}
 			if err := maybeProvisionGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role provisioning failed: %v", item.r.Owner, item.r.Repo, err))
+				err = convergeTriggerAfterPollerFailure(err)
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1042,6 +1195,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 			if err := maybeRotateGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role rotation failed: %v", item.r.Owner, item.r.Repo, err))
+				err = convergeTriggerAfterPollerFailure(err)
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1055,6 +1209,15 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 			if err := ensureGitLabPollerPipelineAccess(ctx, fc.Client, gitLabTokenInventory(opts, fc.Client), printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab poller protected-ref pipeline access failed: %v", item.r.Owner, item.r.Repo, err))
+				// GitLab.com Free refuses the legacy Poller per-user merge
+				// grant. The trigger account does not use that grant, so its
+				// resource preparation still runs. The Poller failure stays the
+				// repo's recorded error and the dispatch-route stages below
+				// (override role, webhook) remain skipped, so the failure is
+				// counted once.
+				if pollerMergeGrantRejected(err) {
+					err = convergeTriggerAfterPollerFailure(err)
+				}
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1065,10 +1228,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			}
 			if err := ensureGitLabPipelineVariableOverrideRole(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.dryRun); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab pipeline-variable override role failed: %v", item.r.Owner, item.r.Repo, err))
-				// The restriction is weakened or could not be verified; the
-				// safety reconciliation after this loop (roleFailedRepos)
-				// revokes any live trigger credential and keeps this role
-				// failure as the repo's recorded error.
+				// The restriction is weakened or could not be verified. A
+				// published trigger-account credential was already removed and
+				// revoked by the early containment pass, which checks the live
+				// role itself; the safety reconciliation after this loop
+				// (roleFailedRepos) revokes any live webhook trigger credential
+				// and keeps this role failure as the repo's recorded error.
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1089,7 +1254,20 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 						roleFailInstalledCount++
 					}
 					roleFailedRepos = append(roleFailedRepos, item.r)
+					continue
 				}
+			}
+			// Trigger-only service account (#8437): after the Poller and its
+			// generations are settled, so the verified Poller inventory it
+			// stays separate from is current. A deferral is not a failure.
+			if err := maybeConvergeGitLabTriggerAccount(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo, opts.rotateGitLabTriggerAccount, manifest); err != nil {
+				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab trigger account failed: %v", item.r.Owner, item.r.Repo, err))
+				roleFail++
+				item.r.Error = err
+				if item.fresh {
+					roleFailInstalledCount++
+				}
+				roleFailedRepos = append(roleFailedRepos, item.r)
 			}
 		}
 	}
@@ -1108,7 +1286,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	printer.Blank()
 	installedCount := len(installed) - installedPostFail - roleFailInstalledCount
-	failedCount := len(failed) + len(postInstallFailedRepos) + pollStateFail + roleFail
+	failedCount := len(failed) + len(postInstallFailedRepos) + len(containFailedRepos) + len(adoptionFailedRepos) + pollStateFail + roleFail
 
 	for _, r := range failed {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
@@ -1117,6 +1295,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
 	for _, r := range postInstallFailedRepos {
+		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+	for _, r := range containFailedRepos {
+		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+	for _, r := range adoptionFailedRepos {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
 	for _, r := range roleFailedRepos {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -140,6 +141,10 @@ type RepoStatus struct {
 	GitLabRolesPartial    bool                         `json:"gitlab_roles_partial,omitempty"`
 	GitLabRoleDiagnostics []string                     `json:"gitlab_role_diagnostics,omitempty"`
 	GitLabServiceAccounts []GitLabServiceAccountStatus `json:"gitlab_service_accounts,omitempty"`
+
+	// GitLabTriggerAccount is the trigger-only service account's readiness,
+	// drift, and the exact reasons for a deferral or unfinished cleanup.
+	GitLabTriggerAccount *GitLabTriggerAccountStatus `json:"gitlab_trigger_account,omitempty"`
 }
 
 // StatusSummary provides aggregate counts across all repos.
@@ -364,6 +369,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			return status
 		}
 		checkManagedConfigDrift(ctx, cfg, &status)
+		if status.Error != "" {
+			return status
+		}
+		// A partial earlier installation can leave vendored assets behind.
+		checkStaleVendoredAssets(ctx, cfg, dcfg, resolver, true, &status)
 		return status
 	}
 	status.Installed = true
@@ -463,6 +473,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		return status
 	}
 
+	checkStaleVendoredAssets(ctx, cfg, dcfg, resolver, !workflowPresent, &status)
+	if status.Error != "" {
+		return status
+	}
+
 	// Read display-only variable not covered by required vars.
 	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, forge.VarGCPRegion)
 	if regionErr != nil {
@@ -473,9 +488,29 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 
 	if cfg.Forge == ForgeGitLab {
 		appendGitLabRoleStatus(ctx, client, owner, repo, &status)
+		// Ledger and sink only; the CLI adds the live GitLab drift checks.
+		diag := DiagnoseGitLabTriggerAccount(ctx, client, nil, owner, repo, "")
+		ApplyGitLabTriggerAccountStatus(&status, diag)
 	}
 
 	return status
+}
+
+// ApplyGitLabTriggerAccountStatus records the trigger account's diagnosis on
+// status and reports every state that needs attention as drift. A
+// not-installed or deferred account is informational: polling keeps working.
+func ApplyGitLabTriggerAccountStatus(status *RepoStatus, diag GitLabTriggerAccountStatus) {
+	status.GitLabTriggerAccount = &diag
+	status.Drifts = slices.DeleteFunc(status.Drifts, func(d Drift) bool { return d.Field == "gitlab-trigger-account" })
+	switch diag.State {
+	case GitLabTriggerStateNotInstalled, GitLabTriggerStateDeferred, GitLabTriggerStateReady:
+		return
+	}
+	status.Drifts = append(status.Drifts, Drift{
+		Field:    "gitlab-trigger-account",
+		Expected: GitLabTriggerStateReady,
+		Actual:   diag.State + ": " + strings.Join(diag.Reasons, "; "),
+	})
 }
 
 // checkObsoleteInferenceConfig reports Fullsend-managed inference secrets

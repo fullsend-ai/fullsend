@@ -1358,13 +1358,22 @@ func gitlabRootCIDispatcherProblem(rootCI []byte, defaultBranch string) string {
 // unparseable files). The returned text completes "…on the default branch
 // admits …" like workflowAdmissionProblem, or is "" when admitted.
 func gitlabEffectiveWorkflowProblem(rootCI, wrapper, template []byte, defaultBranch string) string {
+	return gitlabEffectiveWorkflowProblemForEnv(rootCI, wrapper, template, fullsendDispatcherTemplatePath, triggerPipelineEnv(defaultBranch), "trigger")
+}
+
+// gitlabEffectiveWorkflowProblemForEnv is gitlabEffectiveWorkflowProblem for
+// the pipeline described by env; source names its pipeline source in the
+// diagnostics. template is the committed template the wrapper includes for
+// that pipeline (the dispatcher template for trigger pipelines, the agent
+// template for agent child pipelines) and templateFile its path.
+func gitlabEffectiveWorkflowProblemForEnv(rootCI, wrapper, template []byte, templateFile string, env map[string]*string, source string) string {
 	for _, f := range []struct {
 		content []byte
 		file    string
 	}{
 		{rootCI, ".gitlab-ci.yml"},
 		{wrapper, fullsendPipelineInclude},
-		{template, fullsendDispatcherTemplatePath},
+		{template, templateFile},
 	} {
 		docs, err := decodeGitLabDocuments(f.content)
 		if err != nil || len(docs) == 0 || docs[len(docs)-1].Kind != yaml.DocumentNode || len(docs[len(docs)-1].Content) == 0 {
@@ -1374,7 +1383,7 @@ func gitlabEffectiveWorkflowProblem(rootCI, wrapper, template []byte, defaultBra
 		if root.Kind != yaml.MappingNode {
 			continue
 		}
-		unevaluable := "admits protected-default-branch trigger pipelines (the workflow rules in " + f.file + " cannot be evaluated, so admission cannot be established)"
+		unevaluable := "admits protected-default-branch " + source + " pipelines (the workflow rules in " + f.file + " cannot be evaluated, so admission cannot be established)"
 		workflow, ok := effectiveMappingValue(root, "workflow")
 		if !ok {
 			return unevaluable
@@ -1394,7 +1403,7 @@ func gitlabEffectiveWorkflowProblem(rootCI, wrapper, template []byte, defaultBra
 			continue
 		}
 		// This file's rules replace those of every file it includes.
-		if problem := workflowAdmissionProblem(rules, defaultBranch); problem != "" {
+		if problem := workflowAdmissionProblemForEnv(rules, env, source); problem != "" {
 			return problem + " (effective workflow rules from " + f.file + ")"
 		}
 		return ""
@@ -1413,6 +1422,10 @@ func gitlabEffectiveWorkflowProblem(rootCI, wrapper, template []byte, defaultBra
 // The returned text completes "…on the default branch …" or is "" when the
 // effective list names dispatch.
 func gitlabEffectiveStagesProblem(rootCI, wrapper, template []byte) string {
+	return gitlabEffectiveStagesProblemForStage(rootCI, wrapper, template, "dispatch")
+}
+
+func gitlabEffectiveStagesProblemForStage(rootCI, wrapper, template []byte, required string) string {
 	for _, content := range [][]byte{rootCI, wrapper, template} {
 		docs, err := decodeGitLabDocuments(content)
 		if err != nil || len(docs) == 0 || docs[len(docs)-1].Kind != yaml.DocumentNode || len(docs[len(docs)-1].Content) == 0 {
@@ -1427,9 +1440,9 @@ func gitlabEffectiveStagesProblem(rootCI, wrapper, template []byte) string {
 			continue
 		}
 		// This file's stages: replaces those of every file it includes.
-		return stagesDispatchProblem(root)
+		return stagesRequiredProblem(root, required)
 	}
-	return "lists the dispatch stage (no configuration declares stages, so GitLab's default stages apply)"
+	return "lists the " + required + " stage (no configuration declares stages, so GitLab's default stages apply)"
 }
 
 // stagesDispatchProblem checks that an explicit stages: list in the root
@@ -1437,29 +1450,34 @@ func gitlabEffectiveStagesProblem(rootCI, wrapper, template []byte) string {
 // and its elements; a list that cannot be evaluated is a problem, since the
 // dispatcher job might then have no stage to run in.
 func stagesDispatchProblem(root *yaml.Node) string {
+	return stagesRequiredProblem(root, "dispatch")
+}
+
+func stagesRequiredProblem(root *yaml.Node, required string) string {
+	missing := "lists the " + required + " stage"
 	stages, ok := effectiveMappingValue(root, "stages")
 	if !ok {
-		return "lists the dispatch stage (the stages list cannot be evaluated)"
+		return missing + " (the stages list cannot be evaluated)"
 	}
 	if stages == nil {
 		return ""
 	}
 	list := resolveAlias(stages)
 	if list == nil || list.Kind != yaml.SequenceNode {
-		return "lists the dispatch stage (the stages list cannot be evaluated)"
+		return missing + " (the stages list cannot be evaluated)"
 	}
 	found := false
 	for _, el := range list.Content {
 		n := resolveAlias(el)
 		if n == nil || n.Kind != yaml.ScalarNode || hasNonCoreTag(n) {
-			return "lists the dispatch stage (a stages entry cannot be evaluated)"
+			return missing + " (a stages entry cannot be evaluated)"
 		}
-		if n.Value == "dispatch" {
+		if n.Value == required {
 			found = true
 		}
 	}
 	if !found {
-		return "lists the dispatch stage"
+		return missing
 	}
 	return ""
 }

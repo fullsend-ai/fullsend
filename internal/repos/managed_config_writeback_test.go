@@ -51,6 +51,19 @@ func TestEnsureManagedConfigDefaults_ExistingEntryPersistsUpstreamDefault(t *tes
 	assert.NotNil(t, web.Managed)
 }
 
+// A repository install skips because its overlay needs adoption gains no
+// manifest edit (#8511).
+func TestEnsureManagedConfigDefaults_ExcludedRepoIsNotEdited(t *testing.T) {
+	m := newConvergeManifest("acme/api", "acme/web")
+	fc := newFakeClientForBatch("acme/api", "acme/web")
+	names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{
+		Manifest: m, DryRun: true, ExcludeRepos: []string{"acme/web"},
+	}, newTestClientFactory(fc), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/api"}, names)
+	assert.False(t, m.GitHub.Repos[1].Config.IsSet(), "the excluded repo is untouched")
+}
+
 func TestEnsureManagedConfigDefaults_NewEntryAndBootstrap(t *testing.T) {
 	// A bootstrapped manifest holds only the entries the CLI added in
 	// memory; the writeback records the default on them and creates the file.
@@ -248,59 +261,96 @@ func TestPreflightManagedConfig(t *testing.T) {
 		m := newConvergeManifest("acme/api")
 		fc := newFakeClientForBatch("acme/api")
 		fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "{}\n")
-		require.NoError(t, PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil))
-		require.NoError(t, PreflightManagedConfig(ctx, m, newTestClientFactory(newFakeClientForBatch("acme/api")), []string{"acme/api"}))
+		adoption, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+		require.NoError(t, err)
+		assert.Empty(t, adoption)
+		adoption, err = PreflightManagedConfig(ctx, m, newTestClientFactory(newFakeClientForBatch("acme/api")), []string{"acme/api"})
+		require.NoError(t, err)
+		assert.Empty(t, adoption)
 	})
 	t.Run("markerless overlay needs adoption without a config key", func(t *testing.T) {
 		m := newConvergeManifest("acme/api", "acme/web")
 		fc := newFakeClientForBatch("acme/api", "acme/web")
 		fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("keep_history: true\n")
 		fc.FileContents["acme/web/"+preset.OverlayPath] = []byte("keep_history: false\n")
-		err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+		adoption, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+		require.NoError(t, err, "adoption is a per-repository failure, not a run-level one (#8511)")
+		require.Len(t, adoption, 2, "every offending repo is reported")
+		assert.Equal(t, "acme/api", adoption[0].Name())
+		assert.Equal(t, "acme/web", adoption[1].Name())
+		for _, a := range adoption {
+			assert.Contains(t, a.Guidance, "adoption required")
+			assert.Contains(t, a.Guidance, "proposed repos.yaml entry")
+			assert.NotContains(t, a.Guidance, a.Name()+":", "the guidance does not repeat the repository name")
+		}
+	})
+	t.Run("one repo needs adoption and the other is clean", func(t *testing.T) {
+		m := newConvergeManifest("acme/api", "acme/web")
+		fc := newFakeClientForBatch("acme/api", "acme/web")
+		fc.FileContents["acme/web/"+preset.OverlayPath] = []byte("keep_history: false\n")
+		adoption, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+		require.NoError(t, err)
+		require.Len(t, adoption, 1)
+		assert.Equal(t, AdoptionRequiredRepo{Owner: "acme", Repo: "web", Guidance: adoption[0].Guidance}, adoption[0])
+	})
+	t.Run("a hard problem on another repo stops the run and keeps the adoption guidance", func(t *testing.T) {
+		m := newConvergeManifest("acme/api", "acme/web")
+		fc := newFakeClientForBatch("acme/api", "acme/web")
+		fc.FileContents["acme/api/"+preset.BasePath] = []byte("version: \"1\"\n")
+		fc.FileContents["acme/web/"+preset.OverlayPath] = []byte("keep_history: false\n")
+		adoption, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "acme/api")
-		assert.Contains(t, err.Error(), "acme/web", "every offending repo is reported")
-		assert.Contains(t, err.Error(), "adoption required")
+		assert.Nil(t, adoption)
+		assert.Contains(t, err.Error(), "acme/api: "+preset.BasePath)
+		assert.Contains(t, err.Error(), "acme/web: "+preset.OverlayPath+" exists without the managed-configuration ownership marker")
 	})
 	t.Run("filter limits the check", func(t *testing.T) {
 		m := newConvergeManifest("acme/api", "acme/web")
 		fc := newFakeClientForBatch("acme/api", "acme/web")
 		fc.FileContents["acme/web/"+preset.OverlayPath] = []byte("keep_history: false\n")
-		require.NoError(t, PreflightManagedConfig(ctx, m, newTestClientFactory(fc), []string{"acme/api"}))
+		adoption, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), []string{"acme/api"})
+		require.NoError(t, err)
+		assert.Empty(t, adoption)
 	})
 	t.Run("filter naming a repo that is not in the manifest selects nothing", func(t *testing.T) {
 		m := newConvergeManifest("acme/api")
-		require.NoError(t, PreflightManagedConfig(ctx, m, newTestClientFactory(newFakeClientForBatch("acme/api")), []string{"acme/other"}))
+		adoption, err := PreflightManagedConfig(ctx, m, newTestClientFactory(newFakeClientForBatch("acme/api")), []string{"acme/other"})
+		require.NoError(t, err)
+		assert.Empty(t, adoption)
 	})
 	t.Run("glob-covered filter name is checked", func(t *testing.T) {
 		m := &Manifest{Version: 1, Defaults: testInferenceDefaults(), GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/*"}}}}
 		fc := newFakeClientForBatch()
 		fc.FileContents["acme/fork/"+preset.OverlayPath] = []byte("keep_history: false\n")
-		err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), []string{"acme/fork"})
-		require.Error(t, err, "a glob-covered repo ListOrgRepos omits is still checked")
+		adoption, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), []string{"acme/fork"})
+		require.NoError(t, err)
+		require.Len(t, adoption, 1, "a glob-covered repo ListOrgRepos omits is still checked")
+		assert.Equal(t, "acme/fork", adoption[0].Name())
 	})
 	t.Run("undeclared base", func(t *testing.T) {
 		m := newConvergeManifest("acme/api")
 		fc := newFakeClientForBatch("acme/api")
 		fc.FileContents["acme/api/"+preset.BasePath] = []byte("version: \"1\"\n")
-		err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+		_, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), preset.BasePath)
 
 		m.Defaults.ConfigBase.Source = presetPath
-		require.NoError(t, PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil), "a declared preset accounts for the base")
+		_, err = PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+		require.NoError(t, err, "a declared preset accounts for the base")
 	})
 	t.Run("read error", func(t *testing.T) {
 		m := newConvergeManifest("acme/api")
 		fc := newFakeClientForBatch("acme/api")
 		fc.GetFileContentErrors = map[string]error{"acme/api/" + preset.OverlayPath: fmt.Errorf("boom")}
-		err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+		_, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "boom")
 	})
 	t.Run("filter parse error", func(t *testing.T) {
 		m := newConvergeManifest("acme/api")
-		require.Error(t, PreflightManagedConfig(ctx, m, newTestClientFactory(newFakeClientForBatch("acme/api")), []string{"[bad"}))
+		_, err := PreflightManagedConfig(ctx, m, newTestClientFactory(newFakeClientForBatch("acme/api")), []string{"[bad"})
+		require.Error(t, err)
 	})
 }
 
@@ -314,7 +364,7 @@ func TestWritebackClientFactoryErrors(t *testing.T) {
 	m := newConvergeManifest("acme/api")
 	_, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m}, failingFactory{}, nil)
 	require.Error(t, err)
-	err = preflightManagedConfigRepos(context.Background(), m, failingFactory{}, []ResolvedRepo{{Owner: "acme", Repo: "api", Forge: ForgeGitHub}})
+	_, err = preflightManagedConfigRepos(context.Background(), m, failingFactory{}, []ResolvedRepo{{Owner: "acme", Repo: "api", Forge: ForgeGitHub}})
 	require.Error(t, err)
 }
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -457,8 +458,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
 	cmd.Flags().IntVar(&sOpts.statusComment, "status-comment-id", 0, "ID of the triggering comment, for comment-scoped reactions on slash-command runs (optional)")
 	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
-	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
-	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi and codex — codex takes OpenAI ids and gateway/<model> only; also $FULLSEND_MODEL)")
+	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, opencode, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
+	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi, codex, and opencode — codex takes OpenAI ids and gateway/<model> only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
 	_ = cmd.MarkFlagRequired("target-repo")
 
@@ -483,6 +484,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err := envfile.Load(ef); err != nil {
 			return fmt.Errorf("loading env file %s: %w", ef, err)
 		}
+	}
+
+	// Unpack the runner secrets bundle (ADR 0136) before any child process
+	// starts: loadRunnerSecrets deletes the bundle file and removes both
+	// bundle variables from the environment.
+	runnerSecrets, err := loadRunnerSecrets()
+	if err != nil {
+		printer.StepFail("Invalid runner secrets bundle")
+		return err
 	}
 
 	absFullsendDir, err := filepath.Abs(fullsendDir)
@@ -617,6 +627,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		GitToken:      composeGitToken,
 		Event:         eventMap,
 		Config:        harness.BuildConfigMap(orgCfg),
+
+		RunnerSecretNames: runnerSecretNameSet(runnerSecrets),
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
@@ -1096,18 +1108,30 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// the reference as an unresolvable variable and fails validation.
 		return harnessEnvLookup(key)
 	}
-	if err := h.ValidateRunnerEnvWith(lookup); err != nil {
+	// Runner secrets (ADR 0136) may be referenced only from env.runner.
+	// Refuse every other reference first, so the secret-aware lookup below
+	// can only ever resolve an env.runner reference.
+	if err := validateRunnerSecretRefs(h, runnerSecrets); err != nil {
+		printer.StepFail("Runner secret validation failed")
+		return err
+	}
+	if err := h.ValidateRunnerEnvWith(withRunnerSecretLookup(runnerSecrets, lookup)); err != nil {
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
 	for k, v := range h.RunnerEnv {
 		h.RunnerEnv[k] = os.Expand(v, expander)
 	}
+	// Collect the referenced bundle names before expansion replaces them.
+	usedRunnerSecrets := referencedRunnerSecretNames(h, runnerSecrets)
 
 	// Expand ${VAR} references in env.runner and env.sandbox (ADR 0055).
+	// Only env.runner resolves runner secrets; keys of the bundle that the
+	// harness does not reference reach nothing.
 	if h.Env != nil {
+		runnerExpander := withRunnerSecretExpander(runnerSecrets, expander)
 		for k, v := range h.Env.Runner {
-			h.Env.Runner[k] = os.Expand(v, expander)
+			h.Env.Runner[k] = os.Expand(v, runnerExpander)
 		}
 		for k, v := range h.Env.Sandbox {
 			h.Env.Sandbox[k] = os.Expand(v, expander)
@@ -1126,6 +1150,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
 		return fmt.Errorf("validating files: %w", err)
+	}
+	if err := validateRunnerSecretHostFiles(h, runnerSecrets); err != nil {
+		printer.StepFail("Runner secret validation failed")
+		return err
 	}
 	// Ensure scripts are executable. The GitHub Contents API does not
 	// preserve file permissions, so scripts written via admin install
@@ -1244,6 +1272,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.PreScript != "" {
 		printer.KeyValue("Pre-script", h.PreScript)
 	}
+	if len(usedRunnerSecrets) > 0 {
+		printer.KeyValue("Runner secrets", strings.Join(usedRunnerSecrets, ", "))
+	}
 	if h.PostScript != "" {
 		if noPostScript {
 			printer.KeyValue("Post-script", h.PostScript+" (SKIPPED: --no-post-script)")
@@ -1311,6 +1342,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					status = "skipped"
 					detail = runSkipReason
 				}
+				// The detail is posted to the issue or PR, where Actions log
+				// masking does not apply: a failing preflight check or a
+				// pre-script skip reason can carry a runner secret (ADR 0136).
+				detail = redactFeedback(detail, h.RunnerEnv)
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
@@ -1340,7 +1375,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if preflightCtx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("validation_loop.preflight_check timed out after %s: %s", preflightCheckTimeout, h.ValidationLoop.PreflightCheck)
 			}
-			return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, validationFailMessage(preflightOut, preflightErr))
+			// Redact before the message reaches the CLI error, the trace and
+			// the completion comment: the command runs with env.runner.
+			// Redact the raw capture first, because validationFailMessage
+			// trims it and a padded secret would then miss the literal match.
+			redactedOut := []byte(redactFeedback(string(preflightOut), h.RunnerEnv))
+			return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, redactFeedback(validationFailMessage(redactedOut, preflightErr), h.RunnerEnv))
 		}
 		printer.StepDone("Preflight dependency check passed")
 	}
@@ -1497,6 +1537,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// in CI, but a local per-repo checkout carries only a .gitkeep.
 		providerDefs := appendEmbeddedProviderDefs(localDefs, result.Providers, h.Providers, printer)
 		allDefs, selectedResolved, shadowedResolved := mergeProviderDefs(providerDefs, result.Providers)
+		if err := validateRunnerSecretProviders(allDefs, runnerSecrets); err != nil {
+			printer.StepFail("Runner secret validation failed")
+			return err
+		}
 		for _, name := range shadowedResolved {
 			printer.StepWarn(fmt.Sprintf("Local provider %q shadows URL-resolved provider of the same name", name))
 		}
@@ -1824,11 +1868,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			defer stop()
 		}
 		if err != nil {
-			return err
+			// A parse error can quote the script's own output, such as an
+			// invalid skipped=<value> line, and the run error reaches the
+			// trace and the completion comment.
+			return redactedError{msg: redactFeedback(err.Error(), h.RunnerEnv), err: err}
 		}
+		redactPreScriptResult(&preResult, h.RunnerEnv)
 		// Log the outputs so non-GitHub CIs and local runs still see what
 		// the pre-script reported.
-		if line := prescript.LogLine(preResult); line != "" {
+		if line := prescript.LogLine(preScriptLogResult(preResult, h.RunnerEnv)); line != "" {
 			printer.StepDone("Pre-script outputs: " + line)
 		}
 	}
@@ -1875,9 +1923,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to create sandbox")
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
-	// Anchor for waitForOpenShellFirstPoll (OpenShell #3809) before the first
-	// network request.
-	sandboxReadyAt := time.Now()
 	finalizeSandboxSpan(sandboxSpan, nil)
 
 	if len(runScopedProviders) > 0 {
@@ -2372,13 +2417,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// 9b-1. Let OpenShell 0.1.2's first settings poll pass before any network
-	// request; it terminates connections in flight (OpenShell #3809). Remove
-	// with openShellFirstPollSettle once the pin includes the upstream fix.
-	if _, err := waitForOpenShellFirstPoll(ctx, sandboxReadyAt, printer); err != nil {
-		return fmt.Errorf("waiting for the sandbox's first policy poll: %w", err)
-	}
-
 	// 9b-2. Pre-flight GitHub API connectivity check.
 	// Validates that the sandbox can reach api.github.com through the proxy
 	// before starting the agent. Without this, agents that depend on gh CLI
@@ -2518,14 +2556,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// append, the previous validation failure is injected so the agent
 		// can self-correct instead of re-running blindly (#1050, #6494).
 		agentPrompt := ""
+		promptSanitized := 0
 		if iteration > 1 && feedbackEnabled && validationFeedback != "" {
-			var sanitizedFindings int
-			agentPrompt, sanitizedFindings = buildFeedbackPrompt(validationFeedback)
+			agentPrompt, promptSanitized = buildFeedbackPrompt(validationFeedback)
 			printer.StepInfo("Injecting validation feedback into agent prompt")
-			if sanitizedFindings > 0 {
+			if promptSanitized > 0 {
 				printer.StepWarn(fmt.Sprintf(
 					"Unicode sanitization altered validation feedback (%d finding(s) stripped)",
-					sanitizedFindings))
+					promptSanitized))
 			}
 		}
 
@@ -2558,8 +2596,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// later spans. Nil when the Level 3 gate is off; nil is inert. The
 		// tool-span tracker is per iteration for the same reason and is not
 		// gated: execute_tool spans are metadata.
-		collector := newContentCollectorIfEnabled()
+		collector := newContentCollectorIfEnabled(h.RunnerEnv)
+		collector.attachInput(agentSpan, agentPrompt, promptHidesAlterations(validationFeedback, promptSanitized))
 		toolSpans := newToolSpanTracker(tracer, agentCtx)
+		toolSpans.runnerEnv = h.RunnerEnv
 		var metrics agentruntime.RunMetrics
 		hooksSettings := ""
 		if h.SecurityEnabled() {
@@ -3155,6 +3195,14 @@ var oidcDenyKeys = map[string]bool{
 	// them.
 	"FULLSEND_TRIGGER_TOKEN":  true,
 	"FULLSEND_WEBHOOK_SECRET": true,
+	// The runner secrets bundle and its file path (ADR 0136).
+	// loadRunnerSecrets unsets both at start-up; listing them here keeps a
+	// harness from expanding the whole bundle and strips them from child
+	// scripts if either is ever still present. In CI the bundle reaches
+	// fullsend run only as a file, which it deletes after reading, so no
+	// process environment holds it; scripts still run as the job user.
+	runnerSecretsEnv:     true,
+	runnerSecretsFileEnv: true,
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting
@@ -3682,13 +3730,13 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 		} else {
 			mkdirCmd := fmt.Sprintf("mkdir -p %s/.fullsend", sandbox.SandboxWorkspace)
 			if _, _, _, execErr := sandbox.Exec(sandboxName, mkdirCmd, 10*time.Second); execErr != nil {
-				fmt.Fprintf(os.Stderr, "WARNING: could not create .fullsend dir for schema: %v\n", execErr)
-			} else if uploadErr := sandbox.UploadFile(sandboxName, schemaHost, remoteSchemaPath); uploadErr != nil {
-				fmt.Fprintf(os.Stderr, "WARNING: could not upload output schema: %v\n", uploadErr)
-			} else {
-				// Safe: remoteSchemaPath is built from the SandboxWorkspace constant.
-				lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_SCHEMA=%s", remoteSchemaPath))
+				return fmt.Errorf("creating .fullsend dir for output schema: %w", execErr)
 			}
+			if uploadErr := sandbox.UploadFile(sandboxName, schemaHost, remoteSchemaPath); uploadErr != nil {
+				return fmt.Errorf("uploading output schema %s: %w", schemaHost, uploadErr)
+			}
+			// Safe: remoteSchemaPath is built from the SandboxWorkspace constant.
+			lines = append(lines, fmt.Sprintf("export FULLSEND_OUTPUT_SCHEMA=%s", remoteSchemaPath))
 		}
 	}
 	if outputFile, ok := h.RunnerEnv["FULLSEND_OUTPUT_FILE"]; ok && outputFile != "" {
@@ -3889,6 +3937,28 @@ func buildFeedbackPrompt(feedback string) (string, int) {
 		sanitizedFindings
 }
 
+// promptHidesAlterations reports whether the retry prompt's telemetry copy
+// (contentCollector.attachInput) must be recorded masked whole: the
+// sanitizer stripped something (sanitized > 0), which the collector's own
+// normalizer can then no longer see — a stripped colour code can take a
+// token's first letter with it, and what is left matches no pattern — or
+// the feedback was cut at maxFeedbackBytes while it held what the
+// collector recognises only whole: compatibility characters, which only
+// its fold joins, or a URL whose userinfo, query or fragment maskURLs
+// masks — a cut can take the '@' that marks userinfo and leave the
+// password before it. Feedback cut with neither is recorded.
+func promptHidesAlterations(feedback string, sanitized int) bool {
+	if sanitized > 0 {
+		return true
+	}
+	if len(feedback) <= maxFeedbackBytes {
+		return false
+	}
+	var urls []security.Finding
+	maskURLs(feedback, &urls)
+	return len(urls) > 0 || !security.NewUnicodeNormalizer().Scan(feedback).Safe
+}
+
 // sanitizeFeedbackUnicode strips dangerous non-rendering Unicode characters
 // from validation feedback before it enters the agent prompt. It uses the
 // same UnicodeNormalizer that backs the PostToolUse hook chain's scan_text,
@@ -3993,28 +4063,127 @@ const minRedactableSecretLen = 8
 // never passed through our env (a key baked into a fixture, a hook printing
 // its own).
 func redactFeedback(feedback string, runnerEnv map[string]string) string {
-	for key, value := range runnerEnv {
-		if len(value) < minRedactableSecretLen || !sensitiveEnvKey(key) {
-			continue
-		}
-		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
-	}
-	// Provider-only keys live in the process environment, not RunnerEnv.
-	// Redact their literals the same way so they cannot reach the agent
-	// prompt or the uploaded run directory (#6649).
-	for key := range providerOnlyKeys {
-		value := os.Getenv(key)
-		if len(value) < minRedactableSecretLen {
-			continue
-		}
-		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
-	}
+	feedback = redactSecretLiterals(feedback, runnerEnv)
 	// ScanResult.Sanitized is empty when the scanner changed nothing, so the
 	// original text is the fallback — not an empty prompt.
 	if res := security.NewSecretRedactor().Scan(feedback); res.Sanitized != "" {
 		return res.Sanitized
 	}
 	return feedback
+}
+
+// redactPreScriptResult scrubs a pre-script result before it is printed,
+// relayed to GITHUB_OUTPUT, recorded in the trace or (the reason) posted in
+// the completion comment. Outputs lose only exact credential values, since
+// downstream steps read them; the reason gets the full redaction pass.
+func redactPreScriptResult(res *prescript.Result, runnerEnv map[string]string) {
+	for k, v := range res.Outputs {
+		res.Outputs[k] = redactSecretLiterals(v, runnerEnv)
+	}
+	res.Reason = redactFeedback(res.Reason, runnerEnv)
+	if _, ok := res.Outputs["reason"]; ok {
+		res.Outputs["reason"] = res.Reason
+	}
+}
+
+// redactedError reports a redacted message while keeping the original
+// error in the chain for errors.Is and errors.As.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e redactedError) Error() string { return e.msg }
+func (e redactedError) Unwrap() error { return e.err }
+
+// preScriptLogResult returns a copy of res for the log line, with every
+// output value given the full redaction pass. The log is read by people,
+// not by downstream steps, so a value that looks like a secret is hidden
+// there even though the relayed value keeps it.
+func preScriptLogResult(res prescript.Result, runnerEnv map[string]string) prescript.Result {
+	outputs := make(map[string]string, len(res.Outputs))
+	for k, v := range res.Outputs {
+		outputs[k] = redactFeedback(v, runnerEnv)
+	}
+	res.Outputs = outputs
+	return res
+}
+
+// redactSecretLiterals replaces only known credential values: sensitive
+// env.runner values, provider-only keys and registered runtime secrets
+// (runner secrets among them). Unlike redactFeedback it runs no pattern
+// scan, so text that merely looks like a secret is left alone.
+func redactSecretLiterals(feedback string, runnerEnv map[string]string) string {
+	// All exact literals are replaced in one pass, longest first, so a
+	// value that is a substring of another never leaves part of the longer
+	// one visible, whichever source each came from. envLiterals covers
+	// RunnerEnv and the provider-only keys kept out of it (#6649);
+	// registered runtime secrets, such as runner secrets referenced under a
+	// key sensitiveEnvKey does not match, join the same pass.
+	type literal struct{ value, mask string }
+	var literals []literal
+	seen := map[string]bool{}
+	add := func(value, mask string) {
+		if len(value) >= minRedactableSecretLen && !seen[value] {
+			seen[value] = true
+			literals = append(literals, literal{value, mask})
+		}
+	}
+	for _, l := range envLiterals(runnerEnv) {
+		add(l.value, "[REDACTED:"+l.key+"]")
+	}
+	for _, value := range security.RuntimeSecrets() {
+		add(value, "***")
+	}
+	slices.SortStableFunc(literals, func(a, b literal) int { return cmp.Compare(len(b.value), len(a.value)) })
+	for _, l := range literals {
+		feedback = strings.ReplaceAll(feedback, l.value, l.mask)
+	}
+	return feedback
+}
+
+// replaceEnvSecrets is the literal pass: the value of each sensitive runner
+// env key, and of each providerOnlyKeys entry in the process environment
+// (kept out of RunnerEnv, #6649), when it holds minRedactableSecretLen bytes
+// or more and occurs in text, becomes [REDACTED:<key>]. It returns the keys
+// it replaced. Both sources go in one pass, longer values first, then key
+// order: a value that contains another is replaced whole, whichever source
+// holds it, and the text is the same on every run.
+func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []string) {
+	var replaced []string
+	for _, l := range envLiterals(runnerEnv) {
+		if !strings.Contains(text, l.value) {
+			continue
+		}
+		text = strings.ReplaceAll(text, l.value, "[REDACTED:"+l.key+"]")
+		replaced = append(replaced, l.key)
+	}
+	return text, replaced
+}
+
+// envLiteral is one value the literal pass replaces, with the key it
+// names in the mask.
+type envLiteral struct{ key, value string }
+
+// envLiterals lists the values replaceEnvSecrets replaces — longer values
+// first, then key order, so a value that contains another is replaced
+// whole whichever source holds it.
+func envLiterals(runnerEnv map[string]string) []envLiteral {
+	var literals []envLiteral
+	for key, value := range runnerEnv {
+		if len(value) >= minRedactableSecretLen && sensitiveEnvKey(key) {
+			literals = append(literals, envLiteral{key, value})
+		}
+	}
+	for key := range providerOnlyKeys {
+		if value := os.Getenv(key); len(value) >= minRedactableSecretLen {
+			literals = append(literals, envLiteral{key, value})
+		}
+	}
+	slices.SortFunc(literals, func(a, b envLiteral) int {
+		return cmp.Or(cmp.Compare(len(b.value), len(a.value)), cmp.Compare(a.key, b.key), cmp.Compare(a.value, b.value))
+	})
+	return literals
 }
 
 // writeValidationFeedback writes the validation failure output to a file in
@@ -4750,10 +4919,15 @@ func dropUnusableCredentialFile(printer *ui.Printer, setEnv func(key, value stri
 	return false
 }
 
+// actionsCommandEscaper escapes a workflow command's data the way the
+// runner unescapes it, so a value holding %25, %0D or %0A (or a raw CR or
+// LF) is masked as written rather than as its unescaped form.
+var actionsCommandEscaper = strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
+
 // maskActionsValue asks GitHub Actions to mask a secret in the job log.
 func maskActionsValue(value string) {
 	if value != "" && os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", value)
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", actionsCommandEscaper.Replace(value))
 	}
 }
 
@@ -4968,7 +5142,10 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 		var exitErr *exec.ExitError
 		if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != prescript.ExitCodeNeutral {
 			printer.StepFail("Pre-script failed")
-			detail := preScriptFailureDetail(stdoutBuf.String(), stderrBuf.String())
+			// Redact the whole capture before the last line is cut, stripped
+			// of control characters or capped, so a secret split by the cap
+			// or altered by the stripping is still caught.
+			detail := preScriptFailureDetail(redactFeedback(stdoutBuf.String(), h.RunnerEnv), redactFeedback(stderrBuf.String(), h.RunnerEnv))
 			if detail != "" {
 				// detail flows into the sticky status comment, the OTLP span,
 				// and CLI stderr (via runErr.Error()) — the same redaction
@@ -4993,7 +5170,7 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 			// Same redaction as the hard-failure detail below: this reason is
 			// derived from incidental stdout, not a value the script author
 			// chose to put in a reason= line, so it gets the same scrub.
-			result.Reason = redactFeedback(lastNonEmptyLine(stdoutBuf.String()), h.RunnerEnv)
+			result.Reason = redactFeedback(lastNonEmptyLine(redactFeedback(stdoutBuf.String(), h.RunnerEnv)), h.RunnerEnv)
 		}
 		if result.Reason != "" {
 			result.Outputs["reason"] = result.Reason
@@ -6430,8 +6607,14 @@ type tokenVar struct {
 	Value string // empty = use minted token
 }
 
+// agentTokenEnvVars are the process env vars mintAgentTokenAtLevel sets to
+// the minted token for every role. GITHUB_TOKEN is included so a caller
+// workflow that exports it does not leave the job token in place for tools
+// that read it instead of GH_TOKEN, or for pre/post scripts (#8530).
+var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN"}
+
 // roleTokenVars maps canonical role names to the additional env vars they
-// require beyond GH_TOKEN. These match the vars declared in
+// require beyond agentTokenEnvVars. These match the vars declared in
 // forge.github.runner_env across the harness YAML files.
 var roleTokenVars = map[string][]tokenVar{
 	"coder":  {{Name: "PUSH_TOKEN"}, {Name: "PUSH_TOKEN_SOURCE", Value: "github-app"}},
@@ -6518,7 +6701,7 @@ func syncRunnerEnvTokens(h *harness.Harness) {
 	if h == nil || h.RunnerEnv == nil {
 		return
 	}
-	names := []string{"GH_TOKEN"}
+	names := append([]string(nil), agentTokenEnvVars...)
 	for _, tv := range roleTokenVars[resolveRole(h.Role)] {
 		names = append(names, tv.Name)
 	}
@@ -6574,8 +6757,12 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 // The caller should defer cleanup() to clear tokens from the process env.
 // forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
 // set to "github-app" for GitHub and "pat" for GitLab.
-// On GitHub Actions the pre-mint GH_TOKEN is copied to GH_WORKFLOW_TOKEN
-// for provider credential expansion (#6649); cleanup unsets it. Remint-safe:
+// The minted token replaces every agentTokenEnvVars name (GH_TOKEN and
+// GITHUB_TOKEN); cleanup restores each to its value before this call, or
+// unsets it if it was unset (#8530).
+// On GitHub Actions the pre-mint GH_TOKEN (or, when that is unset or empty,
+// the pre-mint GITHUB_TOKEN) is copied to GH_WORKFLOW_TOKEN for provider
+// credential expansion (#6649); cleanup unsets it. Remint-safe:
 // if GH_WORKFLOW_TOKEN is already set (remintAgentTokenForPostScript's
 // second call, after the first mint replaced GH_TOKEN with the App token),
 // the copy is skipped so the already-preserved workflow token is left alone.
@@ -6614,15 +6801,22 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 	// NOTE: os.Setenv is not goroutine-safe. Minting MUST complete
 	// before any goroutines that read env vars (sandbox streaming,
 	// post-script execution) are launched.
+	//
+	// Record each agentTokenEnvVars name as it was before this call so
+	// cleanup restores exactly that value, or unsets a name that was unset.
+	// A nested remint records the outer mint's token and so restores it.
 	originals := make(map[string]string)
-	envVars := []string{"GH_TOKEN"}
-	if v, ok := os.LookupEnv("GH_TOKEN"); ok {
-		originals["GH_TOKEN"] = v
+	envVars := append([]string(nil), agentTokenEnvVars...)
+	for _, name := range agentTokenEnvVars {
+		if v, ok := os.LookupEnv(name); ok {
+			originals[name] = v
+		}
 	}
-	// Preserve the Actions workflow token before GH_TOKEN is replaced so
-	// provider credentials can authenticate to GitHub Packages. Outside
-	// Actions leave a caller-set value alone and never derive one from a
-	// local PAT (#6649).
+	// Preserve the Actions workflow token before GH_TOKEN and GITHUB_TOKEN
+	// are replaced so provider credentials can authenticate to GitHub
+	// Packages. The pre-mint GH_TOKEN is preferred; a caller that exports
+	// only GITHUB_TOKEN falls back to that (#8530). Outside Actions leave a
+	// caller-set value alone and never derive one from a local PAT (#6649).
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		// A non-empty existing value means either a prior mintAgentToken
 		// call in this process already preserved the real workflow token
@@ -6640,18 +6834,23 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 		existing, alreadyPreserved := os.LookupEnv(workflowTokenEnv)
 		alreadyPreserved = alreadyPreserved && existing != ""
 		if !alreadyPreserved {
-			preMint := originals["GH_TOKEN"]
+			preMintName := "GH_TOKEN"
+			preMint := originals[preMintName]
+			if preMint == "" {
+				preMintName = "GITHUB_TOKEN"
+				preMint = originals[preMintName]
+			}
 			switch {
 			case preMint == "":
 				// A future caller could override the workflow's github_token
 				// input to empty; fail loud instead of silently skipping the
 				// preserve step (#6649).
-				printer.StepWarn("GITHUB_ACTIONS is set but no pre-mint GH_TOKEN was found; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
+				printer.StepWarn("GITHUB_ACTIONS is set but no pre-mint GH_TOKEN or GITHUB_TOKEN was found; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
 			case !mintTokenPattern.MatchString(preMint):
 				// Gate the same as result.Token below before it reaches
 				// Setenv/add-mask/RegisterRuntimeSecret: fail closed rather
 				// than trust an unvalidated value (#6649).
-				printer.StepWarn("pre-mint GH_TOKEN has an unexpected format; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
+				printer.StepWarn("pre-mint " + preMintName + " has an unexpected format; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
 			default:
 				os.Setenv(workflowTokenEnv, preMint)
 				envVars = append(envVars, workflowTokenEnv)
@@ -6660,7 +6859,11 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 			}
 		}
 	}
-	os.Setenv("GH_TOKEN", result.Token)
+	// GITHUB_TOKEN is set even when the caller did not export it, so no
+	// tool that reads it instead of GH_TOKEN keeps the job token (#8530).
+	for _, name := range agentTokenEnvVars {
+		os.Setenv(name, result.Token)
+	}
 
 	for _, tv := range roleTokenVars[role] {
 		if v, ok := os.LookupEnv(tv.Name); ok {

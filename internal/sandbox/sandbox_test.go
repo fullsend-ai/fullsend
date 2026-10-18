@@ -1139,7 +1139,7 @@ func installFileUploadFake(t *testing.T) {
 	bin := t.TempDir()
 	script := `#!/bin/sh
 if [ "$2" = upload ]; then
-  mkdir -p -- "$5" && cp -- "$4" "$5/"
+  mkdir -p -- "$6" && cp -- "$5" "$6/"
   exit $?
 fi
 if [ "$2" = exec ]; then
@@ -1279,7 +1279,8 @@ func TestTarRootMembers_RejectsNestedExclude(t *testing.T) {
 }
 
 // fakeOpenshell writes a script that logs every invocation's full argv to
-// logPath, and — when invoked as "sandbox upload <name> <local> <remote>" —
+// logPath, and — when invoked as
+// "sandbox upload --no-git-ignore <name> <local> <remote>" —
 // copies <local> to sentinelPath so the test can inspect exactly what bytes
 // would have been shipped to the sandbox. It always exits 0. The real system
 // tar (found via the pre-existing PATH) is used for archive creation, so
@@ -1289,7 +1290,7 @@ func fakeOpenshell(t *testing.T, binDir, logPath, sentinelPath string) {
 	t.Helper()
 	script := "#!/bin/sh\n" +
 		"echo \"$@\" >> " + shellQuote(logPath) + "\n" +
-		"if [ \"$2\" = \"upload\" ]; then cp \"$4\" " + shellQuote(sentinelPath) + "; fi\n" +
+		"if [ \"$2\" = \"upload\" ]; then cp \"$5\" " + shellQuote(sentinelPath) + "; fi\n" +
 		"exit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 }
@@ -1409,8 +1410,8 @@ func TestUpload_SymlinkToRegularFile_UploadsFileDirectly(t *testing.T) {
 	require.NoError(t, err)
 	log, readErr := os.ReadFile(logPath)
 	require.NoError(t, readErr)
-	assert.Contains(t, string(log), "upload test-sandbox "+wantPath+" /sandbox/workspace/link.txt")
-	assert.NotContains(t, string(log), "upload test-sandbox "+link+" ",
+	assert.Contains(t, string(log), "upload --no-git-ignore test-sandbox "+wantPath+" /sandbox/workspace/link.txt")
+	assert.NotContains(t, string(log), "test-sandbox "+link+" ",
 		"the symlink path itself should never reach openshell")
 }
 
@@ -1473,7 +1474,7 @@ func TestUpload_MaliciousBasename_ExtractCommandNotInjected(t *testing.T) {
 	// real via the host's own sh. This reproduces, on the test machine,
 	// exactly what UploadDir's extractCmd would do inside the sandbox.
 	script := "#!/bin/sh\n" +
-		"if [ \"$2\" = \"upload\" ]; then cp \"$4\" \"$5\"; exit 0; fi\n" +
+		"if [ \"$2\" = \"upload\" ]; then cp \"$5\" \"$6\"; exit 0; fi\n" +
 		"if [ \"$2\" = \"exec\" ]; then\n" +
 		"  for a in \"$@\"; do last=\"$a\"; done\n" +
 		"  sh -c \"$last\"\n" +
@@ -1519,7 +1520,41 @@ func TestUpload_RegularFile_SkipsTarPath(t *testing.T) {
 
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(log), "upload test-sandbox "+f+" /sandbox/claude-config/settings.json")
+	assert.Contains(t, string(log), "upload --no-git-ignore test-sandbox "+f+" /sandbox/claude-config/settings.json")
+}
+
+// TestUpload_PassesNoGitIgnore: every "sandbox upload" carries --no-git-ignore
+// so OpenShell >= 0.1.3 never drops a file fullsend already chose because the
+// host checkout's .gitignore matches it (NVIDIA/OpenShell#3957, #8484).
+func TestUpload_PassesNoGitIgnore(t *testing.T) {
+	// A git-ignored path inside a checkout, like the cached output schema.
+	f := filepath.Join(t.TempDir(), ".fullsend-cache", "content.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(f), 0o755))
+	require.NoError(t, os.WriteFile(f, []byte("{}"), 0o644))
+	dir := filepath.Join(t.TempDir(), "skill")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("x"), 0o644))
+
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = \"upload\" ]; then printf '%s\\n' \"$*\" >> " + shellQuote(argvLog) + "; fi\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	require.NoError(t, Upload("test-sandbox", f, "/dest/f"))
+	require.NoError(t, UploadDir("test-sandbox", dir, "/dest/skill"))
+
+	data, err := os.ReadFile(argvLog)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, "sandbox upload --no-git-ignore test-sandbox "+f+" /dest/f", lines[0])
+	fields := strings.Fields(lines[1])
+	require.Len(t, fields, 6, "UploadDir tarball upload: %s", lines[1])
+	assert.Equal(t, []string{"sandbox", "upload", "--no-git-ignore", "test-sandbox"}, fields[:4])
+	assert.True(t, strings.HasSuffix(fields[4], ".tar.gz"), "UploadDir uploads its tarball: %s", fields[4])
 }
 
 func TestUpload_TrailingDotConvention_CopiesContentsWithoutWrapping(t *testing.T) {
@@ -2814,4 +2849,67 @@ func TestResolvedBasename(t *testing.T) {
 	t.Run("nonexistent path", func(t *testing.T) {
 		assert.Equal(t, "gone.txt", resolvedBasename("/no/such/gone.txt"))
 	})
+}
+
+// stubOpenshellForExtract puts a fake openshell first on PATH. The listing
+// runs "openshell sandbox exec …" and each copy runs
+// "openshell sandbox download <name> <remote> <destDir>", so the script
+// branches on $2.
+func stubOpenshellForExtract(t *testing.T, execBody, downloadBody string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = \"exec\" ]; then\n" + execBody + "\nfi\n" +
+		"if [ \"$2\" = \"download\" ]; then\n" + downloadBody + "\nfi\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestExtractOutputFiles_OpenshellFailureIsAnError(t *testing.T) {
+	stubOpenshellForExtract(t,
+		"  echo 'sandbox is not ready' >&2\n  exit 1",
+		"  exit 0")
+
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox is not ready")
+	assert.Empty(t, got)
+}
+
+func TestExtractOutputFiles_EmptyOutputIsNotAnError(t *testing.T) {
+	stubOpenshellForExtract(t, "  exit 0", "  exit 0")
+
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	assert.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestExtractOutputFiles_ListedButNoneCopiedIsAnError(t *testing.T) {
+	stubOpenshellForExtract(t,
+		"  echo /sandbox/output/agent-result.json\n  exit 0",
+		"  echo 'sandbox is not ready' >&2\n  exit 1")
+
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "1 listed, none copied")
+	assert.Empty(t, got)
+}
+
+func TestExtractOutputFiles_CopiesListedFiles(t *testing.T) {
+	stubOpenshellForExtract(t,
+		"  echo /sandbox/output/agent-result.json\n  exit 0",
+		"  printf '{}' > \"$5/$(basename \"$4\")\"\n  exit 0")
+
+	localDir := t.TempDir()
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", localDir)
+	require.NoError(t, err)
+	want := filepath.Join(localDir, "agent-result.json")
+	assert.Equal(t, []string{want}, got)
+	data, readErr := os.ReadFile(want)
+	require.NoError(t, readErr)
+	assert.Equal(t, "{}", string(data))
 }

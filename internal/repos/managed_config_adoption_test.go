@@ -165,9 +165,10 @@ func TestZeroByteOverlayRequiresAdoption(t *testing.T) {
 		m := newConvergeManifest("acme/api")
 		fc := newFakeClientForBatch("acme/api")
 		fc.FileContents[path] = []byte{}
-		err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "adoption required")
+		adoption, err := PreflightManagedConfig(ctx, m, newTestClientFactory(fc), nil)
+		require.NoError(t, err)
+		require.Len(t, adoption, 1)
+		assert.Contains(t, adoption[0].Guidance, "adoption required")
 	})
 	t.Run("writeback leaves manifest alone", func(t *testing.T) {
 		m := newConvergeManifest("acme/api")

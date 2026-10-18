@@ -30,6 +30,9 @@ type pipelineCall struct {
 	Ref       string
 	Variables map[string]string
 	ViaInputs bool
+	// JobToken is the CI_JOB_TOKEN a child-pipeline dispatch was
+	// authenticated with; empty for the Poller API route.
+	JobToken string
 }
 
 // typedWrapperFixture returns a minimal two-document GitLab wrapper whose
@@ -622,6 +625,17 @@ func (m *mockClient) CreatePipeline(_ context.Context, owner, repo, ref string, 
 // pipelineCall.Variables unchanged while still exercising the real
 // input-encoding/chunking logic end to end.
 func (m *mockClient) CreatePipelineWithInputs(_ context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	return m.createPipelineWithInputs(owner, repo, ref, "", inputs)
+}
+
+// CreateChildPipelineWithInputs records a CI_JOB_TOKEN child-pipeline
+// dispatch exactly like CreatePipelineWithInputs, plus the job token it
+// was authenticated with, so tests can tell the two routes apart.
+func (m *mockClient) CreateChildPipelineWithInputs(_ context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	return m.createPipelineWithInputs(owner, repo, ref, jobToken, inputs)
+}
+
+func (m *mockClient) createPipelineWithInputs(owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
 	if m.onPipeline != nil {
 		m.onPipeline()
 	}
@@ -678,6 +692,7 @@ func (m *mockClient) CreatePipelineWithInputs(_ context.Context, owner, repo, re
 		Ref:       ref,
 		Variables: vars,
 		ViaInputs: true,
+		JobToken:  jobToken,
 	})
 	if m.pipelineErr != nil && (m.pipelineErrAfter == 0 || len(m.pipelineCalls) > m.pipelineErrAfter) {
 		return 0, "", m.pipelineErr

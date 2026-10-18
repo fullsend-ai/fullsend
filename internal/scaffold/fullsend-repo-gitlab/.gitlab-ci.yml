@@ -133,6 +133,11 @@ workflow:
     # above, bridged from the stage input, so this is a normal
     # variable truthiness check, not a literal-to-literal comparison.
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+    # Child-pipeline agent dispatch (#8438): a poll or dispatcher job
+    # running as the trigger-only account starts the agent pipeline with
+    # its CI_JOB_TOKEN through the pipeline trigger API (source=pipeline,
+    # typed stage input set). Pinned to the protected default branch.
+    - if: $CI_PIPELINE_SOURCE == "pipeline" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $STAGE
     # Webhook dispatcher pipelines (ADR 0125, #7771): GitLab's native
     # "use a webhook" pipeline trigger, URL-pinned to the protected
     # default branch. fullsend-pipeline.yml includes only the dispatcher

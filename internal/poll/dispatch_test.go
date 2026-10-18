@@ -1409,3 +1409,88 @@ func TestResourceKey_EntityBased(t *testing.T) {
 		}
 	}
 }
+
+// TestDispatch_ChildPipelineRoute covers the CI_JOB_TOKEN child-pipeline
+// route (#8438): with ChildDispatchJobToken set, a typed repository's agent
+// pipeline is started through the trigger API with that job token and the
+// same signed typed inputs as the Poller API route; without it, the Poller
+// API route is unchanged; and a legacy (variable-based) repository is
+// refused rather than dispatched through variables.
+func TestDispatch_ChildPipelineRoute(t *testing.T) {
+	event := RoutableEvent{
+		Type:      "issue_note",
+		IID:       42,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:  "/fs-triage",
+	}
+
+	t.Run("typed wrapper dispatches a child pipeline with the job token", func(t *testing.T) {
+		mc := newMockClient()
+		p := newTestPoller(mc, Options{DispatchSecret: "s3cret", ChildDispatchJobToken: "job-token-value"})
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mc.pipelineCalls) != 1 {
+			t.Fatalf("expected one pipeline call, got %+v", mc.pipelineCalls)
+		}
+		call := mc.pipelineCalls[0]
+		if !call.ViaInputs || call.JobToken != "job-token-value" {
+			t.Fatalf("expected a typed child-pipeline call with the job token, got %+v", call)
+		}
+		if call.Variables["STAGE"] != "triage" {
+			t.Errorf("STAGE input: got %q, want triage", call.Variables["STAGE"])
+		}
+		want := computeDispatchHMAC("s3cret", withoutKey(call.Variables, forge.VarDispatchHMAC))
+		if call.Variables[forge.VarDispatchHMAC] != want {
+			t.Errorf("dispatch HMAC: got %q, want %q", call.Variables[forge.VarDispatchHMAC], want)
+		}
+	})
+
+	t.Run("no job token keeps the Poller API route", func(t *testing.T) {
+		mc := newMockClient()
+		p := newTestPoller(mc, Options{})
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mc.pipelineCalls) != 1 || !mc.pipelineCalls[0].ViaInputs || mc.pipelineCalls[0].JobToken != "" {
+			t.Fatalf("expected one Poller API typed-input call, got %+v", mc.pipelineCalls)
+		}
+	})
+
+	t.Run("legacy wrapper is refused on the child route", func(t *testing.T) {
+		mc := newMockClient()
+		mc.wrapperNotFound = true
+		p := newTestPoller(mc, Options{ChildDispatchJobToken: "job-token-value"})
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+		if err == nil || !strings.Contains(err.Error(), "requires the typed pipeline-input contract") {
+			t.Fatalf("expected a typed-contract error, got %v", err)
+		}
+		if len(mc.pipelineCalls) != 0 {
+			t.Fatalf("expected no pipeline call, got %+v", mc.pipelineCalls)
+		}
+	})
+
+	t.Run("child pipeline failure is reported", func(t *testing.T) {
+		mc := newMockClient()
+		mc.pipelineErr = fmt.Errorf("403 forbidden")
+		p := newTestPoller(mc, Options{ChildDispatchJobToken: "job-token-value"})
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+		if err == nil || !strings.Contains(err.Error(), "403 forbidden") {
+			t.Fatalf("expected the child-pipeline error, got %v", err)
+		}
+		if len(p.dispatches) != 0 {
+			t.Fatalf("expected no recorded dispatch after a failed child pipeline, got %+v", p.dispatches)
+		}
+	})
+}
+
+// withoutKey returns a copy of vars without key.
+func withoutKey(vars map[string]string, key string) map[string]string {
+	out := make(map[string]string, len(vars))
+	for k, v := range vars {
+		if k != key {
+			out[k] = v
+		}
+	}
+	return out
+}

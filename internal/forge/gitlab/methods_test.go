@@ -2242,7 +2242,7 @@ func TestListRepoVariables_WildcardScopeWinsOverEnvironmentScope(t *testing.T) {
 }
 
 func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
-	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
 		t.Run(name, func(t *testing.T) {
 			client, mux := setupTest(t)
 			ctx := context.Background()
@@ -2265,7 +2265,7 @@ func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
 }
 
 func TestUpdateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
-	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
 		t.Run(name, func(t *testing.T) {
 			client, mux := setupTest(t)
 			ctx := context.Background()
@@ -2502,6 +2502,37 @@ func TestCreatePipelineSchedule_NoVariables(t *testing.T) {
 	assert.Equal(t, int64(456), id)
 }
 
+func TestCreatePipelineScheduleWithActive_SendsActiveStateInCreateRequest(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var bodies []map[string]any
+	var otherRequests int
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		bodies = append(bodies, body)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 789})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules/789", func(http.ResponseWriter, *http.Request) {
+		otherRequests++
+	})
+
+	id, err := client.CreatePipelineScheduleWithActive(ctx, "myorg", "myrepo", "main", "Disabled", "0 0 * * 0", nil, false)
+	require.NoError(t, err)
+	assert.Equal(t, int64(789), id)
+	_, err = client.CreatePipelineScheduleWithActive(ctx, "myorg", "myrepo", "main", "Enabled", "0 0 * * 0", nil, true)
+	require.NoError(t, err)
+	_, err = client.CreatePipelineSchedule(ctx, "myorg", "myrepo", "main", "Default", "0 0 * * 0", nil)
+	require.NoError(t, err)
+
+	require.Len(t, bodies, 3)
+	assert.Equal(t, false, bodies[0]["active"], "a disabled schedule is created disabled")
+	assert.NotContains(t, bodies[1], "active", "an active schedule keeps GitLab's default")
+	assert.NotContains(t, bodies[2], "active", "CreatePipelineSchedule is unchanged")
+	assert.Zero(t, otherRequests, "no separate request edits the schedule")
+}
+
 func TestDeletePipelineSchedule(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -2553,6 +2584,7 @@ func TestListPipelineSchedules(t *testing.T) {
 		writeJSON(t, w, http.StatusOK, []map[string]any{
 			{
 				"id":            int64(1),
+				"owner":         map[string]any{"id": int64(42)},
 				"description":   "Nightly",
 				"ref":           "main",
 				"cron":          "0 0 * * *",
@@ -2575,6 +2607,7 @@ func TestListPipelineSchedules(t *testing.T) {
 	require.Len(t, schedules, 2)
 
 	assert.Equal(t, int64(1), schedules[0].ID)
+	assert.Equal(t, int64(42), schedules[0].OwnerID)
 	assert.Equal(t, "Nightly", schedules[0].Description)
 	assert.Equal(t, "main", schedules[0].Ref)
 	assert.Equal(t, "0 0 * * *", schedules[0].Cron)
@@ -2582,6 +2615,7 @@ func TestListPipelineSchedules(t *testing.T) {
 	assert.True(t, schedules[0].Active)
 
 	assert.Equal(t, int64(2), schedules[1].ID)
+	assert.Zero(t, schedules[1].OwnerID)
 	assert.False(t, schedules[1].Active)
 }
 

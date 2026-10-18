@@ -376,6 +376,18 @@ func (pc *PollClient) CreatePipelineWithInputs(ctx context.Context, owner, repo,
 	return p.ID, p.WebURL, nil
 }
 
+// CreateChildPipelineWithInputs starts a source=pipeline downstream
+// pipeline on ref, authenticated by jobToken (the running job's
+// CI_JOB_TOKEN) and parameterized by typed pipeline inputs. Returns the
+// pipeline ID and web URL.
+func (pc *PollClient) CreateChildPipelineWithInputs(ctx context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	p, err := pc.LiveClient.TriggerPipelineWithJobToken(ctx, owner, repo, ref, jobToken, inputs)
+	if err != nil {
+		return 0, "", err
+	}
+	return p.ID, p.WebURL, nil
+}
+
 // GetAuthenticatedUserID returns the numeric user ID of the
 // authenticated GitLab user. Used by the CLI to set the bot user ID
 // for event filtering.

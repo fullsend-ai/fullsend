@@ -367,6 +367,24 @@ func TestCheckOrphanVars_GitLabRetiredVarsNotFlagged(t *testing.T) {
 	}
 }
 
+// The webhook fast path's trigger token and webhook secret are managed
+// variables, so status does not report them, while an unknown FULLSEND_
+// variable on the same project still is an orphan.
+func TestCheckOrphanVars_GitLabWebhookVarsManagedButGenuineOrphanReported(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+forge.SecretTriggerToken] = "trigger"
+	fc.VariableValues["owner/repo/"+forge.SecretWebhookSecret] = "webhook"
+	fc.VariableValues["owner/repo/FULLSEND_UNKNOWN_LEFTOVER"] = "x"
+
+	orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo", InstallConfig{Forge: ForgeGitLab}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Name != "FULLSEND_UNKNOWN_LEFTOVER" {
+		t.Errorf("expected only the genuine orphan, got %v", orphans)
+	}
+}
+
 func TestCheckOrphanFiles_GitLabDispatchStubIsOrphan(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["owner/repo/"+fullsendPipelineInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")

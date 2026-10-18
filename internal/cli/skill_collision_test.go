@@ -43,6 +43,68 @@ func TestIsReadableSkillMarkerFS_AcceptsSupportedCasing(t *testing.T) {
 	}
 }
 
+func TestWarnRepoSkillCollisions_UsesDeclaredName(t *testing.T) {
+	repoDir := t.TempDir()
+	repoSkillDir := filepath.Join(repoDir, ".claude", "skills", "issue-labels")
+	require.NoError(t, os.MkdirAll(repoSkillDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoSkillDir, "SKILL.md"), []byte("# Repo labels"), 0o644))
+
+	harnessSkillDir := filepath.Join(t.TempDir(), "issue-labels", "github")
+	require.NoError(t, os.MkdirAll(harnessSkillDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(harnessSkillDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# Harness labels"), 0o644))
+
+	var output bytes.Buffer
+	warnRepoSkillCollisions(repoDir, []string{harnessSkillDir}, ui.New(&output))
+
+	assert.Contains(t, output.String(), `Repo skill "issue-labels" is shadowed by a harness skill of the same name`)
+}
+
+func TestWarnRepoSkillCollisions_RepoSkillDeclaredName(t *testing.T) {
+	harnessSkillDir := filepath.Join(t.TempDir(), "issue-labels")
+	require.NoError(t, os.MkdirAll(harnessSkillDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(harnessSkillDir, "SKILL.md"), []byte("# Harness labels"), 0o644))
+
+	t.Run("declared name collides", func(t *testing.T) {
+		repoDir := t.TempDir()
+		repoSkillDir := filepath.Join(repoDir, ".claude", "skills", "custom-labels")
+		require.NoError(t, os.MkdirAll(repoSkillDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(repoSkillDir, "SKILL.md"),
+			[]byte("---\nname: issue-labels\n---\n# Repo labels"), 0o644))
+
+		var output bytes.Buffer
+		warnRepoSkillCollisions(repoDir, []string{harnessSkillDir}, ui.New(&output))
+
+		assert.Contains(t, output.String(), `Repo skill "issue-labels" is shadowed by a harness skill of the same name`)
+	})
+
+	t.Run("directory name alone does not collide", func(t *testing.T) {
+		repoDir := t.TempDir()
+		repoSkillDir := filepath.Join(repoDir, ".claude", "skills", "issue-labels")
+		require.NoError(t, os.MkdirAll(repoSkillDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(repoSkillDir, "SKILL.md"),
+			[]byte("---\nname: custom-labels\n---\n# Repo labels"), 0o644))
+
+		var output bytes.Buffer
+		warnRepoSkillCollisions(repoDir, []string{harnessSkillDir}, ui.New(&output))
+
+		assert.Empty(t, output.String())
+	})
+
+	t.Run("declared name is read from any marker spelling", func(t *testing.T) {
+		repoDir := t.TempDir()
+		repoSkillDir := filepath.Join(repoDir, ".claude", "skills", "custom-labels")
+		require.NoError(t, os.MkdirAll(repoSkillDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(repoSkillDir, "skill.md"),
+			[]byte("---\nname: issue-labels\n---\n# Repo labels"), 0o644))
+
+		var output bytes.Buffer
+		warnRepoSkillCollisions(repoDir, []string{harnessSkillDir}, ui.New(&output))
+
+		assert.Contains(t, output.String(), `Repo skill "issue-labels" is shadowed by a harness skill of the same name`)
+	})
+}
+
 func TestWarnRepoSkillCollisions_DoesNotWarnWithoutCollision(t *testing.T) {
 	repoDir := t.TempDir()
 	projectSkillsDir := filepath.Join(repoDir, ".claude", "skills")

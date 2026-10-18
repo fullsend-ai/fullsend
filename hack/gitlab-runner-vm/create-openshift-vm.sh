@@ -129,7 +129,7 @@ if [ -f "${_openshell_version_sh}" ]; then
   source "${_openshell_version_sh}"
 fi
 # Fallback only when the pin file is absent; keep in step with openshell-version.sh.
-OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.1.2}"
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.1.4}"
 TEMPLATE="${SCRIPT_DIR}/vm.yaml"
 PREFIX="fullsend-gitlab-runner"
 

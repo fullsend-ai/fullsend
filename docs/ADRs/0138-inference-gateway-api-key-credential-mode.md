@@ -18,6 +18,10 @@ Date: 2026-10-10
 
 Accepted
 
+*Amended by [ADR 0142](0142-inference-gateway-x-api-key-header-for-messages-models.md),
+which adds an opt-in setting to send the gateway credential as `x-api-key` for
+Messages-dialect models instead of `Authorization: Bearer`.*
+
 ## Context
 
 [ADR 0137](0137-inference-gateway-credential-route.md) made an inference

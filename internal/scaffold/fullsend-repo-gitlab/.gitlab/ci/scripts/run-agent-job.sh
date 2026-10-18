@@ -30,10 +30,13 @@ esac
 unset FULLSEND_TRIGGER_TOKEN FULLSEND_WEBHOOK_SECRET
 
 # Pin job/pipeline/project identity to the CI_JOB_TOKEN job record
-# and admit only source=api. Disjoint from the poller (schedule) and
-# the dispatcher (trigger, #7771). Runs before any PAT-bearing call.
+# and admit only source=api (started by the Poller through the
+# pipelines API) or source=pipeline (started by a poll or dispatcher job
+# of the trigger-only account through the CI_JOB_TOKEN trigger API,
+# #8438). Disjoint from the poller (schedule) and the dispatcher
+# (trigger, #7771). Runs before any PAT-bearing call.
 # shellcheck disable=SC2034  # consumed by sourced pin-ci-job-identity.sh
-FULLSEND_ADMIT_SOURCE=api
+FULLSEND_ADMIT_SOURCE="api pipeline"
 . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/pin-ci-job-identity.sh"
 PIPELINE_SOURCE="${FULLSEND_PINNED_PIPELINE_SOURCE}"
 PIPELINE_RESPONSE="${FULLSEND_PINNED_PIPELINE_RESPONSE}"
@@ -143,9 +146,12 @@ fullsend_gate_curl \
 
 # Bot identity verification (#5572 mitigation #1) — PIPELINE_SOURCE
 # was already re-derived from the CI_JOB_TOKEN job record by
-# pin-ci-job-identity.sh and admitted only as "api" (disjoint from
-# the poller's schedule allowlist; parent_pipeline is no longer
-# admitted). Confirm the pinned pipeline's creator is this bot.
+# pin-ci-job-identity.sh and admitted only as "api" or "pipeline"
+# (disjoint from the poller's schedule allowlist; parent_pipeline is
+# no longer admitted). Confirm the pinned pipeline's creator is the
+# identity that source implies: the Poller bot for "api", and the ready
+# trigger-only account recorded in the protected
+# FULLSEND_GITLAB_TRIGGER_ACCOUNT ledger for "pipeline" (#8438).
 # Some GitLab versions omit .user on the job-token pipeline GET;
 # re-fetch with the poller PAT using the pinned IDs (never the
 # overridable CI_PROJECT_ID / CI_PIPELINE_ID) when needed.
@@ -172,10 +178,36 @@ if [ -z "${PIPELINE_CREATOR_ID}" ]; then
   echo "ERROR: Cannot read pipeline creator — aborting (fail-closed)" >&2
   exit 1
 fi
-if [ "${PIPELINE_CREATOR_ID}" != "${BOT_USER_ID}" ]; then
-  echo "ERROR: Pipeline created by user ${PIPELINE_CREATOR_ID}, expected bot ${BOT_USER_ID} — rejecting forged dispatch" >&2
+case "${PIPELINE_SOURCE}" in
+  api)
+    EXPECTED_CREATOR_ID="${BOT_USER_ID}"
+    ;;
+  pipeline)
+    # The trigger-only account holds a deploy-key push grant on the
+    # protected default branch, so it is never the Poller identity
+    # (#8437). A pipeline-source agent pipeline must have been started
+    # by a poll or dispatcher job running as that account; one created
+    # by any other user, including the Poller, is rejected.
+    EXPECTED_CREATOR_ID=$(fullsend_gitlab_trigger_account_id)
+    if [ -z "${EXPECTED_CREATOR_ID}" ]; then
+      echo "ERROR: source=pipeline agent pipeline but no ready trigger-only account is recorded — rejecting (fail-closed)" >&2
+      exit 1
+    fi
+    if [ "${EXPECTED_CREATOR_ID}" = "${BOT_USER_ID}" ]; then
+      echo "ERROR: the recorded trigger-only account is the Poller identity — rejecting (fail-closed)" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "ERROR: unexpected pinned pipeline source '${PIPELINE_SOURCE:-<empty>}' — rejecting (fail-closed)" >&2
+    exit 1
+    ;;
+esac
+if [ "${PIPELINE_CREATOR_ID}" != "${EXPECTED_CREATOR_ID}" ]; then
+  echo "ERROR: Pipeline created by user ${PIPELINE_CREATOR_ID}, expected ${EXPECTED_CREATOR_ID} for source=${PIPELINE_SOURCE} — rejecting forged dispatch" >&2
   exit 1
 fi
+unset EXPECTED_CREATOR_ID
 
 # Gate mode — every mode is role-aware now: select-gitlab-role-token.sh
 # no longer has a shared-token path for disabled/rollback (it always
@@ -188,7 +220,7 @@ fi
 # HMAC dispatch signature verification (#5572 mitigation #2) —
 # verifies the dispatch variables were signed by the poller using
 # a shared secret (FULLSEND_DISPATCH_SECRET). The identity pin
-# above already admitted only source=api from the CI_JOB_TOKEN
+# above already admitted only source=api or source=pipeline from the CI_JOB_TOKEN
 # job record; HMAC authenticates the dispatch fields themselves.
 # parent_pipeline is no longer admitted (disjoint allowlist).
 #
@@ -201,14 +233,14 @@ fi
 # instead of silently skipping verification — an unsigned dispatch
 # must never be trusted with a role-specific credential.
 DISPATCH_VERIFIED=false
-if [ "${PIPELINE_SOURCE}" = "api" ]; then
+if [ "${PIPELINE_SOURCE}" = "api" ] || [ "${PIPELINE_SOURCE}" = "pipeline" ]; then
   if [ -n "${FULLSEND_DISPATCH_SECRET:-}" ]; then
     if [ -z "${FULLSEND_DISPATCH_HMAC:-}" ]; then
       echo "ERROR: FULLSEND_DISPATCH_HMAC missing — dispatch variables not signed (fail-closed)" >&2
       exit 1
     fi
     HMAC_MESSAGE=$(printf 'ACTOR_ID=%s\nEVENT_PAYLOAD_B64=%s\nEVENT_TYPE=%s\nFULLSEND_POLL_JOB_URL=%s\nIS_FORK=%s\nMR_AUTHOR_ID=%s\nORIGINATING_URL=%s\nREPO_FULL_NAME=%s\nRESOURCE_KEY=%s\nSTAGE=%s\nSTATUS_IID=%s' "${ACTOR_ID:-}" "${EVENT_PAYLOAD_B64:-}" "${EVENT_TYPE:-}" "${FULLSEND_POLL_JOB_URL:-}" "${IS_FORK:-}" "${MR_AUTHOR_ID:-}" "${ORIGINATING_URL:-}" "${REPO_FULL_NAME:-}" "${RESOURCE_KEY:-}" "${STAGE:-}" "${STATUS_IID:-}")
-    if printf '%s' "${HMAC_MESSAGE}" | HMAC_SECRET="${FULLSEND_DISPATCH_SECRET}" python3 -c 'import hmac,hashlib,os,sys; expected=hmac.new(os.environ["HMAC_SECRET"].encode(),sys.stdin.read().encode(),hashlib.sha256).hexdigest(); sys.exit(0 if hmac.compare_digest(sys.argv[1],expected) else 1)' "${FULLSEND_DISPATCH_HMAC}"; then
+    if printf '%s' "${HMAC_MESSAGE}" | HMAC_SECRET="${FULLSEND_DISPATCH_SECRET}" python3 -I -c 'import hmac,hashlib,os,sys; expected=hmac.new(os.environ["HMAC_SECRET"].encode(),sys.stdin.read().encode(),hashlib.sha256).hexdigest(); sys.exit(0 if hmac.compare_digest(sys.argv[1],expected) else 1)' "${FULLSEND_DISPATCH_HMAC}"; then
       DISPATCH_VERIFIED=true
     else
       echo "ERROR: HMAC verification failed — dispatch variables may be forged (fail-closed)" >&2
@@ -449,7 +481,7 @@ case "${EVENT_TYPE:-}" in
     if [[ -n "${STATUS_IID:-}" && "${STATUS_IID}" != "0" ]]; then
       GITLAB_ISSUE_URL="${FULLSEND_PINNED_GITLAB_URL}/${FULLSEND_PINNED_PROJECT_PATH}/-/issues/${STATUS_IID}"
     fi
-    # This job's admit source is api only, so GitLab never natively
+    # This job's admit sources are api and pipeline only, so GitLab never natively
     # populates CI_MERGE_REQUEST_IID for an issue event — any value
     # present is an ordinary, outrankable project/group/pipeline CI/CD
     # variable. newGitLabClientFromEnv (internal/cli/reconcilestatus.go)
@@ -465,8 +497,8 @@ case "${EVENT_TYPE:-}" in
     ;;
   *)
     # STATUS_IID is part of the HMAC-signed dispatch message;
-    # CI_MERGE_REQUEST_IID is not. This job's admit source is api
-    # only, so GitLab never natively populates CI_MERGE_REQUEST_IID
+    # CI_MERGE_REQUEST_IID is not. This job's admit sources are api
+    # and pipeline only, so GitLab never natively populates CI_MERGE_REQUEST_IID
     # here — any value comes solely from an ordinary, outrankable
     # project/group/pipeline CI/CD variable. Prefer the signed value,
     # fail closed if a non-empty CI_MERGE_REQUEST_IID disagrees with a
@@ -517,8 +549,8 @@ fi
 if [ "${STAGE}" = "review" ]; then
   # MR identity for the prior-review lookup below. STATUS_IID is part
   # of the HMAC-signed dispatch message (see HMAC_MESSAGE above);
-  # CI_MERGE_REQUEST_IID is not. This job's admit source is api only,
-  # so GitLab never natively populates CI_MERGE_REQUEST_IID here — any
+  # CI_MERGE_REQUEST_IID is not. This job's admit sources are api and
+  # pipeline only, so GitLab never natively populates CI_MERGE_REQUEST_IID here — any
   # value comes solely from an ordinary, outrankable project/group/
   # pipeline CI/CD variable. Prefer the signed value, fail closed if a
   # non-empty CI_MERGE_REQUEST_IID disagrees with a non-zero
@@ -663,7 +695,7 @@ if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ] || [ "${STAGE}" = "review" 
   # selects which MR's source gets fetched into --target-repo.
   # STATUS_IID is part of the HMAC-signed dispatch message (see
   # HMAC_MESSAGE above); CI_MERGE_REQUEST_IID is not. This job's admit
-  # source is api only, so GitLab never natively populates
+  # sources are api and pipeline only, so GitLab never natively populates
   # CI_MERGE_REQUEST_IID here — any value comes solely from an
   # ordinary, outrankable project/group/pipeline CI/CD variable.
   # Prefer the signed value, fail closed if a non-empty
@@ -825,8 +857,8 @@ if [ "${STAGE}" = "fix" ]; then
   # "Record pre-agent HEAD", and "Run fix agent" steps). These are
   # required by the fix harness env.runner and forge.gitlab blocks.
 
-  # Target branch (MR base branch). This job's admit source is
-  # api-only (parent_pipeline is not an admitted arm — see
+  # Target branch (MR base branch). This job's admit sources are
+  # api and pipeline only (parent_pipeline is not an admitted arm — see
   # FULLSEND_ADMIT_SOURCE above), so GitLab does not natively populate
   # CI_MERGE_REQUEST_TARGET_BRANCH_NAME here; a non-empty value is an
   # ordinary, overridable project/group/pipeline CI/CD variable of the
@@ -862,7 +894,7 @@ if [ "${STAGE}" = "fix" ]; then
   # convention). Human-triggered (/fs-fix comment): the note
   # author's username. The agent uses this to determine mode.
   TRIGGER_SOURCE=""
-  if [ "${PIPELINE_SOURCE}" = "api" ] && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
+  if { [ "${PIPELINE_SOURCE}" = "api" ] || [ "${PIPELINE_SOURCE}" = "pipeline" ]; } && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
     if [ "${_IS_BOT_TRIGGER}" = "true" ]; then
       # Bot-triggered — use cached bot username.
       TRIGGER_SOURCE="${_BOT_USERNAME}"

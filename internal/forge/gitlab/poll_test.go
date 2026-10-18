@@ -3,7 +3,10 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -1023,6 +1026,131 @@ func TestPollClient_CreatePipelineWithInputs_Error(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "403")
 	assert.True(t, handlerCalled, "pipeline handler must be called")
+}
+
+func TestPollClient_CreateChildPipelineWithInputs(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	calls := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/trigger/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Equal(t, http.MethodPost, r.Method)
+		// The job token alone authenticates the request: the client's PAT
+		// must not be sent, and the token must not travel in the URL.
+		assert.Empty(t, r.Header.Get("PRIVATE-TOKEN"), "the Poller PAT must not be sent with a job-token trigger")
+		assert.Empty(t, r.URL.RawQuery, "the job token must not travel in the URL")
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, "job-token-value", body["token"])
+		assert.Equal(t, "main", body["ref"])
+		_, hasVariables := body["variables"]
+		assert.False(t, hasVariables, "the child route must not send pipeline variables")
+		inputs, _ := body["inputs"].(map[string]any)
+		assert.Equal(t, "triage", inputs["stage"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      44,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/44",
+		})
+	})
+
+	id, webURL, err := pc.CreateChildPipelineWithInputs(ctx, "myorg", "myrepo", "main", "job-token-value", map[string]forge.PipelineInputValue{
+		"stage": forge.StringInput("triage"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(44), id)
+	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/pipelines/44", webURL)
+	assert.Equal(t, 1, calls)
+}
+
+func TestPollClient_CreateChildPipelineWithInputs_NilInputsSendsEmptyObject(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	calls := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/trigger/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, map[string]any{}, body["inputs"])
+		writeJSON(t, w, http.StatusOK, map[string]any{"id": 45, "web_url": "u"})
+	})
+
+	id, _, err := pc.CreateChildPipelineWithInputs(ctx, "myorg", "myrepo", "main", "job-token-value", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(45), id)
+	assert.Equal(t, 1, calls, "the trigger handler must be called")
+}
+
+func TestPollClient_CreateChildPipelineWithInputs_Errors(t *testing.T) {
+	t.Run("empty job token is refused without a request", func(t *testing.T) {
+		pc, mux := setupPollTest(t)
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/trigger/pipeline", func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("no request may be sent without a job token")
+		})
+		_, _, err := pc.CreateChildPipelineWithInputs(context.Background(), "myorg", "myrepo", "main", "", nil)
+		require.ErrorContains(t, err, "CI job token is empty")
+	})
+
+	t.Run("API rejection is sent once and reported", func(t *testing.T) {
+		pc, mux := setupPollTest(t)
+		calls := 0
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/trigger/pipeline", func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			writeJSON(t, w, http.StatusBadGateway, map[string]string{"message": "502 Bad Gateway"})
+		})
+		_, _, err := pc.CreateChildPipelineWithInputs(context.Background(), "myorg", "myrepo", "main", "job-token-value", nil)
+		require.ErrorContains(t, err, "502")
+		assert.NotContains(t, err.Error(), "job-token-value")
+		assert.Equal(t, 1, calls, "a job-token trigger must never be retried")
+	})
+
+	// A 307/308 would make net/http replay the body, which carries the job
+	// token, so a redirect (cross-origin or same-origin) is an error and the
+	// target is never contacted.
+	for _, code := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(fmt.Sprintf("%d redirect is not followed", code), func(t *testing.T) {
+			targetHits := 0
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				targetHits++
+				writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1, "web_url": "u"})
+			}))
+			defer target.Close()
+			pc, mux := setupPollTest(t)
+			calls := 0
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/trigger/pipeline", func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				http.Redirect(w, r, target.URL+"/capture", code)
+			})
+			_, _, err := pc.CreateChildPipelineWithInputs(context.Background(), "myorg", "myrepo", "main", "job-token-value", nil)
+			require.ErrorContains(t, err, strconv.Itoa(code))
+			assert.NotContains(t, err.Error(), "job-token-value")
+			assert.Equal(t, 1, calls)
+			assert.Zero(t, targetHits, "the redirect target must never receive the job token")
+		})
+	}
+
+	t.Run("undecodable response is reported", func(t *testing.T) {
+		pc, mux := setupPollTest(t)
+		calls := 0
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/trigger/pipeline", func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte("not json"))
+		})
+		_, _, err := pc.CreateChildPipelineWithInputs(context.Background(), "myorg", "myrepo", "main", "job-token-value", nil)
+		require.ErrorContains(t, err, "decode triggered pipeline response")
+		assert.Equal(t, 1, calls, "the trigger handler must be called")
+	})
+
+	t.Run("transport failure is reported", func(t *testing.T) {
+		pc, _ := setupPollTest(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, _, err := pc.CreateChildPipelineWithInputs(ctx, "myorg", "myrepo", "main", "job-token-value", nil)
+		require.ErrorContains(t, err, "trigger pipeline with job token")
+	})
 }
 
 func TestPollClient_GetAuthenticatedUserID(t *testing.T) {

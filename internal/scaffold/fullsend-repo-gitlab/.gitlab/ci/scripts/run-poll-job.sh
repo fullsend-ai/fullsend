@@ -79,6 +79,12 @@ for _fs_sibling in $(compgen -v | grep -E '^FULLSEND_(GITLAB_(ANALYST|CODER|POLL
 done
 unset _fs_sibling
 
+# Select the agent dispatch route (#8438): the CI_JOB_TOKEN child-pipeline
+# route when this pipeline was created by the ready trigger-only account,
+# otherwise the Poller-credential pipelines API route. See
+# fullsend_select_gitlab_dispatch_route in pin-ci-job-identity.sh.
+fullsend_select_gitlab_dispatch_route
+
 # Validate FULLSEND_POLL_MODE before use in URLs and commands.
 case "${FULLSEND_POLL_MODE:-events}" in
   slash|events) ;;

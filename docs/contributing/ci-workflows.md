@@ -259,6 +259,8 @@ Redaction covers:
 - Binary and media files (images, video, PDF, opaque blobs, NUL-containing `.log` files) — replaced with a stub
 - Symlinks under the artifact directory — replaced with a stub before upload
 
+The job-scoped trace collector's bearer token ([Job-scoped trace collection](../guides/dev/behaviour-testing.md#job-scoped-trace-collection)) is generated inside the behaviour test process. It is not a job secret, so the redaction script's literal secret list cannot include it. The install driver never prints it (so it never reaches the tee'd job log) and scrubs literal occurrences of it from every file under the artifact directory when the collector stops, before the redaction step runs. The scrub matches the token's raw bytes only, so a token inside a compressed or archived file (for example gzip or ZIP) is not found. Collector output is plain-text JSONL and log files, so this is not expected. The collected trace files are then redacted like any other artifact.
+
 **Residual limitations:** content scanning cannot catch every encoding or obfuscation of a secret in a text-classified file (base64, hex, split tokens). Same-job PR-head code could theoretically race the upload step after redaction; isolating redaction in a separate job would narrow that window further.
 
 ## Scaffold-sync dispatch recursion

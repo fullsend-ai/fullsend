@@ -124,6 +124,13 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 		for k, v := range vertexSandboxEnv() {
 			sandboxEnv[k] = v
 		}
+		if opts.Runtime == "opencode" {
+			// OPENCODE_CONFIG_CONTENT carries the Vertex provider registration
+			// and the global tool-permission policy. Bootstrap validates it on
+			// startup and fails closed when it is absent or has no permission
+			// block. The value is supplied by the operator via --env-file.
+			sandboxEnv["OPENCODE_CONFIG_CONTENT"] = "${OPENCODE_CONFIG_CONTENT}"
+		}
 	} else {
 		providers = slices.DeleteFunc(providers, func(p string) bool { return p == vertexProvider })
 	}

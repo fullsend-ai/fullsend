@@ -146,7 +146,7 @@ func buildStageMintDriver(
 	if err != nil {
 		return nil, err
 	}
-	return withRateLimitReporter(withMintURL(d, mintURL), client), nil
+	return withTraceCollector(withRateLimitReporter(withMintURL(d, mintURL), client), client, logf), nil
 }
 
 // stageMintMintDriver deploys a durable CF Worker mint with a custom

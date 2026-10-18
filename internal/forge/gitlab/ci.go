@@ -1,7 +1,9 @@
 package gitlab
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -174,7 +176,7 @@ func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, va
 // error rather than a reason to retry with masked=false.
 func maskingRequired(name string) bool {
 	switch name {
-	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret,
+	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken,
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
 		return true
 	}
@@ -1155,6 +1157,63 @@ func (c *LiveClient) CreatePipelineWithInputs(ctx context.Context, owner, repo, 
 	return &forge.Pipeline{ID: result.ID, WebURL: result.WebURL}, nil
 }
 
+// TriggerPipelineWithJobToken creates a downstream pipeline on ref through
+// the pipeline trigger API, authenticated by the running job's CI_JOB_TOKEN
+// and parameterized by typed pipeline inputs (#8438). GitLab records such a
+// pipeline with source "pipeline" and attributes it to the user who owns
+// the calling job, so the protected-branch admission of the new pipeline is
+// that user's, not the client's PAT owner's. The client's PRIVATE-TOKEN is
+// deliberately not sent: the job token alone authenticates the request,
+// and sending both would make the creating identity ambiguous.
+//
+// The job token travels in the JSON body, never in the URL, so it cannot
+// appear in a logged request path. The request is sent exactly once: a
+// retry after an ambiguous outcome could start a duplicate agent pipeline.
+func (c *LiveClient) TriggerPipelineWithJobToken(ctx context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (*forge.Pipeline, error) {
+	if jobToken == "" {
+		return nil, fmt.Errorf("trigger pipeline with job token: CI job token is empty")
+	}
+	in := inputs
+	if in == nil {
+		in = map[string]forge.PipelineInputValue{}
+	}
+	bodyData, err := json.Marshal(map[string]any{
+		"token":  jobToken,
+		"ref":    ref,
+		"inputs": in,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("trigger pipeline with job token: marshal request body: %w", err)
+	}
+	path := fmt.Sprintf("/projects/%s/trigger/pipeline", projectPath(owner, repo))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL(path), bytes.NewReader(bodyData))
+	if err != nil {
+		return nil, fmt.Errorf("trigger pipeline with job token: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// The body carries the job token and is replayable, so a 307/308 would
+	// forward it (and the ref and signed inputs) to wherever the response
+	// points, cross-origin or over cleartext. Never follow redirects on this
+	// request: the redirect response is returned and rejected below.
+	noRedirect := *c.http
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("trigger pipeline with job token: http POST %s: %w", path, err)
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusCreated); err != nil {
+		return nil, fmt.Errorf("trigger pipeline with job token: %w", err)
+	}
+	var result struct {
+		ID     int64  `json:"id"`
+		WebURL string `json:"web_url"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode triggered pipeline response: %w", err)
+	}
+	return &forge.Pipeline{ID: result.ID, WebURL: result.WebURL}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline schedules (GitLab-native)
 // ---------------------------------------------------------------------------
@@ -1162,12 +1221,25 @@ func (c *LiveClient) CreatePipelineWithInputs(ctx context.Context, owner, repo, 
 // CreatePipelineSchedule creates a pipeline schedule and attaches variables.
 // Returns the schedule ID.
 func (c *LiveClient) CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error) {
+	return c.CreatePipelineScheduleWithActive(ctx, owner, repo, ref, description, cron, variables, true)
+}
+
+// CreatePipelineScheduleWithActive creates a pipeline schedule and attaches
+// variables. GitLab creates a schedule active unless the request says
+// otherwise, so an inactive schedule sends active=false in the create
+// request itself: a separate disable afterwards leaves a window in which the
+// schedule is active and can fire. The attribute is omitted for an active
+// schedule, keeping that request unchanged.
+func (c *LiveClient) CreatePipelineScheduleWithActive(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string, active bool) (int64, error) {
 	path := fmt.Sprintf("/projects/%s/pipeline_schedules", projectPath(owner, repo))
-	body := map[string]string{
+	body := map[string]any{
 		"ref":           ref,
 		"description":   description,
 		"cron":          cron,
 		"cron_timezone": "UTC",
+	}
+	if !active {
+		body["active"] = false
 	}
 	resp, err := c.post(ctx, path, body)
 	if err != nil {
@@ -1207,7 +1279,10 @@ func (c *LiveClient) GetPipelineSchedule(ctx context.Context, owner, repo string
 		return nil, fmt.Errorf("get pipeline schedule: %w", err)
 	}
 	var result struct {
-		ID           int64  `json:"id"`
+		ID    int64 `json:"id"`
+		Owner *struct {
+			ID int64 `json:"id"`
+		} `json:"owner"`
 		Description  string `json:"description"`
 		Ref          string `json:"ref"`
 		Cron         string `json:"cron"`
@@ -1225,6 +1300,12 @@ func (c *LiveClient) GetPipelineSchedule(ctx context.Context, owner, repo string
 		return nil, fmt.Errorf("pipeline schedule response omitted variable details; cannot verify migration")
 	}
 	schedule := &forge.PipelineSchedule{ID: result.ID, Description: result.Description, Ref: result.Ref, Cron: result.Cron, CronTimezone: result.CronTimezone, Active: result.Active, Variables: make(map[string]string)}
+	if result.Owner != nil {
+		if result.Owner.ID <= 0 {
+			return nil, fmt.Errorf("pipeline schedule response has invalid owner ID")
+		}
+		schedule.OwnerID = result.Owner.ID
+	}
 	for _, variable := range result.Variables {
 		schedule.Variables[variable.Key] = variable.Value
 	}
@@ -1268,7 +1349,10 @@ func (c *LiveClient) ListPipelineSchedules(ctx context.Context, owner, repo stri
 		}
 
 		var schedules []struct {
-			ID           int64  `json:"id"`
+			ID    int64 `json:"id"`
+			Owner *struct {
+				ID int64 `json:"id"`
+			} `json:"owner"`
 			Description  string `json:"description"`
 			Ref          string `json:"ref"`
 			Cron         string `json:"cron"`
@@ -1280,8 +1364,16 @@ func (c *LiveClient) ListPipelineSchedules(ctx context.Context, owner, repo stri
 		}
 
 		for _, s := range schedules {
+			if s.ID <= 0 || (s.Owner != nil && s.Owner.ID <= 0) {
+				return nil, fmt.Errorf("list pipeline schedules page %d: invalid schedule or owner ID", page)
+			}
+			var ownerID int64
+			if s.Owner != nil {
+				ownerID = s.Owner.ID
+			}
 			result = append(result, forge.PipelineSchedule{
 				ID:           s.ID,
+				OwnerID:      ownerID,
 				Description:  s.Description,
 				Ref:          s.Ref,
 				Cron:         s.Cron,

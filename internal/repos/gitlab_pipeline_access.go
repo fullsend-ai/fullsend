@@ -202,6 +202,22 @@ func loadDefaultBranchRule(ctx context.Context, client forge.Client, owner, repo
 	return branch, rule, nil
 }
 
+// PollerMergeGrantError reports that the forge call granting a Poller user
+// merge access on a protected branch failed. It is distinct from a failure to
+// read the branch rule, so a caller can tell a refused grant (GitLab.com Free
+// refuses per-user grants) from an unreadable project.
+type PollerMergeGrantError struct {
+	UserID int
+	Branch string
+	Err    error
+}
+
+func (e *PollerMergeGrantError) Error() string {
+	return fmt.Sprintf("granting poller user %d merge access on %q: %v", e.UserID, e.Branch, e.Err)
+}
+
+func (e *PollerMergeGrantError) Unwrap() error { return e.Err }
+
 // EnsureGitLabPollerPipelineAccess makes a Developer-level poller able
 // to CreatePipeline on the repo's default branch. When the branch is
 // unprotected, or Developers already have merge or push, this is a
@@ -248,7 +264,7 @@ func EnsureGitLabPollerPipelineAccess(ctx context.Context, client forge.Client, 
 	}
 	for _, id := range toGrant {
 		if err := client.GrantProtectedBranchMergeUser(ctx, owner, repo, branch, id); err != nil {
-			return result, fmt.Errorf("granting poller user %d merge access on %q: %w", id, branch, err)
+			return result, &PollerMergeGrantError{UserID: id, Branch: branch, Err: err}
 		}
 	}
 	result.Action = pipelineAccessGrant

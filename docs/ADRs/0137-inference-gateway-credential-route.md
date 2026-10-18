@@ -18,6 +18,10 @@ Date: 2026-10-09
 
 Accepted
 
+*Amended by [ADR 0142](0142-inference-gateway-x-api-key-header-for-messages-models.md),
+which adds an opt-in setting to send the gateway credential as `x-api-key` for
+`anthropic-messages` models. The default stays `authorization`.*
+
 ## Context
 
 fullsend reaches every model provider directly. For `openai` there are two

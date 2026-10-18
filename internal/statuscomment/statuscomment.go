@@ -476,7 +476,7 @@ func (n *Notifier) analyzeTimeline(ctx context.Context) (agentPosted, startIsLas
 		if c.Author != botUser {
 			continue
 		}
-		isStatus := strings.Contains(string(c.Body), "fullsend:agent-status:")
+		isStatus := strings.Contains(string(c.Body), statusMarkerOpener)
 		if statusClient, ok := n.client.(tracker.StatusCommentClient); ok {
 			isStatus, err = statusClient.IsStatusComment(ctx, n.project, n.number, c.ID)
 			if err != nil {
@@ -683,7 +683,7 @@ func buildMarker(runID string) (string, error) {
 	if !validRunID.MatchString(runID) {
 		return "", fmt.Errorf("invalid run ID %q: must match [a-zA-Z0-9_-]+", runID)
 	}
-	return fmt.Sprintf("<!-- fullsend:agent-status:%s -->", runID), nil
+	return statusMarkerOpener + runID + " -->", nil
 }
 
 func mustBuildMarker(runID string) string {

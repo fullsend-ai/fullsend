@@ -2786,3 +2786,43 @@ func TestReconcileFailedGitLabWebhookSafety_CoversRoleStageFailures(t *testing.T
 		assert.Len(t, fc.PipelineTriggerTokens["group/project"], 1)
 	})
 }
+
+// A repo whose GitLab trigger-account containment failed takes no later
+// mutating stage: no post-install setup runs for it and it is counted once.
+func TestRunReposInstall_GitLabContainmentFailureSkipsLaterStagesAndCountsOnce(t *testing.T) {
+	gitlabManifest := `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+gitlab:
+  url: https://gitlab.example.com
+  fullsend_ref: v0.43.0
+  repos:
+    - name: group/project
+`
+	manifestPath := writeTestManifest(t, gitlabManifest)
+
+	fc := forge.NewFakeClient()
+	seedGitLabInputPrerequisites(fc, "group/project", "v0.43.0")
+	fc.InstallationToken = true
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = map[string]string{
+		"group/project/fullsend-app[bot]": "write",
+	}
+	fc.Repos = []forge.Repository{{FullName: "group/project", Name: "project", DefaultBranch: "main"}}
+
+	opts := gitlabInstallOpts(manifestPath, fc)
+	opts.testContainTriggerAccount = func(context.Context, forge.Client, string, string) error {
+		return errors.New("restoring Developer access")
+	}
+	var runErr error
+	output := captureStdout(t, func() {
+		runErr = runReposInstall(context.Background(), opts)
+	})
+
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "1 repos failed")
+	assert.NotContains(t, output, "GitLab post-install setup", "a containment failure skips post-install work")
+	assert.Contains(t, output, "Install complete: 0 installed, 0 converged, 0 already current, 1 failed")
+	assert.Equal(t, 1, strings.Count(output, "FAILED: group/project"))
+}

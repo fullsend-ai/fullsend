@@ -3,9 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -2125,4 +2131,104 @@ func TestRunOpenAIRefresh_ReadFailureAfterRotationFailsClosed(t *testing.T) {
 	assert.Equal(t, 1, rotations, "no second rotation after the failed read")
 	assert.Equal(t, []time.Time{held}, expiries)
 	assert.Contains(t, buf.String(), "not observed in the sandbox")
+}
+
+// TestReservedOverrides_URLBaseRelativeEntries goes through real composition:
+// a URL base harness lists a reserved provider and profile by relative path,
+// which composition rewrites to .fullsend-cache paths. Those are not files in
+// the repository, so the failure hint and the reserved-provider warning fall
+// back to the provider name and profile id instead of naming the cache file,
+// while a repository-local copy is still quoted by path (#8461).
+func TestReservedOverrides_URLBaseRelativeEntries(t *testing.T) {
+	baseContent := []byte(`role: test
+providers:
+  - providers/github.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-github.yaml
+`)
+	files := map[string][]byte{
+		"/harness/code.yaml":             baseContent,
+		"/providers/github.yaml":         []byte("name: github\ntype: fullsend-github\n"),
+		"/profiles/fullsend-github.yaml": []byte("id: fullsend-github\n"),
+	}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		content, ok := files[r.URL.Path]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(content)
+	}))
+	t.Cleanup(srv.Close)
+	hostname, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
+	require.NoError(t, err)
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+	allowlist := []string{srv.URL + "/"}
+
+	dir := t.TempDir()
+	writePolicyFixture(t, dir)
+	sum := sha256.Sum256(baseContent)
+	child := fmt.Sprintf(`base: %s/harness/code.yaml#sha256=%s
+agent: agents/code.md
+role: test
+policy: policies/base.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-gitleaks.yaml
+`, srv.URL, hex.EncodeToString(sum[:]))
+	for path, content := range map[string]string{
+		"agents/code.md":                  "You are a coding agent.",
+		"harness/code.yaml":               child,
+		"profiles/fullsend-gitleaks.yaml": "id: fullsend-gitleaks\n",
+	} {
+		full := filepath.Join(dir, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+
+	ctx := context.Background()
+	h, _, err := harness.LoadWithBase(ctx, filepath.Join(dir, "harness", "code.yaml"), harness.ComposeOpts{
+		WorkspaceRoot: dir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  allowlist,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.ResolveRelativeTo(dir))
+	result, err := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+		WorkspaceRoot: dir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  allowlist,
+	})
+	require.NoError(t, err)
+
+	cacheDir := filepath.Join(dir, ".fullsend-cache")
+	require.Len(t, result.Providers, 1)
+	require.True(t, strings.HasPrefix(result.Providers[0].LocalPath, cacheDir),
+		"the base's relative provider entry is read from the content cache")
+	localProfile := filepath.Join(dir, "profiles", "fullsend-gitleaks.yaml")
+
+	providerOverrides := providerOverridePaths(nil, result.Providers)
+	assert.Equal(t, map[string]string{"github": ""}, providerOverrides)
+	profileOverrides := profileOverridePaths(dedupResolvedProfiles(result.Profiles))
+	assert.Equal(t, map[string]string{"fullsend-github": "", "fullsend-gitleaks": localProfile}, profileOverrides,
+		"the cache copy keeps map membership (so the embedded profile does not replace it) with no path")
+
+	github := harness.ProviderDef{Name: "github", Type: "fullsend-github"}
+	hint := providerMigrationHint(github, providerOverrides, profileOverrides)
+	assert.Contains(t, hint, `provider "github"`)
+	assert.Contains(t, hint, `profile "fullsend-github"`)
+	assert.NotContains(t, hint, ".fullsend-cache")
+
+	gitleaks := harness.ProviderDef{Name: "custom-gitleaks", Type: "fullsend-gitleaks"}
+	assert.Contains(t, providerMigrationHint(gitleaks, providerOverrides, profileOverrides),
+		fmt.Sprintf("profile %q", localProfile), "a repository-local copy is still quoted by path")
+
+	var buf bytes.Buffer
+	warnReservedProviderNameOverrides(nil, result.Providers, ui.New(&buf))
+	assert.Contains(t, buf.String(), `provider "github"`)
+	assert.Contains(t, buf.String(), "the URL-resolved copy")
+	assert.NotContains(t, buf.String(), ".fullsend-cache")
 }

@@ -14,6 +14,13 @@ type Options struct {
 	PollJobURL     string // back-link to the poller CI job (optional; from CI_JOB_URL)
 	DispatchSecret string // HMAC shared secret for signing dispatch variables (optional; from FULLSEND_DISPATCH_SECRET)
 	Mode           string // "slash" (slash commands only) or "events" (full discovery, filters /fs-* notes); empty uses events discovery path but includes all notes for backward compatibility
+	// ChildDispatchJobToken, when set, selects the child-pipeline dispatch
+	// route (#8438): agent pipelines are started with this CI_JOB_TOKEN
+	// through the pipeline trigger API (source "pipeline", attributed to
+	// the owner of the running job) instead of with the Poller credential
+	// through the pipelines API (source "api"). It requires the typed
+	// pipeline-input contract. Empty keeps the Poller API route.
+	ChildDispatchJobToken string
 }
 
 // RoutableEvent is an intermediate representation of a detected change,

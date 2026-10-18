@@ -52,6 +52,9 @@ func canonicalForgeEnvVars() map[string]struct{} {
 		forge.VarPollJobURL,
 		forge.VarPollMode,
 		forge.VarGitLabBotToken,
+		forge.VarGitLabDispatchRoute,
+		forge.VarGitLabTriggerAccount,
+		forge.VarGitLabDispatchActivation,
 		forge.VarGitLabRoleRegistry,
 		forge.VarGitLabRoleRotation,
 	}
@@ -93,6 +96,7 @@ var gitlabCIScaffoldLocalEnvVars = map[string]struct{}{
 	"FULLSEND_PINNED_PIPELINE_ID":       {},
 	"FULLSEND_PINNED_REF":               {},
 	"FULLSEND_PINNED_PIPELINE_SOURCE":   {},
+	"FULLSEND_PINNED_JOB_USER_ID":       {},
 	"FULLSEND_PINNED_PIPELINE_RESPONSE": {},
 	"FULLSEND_PINNED_PROJECT_PATH":      {},
 	"FULLSEND_PINNED_GITLAB_URL":        {},

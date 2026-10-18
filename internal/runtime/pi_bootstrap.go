@@ -264,17 +264,8 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("writing %s: %w", piSettingsFile, err)
 	}
 
-	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {
+	if err := uploadHarnessSkills(sandboxName, cfg+"/skills", input.SkillDirs()); err != nil {
 		return err
-	}
-	for _, skillPath := range input.SkillDirs() {
-		if skillPath == "" {
-			continue
-		}
-		if err := sandbox.Upload(sandboxName, skillPath, cfg+"/skills/"); err != nil {
-			return fmt.Errorf("copying skill %q: %w", skillPath, err)
-		}
-		fmt.Fprintf(os.Stderr, "Skill %q: uploaded to sandbox\n", resolveSkillDisplayName(skillPath))
 	}
 
 	// Extensions land under ConfigDir/extensions/<name>/ — a runner-owned
@@ -734,7 +725,7 @@ func piAgentModels(defModel string, configAliases map[string]string) map[string]
 
 // piGoogleVertexModels are the model ids pi's built-in google-vertex
 // provider registers, verbatim from the catalog the pinned pi bundles
-// (@earendil-works/pi-ai 0.85.0, dist/providers/data/google-vertex.json).
+// (@earendil-works/pi-ai 1.3.0, dist/providers/data/google-vertex.json).
 // Re-check it on a pi bump, the way the Anthropic ids in pi_run.go are:
 // diff that data file, not the generated wrapper -- 0.85.0 added
 // gemini-3.8-flash and nothing else, and a missed entry means this table
@@ -753,6 +744,7 @@ var piGoogleVertexModels = []string{
 	"gemini-2.5-pro",
 	"gemini-3-flash-preview",
 	"gemini-3.1-flash-lite",
+	"gemini-3.1-flash-lite-image",
 	"gemini-3.1-pro-preview",
 	"gemini-3.1-pro-preview-customtools",
 	"gemini-3.5-flash",
@@ -760,8 +752,7 @@ var piGoogleVertexModels = []string{
 	"gemini-3.6-flash",
 	"gemini-3.7-flash",
 	"gemini-3.8-flash",
-	"gemini-flash-latest",
-	"gemini-flash-lite-latest",
+	"gemini-4-argon",
 }
 
 // piXaiVertexModels are the model ids the vendored xai-vertex extension

@@ -466,6 +466,34 @@ func TestGetFileContent(t *testing.T) {
 	assert.Equal(t, "key: value", string(data))
 }
 
+func TestGetFileContent_EscapesPathSegments(t *testing.T) {
+	var gotURI string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.RequestURI
+		json.NewEncoder(w).Encode(map[string]any{
+			"content":  base64.StdEncoding.EncodeToString([]byte("key: value")),
+			"encoding": "base64",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	tests := []struct {
+		path string
+		want string
+	}{
+		{".github/workflows/custom#caller.yml", "/repos/owner/repo/contents/.github/workflows/custom%23caller.yml"},
+		{".github/workflows/what?.yml", "/repos/owner/repo/contents/.github/workflows/what%3F.yml"},
+		{".github/workflows/100%25.yml", "/repos/owner/repo/contents/.github/workflows/100%2525.yml"},
+	}
+	for _, tt := range tests {
+		data, err := client.GetFileContent(context.Background(), "owner", "repo", tt.path)
+		require.NoError(t, err, tt.path)
+		assert.Equal(t, "key: value", string(data))
+		assert.Equal(t, tt.want, gotURI, tt.path)
+	}
+}
+
 func TestGetRef(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)
@@ -1827,6 +1855,33 @@ func TestIsBranchProtectionError(t *testing.T) {
 				},
 			},
 			want: false,
+		},
+		{
+			name:   "bare protected wording on a ref update",
+			apiErr: &APIError{StatusCode: 422, Message: "Cannot update this protected ref."},
+			want:   true,
+		},
+		// Classic protection on PATCH /git/refs returns the failed checks
+		// alone as the top-level message.
+		{
+			name:   "classic require pull request and status check",
+			apiErr: &APIError{StatusCode: 422, Message: `Changes must be made through a pull request. Required status check "probe-check" is expected.`},
+			want:   true,
+		},
+		{
+			name:   "classic require pull request only",
+			apiErr: &APIError{StatusCode: 422, Message: "Changes must be made through a pull request."},
+			want:   true,
+		},
+		{
+			name:   "classic locked branch",
+			apiErr: &APIError{StatusCode: 422, Message: "Cannot change this locked branch"},
+			want:   true,
+		},
+		{
+			name:   "classic required signatures",
+			apiErr: &APIError{StatusCode: 422, Message: "Commits must have verified signatures."},
+			want:   true,
 		},
 	}
 	for _, tt := range tests {
@@ -3395,7 +3450,8 @@ func TestCommitFiles_RetriesTransientGetCommit404(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "file.sh", Content: []byte("content"), Mode: "100755"},
 	})
 	require.NoError(t, err)
 	assert.True(t, committed)
@@ -3609,7 +3665,7 @@ func TestDeleteFiles_Empty(t *testing.T) {
 }
 
 func TestDeleteFiles_Atomic(t *testing.T) {
-	var treeCreated bool
+	var mutationSeen bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
@@ -3626,25 +3682,33 @@ func TestDeleteFiles_Atomic(t *testing.T) {
 				},
 				"truncated": false,
 			})
-		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
-			treeCreated = true
-			var body map[string]any
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			entries := body["tree"].([]any)
-			require.Len(t, entries, 2)
-			for _, raw := range entries {
-				entry := raw.(map[string]any)
-				assert.Equal(t, "blob", entry["type"])
-				assert.NotEmpty(t, entry["mode"])
-				assert.Nil(t, entry["sha"])
+		case r.Method == "POST" && r.URL.Path == "/graphql":
+			// Deletions always take the signed createCommitOnBranch path;
+			// the missing path must have been filtered out beforehand.
+			mutationSeen = true
+			var body struct {
+				Variables struct {
+					Input struct {
+						ExpectedHeadOid string `json:"expectedHeadOid"`
+						FileChanges     struct {
+							Additions []map[string]string `json:"additions"`
+							Deletions []map[string]string `json:"deletions"`
+						} `json:"fileChanges"`
+					} `json:"input"`
+				} `json:"variables"`
 			}
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
-		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
-		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
-			json.NewEncoder(w).Encode(map[string]any{})
+			// assert, not require: this runs on the server goroutine.
+			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&body)) {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			assert.Equal(t, "commit", body.Variables.Input.ExpectedHeadOid)
+			assert.Empty(t, body.Variables.Input.FileChanges.Additions)
+			assert.Equal(t, []map[string]string{{"path": "bin/fullsend"}, {"path": ".defaults/action.yml"}},
+				body.Variables.Input.FileChanges.Deletions)
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"createCommitOnBranch": map[string]any{"commit": map[string]string{"oid": "newcommit"}},
+			}})
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3660,7 +3724,7 @@ func TestDeleteFiles_Atomic(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 2, deleted)
-	assert.True(t, treeCreated)
+	assert.True(t, mutationSeen)
 }
 
 func TestGetIssueComment(t *testing.T) {
@@ -4498,7 +4562,8 @@ func TestCommitFiles_NonFastForwardRetry(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "f.txt", Content: []byte("x"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
 	})
 	require.NoError(t, err)
 	assert.True(t, committed)
@@ -4546,7 +4611,8 @@ func TestCommitFiles_StaleTreeSHARetry(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "f.txt", Content: []byte("x"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
 	})
 	require.NoError(t, err)
 	assert.True(t, committed)
@@ -4594,7 +4660,8 @@ func TestCommitFiles_StaleTreeSHAOnCommitRetry(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "f.txt", Content: []byte("x"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
 	})
 	require.NoError(t, err)
 	assert.True(t, committed)
@@ -4628,7 +4695,8 @@ func TestCommitFiles_NonFastForward(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "file.sh", Content: []byte("content"), Mode: "100755"},
 	})
 	require.Error(t, err)
 	assert.True(t, forge.IsNonFastForward(err))
@@ -4650,10 +4718,12 @@ func TestCommitFiles_BranchProtected(t *testing.T) {
 		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
 			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
 		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			// Classic "require a pull request" rejection, as GitHub returns it.
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			json.NewEncoder(w).Encode(map[string]any{
-				"message": "Validation Failed",
-				"errors":  []map[string]string{{"message": "Protected branch update failed for refs/heads/main."}},
+				"message":           "Changes must be made through a pull request.",
+				"documentation_url": "https://docs.github.com/articles/about-protected-branches",
+				"status":            "422",
 			})
 		}
 	}))
@@ -4661,11 +4731,13 @@ func TestCommitFiles_BranchProtected(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "file.sh", Content: []byte("content"), Mode: "100755"},
 	})
 	require.Error(t, err)
 	assert.True(t, forge.IsBranchProtected(err))
 	assert.False(t, forge.IsNonFastForward(err), "should not match non-fast-forward")
+	assert.False(t, forge.IsSignedCommitsRequired(err), "a plain protection rejection is not a signature requirement")
 }
 
 func TestListRepoVariables_SinglePage(t *testing.T) {
@@ -5196,6 +5268,10 @@ func TestUnsupportedMethods(t *testing.T) {
 		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("CreatePipelineScheduleWithActive", func(t *testing.T) {
+		_, err := client.CreatePipelineScheduleWithActive(ctx, "o", "r", "main", "desc", "0 * * * *", nil, false)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("DeletePipelineSchedule", func(t *testing.T) {
 		err := client.DeletePipelineSchedule(ctx, "o", "r", 1)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
@@ -5250,6 +5326,10 @@ func TestUnsupportedMethods(t *testing.T) {
 	})
 	t.Run("SetPipelineVariablesMinimumOverrideRole", func(t *testing.T) {
 		err := client.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", forge.PipelineVarOverrideOwner)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("GetJobTokenRepositoryPushAllowed", func(t *testing.T) {
+		_, err := client.GetJobTokenRepositoryPushAllowed(ctx, "o", "r")
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 	t.Run("ForceCommitFileToBranch", func(t *testing.T) {
@@ -5445,6 +5525,11 @@ func gitDataRaceServerWithRepo(t *testing.T, repoFails int, repoGets *int, commi
 				"tree":      []map[string]string{{"path": "README.md", "mode": "100644", "type": "blob", "sha": "r1"}},
 				"truncated": false,
 			})
+		case r.Method == "POST" && r.URL.Path == "/graphql":
+			// Regular inline files take the signed createCommitOnBranch path.
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"createCommitOnBranch": map[string]any{"commit": map[string]string{"oid": "newcommit"}},
+			}})
 		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
@@ -5606,6 +5691,11 @@ func treeStatusServerBody(t *testing.T, status int, body map[string]any, treeGet
 				"tree":      []map[string]string{{"path": "README.md", "mode": "100644", "type": "blob", "sha": "r1"}},
 				"truncated": false,
 			})
+		case r.Method == "POST" && r.URL.Path == "/graphql":
+			// Regular inline files take the signed createCommitOnBranch path.
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"createCommitOnBranch": map[string]any{"commit": map[string]string{"oid": "newcommit"}},
+			}})
 		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})

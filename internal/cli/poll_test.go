@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -22,6 +25,7 @@ func clearPollEnv(t *testing.T) {
 		"CI_COMMIT_REF_NAME", "CI_DEFAULT_BRANCH", "CI_JOB_URL",
 		forge.VarPollMode,
 		forge.VarGitLabRoleRegistry,
+		forge.VarGitLabDispatchRoute, "CI_JOB_TOKEN",
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken,
 		forge.SecretGitLabCoderToken,
 		"JIRA_BASE_URL", "GITHUB_REPOSITORY",
@@ -244,6 +248,28 @@ func TestPollCmd_NoForgeOrDriver(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "at least one of the flags in the group [forge input-driver] is required") {
 		t.Fatalf("expected flag-group validation error, got: %v", err)
+	}
+}
+
+// --print-dispatch-routes is the capability probe the GitLab job scripts run
+// before selecting the child-pipeline route (#8438). It needs no credential
+// and must list exactly the routes gitlabChildDispatchJobToken honors.
+func TestPollCmd_PrintDispatchRoutes(t *testing.T) {
+	clearPollEnv(t)
+	var out strings.Builder
+	cmd := newPollCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--forge", "gitlab", "--fullsend-dir", t.TempDir(), "--print-dispatch-routes"})
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, []string{forge.GitLabDispatchRouteAPI, forge.GitLabDispatchRouteChildPipeline}, strings.Fields(out.String()))
+	for _, route := range strings.Fields(out.String()) {
+		_, err := gitlabChildDispatchJobToken(func(k string) string {
+			if k == forge.VarGitLabDispatchRoute {
+				return route
+			}
+			return "job-token"
+		})
+		require.NoError(t, err, "every advertised route must be honored: %s", route)
 	}
 }
 
@@ -508,4 +534,50 @@ func TestBuildJiraClient_WithTokenAndEmail(t *testing.T) {
 	if c == nil {
 		t.Fatal("expected non-nil client")
 	}
+}
+
+func TestGitLabChildDispatchJobToken(t *testing.T) {
+	env := func(vars map[string]string) func(string) string {
+		return func(key string) string { return vars[key] }
+	}
+
+	t.Run("unset keeps the Poller API route", func(t *testing.T) {
+		token, err := gitlabChildDispatchJobToken(env(map[string]string{"CI_JOB_TOKEN": "job-token-value"}))
+		require.NoError(t, err)
+		assert.Empty(t, token)
+	})
+
+	t.Run("api keeps the Poller API route", func(t *testing.T) {
+		token, err := gitlabChildDispatchJobToken(env(map[string]string{
+			forge.VarGitLabDispatchRoute: forge.GitLabDispatchRouteAPI,
+			"CI_JOB_TOKEN":               "job-token-value",
+		}))
+		require.NoError(t, err)
+		assert.Empty(t, token)
+	})
+
+	t.Run("child-pipeline returns the job token", func(t *testing.T) {
+		token, err := gitlabChildDispatchJobToken(env(map[string]string{
+			forge.VarGitLabDispatchRoute: forge.GitLabDispatchRouteChildPipeline,
+			"CI_JOB_TOKEN":               "job-token-value",
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, "job-token-value", token)
+	})
+
+	t.Run("child-pipeline without a job token fails closed", func(t *testing.T) {
+		_, err := gitlabChildDispatchJobToken(env(map[string]string{
+			forge.VarGitLabDispatchRoute: forge.GitLabDispatchRouteChildPipeline,
+		}))
+		require.ErrorContains(t, err, "requires CI_JOB_TOKEN")
+	})
+
+	t.Run("unrecognized route fails closed", func(t *testing.T) {
+		_, err := gitlabChildDispatchJobToken(env(map[string]string{
+			forge.VarGitLabDispatchRoute: "trigger",
+			"CI_JOB_TOKEN":               "job-token-value",
+		}))
+		require.ErrorContains(t, err, "not a recognized dispatch route")
+		assert.NotContains(t, err.Error(), "job-token-value")
+	})
 }

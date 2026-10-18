@@ -473,7 +473,9 @@ function in `internal/cli/run.go` is the canonical implementation.
    `_SECRET`, `_PASSWORD`, `_KEY`, `_CREDENTIALS`) with
    `[REDACTED:<key>]`. Skip values shorter than
    `minRedactableSecretLen` (currently 8) — short values like `"main"`
-   or `"true"` cause false-positive mangling.
+   or `"true"` cause false-positive mangling. `replaceEnvSecrets` is that
+   pass: it takes longer values first, so a value that contains another
+   is replaced whole.
 
 2. **Scan `providerOnlyKeys` from the process environment
    (`os.Getenv`) for credential literal values.** Provider-only
@@ -482,10 +484,22 @@ function in `internal/cli/run.go` is the canonical implementation.
    can't reach them, which means the `RunnerEnv` scan in invariant 1
    never sees them. Iterate `providerOnlyKeys`, read each value with
    `os.Getenv`, and replace it the same way (skipping values shorter
-   than `minRedactableSecretLen`). A future credential class kept out
-   of `RunnerEnv` for the same reason needs the same treatment here.
+   than `minRedactableSecretLen`). `replaceEnvSecrets` does this in the
+   same longest-first pass as invariant 1. A future credential class kept
+   out of `RunnerEnv` for the same reason needs the same treatment here.
 
-3. **Apply `security.SecretRedactor` as a fallback pass.**
+3. **Replace registered runtime secrets (`security.RuntimeSecrets()`).**
+   Values registered with `security.RegisterRuntimeSecret` have no
+   sensitive key to match, so they are replaced by value with `***`.
+   Runner secrets ([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md))
+   register through `registerRunnerSecretValue`, which adds the trimmed
+   value, each line with and without padding, and the JSON-escaped form
+   of each, because script output is often trimmed or quoted before it
+   is redacted. Exact literals from invariants 1 to 3 are replaced in one
+   pass, longest first, so a value inside a longer one never leaves part
+   of the longer one visible.
+
+4. **Apply `security.SecretRedactor` as a fallback pass.**
    The `RunnerEnv` and `providerOnlyKeys` scans only catch credentials
    the runner explicitly declared. A
    `security.NewSecretRedactor().Scan(content)` call catches
@@ -494,14 +508,14 @@ function in `internal/cli/run.go` is the canonical implementation.
    never passed through either source — for example, a key baked into
    a test fixture or a pre-commit hook printing its own secrets.
 
-4. **Use `truncateUTF8` when enforcing size limits on external
+5. **Use `truncateUTF8` when enforcing size limits on external
    content.** Naive byte slicing (`s[:max]`) can split a multi-byte
    UTF-8 rune, producing invalid text that breaks downstream JSON
    serialization or LLM tokenization. Use `truncateUTF8(s, max)`
    (defined in `internal/cli/run.go`), which backs up to the last
    valid rune boundary before appending a `[truncated]` marker.
 
-5. **Write files containing potential secrets with mode `0600`.**
+6. **Write files containing potential secrets with mode `0600`.**
    Feedback files, redacted logs, and any file derived from external
    content must use `os.WriteFile(path, data, 0o600)` — not `0644`.
    The run directory is uploaded as a CI artifact; restrictive

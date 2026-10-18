@@ -115,13 +115,25 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 	}
 
 	var webURL string
-	if typed {
+	switch {
+	case p.opts.ChildDispatchJobToken != "" && !typed:
+		// The child-pipeline route carries dispatch fields only as typed
+		// inputs. A repository still on the variable-based contract cannot
+		// receive them, and the activation that selects this route requires
+		// pipeline variable overrides to be disabled, so falling back to
+		// variables would not reach the agent either.
+		return fmt.Errorf("child-pipeline dispatch for %s/%s requires the typed pipeline-input contract in %s", stage, rk, fullsendPipelineIncludePath)
+	case typed:
 		inputs, inputsErr := dispatchInputs(variables)
 		if inputsErr != nil {
 			return fmt.Errorf("build dispatch inputs for %s/%s: %w", stage, rk, inputsErr)
 		}
-		_, webURL, err = p.client.CreatePipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, inputs)
-	} else {
+		if p.opts.ChildDispatchJobToken != "" {
+			_, webURL, err = p.client.CreateChildPipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, p.opts.ChildDispatchJobToken, inputs)
+		} else {
+			_, webURL, err = p.client.CreatePipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, inputs)
+		}
+	default:
 		_, webURL, err = p.client.CreatePipeline(ctx, owner, repo, p.opts.PipelineRef, variables)
 	}
 	if err != nil {

@@ -45,7 +45,7 @@ Create a thin harness that inherits from the upstream code agent and adds your s
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
 
 skills:
-  - skills/my-custom-linting        # Merged with base skills (child overrides by basename)
+  - skills/my-custom-linting        # Merged with base skills (child overrides by skill identity)
 
 timeout_minutes: 45                 # Override timeout (scalar: child wins)
 ```
@@ -119,7 +119,7 @@ validation_loop:
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
-- **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
+- **Add skills** — your entries are merged with the base's by skill identity (declared `SKILL.md` name when on disk, otherwise directory basename); a matching child skill overrides the base entry. Nested forge skills that share a leaf directory name are kept alongside each other. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Override validation_loop fields** — child non-zero values win; omitted fields inherit from the base (for example, set only `schema` to swap the schema without copying `script`). **Replace security config** — child replaces the entire block.
 
@@ -177,7 +177,7 @@ workflow token as `GH_WORKFLOW_TOKEN`, a *provider-only* credential:
   refused in `runner_env`, `env.runner`, `env.sandbox`, `host_files` and
   `validation_loop.schema`, and pre/post/validation scripts never see it.
 - `gh` and the post-script keep using the minted token (`GH_TOKEN`,
-  `PUSH_TOKEN`).
+  `GITHUB_TOKEN`, `PUSH_TOKEN`).
 - Outside GitHub Actions the variable is left alone; a local PAT is never
   copied into it. Set it yourself only for a local run against GitHub Packages.
 - Any provider definition in `.fullsend` may reference it, the same way one
@@ -321,8 +321,9 @@ are actually changing:
    schema, post-script, and any shipped skills under
    [fullsend-ai/agents](https://github.com/fullsend-ai/agents). Do not guess
    field names or roster lists from memory.
-2. **Unique skill names** — a repo skill with the same directory name as a
-   built-in is ignored and produces a warning (see
+2. **Unique skill names** — a repo skill whose identity (its declared
+   `SKILL.md` `name:`, or its directory name when none is declared) matches a
+   built-in's is ignored and produces a warning (see
    [skill precedence](customizing-with-skills.md#skill-precedence)).
 3. **Specificity wins** — vague augmentations lose to hard default
    instructions. Own exact fields; use word limits and templates.

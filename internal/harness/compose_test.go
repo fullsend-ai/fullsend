@@ -111,7 +111,7 @@ skills:
 }
 
 // TestLoadWithBase_ChildSkillOverridesBaseByBasename verifies that a child
-// skill whose directory basename matches a base skill replaces the base entry
+// skill whose identity matches a base skill replaces the base entry
 // instead of producing a duplicate that trips duplicateDestinationNameError
 // at bootstrap time (see #5408).
 func TestLoadWithBase_ChildSkillOverridesBaseByBasename(t *testing.T) {
@@ -228,10 +228,16 @@ func TestMergeSkills(t *testing.T) {
 			want:  []string{"skills/code-implementation"},
 		},
 		{
-			name:  "duplicate child basename deduplicates",
+			name:  "sibling child basename collision keeps both",
 			base:  se("/base/skill-a"),
+			child: se("skills/issue-labels/github", "skills/pr-review/github"),
+			want:  []string{"/base/skill-a", "skills/issue-labels/github", "skills/pr-review/github"},
+		},
+		{
+			name:  "two children with one identity are both kept for bootstrap to reject",
+			base:  se("/base/skill-b"),
 			child: se("/child1/skill-b", "/child2/skill-b"),
-			want:  []string{"/base/skill-a", "/child2/skill-b"},
+			want:  []string{"/child1/skill-b", "/child2/skill-b"},
 		},
 	}
 	for _, tt := range tests {
@@ -240,6 +246,269 @@ func TestMergeSkills(t *testing.T) {
 			assert.Equal(t, tt.want, SkillSources(got))
 		})
 	}
+}
+
+func TestMergeSkills_DeclaredNameDistinguishesNestedDirs(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill := func(rel, name string) string {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(p, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(p, "SKILL.md"),
+			[]byte("---\nname: "+name+"\n---\n"), 0o644))
+		return p
+	}
+	labels := writeSkill("issue-labels/github", "issue-labels")
+	review := writeSkill("pr-review/github", "pr-review-github")
+
+	got := mergeSkills(nil, []SkillEntry{{Source: labels}, {Source: review}})
+	assert.Equal(t, []string{labels, review}, SkillSources(got))
+}
+
+func TestMergeSkills_DeclaredNameOverridesMatchingBase(t *testing.T) {
+	dir := t.TempDir()
+	baseDir := filepath.Join(dir, "cache", "github")
+	require.NoError(t, os.MkdirAll(baseDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# base\n"), 0o644))
+
+	childDir := filepath.Join(dir, "issue-labels")
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# child\n"), 0o644))
+
+	got := mergeSkills(
+		[]SkillEntry{{Source: baseDir}},
+		[]SkillEntry{{Source: childDir}},
+	)
+	require.Len(t, got, 1)
+	assert.Equal(t, childDir, got[0].Source)
+}
+
+// writeSkill creates dir/SKILL.md declaring name and returns dir.
+func writeSkill(t *testing.T, dir, name string) string {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"),
+		[]byte("---\nname: "+name+"\n---\n# "+name+"\n"), 0o644))
+	return dir
+}
+
+// A local child's relative override declaring a base skill's name replaces
+// it whatever the override's directory is called: LoadWithBase resolves the
+// child's skill paths against the workspace root before the merge (#7830).
+func TestLoadWithBase_LocalChildOverridesBaseByDeclaredName(t *testing.T) {
+	dir := t.TempDir()
+	// The base skill stands in for a fetched one: an absolute path whose
+	// directory name differs from its declared name.
+	baseSkill := writeSkill(t, filepath.Join(dir, "cache", "issue-labels", "github"), "issue-labels")
+	override := writeSkill(t, filepath.Join(dir, "skills", "my-override"), "issue-labels")
+	writeTestHarness(t, dir, "base.yaml", fmt.Sprintf("agent: agents/base.md\nrole: review\nskills:\n  - %s\n", baseSkill))
+	path := writeTestHarness(t, dir, "review.yaml", "base: ./base.yaml\nrole: review\nskills:\n  - skills/my-override\n")
+
+	// A decoy at the child's relative path under the process directory
+	// declares another name: a read against the CWD would keep the base.
+	other := t.TempDir()
+	writeSkill(t, filepath.Join(other, "skills", "my-override"), "decoy")
+	t.Chdir(other)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.NoError(t, err)
+	assert.Equal(t, []string{override}, SkillSources(h.Skills))
+}
+
+// Sibling child skills that share a directory basename with a base skill
+// keep their own declared identities instead of collapsing into its slot.
+func TestLoadWithBase_LocalSiblingsSharingABasenameAreKept(t *testing.T) {
+	dir := t.TempDir()
+	github := writeSkill(t, filepath.Join(dir, "skills", "github"), "github")
+	labels := writeSkill(t, filepath.Join(dir, "skills", "issue-labels", "github"), "issue-labels")
+	review := writeSkill(t, filepath.Join(dir, "skills", "pr-review", "github"), "pr-review")
+	writeTestHarness(t, dir, "base.yaml", "agent: agents/base.md\nrole: review\nskills:\n  - skills/github\n")
+	path := writeTestHarness(t, dir, "review.yaml",
+		"base: ./base.yaml\nrole: review\nskills:\n  - skills/issue-labels/github\n  - skills/pr-review/github\n")
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.NoError(t, err)
+	assert.Equal(t, []string{github, labels, review}, SkillSources(h.Skills))
+}
+
+// A child listing the same relative skill as its local base still replaces it.
+func TestLoadWithBase_LocalChildOverridesLocalBaseByPath(t *testing.T) {
+	dir := t.TempDir()
+	labels := writeSkill(t, filepath.Join(dir, "skills", "issue-labels", "github"), "issue-labels")
+	writeTestHarness(t, dir, "base.yaml", "agent: agents/base.md\nrole: review\nskills:\n  - skills/issue-labels/github\n")
+	path := writeTestHarness(t, dir, "review.yaml", "base: ./base.yaml\nrole: review\nskills:\n  - skills/issue-labels/github\n")
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.NoError(t, err)
+	assert.Equal(t, []string{labels}, SkillSources(h.Skills))
+}
+
+// A forge-level skill replaces the top-level skill whose name it declares.
+func TestLoadWithBase_ForgeSkillOverridesTopLevelByDeclaredName(t *testing.T) {
+	dir := t.TempDir()
+	writeSkill(t, filepath.Join(dir, "skills", "issue-labels", "github"), "issue-labels")
+	mine := writeSkill(t, filepath.Join(dir, "skills", "my-labels"), "issue-labels")
+	path := writeTestHarness(t, dir, "review.yaml",
+		"agent: agents/base.md\nrole: review\nskills:\n  - skills/issue-labels/github\nforge:\n  github:\n    skills:\n      - skills/my-labels\n")
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir, ForgePlatform: "github"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{mine}, SkillSources(h.Skills))
+}
+
+// The early resolution keeps ResolveRelativeTo's traversal check.
+func TestLoadWithBase_LocalSkillPathOutsideRootIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeTestHarness(t, dir, "base.yaml", "agent: agents/base.md\nrole: review\n")
+	path := writeTestHarness(t, dir, "review.yaml", "base: ./base.yaml\nrole: review\nskills:\n  - ../outside\n")
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `skills[0]: path "../outside" resolves outside fullsend directory`)
+}
+
+// A relative skill entry that is a symlink leaving the root is not read
+// for its declared name: it keeps its basename identity and stays relative
+// for ResolveRelativeTo, as before the merge-time resolution. A relative
+// symlink inside the root resolves like a directory (os.Root follows
+// relative link targets only).
+func TestLoadWithBase_LocalSkillSymlinkOutsideRootIsNotRead(t *testing.T) {
+	dir := t.TempDir()
+	baseSkill := writeSkill(t, filepath.Join(dir, "cache", "issue-labels", "github"), "issue-labels")
+	writeTestHarness(t, dir, "base.yaml", fmt.Sprintf("agent: agents/base.md\nrole: review\nskills:\n  - %s\n", baseSkill))
+
+	outside := writeSkill(t, filepath.Join(t.TempDir(), "elsewhere"), "issue-labels")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "skills"), 0o755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, "skills", "link")))
+	path := writeTestHarness(t, dir, "review.yaml", "base: ./base.yaml\nrole: review\nskills:\n  - skills/link\n")
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.NoError(t, err)
+	assert.Equal(t, []string{baseSkill, "skills/link"}, SkillSources(h.Skills))
+
+	writeSkill(t, filepath.Join(dir, "skills", "real"), "issue-labels")
+	require.NoError(t, os.Symlink("real", filepath.Join(dir, "skills", "alias")))
+	path = writeTestHarness(t, dir, "review2.yaml", "base: ./base.yaml\nrole: review\nskills:\n  - skills/alias\n")
+
+	h, _, err = LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.Join(dir, "skills", "alias")}, SkillSources(h.Skills))
+}
+
+// The containment check opens each marker spelling under an os.Root at the
+// workspace root, so no symlink leaving it is read for a declared name
+// wherever it sits: the marker file itself, a parent component, a `..`
+// entry routed through an in-root link, or a link with an absolute target.
+// Every entry keeps its basename identity and the base skill survives.
+func TestLoadWithBase_LocalSkillMarkerSymlinkOutsideRootIsNotRead(t *testing.T) {
+	dir := t.TempDir()
+	baseSkill := writeSkill(t, filepath.Join(dir, "cache", "issue-labels", "github"), "issue-labels")
+	writeTestHarness(t, dir, "base.yaml", fmt.Sprintf("agent: agents/base.md\nrole: review\nskills:\n  - %s\n", baseSkill))
+	outside := writeSkill(t, filepath.Join(t.TempDir(), "elsewhere"), "issue-labels")
+	skills := filepath.Join(dir, "skills")
+
+	marker := filepath.Join(skills, "marker")
+	require.NoError(t, os.MkdirAll(marker, 0o755))
+	require.NoError(t, os.Symlink(filepath.Join(outside, "SKILL.md"), filepath.Join(marker, "SKILL.md")))
+	require.NoError(t, os.Symlink(filepath.Dir(outside), filepath.Join(skills, "parent")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(skills, "dir")))
+	require.NoError(t, os.Symlink("../cache", filepath.Join(skills, "alias")))
+	real := writeSkill(t, filepath.Join(skills, "real"), "issue-labels")
+	require.NoError(t, os.Symlink(real, filepath.Join(skills, "absalias")))
+	path := writeTestHarness(t, dir, "review.yaml", "base: ./base.yaml\nrole: review\nskills:\n"+
+		"  - skills/marker\n  - skills/parent/elsewhere\n  - skills/alias/../dir\n  - skills/absalias\n")
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.NoError(t, err)
+	assert.Equal(t, []string{baseSkill, "skills/marker", "skills/parent/elsewhere", "skills/alias/../dir", "skills/absalias"},
+		SkillSources(h.Skills))
+}
+
+// TestMergeSkills_RelativeChildCannotSpoofBaseIdentity is a regression test
+// for a merge-time identity spoof: mergeSkills runs during ResolveForge,
+// which executes before run.go's ResolveRelativeTo for local (non-URL)
+// harnesses. At that point a relative child Source resolves against the
+// process's current working directory, not the harness tree. A
+// CWD-relative SKILL.md declaring a name that matches a base skill must not
+// be able to suppress that base skill from the merged list — skill.SandboxName
+// falls back to filepath.Base for any non-absolute path instead of reading
+// SKILL.md, so the base entry must survive and the child must be appended
+// as a distinct entry rather than overriding it.
+func TestMergeSkills_RelativeChildCannotSpoofBaseIdentity(t *testing.T) {
+	dir := t.TempDir()
+	attackerDir := filepath.Join(dir, "attacker-dir")
+	require.NoError(t, os.MkdirAll(attackerDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(attackerDir, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# spoofed\n"), 0o644))
+
+	t.Chdir(dir)
+
+	base := []SkillEntry{{Source: "/abs/base/code-review"}}
+	child := []SkillEntry{{Source: "attacker-dir"}}
+
+	got := mergeSkills(base, child)
+	assert.Equal(t, []string{"/abs/base/code-review", "attacker-dir"}, SkillSources(got))
+}
+
+// TestMergeSkills_LocalOverrideMatchesByBasenameNotDeclaredName pins what
+// mergeSkills does with an entry nothing resolved: a relative child Source
+// is keyed by its basename, never read from disk. LoadWithBase resolves a
+// local harness's skill paths against the workspace root before the merge
+// (TestLoadWithBase_LocalChildOverridesBaseByDeclaredName), so this is the
+// identity only of a path no caller resolved.
+func TestMergeSkills_LocalOverrideMatchesByBasenameNotDeclaredName(t *testing.T) {
+	dir := t.TempDir()
+	baseDir := filepath.Join(dir, "cache", "code-review")
+	require.NoError(t, os.MkdirAll(baseDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseDir, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# base\n"), 0o644))
+
+	t.Chdir(dir)
+
+	// Relative child directory basename ("my-override") differs from the
+	// base's basename ("code-review"), even though the child's own SKILL.md
+	// declares the matching name. Because the child Source is still
+	// relative at merge time, SandboxName falls back to basename and the
+	// declared name is never consulted, so the override does not attach to
+	// the base entry.
+	childDir := "my-override"
+	require.NoError(t, os.MkdirAll(childDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(childDir, "SKILL.md"),
+		[]byte("---\nname: code-review\n---\n# child\n"), 0o644))
+
+	got := mergeSkills(
+		[]SkillEntry{{Source: baseDir}},
+		[]SkillEntry{{Source: childDir}},
+	)
+	require.Len(t, got, 2, "declared-name match alone must not override when the child path is still relative")
+	assert.Equal(t, []string{baseDir, childDir}, SkillSources(got))
+}
+
+// A fetched base is matched by its declared name and a relative local
+// override by its directory basename, so the override directory takes the
+// base's declared name, which for a nested forge skill is not its basename.
+func TestMergeSkills_LocalOverrideMatchesDeclaredBaseName(t *testing.T) {
+	dir := t.TempDir()
+	baseDir := filepath.Join(dir, "cache", "issue-labels", "github")
+	require.NoError(t, os.MkdirAll(baseDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# base\n"), 0o644))
+
+	t.Chdir(dir)
+	// Both overrides declare the matching name; only the directory decides.
+	for _, childDir := range []string{"issue-labels", "github"} {
+		require.NoError(t, os.MkdirAll(childDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(childDir, "SKILL.md"),
+			[]byte("---\nname: issue-labels\n---\n# child\n"), 0o644))
+	}
+
+	got := mergeSkills([]SkillEntry{{Source: baseDir}}, []SkillEntry{{Source: "issue-labels"}})
+	assert.Equal(t, []string{"issue-labels"}, SkillSources(got), "the base's declared name overrides it")
+
+	got = mergeSkills([]SkillEntry{{Source: baseDir}}, []SkillEntry{{Source: "github"}})
+	assert.Equal(t, []string{baseDir, "github"}, SkillSources(got), "the base's basename does not")
 }
 
 func TestLoadWithBase_LocalBase_PrivilegeLevelsMerge(t *testing.T) {
@@ -7260,8 +7529,9 @@ skills:
 
 func TestLoadWithBase_SourceURL_WithBase_SkillOverrideByBasename(t *testing.T) {
 	// mergeSkills (#5408) makes a child skill override a base skill in
-	// place when their basenames match, rather than appending it
-	// alongside. This locks in that this PR's post-merge SourceURL
+	// place when their identities match (here the basename, since neither
+	// SKILL.md declares a name), rather than appending it alongside. This
+	// locks in that this PR's post-merge SourceURL
 	// resolution composes correctly with that override: the surviving
 	// entry must resolve to the child's content from SourceURL, and
 	// there must be exactly one resulting skill, not two.
@@ -7272,8 +7542,9 @@ func TestLoadWithBase_SourceURL_WithBase_SkillOverrideByBasename(t *testing.T) {
 	cacheDir := filepath.Join(dir, "cache")
 
 	// The base's skill directory shares a basename ("pr-review") with the
-	// child's skill declaration below, so mergeSkills overrides it in
-	// place. It must also be a genuine cache path — isFullsendCachePath
+	// child's skill declaration below and neither SKILL.md declares a
+	// name, so mergeSkills overrides it in place. It must also be a genuine
+	// cache path — isFullsendCachePath
 	// rejects any other absolute path as untrusted — so it's nested under
 	// a cache-hash directory rather than a plain temp-dir path, with
 	// "pr-review" as its basename (mirroring how fetchBaseSkill names the
@@ -7314,9 +7585,10 @@ skills:
 
 	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
 
-	// The child declares its own skill with the SAME basename as the
-	// base's, so mergeSkills replaces the base's entry instead of
-	// appending alongside it.
+	// The child declares its own skill with the SAME identity as the
+	// base's (the basename, since neither SKILL.md declares a name), so
+	// mergeSkills replaces the base's entry instead of appending alongside
+	// it.
 	childHarness := fmt.Sprintf(`
 base: %s
 role: review
@@ -7355,6 +7627,98 @@ skills:
 	require.NoError(t, err)
 	assert.Equal(t, "# Child Skill", string(content), "overriding skill should fetch the child's content, not the base's")
 	assert.FileExists(t, filepath.Join(h.Skills[0].Source, "meta-prompt.md"))
+}
+
+// A URL-sourced child's nested skill whose directory basename differs from
+// its declared SKILL.md name replaces the base skill with that declared name:
+// the child's skill paths are resolved against SourceURL before the merge, so
+// mergeSkills reads the declared identity (#7830).
+func TestLoadWithBase_SourceURL_WithBase_NestedSkillOverrideByDeclaredName(t *testing.T) {
+	baseAgentContent := []byte("# base agent definition")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Base skill: directory basename "github", declared name "issue-labels".
+	cacheHashDir, err := fetch.CachePath(cacheDir, strings.Repeat("d", 64))
+	require.NoError(t, err)
+	baseSkillDir := filepath.Join(cacheHashDir, "github")
+	require.NoError(t, os.MkdirAll(baseSkillDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseSkillDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n# Base Skill\n"), 0o644))
+
+	baseContent := []byte(fmt.Sprintf(`
+agent: agents/base.md
+role: review
+model: opus
+skills:
+  - %s
+`, baseSkillDir))
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(baseAgentContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// A decoy at the child's relative path in the working directory declares
+	// another name: a regression that read the path against the CWD would
+	// key the child "decoy" and leave the base skill in place.
+	decoyDir := filepath.Join(dir, "skills", "issue-labels", "github")
+	require.NoError(t, os.MkdirAll(decoyDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(decoyDir, "SKILL.md"),
+		[]byte("---\nname: decoy\n---\n# Decoy\n"), 0o644))
+	t.Chdir(dir)
+
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+skills:
+  - skills/issue-labels/github
+`, baseURL)
+
+	path := writeTestHarness(t, dir, "review.yaml", childHarness)
+	sourceURL := "https://raw.githubusercontent.com/org/agents/abc123/harness/review.yaml"
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"SKILL.md": []byte("---\nname: issue-labels\n---\n# Child Skill\n"),
+	})
+
+	allowlist := []string{
+		server.URL + "/",
+		"https://raw.githubusercontent.com/org/agents/",
+	}
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:      cacheDir,
+		FetchPolicy:        policy,
+		OrgAllowlist:       allowlist,
+		SourceURL:          sourceURL,
+		TreeFetcher:        fetcher,
+		allowSelfAllowlist: true,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Skills, 1, "the child skill declaring the base's name replaces it")
+	assert.NotEqual(t, baseSkillDir, h.Skills[0].Source)
+	content, err := os.ReadFile(filepath.Join(h.Skills[0].Source, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "# Child Skill")
 }
 
 func TestLoadWithBase_SourceURL_WithBase_ScriptResolutionError(t *testing.T) {
@@ -7422,9 +7786,8 @@ pre_script: scripts/pre.sh
 
 func TestLoadWithBase_SourceURL_WithBase_ResourceResolutionError(t *testing.T) {
 	// When a URL-sourced harness has a base: field and the child declares
-	// its own skills, the post-composition resolveBaseResources call must
-	// propagate errors. The child declares no scripts (so resolveBaseScripts
-	// succeeds on the merged harness), but the child's skill path cannot be
+	// its own skills, the pre-merge skill resolution must propagate errors.
+	// The child declares no scripts, but the child's skill path cannot be
 	// resolved because the SourceURL is not in the allowlist.
 
 	baseAgentContent := []byte("# base agent definition")
@@ -7480,7 +7843,7 @@ skills:
 		allowSelfAllowlist: true,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "resolving URL-sourced resources after base composition")
+	assert.Contains(t, err.Error(), "resolving URL-sourced skills before base composition")
 }
 
 func TestLoadWithBase_SourceURL_WithBase_HostFilesResolutionError(t *testing.T) {

@@ -132,8 +132,17 @@ var fullsendWorkflowRules = []workflowRule{
 	{If: debugTraceDenyRuleIf, When: "never"},
 	{If: `$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"`},
 	{If: `$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE`},
+	{If: childPipelineAgentRuleIf},
 	{If: triggerDispatcherRuleIf},
 }
+
+// childPipelineAgentRuleIf admits agent pipelines a poll or dispatcher job
+// of the trigger-only account starts with its CI_JOB_TOKEN through the
+// pipeline trigger API (source=pipeline, #8438) on the protected default
+// branch. run-agent-job.sh still requires the recorded trigger account as
+// the pipeline creator and a valid dispatch HMAC before any role
+// credential is selected.
+const childPipelineAgentRuleIf = `$CI_PIPELINE_SOURCE == "pipeline" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH && $STAGE`
 
 // triggerDispatcherRuleIf admits webhook-triggered (source=trigger)
 // pipelines on the protected default branch (ADR 0125, #7771). The
@@ -156,6 +165,7 @@ var unmergeWorkflowRules = []workflowRule{
 	{If: debugTraceDenyRuleIf, When: "never"},
 	{If: `$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"`},
 	{If: `$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE`},
+	{If: childPipelineAgentRuleIf},
 	{If: triggerDispatcherRuleIf},
 }
 
@@ -1524,8 +1534,8 @@ func gitlabVariableBridgesInputExpand(variables *yaml.Node, varName, inputName s
 	return false
 }
 
-// gitlabAgentBridgesDispatchInputs reports whether the committed agent
-// template declares a job whose variables: block bridges every dispatch
+// gitlabAgentBridgesDispatchInputs reports whether the committed managed agent
+// job's variables: block bridges every dispatch
 // input into its corresponding job variable using the exact
 // "$[[ inputs.<name> ]]" form run-agent-job.sh and HMAC verification
 // depend on. Every bridge must be an extended mapping with an explicit
@@ -1541,39 +1551,24 @@ func gitlabVariableBridgesInputExpand(variables *yaml.Node, varName, inputName s
 // reported the repair as landed — see the review finding on this guard's
 // incomplete consumption check.
 func gitlabAgentBridgesDispatchInputs(content []byte) bool {
-	docs, err := decodeGitLabDocuments(content)
-	if err != nil || len(docs) != 2 {
+	job, ok := gitlabJobNode(content, fullsendAgentJobName)
+	if !ok {
 		return false
 	}
-	root := docs[1].Content[0]
-	if root.Kind != yaml.MappingNode {
+	variables, ok := effectiveMappingValue(job, "variables")
+	if !ok || variables == nil {
 		return false
 	}
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		name, ok := classifyTopLevelKey(root.Content[i])
-		if !ok || name == "<<" || nonJobTopLevelKeys[name] || strings.HasPrefix(name, ".") {
-			continue
-		}
-		job := root.Content[i+1]
-		if job.Kind != yaml.MappingNode {
-			continue
-		}
-		variables := findMappingValue(job, "variables")
-		if variables == nil || variables.Kind != yaml.MappingNode {
-			continue
-		}
-		complete := true
-		for varName, inputName := range gitlabAgentInputVariableBridge {
-			if !gitlabVariableBridgesInputNonExpanding(variables, varName, inputName) {
-				complete = false
-				break
-			}
-		}
-		if complete {
-			return true
+	variables = resolveAlias(variables)
+	if variables == nil || variables.Kind != yaml.MappingNode || duplicateMappingKeyProblem(variables) != "" {
+		return false
+	}
+	for varName, inputName := range gitlabAgentInputVariableBridge {
+		if !gitlabVariableBridgesInputNonExpanding(variables, varName, inputName) {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // gitlabPollAndAgentTemplatesLanded reports whether the committed

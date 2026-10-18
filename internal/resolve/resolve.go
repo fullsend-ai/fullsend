@@ -41,14 +41,18 @@ type Dependency struct {
 type ResolvedProfile struct {
 	ID        string
 	LocalPath string
-	FromURL   bool // true when resolved from a URL (including lock-file reconstruction)
+	// FromURL is true when the content came from a URL: resolved from one
+	// directly, reconstructed from the lock file, or read from the content
+	// cache (a URL base harness's relative entry, rewritten by composition).
+	FromURL bool
 }
 
 // ResolvedProvider is a provider definition resolved from a URL or local path.
 type ResolvedProvider struct {
 	Def       harness.ProviderDef
 	LocalPath string
-	FromURL   bool // true when resolved from a URL (including lock-file reconstruction)
+	// FromURL has the same meaning as ResolvedProfile.FromURL.
+	FromURL bool
 }
 
 // ResolveResult contains all outputs from harness resolution.
@@ -465,14 +469,18 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: %w (from %s)", i, err, localPath)
 			}
 
+			// A cache path holds content fetched from a URL (a URL base
+			// harness's relative entry, rewritten by composition), not a
+			// repository file.
+			fromCache := isCachePath(localPath, opts.WorkspaceRoot)
 			ext := strings.ToLower(filepath.Ext(localPath))
-			if ext != ".yaml" && ext != ".yml" && isCachePath(localPath, opts.WorkspaceRoot) {
+			if ext != ".yaml" && ext != ".yml" && fromCache {
 				localPath, err = fetch.CacheNamedSymlink(localPath, id+".yaml")
 				if err != nil {
 					return ResolveResult{}, fmt.Errorf("naming cached profile for openshell.profiles[%d]: %w", i, err)
 				}
 			}
-			profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath})
+			profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath, FromURL: fromCache})
 		}
 	}
 
@@ -498,7 +506,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 				if w != "" {
 					state.warnings = append(state.warnings, w)
 				}
-				resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: p})
+				resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: p, FromURL: isCachePath(p, opts.WorkspaceRoot)})
 				continue
 			}
 			remaining = append(remaining, p)

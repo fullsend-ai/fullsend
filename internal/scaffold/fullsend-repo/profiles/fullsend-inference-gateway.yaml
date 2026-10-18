@@ -14,6 +14,11 @@ credentials:
     description: Short-lived forge OIDC token presented to the inference gateway
     env_vars: [INFERENCE_GATEWAY_API_KEY]
     required: true
+    # One binding serves every dialect, because a pi run can mix them on one
+    # gateway. With messages_auth_header: x-api-key (ADR 0142) pi sends the
+    # credential as x-api-key on /v1/messages and as Authorization: Bearer
+    # on the other paths, one header per request; OpenShell resolves the
+    # placeholder in whichever header carries it on this endpoint.
     auth_style: bearer
     header_name: authorization
     refresh:

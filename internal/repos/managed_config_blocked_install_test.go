@@ -423,9 +423,10 @@ func TestPreflightManagedConfig_AdoptionGuidanceUsesDeclaredPreset(t *testing.T)
 	fc := newFakeClientForBatch("acme/api")
 	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("keep_history: true\n")
 
-	err := PreflightManagedConfig(context.Background(), m, newTestClientFactory(fc), nil)
-	require.Error(t, err)
-	msg := err.Error()
+	adoption, err := PreflightManagedConfig(context.Background(), m, newTestClientFactory(fc), nil)
+	require.NoError(t, err)
+	require.Len(t, adoption, 1)
+	msg := adoption[0].Guidance
 	assert.Contains(t, msg, "effective layered configuration change")
 	// The preset the install would add changes the effective value once the
 	// overlay stops declaring keep_history.
@@ -582,14 +583,14 @@ func TestConverge_EstablishedMarkerlessOverlayFailsWithoutWrites(t *testing.T) {
 // PreflightProposedManagedSafety applies convergence's layered comparison to
 // the proposed manifest without writing anything: an installed repository
 // whose overlay or base would relax is rejected, a pristine first install and
-// a safe proposal pass, and an unloadable preset is reported.
+// a safe proposal pass, and an unloadable preset is left to convergence.
 func TestPreflightProposedManagedSafety(t *testing.T) {
 	presetPath := writePresetFile(t, wideningPreset)
 	for _, forgeName := range layerForges {
 		t.Run(forgeName+"/overlay relaxation on an installed repo", func(t *testing.T) {
 			fc, cfg := blockedInstallFixture(t, forgeName, true, "")
 			fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: true\n")
-			err := PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil)
+			err := PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil, nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "acme/api")
 			assert.Contains(t, err.Error(), "kill_switch")
@@ -598,26 +599,38 @@ func TestPreflightProposedManagedSafety(t *testing.T) {
 		t.Run(forgeName+"/base relaxation on an installed repo", func(t *testing.T) {
 			fc, cfg := blockedInstallFixture(t, forgeName, true, presetPath)
 			fc.FileContents["acme/api/"+preset.OverlayPath] = mustDesiredManaged(t, cfg.Manifest, "acme", "api")
-			err := PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil)
+			err := PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil, nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "create_issues.allow_targets")
 		})
 		t.Run(forgeName+"/pristine first install passes", func(t *testing.T) {
 			fc, cfg := blockedInstallFixture(t, forgeName, false, presetPath)
-			require.NoError(t, PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil))
+			require.NoError(t, PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil, nil))
 		})
 		t.Run(forgeName+"/pending install with a relaxing overlay is rejected", func(t *testing.T) {
 			fc, cfg := blockedInstallFixture(t, forgeName, false, "")
 			fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "kill_switch: true\n")
-			err := PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil)
+			err := PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil, nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "kill_switch")
 		})
-		t.Run(forgeName+"/unloadable preset is reported", func(t *testing.T) {
-			fc, cfg := blockedInstallFixture(t, forgeName, true, presetPath+".missing")
-			err := PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil)
+		t.Run(forgeName+"/markerless overlay on an installed repo is skipped when excluded", func(t *testing.T) {
+			// install excludes a repository whose overlay needs adoption and
+			// reports it on its own (#8511).
+			fc, cfg := blockedInstallFixture(t, forgeName, true, "")
+			fc.FileContents["acme/api/"+preset.OverlayPath] = []byte("kill_switch: false\n# hand-authored\n")
+			err := PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil, nil)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "loading config preset")
+			assert.Contains(t, err.Error(), "adoption required")
+			require.NoError(t, PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil, []string{"acme/api"}))
+			assertNoForgeWrites(t, fc)
+		})
+		t.Run(forgeName+"/unloadable preset is left to convergence", func(t *testing.T) {
+			// A preset load failure fails only that repository; convergence
+			// reloads it before any write and reports it there (#8516).
+			fc, cfg := blockedInstallFixture(t, forgeName, true, presetPath+".missing")
+			require.NoError(t, PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil, nil))
+			assertNoForgeWrites(t, fc)
 		})
 	}
 }

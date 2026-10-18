@@ -132,6 +132,20 @@ const (
 	VarPollMode       = "FULLSEND_POLL_MODE"
 	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
 
+	// VarGitLabDispatchRoute is the job-local selector the GitLab poll and
+	// dispatcher job scripts export for `fullsend poll` (#8438). It is never
+	// a CI/CD variable: the scripts derive it from the pinned pipeline's
+	// creator. "child-pipeline" starts agent pipelines with CI_JOB_TOKEN
+	// through the pipeline trigger API (source "pipeline"); unset or "api"
+	// keeps the Poller credential and the pipelines API (source "api").
+	VarGitLabDispatchRoute = "FULLSEND_GITLAB_DISPATCH_ROUTE"
+	// GitLabDispatchRouteChildPipeline is the VarGitLabDispatchRoute value
+	// that selects the CI_JOB_TOKEN child-pipeline dispatch route.
+	GitLabDispatchRouteChildPipeline = "child-pipeline"
+	// GitLabDispatchRouteAPI is the VarGitLabDispatchRoute value that keeps
+	// the Poller-credential pipelines API dispatch route.
+	GitLabDispatchRouteAPI = "api"
+
 	// VarGitLabRoleRegistry is the administrator-controlled GitLab role
 	// registry (JSON policy and credential *references*, never raw
 	// secret values). Absent or empty means built-in roles only. Must
@@ -149,6 +163,33 @@ const (
 	// account IDs and the pending generation's handoff phase). It never
 	// stores token values. Not yet written by any command. See #8210.
 	VarGitLabPollerGenerations = "FULLSEND_GITLAB_POLLER_GENERATIONS"
+
+	// VarGitLabTriggerAccount is the protected, unmasked ledger for the
+	// trigger-only GitLab service account (account, bootstrap PAT,
+	// deploy-key and branch-grant, and pipeline trigger token IDs, plus
+	// the lifecycle phase). It never stores token values or private keys.
+	// Written by repos install and removed by repos uninstall only after
+	// every resource it records is gone; see #8437 and #8438.
+	VarGitLabTriggerAccount = "FULLSEND_GITLAB_TRIGGER_ACCOUNT"
+
+	// VarGitLabDispatchActivation is the protected, unmasked activation record
+	// for the trigger-account dispatch route (#8438). It is a separate variable
+	// rather than a ledger field because every released decoder of
+	// FULLSEND_GITLAB_TRIGGER_ACCOUNT rejects unknown fields before it reads the
+	// ledger version, so a new ledger field would make an older CLI fail on an
+	// activated project. The record binds to the exact ledger generation (nonce
+	// and resource IDs) it was written for, so any lifecycle change, including
+	// one made by an older CLI that does not know this variable, leaves it
+	// stale and the scaffold falls back to the Poller route. It never stores
+	// token values.
+	VarGitLabDispatchActivation = "FULLSEND_GITLAB_DISPATCH_ACTIVATION"
+
+	// SecretGitLabTriggerAccountToken is the pipeline trigger token owned by
+	// the trigger-only service account. It is stored as a masked, protected
+	// CI/CD variable that no pipeline reads until the dispatch route of #8438
+	// is activated; the existing polling path and FULLSEND_TRIGGER_TOKEN are
+	// unaffected. Never logged and never written to the ledger.
+	SecretGitLabTriggerAccountToken = "FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN"
 )
 
 // GitLab CI pipeline-variable minimum-override roles.
@@ -232,6 +273,19 @@ var ErrForbidden = errors.New("forbidden")
 // IsForbidden reports whether err indicates a permission denial.
 func IsForbidden(err error) bool {
 	return errors.Is(err, ErrForbidden)
+}
+
+// ErrSignedCommitsRequired indicates that a commit was rejected because
+// the repository's rules require verified signatures and the commit is
+// not signed. Implementations wrap it together with ErrBranchProtected so
+// existing protection handling still applies, while callers can name the
+// actual rule instead of a generic protection message.
+var ErrSignedCommitsRequired = errors.New("signed commits required")
+
+// IsSignedCommitsRequired reports whether err indicates a rejection by a
+// rule that requires signed commits.
+func IsSignedCommitsRequired(err error) bool {
+	return errors.Is(err, ErrSignedCommitsRequired)
 }
 
 // UnverifiedScopesError is returned by ListInheritedRepoVariables together
@@ -801,9 +855,11 @@ type Client interface {
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 	DeleteFile(ctx context.Context, owner, repo, path, message string) error
 
-	// DeleteFiles atomically removes multiple paths in a single commit via the
-	// Git Trees API. Missing paths are skipped. Returns the number of paths
-	// removed, or (0, nil) when none of the paths exist.
+	// DeleteFiles atomically removes multiple paths in a single commit.
+	// Missing paths are skipped. Returns the number of paths removed, or
+	// (0, nil) when none of the paths exist. On GitHub the commit is
+	// created with the createCommitOnBranch mutation and is therefore
+	// signed by GitHub (see CommitFiles).
 	DeleteFiles(ctx context.Context, owner, repo, message string, paths []string) (deleted int, err error)
 
 	// ListDirectoryContents returns all files and subdirectories at the given
@@ -831,11 +887,25 @@ type Client interface {
 	// default branch in a single commit. It is idempotent: if all files
 	// already have the expected content and mode, no commit is created
 	// and it returns (false, nil).
+	//
+	// On GitHub, a commit whose changed files are all regular inline files
+	// (mode 100644, no LocalPath) is created with createCommitOnBranch and
+	// signed by GitHub for any credential; it cannot change an existing
+	// file's mode, so a mode-only difference counts as unchanged. Other
+	// commits (the vendored bundle) use the Git Data REST API, signed only
+	// for App installation tokens. GitLab commits count as web-based
+	// commits and are signed only where web-based commit signing is set
+	// up: the group or project setting on GitLab.com, the instance's
+	// signing key on Self-Managed and Dedicated.
+	//
+	// Returns ErrBranchProtected when a rule rejects the commit, also
+	// wrapping ErrSignedCommitsRequired for a signature rule.
 	CommitFiles(ctx context.Context, owner, repo, message string, files []TreeFile) (committed bool, err error)
 
 	// CommitFilesToBranch atomically commits multiple files to a specific
 	// branch. Like CommitFiles, it is idempotent: if all files already
-	// have the expected content, no commit is created.
+	// have the expected content, no commit is created. The signing rules
+	// documented on CommitFiles apply.
 	CommitFilesToBranch(ctx context.Context, owner, repo, branch, message string, files []TreeFile) (committed bool, err error)
 
 	// ForceCommitFileToBranch force-updates branch to a single-file commit
@@ -1189,6 +1259,11 @@ type Client interface {
 	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]PipelineInputValue) (*Pipeline, error)
 
 	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
+	// CreatePipelineScheduleWithActive is CreatePipelineSchedule with the
+	// schedule's initial active state sent in the create request. With
+	// active false the schedule is never active, so it cannot fire between
+	// a create and a separate disable. GitHub returns ErrNotSupported.
+	CreatePipelineScheduleWithActive(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string, active bool) (int64, error)
 	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 	// GetPipelineSchedule includes variables omitted by GitLab's list endpoint.
 	GetPipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) (*PipelineSchedule, error)
@@ -1261,6 +1336,14 @@ type Client interface {
 	// Returns ErrNotFound if the project does not exist. GitHub returns
 	// ErrNotSupported.
 	SetPipelineVariablesMinimumOverrideRole(ctx context.Context, owner, repo, role string) error
+	// GetJobTokenRepositoryPushAllowed returns the GitLab project setting
+	// ci_push_repository_for_job_token_allowed, which lets a job's
+	// CI_JOB_TOKEN push to the project repository. Returns ErrNotSupported
+	// if the field is absent from GitLab's response (an instance or edition
+	// that does not report the setting), so callers can fail closed rather
+	// than treat an unreported setting as disabled. Returns ErrNotFound if
+	// the project does not exist. GitHub returns ErrNotSupported.
+	GetJobTokenRepositoryPushAllowed(ctx context.Context, owner, repo string) (bool, error)
 
 	// Commit comparison
 	// CompareCommits compares two commits and returns their relationship
@@ -1372,6 +1455,7 @@ type ProtectedBranchRule struct {
 // PipelineSchedule represents a scheduled pipeline trigger.
 type PipelineSchedule struct {
 	ID           int64
+	OwnerID      int64 // zero when GitLab did not report an owner
 	Description  string
 	Ref          string
 	Cron         string

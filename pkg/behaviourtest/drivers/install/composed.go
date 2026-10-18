@@ -30,6 +30,16 @@ type composedDriver struct {
 	// factories through withMintURL once the mint is deployed.
 	mintURL string
 
+	// traces, when set, is the job-scoped trace collector: each
+	// allocated repo is pointed at it, and Finalize stops it and
+	// saves its trace files. Set by withTraceCollector.
+	traces traceSink
+
+	// pendingTraces is a collector that failed to start and whose own
+	// cleanup also failed. It is never used to configure repos; Finalize
+	// only retries its cleanup.
+	pendingTraces interface{ Stop(context.Context) error }
+
 	names    chan string // buffered channel of available repo names
 	capacity int
 
@@ -95,6 +105,12 @@ func (d *composedDriver) AllocateRepo(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("allocating repo %s/%s: %w", d.org, name, err)
 	}
 
+	if d.traces != nil {
+		if err := d.traces.ConfigureRepo(ctx, d.org, name); err != nil {
+			d.logf("[driver] trace collector: configuring %s/%s (continuing without traces from it): %v", d.org, name, err)
+		}
+	}
+
 	d.logf("[driver] allocated %s/%s", d.org, name)
 	d.logRateLimit("after allocating " + d.org + "/" + name)
 	return name, nil
@@ -133,8 +149,8 @@ func (d *composedDriver) DeallocateRepo(ctx context.Context, repoName string) er
 	return nil
 }
 
-// Finalize tears down suite-scoped resources (mint). If leases are
-// still outstanding, it reclaims them (logging the names), best-effort
+// Finalize tears down suite-scoped resources (mint, trace collector).
+// If leases are still outstanding, it reclaims them (logging the names), best-effort
 // deletes each leaked repo (same log-and-continue policy as
 // DeallocateRepo, so a leak doesn't leave the forge repo behind until
 // the next acquire), and returns an error alongside any mint teardown
@@ -169,7 +185,22 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 		}
 	}
 
-	return errors.Join(leakErr, teardownErr)
+	// Stop the trace collector last, after the repos (and their
+	// workflows) are gone, so it flushes everything it received.
+	var traceErr error
+	if d.traces != nil {
+		if err := d.traces.Stop(ctx); err != nil {
+			traceErr = fmt.Errorf("Finalize: trace collector: %w", err)
+		}
+	}
+
+	if d.pendingTraces != nil {
+		if err := d.pendingTraces.Stop(ctx); err != nil {
+			traceErr = errors.Join(traceErr, fmt.Errorf("Finalize: failed-start trace collector cleanup: %w", err))
+		}
+	}
+
+	return errors.Join(leakErr, teardownErr, traceErr)
 }
 
 // Capacity returns the max concurrent outstanding allocations.

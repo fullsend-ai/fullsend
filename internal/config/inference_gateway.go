@@ -39,6 +39,26 @@ const (
 	GatewayAuthAPIKey = "api-key"
 )
 
+// Inference gateway credential headers for Messages-dialect requests
+// (inference.gateway.messages_auth_header, ADR 0142). The other dialects
+// and codex always send Authorization: Bearer.
+const (
+	// GatewayMessagesAuthHeaderAuthorization sends the credential as
+	// Authorization: Bearer, the header agentgateway reads by default
+	// (ADR 0137). It is the default.
+	GatewayMessagesAuthHeaderAuthorization = "authorization"
+	// GatewayMessagesAuthHeaderXAPIKey sends the credential as x-api-key,
+	// the header Anthropic documents for API keys on the Messages API. It
+	// is valid only with GatewayAuthAPIKey.
+	GatewayMessagesAuthHeaderXAPIKey = "x-api-key"
+)
+
+// ValidGatewayMessagesAuthHeaders returns the accepted
+// inference.gateway.messages_auth_header values.
+func ValidGatewayMessagesAuthHeaders() []string {
+	return []string{GatewayMessagesAuthHeaderAuthorization, GatewayMessagesAuthHeaderXAPIKey}
+}
+
 // ValidGatewayAuthModes returns the accepted inference.gateway.auth values.
 func ValidGatewayAuthModes() []string {
 	return []string{GatewayAuthOIDC, GatewayAuthAPIKey}
@@ -54,7 +74,10 @@ func ValidGatewayAPIs() []string {
 // self-hosted, OpenAI/Anthropic-compatible gateway. Auth selects the
 // credential mode (EffectiveAuth): oidc (the default) presents the job's
 // forge OIDC token and requires Audience; api-key presents a gateway API
-// key and needs no audience. URL is always required (see Missing). The
+// key and needs no audience. MessagesAuthHeader selects the header the
+// credential travels in on Messages-dialect requests
+// (EffectiveMessagesAuthHeader; ADR 0142). URL is always required (see
+// Missing). The
 // model list is optional at block level and takes exactly one of two
 // forms: Models (inline) or ModelsFile (a repository path to a file in the
 // pi-inference-gateway extension's own config format). A runtime that
@@ -65,11 +88,12 @@ func ValidGatewayAPIs() []string {
 // is the single source, and pull-request events read it from the base
 // branch, so a pull request cannot redirect its own run.
 type InferenceGatewayConfig struct {
-	URL        string                           `yaml:"url,omitempty"`
-	Audience   string                           `yaml:"audience,omitempty"`
-	Auth       string                           `yaml:"auth,omitempty"`
-	Models     map[string]InferenceGatewayModel `yaml:"models,omitempty"`
-	ModelsFile string                           `yaml:"models_file,omitempty"`
+	URL                string                           `yaml:"url,omitempty"`
+	Audience           string                           `yaml:"audience,omitempty"`
+	Auth               string                           `yaml:"auth,omitempty"`
+	MessagesAuthHeader string                           `yaml:"messages_auth_header,omitempty"`
+	Models             map[string]InferenceGatewayModel `yaml:"models,omitempty"`
+	ModelsFile         string                           `yaml:"models_file,omitempty"`
 }
 
 // InferenceGatewayModel holds the per-model settings of an inline
@@ -88,10 +112,11 @@ type InferenceGatewayModel struct {
 // receiver's map.
 func (c InferenceGatewayConfig) Trimmed() InferenceGatewayConfig {
 	out := InferenceGatewayConfig{
-		URL:        strings.TrimSpace(c.URL),
-		Audience:   strings.TrimSpace(c.Audience),
-		Auth:       strings.TrimSpace(c.Auth),
-		ModelsFile: strings.TrimSpace(c.ModelsFile),
+		URL:                strings.TrimSpace(c.URL),
+		Audience:           strings.TrimSpace(c.Audience),
+		Auth:               strings.TrimSpace(c.Auth),
+		MessagesAuthHeader: strings.TrimSpace(c.MessagesAuthHeader),
+		ModelsFile:         strings.TrimSpace(c.ModelsFile),
 	}
 	if c.Models != nil {
 		out.Models = make(map[string]InferenceGatewayModel, len(c.Models))
@@ -105,7 +130,7 @@ func (c InferenceGatewayConfig) Trimmed() InferenceGatewayConfig {
 
 // IsZero reports whether no field is set.
 func (c InferenceGatewayConfig) IsZero() bool {
-	return c.URL == "" && c.Audience == "" && c.Auth == "" && len(c.Models) == 0 && c.ModelsFile == ""
+	return c.URL == "" && c.Audience == "" && c.Auth == "" && c.MessagesAuthHeader == "" && len(c.Models) == 0 && c.ModelsFile == ""
 }
 
 // EffectiveAuth returns the block's credential mode: Auth, or
@@ -120,6 +145,22 @@ func (c InferenceGatewayConfig) EffectiveAuth() string {
 // IsAPIKey reports whether the block uses the api-key credential mode.
 func (c InferenceGatewayConfig) IsAPIKey() bool {
 	return c.EffectiveAuth() == GatewayAuthAPIKey
+}
+
+// EffectiveMessagesAuthHeader returns the header the credential travels in
+// on Messages-dialect requests: MessagesAuthHeader, or
+// GatewayMessagesAuthHeaderAuthorization when it is unset.
+func (c InferenceGatewayConfig) EffectiveMessagesAuthHeader() string {
+	if h := strings.TrimSpace(c.MessagesAuthHeader); h != "" {
+		return h
+	}
+	return GatewayMessagesAuthHeaderAuthorization
+}
+
+// MessagesUseXAPIKey reports whether Messages-dialect requests carry the
+// credential as x-api-key instead of Authorization: Bearer.
+func (c InferenceGatewayConfig) MessagesUseXAPIKey() bool {
+	return c.EffectiveMessagesAuthHeader() == GatewayMessagesAuthHeaderXAPIKey
 }
 
 // HasModelList reports whether either model-list form is set.
@@ -166,6 +207,14 @@ func (c InferenceGatewayConfig) Validate() error {
 	if c.Auth != "" && !slices.Contains(ValidGatewayAuthModes(), c.Auth) {
 		return fmt.Errorf("inference.gateway.auth: invalid value %q: must be one of %s", c.Auth, strings.Join(ValidGatewayAuthModes(), ", "))
 	}
+	if c.MessagesAuthHeader != "" && !slices.Contains(ValidGatewayMessagesAuthHeaders(), c.MessagesAuthHeader) {
+		return fmt.Errorf("inference.gateway.messages_auth_header: invalid value %q: must be one of %s", c.MessagesAuthHeader, strings.Join(ValidGatewayMessagesAuthHeaders(), ", "))
+	}
+	if c.Auth != "" {
+		if err := c.validateMessagesAuthHeaderMode(); err != nil {
+			return err
+		}
+	}
 	if len(c.Models) > 0 && c.ModelsFile != "" {
 		return fmt.Errorf("inference.gateway: models and models_file are mutually exclusive")
 	}
@@ -178,6 +227,26 @@ func (c InferenceGatewayConfig) Validate() error {
 		if err := validateGatewayModel(id, c.Models[id]); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// ValidateEffective checks a resolved (layered) block: Validate, plus the
+// rules that span fields a single layer may not all set. messages_auth_header:
+// x-api-key needs the api-key mode, and the mode may come from another layer
+// (an unset auth is oidc), so Validate alone cannot refuse it.
+func (c InferenceGatewayConfig) ValidateEffective() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	return c.validateMessagesAuthHeaderMode()
+}
+
+// validateMessagesAuthHeaderMode refuses messages_auth_header: x-api-key
+// outside the api-key mode (ADR 0142): an OIDC JWT is a bearer token.
+func (c InferenceGatewayConfig) validateMessagesAuthHeaderMode() error {
+	if c.MessagesUseXAPIKey() && !c.IsAPIKey() {
+		return fmt.Errorf("inference.gateway.messages_auth_header: %q is allowed only with auth: %s (the %s mode sends its token as Authorization: Bearer)", GatewayMessagesAuthHeaderXAPIKey, GatewayAuthAPIKey, c.EffectiveAuth())
 	}
 	return nil
 }
@@ -571,8 +640,8 @@ func validateGatewayModel(id string, m InferenceGatewayModel) error {
 	return nil
 }
 
-// mergeGateway layers child over parent field by field: url, audience and
-// auth resolve independently, and the model list (either form) is one unit — a
+// mergeGateway layers child over parent field by field: url, audience,
+// auth and messages_auth_header resolve independently, and the model list (either form) is one unit — a
 // layer that states a list replaces the parent's list, so the two forms
 // never combine across layers.
 func mergeGateway(parent InferenceGatewayConfig, child *InferenceGatewayConfig) InferenceGatewayConfig {
@@ -588,6 +657,9 @@ func mergeGateway(parent InferenceGatewayConfig, child *InferenceGatewayConfig) 
 	}
 	if child.Auth != "" {
 		out.Auth = child.Auth
+	}
+	if child.MessagesAuthHeader != "" {
+		out.MessagesAuthHeader = child.MessagesAuthHeader
 	}
 	if child.HasModelList() {
 		out.Models = cloneGatewayModels(child.Models)

@@ -11,13 +11,16 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -25,9 +28,16 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/netutil"
 )
 
+// fetchRetryDelay is the pause before retrying a failed HTTPS fetch. A
+// variable so tests can shorten it.
+var fetchRetryDelay = 500 * time.Millisecond
+
 const (
 	fetchTimeout = 30 * time.Second
-	maxSize      = 1 << 20 // 1 MiB
+	// fetchAttempts bounds HTTPS fetch attempts: one retry after a
+	// transport failure.
+	fetchAttempts = 2
+	maxSize       = 1 << 20 // 1 MiB
 
 	// BasePath is the repository-relative path of the vendor/base layer.
 	BasePath = ".fullsend/config.base.yaml"
@@ -117,7 +127,7 @@ func safeDialContext(d *net.Dialer, skipIPCheck bool) func(ctx context.Context, 
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
-			return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+			return nil, policyError{fmt.Errorf("invalid address %q: %w", addr, err)}
 		}
 		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 		if err != nil {
@@ -137,7 +147,7 @@ func safeDialContext(d *net.Dialer, skipIPCheck bool) func(ctx context.Context, 
 			}
 		}
 		if len(safeIPs) == 0 {
-			return nil, fmt.Errorf("all resolved addresses for %q are blocked", host)
+			return nil, policyError{fmt.Errorf("all resolved addresses for %q are blocked", host)}
 		}
 		var lastErr error
 		for _, ip := range safeIPs {
@@ -192,48 +202,170 @@ func fetchHTTPSWithTLSConfig(ctx context.Context, rawURL string, skipIPCheck boo
 		transport.TLSClientConfig = base.TLSClientConfig.Clone()
 	}
 
+	// The transport is private to this fetch; release its connections.
+	defer transport.CloseIdleConnections()
+
 	client := &http.Client{
 		Timeout:   fetchTimeout,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "https" {
-				return fmt.Errorf("preset redirect to non-HTTPS URL %q is not allowed", req.URL.Redacted())
+				return policyError{fmt.Errorf("preset redirect to non-HTTPS URL %q is not allowed", req.URL.Redacted())}
 			}
 			if req.URL.User != nil {
-				return fmt.Errorf("preset redirect URL must not contain userinfo, got %q", req.URL.Redacted())
+				return policyError{fmt.Errorf("preset redirect URL must not contain userinfo, got %q", req.URL.Redacted())}
 			}
 			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
+				return policyError{fmt.Errorf("too many redirects")}
 			}
 			return nil
 		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	// The GET is idempotent, so a transport failure (a dropped or
+	// half-open connection surfacing as a bare EOF, a reset, a timeout
+	// before the response) is retried once. HTTP status, size and policy
+	// failures are deterministic and returned immediately, as is any
+	// failure once ctx is done.
+	var attemptErrs []error
+	for attempt := 1; attempt <= fetchAttempts; attempt++ {
+		if attempt > 1 {
+			timer := time.NewTimer(fetchRetryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, joinAttemptErrors(attemptErrs, context.Cause(ctx))
+			case <-timer.C:
+			}
+		}
+		data, retryable, err := fetchHTTPSAttempt(ctx, client, rawURL)
+		if err == nil {
+			return data, nil
+		}
+		attemptErrs = append(attemptErrs, err)
+		if !retryable {
+			break
+		}
+	}
+	return nil, joinAttemptErrors(attemptErrs, nil)
+}
+
+// joinAttemptErrors reports every failed attempt so the cause of the first
+// failure is not hidden by the retry. abandoned, when set, is why the
+// retry was not made.
+func joinAttemptErrors(errs []error, abandoned error) error {
+	format := "%w"
+	args := []any{errs[0]}
+	for _, err := range errs[1:] {
+		format += "; retried once: %w"
+		args = append(args, err)
+	}
+	if abandoned != nil {
+		format += "; retry abandoned: %w"
+		args = append(args, abandoned)
+	}
+	return fmt.Errorf(format, args...)
+}
+
+// fetchHTTPSAttempt performs one GET. retryable reports whether the
+// failure is a transport-level one worth a single retry.
+func fetchHTTPSAttempt(ctx context.Context, client *http.Client, rawURL string) (data []byte, retryable bool, err error) {
+	trace := newFetchTrace()
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace.clientTrace()), http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("fetching preset from %q: %w", rawURL, err)
+		return nil, false, fmt.Errorf("fetching preset from %q: %w", rawURL, err)
 	}
 	resp, err := client.Do(req) //nolint:gosec // URL is user-provided via --config / repos.yaml; SSRF-hardened via safeDialContext
 	if err != nil {
-		return nil, fmt.Errorf("fetching preset from %q: %w", rawURL, err)
+		var policy policyError
+		if errors.As(err, &policy) {
+			return nil, false, fmt.Errorf("fetching preset from %q: %w", rawURL, err)
+		}
+		return nil, ctx.Err() == nil, fmt.Errorf("fetching preset from %q (%s): %w", rawURL, trace.describe(ctx), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetching preset from %q: HTTP %d", rawURL, resp.StatusCode)
+		return nil, false, fmt.Errorf("fetching preset from %q: HTTP %d", rawURL, resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
+	data, err = io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading preset from %q: %w", rawURL, err)
+		return nil, ctx.Err() == nil, fmt.Errorf("reading preset from %q (%s): %w", rawURL, trace.describe(ctx), err)
 	}
 	if len(data) > maxSize {
-		return nil, fmt.Errorf("preset from %q exceeds maximum size (%d bytes)", rawURL, maxSize)
+		return nil, false, fmt.Errorf("preset from %q exceeds maximum size (%d bytes)", rawURL, maxSize)
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("preset from %q is empty", rawURL)
+		return nil, false, fmt.Errorf("preset from %q is empty", rawURL)
 	}
-	return data, nil
+	return data, false, nil
+}
+
+// policyError marks a fetch failure caused by the SSRF or redirect policy
+// rather than the network. Such failures are never retried.
+type policyError struct{ err error }
+
+func (e policyError) Error() string { return e.err.Error() }
+func (e policyError) Unwrap() error { return e.err }
+
+// fetchTrace records how far one HTTP attempt progressed, so a transport
+// error that net/http reports only as "EOF" or "connection reset" names
+// the phase it happened in (DNS, connect, TLS handshake, waiting for the
+// response, reading the body), the remote address and the elapsed time.
+// Trace hooks may run on transport goroutines, hence the mutex.
+type fetchTrace struct {
+	mu     sync.Mutex
+	start  time.Time
+	phase  string
+	remote string
+}
+
+func newFetchTrace() *fetchTrace {
+	return &fetchTrace{start: time.Now(), phase: "starting the request"}
+}
+
+func (t *fetchTrace) set(phase, remote string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.phase = phase
+	if remote != "" {
+		t.remote = remote
+	}
+}
+
+func (t *fetchTrace) clientTrace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		DNSStart:          func(httptrace.DNSStartInfo) { t.set("resolving DNS", "") },
+		ConnectStart:      func(_, addr string) { t.set("connecting", addr) },
+		TLSHandshakeStart: func() { t.set("TLS handshake", "") },
+		GotConn: func(info httptrace.GotConnInfo) {
+			remote := ""
+			if info.Conn != nil {
+				remote = info.Conn.RemoteAddr().String()
+			}
+			t.set("sending the request", remote)
+		},
+		WroteRequest:         func(httptrace.WroteRequestInfo) { t.set("awaiting response headers", "") },
+		GotFirstResponseByte: func() { t.set("reading the response", "") },
+	}
+}
+
+// describe summarizes the attempt's progress for an error message. When
+// ctx is done its cause is included, since a connection torn down at a
+// deadline can surface from net/http as a bare EOF.
+func (t *fetchTrace) describe(ctx context.Context) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	msg := "failed while " + t.phase
+	if t.remote != "" {
+		msg += " with " + t.remote
+	}
+	msg += " after " + time.Since(t.start).Round(time.Millisecond).String()
+	if ctx.Err() != nil {
+		msg += "; context: " + context.Cause(ctx).Error()
+	}
+	return msg
 }
 
 // IsRemote reports whether source is a URL rather than a local path,

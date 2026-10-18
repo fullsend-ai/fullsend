@@ -61,9 +61,13 @@ type pinAPIState struct {
 	projectPATJSON   string
 	branchPATStatus  int
 	branchPATJSON    string
-	jobHits          atomic.Int32
-	sawPAT           atomic.Bool
-	jobAuth          atomic.Bool
+	// pipelinePATJSON, when non-empty, is the pipeline body served to a
+	// PRIVATE-TOKEN request (the creator re-read in
+	// fullsend_pinned_pipeline_creator_id) instead of pipelineJSON.
+	pipelinePATJSON string
+	jobHits         atomic.Int32
+	sawPAT          atomic.Bool
+	jobAuth         atomic.Bool
 }
 
 func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
@@ -103,6 +107,9 @@ func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
 		case strings.Contains(path, "/pipelines/"):
 			status = st.pipelineStatus
 			body = st.pipelineJSON
+			if isPAT && st.pipelinePATJSON != "" {
+				body = st.pipelinePATJSON
+			}
 		default:
 			if isPAT && st.projectPATStatus != 0 {
 				status = st.projectPATStatus
@@ -146,6 +153,12 @@ func startPinAPIOnIPv6Loopback(t *testing.T, st *pinAPIState) *httptest.Server {
 
 func pinJobJSON(projectID, pipelineID, ref string) string {
 	return fmt.Sprintf(`{"id":9,"ref":%q,"pipeline":{"id":%s,"project_id":%s,"ref":%q}}`, ref, pipelineID, projectID, ref)
+}
+
+// pinJobJSONWithUser is pinJobJSON for a job that runs as userID, the identity
+// CI_JOB_TOKEN authenticates as.
+func pinJobJSONWithUser(projectID, pipelineID, ref, userID string) string {
+	return fmt.Sprintf(`{"id":9,"ref":%q,"user":{"id":%s},"pipeline":{"id":%s,"project_id":%s,"ref":%q}}`, ref, userID, pipelineID, projectID, ref)
 }
 
 func pinTLSEnv(t *testing.T, srv *httptest.Server) []string {

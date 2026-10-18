@@ -293,6 +293,28 @@ func (c *LiveClient) SetPipelineVariablesMinimumOverrideRole(ctx context.Context
 	return nil
 }
 
+// GetJobTokenRepositoryPushAllowed reads the GitLab project setting
+// ci_push_repository_for_job_token_allowed. A response that omits the field
+// returns forge.ErrNotSupported, so callers can fail closed instead of
+// treating an unreported setting as disabled.
+func (c *LiveClient) GetJobTokenRepositoryPushAllowed(ctx context.Context, owner, repo string) (bool, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/projects/%s", projectPath(owner, repo)))
+	if err != nil {
+		return false, fmt.Errorf("get job token repository push setting for %s/%s: %w", owner, repo, err)
+	}
+
+	var p struct {
+		Allowed *bool `json:"ci_push_repository_for_job_token_allowed"`
+	}
+	if err := decodeJSON(resp, &p); err != nil {
+		return false, fmt.Errorf("decode job token repository push setting: %w", err)
+	}
+	if p.Allowed == nil {
+		return false, fmt.Errorf("ci_push_repository_for_job_token_allowed not reported for %s/%s: %w", owner, repo, forge.ErrNotSupported)
+	}
+	return *p.Allowed, nil
+}
+
 func (c *LiveClient) DeleteRepo(ctx context.Context, owner, repo string) error {
 	return c.delete_(ctx, fmt.Sprintf("/projects/%s", projectPath(owner, repo)))
 }

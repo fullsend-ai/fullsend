@@ -424,6 +424,61 @@ func TestGetPipelineVariablesMinimumOverrideRole(t *testing.T) {
 	assert.Equal(t, forge.PipelineVarOverrideDeveloper, role)
 }
 
+func TestGetJobTokenRepositoryPushAllowed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body map[string]any
+		want bool
+	}{
+		"disabled": {body: map[string]any{"id": 42, "ci_push_repository_for_job_token_allowed": false}, want: false},
+		"enabled":  {body: map[string]any{"id": 42, "ci_push_repository_for_job_token_allowed": true}, want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				json.NewEncoder(w).Encode(tc.body)
+			})
+
+			allowed, err := client.GetJobTokenRepositoryPushAllowed(context.Background(), "mygroup", "myrepo")
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, allowed)
+		})
+	}
+}
+
+func TestGetJobTokenRepositoryPushAllowed_UnreportedIsNotSupported(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"id": 42})
+	})
+
+	_, err := client.GetJobTokenRepositoryPushAllowed(context.Background(), "mygroup", "myrepo")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotSupported)
+}
+
+func TestGetJobTokenRepositoryPushAllowed_Errors(t *testing.T) {
+	t.Run("forbidden", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"message":"403 Forbidden"}`)
+		})
+		_, err := client.GetJobTokenRepositoryPushAllowed(context.Background(), "owner", "repo")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, forge.ErrForbidden)
+	})
+	t.Run("malformed", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/owner%2Frepo", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"ci_push_repository_for_job_token_allowed": "yes"}`)
+		})
+		_, err := client.GetJobTokenRepositoryPushAllowed(context.Background(), "owner", "repo")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode job token repository push setting")
+	})
+}
+
 func TestGetPipelineVariablesMinimumOverrideRole_NotFound(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/owner%2Fgone", func(w http.ResponseWriter, r *http.Request) {

@@ -96,6 +96,13 @@ fails.
   a leaked key works until the operator revokes it. Use `oidc` whenever the gateway supports it
   ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
 
+By default the key travels as `Authorization: Bearer`. If your operator says the gateway reads the
+key from `x-api-key` on its Messages API, add `messages_auth_header: x-api-key` to an `api-key`
+block. Claude Code and pi `anthropic-messages` models then send it as `x-api-key`, and every other
+model keeps `Authorization: Bearer`. The setting is refused with `auth: oidc`
+([ADR 0142](../../ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md),
+[config reference](../../reference/config-reference.md)).
+
 The `api-key` mode also applies to local runs: a local `fullsend run` with
 `FULLSEND_INFERENCE_GATEWAY_API_KEY` in its environment takes the same route as CI. The `oidc`
 mode applies only to runs that have a GitHub OIDC endpoint, so a local run without one leaves the

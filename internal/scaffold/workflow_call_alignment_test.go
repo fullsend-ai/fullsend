@@ -68,9 +68,23 @@ type callerJob struct {
 	Concurrency *jobConcurrency   `yaml:"concurrency"`
 }
 
+// jobConcurrency decodes cancel-in-progress as a yaml.Node so tests can tell a
+// literal YAML boolean (tag !!bool) from a quoted string such as "true" (tag
+// !!str), which a Go bool field would decode identically.
 type jobConcurrency struct {
-	Group            string `yaml:"group"`
-	CancelInProgress bool   `yaml:"cancel-in-progress"`
+	Group            string    `yaml:"group"`
+	CancelInProgress yaml.Node `yaml:"cancel-in-progress"`
+}
+
+// assertLiteralTrue asserts that node is the unquoted YAML boolean true.
+func assertLiteralTrue(t *testing.T, node yaml.Node, context string) {
+	t.Helper()
+	assert.Equal(t, yaml.ScalarNode, node.Kind,
+		"%s: cancel-in-progress must be set to a scalar value", context)
+	assert.Equal(t, "!!bool", node.Tag,
+		"%s: cancel-in-progress must be a literal YAML boolean, not a quoted string (got %q)", context, node.Value)
+	assert.Equal(t, "true", node.Value,
+		"%s: cancel-in-progress must be true", context)
 }
 
 // reusableStageWorkflow includes workflow-level concurrency on reusable agent workflows.
@@ -123,7 +137,18 @@ var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 		groupPrefix: "fullsend-prioritize-",
 		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
 	},
+	// harness-run pins today's group key. When #7475 changes the key, update
+	// these fragments in the same PR.
+	"harness-run": {
+		groupPrefix: "fullsend-harness-",
+		groupMust:   []string{"matrix.agent", "github.repository", "matrix.status_repo", "matrix.status_number"},
+	},
 }
+
+// dispatchNonAgentJobs lists reusable-dispatch.yml jobs that intentionally
+// carry no concurrency expectation. Every other job in the workflow must have
+// an entry in dispatchStageConcurrencyExpectations.
+var dispatchNonAgentJobs = []string{"route", "harness-dispatch"}
 
 // stepDeclRe matches a YAML step declaration line: "      - name: <marker>".
 var stepDeclRe = regexp.MustCompile(`(?m)^      - name: (.+)$`)
@@ -600,6 +625,65 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 	})
 }
 
+// TestRunnerSecretsThreading validates the in-repo half of the
+// FULLSEND_GITHUB_RUNNER_SECRETS channel (ADR 0136): the scaffold shim forwards
+// the secret with its one fixed line, the composite action reads its
+// runner_secrets input only in the staging step, and the Run fullsend
+// step receives the staged file's path, never the value.
+func TestRunnerSecretsThreading(t *testing.T) {
+	shim := string(loadScaffoldFile("templates/shim-per-repo.yaml")(t))
+	assert.Contains(t, shim, "FULLSEND_GITHUB_RUNNER_SECRETS: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}",
+		"scaffold shim must forward FULLSEND_GITHUB_RUNNER_SECRETS")
+
+	action := string(loadRepoFile("action.yml")(t))
+	assert.Contains(t, action, "  runner_secrets:\n", "action.yml must declare the runner_secrets input")
+	// action.yml steps sit at four-space indent, so extractStepSection's
+	// workflow-job pattern does not apply; slice each step by hand.
+	actionStep := func(name string) string {
+		t.Helper()
+		start := strings.Index(action, "\n    - name: "+name+"\n")
+		require.GreaterOrEqual(t, start, 0, "action.yml must have a %s step", name)
+		step := action[start+1:]
+		if next := strings.Index(step[1:], "\n    - name: "); next >= 0 {
+			step = step[:next+1]
+		}
+		return step
+	}
+
+	stage := actionStep("Stage runner secrets")
+	assert.Contains(t, stage, "id: runner-secrets\n")
+	assert.Contains(t, stage, "FULLSEND_GITHUB_RUNNER_SECRETS: ${{ inputs.runner_secrets }}",
+		"the staging step must carry runner_secrets in its own env")
+	assert.Contains(t, stage, "umask 077", "the staged file must be readable by the job user only")
+	assert.Equal(t, strings.Count(action, "inputs.runner_secrets"), strings.Count(stage, "inputs.runner_secrets"),
+		"runner_secrets must reach no composite step other than Stage runner secrets")
+
+	run := actionStep("Run fullsend")
+	assert.Contains(t, run, "FULLSEND_GITHUB_RUNNER_SECRETS_FILE: ${{ steps.runner-secrets.outputs.path }}",
+		"Run fullsend step must receive the staged file path")
+	assert.NotContains(t, run, "FULLSEND_GITHUB_RUNNER_SECRETS:", "Run fullsend step must not receive the bundle itself")
+
+	cleanup := actionStep("Remove staged runner secrets")
+	assert.Contains(t, cleanup, "if: always() && steps.runner-secrets.outputs.path != ''")
+	assert.Less(t, strings.Index(action, stage), strings.Index(action, run), "staging must precede Run fullsend")
+	assert.Less(t, strings.Index(action, run), strings.Index(action, cleanup), "cleanup must follow Run fullsend")
+
+	prioritize := string(loadScaffoldFile(".github/workflows/prioritize.yml")(t))
+	assert.Contains(t, prioritize, "FULLSEND_GITHUB_RUNNER_SECRETS: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}",
+		"scaffold prioritize caller must forward FULLSEND_GITHUB_RUNNER_SECRETS")
+
+	// Every fullsend run step in the reusable workflows passes the secret,
+	// and each workflow declares it, so no stage silently drops it.
+	for _, wf := range []string{".github/workflows/reusable-dispatch.yml", ".github/workflows/reusable-prioritize.yml"} {
+		body := string(loadRepoFile(wf)(t))
+		assert.Contains(t, body, "\n      FULLSEND_GITHUB_RUNNER_SECRETS:\n", "%s must declare FULLSEND_GITHUB_RUNNER_SECRETS", wf)
+		runSteps := strings.Count(body, "\n          agent: ")
+		require.Positive(t, runSteps, "%s must have fullsend run steps", wf)
+		assert.Equal(t, runSteps, strings.Count(body, "runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}"),
+			"%s: every fullsend run step must pass runner_secrets", wf)
+	}
+}
+
 // TestOTELVariableForwarding validates that OTEL variables (#5886) are
 // injected into the env: block of every agent run step. Variables are
 // auto-visible via vars. context so they don't need secrets: threading,
@@ -680,9 +764,23 @@ func TestReusableDispatchStageConcurrency(t *testing.T) {
 				assert.Contains(t, job.Concurrency.Group, fragment,
 					"job %q concurrency group should reference %q", stage, fragment)
 			}
-			assert.True(t, job.Concurrency.CancelInProgress,
-				"job %q should cancel in-progress runs when a newer dispatch arrives", stage)
+			assertLiteralTrue(t, job.Concurrency.CancelInProgress,
+				fmt.Sprintf("job %q should cancel in-progress runs when a newer dispatch arrives", stage))
 		})
+	}
+
+	nonAgent := make(map[string]bool, len(dispatchNonAgentJobs))
+	for _, name := range dispatchNonAgentJobs {
+		nonAgent[name] = true
+		_, ok := caller.Jobs[name]
+		assert.True(t, ok,
+			"non-agent job %q is not in reusable-dispatch.yml; remove the stale entry from dispatchNonAgentJobs", name)
+	}
+
+	for name := range caller.Jobs {
+		_, pinned := dispatchStageConcurrencyExpectations[name]
+		assert.True(t, pinned || nonAgent[name],
+			"job %q in reusable-dispatch.yml has no concurrency expectation; add it to dispatchStageConcurrencyExpectations or list it in dispatchNonAgentJobs", name)
 	}
 }
 
@@ -704,8 +802,8 @@ func TestReusableAgentWorkflowConcurrency(t *testing.T) {
 				assert.Contains(t, wf.Concurrency.Group, fragment,
 					"reusable-%s.yml concurrency group should reference %q", stage, fragment)
 			}
-			assert.True(t, wf.Concurrency.CancelInProgress,
-				"reusable-%s.yml should cancel in-progress runs", stage)
+			assertLiteralTrue(t, wf.Concurrency.CancelInProgress,
+				fmt.Sprintf("reusable-%s.yml should cancel in-progress runs", stage))
 
 			callerExpect := dispatchStageConcurrencyExpectations[stage]
 			require.NotEmpty(t, callerExpect.groupPrefix, "missing dispatch expectation for %s", stage)
@@ -733,8 +831,8 @@ func TestThinCallerStageConcurrency(t *testing.T) {
 				assert.Contains(t, wf.Concurrency.Group, fragment,
 					"%s concurrency group should reference %q", path, fragment)
 			}
-			assert.True(t, wf.Concurrency.CancelInProgress,
-				"%s should cancel in-progress runs when a newer dispatch arrives", path)
+			assertLiteralTrue(t, wf.Concurrency.CancelInProgress,
+				fmt.Sprintf("%s should cancel in-progress runs when a newer dispatch arrives", path))
 		})
 	}
 }

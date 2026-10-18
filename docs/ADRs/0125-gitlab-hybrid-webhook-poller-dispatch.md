@@ -35,6 +35,17 @@ Accepted
 > The rest of this ADR (dispatch topology, shared spine, CI scaffold
 > isolation, in-job identity/HMAC gates, and the still-open ship gates in
 > Caveats) is unaffected.
+>
+> **Update (#8438):** the agent job's in-job source allowlist is now
+> `api pipeline`, not only `api`. `source=pipeline` is admitted only for an
+> agent pipeline that a poll or dispatcher job running as the trigger-only
+> service account started with its own `CI_JOB_TOKEN`, only while the
+> install-recorded dispatch activation (the protected
+> `FULLSEND_GITLAB_DISPATCH_ACTIVATION` variable, bound to the current
+> `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger generation and set only after the
+> full activation gate passes) is present, and with the same dispatch HMAC as
+> `api`. Statements below that the agent job admits only `api` describe the
+> design before that change.
 
 Supersedes the GitLab **dispatch topology** in
 [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md) (native-CI two-path,

@@ -229,6 +229,11 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 	// existing installs incomplete solely because the secret is new.
 	if cfg.Forge == ForgeGitLab {
 		managedNames[forge.SecretDispatch] = true
+		// The webhook fast path owns its pipeline trigger token and webhook
+		// secret. They are stored as masked CI/CD variables, so the variable
+		// listing returns them, but they are managed, not orphans.
+		managedNames[forge.SecretTriggerToken] = true
+		managedNames[forge.SecretWebhookSecret] = true
 		for _, name := range gitlabRetiredLegacyVars {
 			managedNames[name] = true
 		}

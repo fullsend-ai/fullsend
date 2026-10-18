@@ -55,8 +55,8 @@ if [ "$2" = "download" ]; then
   exit 0
 fi
 if [ "$2" = "upload" ]; then
-  case "$5" in /tmp/fs-upload-*/) cp -- "$4" "$5/"; exit $? ;; esac
-  cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
+  case "$6" in /tmp/fs-upload-*/) cp -- "$5" "$6/"; exit $? ;; esac
+  cp "$5" '` + storeDir + `'/"$(printf '%s' "$6" | tr '/' '_')"
   exit 0
 fi
 if [ "$2" = "exec" ]; then
@@ -229,6 +229,60 @@ func TestCodexRuntimeBootstrap_UploadsSkillsAndWarnsOnPlugins(t *testing.T) {
 
 	// codex discovers $CODEX_HOME/skills natively.
 	assert.Contains(t, readFileString(t, logPath), r.ConfigDir()+"/skills/")
+}
+
+func TestCodexRuntimeBootstrap_NestedForgeSkillsShareBasename(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	fakeOpenshellCodex(t, logPath, t.TempDir(), "codex-cli 0.152.1")
+
+	root := t.TempDir()
+	labelsDir := filepath.Join(root, "issue-labels", "github")
+	reviewDir := filepath.Join(root, "pr-review", "github")
+	require.NoError(t, os.MkdirAll(labelsDir, 0o755))
+	require.NoError(t, os.MkdirAll(reviewDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(labelsDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(reviewDir, "SKILL.md"),
+		[]byte("---\nname: pr-review-github\n---\n"), 0o644))
+
+	r := CodexRuntime{}
+	err := r.Bootstrap(bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, codexTestAgentDef),
+		agentName:   "triage",
+		skillDirs:   []string{labelsDir, reviewDir},
+	})
+	require.NoError(t, err)
+
+	log := readFileString(t, logPath)
+	assert.Contains(t, log, r.ConfigDir()+"/skills/issue-labels")
+	assert.Contains(t, log, r.ConfigDir()+"/skills/pr-review-github")
+	assert.NotContains(t, log, r.ConfigDir()+"/skills/github")
+}
+
+func TestCodexRuntimeBootstrap_RejectsInvalidSkillDestinationName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(root string) string
+	}{
+		{"dotdot", func(root string) string { return root + "/sub/.." }},
+		{"dot", func(root string) string { return root + "/sub/." }},
+		{"control-char", func(root string) string { return root + "/bad\x01name" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath := filepath.Join(t.TempDir(), "openshell.log")
+			fakeOpenshellCodex(t, logPath, t.TempDir(), "codex-cli 0.152.1")
+
+			err := CodexRuntime{}.Bootstrap(bootstrapInput{
+				sandboxName: "sb",
+				agentPath:   writeAgentFile(t, codexTestAgentDef),
+				agentName:   "triage",
+				skillDirs:   []string{tc.path(t.TempDir())},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid sandbox name")
+		})
+	}
 }
 
 func TestCodexRuntimeBootstrap_PreflightFailureIsReportedEarly(t *testing.T) {

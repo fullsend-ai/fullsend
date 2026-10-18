@@ -141,7 +141,7 @@ func buildCFMintDriverWithOpts(
 	if err != nil {
 		return nil, err
 	}
-	return withRateLimitReporter(withMintURL(d, mintURL), client), nil
+	return withTraceCollector(withRateLimitReporter(withMintURL(d, mintURL), client), client, logf), nil
 }
 
 // cfmintMintDriver deploys a CF Worker preview mint and uses the derived

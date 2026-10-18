@@ -53,6 +53,16 @@ const (
 	// PI_CODING_AGENT_DIR so pi never auto-loads them; PiRuntime.Run passes
 	// each one explicitly with -e.
 	SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"
+	// SandboxOpenCodeConfig is the OpenCode config directory inside the
+	// sandbox. Exported as OPENCODE_CONFIG_DIR (OpenCodeRuntime.EnvExports).
+	// Outside the cloned repo tree, like SandboxClaudeConfig and
+	// SandboxPiConfig, so the target repo cannot pre-seed it and a workspace
+	// reset does not clear it. Unlike pi's config dir, OpenCode takes an
+	// explicit env pointer to it, so the agent-writable workspace .opencode/
+	// is never on the config search path. Path convention pinned by #515
+	// (the hook plugin adapter lives under this dir at plugins/, integrity-
+	// gated before .env is sourced, mirroring pi's piHooksGuard).
+	SandboxOpenCodeConfig = "/sandbox/opencode-config" //nolint:gosec // not a credential
 
 	// KeepAliveCommand is the sandbox's canonical main process, started by
 	// createOnce so the sandbox stays Ready between `sandbox exec` calls
@@ -1598,6 +1608,8 @@ func Upload(sandboxName, localPath, remotePath string) error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "openshell", "sandbox", "upload",
+		// fullsend always uploads one file it already chose (UploadDir applies its own excludes); OpenShell's Git filtering must not drop it (NVIDIA/OpenShell#3957).
+		"--no-git-ignore",
 		sandboxName,
 		uploadPath,
 		remotePath,
@@ -1899,6 +1911,12 @@ func collectPodmanLogs(sandboxName string) string {
 
 // ExtractOutputFiles copies all files under a remote directory in the sandbox
 // to a local output directory, preserving relative paths.
+//
+// A listing that openshell itself failed (non-zero exit, e.g. exec refused for
+// a sandbox that is not Ready) or a listing in which no file could be
+// extracted returns an error, so the caller does not report either as "no
+// output". The remote find still runs with "2>/dev/null || true", so a missing
+// or unreadable remoteDir reads as an empty listing and returns nil, nil.
 func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, error) {
 	if err := os.MkdirAll(localDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating local output dir: %w", err)
@@ -1910,12 +1928,17 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 	}
 	defer root.Close()
 
-	stdout, _, _, err := Exec(sandboxName,
+	stdout, stderr, exitCode, err := Exec(sandboxName,
 		fmt.Sprintf("find %s -type f 2>/dev/null || true", remoteDir),
 		10*time.Second,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing output files: %w", err)
+	}
+	// The remote command ends in "|| true", so a non-zero exit can only come
+	// from openshell itself (e.g. exec refused for a sandbox that is not Ready).
+	if exitCode != 0 {
+		return nil, fmt.Errorf("listing output files: exit %d: %s", exitCode, strings.TrimSpace(stderr))
 	}
 
 	trimmed := strings.TrimSpace(stdout)
@@ -1925,11 +1948,13 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 	lines := strings.Split(trimmed, "\n")
 
 	var extracted []string
+	listed := 0
 	for _, remotePath := range lines {
 		remotePath = strings.TrimSpace(remotePath)
 		if remotePath == "" {
 			continue
 		}
+		listed++
 		relPath := strings.TrimPrefix(remotePath, remoteDir)
 		relPath = strings.TrimPrefix(relPath, "/")
 
@@ -1959,5 +1984,8 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 		extracted = append(extracted, localPath)
 	}
 
+	if listed > 0 && len(extracted) == 0 {
+		return nil, fmt.Errorf("copying output files: %d listed, none copied", listed)
+	}
 	return extracted, nil
 }

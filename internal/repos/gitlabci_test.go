@@ -907,6 +907,7 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+    - if: ` + childPipelineAgentRuleIf + `
     - if: ` + triggerDispatcherRuleIf + `
 `
 	assert.True(t, HasFullsendEntries([]byte(yaml)))
@@ -1002,9 +1003,48 @@ workflow:
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+    - if: ` + childPipelineAgentRuleIf + `
     - if: ` + triggerDispatcherRuleIf + `
 `
 	assert.True(t, HasFullsendEntries([]byte(yaml)))
+}
+
+// An installation that predates child-pipeline dispatch (#8438) lacks the
+// source=pipeline workflow rule; it is drift, so convergence adds the rule.
+func TestHasFullsendEntries_MissingChildPipelineRule(t *testing.T) {
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - dispatch
+  - poll
+  - agent
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+    - if: ` + triggerDispatcherRuleIf + `
+`
+	assert.False(t, HasFullsendEntries([]byte(yaml)),
+		"workflow rules without the child-pipeline agent rule are drift")
+}
+
+// The child-pipeline rule admits only source=pipeline on the protected
+// default branch with the stage input set.
+func TestChildPipelineAgentRuleIf(t *testing.T) {
+	assert.Contains(t, childPipelineAgentRuleIf, `$CI_PIPELINE_SOURCE == "pipeline"`)
+	assert.Contains(t, childPipelineAgentRuleIf, `$CI_COMMIT_REF_PROTECTED == "true"`)
+	assert.Contains(t, childPipelineAgentRuleIf, `$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH`)
+	assert.Contains(t, childPipelineAgentRuleIf, `$STAGE`)
+	assert.NotContains(t, childPipelineAgentRuleIf, "||")
+	assert.Contains(t, fullsendWorkflowRules, workflowRule{If: childPipelineAgentRuleIf})
+	assert.Contains(t, unmergeWorkflowRules, workflowRule{If: childPipelineAgentRuleIf})
 }
 
 func TestHasFullsendEntries_MissingDebugTraceDeny(t *testing.T) {

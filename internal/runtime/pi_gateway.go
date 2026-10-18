@@ -34,8 +34,12 @@ const (
 	// piInferenceGatewayAuthHeader makes every API, including
 	// anthropic-messages (whose native header is x-api-key), present the
 	// token as Authorization: Bearer, which a default agentgateway jwtAuth
-	// policy reads. The token then never travels in x-api-key.
+	// policy reads. The token then never travels in x-api-key. It is the
+	// default (messages_auth_header unset or authorization).
 	piInferenceGatewayAuthHeader = "authorization"
+	// piInferenceGatewayXAPIKeyHeader is the anthropic-messages auth scheme
+	// when an api-key block sets messages_auth_header: x-api-key (ADR 0142).
+	piInferenceGatewayXAPIKeyHeader = "x-api-key"
 	// MaxPiGatewayModelsFileBytes bounds a committed models_file.
 	MaxPiGatewayModelsFileBytes = 256 << 10
 )
@@ -358,6 +362,26 @@ func piGatewaySortedKeys(m map[string]any) []string {
 	return keys
 }
 
+// piGatewayAuthHeader returns the authHeader value the runner renders: the
+// single scheme "authorization" for every target by default, or, when an
+// api-key block sets messages_auth_header: x-api-key (ADR 0142), an object
+// keyed by the extension's auth targets that sends x-api-key on
+// anthropic-messages only and keeps Authorization: Bearer on every other
+// target. Every target is named, so none falls back to the extension's
+// native scheme. The extension strips every credential header before it
+// sets the selected one, so each request carries exactly one.
+func piGatewayAuthHeader(g config.InferenceGatewayConfig) any {
+	if !g.IsAPIKey() || !g.MessagesUseXAPIKey() {
+		return piInferenceGatewayAuthHeader
+	}
+	return map[string]any{
+		config.GatewayAPIAnthropicMessages: piInferenceGatewayXAPIKeyHeader,
+		config.GatewayAPIOpenAIResponses:   piInferenceGatewayAuthHeader,
+		config.GatewayAPIOpenAICompletions: piInferenceGatewayAuthHeader,
+		"discovery":                        piInferenceGatewayAuthHeader,
+	}
+}
+
 // RenderPiGatewayConfig renders the runner-owned inference-gateway.json
 // for a pi run that uses gateway/ models. The model list comes from the
 // block's inline models, or from modelsFile (the committed models_file's
@@ -407,7 +431,7 @@ func RenderPiGatewayConfig(g config.InferenceGatewayConfig, modelsFile []byte) (
 		return nil, nil, fmt.Errorf("pi gateway/ models need a model list: set inference.gateway.models or inference.gateway.models_file (pi runs offline and cannot discover gateway models)")
 	}
 	provider["baseUrlEnv"] = piInferenceGatewayBaseURLEnv
-	provider["authHeader"] = piInferenceGatewayAuthHeader
+	provider["authHeader"] = piGatewayAuthHeader(g)
 
 	models, _ := provider["models"].(map[string]any)
 	ids := make([]string, 0, len(models))

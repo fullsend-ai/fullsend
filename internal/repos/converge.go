@@ -23,9 +23,13 @@ import (
 // It replaces the former two-phase architecture where BatchInstall
 // handled new repos and Upgrade + Sync handled already-installed repos.
 type ConvergeConfig struct {
-	Manifest       *Manifest
-	DryRun         bool
-	RepoFilter     []string
+	Manifest   *Manifest
+	DryRun     bool
+	RepoFilter []string
+	// ExcludeRepos lists owner/repo names (case-insensitive) that Converge
+	// skips entirely, such as repos whose GitLab trigger-account containment
+	// failed: they take no scaffold, config, variable, or schedule write.
+	ExcludeRepos   []string
 	MaxConcurrency int
 
 	// UpstreamRef is the git ref (SHA) used to pin scaffold workflow refs.
@@ -265,6 +269,12 @@ type convergeDiscovery struct {
 	// call and reported verbatim, without discovery wrapping.
 	configErr error
 	err       error
+
+	// staleVendored holds the Fullsend-owned assets an earlier vendored
+	// install left in a GitHub repository whose vendor setting is false.
+	// Read before any forge write so a malformed vendor manifest or a
+	// failed read changes nothing.
+	staleVendored *scaffold.StaleVendoredAssets
 
 	// credsPresent reports that every inference secret for the repo's
 	// inference.auth existed before this run. credsSupplied reports that
@@ -775,6 +785,30 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			return nil, err
 		}
 	}
+	excludedUsesOpenAI, excludedUsesVertex := false, false
+	if len(cfg.ExcludeRepos) > 0 {
+		excluded := make(map[string]bool, len(cfg.ExcludeRepos))
+		for _, name := range cfg.ExcludeRepos {
+			excluded[strings.ToLower(name)] = true
+		}
+		kept := make([]ResolvedRepo, 0, len(repos))
+		for _, rr := range repos {
+			if !excluded[strings.ToLower(rr.Owner+"/"+rr.Repo)] {
+				kept = append(kept, rr)
+				continue
+			}
+			// An excluded repo takes no write, but it is still part of the
+			// selection the credential inputs are validated against, so a
+			// skipped consumer does not fail the run for the others.
+			switch manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry).InferenceAuth {
+			case InferenceAuthOpenAIAPIKey:
+				excludedUsesOpenAI = true
+			case InferenceAuthVertexWIF, InferenceAuthOpenAIWIF:
+				excludedUsesVertex = true
+			}
+		}
+		repos = kept
+	}
 	if len(repos) == 0 {
 		return &ConvergeBatchResult{}, nil
 	}
@@ -1016,8 +1050,9 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	// Reject credential inputs that no selected repository consumes, before
 	// any write: silently ignoring them would leave the caller believing the
 	// credentials were provisioned. Mixed fleets keep working because each
-	// input group only needs one consumer.
-	usesOpenAI, usesVertex := false, false
+	// input group only needs one consumer. Excluded repos still count as
+	// consumers (they remain selected) but receive no write.
+	usesOpenAI, usesVertex := excludedUsesOpenAI, excludedUsesVertex
 	for _, d := range discoveries {
 		switch d.resolved.InferenceAuth {
 		case InferenceAuthOpenAIAPIKey:
@@ -1419,6 +1454,15 @@ func convergeRepo(ctx context.Context,
 		cr.Error = contractErr
 		return cr
 	}
+	// Read stale vendored assets (GitHub, vendor: false) before any forge
+	// write, so a malformed vendor manifest or a failed read changes
+	// nothing.
+	staleVendored, staleErr := findStaleVendored(ctx, resolved)
+	if staleErr != nil {
+		cr.Error = fmt.Errorf("checking stale vendored assets: %w", staleErr)
+		return cr
+	}
+	d.staleVendored = staleVendored
 	// Treat the repo as new until the workflow file is on the default
 	// branch. Variables and secrets are written before the scaffold
 	// commit (see Install), so anyComponentPresent is true while an
@@ -1595,6 +1639,27 @@ func convergeRepo(ctx context.Context,
 			}
 		}
 
+		// Stale vendored assets from an earlier vendored install are
+		// removed in the install commit. Plan against the files the
+		// install delivers, before any forge write.
+		var staleVendoredPlanned *staleVendoredPlan
+		var staleVendoredActions []ComponentAction
+		if d.staleVendored != nil && len(d.staleVendored.Paths) > 0 {
+			installFiles, buildErr := BuildScaffoldFiles(installCfg)
+			if buildErr != nil {
+				cr.Error = fmt.Errorf("generating scaffold files: %w", buildErr)
+				return cr
+			}
+			plan, planErr := planStaleVendoredCleanup(ctx, resolved, d.staleVendored, installFiles,
+				freshCallerContent(resolved, staleVendoredDriftConfig(d, cfg)))
+			if planErr != nil {
+				cr.Error = fmt.Errorf("checking stale vendored assets: %w", planErr)
+				return cr
+			}
+			staleVendoredPlanned = plan
+			_, staleVendoredActions = applyStaleVendoredPlan(installFiles, plan, cfg.DryRun, repoFullName, progress)
+		}
+
 		if cfg.DryRun {
 			cr.Installed = true
 			if resolved.Forge == ForgeGitLab {
@@ -1613,6 +1678,7 @@ func convergeRepo(ctx context.Context,
 				Action:    "add",
 				Detail:    "Would install (new)",
 			})
+			cr.Actions = append(cr.Actions, staleVendoredActions...)
 			cr.Actions = append(cr.Actions, plannedInferenceSecretActions(d, progress)...)
 			dryCleanup := removeObsoleteInferenceSecrets(ctx, resolved, true, true, nil, progress)
 			cr.Actions = append(cr.Actions, dryCleanup...)
@@ -1645,7 +1711,15 @@ func convergeRepo(ctx context.Context,
 			return cr
 		}
 
-		installResult, installErr := Install(ctx, installCfg, resolved.ForgeConfig.Client, commitScaffold, progress)
+		installCommit := commitScaffold
+		if staleVendoredPlanned.deletable() {
+			installCommit = func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, installed bool) error {
+				files, _ = applyStaleVendoredPlan(files, staleVendoredPlanned, false, repoFullName, func(string, string, string) {})
+				return commitScaffold(ctx, owner, repo, files, direct, installed)
+			}
+		}
+
+		installResult, installErr := Install(ctx, installCfg, resolved.ForgeConfig.Client, installCommit, progress)
 		if installErr != nil {
 			cr.Error = installErr
 			if installResult != nil {
@@ -1662,6 +1736,7 @@ func convergeRepo(ctx context.Context,
 			Action:    "add",
 			Detail:    "Installed",
 		})
+		cr.Actions = append(cr.Actions, staleVendoredActions...)
 		// The selected method's credentials were written before the
 		// scaffold commit; only now remove the other method's secrets.
 		// This runs on every successful install, including a retry after an
@@ -1922,7 +1997,7 @@ func scaffoldDeliveryPlanned(files []forge.TreeFile, actions []ComponentAction, 
 	}
 	for _, a := range actions {
 		switch a.Action {
-		case "none", "orphan", "error", ActionAdoptionRequired, ActionSafetyRejected:
+		case "none", "orphan", "error", ActionAdoptionRequired, ActionSafetyRejected, ActionPending:
 		default:
 			return true
 		}
@@ -2483,6 +2558,34 @@ func convergeSchedules(ctx context.Context,
 	return actions
 }
 
+// recordedTriggerScheduleOwner reports whether the schedule belongs to an
+// account generation in the validated trigger-account ledger.
+// A forbidden update is delegated only when GitLab reports that the owner is
+// one of the recorded trigger-account generations. Unknown or human owners
+// retain the update error.
+func recordedTriggerScheduleOwner(ctx context.Context, client forge.Client, owner, repo string, scheduleOwnerID int64) bool {
+	if scheduleOwnerID <= 0 {
+		return false
+	}
+	raw, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabTriggerAccount)
+	if err != nil || !exists {
+		return false
+	}
+	state, err := decodeGitLabTriggerAccountState(raw)
+	if err != nil {
+		return false
+	}
+	if int64(state.AccountID) == scheduleOwnerID {
+		return true
+	}
+	for _, retired := range state.Retired {
+		if int64(retired.AccountID) == scheduleOwnerID {
+			return true
+		}
+	}
+	return false
+}
+
 // activatePipelineSchedules reactivates existing GitLab pipeline schedules
 // that match the given component names but are currently disabled.
 func activatePipelineSchedules(ctx context.Context, client forge.Client,
@@ -2515,15 +2618,32 @@ func activatePipelineSchedules(ctx context.Context, client forge.Client,
 
 		foundInactive := false
 		var activateErr error
+		forbidden := false
 		for _, s := range schedules {
 			if s.Description != spec.Description || s.Active {
 				continue
 			}
 			foundInactive = true
 			if err := client.UpdatePipelineSchedule(ctx, owner, repo, s.ID, true); err != nil {
+				if forge.IsForbidden(err) {
+					if recordedTriggerScheduleOwner(ctx, client, owner, repo, s.OwnerID) {
+						// The following trigger-account stage reactivates this
+						// recorded account generation's schedule.
+						forbidden = true
+						continue
+					}
+				}
 				activateErr = err
 				break
 			}
+		}
+		if activateErr == nil && forbidden {
+			actions = append(actions, ComponentAction{
+				Component: name,
+				Action:    "none",
+				Detail:    fmt.Sprintf("%s is owned by the recorded GitLab trigger account and will be reactivated by the trigger-account stage", DriftFieldName(name)),
+			})
+			continue
 		}
 		if !foundInactive {
 			actions = append(actions, ComponentAction{
@@ -3721,16 +3841,37 @@ func collectConvergeScaffoldFiles(ctx context.Context, d convergeDiscovery, cfg 
 		return allScaffoldFiles, actions, fmt.Errorf("convergence errors: %s", strings.Join(configErrors, "; "))
 	}
 	allScaffoldFiles = append(allScaffoldFiles, configFiles...)
+
+	// 2d-v: Stale vendored assets — with vendoring off, delete the
+	// Fullsend-owned files an earlier vendored install committed in this
+	// same scaffold commit, after rewriting Fullsend's callers away from
+	// the local reusable workflows being deleted.
+	if d.staleVendored != nil && len(d.staleVendored.Paths) > 0 {
+		plan, planErr := planStaleVendoredCleanup(ctx, resolved, d.staleVendored, allScaffoldFiles,
+			establishedCallerContent(ctx, resolved, staleVendoredDriftConfig(d, cfg), refResolver))
+		if planErr != nil {
+			detail := fmt.Sprintf("checking stale vendored assets: %v", planErr)
+			actions = append(actions, ComponentAction{Component: staleVendoredComponent, Action: "error", Detail: detail})
+			return allScaffoldFiles, actions, fmt.Errorf("convergence errors: %s", detail)
+		}
+		var staleActions []ComponentAction
+		allScaffoldFiles, staleActions = applyStaleVendoredPlan(allScaffoldFiles, plan, cfg.DryRun, resolved.Owner+"/"+resolved.Repo, progress)
+		actions = append(actions, staleActions...)
+	}
 	return allScaffoldFiles, actions, nil
 }
 
 // convergeEstablishedPhases collects scaffold changes once, preserving the
-// credential-before-planning order except where vendored WIF preflight must
-// establish usable delivery before any credential can change.
+// credential-before-planning order except where planning must finish before
+// any credential can change: vendored WIF preflight must establish usable
+// delivery, and stale vendored asset cleanup must complete its caller reads,
+// rendering and planning so a failure there leaves variables and secrets
+// untouched. The one plan is then reused for the scaffold commit.
 func convergeEstablishedPhases(ctx context.Context, d convergeDiscovery, wifProvider string, cfg ConvergeConfig, refResolver *RefResolver, progress ProgressFunc, vendoredWIFSource bool) ([]forge.TreeFile, []ComponentAction, []ComponentAction, error) {
 	var orderedActions []ComponentAction
 	resolved := d.resolved
-	if !vendoredWIFSource {
+	planFirst := vendoredWIFSource || (d.staleVendored != nil && len(d.staleVendored.Paths) > 0)
+	if !planFirst {
 		actions, err := convergeRepoCredentials(ctx, d, wifProvider, cfg, progress)
 		orderedActions = append(orderedActions, actions...)
 		if err != nil {
@@ -3756,7 +3897,7 @@ func convergeEstablishedPhases(ctx context.Context, d convergeDiscovery, wifProv
 		}
 	}
 
-	if vendoredWIFSource {
+	if planFirst {
 		actions, err := convergeRepoCredentials(ctx, d, wifProvider, cfg, progress)
 		orderedActions = append(orderedActions, actions...)
 		return files, scaffoldActions, orderedActions, err

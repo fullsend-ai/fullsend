@@ -12,6 +12,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/skill"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
@@ -642,21 +643,104 @@ func (h *Harness) validateSecurity() error {
 	return nil
 }
 
+// resolvePathWithin joins a relative path to baseDir and rejects one that
+// resolves outside it. Absolute paths, URLs and empty values pass through.
+func resolvePathWithin(baseDir, field, p string) (string, error) {
+	if p == "" || filepath.IsAbs(p) || IsURL(p) {
+		return p, nil
+	}
+	resolved := filepath.Join(baseDir, p)
+	cleanBase := filepath.Clean(baseDir) + string(filepath.Separator)
+	if !strings.HasPrefix(filepath.Clean(resolved), cleanBase) {
+		return "", fmt.Errorf("%s: path %q resolves outside fullsend directory", field, p)
+	}
+	return resolved, nil
+}
+
+// markersWithin reports whether the relative skill directory rel can be
+// read for its declared name without leaving root. os.Root follows
+// symlinks but refuses any component that resolves outside it (the skill
+// directory, an ancestor or the marker file itself) and any symlink with
+// an absolute target, so every spelling of the marker must be reachable or
+// absent. Every spelling is checked, not just the first present one,
+// because declaredName moves on to the next spelling when a present one
+// cannot be read (a directory named SKILL.md). filepath.Join cleans `..`
+// in rel lexically, as the path opened later is cleaned, rather than
+// against a preceding link's target. A missing marker counts as within:
+// there is nothing to read. A nil root is never within. The check and the
+// later read are separate operations: the harness tree is taken as
+// unchanged while a harness is composed.
+func markersWithin(root *os.Root, rel string) bool {
+	if root == nil {
+		return false
+	}
+	for _, marker := range skill.MarkerNames {
+		if _, err := root.Stat(filepath.Join(rel, marker)); err != nil && !os.IsNotExist(err) {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveSkillSourcesWithin resolves the relative skill directories of the
+// top-level, forge and overlay lists against baseDir, the directory
+// ResolveRelativeTo resolves them against later. Skill identity is the
+// declared SKILL.md name, which skill.SandboxName reads only from an
+// absolute path, so this runs before any merge compares identities (#7830).
+// An entry whose marker cannot be opened without a symlink leaving baseDir
+// (the directory, a parent or the marker file itself) stays relative: no
+// metadata is read through the link, and its identity is its basename.
+// Absolute entries are allowed anyway, so this is not an error.
+func (h *Harness) resolveSkillSourcesWithin(baseDir string) error {
+	// dispatch passes --config-dir as given, so the root may be relative;
+	// resolvePathWithin's prefix check needs it absolute.
+	if abs, err := filepath.Abs(baseDir); err == nil {
+		baseDir = abs
+	}
+	// A root that cannot be opened resolves nothing: every relative entry
+	// keeps its basename identity, as before.
+	root, err := os.OpenRoot(baseDir)
+	if err == nil {
+		defer root.Close()
+	}
+	resolveList := func(field string, skills []SkillEntry) error {
+		for i := range skills {
+			resolved, err := resolvePathWithin(baseDir, fmt.Sprintf("%s[%d]", field, i), skills[i].Source)
+			if err != nil {
+				return err
+			}
+			if resolved != skills[i].Source && !markersWithin(root, skills[i].Source) {
+				continue
+			}
+			skills[i].Source = resolved
+		}
+		return nil
+	}
+	if err := resolveList("skills", h.Skills); err != nil {
+		return err
+	}
+	for platform, fc := range h.Forge {
+		if fc == nil {
+			continue
+		}
+		if err := resolveList("forge."+platform+".skills", fc.Skills); err != nil {
+			return err
+		}
+	}
+	for i := range h.Overlays {
+		if err := resolveList(fmt.Sprintf("overlays[%d].skills", i), h.Overlays[i].ForgeConfig.Skills); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ResolveRelativeTo resolves all relative paths in the harness against baseDir.
 // Relative paths that resolve outside baseDir are rejected to prevent directory
 // traversal (e.g. ../../etc/shadow). Absolute paths and ${VAR} paths are allowed.
 func (h *Harness) ResolveRelativeTo(baseDir string) error {
-	cleanBase := filepath.Clean(baseDir) + string(filepath.Separator)
-
 	resolve := func(field, p string) (string, error) {
-		if p == "" || filepath.IsAbs(p) || IsURL(p) {
-			return p, nil
-		}
-		resolved := filepath.Join(baseDir, p)
-		if !strings.HasPrefix(filepath.Clean(resolved), cleanBase) {
-			return "", fmt.Errorf("%s: path %q resolves outside fullsend directory", field, p)
-		}
-		return resolved, nil
+		return resolvePathWithin(baseDir, field, p)
 	}
 
 	var err error

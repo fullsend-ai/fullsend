@@ -34,12 +34,24 @@ func newPollCmd() *cobra.Command {
 		jqlOverride string
 		targetRepo  string
 		modeFlag    string
+
+		printDispatchRoutes bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "poll",
 		Short: "Poll forge or external tracker APIs for new events and dispatch agent stages",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if printDispatchRoutes {
+				// Capability probe for the GitLab job scripts (#8438): a CLI
+				// that predates the FULLSEND_GITLAB_DISPATCH_ROUTE selector
+				// rejects this flag as unknown, so a nonzero exit or a missing
+				// route name means the route is unsupported.
+				for _, route := range supportedGitLabDispatchRoutes {
+					fmt.Fprintln(cmd.OutOrStdout(), route)
+				}
+				return nil
+			}
 			if inputDriver == "jira-poll" {
 				return runJiraPoll(cmd, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
 			}
@@ -99,13 +111,19 @@ func newPollCmd() *cobra.Command {
 				return fmt.Errorf("CI_COMMIT_REF_NAME or CI_DEFAULT_BRANCH is required for pipeline dispatch")
 			}
 
+			childJobToken, err := gitlabChildDispatchJobToken(os.Getenv)
+			if err != nil {
+				return err
+			}
+
 			opts := poll.Options{
-				BotUserID:      botUserID,
-				GitLabURL:      gitlabURL,
-				PipelineRef:    pipelineRef,
-				PollJobURL:     os.Getenv("CI_JOB_URL"),
-				DispatchSecret: os.Getenv("FULLSEND_DISPATCH_SECRET"),
-				Mode:           mode,
+				BotUserID:             botUserID,
+				GitLabURL:             gitlabURL,
+				PipelineRef:           pipelineRef,
+				PollJobURL:            os.Getenv("CI_JOB_URL"),
+				DispatchSecret:        os.Getenv("FULLSEND_DISPATCH_SECRET"),
+				Mode:                  mode,
+				ChildDispatchJobToken: childJobToken,
 			}
 
 			poller := poll.New(pollClient, router, projectPath, opts)
@@ -113,6 +131,7 @@ func newPollCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().BoolVar(&printDispatchRoutes, "print-dispatch-routes", false, "Print the GitLab agent dispatch routes this CLI supports (one per line) and exit; used by the job scripts to detect an older CLI before selecting a route")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", "Forge platform (gitlab)")
 	cmd.Flags().StringVar(&inputDriver, "input-driver", "", "Poll input driver (jira-poll or gitlab-webhook)")
 	cmd.Flags().StringVar(&projectPath, "project", "", "GitLab project path (default: $CI_PROJECT_PATH for --forge gitlab; required for --input-driver gitlab-webhook)")
@@ -213,16 +232,53 @@ func runGitLabWebhook(cmd *cobra.Command, projectPath, gitlabURL, fullsendDir st
 		return fmt.Errorf("build event router: %w", err)
 	}
 
+	childJobToken, err := gitlabChildDispatchJobToken(os.Getenv)
+	if err != nil {
+		return err
+	}
+
 	opts := poll.Options{
-		BotUserID:      botUserID,
-		GitLabURL:      gitlabURL,
-		PipelineRef:    pipelineRef,
-		PollJobURL:     os.Getenv("CI_JOB_URL"),
-		DispatchSecret: os.Getenv("FULLSEND_DISPATCH_SECRET"),
+		BotUserID:             botUserID,
+		GitLabURL:             gitlabURL,
+		PipelineRef:           pipelineRef,
+		PollJobURL:            os.Getenv("CI_JOB_URL"),
+		DispatchSecret:        os.Getenv("FULLSEND_DISPATCH_SECRET"),
+		ChildDispatchJobToken: childJobToken,
 	}
 
 	poller := poll.New(pollClient, router, projectPath, opts)
 	return wrapGitLabAuthFailure(sel, poller.RunWebhook(cmd.Context(), raw))
+}
+
+// supportedGitLabDispatchRoutes are the VarGitLabDispatchRoute values this CLI
+// honors, in the order `fullsend poll --print-dispatch-routes` prints them.
+var supportedGitLabDispatchRoutes = []string{
+	forge.GitLabDispatchRouteAPI,
+	forge.GitLabDispatchRouteChildPipeline,
+}
+
+// gitlabChildDispatchJobToken resolves the agent dispatch route the GitLab
+// poll and dispatcher job scripts selected (#8438). It returns the
+// CI_JOB_TOKEN to start source=pipeline agent pipelines with when the
+// route is forge.GitLabDispatchRouteChildPipeline, or "" for the Poller
+// API route (unset or forge.GitLabDispatchRouteAPI). The child route
+// without a job token, or an unrecognized route, is an error rather than
+// a silent fallback: the scripts select the child route only when the
+// pipeline is owned by the trigger-only account, and an API pipeline
+// created by the Poller would then fail the agent's creator check.
+func gitlabChildDispatchJobToken(getenv func(string) string) (string, error) {
+	switch route := getenv(forge.VarGitLabDispatchRoute); route {
+	case "", forge.GitLabDispatchRouteAPI:
+		return "", nil
+	case forge.GitLabDispatchRouteChildPipeline:
+		token := getenv("CI_JOB_TOKEN")
+		if token == "" {
+			return "", fmt.Errorf("%s=%s requires CI_JOB_TOKEN", forge.VarGitLabDispatchRoute, forge.GitLabDispatchRouteChildPipeline)
+		}
+		return token, nil
+	default:
+		return "", fmt.Errorf("%s=%q is not a recognized dispatch route (expected unset, %q, or %q)", forge.VarGitLabDispatchRoute, route, forge.GitLabDispatchRouteAPI, forge.GitLabDispatchRouteChildPipeline)
+	}
 }
 
 // jiraPollArgs holds resolved arguments for runJiraPoll after env-var fallbacks.

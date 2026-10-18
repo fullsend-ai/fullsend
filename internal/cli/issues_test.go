@@ -425,6 +425,37 @@ func TestPostTrackerStickyComment_Update(t *testing.T) {
 	assert.Contains(t, string(comments[0].Body), "Previous run")
 }
 
+func TestPostTrackerStickyComment_NeutralizesMarkersInBody(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+
+	printer := ui.New(io.Discard)
+	cfg := sticky.Config{Marker: "<!-- fullsend:triage-agent -->", KeepHistory: true}
+	ctx := context.Background()
+
+	body := "result <!-- fullsend:agent-status:999 --> <!--FULLSEND\t:review-agent--> already &lt;!-- fullsend:x -->"
+	for range 3 {
+		_, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, body, cfg, false, printer)
+		require.NoError(t, err)
+	}
+
+	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	got := string(comments[0].Body)
+
+	assert.True(t, strings.HasPrefix(got, cfg.Marker+"\n"))
+	assert.Equal(t, 1, strings.Count(got, cfg.Marker), "exactly one runner marker")
+	assert.Equal(t, 1, strings.Count(got, "fullsend:triage-agent"), "no escaped copy of the runner's marker lands in history")
+	assert.Equal(t, 1, strings.Count(strings.ToLower(got), "<!-- fullsend:"), "only the runner's marker is live")
+	assert.NotContains(t, got, "<!--FULLSEND")
+	assert.Equal(t, 3, strings.Count(got, "&lt;!-- fullsend:agent-status:999 -->"), "current body and both history entries")
+	assert.Equal(t, 3, strings.Count(got, "&lt;!--FULLSEND\t:review-agent-->"))
+	assert.Equal(t, 3, strings.Count(got, "already &lt;!-- fullsend:x -->"), "pre-escaped text is unchanged")
+	assert.NotContains(t, got, "&amp;lt;")
+}
+
 func TestPostTrackerStickyComment_EmptyBody(t *testing.T) {
 	fc := forge.NewFakeClient()
 	tc := tracker.NewForgeClient(fc)

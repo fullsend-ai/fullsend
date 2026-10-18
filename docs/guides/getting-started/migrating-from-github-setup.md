@@ -84,6 +84,15 @@ see [Repo Management](repo-management.md).
 - **`--fullsend-binary` and `--fullsend-source` need `vendor: true`.** They
   are accepted only when at least one selected repository resolves
   `vendor: true`.
+- **Turning vendoring off cleans up.** If a GitHub repository was vendored
+  and now resolves `vendor: false`, from `defaults.vendor` or its entry's
+  `vendor`, install removes the stale binary, the vendor manifest, the
+  `.defaults/` content, and the local reusable workflows. Fullsend's own
+  callers are rewritten in the same scaffold commit. Install deletes only
+  files Fullsend is known to have shipped; a file you created, even one
+  the vendor manifest lists, is kept. If a workflow would still call a local reusable
+  workflow, install keeps everything and reports the pending work. See
+  [Turning vendoring off](../../cli/repos.md#turning-vendoring-off).
 
 No configuration flags were added to `github setup` or any other command to
 replace the removed ones.
@@ -119,7 +128,7 @@ These inputs are never written to `repos.yaml`:
 |---|---|
 | Secrets and sensitive provisioning | `--openai-api-key`, `--vertex-project`, `--vertex-wif-provider`, `--gitlab-role-token role=token` (repeatable), `--gitlab-role-registry`, `--gitlab-token` (or `GITLAB_TOKEN`) |
 | Local vendoring artifacts | `--fullsend-binary`, `--fullsend-source`. Valid only when a selected repository resolves `vendor: true`; otherwise install fails and points at `fullsend repos set defaults.vendor true` |
-| One-run controls | `-f` / `--manifest`, `--dry-run`, `--direct`, `--concurrency`, `--force`, `--reactivate-schedules`, `--rotate-gitlab-roles`, `--rotate-gitlab-role`, `--rotate-gitlab-trigger-token` |
+| One-run controls | `-f` / `--manifest`, `--dry-run`, `--direct`, `--concurrency`, `--force`, `--reactivate-schedules`, `--rotate-gitlab-roles`, `--rotate-gitlab-role`, `--rotate-gitlab-trigger-token`, `--rotate-gitlab-trigger-account` |
 
 `--vertex-project` and `--vertex-wif-provider` are optional when the
 effective configuration declares `inference.project` and
@@ -326,8 +335,9 @@ key out.
 ### Repository installed with `github setup` (markerless overlay)
 
 `github setup` writes `.fullsend/config.yaml` without the managed-file
-ownership marker. Install never overwrites such a file. It stops with
-`adoption required` before any write, including in a dry run.
+ownership marker. Install never overwrites such a file. It skips that repository
+and reports `adoption required` for it before any write to it, including in a dry run;
+the rest of the fleet still converges and the run exits non-zero.
 
 1. Declare the repository with its manifest-level settings, such as
    `inference.auth`, `app_set`, `fullsend_ref`, and `vendor`:

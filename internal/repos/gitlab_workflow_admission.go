@@ -67,9 +67,17 @@ func (a triadState) not() triadState {
 // pipelines whose branch is the source of an open merge request, which
 // depends on project state this check cannot see.
 func triggerPipelineEnv(defaultBranch string) map[string]*string {
+	return pipelineSourceEnv(defaultBranch, "trigger")
+}
+
+// pipelineSourceEnv is triggerPipelineEnv for another pipeline source. The
+// trigger-account child-pipeline dispatch route (#8438) starts agent
+// pipelines with source=pipeline on the protected default branch, so the
+// same protected-branch variable set applies to it.
+func pipelineSourceEnv(defaultBranch, source string) map[string]*string {
 	str := func(s string) *string { return &s }
 	return map[string]*string{
-		"CI_PIPELINE_SOURCE":       str("trigger"),
+		"CI_PIPELINE_SOURCE":       str(source),
 		"CI_COMMIT_REF_PROTECTED":  str("true"),
 		"CI_COMMIT_REF_NAME":       str(defaultBranch),
 		"CI_COMMIT_BRANCH":         str(defaultBranch),
@@ -368,8 +376,14 @@ func rulesProblem(outcome ruleOutcome, idx int, kind string) string {
 // default branch admits protected-default-branch trigger pipelines")
 // when it is rejected or admission cannot be established.
 func workflowAdmissionProblem(rules *yaml.Node, defaultBranch string) string {
-	const subject = "admits protected-default-branch trigger pipelines"
-	outcome, idx := evaluateRules(rules, triggerPipelineEnv(defaultBranch))
+	return workflowAdmissionProblemForEnv(rules, triggerPipelineEnv(defaultBranch), "trigger")
+}
+
+// workflowAdmissionProblemForEnv is workflowAdmissionProblem for the pipeline
+// described by env; source names its pipeline source in the diagnostic.
+func workflowAdmissionProblemForEnv(rules *yaml.Node, env map[string]*string, source string) string {
+	subject := "admits protected-default-branch " + source + " pipelines"
+	outcome, idx := evaluateRules(rules, env)
 	if p := rulesProblem(outcome, idx, "workflow rule"); p != "" {
 		return subject + " " + p
 	}

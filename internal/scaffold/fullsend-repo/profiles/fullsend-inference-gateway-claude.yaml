@@ -17,8 +17,11 @@ credentials:
     required: true
     # Claude Code sends the credential as Authorization: Bearer in both auth
     # modes: from the oidc mode's apiKeyHelper, and from ANTHROPIC_AUTH_TOKEN
-    # in the api-key mode. OpenShell resolves the placeholder wherever it
-    # appears on a request to the endpoint below.
+    # in the api-key mode. For an api-key block with messages_auth_header:
+    # x-api-key (ADR 0142) the runner renders the two lines below as
+    # auth_style: header and header_name: x-api-key, and Claude Code sends
+    # ANTHROPIC_API_KEY as x-api-key only. OpenShell resolves the placeholder
+    # wherever it appears on a request to the endpoint below.
     auth_style: bearer
     header_name: authorization
     refresh:

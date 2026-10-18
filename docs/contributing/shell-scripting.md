@@ -63,6 +63,23 @@ fi
 
 **When reviewing PRs:** Flag `2>/dev/null || echo ""` (or `|| true`) in workflow steps that gate dispatch or skip execution as a medium-severity or higher finding — unless the fallback value is verified to be restrictive (narrows what's allowed) rather than permissive (widens what's allowed) downstream. Silent failure in a permissive-fallback gate means the gate is non-functional; the same pattern feeding a restrictive fallback is comparatively safe (it fails toward "allow nothing" rather than "allow everything"). Judge severity by what the fallback value actually does downstream, not by the presence of `2>/dev/null || echo ""`/`|| true` alone.
 
+## `| grep -q` under `pipefail`
+
+`grep -q` exits as soon as it finds a match and closes the pipe. If the writer still has output to send, its next write hits the closed pipe and it is killed by SIGPIPE (exit 141). Under `set -o pipefail` the pipeline then reports 141 instead of `grep`'s 0, so a check that matched still fails. Whether it fails depends on scheduling: writers flush to a pipe in blocks (often 4 KB), so the race only appears once the output needs more than one write, and it can pass on CI while failing everywhere else.
+
+```bash
+# RACY — fails intermittently once the help text exceeds one pipe write
+if bash ./script.sh --help | grep -q '^Usage:'; then ...
+
+# SAFE — capture the output first, then match it
+help_out=$(bash ./script.sh --help)
+if grep -q '^Usage:' <<< "${help_out}"; then ...
+```
+
+Capturing first also keeps the check strict: under `set -e`, a non-zero exit from the writer aborts the script at the assignment. `grep -m1` has the same race as `grep -q`.
+
+**When reviewing PRs:** Flag `<writer> | grep -q` under `pipefail` when the writer can produce more than about 4 KB of output (help text, logs, API responses) as a low-to-medium-severity finding.
+
 ## Stdout contamination in command substitution
 
 When a shell function is called inside `$(...)` command substitution, **everything the function writes to stdout becomes part of the captured variable**. If the function also writes diagnostic output (log messages, retry warnings, `::error::`/`::warning::` annotations) to stdout, that output is concatenated with the intended return value, silently corrupting it.

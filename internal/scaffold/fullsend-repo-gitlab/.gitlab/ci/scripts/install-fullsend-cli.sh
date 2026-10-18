@@ -17,6 +17,12 @@ if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
   echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets" >&2
   exit 1
 fi
+# These can make bootstrap commands execute or load untrusted code. The
+# activation gate also rejects project and readable inherited overrides, but
+# clear inherited runner values before this script invokes external commands.
+unset LD_AUDIT LD_PRELOAD LD_LIBRARY_PATH BASH_ENV TAR_OPTIONS
+# These select Python modules that later job scripts would load.
+unset PYTHONPATH PYTHONSTARTUP PYTHONHOME
 # Private-CA trust for self-hosted GitLab. Must run before any
 # GitLab network operation (curl, git, or the fullsend Go client).
 # CI_SERVER_TLS_CA_FILE is a job-local path; it is not available on
@@ -35,7 +41,7 @@ if [ "${FULLSEND_VERSION}" = "latest" ]; then
   if [ -n "${GITHUB_TOKEN:-}" ]; then
     FS_AUTH_HEADER="Authorization: token ${GITHUB_TOKEN}"
   fi
-  if ! FS_RELEASE_JSON=$(curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+  if ! FS_RELEASE_JSON=$(curl -q -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
     ${FS_AUTH_HEADER:+-H "${FS_AUTH_HEADER}"} \
     "https://api.github.com/repos/${FULLSEND_REPO}/releases/latest"); then
     echo "ERROR: Failed to fetch latest release from GitHub API" >&2
@@ -59,10 +65,10 @@ case "${FULLSEND_VERSION}" in
       *)       echo "ERROR: unsupported architecture: ${FS_ARCH} (supported: x86_64, aarch64)" >&2; exit 1 ;;
     esac
     FS_BASE="https://github.com/${FULLSEND_REPO}/releases/download/${FULLSEND_VERSION}"
-    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+    curl -q -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
       "${FS_BASE}/fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz" \
       -o /tmp/fullsend.tar.gz
-    curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+    curl -q -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
       "${FS_BASE}/checksums.txt" -o /tmp/checksums.txt
     FS_CHECKSUM_LINE=$(grep "fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz$" /tmp/checksums.txt || true)
     if [ -z "${FS_CHECKSUM_LINE}" ]; then
@@ -72,12 +78,19 @@ case "${FULLSEND_VERSION}" in
     echo "${FS_CHECKSUM_LINE}" \
       | sed "s|fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz|/tmp/fullsend.tar.gz|" \
       | sha256sum -c -
-    tar --no-same-owner -xzf /tmp/fullsend.tar.gz -C /usr/local/bin fullsend
+    TAR_OPTIONS='' tar --no-same-owner -xzf /tmp/fullsend.tar.gz -C /usr/local/bin fullsend
     rm -f /tmp/fullsend.tar.gz /tmp/checksums.txt
     ;;
   *)
     # Untagged SHA — clone and build from source (Go toolchain
     # is in the runner base image for this purpose).
+    # These select the git helpers/config and the Go toolchain flags,
+    # environment, version, root, or cache program that this source-pinned
+    # path (git fetch / go build) would run. They are cleared only here: the
+    # release-download path above runs none of them, and self-hosted or
+    # air-gapped runners may set them deliberately (e.g. GOTOOLCHAIN=local).
+    unset GIT_EXEC_PATH GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_TEMPLATE_DIR
+    unset GOFLAGS GOENV GOTOOLCHAIN GOROOT GOCACHEPROG
     if ! command -v go >/dev/null 2>&1; then
       echo "ERROR: Go 1.20+ toolchain not found — required for source builds (non-release refs)" >&2
       echo "Use a runner image with Go 1.20+ installed or pin to a release version tag" >&2
@@ -86,10 +99,12 @@ case "${FULLSEND_VERSION}" in
     export GOPATH="${RUNNER_TEMP:-/tmp}/go"
     export GOCACHE="${RUNNER_TEMP:-/tmp}/go-cache"
     FSSRC=$(mktemp -d)
-    git init "${FSSRC}"
+    # An empty template and a null hooks path keep this checkout from
+    # running any hook copied from a template directory.
+    git init --template= "${FSSRC}"
     git -C "${FSSRC}" remote add origin "https://github.com/${FULLSEND_REPO}.git"
     git -C "${FSSRC}" fetch --depth 1 origin "${FULLSEND_VERSION}"
-    git -C "${FSSRC}" checkout FETCH_HEAD
+    git -C "${FSSRC}" -c core.hooksPath=/dev/null checkout FETCH_HEAD
     CGO_ENABLED=0 go build -C "${FSSRC}" \
       -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION}" \
       -o /usr/local/bin/fullsend ./cmd/fullsend/

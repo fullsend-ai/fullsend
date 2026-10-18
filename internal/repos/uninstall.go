@@ -374,7 +374,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	var pollerErr error
 	unlockProject := func() error { return nil }
 	if cfg.Forge == ForgeGitLab {
-		release, lockErr := LockGitLabProject(ctx, client, owner, repo, false)
+		lease, release, lockErr := LockGitLabProjectLease(ctx, client, owner, repo)
 		if lockErr != nil {
 			result.Error = fmt.Errorf("serializing uninstall with other installers: %w", lockErr)
 			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", lockErr))
@@ -390,6 +390,24 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 			return leaseErr
 		}
 		defer func() { _ = unlockProject() }()
+
+		// An interrupted trigger-account bootstrap can leave that account
+		// elevated with a live bootstrap PAT. Contain it first, with no Poller
+		// inventory and before any gate below can return early, on a bounded,
+		// cancellation-detached context so a canceled uninstall still demotes.
+		// Removal later still needs the verified inventory. A failure stops
+		// uninstall with the ledger kept, so a retry resumes containment.
+		if containTokens, ok := tokens.(GitLabTriggerAccountUninstaller); ok {
+			progress(fullName, "cleanup", "Containing the GitLab trigger account")
+			cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), 3*gitlabCleanupTimeout)
+			containErr := containTokens.ContainGitLabTriggerAccountForUninstall(cctx, client, lease, owner, repo)
+			ccancel()
+			if containErr != nil {
+				result.Error = errors.Join(fmt.Errorf("containing the GitLab trigger account before uninstall: %w", containErr), unlockProject())
+				progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", containErr))
+				return result
+			}
+		}
 
 		// An interrupted trigger-creation transaction can leave the Poller
 		// elevated or holding its bootstrap credential. Restore and revoke
@@ -437,6 +455,48 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 			result.Error = errors.Join(fmt.Errorf("removing webhook fast-path: %w", teardownErr), pollerErr, unlockProject())
 			progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", teardownErr))
 			return result
+		}
+
+		// Remove the trigger-only service account and its protected-branch
+		// resources before role-identity cleanup retires the Poller
+		// generation state that proves the account is not a Poller. Skipped
+		// when the Poller could not be reconciled: the inventory is then
+		// unverified, and FULLSEND_GITLAB_TRIGGER_ACCOUNT stays as the durable
+		// cleanup obligation for the retried uninstall. A failure stops
+		// uninstall here, keeping the manifest entry and the ledger.
+		if pollerErr == nil {
+			remover, ok := tokens.(GitLabTriggerAccountUninstaller)
+			if !ok {
+				// Without the dedicated removal capability a ledger cannot be
+				// cleaned up, and nothing else may forget it: stop here with
+				// the ledger and the token sink in place.
+				_, ledgerExists, ledgerErr := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabTriggerAccount)
+				switch {
+				case ledgerErr != nil:
+					err := SafeAPIError("reading "+forge.VarGitLabTriggerAccount, ledgerErr)
+					result.TokensRevoked = triggersRevoked
+					result.Error = errors.Join(fmt.Errorf("checking for a GitLab trigger account: %w", err), unlockProject())
+					progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", err))
+					return result
+				case ledgerExists:
+					err := fmt.Errorf("%s exists but this uninstall client cannot remove the GitLab trigger account; %s is kept so a retried uninstall with that capability resumes", forge.VarGitLabTriggerAccount, forge.VarGitLabTriggerAccount)
+					result.TokensRevoked = triggersRevoked
+					result.Error = errors.Join(err, unlockProject())
+					progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", err))
+					return result
+				}
+			} else {
+				progress(fullName, "cleanup", "Removing the GitLab trigger account")
+				rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 3*gitlabCleanupTimeout)
+				triggerErr := remover.RemoveGitLabTriggerAccountForUninstall(rctx, client, lease, owner, repo)
+				rcancel()
+				if triggerErr != nil {
+					result.TokensRevoked = triggersRevoked
+					result.Error = errors.Join(fmt.Errorf("removing the GitLab trigger account (%s is kept so a retried uninstall resumes): %w", forge.VarGitLabTriggerAccount, triggerErr), unlockProject())
+					progress(fullName, "cleanup", fmt.Sprintf("Failed: %v", triggerErr))
+					return result
+				}
+			}
 		}
 	}
 

@@ -179,8 +179,8 @@ The --subagent flag maps a persona name to a model (repeatable):
 		},
 	}
 	addFullsendDirFlag(cmd, &fullsendDir)
-	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude, pi or codex); \"\" clears it")
-	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi and codex — codex takes OpenAI ids and gateway/<model> only); \"\" clears it")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude, pi, codex or opencode); \"\" clears it")
+	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi, codex, and opencode — codex takes OpenAI ids and gateway/<model> only); \"\" clears it")
 	cmd.Flags().StringVar(&effort, "effort", "", "effort level for this agent (low, medium, high, xhigh, max); \"\" clears it")
 	cmd.Flags().StringArrayVar(&subagentFlags, "subagent", nil, "persona=model mapping for sub-agents (repeatable; persona= clears)")
 	return cmd

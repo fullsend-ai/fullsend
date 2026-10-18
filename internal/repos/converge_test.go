@@ -3621,6 +3621,50 @@ func TestActivatePipelineSchedules_ErrorPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("owner-only update is left to the trigger-account stage", func(t *testing.T) {
+		e := readyTriggerDispatchEnv(t)
+		fc := e.state.FakeClient
+		raw, exists, err := fc.GetRepoVariable(ctx, trigOwner, trigRepo, forge.VarGitLabTriggerAccount)
+		require.NoError(t, err)
+		require.True(t, exists)
+		ledger, err := decodeGitLabTriggerAccountState(raw)
+		require.NoError(t, err)
+		fc.PipelineSchedules[trigOwner+"/"+trigRepo] = []forge.PipelineSchedule{
+			{ID: 1, OwnerID: int64(ledger.AccountID), Description: "fullsend slash poll", Active: false},
+		}
+		fc.Errors["UpdatePipelineSchedule"] = forge.ErrForbidden
+		actions := activatePipelineSchedules(ctx, fc, trigOwner, trigRepo, trigOwner+"/"+trigRepo,
+			[]string{"schedule:slash-poll"}, noopProgress)
+		if len(actions) != 1 || actions[0].Action != "none" {
+			t.Fatalf("got %+v, want one none action", actions)
+		}
+		if !strings.Contains(actions[0].Detail, "trigger-account stage") {
+			t.Errorf("detail = %q, want trigger-account wording", actions[0].Detail)
+		}
+	})
+
+	for _, tc := range []struct {
+		name    string
+		ownerID int64
+	}{
+		{"human-owned disabled schedule", 999999},
+		{"owner not reported", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := readyTriggerDispatchEnv(t)
+			fc := e.state.FakeClient
+			fc.PipelineSchedules[trigOwner+"/"+trigRepo] = []forge.PipelineSchedule{
+				{ID: 1, OwnerID: tc.ownerID, Description: "fullsend slash poll", Active: false},
+			}
+			fc.Errors["UpdatePipelineSchedule"] = forge.ErrForbidden
+			actions := activatePipelineSchedules(ctx, fc, trigOwner, trigRepo, trigOwner+"/"+trigRepo,
+				[]string{"schedule:slash-poll"}, noopProgress)
+			require.Len(t, actions, 1)
+			assert.Equal(t, "error", actions[0].Action)
+			assert.Contains(t, actions[0].Detail, "forbidden")
+		})
+	}
+
 	t.Run("inactive not found on re-list", func(t *testing.T) {
 		fc := forge.NewFakeClient()
 		// Probe saw an inactive schedule, but the re-list returns only an active one.
@@ -3636,6 +3680,21 @@ func TestActivatePipelineSchedules_ErrorPaths(t *testing.T) {
 			t.Errorf("detail = %q, want not-found wording", actions[0].Detail)
 		}
 	})
+}
+
+func TestRecordedTriggerScheduleOwner(t *testing.T) {
+	e := readyTriggerDispatchEnv(t)
+	ctx := context.Background()
+	ledger, found := e.ledger(t)
+	require.True(t, found)
+	require.True(t, recordedTriggerScheduleOwner(ctx, e.state, trigOwner, trigRepo, int64(ledger.AccountID)))
+	assert.False(t, recordedTriggerScheduleOwner(ctx, e.state, trigOwner, trigRepo, 0))
+	assert.False(t, recordedTriggerScheduleOwner(ctx, e.state, trigOwner, trigRepo, int64(ledger.AccountID)+100))
+	e.state.Errors["GetRepoVariable"] = fmt.Errorf("unreadable")
+	assert.False(t, recordedTriggerScheduleOwner(ctx, e.state, trigOwner, trigRepo, int64(ledger.AccountID)))
+	delete(e.state.Errors, "GetRepoVariable")
+	e.state.VariableValues[trigOwner+"/"+trigRepo+"/"+forge.VarGitLabTriggerAccount] = "invalid"
+	assert.False(t, recordedTriggerScheduleOwner(ctx, e.state, trigOwner, trigRepo, int64(ledger.AccountID)))
 }
 
 func TestConvergeSchedules_UnrecognizedMissing(t *testing.T) {

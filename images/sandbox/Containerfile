@@ -10,6 +10,9 @@
 #   - Codex (npm, version-pinned via CODEX_VERSION ARG; replaces the copy
 #     the OpenShell base image ships, with the same shadow-proof symlink
 #     and build-time assertion as Claude Code — stub runtime, see #6920)
+#   - OpenCode (GitHub release, SHA256-verified glibc build via
+#     OPENCODE_VERSION + per-arch checksum ARGs; opt-in runtime, see
+#     unbound-force#510)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - ripgrep + fd (backends of pi's built-in grep/find tools; SHA256-verified
 #     static builds, versions asserted at build time)
@@ -56,7 +59,7 @@ RUN apt-get update \
 #
 # To update: bump CLAUDE_CODE_VERSION; renovate tracks this ARG via
 # a customManagers regex entry in renovate.json.
-ARG CLAUDE_CODE_VERSION=2.1.296
+ARG CLAUDE_CODE_VERSION=2.1.302
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # The OpenShell base image bundles its own Claude Code at /usr/local/bin/claude
@@ -103,7 +106,7 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # rejecting malformed edit arguments (earendil-works/pi#8521, #8962); once
 # the test's without-extension control stops failing, this pi repairs both
 # shapes itself — delete the extension and internal/runtime/pi_edit_repair.go.
-ARG PI_VERSION=1.1.0
+ARG PI_VERSION=1.3.0
 RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
         || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
     && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
@@ -226,8 +229,8 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # carry the tarball SHA256) and set the two ARGs below:
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v<ver>.tar.gz)
 # The last extension install locks the parent directory (see pi-xai-vertex).
-ARG PI_INFERENCE_GATEWAY_VERSION=0.1.2
-ARG PI_INFERENCE_GATEWAY_SHA256=86684dd41f23bc9fd9043db7677caed65de6fa0e200501598e7c7d0465e8f441
+ARG PI_INFERENCE_GATEWAY_VERSION=0.1.3
+ARG PI_INFERENCE_GATEWAY_SHA256=f380408d6f20aba41909fe2af28511c68ca9eeb1c3fe2bd5771d4ab4fc82399a
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v${PI_INFERENCE_GATEWAY_VERSION}.tar.gz" \
       -o /tmp/pi-inference-gateway.tar.gz \
@@ -325,6 +328,56 @@ RUN mkdir -p /etc/codex \
       'enabled = false' \
       > /etc/codex/config.toml \
     && chmod 0644 /etc/codex/config.toml
+
+# ---------------------------------------------------------------------------
+# OpenCode — opt-in agent runtime (anomalyco/opencode, unbound-force#510).
+# glibc builds (the musl tarballs dynamically link libc.musl — absent in the
+# Debian-based OpenShell base image).  The base image may ship its own
+# opencode at /usr/local/bin; rm -f before extract so the pinned version wins
+# (same shadow-proof pattern as Claude Code above).
+# To update: bump OPENCODE_VERSION and OPENCODE_SHA256_{AMD64,ARM64} from:
+#   https://github.com/anomalyco/opencode/releases
+ARG OPENCODE_VERSION=1.19.1
+ARG OPENCODE_SHA256_AMD64=6f1904b860bdbd32e90e679c9e1b0e64e78269a353e1497d5ea792dfa449538c
+ARG OPENCODE_SHA256_ARM64=3840e9afb2462a666d31816b20bc13b91af9845c329cff660a972aa9cfaee3a2
+RUN case "$TARGETARCH" in \
+      amd64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+             EXPECTED="${OPENCODE_SHA256_AMD64}" ;; \
+      arm64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz" \
+             EXPECTED="${OPENCODE_SHA256_ARM64}" ;; \
+      *)     echo "unsupported TARGETARCH=$TARGETARCH for opencode" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --retry 3 --retry-delay 5 "${OPENCODE_URL}" -o /tmp/opencode.tar.gz \
+    && GOT="$(sha256sum /tmp/opencode.tar.gz | cut -d' ' -f1)" \
+    && if [ "${GOT}" != "${EXPECTED}" ]; then \
+         echo "opencode checksum mismatch: got ${GOT}, expected ${EXPECTED}" >&2; \
+         exit 1; \
+       fi \
+    && rm -f /usr/local/bin/opencode \
+    && tar xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode \
+    && chmod 0755 /usr/local/bin/opencode \
+    && rm -f /tmp/opencode.tar.gz \
+    && GOT_VER="$(opencode --version)" \
+    && if [ "${GOT_VER}" != "${OPENCODE_VERSION}" ]; then \
+         echo "opencode version mismatch: got '${GOT_VER}', expected version ${OPENCODE_VERSION}" >&2; \
+         exit 1; \
+       fi
+
+# OpenCode hygiene defaults. OPENCODE_CONFIG_DIR must match
+# sandbox.SandboxOpenCodeConfig (internal/sandbox/sandbox.go).
+# Root-owned, group-writable (0775): Bootstrap and the run prelude create
+# subdirectories and write opencode.json as the sandbox user (gid sandbox).
+# The run prelude re-pins OPENCODE_CONFIG_DIR after sourcing .env so the
+# agent cannot redirect the config path; per-run agent tampering with
+# opencode.json is overwritten at the next iteration. Full config-dir
+# lockdown is deferred to the hook adapter (#7824).
+RUN install -d -o root -g sandbox -m 0775 /sandbox/opencode-config
+# OPENCODE_DISABLE_MODELS_FETCH: the sandbox cannot reach models.opencode.ai,
+# so skip the refresh. With no cached models.json (the runner removes it
+# before each iteration), OpenCode uses the catalog built into the binary.
+ENV OPENCODE_CONFIG_DIR="/sandbox/opencode-config" \
+    OPENCODE_DISABLE_PROJECT_CONFIG="true" \
+    OPENCODE_DISABLE_MODELS_FETCH="true"
 
 # ---------------------------------------------------------------------------
 # ProtectAI DeBERTa-v3 ONNX model and ONNX Runtime — REMOVED (#6522).

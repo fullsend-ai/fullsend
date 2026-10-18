@@ -242,10 +242,29 @@ func annotateGitLabRoleLifecycle(ctx context.Context, clients repos.ForgeClientF
 		if adapter.AppendGitLabServiceAccountStatus(ctx, fc.Client, st.Owner, st.Repo, st) {
 			newlyDrifted = true
 		}
-		if newlyDrifted && !wasDrifted {
-			result.Summary.Drifted++
+		// The ledger-only diagnosis from repos.Status becomes a live one.
+		if appendGitLabTriggerAccountStatus(ctx, fc.Client, st) {
+			newlyDrifted = true
 		}
+		// The live trigger re-diagnosis can add drift to a ready ledger-only
+		// row or remove ledger-only drift that GitLab disproves, so the repo's
+		// final state decides the count in both directions.
+		nowDrifted := newlyDrifted || len(st.Drifts) > 0
+		result.Summary.Drifted = summaryDriftedAfterLive(result.Summary.Drifted, wasDrifted, nowDrifted)
 	}
+}
+
+// summaryDriftedAfterLive adjusts the drifted-repo count when a live
+// re-diagnosis changes whether a repo is drifted: a repo is counted once, on
+// its no-drift to drift transition, and uncounted when drift is disproved.
+func summaryDriftedAfterLive(drifted int, was, now bool) int {
+	switch {
+	case now && !was:
+		return drifted + 1
+	case !now && was && drifted > 0:
+		return drifted - 1
+	}
+	return drifted
 }
 
 func gitLabTokenInventory(opts *reposInstallConfig, client forge.Client) repos.ProjectAccessTokenClient {

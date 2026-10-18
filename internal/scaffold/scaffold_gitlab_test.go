@@ -242,13 +242,21 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, `PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}`)
 	// Bot identity verification pins .source from the CI_JOB_TOKEN job
 	// record (deny-by-default, not forgeable CI_PIPELINE_SOURCE env var)
-	// and admits only api — parent_pipeline is no longer an allowlist arm.
+	// and admits only api or pipeline (#8438) — parent_pipeline is no
+	// longer an allowlist arm.
 	assert.Contains(t, s, `jq -r '.source // empty'`)
-	assert.Contains(t, s, "FULLSEND_ADMIT_SOURCE=api")
+	assert.Contains(t, s, `FULLSEND_ADMIT_SOURCE="api pipeline"`)
 	assert.NotRegexp(t, `(?m)^\s+parent_pipeline\)\s*$`, s,
 		"agent job must not admit parent_pipeline as an allowlist arm")
 	assert.Contains(t, s, "disjoint allowlist deny")
 	assert.Contains(t, s, "rejecting forged dispatch")
+	// source=pipeline agent pipelines (#8438) must be created by the ready
+	// trigger-only account from the protected ledger, never by the Poller,
+	// and still carry a verified dispatch HMAC.
+	assert.Contains(t, s, `EXPECTED_CREATOR_ID=$(fullsend_gitlab_trigger_account_id)`)
+	assert.Contains(t, s, "no ready trigger-only account is recorded")
+	assert.Contains(t, s, "the recorded trigger-only account is the Poller identity")
+	assert.Contains(t, s, `if [ "${PIPELINE_SOURCE}" = "api" ] || [ "${PIPELINE_SOURCE}" = "pipeline" ]; then`)
 	// Generic runner image, not agent-specific
 	assert.Contains(t, s, "fullsend-runner:dev")
 	assert.NotContains(t, s, "fullsend-code:latest")
