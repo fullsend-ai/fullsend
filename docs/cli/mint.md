@@ -36,7 +36,7 @@ fullsend mint deploy \
   --region "us-central1"
 ```
 
-The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure.
+The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure. After a source deploy (and on a hash-skip when traffic is still pinned to an older revision), the CLI pins Cloud Run traffic to the latest created revision (once it is ready) before any per-repo registration, and also when traffic is split across revisions. If reconciliation fails — including when its revision was created but the conditional traffic pin was rejected because the service changed meanwhile — deploy fails and the error asks you to re-run `mint deploy`. If revision discovery fails or the target revision cannot be identified, the error likewise asks you to re-run `mint deploy` — do not shift traffic manually (including with `--to-latest`), because that can restore access that was revoked. Reconciliation preserves the serving revision's `ALLOWED_ROLES`, `ALLOWED_WORKFLOW_FILES`, and `CUSTOM_ROLE_PERMISSIONS`, and never turns a nonempty `ALLOWED_ROLES` that lists no roles (deny-all) into an all-roles grant. Role PEM secrets are stored and verified before any reconciliation publishes role app IDs. Before a source deploy on an existing mint, the CLI pins traffic to the verified serving revision (conditioned on the service etag of that read) so the newly built revision cannot serve until the serving state has been re-read and reconciled after the build; if the service changed in between, deploy fails and asks you to re-run `mint deploy`. If the revision being pinned must first become ready, the serving state is re-verified after the wait, and the final traffic update is conditioned on the verified service etag; if the service changed meanwhile, deploy fails and asks you to re-run `mint deploy` rather than overwriting the change. The latest revision must also carry the source hash of this deploy: if a concurrent update superseded it (for example an older template was patched in after the build), a source deploy fails and asks you to re-run `mint deploy`, and a hash-skip redeploys the source instead of treating the superseded revision as current.
 
 `mint deploy` does not enroll any organization or repository. Per-org enrollment (bare-org `mint enroll <org>` / `mint unenroll <org>`) and the Cloudflare `--allowed-orgs` flag have been removed; enroll each repository with `fullsend mint enroll <owner/repo>`. See [Cleaning up legacy per-org mint state](../guides/infrastructure/mint-administration.md#cleaning-up-legacy-per-org-mint-state) for removing leftover org entries from existing mints.
 
@@ -315,8 +315,15 @@ the API-based mode is used automatically.
 
 ### GCP-based mode (`--project`)
 
-Reads mint state directly from GCP infrastructure (Cloud Function metadata,
-Secret Manager). Requires GCP viewer IAM roles.
+Reads mint state directly from GCP infrastructure: Cloud Function metadata,
+Cloud Run revision/traffic routing, registered roles, and
+Secret Manager PEM health. Requires GCP viewer IAM roles. When a newer Cloud
+Run revision exists but is not serving, status reports health as degraded
+and warns "Newer revision exists but is not serving". Role app
+IDs, per-repo WIF repos, workflow host repos, and PEM health are read from the
+verified serving revision only; when that read is unavailable, those sections
+report "unknown" (and health degraded) instead of falling back to Cloud
+Functions discovery data.
 
 ```bash
 fullsend mint status \
