@@ -81,17 +81,17 @@ func TestPlaybackDriver_SetRepoHint_NoOp(t *testing.T) {
 }
 
 func TestPlaybackInstallHooks_NonPlaybackRuntime_NoHooks(t *testing.T) {
-	hooks := playbackInstallHooks(common.GitHubSetupOpts{}, t.Logf)
+	hooks := playbackInstallHooks(common.InstallOpts{}, t.Logf)
 	assert.Nil(t, hooks.BeforeInstall)
 	assert.Nil(t, hooks.AfterInstall)
 
-	hooks = playbackInstallHooks(common.GitHubSetupOpts{Runtime: "dummy"}, t.Logf)
+	hooks = playbackInstallHooks(common.InstallOpts{Runtime: "dummy"}, t.Logf)
 	assert.Nil(t, hooks.AfterInstall)
 }
 
 func TestPlaybackInstallHooks_AfterInstall_CreatesTrackingIssueAndComment(t *testing.T) {
 	client := forge.NewFakeClient()
-	hooks := playbackInstallHooks(common.GitHubSetupOpts{Runtime: "dummy-playback"}, t.Logf)
+	hooks := playbackInstallHooks(common.InstallOpts{Runtime: "dummy-playback"}, t.Logf)
 	require.NotNil(t, hooks.AfterInstall)
 
 	err := hooks.AfterInstall(context.Background(), client, "acme", "test-repo-01", nil)
@@ -105,70 +105,68 @@ func TestPlaybackInstallHooks_AfterInstall_CreatesTrackingIssueAndComment(t *tes
 func TestPlaybackInstallHooks_AfterInstall_CreateIssueError(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Errors = map[string]error{"CreateIssue": errors.New("boom")}
-	hooks := playbackInstallHooks(common.GitHubSetupOpts{Runtime: "dummy-playback"}, t.Logf)
+	hooks := playbackInstallHooks(common.InstallOpts{Runtime: "dummy-playback"}, t.Logf)
 
 	err := hooks.AfterInstall(context.Background(), client, "acme", "test-repo-01", nil)
 	assert.ErrorContains(t, err, "creating playback tracking issue")
 }
 
-func TestPlaybackSetupOpts_DefaultsToVendoredDummy(t *testing.T) {
+func TestPlaybackInstallOpts_DefaultsToVendoredDummy(t *testing.T) {
 	t.Setenv("PLAYBACK_RUNTIME", "")
-	opts := playbackSetupOpts()
+	opts := playbackInstallOpts()
 	assert.True(t, opts.Vendor)
 	assert.Empty(t, opts.Runtime)
 }
 
-func TestPlaybackSetupOpts_HonoursEnvOverride(t *testing.T) {
+func TestPlaybackInstallOpts_HonoursEnvOverride(t *testing.T) {
 	t.Setenv("PLAYBACK_RUNTIME", "dummy-playback")
-	opts := playbackSetupOpts()
+	opts := playbackInstallOpts()
 	assert.Equal(t, "dummy-playback", opts.Runtime)
 }
 
-// TestPlaybackSetupOpts_PropagatesConfigPreset is a regression test for a
-// factory-path bug: NewRepoPoolCFMintPreviews builds its GitHubSetupOpts via
-// playbackSetupOpts instead of common.DefaultGitHubSetupOpts, and the
+// TestPlaybackInstallOpts_PropagatesConfigPreset is a regression test for a
+// factory-path bug: NewRepoPoolCFMintPreviews builds its InstallOpts via
+// playbackInstallOpts instead of common.DefaultInstallOpts, and the
 // replacement silently dropped BEHAVIOUR_CONFIG_PRESET (unlike
 // newRepoEnsurer, which applies it onto the vendored-mode defaults). That
 // made ordinary DEV suites silently lose their requested preset even when
-// PLAYBACK_RUNTIME is unset. playbackSetupOpts must forward the preset so
-// it reaches `github setup` as --config.
-func TestPlaybackSetupOpts_PropagatesConfigPreset(t *testing.T) {
+// PLAYBACK_RUNTIME is unset. playbackInstallOpts must forward the preset so
+// it reaches the generated repos.yaml entry as config_base.source.
+func TestPlaybackInstallOpts_PropagatesConfigPreset(t *testing.T) {
 	t.Setenv("PLAYBACK_RUNTIME", "")
 	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "https://example.com/preset.yaml")
-	opts := playbackSetupOpts()
+	opts := playbackInstallOpts()
 	assert.Equal(t, "https://example.com/preset.yaml", opts.ConfigPreset)
 
-	var capturedArgs []string
+	var manifest string
 	runner := func(_, _ string, args ...string) (string, error) {
-		capturedArgs = args
+		manifest = readInstallManifest(t, args)
 		return "", nil
 	}
-	err := common.RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	err := common.RunReposInstallWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
 	require.NoError(t, err)
-	assert.Contains(t, capturedArgs, "--config")
-	assert.Contains(t, capturedArgs, "https://example.com/preset.yaml")
+	assert.Contains(t, manifest, "source: https://example.com/preset.yaml")
+	assert.NotContains(t, manifest, "runtime:", "the preset's runtime is inherited")
 }
 
-// TestPlaybackSetupOpts_ConfigPresetAndRuntime is a regression test
+// TestPlaybackInstallOpts_ConfigPresetAndRuntime is a regression test
 // covering the combined preset + explicit playback runtime case: the
 // installed runtime must match what doEnsure's post-install validation
 // expects (opts.Runtime), even when a config preset is also set.
-func TestPlaybackSetupOpts_ConfigPresetAndRuntime(t *testing.T) {
+func TestPlaybackInstallOpts_ConfigPresetAndRuntime(t *testing.T) {
 	t.Setenv("PLAYBACK_RUNTIME", "dummy-playback")
 	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "https://example.com/preset.yaml")
-	opts := playbackSetupOpts()
+	opts := playbackInstallOpts()
 	assert.Equal(t, "https://example.com/preset.yaml", opts.ConfigPreset)
 	assert.Equal(t, "dummy-playback", opts.Runtime)
 
-	var capturedArgs []string
+	var manifest string
 	runner := func(_, _ string, args ...string) (string, error) {
-		capturedArgs = args
+		manifest = readInstallManifest(t, args)
 		return "", nil
 	}
-	err := common.RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
+	err := common.RunReposInstallWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "", opts, runner, t.Logf)
 	require.NoError(t, err)
-	assert.Contains(t, capturedArgs, "--config")
-	assert.Contains(t, capturedArgs, "https://example.com/preset.yaml")
-	assert.Contains(t, capturedArgs, "--runtime")
-	assert.Contains(t, capturedArgs, "dummy-playback")
+	assert.Contains(t, manifest, "source: https://example.com/preset.yaml")
+	assert.Contains(t, manifest, "runtime: dummy-playback")
 }

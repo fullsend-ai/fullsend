@@ -34,7 +34,7 @@ type PlaybackDriver struct {
 // NewPlaybackDriver wraps a standard behaviour Driver for playback tests.
 // base is typically constructed by one of the existing Factory functions
 // (e.g. NewRepoPoolCFMintPreviews, NewRepoPoolCFMintStage) using
-// GitHubSetupOpts.Runtime set to "dummy-playback" so installed repos run
+// InstallOpts.Runtime set to "dummy-playback" so installed repos run
 // the playback runtime; playbackInstallHooks (attached to the ensurer by
 // the same factory) provisions the tracking-issue bookkeeping those
 // installs rely on.
@@ -80,7 +80,7 @@ const playbackCommentPath = ".fullsend/playback-comment-url"
 // playbackCommentPath. The dummy-playback runtime reads that comment to
 // track its position in the scenario's canned playlist. For any other
 // runtime this returns the zero-value InstallHooks (no-op).
-func playbackInstallHooks(opts common.GitHubSetupOpts, logf func(string, ...any)) InstallHooks {
+func playbackInstallHooks(opts common.InstallOpts, logf func(string, ...any)) InstallHooks {
 	if opts.Runtime != playbackRuntime {
 		return InstallHooks{}
 	}
@@ -108,17 +108,17 @@ func playbackInstallHooks(opts common.GitHubSetupOpts, logf func(string, ...any)
 	}
 }
 
-// playbackSetupOpts returns vendored-mode GitHubSetupOpts with ConfigPreset
+// playbackInstallOpts returns vendored-mode InstallOpts with ConfigPreset
 // populated from BEHAVIOUR_CONFIG_PRESET (same as newRepoEnsurer) and
 // Runtime set to the playback runtime when PLAYBACK_RUNTIME is set in the
 // environment, or left empty (normal "dummy" runtime) otherwise. Factories
 // that build the shared pool driver (e.g. NewRepoPoolCFMintPreviews) call
-// this instead of common.DefaultGitHubSetupOpts() so the same factory can
+// this instead of common.DefaultInstallOpts() so the same factory can
 // back either a normal behaviour suite or a playback suite depending on
 // how the process was launched, without losing BEHAVIOUR_CONFIG_PRESET
 // support for ordinary (non-playback) suites.
-func playbackSetupOpts() common.GitHubSetupOpts {
-	opts := common.DefaultGitHubSetupOpts()
+func playbackInstallOpts() common.InstallOpts {
+	opts := common.DefaultInstallOpts()
 	opts.ConfigPreset = envConfigPreset()
 	if runtime := os.Getenv("PLAYBACK_RUNTIME"); runtime != "" {
 		opts.Runtime = runtime

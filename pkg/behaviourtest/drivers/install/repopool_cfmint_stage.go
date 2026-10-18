@@ -5,7 +5,7 @@
 // persists across runs — teardown is a no-op.
 //
 // The STAGE driver uses non-vendored per-repo install mode with
-// --fullsend-ref=main so that pool repos reference the latest code on
+// fullsend_ref: main so that pool repos reference the latest code on
 // the default branch instead of a vendored binary.
 package install
 
@@ -25,7 +25,8 @@ const (
 	StageMintCustomDomain = "stage-mint.fullsend.sh"
 
 	// StageMintURL is the HTTPS URL for the STAGE mint. This is the
-	// custom domain URL used for github setup --mint-url.
+	// custom domain URL declared as config.mint_url in each pool repo's
+	// repos.yaml entry.
 	StageMintURL = "https://" + StageMintCustomDomain
 
 	// StageMintWorkerName is the CF Worker script name for the STAGE mint.
@@ -37,8 +38,8 @@ const (
 	// just like in the DEV drivers.
 	StageOrg = "halfsend"
 
-	// stageFullsendRef is the ref passed to --fullsend-ref for
-	// non-vendored installs. Using "main" means pool repos reference
+	// stageFullsendRef is the fullsend_ref declared for non-vendored
+	// installs. Using "main" means pool repos reference
 	// the latest code on the default branch.
 	stageFullsendRef = "main"
 )
@@ -60,7 +61,7 @@ type stageMintConfig struct {
 //
 // The STAGE driver differs from the preview driver in three ways:
 //   - Deploys a durable (non-preview) Worker with a custom domain
-//   - Uses non-vendored per-repo install with --fullsend-ref=main
+//   - Uses non-vendored per-repo install with fullsend_ref: main
 //   - Teardown is a no-op (the durable Worker persists across runs)
 //
 // The org parameter must equal StageOrg ("halfsend"); the driver
@@ -121,10 +122,10 @@ func buildStageMintDriver(
 		return nil, fmt.Errorf("stage cfmint factory: deploying mint: %w", err)
 	}
 
-	// Non-vendored setup opts — use --fullsend-ref=main. Runtime picks up
+	// Non-vendored install opts — declare fullsend_ref: main. Runtime picks up
 	// PLAYBACK_RUNTIME when set, so this factory can also back a playback
 	// suite (see NewPlaybackDriver) in the stage environment.
-	setupOpts := common.GitHubSetupOpts{
+	installOpts := common.InstallOpts{
 		AppSet:       envAppSet(),
 		Vendor:       false,
 		FullsendRef:  stageFullsendRef,
@@ -136,8 +137,8 @@ func buildStageMintDriver(
 		MintURL:      mintURL,
 		GCPProjectID: gcpProjectID,
 	}
-	ens, err := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf,
-		playbackInstallHooks(setupOpts, logf))
+	ens, err := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, installOpts, logf,
+		playbackInstallHooks(installOpts, logf))
 	if err != nil {
 		return nil, fmt.Errorf("stage cfmint factory: %w", err)
 	}
