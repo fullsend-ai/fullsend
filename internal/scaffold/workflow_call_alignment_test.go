@@ -890,12 +890,12 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 				"triage arm must return explicitly (not rely on [[ ]] exit status)")
 
 			// Observation slash commands (triage min level)
-			assert.Regexp(t, `/fs-triage\)\s*\n(?:\s+COMMAND_APPLICABLE=true\s*\n)?\s+if \[\[ "\$\{COMMENT_USER_TYPE\}" != "Bot" \]\] && is_authorized triage;`, s)
-			assert.Regexp(t, `is_authorized triage; then\s*\n\s+STAGE="review"`, s)
+			assert.Contains(t, s, "set_command_stage triage triage")
+			assert.Contains(t, s, "set_command_stage review triage")
 
 			// Mutation slash commands stay at write+ (default is_authorized)
-			assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="code"`, s)
-			assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="fix"`, s)
+			assert.Contains(t, s, "set_command_stage code")
+			assert.Contains(t, s, "set_command_stage fix")
 
 			// Auto-triage and auto-review event paths accept triage
 			assert.Contains(t, s, `is_event_actor_authorized "${ISSUE_USER_LOGIN}" triage`)

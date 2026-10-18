@@ -141,10 +141,6 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	return nil
 }
 
-func writeAuthorizationOutput(event *normevent.Event, denied bool) error {
-	return writeDispatchOutput(event, denied, "")
-}
-
 func writeDispatchOutput(event *normevent.Event, denied bool, blockedReason string) error {
 	if !isExplicitHumanSlashCommand(event) || (!denied && blockedReason != "kill_switch") {
 		return nil

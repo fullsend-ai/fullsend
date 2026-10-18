@@ -233,3 +233,38 @@ func TestCheckKillSwitchStep_ConsultsConfigBaseYAML(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthorizationMetadataStep_EmitsPauseForHumanLaunch(t *testing.T) {
+	script := extractReusableDispatchStepScript(t, "route", "Emit authorization denial metadata")
+	root := t.TempDir()
+	scriptPath := filepath.Join(root, "emit-authorization-metadata.sh")
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+	outputPath := filepath.Join(root, "github-output")
+	require.NoError(t, os.WriteFile(outputPath, nil, 0o600))
+
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"EVENT_NAME=issue_comment",
+		"COMMENT_USER_TYPE=User",
+		"COMMENT_USER_LOGIN=alice",
+		"COMMENT_USER_ID=1234",
+		"ISSUE_NUMBER=42",
+		"COMMAND_APPLICABLE=true",
+		"REQUESTED_STAGE=code",
+		"AUTH_CHECK_FAILED=false",
+		"ROUTE_AUTHORIZATION_DENIED=true",
+		"KILL_SWITCH_SKIPPED=true",
+		"GITHUB_OUTPUT="+outputPath,
+	)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "stdout/stderr: %s", out)
+
+	output, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(output), "dispatch_blocked_reason=kill_switch\n")
+	assert.Contains(t, string(output), "authorization_actor=alice\n")
+	assert.Contains(t, string(output), "authorization_actor_id=1234\n")
+	assert.Contains(t, string(output), "authorization_number=42\n")
+	assert.NotContains(t, string(output), "authorization_denied=true")
+}

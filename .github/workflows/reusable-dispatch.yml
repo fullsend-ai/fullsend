@@ -179,6 +179,7 @@ jobs:
           REQUESTED_STAGE=""
           TRIGGER_SOURCE=""
           AUTH_CHECK_FAILED=false
+          AUTHORIZATION_DENIED=false
 
           # Report whether the lowercased user is in an OWNERS list. An entry
           # that names an OWNERS_ALIASES key matches only that alias's members,
@@ -287,6 +288,23 @@ jobs:
             has_repo_permission "${COMMENT_USER_LOGIN}" "${1:-write}"
           }
 
+          # Record an explicit denial at the point where the slash-command
+          # authorization check fails. Downstream steps must not infer this
+          # from an empty stage, because an empty stage also represents a
+          # kill-switch pause and other intentional skips.
+          set_command_stage() {
+            local stage="${1}" min="${2:-write}"
+            REQUESTED_STAGE="${stage}"
+            if [[ "${COMMENT_USER_TYPE}" == "Bot" ]]; then
+              return 0
+            fi
+            if is_authorized "${min}"; then
+              STAGE="${stage}"
+            elif [[ "${AUTH_CHECK_FAILED}" != "true" ]]; then
+              AUTHORIZATION_DENIED=true
+            fi
+          }
+
           # Event-actor auth; $1=user, optional $2 = write|triage (default write).
           is_event_actor_authorized() {
             has_repo_permission "${1:-}" "${2:-write}"
@@ -314,52 +332,36 @@ jobs:
               case "${COMMAND}" in
                 /fs-triage)
                   COMMAND_APPLICABLE=true
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized triage; then
-                    STAGE="triage"
-                  fi
-                  REQUESTED_STAGE="triage"
+                  set_command_stage triage triage
                   ;;
                 /fs-code)
                   if [[ "${ISSUE_IS_PR}" == "false" ]]; then
                     COMMAND_APPLICABLE=true
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
-                      STAGE="code"
-                    fi
-                    REQUESTED_STAGE="code"
+                    set_command_stage code
                   fi
                   ;;
                 /fs-review)
                   if [[ "${ISSUE_IS_PR}" == "true" ]]; then
                     COMMAND_APPLICABLE=true
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized triage; then
-                      STAGE="review"
-                    fi
-                    REQUESTED_STAGE="review"
+                    set_command_stage review triage
                   fi
                   ;;
                 /fs-fix)
                   if [[ "${ISSUE_IS_PR}" == "true" ]]; then
                     COMMAND_APPLICABLE=true
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
-                      STAGE="fix"
+                    set_command_stage fix
+                    if [[ "${STAGE}" == "fix" ]]; then
                       TRIGGER_SOURCE="${COMMENT_USER_LOGIN}"
                     fi
-                    REQUESTED_STAGE="fix"
                   fi
                   ;;
                 /fs-retro)
                   COMMAND_APPLICABLE=true
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
-                    STAGE="retro"
-                  fi
-                  REQUESTED_STAGE="retro"
+                  set_command_stage retro
                   ;;
                 /fs-prioritize)
                   COMMAND_APPLICABLE=true
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
-                    STAGE="prioritize"
-                  fi
-                  REQUESTED_STAGE="prioritize"
+                  set_command_stage prioritize
                   ;;
                 *)
                   ;;
@@ -455,6 +457,7 @@ jobs:
               echo "requested_stage=${REQUESTED_STAGE}"
               echo "command_applicable=${COMMAND_APPLICABLE}"
               echo "authorization_check_failed=${AUTH_CHECK_FAILED}"
+              echo "authorization_denied=${AUTHORIZATION_DENIED}"
             } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -466,6 +469,7 @@ jobs:
             echo "trigger_source=${TRIGGER_SOURCE}"
             echo "command_applicable=${COMMAND_APPLICABLE}"
             echo "authorization_check_failed=${AUTH_CHECK_FAILED}"
+            echo "authorization_denied=${AUTHORIZATION_DENIED}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Check for existing PRs
@@ -731,15 +735,8 @@ jobs:
           REQUESTED_STAGE: ${{ steps.route.outputs.requested_stage }}
           STAGE: ${{ steps.route.outputs.stage }}
           AUTH_CHECK_FAILED: ${{ steps.route.outputs.authorization_check_failed }}
+          ROUTE_AUTHORIZATION_DENIED: ${{ steps.route.outputs.authorization_denied }}
           KILL_SWITCH_SKIPPED: ${{ steps.kill-switch.outputs.skipped }}
-          ROLE_SKIPPED: ${{ steps.role-check.outputs.skipped }}
-          AGENT_SKIPPED: ${{ steps.agent-check.outputs.skipped }}
-          PR_SKIPPED: ${{ steps.pr-check.outputs.skipped }}
-          KILL_SWITCH_OUTCOME: ${{ steps.kill-switch.outcome }}
-          VALIDATE_AGENTS_OUTCOME: ${{ steps.validate-agents.outcome }}
-          ROLE_CHECK_OUTCOME: ${{ steps.role-check.outcome }}
-          AGENT_CHECK_OUTCOME: ${{ steps.agent-check.outcome }}
-          PR_CHECK_OUTCOME: ${{ steps.pr-check.outcome }}
         run: |
           set -euo pipefail
           echo "authorization_denied=false" >> "${GITHUB_OUTPUT}"
@@ -748,11 +745,7 @@ jobs:
             || "${COMMENT_USER_TYPE}" == "Bot" \
             || "${COMMAND_APPLICABLE}" != "true" \
             || -z "${REQUESTED_STAGE}" \
-            || -n "${STAGE}" \
             || "${AUTH_CHECK_FAILED}" == "true" \
-            || "${KILL_SWITCH_SKIPPED}" == "true" \
-            || "${ROLE_SKIPPED}" == "true" \
-            || "${AGENT_SKIPPED}" == "true" \
             || ! "${COMMENT_USER_ID}" =~ ^[1-9][0-9]*$ \
             || ! "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ \
             || ! "${COMMENT_USER_LOGIN}" =~ ^[A-Za-z0-9_-]+$ ]]; then
@@ -768,13 +761,7 @@ jobs:
             } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-          [[ "${KILL_SWITCH_OUTCOME}" == "success" ]] || exit 0
-          [[ "${VALIDATE_AGENTS_OUTCOME}" == "success" ]] || exit 0
-          [[ "${ROLE_CHECK_OUTCOME}" == "success" ]] || exit 0
-          [[ "${AGENT_CHECK_OUTCOME}" == "success" ]] || exit 0
-          if [[ "${REQUESTED_STAGE}" == "code" && ("${PR_SKIPPED}" == "true" || "${PR_CHECK_OUTCOME}" != "success") ]]; then
-            exit 0
-          fi
+          [[ "${ROUTE_AUTHORIZATION_DENIED}" == "true" ]] || exit 0
           echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to launch the requested agent"
           {
             echo "authorization_denied=true"

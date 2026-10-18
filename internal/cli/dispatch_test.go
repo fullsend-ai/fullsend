@@ -31,7 +31,7 @@ func TestWriteAuthorizationOutput(t *testing.T) {
 		Source: normevent.Source{RawType: "issue_comment"},
 	}
 
-	require.NoError(t, writeAuthorizationOutput(event, true))
+	require.NoError(t, writeDispatchOutput(event, true, ""))
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, "authorization_denied=true\nauthorization_actor=alice\nauthorization_actor_id=1234\nauthorization_number=42\n", string(data))
@@ -51,7 +51,7 @@ func TestWriteAuthorizationOutputSupportsCustomSlashCommand(t *testing.T) {
 		Source: normevent.Source{RawType: "issue_comment"},
 	}
 
-	require.NoError(t, writeAuthorizationOutput(event, true))
+	require.NoError(t, writeDispatchOutput(event, true, ""))
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "authorization_actor_id=1234")
@@ -84,7 +84,7 @@ func TestWriteAuthorizationOutputSkipsNonDeniedOrNonHuman(t *testing.T) {
 		{Entity: normevent.Entity{ID: 42}, Actor: normevent.Actor{ID: "alice", NumericID: 1234, Kind: normevent.ActorHuman}},
 		{Entity: normevent.Entity{ID: 42}, Actor: normevent.Actor{ID: "agent[bot]", Kind: normevent.ActorBot}},
 	} {
-		require.NoError(t, writeAuthorizationOutput(event, false))
+		require.NoError(t, writeDispatchOutput(event, false, ""))
 	}
 	_, err := os.Stat(path)
 	assert.ErrorIs(t, err, os.ErrNotExist)
@@ -100,7 +100,7 @@ func TestWriteAuthorizationOutputSkipsInvalidLogin(t *testing.T) {
 		Source:     normevent.Source{RawType: "issue_comment"},
 	}
 
-	require.NoError(t, writeAuthorizationOutput(event, true))
+	require.NoError(t, writeDispatchOutput(event, true, ""))
 	_, err := os.Stat(path)
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
@@ -115,7 +115,7 @@ func TestWriteAuthorizationOutputSkipsAutomaticTrigger(t *testing.T) {
 		Source:     normevent.Source{RawType: "issues"},
 	}
 
-	require.NoError(t, writeAuthorizationOutput(event, true))
+	require.NoError(t, writeDispatchOutput(event, true, ""))
 	_, err := os.Stat(path)
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
@@ -130,7 +130,7 @@ func TestWriteAuthorizationOutputSkipsMissingNumericID(t *testing.T) {
 		Source:     normevent.Source{RawType: "issue_comment"},
 	}
 
-	require.NoError(t, writeAuthorizationOutput(event, true))
+	require.NoError(t, writeDispatchOutput(event, true, ""))
 	_, err := os.Stat(path)
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
@@ -145,7 +145,7 @@ func TestWriteAuthorizationOutputReportsOutputError(t *testing.T) {
 		Source:     normevent.Source{RawType: "issue_comment"},
 	}
 
-	err := writeAuthorizationOutput(event, true)
+	err := writeDispatchOutput(event, true, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write authorization output")
 }
