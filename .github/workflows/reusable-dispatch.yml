@@ -744,6 +744,9 @@ jobs:
           AUTH_CHECK_FAILED: ${{ steps.route.outputs.authorization_check_failed }}
           ROUTE_AUTHORIZATION_DENIED: ${{ steps.route.outputs.authorization_denied }}
           KILL_SWITCH_SKIPPED: ${{ steps.kill-switch.outputs.skipped }}
+          ROLE_SKIPPED: ${{ steps.role-check.outputs.skipped }}
+          AGENT_SKIPPED: ${{ steps.agent-check.outputs.skipped }}
+          PR_SKIPPED: ${{ steps.pr-check.outputs.skipped }}
         run: |
           set -euo pipefail
           echo "authorization_denied=false" >> "${GITHUB_OUTPUT}"
@@ -768,7 +771,12 @@ jobs:
             } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-          [[ "${ROUTE_AUTHORIZATION_DENIED}" == "true" ]] || exit 0
+          if [[ "${ROUTE_AUTHORIZATION_DENIED}" != "true" \
+            || "${ROLE_SKIPPED}" == "true" \
+            || "${AGENT_SKIPPED}" == "true" \
+            || "${PR_SKIPPED}" == "true" ]]; then
+            exit 0
+          fi
           echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to launch the requested agent"
           {
             echo "authorization_denied=true"
