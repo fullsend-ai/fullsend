@@ -148,7 +148,7 @@ var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 // dispatchNonAgentJobs lists reusable-dispatch.yml jobs that intentionally
 // carry no concurrency expectation. Every other job in the workflow must have
 // an entry in dispatchStageConcurrencyExpectations.
-var dispatchNonAgentJobs = []string{"route", "harness-dispatch"}
+var dispatchNonAgentJobs = []string{"route", "harness-dispatch", "authorization-notice"}
 
 // stepDeclRe matches a YAML step declaration line: "      - name: <marker>".
 var stepDeclRe = regexp.MustCompile(`(?m)^      - name: (.+)$`)
