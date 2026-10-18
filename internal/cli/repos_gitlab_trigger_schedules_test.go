@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -117,4 +118,74 @@ func TestReconcileGitLabTriggerScheduleOwnership_HandsBackAndReports(t *testing.
 	require.Error(t, err)
 	assert.Contains(t, buf.String(), "Reconciling the owner of the GitLab polling schedules failed")
 	err = nil
+}
+
+// A transfer interrupted after the account's schedules were created (the
+// installer-owned originals were not deleted) still warns, because a cleanup
+// retry creates nothing and would not warn (#8543).
+func TestReportGitLabTriggerScheduleReconcile_InterruptedTransferWarns(t *testing.T) {
+	deleteErr := errors.New("deleting the installer-owned schedule failed")
+	var buf bytes.Buffer
+	err := reportGitLabTriggerScheduleReconcile(ui.New(&buf), "g/p", repos.GitLabTriggerSchedulesResult{Created: []int64{11, 12}}, deleteErr, true)
+	require.ErrorIs(t, err, deleteErr)
+	out := buf.String()
+	assert.Contains(t, out, "Reconciling the owner of the GitLab polling schedules failed")
+	assert.Contains(t, out, "[g/p] repos install and repos uninstall for this project now require "+gitlabTriggerScheduleMinInstallerCLI)
+
+	// Nothing was created, or the run was a hand-back: no warning.
+	for name, tc := range map[string]struct {
+		res    repos.GitLabTriggerSchedulesResult
+		active bool
+	}{
+		"nothing created":       {active: true},
+		"hand-back interrupted": {res: repos.GitLabTriggerSchedulesResult{Created: []int64{11}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			require.ErrorIs(t, reportGitLabTriggerScheduleReconcile(ui.New(&buf), "g/p", tc.res, deleteErr, tc.active), deleteErr)
+			assert.NotContains(t, buf.String(), "now require")
+		})
+	}
+
+	// The cleanup-only retry succeeds without created schedules and stays quiet
+	// about the warning the interrupted run already printed.
+	buf.Reset()
+	require.NoError(t, reportGitLabTriggerScheduleReconcile(ui.New(&buf), "g/p", repos.GitLabTriggerSchedulesResult{Removed: []int64{1, 2}}, nil, true))
+	assert.Contains(t, buf.String(), "owned by the trigger account (0 created, 2 removed)")
+	assert.NotContains(t, buf.String(), "now require")
+}
+
+// A transfer to the trigger account warns about the minimum installer CLI and
+// the upgrade order; a hand-back or a run that created nothing does not.
+func TestPrintGitLabTriggerScheduleOwnership_TransferWarnsAboutMinimumCLI(t *testing.T) {
+	var buf bytes.Buffer
+	printGitLabTriggerScheduleOwnership(ui.New(&buf), "g/p", repos.GitLabTriggerSchedulesResult{Created: []int64{11, 12}, Removed: []int64{1, 2}}, true)
+	out := buf.String()
+	assert.Contains(t, out, "GitLab polling schedules are owned by the trigger account (2 created, 2 removed)")
+	assert.Contains(t, out, "[g/p] repos install and repos uninstall for this project now require "+gitlabTriggerScheduleMinInstallerCLI)
+	assert.Contains(t, out, "(this CLI, "+version+", qualifies)")
+	assert.Contains(t, out, "earlier CLIs treat the trigger-account-owned schedules as foreign")
+	assert.Contains(t, out, "Upgrade every CLI that installs or uninstalls this project before its next run")
+	assert.Contains(t, out, "first use a current CLI to hand the schedules back to the installer")
+
+	for name, tc := range map[string]struct {
+		res    repos.GitLabTriggerSchedulesResult
+		active bool
+		want   string
+	}{
+		"hand-back":            {res: repos.GitLabTriggerSchedulesResult{Created: []int64{11}, Removed: []int64{1}}, want: "owned by the installer (1 created, 1 removed)"},
+		"cleanup only":         {res: repos.GitLabTriggerSchedulesResult{Removed: []int64{1}}, active: true, want: "owned by the trigger account (0 created, 1 removed)"},
+		"nothing moved active": {active: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printGitLabTriggerScheduleOwnership(ui.New(&buf), "g/p", tc.res, tc.active)
+			if tc.want == "" {
+				assert.Empty(t, buf.String())
+			} else {
+				assert.Contains(t, buf.String(), tc.want)
+			}
+			assert.NotContains(t, buf.String(), "now require")
+		})
+	}
 }

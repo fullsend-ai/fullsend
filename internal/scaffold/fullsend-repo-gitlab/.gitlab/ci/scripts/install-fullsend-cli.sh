@@ -89,8 +89,21 @@ case "${FULLSEND_VERSION}" in
     # path (git fetch / go build) would run. They are cleared only here: the
     # release-download path above runs none of them, and self-hosted or
     # air-gapped runners may set them deliberately (e.g. GOTOOLCHAIN=local).
+    # Record which of them the runner set (names only, never values) so the
+    # operator learns why the build ignores them; they are still cleared.
+    FS_CLEARED_VARS=""
+    for FS_VAR in GIT_EXEC_PATH GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_TEMPLATE_DIR \
+      GOFLAGS GOENV GOTOOLCHAIN GOROOT GOCACHEPROG; do
+      if [ -n "${!FS_VAR:-}" ]; then
+        FS_CLEARED_VARS="${FS_CLEARED_VARS:+${FS_CLEARED_VARS} }${FS_VAR}"
+      fi
+    done
     unset GIT_EXEC_PATH GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_TEMPLATE_DIR
     unset GOFLAGS GOENV GOTOOLCHAIN GOROOT GOCACHEPROG
+    if [ -n "${FS_CLEARED_VARS}" ]; then
+      echo "NOTICE: building the fullsend CLI from source for untagged fullsend_ref ${FULLSEND_VERSION}; cleared runner settings: ${FS_CLEARED_VARS}" >&2
+      echo "This build ignores them. If this runner needs them (e.g. GOTOOLCHAIN=local or GOFLAGS=-mod=vendor), pin fullsend_ref to a release version tag, which downloads the release binary and leaves them untouched" >&2
+    fi
     if ! command -v go >/dev/null 2>&1; then
       echo "ERROR: Go 1.20+ toolchain not found — required for source builds (non-release refs)" >&2
       echo "Use a runner image with Go 1.20+ installed or pin to a release version tag" >&2
@@ -103,11 +116,19 @@ case "${FULLSEND_VERSION}" in
     # running any hook copied from a template directory.
     git init --template= "${FSSRC}"
     git -C "${FSSRC}" remote add origin "https://github.com/${FULLSEND_REPO}.git"
-    git -C "${FSSRC}" fetch --depth 1 origin "${FULLSEND_VERSION}"
-    git -C "${FSSRC}" -c core.hooksPath=/dev/null checkout FETCH_HEAD
-    CGO_ENABLED=0 go build -C "${FSSRC}" \
-      -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION}" \
-      -o /usr/local/bin/fullsend ./cmd/fullsend/
+    if ! git -C "${FSSRC}" fetch --depth 1 origin "${FULLSEND_VERSION}" \
+      || ! git -C "${FSSRC}" -c core.hooksPath=/dev/null checkout FETCH_HEAD \
+      || ! CGO_ENABLED=0 go build -C "${FSSRC}" \
+        -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION}" \
+        -o /usr/local/bin/fullsend ./cmd/fullsend/; then
+      rm -rf "${FSSRC}"
+      echo "ERROR: source build of the fullsend CLI failed for untagged fullsend_ref ${FULLSEND_VERSION}" >&2
+      if [ -n "${FS_CLEARED_VARS}" ]; then
+        echo "The build ran without these runner settings, which it clears before building: ${FS_CLEARED_VARS}" >&2
+      fi
+      echo "Pin fullsend_ref to a release version tag to download the release binary instead; see the GitLab configuration guide" >&2
+      exit 1
+    fi
     rm -rf "${FSSRC}"
     ;;
 esac

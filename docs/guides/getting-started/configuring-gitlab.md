@@ -819,7 +819,9 @@ reason and resource IDs.
   #8482 cannot poll once that transfer is active. For installer operations
   (`repos install` and `repos uninstall`) after the transfer, the minimum CLI
   is the first release or commit containing #8508, because earlier CLIs treat
-  account-owned schedules as foreign and refuse to proceed. Use a current CLI
+  account-owned schedules as foreign and refuse to proceed. The `repos install`
+  run that transfers the schedules prints a warning naming this minimum CLI and
+  the upgrade order. Use a current CLI
   to hand schedules back to the installer while upgrading. Keep the generated agent job name: renaming it prevents the
   activation gate from proving that the dispatched pipeline runs the guarded
   job, so restore the shipped name in the scaffold repair. A scaffold that
@@ -831,6 +833,9 @@ reason and resource IDs.
   `GOENV`, `GOTOOLCHAIN`, `GOROOT`, `GOCACHEPROG`). Runners that rely on one of
   them, such as `GOTOOLCHAIN=local` on an air-gapped runner, should pin a release
   version instead, which downloads the release binary and leaves them untouched.
+  The job log names (never the values of) each of these settings the runner had
+  set and the build cleared. If the source build fails, the log repeats that
+  list and points to the release-version pin.
   A managed schedule left by a previous installer credential remains eligible
   for adoption or hand-back when its reported owner still has project
   Maintainer access. An unknown or lower-privilege owner requires manual

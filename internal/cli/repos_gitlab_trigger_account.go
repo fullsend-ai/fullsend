@@ -173,19 +173,52 @@ func recordGitLabTriggerDispatchActivation(ctx context.Context, lifecycleOpts re
 // account-owned managed schedule back to the installer otherwise (#8508).
 func reconcileGitLabTriggerScheduleOwnership(ctx context.Context, lifecycleOpts repos.GitLabTriggerAccountOptions, printer *ui.Printer, repoFullName string, dispatchActive bool) error {
 	res, err := repos.ReconcileGitLabTriggerScheduleOwnership(ctx, lifecycleOpts, dispatchActive)
+	return reportGitLabTriggerScheduleReconcile(printer, repoFullName, res, err, dispatchActive)
+}
+
+// reportGitLabTriggerScheduleReconcile prints the outcome of a schedule
+// ownership run and returns its error unchanged.
+func reportGitLabTriggerScheduleReconcile(printer *ui.Printer, repoFullName string, res repos.GitLabTriggerSchedulesResult, err error, dispatchActive bool) error {
 	if err != nil {
 		printer.StepFail(fmt.Sprintf("[%s] Reconciling the owner of the GitLab polling schedules failed", repoFullName))
+		// An interrupted transfer (for example a failed deletion of the
+		// installer-owned originals) can leave account-owned schedules behind.
+		// A retry keeps them in sync and creates nothing, so warn now.
+		if dispatchActive && len(res.Created) > 0 {
+			warnGitLabTriggerScheduleMinInstallerCLI(printer, repoFullName)
+		}
 		return err
 	}
+	printGitLabTriggerScheduleOwnership(printer, repoFullName, res, dispatchActive)
+	return nil
+}
+
+// gitlabTriggerScheduleMinInstallerCLI names the oldest CLI that accepts
+// trigger-account-owned managed schedules in repos install and repos
+// uninstall (#8508).
+const gitlabTriggerScheduleMinInstallerCLI = "the first Fullsend release or commit containing fullsend-ai/fullsend#8508"
+
+// printGitLabTriggerScheduleOwnership reports a schedule-ownership run. When
+// this run transferred schedules to the trigger account it also warns that
+// older installer CLIs now refuse the project (#8543).
+func printGitLabTriggerScheduleOwnership(printer *ui.Printer, repoFullName string, res repos.GitLabTriggerSchedulesResult, dispatchActive bool) {
 	if len(res.Created) == 0 && len(res.Removed) == 0 {
-		return nil
+		return
 	}
 	owner := "the installer"
 	if dispatchActive {
 		owner = "the trigger account"
 	}
 	printer.StepDone(fmt.Sprintf("[%s] GitLab polling schedules are owned by %s (%d created, %d removed)", repoFullName, owner, len(res.Created), len(res.Removed)))
-	return nil
+	if dispatchActive && len(res.Created) > 0 {
+		warnGitLabTriggerScheduleMinInstallerCLI(printer, repoFullName)
+	}
+}
+
+// warnGitLabTriggerScheduleMinInstallerCLI warns that trigger-account-owned
+// schedules exist, so older installer CLIs refuse the project (#8543).
+func warnGitLabTriggerScheduleMinInstallerCLI(printer *ui.Printer, repoFullName string) {
+	printer.StepWarn(fmt.Sprintf("[%s] repos install and repos uninstall for this project now require %s (this CLI, %s, qualifies): earlier CLIs treat the trigger-account-owned schedules as foreign and refuse to proceed. Upgrade every CLI that installs or uninstalls this project before its next run; to return to an older CLI, first use a current CLI to hand the schedules back to the installer. See the GitLab configuration guide", repoFullName, gitlabTriggerScheduleMinInstallerCLI, version))
 }
 
 // reportGitLabTriggerDispatchGate rechecks the trigger-dispatch activation

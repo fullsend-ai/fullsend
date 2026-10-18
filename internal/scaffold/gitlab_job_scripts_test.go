@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -301,6 +302,96 @@ func TestInstallFullsendCLIScript_DebugTraceAborts(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "stdout/stderr: %s", out)
 	assert.Contains(t, string(out), "CI_DEBUG_TRACE enabled")
+}
+
+// runInstallFullsendCLIScript renders install-fullsend-cli.sh with version and
+// sources it with stub git, go, curl, and fullsend binaries first on PATH. The
+// go stub records the GOTOOLCHAIN and GOFLAGS it sees and exits goExit.
+func runInstallFullsendCLIScript(t *testing.T, version string, goExit int, env ...string) (out, goEnv string, err error) {
+	t.Helper()
+	root := t.TempDir()
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
+	script := writeGitLabScript(t, root, gitlabInstallCLIScriptPath)
+	content, readErr := os.ReadFile(script)
+	require.NoError(t, readErr)
+	require.NoError(t, os.WriteFile(script, []byte(strings.Replace(string(content), "__FULLSEND_VERSION__", version, 1)), 0o644))
+
+	bin := t.TempDir()
+	goEnvLog := filepath.Join(t.TempDir(), "go-env")
+	stubs := map[string]string{
+		"git":      "#!/bin/sh\nexit 0\n",
+		"curl":     "#!/bin/sh\necho 'curl stub: offline' >&2\nexit 22\n",
+		"fullsend": "#!/bin/sh\necho 'fullsend stub'\n",
+		"go": "#!/bin/sh\nprintf 'GOTOOLCHAIN=%s GOFLAGS=%s\\n' \"${GOTOOLCHAIN-unset}\" \"${GOFLAGS-unset}\" > \"$GO_ENV_LOG\"\n" +
+			"exit " + strconv.Itoa(goExit) + "\n",
+	}
+	for name, body := range stubs {
+		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755))
+	}
+
+	cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"")
+	cmd.Env = append([]string{
+		"SCRIPT=" + script,
+		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"CI_PROJECT_DIR=" + root,
+		"RUNNER_TEMP=" + t.TempDir(),
+		"GO_ENV_LOG=" + goEnvLog,
+	}, env...)
+	combined, err := cmd.CombinedOutput()
+	if logged, readErr := os.ReadFile(goEnvLog); readErr == nil {
+		goEnv = string(logged)
+	}
+	return string(combined), goEnv, err
+}
+
+func TestInstallFullsendCLIScript_SourceBuildNamesClearedSettings(t *testing.T) {
+	out, goEnv, err := runInstallFullsendCLIScript(t, "0123456789abcdef0123456789abcdef01234567", 0,
+		"GOTOOLCHAIN=local-value-not-printed", "GOFLAGS=-mod=vendor-value-not-printed", "GOENV=")
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "NOTICE: building the fullsend CLI from source for untagged fullsend_ref 0123456789abcdef0123456789abcdef01234567; cleared runner settings: GOFLAGS GOTOOLCHAIN")
+	assert.Contains(t, out, "pin fullsend_ref to a release version tag")
+	assert.NotContains(t, out, "value-not-printed")
+	// An empty value changes nothing, so it is not reported.
+	assert.NotContains(t, out, "GOENV")
+	// The settings are still cleared before go build runs.
+	assert.Equal(t, "GOTOOLCHAIN=unset GOFLAGS=unset\n", goEnv)
+}
+
+func TestInstallFullsendCLIScript_SourceBuildWithoutSettingsHasNoNotice(t *testing.T) {
+	out, goEnv, err := runInstallFullsendCLIScript(t, "0123456789abcdef0123456789abcdef01234567", 0)
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assert.NotContains(t, out, "NOTICE")
+	assert.NotContains(t, out, "cleared")
+	assert.Equal(t, "GOTOOLCHAIN=unset GOFLAGS=unset\n", goEnv)
+}
+
+func TestInstallFullsendCLIScript_SourceBuildFailureGivesGuidance(t *testing.T) {
+	out, _, err := runInstallFullsendCLIScript(t, "0123456789abcdef0123456789abcdef01234567", 1,
+		"GOTOOLCHAIN=local", "GIT_CONFIG_GLOBAL=/etc/runner-gitconfig")
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "ERROR: source build of the fullsend CLI failed for untagged fullsend_ref 0123456789abcdef0123456789abcdef01234567")
+	assert.Contains(t, out, "The build ran without these runner settings, which it clears before building: GIT_CONFIG_GLOBAL GOTOOLCHAIN")
+	assert.Contains(t, out, "Pin fullsend_ref to a release version tag to download the release binary instead")
+	assert.NotContains(t, out, "fullsend stub")
+
+	// With nothing cleared, the failure still points at the release pin.
+	out, _, err = runInstallFullsendCLIScript(t, "0123456789abcdef0123456789abcdef01234567", 1)
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "ERROR: source build of the fullsend CLI failed")
+	assert.NotContains(t, out, "The build ran without these runner settings")
+	assert.Contains(t, out, "Pin fullsend_ref to a release version tag")
+}
+
+func TestInstallFullsendCLIScript_ReleasePinDoesNotClearSettings(t *testing.T) {
+	// The curl stub fails the download; the release path must neither report
+	// nor clear the runner's Go settings.
+	out, goEnv, err := runInstallFullsendCLIScript(t, "v0.48.1", 0, "GOTOOLCHAIN=local")
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "curl stub: offline")
+	assert.NotContains(t, out, "NOTICE")
+	assert.NotContains(t, out, "cleared")
+	assert.Empty(t, goEnv)
 }
 
 func TestRunPollJobScript_DeniesNonSchedulePinnedSource(t *testing.T) {
