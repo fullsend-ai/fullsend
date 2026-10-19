@@ -16,3 +16,5 @@ directory = "./public"
 # Serves the nearest 404.html with HTTP 404 (tries `../404.html` until it matches)
 not_found_handling = "404-page"
 binding = "ASSETS"
+# Run the Worker before static-asset routing so the HTTP→HTTPS redirect fires for all paths.
+run_worker_first = true

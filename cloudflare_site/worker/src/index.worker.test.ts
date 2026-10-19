@@ -74,6 +74,59 @@ describe("site worker", () => {
   });
 });
 
+describe("HTTP to HTTPS redirect", () => {
+  it("redirects HTTP requests to HTTPS", async () => {
+    const { fetcher } = assetsStub();
+    const ctx = createExecutionContext();
+
+    const res = await worker.fetch(
+      new Request("http://example.test/docs/getting-started"),
+      { ASSETS: fetcher },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res.status).toBe(301);
+    expect(res.headers.get("location")).toBe(
+      "https://example.test/docs/getting-started",
+    );
+  });
+
+  it("does not redirect HTTPS requests", async () => {
+    const { fetcher, seen } = assetsStub("page content");
+    const ctx = createExecutionContext();
+
+    const res = await worker.fetch(
+      new Request("https://example.test/docs/"),
+      { ASSETS: fetcher },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("page content");
+    expect(seen).toEqual(["/docs/"]);
+  });
+
+  it("preserves query string during redirect", async () => {
+    const { fetcher } = assetsStub();
+    const ctx = createExecutionContext();
+
+    const res = await worker.fetch(
+      new Request("http://example.test/search?q=hello"),
+      { ASSETS: fetcher },
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(res.status).toBe(301);
+    expect(res.headers.get("location")).toBe(
+      "https://example.test/search?q=hello",
+    );
+  });
+
+});
+
 describe("wrangler bindings", () => {
   it("provides env.ASSETS from wrangler.toml", () => {
     expect((env as Env).ASSETS).toBeDefined();
