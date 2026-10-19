@@ -3,11 +3,11 @@
   "pr_number": 2,
   "repo": "owner/repo",
   "head_sha": "5429609dce9a122a2721107edb51551c8d73cc6f",
-  "body": "<!-- **Head SHA:** 5429609dce9a122a2721107edb51551c8d73cc6f -->\n\n## Review\n\n### Findings\n\n#### Medium\n\n- **[race condition]** `main.go` — TOCTOU race in getHandler: the entry is read under RLock, then the lock is released. The expiry check and conditional delete happen without holding any lock. Between the RUnlock and the Lock for delete, another goroutine can call setHandler and write a fresh entry for the same key. The delete then destroys the newly-written entry, causing silent data loss.\n  Remediation: re-check the entry under the write lock before deleting.",
+  "body": "<!-- **Head SHA:** 5429609dce9a122a2721107edb51551c8d73cc6f -->\n\n## Review\n\n### Findings\n\n#### Medium\n\n- **[edge-case]** `main.go` — TOCTOU race in getHandler: the entry is read under RLock, then the lock is released. The expiry check and conditional delete happen without holding any lock. Between the RUnlock and the Lock for delete, another goroutine can call setHandler and write a fresh entry for the same key. The delete then destroys the newly-written entry, causing silent data loss.\n  Remediation: re-check the entry under the write lock before deleting.",
   "findings": [
     {
       "severity": "medium",
-      "category": "race condition",
+      "category": "edge-case",
       "file": "main.go",
       "line": 35,
       "description": "TOCTOU race in getHandler: the entry is read under RLock, then the lock is released. The expiry check and conditional delete happen without holding any lock. Between the RUnlock and the Lock for delete, another goroutine can call setHandler and write a fresh entry for the same key. The delete then destroys the newly-written entry, causing silent data loss.",
