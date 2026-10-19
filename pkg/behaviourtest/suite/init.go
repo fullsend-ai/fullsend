@@ -30,6 +30,45 @@ func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	steps.Register(sc)
 }
 
+// TemplateRouter returns the template World a scenario runs against.
+// The multi-org behaviour suite uses it to send each scenario to the
+// pool org it was assigned, with that org's token and drivers.
+type TemplateRouter func(scenario *godog.Scenario) (*world.World, error)
+
+// InitRoutedScenario is InitScenario for a suite whose scenarios run
+// against different template Worlds. Compatibility tags are evaluated
+// against base first, so a skipped scenario, or one whose tags are
+// malformed (which fails with the tag error), is never routed; every
+// other scenario is cloned from the template route returns, and its
+// After hook deallocates through that template's Driver. A routing error
+// fails the scenario before any step runs.
+func InitRoutedScenario(sc *godog.ScenarioContext, base *world.World, route TemplateRouter) {
+	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
+		tags := tagNames(scenario.Tags)
+		if SkipErrorForTagNames(tags, base) != nil {
+			// A skip or a malformed tag: the scenario is never routed, so
+			// it consumes no org capacity. beforeScenario returns the same
+			// error and, for a malformed tag, attaches a World (cloned from
+			// base, without a driver) so the After hook can still write a
+			// failure summary.
+			return beforeScenario(ctx, tags, base, scenario.Name)
+		}
+		template, err := route(scenario)
+		if err != nil {
+			return ctx, err
+		}
+		return beforeScenario(ctx, tags, template, scenario.Name)
+	})
+	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
+		var driver install.Driver
+		if w := world.FromContext(ctx); w != nil {
+			driver = w.Driver
+		}
+		return afterScenario(ctx, driver, err)
+	})
+	steps.Register(sc)
+}
+
 // beforeScenario clones the template World, resets scenario fields, and
 // records the scenario name. Repo allocation is handled by the step (via
 // Driver.AllocateRepo), not by the Before hook.

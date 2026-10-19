@@ -75,8 +75,9 @@ Optional environment variables:
 
 Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
-Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
+Tests acquire an exclusive lock on an org from the pool (`halfsend-01` …
 `halfsend-12` for DEV, or `halfsend` for STAGE) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
+A DEV behaviour run (`RunSuite`) locks as many orgs as its provisioning demand requires; the playback suite and STAGE lock a single org. See [Pool orgs and the per-org scenario cap](behaviour-testing.md#pool-orgs-and-the-per-org-scenario-cap).
 
 Shared pool, CLI, and cleanup helpers used by the behaviour and playback suites live in `internal/e2etest/`.
 
