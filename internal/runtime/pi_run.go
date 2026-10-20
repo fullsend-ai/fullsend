@@ -485,7 +485,7 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	}
 	parts = append(parts,
 		// .env is read as data, never sourced (envDataLoad, #8498); that
-		// also drops LD_PRELOAD, LD_LIBRARY_PATH and LD_AUDIT (#7580).
+		// also drops every LD_* variable (#7580, #8607).
 		"&& "+envDataLoad(envFile, piBinaryVar),
 		// First thing after the agent-writable .env, on every provider
 		// path: clear the variables that steer the module loaders pi runs

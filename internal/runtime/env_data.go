@@ -62,16 +62,19 @@ const (
 	envDataRunnerPathVar = "FULLSEND_RUNNER_PATH"
 )
 
-// envDataDropNames are never taken from .env, for any runtime: the dynamic
-// loader variables (#7580), every PYTHON* variable (a PYTHONPATH with a
-// sitecustomize.py, or a PYTHONWARNINGS category that imports a module, would
-// run in every python3 the CLI starts, such as pi's hook adapter; a trailing
-// * drops the whole prefix), the shell startup variables (an exported BASH_ENV runs a
+// envDataDropNames are never taken from .env, for any runtime: every LD_*
+// dynamic-loader variable (#7580, #8607: besides LD_PRELOAD, LD_LIBRARY_PATH
+// and LD_AUDIT, names such as LD_TRACE_LOADED_OBJECTS, LD_BIND_NOW and
+// LD_DEBUG change how every dynamically linked program the CLI starts runs;
+// a trailing * drops the whole prefix), every PYTHON* variable (a PYTHONPATH
+// with a sitecustomize.py, or a PYTHONWARNINGS category that imports a
+// module, would run in every python3 the CLI starts, such as pi's hook
+// adapter), the shell startup variables (an exported BASH_ENV runs a
 // file in every non-interactive bash the CLI starts, ENV the same for an
 // interactive sh), IFS (it would change how the rest of the launch splits
 // words), and the loader's own variables.
 var envDataDropNames = []string{
-	"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
+	"LD_*",
 	"PYTHON*",
 	"BASH_ENV", "ENV",
 	"IFS",

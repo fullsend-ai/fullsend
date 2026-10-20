@@ -236,8 +236,8 @@ Use the gateway route above. For Claude models, the default Vertex route is the 
 
 The launch reads the sandbox `.env` as data and then clears variables before it starts Claude Code.
 No line of `.env` runs as shell: a `python3` resolved before anything the agent wrote parses its
-`NAME=value` assignments and ignores everything else, and `LD_PRELOAD`, `LD_LIBRARY_PATH`,
-`LD_AUDIT`, every `PYTHON*` variable, `BASH_ENV`, `ENV` and `IFS` are never taken from it (#8498).
+`NAME=value` assignments and ignores everything else, and every `LD_*` variable, every
+`PYTHON*` variable, `BASH_ENV`, `ENV` and `IFS` are never taken from it (#8498, #8607).
 The sandbox image therefore needs `python3` on every Claude run, including runs without sandbox
 hooks, in a `PATH` directory the sandbox user neither owns nor can write (a virtualenv or a
 `$HOME`-managed interpreter does not count); without one the launch fails with

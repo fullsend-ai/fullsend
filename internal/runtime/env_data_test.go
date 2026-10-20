@@ -345,6 +345,46 @@ func TestEnvDataLoad_DropsPythonStartupVariables(t *testing.T) {
 	}
 }
 
+// Every LD_* dynamic-loader variable is dropped by prefix (#8607), whether
+// exported or only set as a shell variable, while a name that merely starts
+// with LD stays. The drop report names the file and line, never the value.
+func TestEnvDataLoad_DropsDynamicLoaderVariables(t *testing.T) {
+	f := newEnvDataFixture(t)
+	names := []string{"LD_TRACE_LOADED_OBJECTS", "LD_BIND_NOW", "LD_DEBUG", "LD_FOO", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"}
+	f.write(t, ".env", strings.Join([]string{
+		"export LD_TRACE_LOADED_OBJECTS=ld-secret-value",
+		"export LD_BIND_NOW=1",
+		"LD_DEBUG=all",
+		"export LD_FOO=ld-secret-value",
+		"export LD_PRELOAD=/tmp/evil.so",
+		"export LD_LIBRARY_PATH=/tmp/evil",
+		"LD_AUDIT=/tmp/evil.so",
+		"export LD_AUDIT",
+		"export LDAP_URI=ldap://example.test",
+		"export KEEP=1",
+	}, "\n")+"\n")
+	env, stderr := f.envOf(t)
+	assert.Equal(t, "1", env["KEEP"])
+	assert.Equal(t, "ldap://example.test", env["LDAP_URI"], "only the LD_ prefix is dropped")
+	for _, name := range names {
+		_, ok := env[name]
+		assert.False(t, ok, "%s must not reach the CLI", name)
+		assert.Contains(t, stderr, name+" is not taken from .env")
+	}
+	assert.Contains(t, stderr, "line 1:")
+	assert.NotContains(t, stderr, "ld-secret-value", "dropped lines are reported by name and line, not value")
+
+	probes := make([]string, 0, len(names))
+	for _, name := range names {
+		probes = append(probes, `printf '%s=%s\n' `+name+` "${`+name+`+set}"`)
+	}
+	out, stderr, err := f.load(t, strings.Join(probes, "; "))
+	require.NoError(t, err, stderr)
+	for _, name := range names {
+		assert.Contains(t, out, name+"=\n", "%s is set as a shell variable", name)
+	}
+}
+
 // Shell startup variables are never taken from .env, so a planted
 // BASH_ENV cannot run a file in a bash the CLI starts later.
 func TestEnvDataLoad_DropsShellStartupVariables(t *testing.T) {
@@ -669,7 +709,7 @@ func TestEnvDataLoad_Shape(t *testing.T) {
 	assert.True(t, strings.HasPrefix(frag, envDataPin()+" && "), frag)
 	assert.Contains(t, frag, `"$`+envDataPythonVar+`" -I -S -c `)
 	assert.Contains(t, frag, `eval "$`+envDataExportsVar+`" && unset `+envDataExportsVar)
-	assert.Contains(t, frag, "'LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHON* BASH_ENV ENV IFS "+envDataPythonVar+" "+envDataExportsVar+" "+envDataTrustedPathVar+" FULLSEND_X_BIN'")
+	assert.Contains(t, frag, "'LD_* PYTHON* BASH_ENV ENV IFS "+envDataPythonVar+" "+envDataExportsVar+" "+envDataTrustedPathVar+" FULLSEND_X_BIN'")
 	assert.NotContains(t, frag, ". /sandbox/workspace/.env")
 	assert.NotContains(t, frag, "  ", "the launch commands are checked for double spaces")
 	for _, line := range EnvDataControlLines() {

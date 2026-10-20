@@ -259,7 +259,7 @@ for n in order:
 	if n in values and "\0" not in values[n]:
 		sys.stdout.buffer.write(os.fsencode("%s%s='\''%s'\''\n" % ("export " if n in exported else "", n, values[n].replace("'\''", "'\''\\'\'''\''"))))
 ' '/sandbox/workspace/.env' 'if ( FULLSEND_RUNNER_PATH= ) 2>/dev/null; then FULLSEND_RUNNER_PATH="$PATH"; readonly FULLSEND_RUNNER_PATH; fi' 'for f in /sandbox/workspace/.env.d/*.env; do [ -f "$f" ] &&
-. "$f"; done' 'export PATH="$FULLSEND_RUNNER_PATH${PATH:+:$PATH}"' 'if [ -f /sandbox/workspace/.fullsend/iteration.env ]; then . /sandbox/workspace/.fullsend/iteration.env; fi' 'LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHON* BASH_ENV ENV IFS FULLSEND_ENV_PYTHON FULLSEND_ENV_EXPORTS FULLSEND_TRUSTED_PATH FULLSEND_CODEX_BIN FULLSEND_CODEX_PATH')" &&
+. "$f"; done' 'export PATH="$FULLSEND_RUNNER_PATH${PATH:+:$PATH}"' 'if [ -f /sandbox/workspace/.fullsend/iteration.env ]; then . /sandbox/workspace/.fullsend/iteration.env; fi' 'LD_* PYTHON* BASH_ENV ENV IFS FULLSEND_ENV_PYTHON FULLSEND_ENV_EXPORTS FULLSEND_TRUSTED_PATH FULLSEND_CODEX_BIN FULLSEND_CODEX_PATH')" &&
 eval "$FULLSEND_ENV_EXPORTS" &&
 unset FULLSEND_ENV_EXPORTS &&
 export CODEX_HOME=/sandbox/codex-config &&
