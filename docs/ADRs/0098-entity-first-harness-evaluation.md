@@ -36,6 +36,11 @@ has no prompting event actor; event-backed dispatch authorization is unchanged.
 On GitLab, the low-latency webhook candidate path and poller backstop are
 [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md).
 
+Living contract:
+[Normalized entity v1](../normative/normalized-entity/v1/README.md) specifies
+the logical `entity` value, coverage states, and partial-data invariants that
+this ADR requires.
+
 ## Context
 
 [ADR 0061](0061-harness-cel-dispatch.md) made a `NormalizedEvent` the sole CEL

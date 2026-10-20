@@ -180,7 +180,8 @@ repo baseline and overrides)
   resolved entities with no prompting event. Harnesses without entity sources
   remain event-triggered only and may rely on the event being present
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md), partially superseded by
-  [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
+  [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md); entity contract:
+  [`docs/normative/normalized-entity/v1`](normative/normalized-entity/v1/README.md)).
 - Portable provider and profile resolution: provider and profile definitions
   can be URL-referenced (sha256-pinned) or specified as local file paths in
   the harness, enabling portable base harnesses that carry their own
@@ -443,16 +444,20 @@ The existing design principle is that [the repo is the coordinator](problems/age
   closed superset of action-indicating entity elements, resolves each actor's
   current permission, and removes elements below that harness's observation or
   mutation threshold. Later input-selection and injection filtering are defense
-  in depth for prompt construction. Entity-first execution remains disabled
-  until its versioned normalized-entity contract exists. Every run uses the
-  harness's configured identity
+  in depth for prompt construction. The versioned field-level contract is
+  [Normalized entity v1](normative/normalized-entity/v1/README.md);
+  entity-first execution remains disabled until its implementation lands.
+  Every run uses the harness's configured identity
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
 
 **Open questions:**
 
-- What normative entity-history, query-planning, and handled-state contract
-  can support entity-first harness evaluation without unbounded provider reads
-  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md))?
+- What query-planning and entity-source discovery protocol can support
+  entity-first harness evaluation without unbounded provider reads
+  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md),
+  [#8421](https://github.com/fullsend-ai/fullsend/issues/8421))? The
+  entity-history, partial-data, and handled-state contract is
+  [Normalized entity v1](normative/normalized-entity/v1/README.md).
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner

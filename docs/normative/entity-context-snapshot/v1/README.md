@@ -11,7 +11,9 @@ Git-forge entity. The qualified name distinguishes this data structure from
 the dispatch-layer routing category called *entity context* in
 [ADR 0076](../../../ADRs/0076-slash-command-entity-context-separation.md),
 which determines the agent or slash command that may handle an issue, change
-proposal, or conversation. Entity-context-snapshot v1 applies only to GitHub,
+proposal, or conversation. It is also distinct from the CEL-visible entity
+document defined in [Normalized entity v1](../../normalized-entity/v1/README.md),
+which harness predicates evaluate. Entity-context-snapshot v1 applies only to GitHub,
 GitLab, and Forgejo work items and change proposals. A non-forge `work_item`,
 such as Jira, does not start v1
 snapshot assembly; the runner records an `unsupported_entity` diagnostic
