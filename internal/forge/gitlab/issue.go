@@ -496,6 +496,16 @@ func (c *LiveClient) ListIssueReactions(_ context.Context, _, _ string, _ int) (
 	return nil, forge.ErrNotSupported
 }
 
+// ListIssueLabelEvents is not supported on GitLab (e2e gate is GitHub-only).
+func (c *LiveClient) ListIssueLabelEvents(_ context.Context, _, _ string, _ int) ([]forge.IssueLabelEvent, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// RemoveIssueLabel is not supported on GitLab (e2e gate is GitHub-only).
+func (c *LiveClient) RemoveIssueLabel(_ context.Context, _, _ string, _ int, _ string) error {
+	return forge.ErrNotSupported
+}
+
 // AddIssueReaction is not yet implemented for GitLab. GitLab has an
 // equivalent "award emoji" API, but no caller currently exercises this
 // path on GitLab, so it is left unimplemented rather than guessed at.

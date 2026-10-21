@@ -962,8 +962,13 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 		"DeleteIssueCommentReaction": func(fc *FakeClient) []any {
 			return pack(fc.DeleteIssueCommentReaction(ctx, "o", "r", 1, 1))
 		},
-		"ListIssueReactions":    func(fc *FakeClient) []any { return pack(fc.ListIssueReactions(ctx, "o", "r", 1)) },
-		"GetPullRequestInfo":    func(fc *FakeClient) []any { return pack(fc.GetPullRequestInfo(ctx, "o", "r", 1)) },
+		"ListIssueReactions": func(fc *FakeClient) []any { return pack(fc.ListIssueReactions(ctx, "o", "r", 1)) },
+		"GetPullRequestInfo": func(fc *FakeClient) []any { return pack(fc.GetPullRequestInfo(ctx, "o", "r", 1)) },
+		"GetPullRequestAuthorizationContext": func(fc *FakeClient) []any {
+			return pack(fc.GetPullRequestAuthorizationContext(ctx, "o", "r", 1))
+		},
+		"ListIssueLabelEvents":  func(fc *FakeClient) []any { return pack(fc.ListIssueLabelEvents(ctx, "o", "r", 1)) },
+		"RemoveIssueLabel":      func(fc *FakeClient) []any { return pack(fc.RemoveIssueLabel(ctx, "o", "r", 1, "ok-to-test")) },
 		"GetPullRequestHeadSHA": func(fc *FakeClient) []any { return pack(fc.GetPullRequestHeadSHA(ctx, "o", "r", 1)) },
 		"ListPullRequestFiles":  func(fc *FakeClient) []any { return pack(fc.ListPullRequestFiles(ctx, "o", "r", 1)) },
 		"ListPullRequestCommits": func(fc *FakeClient) []any {
@@ -1073,6 +1078,9 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 		"GetAppClientID":       func(fc *FakeClient) []any { return pack(fc.GetAppClientID(ctx, "app")) },
 		"GetCollaboratorPermission": func(fc *FakeClient) []any {
 			return pack(fc.GetCollaboratorPermission(ctx, "o", "r", "u"))
+		},
+		"GetCollaboratorPermissionDetail": func(fc *FakeClient) []any {
+			return pack(fc.GetCollaboratorPermissionDetail(ctx, "o", "r", "u"))
 		},
 		"AddCollaborator":  func(fc *FakeClient) []any { return pack(fc.AddCollaborator(ctx, "o", "r", "u", "push")) },
 		"GetOrgMembership": func(fc *FakeClient) []any { return pack(fc.GetOrgMembership(ctx, "o", "u")) },
