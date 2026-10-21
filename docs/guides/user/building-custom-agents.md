@@ -118,6 +118,11 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 - Keep the greeting under 280 characters.
 ````
 
+The `## Inputs` section lists the environment variables the runner sets in every agent's shell.
+The full inventory — what every run carries, what each runtime adds, and what arrives only
+through harness configuration — is published as the machine-checkable [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md).
+
 ### Key frontmatter fields
 
 | Field | Purpose |

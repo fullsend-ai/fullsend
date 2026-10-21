@@ -199,6 +199,11 @@ on every runtime (claude, pi, codex, opencode):
 | `FULLSEND_ITERATION_DEADLINE` | Unix time (seconds) at which the running iteration is killed |
 | `TRACEPARENT` | W3C trace context of this iteration's **agent** span (not the run-root span that pre/post scripts receive). Runtimes use it to join Fullsend traces. An inbound unsampled parent (`-00`) is preserved so runtime export stays suppressed. Empty when telemetry produced no valid span context. Reserved: an `env.sandbox` entry with this name is dropped. |
 
+The full inventory of what the runner injects into the sandbox — these names
+included — and of the keys it reserves from `env.sandbox` override is
+published as the generated [sandbox environment
+contract](../normative/sandbox-env/v1/README.md).
+
 **Example.** A probe that shows both, and what a kill looks like. The agent prints the variables
 with its own clock, then sleeps past the budget:
 

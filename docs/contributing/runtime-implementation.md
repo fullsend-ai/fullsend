@@ -61,6 +61,12 @@ content that must be updated whenever a runtime is added or renamed.
   if the runtime is user-selectable).
 - [x] `internal/config/config_test.go` — update any assertion on
   `ValidRuntimes()` to include the new name.
+- [ ] `internal/cli/env_manifest_collector_test.go` and
+  `internal/cli/env_manifest_golden_test.go` — the runtime's `EnvExports()`
+  names must land in the generated
+  [sandbox environment contract](../normative/sandbox-env/v1/README.md);
+  registering a runtime without a manifest decision fails the golden test
+  (regenerate with `go test ./internal/cli -run TestEnvManifestGolden -update`).
 
 **CLI:**
 
@@ -381,6 +387,12 @@ Two traps when reproducing by hand:
 | `FULLSEND_TOOL_ALLOWLIST` | `tool_allowlist_pretool.py` | fail-closed when unset |
 | `FULLSEND_CANARY_TOKEN` | both canary hooks | no-ops when empty; supply it via harness `env.sandbox`/`host_files` |
 | `FULLSEND_TRACE_ID` | all scripts | correlates findings with the run |
+
+The runner-written rows in this table are entries in the generated
+[sandbox environment contract](../normative/sandbox-env/v1/README.md) — the
+machine-checkable manifest of every variable the runner injects into the
+sandbox, per gate and per runtime, and of the keys it reserves from harness
+override. The manifest is the source of truth; this table is prose.
 
 ### Suppression reachability
 

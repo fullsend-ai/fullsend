@@ -461,7 +461,9 @@ shell-behavior variables like `HTTPS_PROXY`, `SSL_CERT_FILE`,
 `GIT_SSH_COMMAND` and `NODE_OPTIONS`, instead of exporting them into the
 sandbox. Matching is case-insensitive, and `fullsend run` warns about every
 key it drops. The gate covers `env.sandbox` only; it is not a reason to move
-those settings into `.env.d` files.
+those settings into `.env.d` files. The full reserved set is published in the
+generated [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md).
 
 For the full list, how to check a harness with `fullsend lock`, and where
 proxy and certificate settings go instead, see [Reserved `env.sandbox`
