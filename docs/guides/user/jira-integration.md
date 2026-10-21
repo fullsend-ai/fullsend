@@ -6,7 +6,7 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 
 ## Setup overview
 
-1. **Create a Jira service account** and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup).
+1. **Create a dedicated Jira account** for fullsend and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup) and [Authentication model](#authentication-model).
 2. **Grant it two project roles** in the target Jira project:
    - **Developers** — so the poller can operate on issues and write the entity properties it uses for lock and checkpoint coordination.
    - **Administrators** — so the poller can inspect other users' project-role membership when authorizing slash commands.
@@ -39,7 +39,7 @@ The same conventions work across forges:
 
 A slash command is only recognized as the **first token of the comment's first line**; the rest of that line becomes the instruction passed to the agent. A command buried mid-sentence ("please /fs-triage this") or on a later line does not trigger. Slash commands follow the `/fs-{agent}` pattern for stages that can legitimately run against a bare Jira issue. `review`, `fix`, and `retro` are **not** among them: per the [jira-poll adapter spec](../../normative/normalized-event/v1/jira-poll-adapter.md#state), those stages are change-proposal-scoped (they act on an existing PR) and harness CEL triggers for them MUST require `entity.kind == 'change_proposal'` — which a Jira issue comment alone never has. A `/fs-review` comment on a Jira issue is not expected to dispatch anything.
 
-Comments and changelog entries from the **authenticated poller account** are classified as `actor.kind: bot` and do not dispatch agents. The poller learns that identity from Jira's `/myself` endpoint during the auth preflight, so a regular Atlassian service account (plain display name, `accountType: atlassian`) is recognized without renaming it or adding display-name heuristics. This is the invariant that a mutation performed by fullsend — applying `needs-info`, posting a triage comment, writing a run-status update — cannot trigger the same agent again. Human comments, including `/fs-triage`, still dispatch. Filtered self-authored events still advance the per-issue checkpoint, so they are not reconsidered on the next poll.
+Comments and changelog entries from the **authenticated poller account** are classified as `actor.kind: bot` and do not dispatch agents. The poller learns that identity from Jira's `/myself` endpoint during the auth preflight, so a dedicated regular Atlassian account (plain display name, `accountType: atlassian`) is recognized without renaming it or adding display-name heuristics. This is the invariant that a mutation performed by fullsend — applying `needs-info`, posting a triage comment, writing a run-status update — cannot trigger the same agent again. Human comments, including `/fs-triage`, still dispatch. Filtered self-authored events still advance the per-issue checkpoint, so they are not reconsidered on the next poll.
 
 ## Event semantics — input only
 
@@ -55,7 +55,7 @@ This means the person who commented `/fs-triage` on a Jira issue will see the ru
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
 - A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
-- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens)) for a dedicated service account in the **Developers** and **Administrators** project roles. See [Setup overview](#setup-overview) for why both roles are required today.
+- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens)) for a dedicated non-human account in the **Developers** and **Administrators** project roles. This is a regular Atlassian user account, not an Atlassian-managed service account — see [Authentication model](#authentication-model). See [Setup overview](#setup-overview) for why both roles are required today.
 
 ## Credential setup
 
@@ -78,6 +78,182 @@ The fullsend binary ships an OpenShell credential provider (`atlassian-cloud`) a
 - **Profile** (`fullsend-atlassian-cloud`) — allows outbound HTTPS to `*.atlassian.net:443` with read-write access and endpoint enforcement. Permitted binaries are `curl` and `node`.
 
 The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tenant. Per-tenant scoping is not yet supported by OpenShell; this is an accepted risk for now.
+
+## Authentication model
+
+"Service account" can mean several things in Atlassian. This section separates
+what fullsend implements today, the account we recommend running it under, and
+the Atlassian-managed service-account model that fullsend does not support
+yet.
+
+### Current implementation: Basic auth with an email-bound API token
+
+Every fullsend command that calls Jira (`fullsend poll --input-driver
+jira-poll`, run-status notifications, and `fullsend issues --tracker jira`)
+authenticates the same way:
+
+- It requires both `JIRA_TOKEN` and `JIRA_USER_EMAIL` (or `--jira-email`).
+  A bare token without an email is rejected.
+- It sends `Authorization: Basic base64(email:api_token)` on every request.
+- It calls the REST API on the site URL you configure, as
+  `<JIRA_BASE_URL>/rest/api/3/...` (for example
+  `https://myteam.atlassian.net/rest/api/3/myself`).
+- It learns its own identity from `/myself`, which is how it recognises and
+  skips its own comments and label changes.
+
+The token is a long-lived Atlassian API token. It acts with the full
+permissions of the account that created it, in every Jira project and
+Confluence space that account can reach, until it expires or is revoked.
+Fullsend does not implement OAuth, Atlassian API-gateway URLs
+(`api.atlassian.com`), or `cloudId` configuration.
+
+### Recommended operating identity: a dedicated non-human account
+
+Create the token on a regular Atlassian user account that exists only for
+fullsend. Do not use a person's own account. A dedicated account:
+
+- Limits the token's reach to the projects you grant it, rather than
+  everything one person can see. Grant only the project roles in
+  [Setup overview](#setup-overview), and only on the projects you poll.
+- Makes agent activity in Jira attributable to fullsend, not to an
+  individual.
+- Keeps the self-filtering described in [How it works](#how-it-works)
+  correct. Comments posted by the token's account are treated as bot
+  activity, so a person's own `/fs-*` comments would be ignored if the
+  token were theirs.
+- Survives staff changes. The token does not stop working when someone
+  leaves, and leavers do not take a credential with them.
+
+Keep the account's email address on a mailbox your team controls, so you can
+recover the account and receive Atlassian's account notices.
+
+### Not yet supported: Atlassian-managed service accounts
+
+Atlassian also offers managed service accounts, which are separate from
+regular user accounts. Atlassian documents two credential types for them, and
+both use the Atlassian API gateway
+(`https://api.atlassian.com/ex/jira/{cloudId}/...`) rather than the site URL:
+
+- **Scoped API tokens**, still used with Basic auth.
+- **OAuth 2.0 client credentials**. The client ID and secret are exchanged at
+  `https://auth.atlassian.com/oauth/token` for a short-lived Bearer access
+  token.
+
+Fullsend cannot use either of these today. It builds every request URL from
+the site URL, has no `cloudId` setting, and cannot exchange client
+credentials for a token. In addition, the `fullsend-atlassian-cloud` sandbox
+profile only allows egress to `*.atlassian.net`. See
+[Migration path](#migration-path-to-short-lived-credentials).
+
+See Atlassian's documentation for details:
+[Understand service accounts](https://support.atlassian.com/user-management/docs/understand-service-accounts/),
+[Create OAuth 2.0 credential for service accounts](https://support.atlassian.com/user-management/docs/create-oauth-2-0-credential-for-service-accounts/),
+and [Jira REST API authentication](https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/#authentication).
+
+### Data exposure
+
+Anything the fullsend account can read in Jira can reach agents, and agent
+output is written to GitHub. If that GitHub repository is public, Jira
+content quoted in agent comments or pull requests becomes public too. Scope
+the account's project access, and the poller's `--jql`, to data you are
+comfortable exposing in the target repository. The wider data-leakage risks
+for public repositories are tracked in
+[#2513](https://github.com/fullsend-ai/fullsend/issues/2513).
+
+## Rotating the Jira API token
+
+Rotate the token before it expires, whenever someone who could read it
+leaves, and immediately if you suspect it has leaked. Atlassian sets an
+expiry date on each API token when it is created; the API tokens page shows
+it. A new token works alongside the old one until you revoke the old one, so
+you can rotate without downtime.
+
+The token is stored in more than one place. Find every copy before you
+start:
+
+- The `JIRA_TOKEN` Actions secret in **every** repository (or organization)
+  whose poll workflow uses this account. See
+  [Multi-repo polling](#multi-repo-polling).
+- The pre-encoded `email:token` credential behind the `atlassian-cloud`
+  sandbox provider, if any harness lists it. See
+  [Sandbox credentials and network access](#sandbox-credentials-and-network-access).
+- Local shells or other automation that export `JIRA_TOKEN`.
+
+To rotate:
+
+1. Sign in to Atlassian as the dedicated fullsend account and
+   [create a new API token](https://id.atlassian.com/manage-profile/security/api-tokens).
+   Give it a name that includes the creation date, so the old and new
+   tokens are easy to tell apart.
+2. Check the new token before you deploy it. With `JIRA_USER_EMAIL`,
+   `JIRA_BASE_URL`, and the new `JIRA_TOKEN` exported in your shell (not
+   typed on the command line), run:
+
+   ```bash
+   curl --fail --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+     "${JIRA_BASE_URL}/rest/api/3/myself" | jq '{accountId, displayName}'
+   ```
+
+   The response must show the fullsend account, not a person.
+3. Update the `JIRA_TOKEN` secret in every repository or organization from
+   the list above, for example
+   `gh secret set JIRA_TOKEN --repo owner/repo` (it prompts for the value).
+4. If a harness uses the `atlassian-cloud` sandbox provider, re-encode the
+   credential (`printf '%s' "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" | base64`)
+   and update the stored value.
+5. Run the poll workflow manually (**Actions > fullsend Jira poll > Run
+   workflow**) and confirm the **Poll Jira** step succeeds. Wait for one
+   scheduled run to succeed as well.
+6. Revoke the old token on the API tokens page.
+
+If you suspect a leak, revoke the old token first and accept a short outage
+while you deploy the new one. Then review the account's recent activity in
+Jira for changes you do not recognise.
+
+`JIRA_USER_EMAIL` only changes if you move to a different account. In that
+case, also give the new account the project roles from
+[Setup overview](#setup-overview).
+
+## Migration path to short-lived credentials
+
+The long-lived API token is an interim choice: it is simple to set up and
+operate, but a leaked token stays valid until it expires or someone revokes
+it. The most promising non-interactive replacement is the OAuth 2.0
+client-credentials flow for Atlassian-managed service accounts. Each job
+would exchange a client ID and secret for a short-lived Bearer token, so no
+long-lived Jira token sits in the job or the sandbox.
+
+Two caveats shape this plan:
+
+- **It is not workload-identity federation.** Atlassian documents a client
+  ID and secret exchange, not trading a CI provider's OIDC token directly
+  for a Jira token. The client secret is still a long-lived credential. It
+  must be stored centrally and rotated, but it can stay on the host side and
+  out of the sandbox. Using CI OIDC to fetch that secret from a secret
+  broker would be extra architecture on top.
+- **It is not a configuration change.** Moving fullsend to it needs code
+  changes, listed below.
+
+Work needed before fullsend can use Atlassian service-account credentials:
+
+1. An authentication abstraction in the Jira client that supports Basic
+   auth and an exchanged Bearer token, including refreshing the token before
+   it expires during long runs.
+2. Configuration for the site's `cloudId` and the OAuth client credentials,
+   and building API URLs as `https://api.atlassian.com/ex/jira/{cloudId}`
+   while keeping browse links on the site URL.
+3. Sandbox support: egress to `api.atlassian.com` (and `auth.atlassian.com`
+   where tokens are exchanged), and delivering a short-lived token to the
+   sandbox instead of the pre-encoded API token.
+4. Checking the OAuth scopes each operation needs, then testing every Jira
+   operation fullsend performs against a service account. That covers
+   issue search and reads, issue creation and issue links, changelogs and
+   status lookups, comments and comment properties, issue entity properties
+   (poll locks and checkpoints), and project-role and group lookups. It also
+   covers `/myself` self-identification for bot filtering.
+
+Until that work lands, use a dedicated account, keep its project access
+narrow, and rotate its token as described above.
 
 ## Repo configuration
 
@@ -418,7 +594,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| 401 on all Jira API calls | Invalid token | Regenerate the API token and update the `JIRA_TOKEN` secret |
+| 401 on all Jira API calls | Invalid, expired, or revoked token | Create a new API token and update every place it is stored — see [Rotating the Jira API token](#rotating-the-jira-api-token) |
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm `JIRA_USER_EMAIL` / `JIRA_TOKEN` are the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
