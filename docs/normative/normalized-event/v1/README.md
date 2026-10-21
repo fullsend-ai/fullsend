@@ -42,8 +42,8 @@ and native-webhook input, and **Jira poll** input:
   `gitlab-webhook` is the shipped GitLab native-webhook fast-path adapter,
   provisioned at install time once its readiness gates hold
   ([ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)).
-  Live validation is partial: dispatch is demonstrated on GitLab.com Free and
-  self-managed EE, while other environments remain unverified (see
+  Live issue-to-agent validation covers GitLab.com Free and self-managed EE and
+  CE, with a custom-port qualification for the CE agent helper (see
   [Validation status](#gitlab-webhook-validation-status));
   `jira-poll` is the production Jira poll adapter; `json` supports tests and
   replay.
@@ -416,7 +416,7 @@ GitLab is a normative v1 source system ([gitlab-implementation.md](../../../prob
 
 | Concern | Mapping |
 |---------|---------|
-| Input driver | `gitlab-poll` (production, cron-polled; [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) and `gitlab-webhook` (shipped fast-path, provisioned at install time behind readiness gates, with live validation partial — see [Validation status](#gitlab-webhook-validation-status); reads the file `TRIGGER_PAYLOAD` points to, re-fetched with a `CI_JOB_TOKEN`-pinned project identity and API root, and fail-closed on mismatch; see the Adapters table above; [ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)) |
+| Input driver | `gitlab-poll` (production, cron-polled; [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) and `gitlab-webhook` (shipped fast-path, provisioned at install time behind readiness gates, with live evidence and a CE qualification — see [Validation status](#gitlab-webhook-validation-status); reads the file `TRIGGER_PAYLOAD` points to, re-fetched with a `CI_JOB_TOKEN`-pinned project identity and API root, and fail-closed on mismatch; see the Adapters table above; [ADR 0125](../../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)) |
 | `source.system` | `gitlab` |
 | `repo` slug | Nested group path (`group/subgroup/project`) — `repo_path` pattern supports multi-segment paths |
 | MR events | Cron-polled MR → `entity.kind: change_proposal` (native `merge_request_event` dispatch removed in [#7322](https://github.com/fullsend-ai/fullsend/issues/7322); see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
@@ -573,24 +573,30 @@ bind its actor the same way or fail closed.
 
 #### GitLab webhook validation status
 
-Live validation on `main` at `acd2ff4` (recorded in
-[#8245](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6280859593))
-demonstrated the fast path on disposable GitLab.com Free and self-managed EE
-19.2.7-ee projects. On both, a newly opened issue started a webhook-triggered
-dispatcher pipeline within about two seconds, and the dispatcher launched an
-agent pipeline. Runtime identities stayed at Developer level. The run also
-covered the poller backstop with the webhook removed, rotation and reinstall,
-and uninstall cleanup.
+The [GitLab.com Free and self-managed EE run](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6301468961)
+on `main` at `a87815b6c` demonstrated issue-open webhook-to-agent dispatch,
+inference-backed triage completion, and scheduled polling with the webhook
+removed. Both environments also passed trigger-account rotation, post-rotation
+issue-to-agent dispatch, reinstall, and uninstall cleanup. Runtime identities
+stayed at Developer level.
 
-The following remain **unverified**, so the full #8245 live-validation gate is
-still open:
+On isolated self-managed CE 19.4.1, a [real install and issue-open webhook
+run](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6307934978)
+passed on `main` at `6cd9caa58496`. The [remaining scheduled-polling and
+post-rotation runs](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6316757216)
+passed on `main` at `5740e70511d8`: polling and the rotated webhook each
+launched an inference-backed triage agent that completed and closed its test
+issue. `repos status` reported zero drift after rotation, and uninstall removed
+the managed hooks, schedules, credentials, and exact protected-branch grant.
+The [instrumented Phase A pause run](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6306072289)
+on this CE instance also verified old-Poller isolation, bootstrap trigger
+creation and retry quarantine, and PAT rotation behavior.
 
-- **Self-managed CE.** No CE instance was available.
-- **The instrumented Phase A pause harness.** It depends on server-side
-  request pauses in isolated GitLab instances, which were not available.
-- **GitLab.com inference-backed agent completion.** The agent jobs started
-  on GitLab.com Free, but inference failed because of a test credential
-  mismatch. The self-managed EE triage agent pipeline completed.
+The CE fixture used a custom HTTPS port. Its triage helper required an
+isolated, unpushed agents patch (`371fdf36cef0`) to accept that URL and use
+`CI_SERVER_URL`. These CE runs therefore do not verify stock agents on a
+custom-port CE instance. This qualification remains part of the open
+[#8245 validation gate](https://github.com/fullsend-ai/fullsend/issues/8245).
 
 Demonstrated dispatch does not relax any MUST in this section. The
 fail-closed provenance, identity-pin, and actor-binding requirements above
