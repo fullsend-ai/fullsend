@@ -447,12 +447,26 @@ The existing design principle is that [the repo is the coordinator](problems/age
   until its versioned normalized-entity contract exists. Every run uses the
   harness's configured identity
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
+- Scheduled-discovery acquisition: Fullsend reads a fixed, bounded profile
+  for each entity kind and provider before predicate evaluation. The profile
+  includes the mandatory action-indicating superset. CEL then evaluates a
+  fully materialized `entity` with no provider reads, and harness validation
+  rejects predicates that access fields outside the profile. Fullsend tracks
+  acquisition coverage outside CEL and denies any candidate whose mandatory
+  action-indicating enumeration floor is incomplete, or whose accessible
+  profile components are incomplete
+  ([ADR 0143](ADRs/0143-pre-read-fixed-entity-profiles-for-scheduled-discovery.md)).
 
 **Open questions:**
 
 - What normative entity-history, query-planning, and handled-state contract
   can support entity-first harness evaluation without unbounded provider reads
-  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md))?
+  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md))? Discovery and
+  query-planning requirements are gathered in
+  [entity-source discovery](problems/entity-source-discovery.md). (The
+  acquisition strategy is decided in
+  [ADR 0143](ADRs/0143-pre-read-fixed-entity-profiles-for-scheduled-discovery.md).
+  The profiles, bounds, and handled-state contract remain open.)
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
