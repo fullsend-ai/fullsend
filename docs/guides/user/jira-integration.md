@@ -74,7 +74,7 @@ This means the person who commented `/fs-triage` on a Jira issue will see the ru
 
 The fullsend binary ships an OpenShell credential provider (`atlassian-cloud`) and network profile (`fullsend-atlassian-cloud`) that grant sandboxed agents access to Jira Cloud. List the bare name `atlassian-cloud` under a harness's `providers:` and `fullsend run` uses the built-in definition and imports its profile; nothing is written to the `.fullsend` directory:
 
-- **Provider** (`atlassian-cloud`) — declares the `atlassian-cloud` credential provider using the `fullsend-atlassian-cloud` profile type. Jira Cloud Basic auth requires a base64-encoded `email:api-token` string; because OpenShell does not yet support composite credential injection, provide a single pre-encoded token (generate with `printf 'you@example.com:your-api-token' | base64`).
+- **Provider** (`atlassian-cloud`) — declares the `atlassian-cloud` credential provider using the `fullsend-atlassian-cloud` profile type. Jira Cloud Basic auth requires a base64-encoded `email:api-token` string; because OpenShell does not yet support composite credential injection, provide a single pre-encoded token (generate with `printf '%s' 'you@example.com:your-api-token' | base64 | tr -d '\r\n'`; the `tr` strips the line wraps GNU `base64` adds, so the value stays on one line).
 - **Profile** (`fullsend-atlassian-cloud`) — allows outbound HTTPS to `*.atlassian.net:443` with read-write access and endpoint enforcement. Permitted binaries are `curl` and `node`.
 
 The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tenant. Per-tenant scoping is not yet supported by OpenShell; this is an accepted risk for now.
@@ -199,8 +199,11 @@ To rotate:
    the list above, for example
    `gh secret set JIRA_TOKEN --repo owner/repo` (it prompts for the value).
 4. If a harness uses the `atlassian-cloud` sandbox provider, re-encode the
-   credential (`printf '%s' "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" | base64`)
-   and update the stored value. The encoded value is a secret: base64 is
+   credential
+   (`printf '%s' "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" | base64 | tr -d '\r\n'`)
+   and update the stored value. The `tr` strips the line wraps GNU `base64`
+   adds, so the stored value is a single line, as HTTP Basic auth requires.
+   The encoded value is a secret: base64 is
    only an encoding and gives no protection. Do not leave it in terminal
    scrollback or captured session logs. Where you can, pipe the output
    straight into your secret store's stdin-based input instead of
