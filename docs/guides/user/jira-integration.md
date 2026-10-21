@@ -200,7 +200,11 @@ To rotate:
    `gh secret set JIRA_TOKEN --repo owner/repo` (it prompts for the value).
 4. If a harness uses the `atlassian-cloud` sandbox provider, re-encode the
    credential (`printf '%s' "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" | base64`)
-   and update the stored value.
+   and update the stored value. The encoded value is a secret: base64 is
+   only an encoding and gives no protection. Do not leave it in terminal
+   scrollback or captured session logs. Where you can, pipe the output
+   straight into your secret store's stdin-based input instead of
+   displaying it.
 5. Run the poll workflow manually (**Actions > fullsend Jira poll > Run
    workflow**) and confirm the **Poll Jira** step succeeds. Wait for one
    scheduled run to succeed as well.
