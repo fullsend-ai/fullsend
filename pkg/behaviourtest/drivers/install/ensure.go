@@ -712,7 +712,9 @@ func (e *repoEnsurer) cacheWIFProvider(target, wifProvider string) {
 //
 // Polls back off exponentially from settlePollInitial to settlePollMax.
 // A timeout returns an error wrapping errWorkflowNotReady so doEnsure
-// can recreate the repo; context cancellation does not.
+// can recreate the repo, unless the last poll failed with an API error
+// other than forge.ErrNotFound; that error is returned unwrapped, like
+// context cancellation, because recreating the repo cannot fix it.
 func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error {
 	target := org + "/" + repo
 	logf("[ensure] waiting for Actions to recognise %s on %s", workflowFile, target)
@@ -721,15 +723,23 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 	deadline := start.Add(settleTimeout)
 	delay := settlePollInitial
 	var last string
+	// lastAPIErr is the last poll's GetWorkflow error when it was
+	// something other than "not found"; nil when the last poll saw a
+	// 404 or a workflow that is not active yet.
+	var lastAPIErr error
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("context cancelled while waiting for %s on %s: %w", workflowFile, target, err)
 		}
 
 		wf, err := client.GetWorkflow(ctx, org, repo, workflowFile)
+		lastAPIErr = nil
 		switch {
+		case errors.Is(err, forge.ErrNotFound):
+			last = err.Error()
 		case err != nil:
 			last = err.Error()
+			lastAPIErr = err
 		case wf == nil:
 			last = "no workflow returned"
 		case wf.State == settleWorkflowActive:
@@ -741,6 +751,12 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
+			if lastAPIErr != nil {
+				// The API failed rather than reporting an unindexed
+				// workflow, so recreating the repo cannot help.
+				return fmt.Errorf("polling %s on %s failed after %d attempts over %v: %w",
+					workflowFile, target, attempt, settleTimeout, lastAPIErr)
+			}
 			return fmt.Errorf("%w: %s on %s after %d attempts over %v (last: %s)",
 				errWorkflowNotReady, workflowFile, target, attempt, settleTimeout, last)
 		}

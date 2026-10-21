@@ -596,13 +596,33 @@ Reference: [`createFork`](../../../pkg/behaviourtest/steps/fork.go) — retries 
 
 After creating a repo and committing workflow files via `fullsend github setup`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
 
-The install driver's internal ensurer handles this by polling `GetWorkflow` until the workflow is visible and its state is `active`. Polls back off exponentially from 5 seconds to a 30-second cap, for up to 5 minutes. Indexing on a freshly created repo sometimes never finishes in that window, so a timeout does not fail the allocation straight away: the ensurer deletes and recreates the repo, reinstalls, and waits again, up to 2 repo creations in total ([#8654](https://github.com/fullsend-ai/fullsend/issues/8654)). Context cancellation and other errors are not retried. When writing new provisioning code or modifying the install flow, always poll for workflow readiness before dispatching events that depend on the workflow.
+The install driver's internal ensurer handles this by polling `GetWorkflow`
+until the workflow is visible and its state is `active`. Polls back off
+exponentially from 5 seconds to a 30-second cap, for up to 5 minutes. Indexing
+on a freshly created repo sometimes never finishes in that window, so a timeout
+does not fail the allocation straight away: the ensurer deletes and recreates
+the repo, reinstalls, and waits again, up to 2 repo creations in total
+([#8654](https://github.com/fullsend-ai/fullsend/issues/8654)). Context
+cancellation and API errors other than "not found" are not retried by
+recreating the repo. When writing new provisioning code or modifying the
+install flow, always poll for workflow readiness before dispatching events that
+depend on the workflow.
 
 Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is active; `doEnsure` recreates the repo when it times out.
 
 ### CI timeout budgeting for lazy provisioning
 
-Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete leftover state + create + `github setup` + Actions settle; the first lease of each name also resolves inference WIF), including when a later scenario reuses the same `test-repo-NN` name. A lease whose workflow Actions does not index in time can take about 10 minutes longer: up to two 5-minute settle waits plus one more create and `github setup` ([Actions workflow readiness](#actions-workflow-readiness-after-repo-creation)). This happens rarely, so it is not budgeted per lease, but it reduces the slack for the whole suite. The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leases in the suite.
+Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete
+leftover state + create + `github setup` + Actions settle; the first lease of
+each name also resolves inference WIF), including when a later scenario reuses
+the same `test-repo-NN` name. A lease whose workflow Actions does not index in
+time can take about 10 minutes longer: up to two 5-minute settle waits plus one
+more create and `github setup`
+([Actions workflow readiness](#actions-workflow-readiness-after-repo-creation)).
+This happens rarely, so it is not budgeted per lease, but it reduces the slack
+for the whole suite. The behaviour job's `timeout-minutes` in `e2e.yml` and the
+`go test -timeout` in the Makefile must account for this overhead across all
+leases in the suite.
 
 Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) lease one repo per Examples row. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection. The same rule applies to the `playback-test` target (also 45 minutes) and to any CI job that runs it.
 

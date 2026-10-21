@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -1567,6 +1568,33 @@ func TestAwaitWorkflowReady_TimeoutIsRetryable(t *testing.T) {
 	assert.Contains(t, err.Error(), "fullsend.yaml on org/repo")
 	assert.Contains(t, err.Error(), forge.ErrNotFound.Error(), "error should report the last poll result")
 	assert.Greater(t, c.calls.Load(), int32(1), "should poll more than once before timing out")
+}
+
+func TestAwaitWorkflowReady_APIErrorIsNotRetryable(t *testing.T) {
+	speedUpSettle(t, 20*time.Millisecond)
+	apiErr := errors.New("403 forbidden")
+	c := &seqWorkflowClient{results: []workflowResult{
+		{err: forge.ErrNotFound},
+		{err: apiErr},
+	}}
+
+	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, apiErr, "error should report the API failure")
+	assert.NotErrorIs(t, err, errWorkflowNotReady, "an API error must not trigger a repo recreate")
+	assert.Greater(t, c.calls.Load(), int32(1), "should keep polling until the settle window ends")
+}
+
+func TestAwaitWorkflowReady_APIErrorThenActive(t *testing.T) {
+	speedUpSettle(t, time.Minute)
+	c := &seqWorkflowClient{results: []workflowResult{
+		{err: errors.New("502 bad gateway")},
+		{wf: &forge.Workflow{State: "active"}},
+	}}
+
+	err := awaitWorkflowReady(context.Background(), c, "org", "repo", "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), c.calls.Load(), "a transient API error should not stop polling")
 }
 
 func TestAwaitWorkflowReady_CancelledMidWait(t *testing.T) {
