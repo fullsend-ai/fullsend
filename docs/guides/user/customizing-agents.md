@@ -456,7 +456,9 @@ as git config or shell rc files; that is trusted like `pre_script` too.
 
 **Note**: `env.sandbox` cannot modify runner infrastructure or security
 settings through the reserved names below. The runner drops these names
-before writing the sandbox environment, case-insensitively:
+before writing the sandbox environment, case-insensitively. The full
+reserved set is published in the generated [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md):
 
 - **Runner infrastructure and process-loading safeguards:** `PATH`, `HOME`,
   `SHELL`, `BASH_ENV`, `ENV`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `TRACEPARENT`,

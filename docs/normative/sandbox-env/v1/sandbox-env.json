@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "exports": {
+    "always": [
+      "FULLSEND_ITERATION_DEADLINE",
+      "FULLSEND_OUTPUT_DIR",
+      "FULLSEND_ROLE",
+      "FULLSEND_RUNNER_PATH",
+      "FULLSEND_TARGET_REPO_DIR",
+      "FULLSEND_TIMEOUT_MINUTES",
+      "PATH",
+      "TRACEPARENT"
+    ],
+    "conditional": {
+      "FULLSEND_EGRESS_ALLOWLIST": "an SSRF egress allowlist is configured, including the auto-merged forge egress entry",
+      "FULLSEND_FETCH_TOKEN": "the runtime fetch service is enabled (ADR 0038)",
+      "FULLSEND_FETCH_URL": "the runtime fetch service is enabled (ADR 0038)",
+      "FULLSEND_OUTPUT_FILE": "the legacy runner_env FULLSEND_OUTPUT_FILE is set",
+      "FULLSEND_OUTPUT_SCHEMA": "an output schema is configured (validation_loop.schema, or the legacy FULLSEND_OUTPUT_SCHEMA runner env) and its file uploads into the sandbox",
+      "FULLSEND_SLUG": "the harness sets a slug",
+      "FULLSEND_TRACE_ID": "trace-ID injection succeeds; the run warns and continues when it fails",
+      "TIRITH_FAIL_ON": "security.sandbox_hooks.tirith.fail_on is set",
+      "TIRITH_REQUIRED": "Tirith scanning is required (security.sandbox_hooks.tirith.enabled, default true)"
+    },
+    "runtime_specific": {
+      "claude": [
+        "CLAUDE_CONFIG_DIR"
+      ],
+      "codex": [
+        "CODEX_HOME"
+      ],
+      "opencode": [],
+      "pi": [
+        "JITI_FS_CACHE",
+        "PI_CODING_AGENT_DIR",
+        "PI_CODING_AGENT_SESSION_DIR",
+        "PI_OFFLINE",
+        "PI_SKIP_VERSION_CHECK",
+        "PI_TELEMETRY"
+      ]
+    }
+  },
+  "harness_delivered": {
+    "ANTHROPIC_VERTEX_PROJECT_ID": {
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers the same variables through env/gcp-vertex.env in fullsend-ai/agents",
+      "runner_guaranteed": false
+    },
+    "CLAUDE_CODE_USE_VERTEX": {
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers the same variables through env/gcp-vertex.env in fullsend-ai/agents",
+      "runner_guaranteed": false
+    },
+    "CLOUD_ML_REGION": {
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers the same variables through env/gcp-vertex.env in fullsend-ai/agents",
+      "runner_guaranteed": false
+    },
+    "GOOGLE_APPLICATION_CREDENTIALS": {
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers the same variables through env/gcp-vertex.env in fullsend-ai/agents",
+      "runner_guaranteed": false
+    }
+  },
+  "reserved": [
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "BASH_ENV",
+    "ENV",
+    "FULLSEND_FETCH_TOKEN",
+    "FULLSEND_FETCH_URL",
+    "FULLSEND_GCP_OIDC_AUTH_FILE",
+    "FULLSEND_GCP_OIDC_URL",
+    "FULLSEND_GCP_PROJECT_ID",
+    "FULLSEND_GCP_WIF_PROVIDER",
+    "FULLSEND_INFERENCE_GATEWAY_API_KEY",
+    "FULLSEND_ITERATION_DEADLINE",
+    "FULLSEND_OPENAI_API_KEY",
+    "FULLSEND_OPENAI_AUDIENCE",
+    "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID",
+    "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID",
+    "FULLSEND_OUTPUT_DIR",
+    "FULLSEND_OUTPUT_FILE",
+    "FULLSEND_OUTPUT_SCHEMA",
+    "FULLSEND_ROLE",
+    "FULLSEND_RUNNER_PATH",
+    "FULLSEND_SLUG",
+    "FULLSEND_TARGET_REPO_DIR",
+    "FULLSEND_TIMEOUT_MINUTES",
+    "FULLSEND_TRIGGER_TOKEN",
+    "FULLSEND_WEBHOOK_SECRET",
+    "GH_WORKFLOW_TOKEN",
+    "HOME",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "OPENAI_API_KEY",
+    "PATH",
+    "SHELL",
+    "TRACEPARENT"
+  ]
+}

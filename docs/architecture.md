@@ -88,7 +88,7 @@ each target repository's **`.fullsend/`** directory
 
 - What is the right isolation level — process, container, microVM, or separate cluster? (See [agent-infrastructure.md](problems/agent-infrastructure.md) and [security-threat-model.md](problems/security-threat-model.md).)
 - ~~How granular is network regulation? Allowlist of endpoints, or coarser controls?~~ Decided in [ADR 0065](ADRs/0065-provider-backed-policy-composition.md): network access is granted through provider profiles with per-endpoint allowlists.
-- Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox?
+- Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox? (The environment-variable dimension is now a published, generated contract — [ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md), [manifest](normative/sandbox-env/v1/README.md); tools, runtimes, and workspace setup remain open.)
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
 
 **Decided:**
@@ -133,7 +133,12 @@ repo baseline and overrides)
   sub-maps replaces `runner_env` and manual `.env` files. The runner generates
   the sandbox `.env` file from `env.sandbox` at bootstrap. `runner_env` is
   deprecated ([ADR 0055](ADRs/0055-unified-env-var-delivery.md), amending
-  [ADR 0024](ADRs/0024-harness-definitions.md)).
+  [ADR 0024](ADRs/0024-harness-definitions.md)). What the runner itself
+  injects — which env vars every sandbox receives, which arrive per runtime
+  via `EnvExports()`, and which keys are reserved from harness override — is
+  published as a generated, tag-pinned manifest enforced by an always-on
+  golden test ([ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md);
+  [contract](normative/sandbox-env/v1/README.md)).
 - Runner secrets on GitHub (interim until external secret manager support
   or #6359 settles the long-term route, then kept as the fallback for
   workflows without GitHub OIDC or WIF; integrations fullsend owns keep their
